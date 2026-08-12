@@ -45,6 +45,7 @@ DOCUMENT_LEASE_VERSION = 1
 DOCUMENT_LEASE_SCHEMA = 1
 DOCUMENT_LEASE_PURPOSES = {"document-write", "git-stability-barrier"}
 DOCUMENT_LEASE_STAGES = {
+    "design-discussion",
     "problem-framing",
     "solution-design",
     "guided-implementation",

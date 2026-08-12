@@ -2,6 +2,7 @@
 set -euo pipefail
 
 required_skills=(
+  design-discussion
   problem-framing
   solution-design
   guided-implementation
@@ -18,7 +19,8 @@ required_skills=(
   code-review
 )
 
-search_roots=()
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+search_roots=("$repo_root/skills")
 if [[ -n "${CODEX_HOME:-}" ]]; then
   search_roots+=("$CODEX_HOME/skills")
 fi

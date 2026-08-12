@@ -14,9 +14,12 @@ for skill_dir in "$repo_root"/skills/*; do
   python3 "$validator" "$skill_dir"
 done
 
-python3 -m unittest \
-  "$repo_root/skills/problem-framing/scripts/test_read_thread_settings.py" \
-  "$repo_root/skills/guided-implementation/scripts/test_supervision_protocol.py"
+test_files=()
+while IFS= read -r -d '' test_file; do
+  test_files+=("$test_file")
+done < <(find "$repo_root/skills" -type f -path '*/scripts/test_*.py' -print0 | sort -z)
+
+python3 -m unittest "${test_files[@]}"
 
 if rg -n '/Users/[^/]+/' "$repo_root/skills"; then
   printf 'User-specific absolute paths remain under skills/.\n' >&2

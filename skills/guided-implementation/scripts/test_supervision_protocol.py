@@ -201,6 +201,23 @@ class DocumentLeaseTests(unittest.TestCase):
         self.assertEqual(released["version"], 3)
         self.assertIsNone(released["holder"])
 
+    def test_design_discussion_is_an_accepted_document_lease_stage(self) -> None:
+        lease_input = self.write_input(
+            "design-discussion-lease.json",
+            task_id="discussion-task",
+            stage="design-discussion",
+        )
+        acquired = PROTOCOL.acquire_document_lease(
+            lease_input, wait_seconds=0, max_retries=0
+        )
+        self.assertTrue(acquired["acquired"])
+        self.assertEqual(acquired["holder"]["stage"], "design-discussion")
+        PROTOCOL.release_document_lease(
+            Path(acquired["path"]),
+            expected_id=acquired["holder"]["lease_id"],
+            expected_version=acquired["version"],
+        )
+
     def test_expired_lease_can_be_replaced_but_old_owner_cannot_release(self) -> None:
         first_input = self.write_input("first.json", task_id="task-a", ttl_seconds=10)
         second_input = self.write_input("second.json", task_id="task-b", ttl_seconds=10)
