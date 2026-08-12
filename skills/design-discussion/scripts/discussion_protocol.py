@@ -411,6 +411,61 @@ def _ledger_sections(text: str) -> dict[str, str]:
     return sections
 
 
+def _parse_yaml_scalar(value: str, label: str) -> str | int | bool | None:
+    if value == "null":
+        return None
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    if re.fullmatch(r"0|[1-9][0-9]*", value):
+        return int(value)
+    if value.startswith('"'):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ProtocolError("state_corrupt", f"{label} has an invalid quoted scalar") from error
+        if not isinstance(decoded, str):
+            raise ProtocolError("state_corrupt", f"{label} must decode to a string")
+        return decoded
+    raise ProtocolError("state_corrupt", f"{label} uses an unsupported YAML scalar")
+
+
+def _parse_record_section(section: str, label: str) -> list[dict[str, Any]]:
+    lines = section.strip().splitlines()
+    if len(lines) < 3 or lines[:2] != ["```yaml", "records:"] or lines[-1] != "```":
+        raise ProtocolError("state_corrupt", f"{label} has invalid YAML framing")
+    content = lines[2:-1]
+    if content == ["  []"]:
+        return []
+    records: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for line in content:
+        if line.startswith("  - "):
+            current = {}
+            records.append(current)
+            field_line = line[4:]
+        elif line.startswith("    ") and current is not None:
+            field_line = line[4:]
+        else:
+            raise ProtocolError("state_corrupt", f"{label} contains invalid indentation")
+        if ": " not in field_line:
+            raise ProtocolError("state_corrupt", f"{label} contains a malformed field")
+        key, raw_value = field_line.split(": ", 1)
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", key) or key in current:
+            raise ProtocolError("state_corrupt", f"{label} contains an invalid or duplicate key")
+        current[key] = _parse_yaml_scalar(raw_value, f"{label}.{key}")
+    return records
+
+
+def _require_exact_record(
+    sections: dict[str, str], section_name: str, expected: dict[str, Any]
+) -> None:
+    records = _parse_record_section(sections[section_name], section_name)
+    if records != [expected]:
+        raise ProtocolError("state_corrupt", f"ledger {section_name!r} record is invalid")
+
+
 def _mkdirs(path: Path, created_directories: list[Path]) -> None:
     missing: list[Path] = []
     cursor = path
@@ -576,48 +631,64 @@ def _existing_response(
             if topic_frontmatter.get(field) != expected_value:
                 raise ProtocolError("state_corrupt", f"topic document has invalid {field}")
         sections = _ledger_sections(ledger_text)
-        current_topic_records = (
-            f'topic_id: "{manifest["topic_id"]}"',
-            "current_phase: 0",
-            'phase_state: "active"',
-            'topic_state: "open"',
-            f'topic_document_path: "{topic_path}"',
+        event_records = _parse_record_section(sections["Recent Events"], "Recent Events")
+        if len(event_records) != 1:
+            raise ProtocolError("state_corrupt", "bootstrap must have exactly one recent event")
+        event_record = event_records[0]
+        if event_record.get("idempotency_key") != idempotency_key:
+            raise ProtocolError(
+                "discussion_already_initialized",
+                "the project already has a different persistent discussion root",
+                context=context,
+            )
+        if event_record.get("request_fingerprint") != request_fingerprint:
+            raise ProtocolError(
+                "idempotency_conflict",
+                "idempotency key was already used with different bootstrap parameters",
+                context=context,
+            )
+        _require_exact_record(
+            sections,
+            "Current Topics",
+            {
+                "topic_id": manifest["topic_id"],
+                "record_revision": 1,
+                "root_slug": root_slug,
+                "current_phase": 0,
+                "phase_state": "active",
+                "review_state": "unreviewed",
+                "topic_state": "open",
+                "topic_document_path": str(topic_path),
+            },
         )
-        binding_records = (
-            f'topic_id: "{manifest["topic_id"]}"',
-            f'conversation_ref: "{conversation_ref}"',
-            'binding_state: "active"',
+        _require_exact_record(
+            sections,
+            "Conversation Bindings",
+            {
+                "topic_id": manifest["topic_id"],
+                "conversation_ref": conversation_ref,
+                "binding_state": "active",
+                "record_revision": 1,
+            },
         )
-        event_records = (
-            f'topic_id: "{manifest["topic_id"]}"',
-            'event_type: "root-topic-bootstrapped"',
-            f'idempotency_key: "{idempotency_key}"',
-            f'request_fingerprint: "{request_fingerprint}"',
-        )
-        if any(sections["Current Topics"].count(record) != 1 for record in current_topic_records):
-            raise ProtocolError("state_corrupt", "root topic record is invalid")
-        if any(
-            sections["Conversation Bindings"].count(record) != 1
-            for record in binding_records
-        ):
-            raise ProtocolError("state_corrupt", "active conversation binding is invalid")
-        if any(sections["Recent Events"].count(record) != 1 for record in event_records):
-            raise ProtocolError("state_corrupt", "root topic, binding or event record is invalid")
+        expected_event = {
+            "event_id": "event-00000001",
+            "event_type": "root-topic-bootstrapped",
+            "ledger_revision": 1,
+            "topic_id": manifest["topic_id"],
+            "idempotency_key": idempotency_key,
+            "request_fingerprint": request_fingerprint,
+        }
+        if event_record != expected_event:
+            raise ProtocolError("state_corrupt", "bootstrap recent event is invalid")
+        for empty_name in LEDGER_SECTION_NAMES:
+            if empty_name in {"Current Topics", "Conversation Bindings", "Recent Events"}:
+                continue
+            if _parse_record_section(sections[empty_name], empty_name) != []:
+                raise ProtocolError("state_corrupt", f"bootstrap section {empty_name!r} must be empty")
     except ProtocolError as error:
         error.context = {**context, **error.context}
         raise
-    if f'idempotency_key: "{idempotency_key}"' not in ledger_text:
-        raise ProtocolError(
-            "discussion_already_initialized",
-            "the project already has a different persistent discussion root",
-            context=context,
-        )
-    if f'request_fingerprint: "{request_fingerprint}"' not in ledger_text:
-        raise ProtocolError(
-            "idempotency_conflict",
-            "idempotency key was already used with different bootstrap parameters",
-            context=context,
-        )
     for identity in required - {"root_slug"}:
         value = manifest[identity]
         if value.encode("utf-8") not in ledger_data or value.encode("utf-8") not in topic_data:

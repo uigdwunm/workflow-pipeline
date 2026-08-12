@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import re
 import subprocess
@@ -81,6 +82,16 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
             text=True,
         )
         return Path(completed.stdout.strip())
+
+    def rewrite_ledger_with_valid_digest(self, ledger_path: Path, old: str, new: str) -> None:
+        text = ledger_path.read_text(encoding="utf-8").replace(old, new)
+        frontmatter, body = text[4:].split("\n---\n", 1)
+        without_digest = "\n".join(
+            line for line in frontmatter.splitlines() if not line.startswith("content_digest: ")
+        ) + "\n"
+        digest = hashlib.sha256((without_digest + body).encode("utf-8")).hexdigest()
+        text = re.sub(r"content_digest: [0-9a-f]{64}", f"content_digest: {digest}", text)
+        ledger_path.write_text(text, encoding="utf-8")
 
     def assert_initialized(self, project: Path, response: dict[str, object]) -> None:
         self.assertTrue(response["ok"])
@@ -202,6 +213,22 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
         self.assertEqual(response["ledger_revision"], 1)
         self.assertEqual(response["topic_id"], first["topic_id"])
 
+    def test_duplicate_invocation_rejects_semantically_changed_records_with_valid_digest(self) -> None:
+        project = self.make_project("semantic-tamper", git=True)
+        invocation_id = str(uuid.uuid4())
+        request = self.request(project, invocation_id=invocation_id)
+        first_code, first, first_stderr = self.run_cli(request)
+        self.assertEqual(first_code, 0, first_stderr)
+        ledger_path = Path(str(first["ledger_path"]))
+        self.rewrite_ledger_with_valid_digest(
+            ledger_path, "record_revision: 1", "record_revision: 2"
+        )
+
+        returncode, response, _ = self.run_cli(request)
+        self.assertEqual(returncode, 1)
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "state_corrupt")
+
     def test_duplicate_invocation_rejects_an_invalid_manifest_slug(self) -> None:
         project = self.make_project("invalid-replay-slug", git=True)
         invocation_id = str(uuid.uuid4())
@@ -222,6 +249,29 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "state_corrupt")
         self.assertFalse((self.root / "outside" / "topic.md").exists())
+
+    def test_reused_idempotency_key_with_changed_binding_is_a_conflict(self) -> None:
+        project = self.make_project("idempotency-conflict", git=True)
+        invocation_id = str(uuid.uuid4())
+        first_request = self.request(project, invocation_id=invocation_id)
+        first_code, _, first_stderr = self.run_cli(first_request)
+        self.assertEqual(first_code, 0, first_stderr)
+        changed_request = self.request(
+            project,
+            invocation_id=invocation_id,
+            conversation_ref="codex-thread:different-conversation",
+        )
+
+        returncode, response, _ = self.run_cli(changed_request)
+        self.assertEqual(returncode, 1)
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "idempotency_conflict")
+
+    def test_skill_metadata_disables_implicit_invocation(self) -> None:
+        metadata = SCRIPT_PATH.parents[1] / "agents" / "openai.yaml"
+        self.assertIn(
+            "allow_implicit_invocation: false", metadata.read_text(encoding="utf-8")
+        )
 
     def test_error_response_includes_localized_contract_and_authoritative_state(self) -> None:
         project = self.make_project("error-contract", git=True)

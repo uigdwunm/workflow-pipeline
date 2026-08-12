@@ -3,4 +3,4 @@ interface:
   short_description: "Run persistent one-question design discussions"
   default_prompt: "Use $design-discussion to initialize a verified persistent design topic, then ask one recommended design question at a time."
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false
