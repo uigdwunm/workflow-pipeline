@@ -36,12 +36,14 @@ class ProtocolError(ValueError):
         *,
         retryable: bool = False,
         cause: str | None = None,
+        context: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
         self.cause = cause
+        self.context = context or {}
 
 
 def _canonical_json(value: Any) -> str:
@@ -49,14 +51,40 @@ def _canonical_json(value: Any) -> str:
 
 
 def _response_error(error: ProtocolError) -> dict[str, Any]:
+    chinese_messages = {
+        "discussion_already_initialized": "项目已绑定其他持久化根话题，不能猜测或替换。",
+        "git_identity_invalid": "Git 协调目录身份无效。",
+        "idempotency_conflict": "同一幂等键已用于不同的初始化参数。",
+        "initialization_conflict": "初始化目标已存在，已停止且未覆盖原内容。",
+        "initialization_failed": "持久化讨论初始化失败，已停止并回滚本次新增状态。",
+        "initialization_verification_failed": "初始化后的权威状态回读验证失败。",
+        "invalid_entry_mode": "当前入口不是明确的持久化 0讨论 触发。",
+        "invalid_json": "标准输入必须只包含一个有效 JSON 值。",
+        "invalid_project_path": "项目路径必须是已存在且规范化的绝对目录。",
+        "invalid_request": "请求不符合 bootstrap 类型化接口。",
+        "invalid_root_slug": "根话题 slug 格式无效。",
+        "invalid_storage_path": "持久化路径包含不安全或无效的组件。",
+        "state_corrupt": "持久化讨论权威状态损坏或不完整。",
+        "unsupported_operation": "当前工单只支持 bootstrap 操作。",
+        "unsupported_protocol_version": "协议版本不受支持。",
+    }
     detail: dict[str, Any] = {
         "code": error.code,
         "message": error.message,
+        "message_zh": chinese_messages.get(error.code, "讨论协议操作失败。"),
         "retryable": error.retryable,
+        "cause": error.cause,
     }
-    if error.cause:
-        detail["cause"] = error.cause
-    return {"ok": False, "error": detail}
+    return {
+        "ok": False,
+        "state": error.context.get("state", "stopped"),
+        "ledger_revision": error.context.get("ledger_revision"),
+        "record_revision": error.context.get("record_revision"),
+        "project_id": error.context.get("project_id"),
+        "tree_id": error.context.get("tree_id"),
+        "topic_id": error.context.get("topic_id"),
+        "error": detail,
+    }
 
 
 def _expect_keys(source: dict[str, Any], expected: set[str], label: str) -> None:
@@ -312,6 +340,77 @@ def _parse_frontmatter(data: bytes, label: str) -> dict[str, str]:
     return result
 
 
+def _require_regular_nosymlink(path: Path, label: str) -> bytes:
+    cursor = path
+    while cursor != cursor.parent:
+        try:
+            status = os.lstat(cursor)
+        except OSError as error:
+            raise ProtocolError(
+                "state_corrupt", f"cannot inspect {label}: {cursor}", cause=str(error)
+            ) from error
+        if stat.S_ISLNK(status.st_mode):
+            raise ProtocolError("state_corrupt", f"{label} contains a symbolic-link component")
+        cursor = cursor.parent
+    try:
+        status = os.lstat(path)
+    except OSError as error:
+        raise ProtocolError("state_corrupt", f"cannot inspect {label}", cause=str(error)) from error
+    if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+        raise ProtocolError("state_corrupt", f"{label} must be a single-link regular file")
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise ProtocolError("state_corrupt", f"cannot read {label}", cause=str(error)) from error
+
+
+def _verify_ledger_digest(data: bytes) -> tuple[dict[str, str], str]:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ProtocolError("state_corrupt", "ledger is not UTF-8", cause=str(error)) from error
+    if not text.startswith("---\n") or "\n---\n" not in text[4:]:
+        raise ProtocolError("state_corrupt", "ledger has invalid frontmatter")
+    frontmatter_text, body = text[4:].split("\n---\n", 1)
+    frontmatter = _parse_frontmatter(data, "ledger")
+    digest = frontmatter.get("content_digest")
+    if digest is None or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ProtocolError("state_corrupt", "ledger content_digest is invalid")
+    lines_without_digest = [
+        line for line in frontmatter_text.splitlines() if not line.startswith("content_digest: ")
+    ]
+    expected = hashlib.sha256(
+        (("\n".join(lines_without_digest) + "\n") + body).encode("utf-8")
+    ).hexdigest()
+    if digest != expected:
+        raise ProtocolError("state_corrupt", "ledger content_digest does not match its bytes")
+    return frontmatter, text
+
+
+def _ledger_sections(text: str) -> dict[str, str]:
+    sections: dict[str, str] = {}
+    for index, name in enumerate(LEDGER_SECTION_NAMES):
+        marker = f"## {name}\n\n"
+        if text.count(marker) != 1:
+            raise ProtocolError("state_corrupt", f"ledger section {name!r} is missing or duplicated")
+        start = text.index(marker) + len(marker)
+        if index + 1 < len(LEDGER_SECTION_NAMES):
+            next_marker = f"\n## {LEDGER_SECTION_NAMES[index + 1]}\n\n"
+            try:
+                end = text.index(next_marker, start)
+            except ValueError as error:
+                raise ProtocolError(
+                    "state_corrupt", f"ledger section order is invalid after {name!r}"
+                ) from error
+        else:
+            end = len(text)
+        section = text[start:end]
+        if not section.startswith("```yaml\nrecords:") or not section.rstrip().endswith("```"):
+            raise ProtocolError("state_corrupt", f"ledger section {name!r} has invalid record framing")
+        sections[name] = section
+    return sections
+
+
 def _mkdirs(path: Path, created_directories: list[Path]) -> None:
     missing: list[Path] = []
     cursor = path
@@ -362,7 +461,12 @@ def _write_new_file(path: Path, data: bytes, created_files: list[Path]) -> None:
             except OSError:
                 pass
             raise
-        os.replace(temporary, path)
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError as error:
+            raise ProtocolError(
+                "initialization_conflict", f"refusing to replace existing path: {path}"
+            ) from error
         created_files.append(path)
         directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
@@ -409,21 +513,24 @@ def _existing_response(
     project: Path,
     coordination_root: Path,
     storage_mode: str,
+    conversation_ref: str,
     idempotency_key: str,
     request_fingerprint: str,
 ) -> dict[str, Any] | None:
     manifest_path = project / "docs" / "discussions" / ".codex-project.md"
     if not manifest_path.exists():
         return None
-    if not manifest_path.is_file():
-        raise ProtocolError("state_corrupt", "project identity manifest is not a regular file")
-    manifest = _parse_frontmatter(manifest_path.read_bytes(), "project identity manifest")
+    manifest_data = _require_regular_nosymlink(manifest_path, "project identity manifest")
+    manifest = _parse_frontmatter(manifest_data, "project identity manifest")
     required = {"project_id", "tree_id", "topic_id", "root_slug"}
     if not required.issubset(manifest):
         raise ProtocolError("state_corrupt", "project identity manifest is incomplete")
     for field in ("project_id", "tree_id", "topic_id"):
         if not IDENTITY_RE.fullmatch(manifest[field]):
             raise ProtocolError("state_corrupt", f"project identity manifest has invalid {field}")
+    root_slug = manifest["root_slug"]
+    if not ROOT_SLUG_RE.fullmatch(root_slug):
+        raise ProtocolError("state_corrupt", "project identity manifest has invalid root_slug")
     ledger_path = (
         coordination_root
         / "projects"
@@ -432,26 +539,91 @@ def _existing_response(
         / manifest["tree_id"]
         / "ledger.md"
     )
-    topic_path = project / "docs" / "discussions" / manifest["root_slug"] / "topic.md"
-    if not ledger_path.is_file() or not topic_path.is_file():
-        raise ProtocolError("state_corrupt", "persistent discussion bootstrap is incomplete")
-    ledger_data = ledger_path.read_bytes()
-    topic_data = topic_path.read_bytes()
-    ledger_text = ledger_data.decode("utf-8")
+    topic_path = project / "docs" / "discussions" / root_slug / "topic.md"
+    context = {
+        "state": "stopped",
+        "ledger_revision": 1,
+        "record_revision": 1,
+        "project_id": manifest["project_id"],
+        "tree_id": manifest["tree_id"],
+        "topic_id": manifest["topic_id"],
+    }
+    try:
+        ledger_data = _require_regular_nosymlink(ledger_path, "ledger")
+        topic_data = _require_regular_nosymlink(topic_path, "topic document")
+        ledger_frontmatter, ledger_text = _verify_ledger_digest(ledger_data)
+        topic_frontmatter = _parse_frontmatter(topic_data, "topic document")
+        expected_ledger_frontmatter = {
+            "schema_version": "1",
+            "project_id": manifest["project_id"],
+            "tree_id": manifest["tree_id"],
+            "ledger_revision": "1",
+            "event_count": "1",
+            "project_manifest_path": str(manifest_path),
+        }
+        for field, expected_value in expected_ledger_frontmatter.items():
+            if ledger_frontmatter.get(field) != expected_value:
+                raise ProtocolError("state_corrupt", f"ledger has invalid {field}")
+        expected_topic_frontmatter = {
+            "schema_version": "1",
+            "project_id": manifest["project_id"],
+            "tree_id": manifest["tree_id"],
+            "topic_id": manifest["topic_id"],
+            "parent_topic_id": "null",
+            "topic_revision": "1",
+        }
+        for field, expected_value in expected_topic_frontmatter.items():
+            if topic_frontmatter.get(field) != expected_value:
+                raise ProtocolError("state_corrupt", f"topic document has invalid {field}")
+        sections = _ledger_sections(ledger_text)
+        current_topic_records = (
+            f'topic_id: "{manifest["topic_id"]}"',
+            "current_phase: 0",
+            'phase_state: "active"',
+            'topic_state: "open"',
+            f'topic_document_path: "{topic_path}"',
+        )
+        binding_records = (
+            f'topic_id: "{manifest["topic_id"]}"',
+            f'conversation_ref: "{conversation_ref}"',
+            'binding_state: "active"',
+        )
+        event_records = (
+            f'topic_id: "{manifest["topic_id"]}"',
+            'event_type: "root-topic-bootstrapped"',
+            f'idempotency_key: "{idempotency_key}"',
+            f'request_fingerprint: "{request_fingerprint}"',
+        )
+        if any(sections["Current Topics"].count(record) != 1 for record in current_topic_records):
+            raise ProtocolError("state_corrupt", "root topic record is invalid")
+        if any(
+            sections["Conversation Bindings"].count(record) != 1
+            for record in binding_records
+        ):
+            raise ProtocolError("state_corrupt", "active conversation binding is invalid")
+        if any(sections["Recent Events"].count(record) != 1 for record in event_records):
+            raise ProtocolError("state_corrupt", "root topic, binding or event record is invalid")
+    except ProtocolError as error:
+        error.context = {**context, **error.context}
+        raise
     if f'idempotency_key: "{idempotency_key}"' not in ledger_text:
         raise ProtocolError(
             "discussion_already_initialized",
             "the project already has a different persistent discussion root",
+            context=context,
         )
     if f'request_fingerprint: "{request_fingerprint}"' not in ledger_text:
         raise ProtocolError(
             "idempotency_conflict",
             "idempotency key was already used with different bootstrap parameters",
+            context=context,
         )
     for identity in required - {"root_slug"}:
         value = manifest[identity]
         if value.encode("utf-8") not in ledger_data or value.encode("utf-8") not in topic_data:
-            raise ProtocolError("state_corrupt", "bootstrap identity reread verification failed")
+            raise ProtocolError(
+                "state_corrupt", "bootstrap identity reread verification failed", context=context
+            )
     return {
         "ok": True,
         "state": "started",
@@ -529,6 +701,7 @@ def _bootstrap(request: dict[str, Any]) -> dict[str, Any]:
                 project=project,
                 coordination_root=coordination_root,
                 storage_mode=storage_mode,
+                conversation_ref=conversation_ref,
                 idempotency_key=idempotency_key,
                 request_fingerprint=request_fingerprint,
             )

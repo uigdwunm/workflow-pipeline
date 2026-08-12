@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -179,6 +180,70 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
         self.assertEqual(second["event_count"], 1)
         self.assertEqual(first["topic_id"], second["topic_id"])
         self.assertEqual(original_ledger, ledger_path.read_bytes())
+
+    def test_duplicate_invocation_rejects_a_tampered_binding(self) -> None:
+        project = self.make_project("tampered-replay", git=True)
+        invocation_id = str(uuid.uuid4())
+        request = self.request(project, invocation_id=invocation_id)
+        first_code, first, first_stderr = self.run_cli(request)
+        self.assertEqual(first_code, 0, first_stderr)
+        ledger_path = Path(str(first["ledger_path"]))
+        ledger_text = ledger_path.read_text(encoding="utf-8")
+        ledger_path.write_text(
+            ledger_text.replace("binding_state: \"active\"", "binding_state: \"inactive\""),
+            encoding="utf-8",
+        )
+
+        returncode, response, _ = self.run_cli(request)
+        self.assertEqual(returncode, 1)
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "state_corrupt")
+        self.assertEqual(response["state"], "stopped")
+        self.assertEqual(response["ledger_revision"], 1)
+        self.assertEqual(response["topic_id"], first["topic_id"])
+
+    def test_duplicate_invocation_rejects_an_invalid_manifest_slug(self) -> None:
+        project = self.make_project("invalid-replay-slug", git=True)
+        invocation_id = str(uuid.uuid4())
+        request = self.request(project, invocation_id=invocation_id)
+        first_code, first, first_stderr = self.run_cli(request)
+        self.assertEqual(first_code, 0, first_stderr)
+        manifest_path = Path(str(first["project_manifest_path"]))
+        manifest_text = manifest_path.read_text(encoding="utf-8")
+        manifest_path.write_text(
+            manifest_text.replace(
+                "root_slug: checkout-redesign", "root_slug: ../../outside"
+            ),
+            encoding="utf-8",
+        )
+
+        returncode, response, _ = self.run_cli(request)
+        self.assertEqual(returncode, 1)
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "state_corrupt")
+        self.assertFalse((self.root / "outside" / "topic.md").exists())
+
+    def test_error_response_includes_localized_contract_and_authoritative_state(self) -> None:
+        project = self.make_project("error-contract", git=True)
+        invocation_id = str(uuid.uuid4())
+        request = self.request(project, invocation_id=invocation_id)
+        first_code, first, first_stderr = self.run_cli(request)
+        self.assertEqual(first_code, 0, first_stderr)
+        ledger_path = Path(str(first["ledger_path"]))
+        ledger_text = ledger_path.read_text(encoding="utf-8")
+        ledger_path.write_text(
+            re.sub(r"content_digest: [0-9a-f]{64}", "content_digest: " + "0" * 64, ledger_text),
+            encoding="utf-8",
+        )
+
+        returncode, response, _ = self.run_cli(request)
+        self.assertEqual(returncode, 1)
+        error = response["error"]
+        self.assertEqual(error["code"], "state_corrupt")
+        self.assertTrue(error["message_zh"])
+        self.assertEqual(response["state"], "stopped")
+        self.assertEqual(response["ledger_revision"], 1)
+        self.assertEqual(response["topic_id"], first["topic_id"])
 
     def test_late_initialization_failure_rolls_back_every_new_artifact(self) -> None:
         project = self.make_project("partial-failure", git=True)
