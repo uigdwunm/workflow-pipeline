@@ -1,0 +1,6 @@
+interface:
+  display_name: "1拷问"
+  short_description: "Sharpen a target with coordinated document writes"
+  default_prompt: "Use $problem-framing to sharpen this target, coordinate repository documentation writes through the shared CAS document lease while stage 3 owns Git and implementation paths, commit only stage-owned planning documents after the repository lease is available, and offer 执行后续全部流程 only in the final success footer."
+policy:
+  allow_implicit_invocation: false

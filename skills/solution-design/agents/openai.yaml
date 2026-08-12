@@ -1,0 +1,6 @@
+interface:
+  display_name: "2方案"
+  short_description: "Design and publish through the shared document lease"
+  default_prompt: "Use $solution-design to launch one context-isolated solution-design subagent, write local Spec, ADR, and Ticket artifacts through the shared document lease while implementation may continue, publish and commit only when authorized, and hand the result to 3实现."
+policy:
+  allow_implicit_invocation: true
