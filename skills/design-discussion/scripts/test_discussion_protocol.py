@@ -14,6 +14,12 @@ import uuid
 
 
 SCRIPT_PATH = Path(__file__).with_name("discussion_protocol.py")
+SUPERVISION_SCRIPT_PATH = (
+    Path(__file__).parents[2]
+    / "guided-implementation"
+    / "scripts"
+    / "supervision_protocol.py"
+)
 
 
 class DiscussionProtocolBootstrapTests(unittest.TestCase):
@@ -358,6 +364,479 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
         self.assertFalse((project / "docs" / "discussions").exists())
         self.assertFalse(
             (self.git_common_dir(project) / "cc-switch" / "design-discussion").exists()
+        )
+
+
+class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
+    def bootstrap_topic(
+        self, project: Path, *, owner_ref: str = "discussion-task"
+    ) -> dict[str, object]:
+        returncode, response, stderr = self.run_cli(
+            self.request(project, conversation_ref=owner_ref)
+        )
+        self.assertEqual(returncode, 0, stderr)
+        return response
+
+    def evolution_request(
+        self,
+        topic: dict[str, object],
+        *,
+        operation: str,
+        expected_revision: int | None = None,
+        expected_topic_revision: int | None = None,
+        owner_ref: str = "discussion-task",
+        **parameters: object,
+    ) -> dict[str, object]:
+        request: dict[str, object] = {
+            "protocol_version": 1,
+            "operation": operation,
+            "project_path": str(Path(str(topic["topic_document_path"])).parents[3]),
+            "project_id": topic["project_id"],
+            "tree_id": topic["tree_id"],
+            "actor_topic_id": topic["topic_id"],
+            "actor_conversation_ref": owner_ref,
+        }
+        if expected_revision is not None:
+            request.update(
+                {
+                    "expected_ledger_revision": expected_revision,
+                    "expected_topic_revision": expected_topic_revision or expected_revision,
+                    "idempotency_key": str(uuid.uuid4()),
+                }
+            )
+        request.update(parameters)
+        return request
+
+    def supervision_cli(self, *arguments: str) -> dict[str, object]:
+        completed = subprocess.run(
+            [sys.executable, str(SUPERVISION_SCRIPT_PATH), *arguments],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(completed.stdout)
+
+    def acquire_document_lease(
+        self, project: Path, *, owner_ref: str = "discussion-task"
+    ) -> dict[str, object]:
+        input_path = self.root / f"lease-{uuid.uuid4().hex}.json"
+        input_path.write_text(
+            json.dumps(
+                {
+                    "owner_host_id": "test-host",
+                    "owner_task_id": owner_ref,
+                    "purpose": "document-write",
+                    "repository": str(project),
+                    "stage": "design-discussion",
+                    "ttl_seconds": 300,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return self.supervision_cli(
+            "acquire-document-lease",
+            "--wait-seconds",
+            "0",
+            "--max-retries",
+            "0",
+            "--input",
+            str(input_path),
+        )
+
+    def release_document_lease(self, lease: dict[str, object]) -> dict[str, object]:
+        holder = lease["holder"]
+        assert isinstance(holder, dict)
+        return self.supervision_cli(
+            "release-document-lease",
+            "--file",
+            str(lease["path"]),
+            "--id",
+            str(holder["lease_id"]),
+            "--version",
+            str(lease["version"]),
+        )
+
+    def complete_update(
+        self,
+        project: Path,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int,
+        topic_revision: int,
+        mutation: dict[str, object],
+        owner_ref: str = "discussion-task",
+    ) -> tuple[dict[str, object], int, int]:
+        returncode, prepared, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-topic-update",
+                expected_revision=ledger_revision,
+                expected_topic_revision=topic_revision,
+                owner_ref=owner_ref,
+                mutation=mutation,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        lease = self.acquire_document_lease(project, owner_ref=owner_ref)
+        holder = lease["holder"]
+        assert isinstance(holder, dict)
+        returncode, applied, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="apply-document-write",
+                expected_revision=ledger_revision + 1,
+                expected_topic_revision=topic_revision + 1,
+                owner_ref=owner_ref,
+                document_write_id=prepared["document_write_id"],
+                document_lease={
+                    "path": lease["path"],
+                    "lease_id": holder["lease_id"],
+                    "version": lease["version"],
+                },
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertTrue(applied["document_verified"])
+        released = self.release_document_lease(lease)
+        returncode, completed, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="complete-document-write",
+                expected_revision=ledger_revision + 2,
+                expected_topic_revision=topic_revision + 1,
+                owner_ref=owner_ref,
+                document_write_id=prepared["document_write_id"],
+                document_lease_release={
+                    "path": released["path"],
+                    "lease_id": released["released_lease_id"],
+                    "version": released["version"],
+                },
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertTrue(completed["release_verified"])
+        return prepared, ledger_revision + 3, topic_revision + 1
+
+    def test_confirmed_decision_is_applied_with_immutable_dw_and_verified_lease(
+        self,
+    ) -> None:
+        project = self.make_project("decision-write", git=True)
+        topic = self.bootstrap_topic(project)
+        prepare_request = self.evolution_request(
+            topic,
+            operation="prepare-topic-update",
+            expected_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Use a single durable ledger.",
+                "rationale": "It prevents competing coordination authorities.",
+            },
+        )
+        returncode, prepared, stderr = self.run_cli(prepare_request)
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(prepared["state"], "confirmed-but-pending")
+        self.assertRegex(str(prepared["decision_id"]), r"^D-[0-9a-f]{32}$")
+        self.assertRegex(str(prepared["document_write_id"]), r"^DW-[0-9a-f]{32}$")
+        self.assertNotEqual(prepared["before_sha256"], prepared["after_sha256"])
+        payload_path = Path(str(prepared["payload_path"]))
+        payload_before = payload_path.read_bytes()
+
+        lease = self.acquire_document_lease(project)
+        holder = lease["holder"]
+        assert isinstance(holder, dict)
+        apply_request = self.evolution_request(
+            topic,
+            operation="apply-document-write",
+            expected_revision=2,
+            expected_topic_revision=2,
+            document_write_id=prepared["document_write_id"],
+            document_lease={
+                "path": lease["path"],
+                "lease_id": holder["lease_id"],
+                "version": lease["version"],
+            },
+        )
+        returncode, applied, stderr = self.run_cli(apply_request)
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(applied["state"], "applied-pending-release")
+        self.assertTrue(applied["document_verified"])
+        self.assertEqual(payload_path.read_bytes(), payload_before)
+        topic_text = Path(str(topic["topic_document_path"])).read_text(encoding="utf-8")
+        self.assertIn(str(prepared["decision_id"]), topic_text)
+        self.assertIn("Use a single durable ledger.", topic_text)
+
+        released = self.release_document_lease(lease)
+        complete_request = self.evolution_request(
+            topic,
+            operation="complete-document-write",
+            expected_revision=3,
+            expected_topic_revision=2,
+            document_write_id=prepared["document_write_id"],
+            document_lease_release={
+                "path": released["path"],
+                "lease_id": released["released_lease_id"],
+                "version": released["version"],
+            },
+        )
+        returncode, completed, stderr = self.run_cli(complete_request)
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(completed["state"], "completed")
+        self.assertTrue(completed["release_verified"])
+
+        returncode, inspected, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+            operation="read-topic",
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(inspected["decisions"][0]["decision_id"], prepared["decision_id"])
+        self.assertEqual(inspected["pending_document_writes"][0]["state"], "completed")
+
+    def test_pending_update_replay_is_idempotent_and_blocks_new_substantive_update(
+        self,
+    ) -> None:
+        project = self.make_project("pending-replay", git=True)
+        topic = self.bootstrap_topic(project)
+        request = self.evolution_request(
+            topic,
+            operation="prepare-topic-update",
+            expected_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Preserve the checkpoint.",
+                "rationale": "Uncertain persistence must be recoverable.",
+            },
+        )
+        first_code, first, first_stderr = self.run_cli(request)
+        second_code, second, second_stderr = self.run_cli(request)
+        self.assertEqual(first_code, 0, first_stderr)
+        self.assertEqual(second_code, 0, second_stderr)
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(second["idempotent_replay"])
+        self.assertEqual(first["document_write_id"], second["document_write_id"])
+        self.assertEqual(first["ledger_revision"], second["ledger_revision"])
+
+        returncode, blocked, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-topic-update",
+                expected_revision=2,
+                expected_topic_revision=2,
+                mutation={
+                    "type": "set-active-question",
+                    "prompt": "Can discussion continue?",
+                    "recommendation": "Reconcile first.",
+                    "reason": "The confirmed write is still pending.",
+                },
+            )
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(blocked["error"]["code"], "document_write_reconciliation_required")
+        self.assertEqual(blocked["state"], "confirmed-but-pending")
+
+    def test_ownership_conflict_and_stale_lease_cannot_apply_pending_write(self) -> None:
+        project = self.make_project("write-authority", git=True)
+        topic = self.bootstrap_topic(project)
+        returncode, prepared, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-topic-update",
+                expected_revision=1,
+                mutation={
+                    "type": "confirm-decision",
+                    "summary": "Require both authorities.",
+                    "rationale": "A lease alone must not grant topic ownership.",
+                },
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+
+        foreign_lease = self.acquire_document_lease(project, owner_ref="foreign-task")
+        foreign_holder = foreign_lease["holder"]
+        assert isinstance(foreign_holder, dict)
+        returncode, conflict, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="apply-document-write",
+                expected_revision=2,
+                expected_topic_revision=2,
+                owner_ref="foreign-task",
+                document_write_id=prepared["document_write_id"],
+                document_lease={
+                    "path": foreign_lease["path"],
+                    "lease_id": foreign_holder["lease_id"],
+                    "version": foreign_lease["version"],
+                },
+            )
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(conflict["error"]["code"], "document_ownership_conflict")
+        self.release_document_lease(foreign_lease)
+
+        stale_lease = self.acquire_document_lease(project)
+        stale_holder = stale_lease["holder"]
+        assert isinstance(stale_holder, dict)
+        self.release_document_lease(stale_lease)
+        returncode, stale, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="apply-document-write",
+                expected_revision=2,
+                expected_topic_revision=2,
+                document_write_id=prepared["document_write_id"],
+                document_lease={
+                    "path": stale_lease["path"],
+                    "lease_id": stale_holder["lease_id"],
+                    "version": stale_lease["version"],
+                },
+            )
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(stale["error"]["code"], "document_lease_invalid")
+
+    def test_validate_rejects_damaged_and_orphaned_pending_write_payloads(self) -> None:
+        for damage_kind in ("damaged", "orphaned"):
+            with self.subTest(damage_kind=damage_kind):
+                project = self.make_project(f"payload-{damage_kind}", git=True)
+                topic = self.bootstrap_topic(project)
+                returncode, prepared, stderr = self.run_cli(
+                    self.evolution_request(
+                        topic,
+                        operation="prepare-topic-update",
+                        expected_revision=1,
+                        mutation={
+                            "type": "confirm-decision",
+                            "summary": "Keep immutable payloads.",
+                            "rationale": "Recovery needs exact bytes.",
+                        },
+                    )
+                )
+                self.assertEqual(returncode, 0, stderr)
+                payload_path = Path(str(prepared["payload_path"]))
+                if damage_kind == "damaged":
+                    payload_path.chmod(0o600)
+                    payload_path.write_bytes(b"damaged\n")
+                else:
+                    (payload_path.parent / "DW-orphan.payload").write_bytes(b"orphan\n")
+                returncode, response, _ = self.run_cli(
+                    self.evolution_request(topic, operation="validate")
+                )
+                self.assertEqual(returncode, 1)
+                expected = (
+                    "document_write_payload_damaged"
+                    if damage_kind == "damaged"
+                    else "orphaned_document_write"
+                )
+                self.assertEqual(response["error"]["code"], expected)
+
+    def test_inserted_idea_suspends_then_adjusts_the_only_active_question(self) -> None:
+        project = self.make_project("inserted-idea", git=True)
+        topic = self.bootstrap_topic(project)
+        question, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=1,
+            topic_revision=1,
+            mutation={
+                "type": "set-active-question",
+                "prompt": "Which storage layout should we choose?",
+                "recommendation": "Use one tree ledger.",
+                "reason": "It centralizes coordination state.",
+            },
+        )
+        idea, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={"type": "insert-idea", "summary": "Support non-Git projects too."},
+        )
+        self.assertEqual(idea["suspended_question_id"], question["question_id"])
+        returncode, suspended, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertIsNone(suspended["active_question"])
+        self.assertEqual(suspended["questions"][0]["state"], "suspended")
+
+        _, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "resolve-inserted-idea",
+                "question_id": question["question_id"],
+                "action": "adjust",
+                "adjusted_prompt": "Which storage layout works for Git and non-Git projects?",
+            },
+        )
+        returncode, resumed, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(resumed["active_question"]["state"], "active")
+        self.assertIn("Git and non-Git", resumed["active_question"]["prompt"])
+
+    def test_changed_direction_requires_separate_resolution_for_each_decision(self) -> None:
+        project = self.make_project("decision-impacts", git=True)
+        topic = self.bootstrap_topic(project)
+        ledger_revision = topic_revision = 1
+        decisions: list[str] = []
+        for index in range(4):
+            prepared, ledger_revision, topic_revision = self.complete_update(
+                project,
+                topic,
+                ledger_revision=ledger_revision,
+                topic_revision=topic_revision,
+                mutation={
+                    "type": "confirm-decision",
+                    "summary": f"Decision {index + 1}",
+                    "rationale": "Initial direction.",
+                },
+            )
+            decisions.append(str(prepared["decision_id"]))
+        changed, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "change-direction",
+                "summary": "Adopt the new direction.",
+                "affected_decision_ids": decisions,
+            },
+        )
+        impact_ids = changed["impact_ids"]
+        self.assertEqual(len(impact_ids), 4)
+        actions = ["keep", "adjust", "replace", "discard"]
+        for index, action in enumerate(actions):
+            _, ledger_revision, topic_revision = self.complete_update(
+                project,
+                topic,
+                ledger_revision=ledger_revision,
+                topic_revision=topic_revision,
+                mutation={
+                    "type": "resolve-impact",
+                    "impact_id": impact_ids[index],
+                    "decision_id": decisions[index],
+                    "action": action,
+                    "summary": f"{action} resolution",
+                },
+            )
+            returncode, current, stderr = self.run_cli(
+                self.evolution_request(topic, operation="read-topic")
+            )
+            self.assertEqual(returncode, 0, stderr)
+            resolved = [item for item in current["impacts"] if item["state"] == "resolved"]
+            self.assertEqual(len(resolved), index + 1)
+        self.assertEqual(
+            [item["action"] for item in current["impacts"]], actions
         )
 
 

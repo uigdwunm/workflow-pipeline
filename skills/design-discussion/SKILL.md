@@ -67,12 +67,42 @@ question. Do not silently preserve, replace or discard an earlier decision.
 For detailed document sections and confirmation boundaries, read
 [references/topic-document-protocol.md](references/topic-document-protocol.md).
 
+For a confirmed substantive update, call `prepare-topic-update` with the
+current ledger and topic revisions, the authenticated topic binding, a new
+UUIDv4 idempotency key and exactly one typed mutation. Supported Ticket 02
+mutations are `confirm-decision`, `set-active-question`, `insert-idea`,
+`resolve-inserted-idea`, `change-direction` and `resolve-impact`. Reuse the
+same idempotency key only to replay the exact same request. Stable decision,
+question, idea, impact and document-write identities come from the protocol;
+do not construct or rewrite them in prose.
+
+An inserted idea suspends the active question. After the idea is understood,
+explicitly resolve that question as `resume`, `adjust` or `invalidate`. A
+changed direction first lists affected decision identities, then confirms one
+`keep`, `adjust`, `replace` or `discard` action per impact. Never batch several
+affected decisions into one resolution.
+
 ## Coordinate writes and later actions
 
 All durable discussion state belongs to `discussion_protocol.py`; do not patch
 the authoritative ledger directly. Topic-document writes use the shared
-document lease with stage `design-discussion`. Ticket 01 establishes bootstrap
-only; do not invent update operations that the protocol does not expose.
+document lease with stage `design-discussion` and purpose `document-write`.
+The update sequence is:
+
+1. `prepare-topic-update` creates one immutable `DW-*` payload with before and
+   after SHA-256 digests and enters `confirmed-but-pending`.
+2. Acquire the document lease from `supervision_protocol.py`. Pass its exact
+   path, lease ID and version to `apply-document-write`; continue only when the
+   protocol reports byte verification and `release_allowed: true`.
+3. Release that exact lease through `supervision_protocol.py`, then pass its
+   release path, lease ID and new version to `complete-document-write`.
+4. Call `validate` or `read-topic` before continuing substantive discussion.
+
+While any `DW-*` is not `completed`, do not prepare another substantive
+update. Lease timeout, stale credentials, outcome uncertainty, missing or
+damaged payloads, or release verification failure leave a recoverable
+confirmed-but-pending checkpoint; reconcile it before asking the next design
+question. Never edit or delete the payload to force recovery.
 
 Read the applicable reference only when the action is requested:
 

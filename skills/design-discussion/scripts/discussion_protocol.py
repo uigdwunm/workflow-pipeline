@@ -12,6 +12,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from typing import Any
 
@@ -58,6 +59,23 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "initialization_conflict": "初始化目标已存在，已停止且未覆盖原内容。",
         "initialization_failed": "持久化讨论初始化失败，已停止并回滚本次新增状态。",
         "initialization_verification_failed": "初始化后的权威状态回读验证失败。",
+        "active_question_conflict": "当前话题已经有一个用户可见问题。",
+        "coordination_busy": "讨论账本协调暂时繁忙，请稍后重试。",
+        "discussion_identity_conflict": "讨论项目、树或话题身份不匹配。",
+        "document_lease_invalid": "文档租约凭证无效、过期或不属于当前写入者。",
+        "document_lease_release_unverified": "文档租约释放状态无法验证。",
+        "document_ownership_conflict": "调用者不是当前话题文档写入所有者。",
+        "document_write_before_conflict": "话题文档已偏离待写入载荷的准备基线。",
+        "document_write_payload_damaged": "待写入载荷缺失或摘要损坏。",
+        "document_write_reconciliation_required": "存在已确认但未完成的文档写入，必须先恢复协调。",
+        "document_write_state_conflict": "待写入记录当前状态不允许此操作。",
+        "document_write_verification_failed": "文档写入后的字节校验失败。",
+        "impact_state_conflict": "该决定影响当前不能按请求处理。",
+        "ledger_revision_conflict": "讨论账本修订已变化，请重读后重试。",
+        "orphaned_document_write": "发现孤立、缺失或未归属的待写入载荷。",
+        "question_state_conflict": "该问题当前不是可恢复、调整或失效的挂起状态。",
+        "record_not_found": "请求引用的权威记录不存在或不唯一。",
+        "record_revision_conflict": "话题记录修订已变化，请重读后重试。",
         "invalid_entry_mode": "当前入口不是明确的持久化 0讨论 触发。",
         "invalid_json": "标准输入必须只包含一个有效 JSON 值。",
         "invalid_project_path": "项目路径必须是已存在且规范化的绝对目录。",
@@ -874,6 +892,818 @@ def _bootstrap(request: dict[str, Any]) -> dict[str, Any]:
         ) from error
 
 
+SUBSTANTIVE_MUTATIONS = {
+    "confirm-decision",
+    "set-active-question",
+    "insert-idea",
+    "resolve-inserted-idea",
+    "change-direction",
+    "resolve-impact",
+}
+IMPACT_ACTIONS = {"keep", "adjust", "replace", "discard"}
+QUESTION_ACTIONS = {"resume", "adjust", "invalidate"}
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _atomic_replace(path: Path, data: bytes, *, mode: int = 0o600) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _flock_with_timeout(stream: Any, timeout_seconds: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError as error:
+            if time.monotonic() >= deadline:
+                raise ProtocolError(
+                    "coordination_busy",
+                    "discussion ledger lock did not become available within five seconds",
+                    retryable=True,
+                ) from error
+            time.sleep(0.05)
+
+
+def _render_records_ledger(
+    frontmatter: dict[str, str], records: dict[str, list[dict[str, Any]]]
+) -> bytes:
+    body_lines = ["# Design Discussion Ledger", ""]
+    for name in LEDGER_SECTION_NAMES:
+        body_lines.extend([f"## {name}", "", _yaml_record_block(records[name]), ""])
+    body = "\n".join(body_lines)
+    frontmatter_without_digest = (
+        f"schema_version: {frontmatter['schema_version']}\n"
+        f"project_id: {frontmatter['project_id']}\n"
+        f"tree_id: {frontmatter['tree_id']}\n"
+        f"ledger_revision: {frontmatter['ledger_revision']}\n"
+        f"event_count: {frontmatter['event_count']}\n"
+        f"project_manifest_path: {json.dumps(frontmatter['project_manifest_path'])}\n"
+    )
+    digest = _sha256((frontmatter_without_digest + body).encode("utf-8"))
+    return (
+        "---\n"
+        + frontmatter_without_digest
+        + f"content_digest: {digest}\n"
+        + "---\n"
+        + body
+    ).encode("utf-8")
+
+
+def _load_records(ledger_path: Path) -> tuple[dict[str, str], dict[str, list[dict[str, Any]]]]:
+    frontmatter, text = _verify_ledger_digest(
+        _require_regular_nosymlink(ledger_path, "ledger")
+    )
+    sections = _ledger_sections(text)
+    return frontmatter, {
+        name: _parse_record_section(sections[name], name) for name in LEDGER_SECTION_NAMES
+    }
+
+
+def _evolution_paths(
+    request: dict[str, Any], *, query: bool = False
+) -> tuple[Path, Path, Path, Path, str]:
+    required = {
+        "protocol_version",
+        "operation",
+        "project_path",
+        "project_id",
+        "tree_id",
+        "actor_topic_id",
+        "actor_conversation_ref",
+    }
+    if not query:
+        required |= {
+            "expected_ledger_revision",
+            "expected_topic_revision",
+            "idempotency_key",
+        }
+    if not required.issubset(request):
+        raise ProtocolError(
+            "invalid_request",
+            f"request is missing fields: {sorted(required - set(request))!r}",
+        )
+    project = _validate_project_path(request["project_path"])
+    project_id = _expect_string(request["project_id"], "project_id")
+    tree_id = _expect_string(request["tree_id"], "tree_id")
+    topic_id = _expect_string(request["actor_topic_id"], "actor_topic_id")
+    for label, value, kind in (
+        ("project_id", project_id, "project"),
+        ("tree_id", tree_id, "tree"),
+        ("actor_topic_id", topic_id, "topic"),
+    ):
+        if not value.startswith(f"{kind}-") or not IDENTITY_RE.fullmatch(value):
+            raise ProtocolError("discussion_identity_conflict", f"{label} is invalid")
+    owner_ref = _expect_string(
+        request["actor_conversation_ref"], "actor_conversation_ref"
+    )
+    manifest_path = project / "docs" / "discussions" / ".codex-project.md"
+    manifest = _parse_frontmatter(
+        _require_regular_nosymlink(manifest_path, "project identity manifest"),
+        "project identity manifest",
+    )
+    observed = (manifest.get("project_id"), manifest.get("tree_id"), manifest.get("topic_id"))
+    if observed != (project_id, tree_id, topic_id):
+        raise ProtocolError(
+            "discussion_identity_conflict",
+            "request identity does not match the project identity manifest",
+        )
+    coordination_root, _ = _coordination_root(project)
+    ledger_path = coordination_root / "projects" / project_id / "trees" / tree_id / "ledger.md"
+    topic_path = project / "docs" / "discussions" / manifest["root_slug"] / "topic.md"
+    lock_path = coordination_root / "locks" / _project_lock_name(project)
+    return project, ledger_path, topic_path, lock_path, owner_ref
+
+
+def _record_by_id(
+    records: list[dict[str, Any]], field: str, value: str, label: str
+) -> dict[str, Any]:
+    matches = [record for record in records if record.get(field) == value]
+    if len(matches) != 1:
+        raise ProtocolError("record_not_found", f"{label} does not identify one record")
+    return matches[0]
+
+
+def _verify_topic_owner(
+    records: dict[str, list[dict[str, Any]]], topic_id: str, owner_ref: str
+) -> None:
+    active = [
+        record
+        for record in records["Conversation Bindings"]
+        if record.get("topic_id") == topic_id and record.get("binding_state") == "active"
+    ]
+    if len(active) != 1 or active[0].get("conversation_ref") != owner_ref:
+        raise ProtocolError(
+            "document_ownership_conflict",
+            "the caller is not the active document owner for this topic",
+        )
+
+
+def _active_pending_write(records: dict[str, list[dict[str, Any]]]) -> dict[str, Any] | None:
+    active = [
+        record
+        for record in records["Pending Document Writes"]
+        if record.get("state") != "completed"
+    ]
+    if len(active) > 1:
+        raise ProtocolError("state_corrupt", "more than one document write is active")
+    return active[0] if active else None
+
+
+def _json_field(record: dict[str, Any], field: str, label: str) -> Any:
+    raw = record.get(field)
+    if not isinstance(raw, str):
+        raise ProtocolError("state_corrupt", f"{label}.{field} is missing")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ProtocolError("state_corrupt", f"{label}.{field} is invalid JSON") from error
+
+
+def _topic_snapshot(records: dict[str, list[dict[str, Any]]], topic_id: str) -> dict[str, Any]:
+    pending_items = [
+        record for record in records["Pending Items"] if record.get("topic_id") == topic_id
+    ]
+    decisions = [
+        _json_field(record, "data_json", "decision")
+        for record in pending_items
+        if record.get("item_kind") == "decision"
+    ]
+    questions = [
+        _json_field(record, "data_json", "question")
+        for record in pending_items
+        if record.get("item_kind") == "question"
+    ]
+    ideas = [
+        _json_field(record, "data_json", "idea")
+        for record in pending_items
+        if record.get("item_kind") == "idea"
+    ]
+    impacts = [
+        _json_field(record, "data_json", "impact")
+        for record in records["Impacts"]
+        if record.get("topic_id") == topic_id
+    ]
+    return {
+        "decisions": sorted(decisions, key=lambda item: item["decision_id"]),
+        "questions": sorted(questions, key=lambda item: item["question_id"]),
+        "ideas": sorted(ideas, key=lambda item: item["idea_id"]),
+        "impacts": sorted(impacts, key=lambda item: item["impact_id"]),
+    }
+
+
+def _render_evolved_topic(
+    *,
+    project_id: str,
+    tree_id: str,
+    topic_id: str,
+    root_slug: str,
+    topic_revision: int,
+    snapshot: dict[str, Any],
+) -> bytes:
+    decisions = snapshot["decisions"]
+    active_decisions = [item for item in decisions if item.get("state") != "discarded"]
+    decision_lines = [
+        f"- `{item['decision_id']}` — {item['summary']}"
+        + (f" Rationale: {item['rationale']}" if item.get("rationale") else "")
+        for item in active_decisions
+    ] or ["- None."]
+    candidate_lines = [f"- {item['summary']}" for item in snapshot["ideas"]] or ["- None."]
+    question_lines = [
+        f"- `{item['question_id']}` [{item['state']}] {item['prompt']}"
+        for item in snapshot["questions"]
+        if item["state"] != "invalidated"
+    ] or ["- None."]
+    evolution_lines = []
+    for item in decisions:
+        evolution_lines.append(
+            f"- `{item['decision_id']}`: {item.get('evolution', 'confirmed')}"
+        )
+    for impact in snapshot["impacts"]:
+        evolution_lines.append(
+            f"- `{impact['decision_id']}` impact `{impact['impact_id']}`: "
+            f"{impact['state']}"
+            + (f" ({impact['action']})" if impact.get("action") else "")
+        )
+    if not evolution_lines:
+        evolution_lines = ["- None."]
+    return (
+        "---\n"
+        "schema_version: 1\n"
+        f"project_id: {project_id}\n"
+        f"tree_id: {tree_id}\n"
+        f"topic_id: {topic_id}\n"
+        "parent_topic_id: null\n"
+        f"topic_revision: {topic_revision}\n"
+        "---\n"
+        f"# {root_slug}\n\n"
+        "## Confirmed Decisions\n\n"
+        + "\n".join(decision_lines)
+        + "\n\n## Candidate Solution\n\n"
+        + "\n".join(candidate_lines)
+        + "\n\n## Tentative Assumptions\n\n- None.\n\n"
+        "## Facts\n\n- Persistent discussion workspace initialized.\n\n"
+        "## Pending Questions\n\n"
+        + "\n".join(question_lines)
+        + "\n\n## Decision Evolution\n\n"
+        + "\n".join(evolution_lines)
+        + "\n"
+    ).encode("utf-8")
+
+
+def _mutation_fingerprint(request: dict[str, Any]) -> str:
+    return _sha256(
+        _canonical_json(
+            {key: value for key, value in request.items() if key != "idempotency_key"}
+        ).encode("utf-8")
+    )
+
+
+def _idempotent_result(
+    records: dict[str, list[dict[str, Any]]], request: dict[str, Any]
+) -> dict[str, Any] | None:
+    key = request["idempotency_key"]
+    matches = [event for event in records["Recent Events"] if event.get("idempotency_key") == key]
+    if not matches:
+        return None
+    event = matches[-1]
+    if event.get("request_fingerprint") != _mutation_fingerprint(request):
+        raise ProtocolError("idempotency_conflict", "idempotency key was reused for another update")
+    result = _json_field(event, "result_json", "event")
+    result["idempotent_replay"] = True
+    return result
+
+
+def _append_event(
+    records: dict[str, list[dict[str, Any]]],
+    request: dict[str, Any],
+    *,
+    revision: int,
+    event_type: str,
+    result: dict[str, Any],
+) -> None:
+    records["Recent Events"].append(
+        {
+            "event_id": f"event-{revision:08d}",
+            "event_type": event_type,
+            "ledger_revision": revision,
+            "topic_id": request["actor_topic_id"],
+            "idempotency_key": request["idempotency_key"],
+            "request_fingerprint": _mutation_fingerprint(request),
+            "result_json": _canonical_json(result),
+        }
+    )
+    records["Recent Events"] = records["Recent Events"][-200:]
+
+
+def _validate_revisions(
+    request: dict[str, Any], frontmatter: dict[str, str], topic_record: dict[str, Any]
+) -> tuple[int, int]:
+    ledger_revision = int(frontmatter["ledger_revision"])
+    topic_revision = int(topic_record["record_revision"])
+    if request["expected_ledger_revision"] != ledger_revision:
+        raise ProtocolError(
+            "ledger_revision_conflict",
+            "expected ledger revision is stale",
+            context={"ledger_revision": ledger_revision, "record_revision": topic_revision},
+        )
+    if request["expected_topic_revision"] != topic_revision:
+        raise ProtocolError(
+            "record_revision_conflict",
+            "expected topic record revision is stale",
+            context={"ledger_revision": ledger_revision, "record_revision": topic_revision},
+        )
+    return ledger_revision, topic_revision
+
+
+def _validate_mutation(value: Any, key: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ProtocolError("invalid_request", "mutation must be an object")
+    mutation_type = value.get("type")
+    if mutation_type not in SUBSTANTIVE_MUTATIONS:
+        raise ProtocolError("invalid_request", "mutation type is unsupported")
+    return value
+
+
+def _apply_mutation_to_records(
+    records: dict[str, list[dict[str, Any]]],
+    *,
+    topic_id: str,
+    mutation: dict[str, Any],
+    idempotency_key: str,
+) -> dict[str, Any]:
+    seed = uuid.UUID(idempotency_key).hex
+    mutation_type = mutation["type"]
+    result: dict[str, Any] = {}
+    if mutation_type == "confirm-decision":
+        _expect_keys(mutation, {"type", "summary", "rationale"}, "confirm-decision mutation")
+        decision_id = f"D-{seed}"
+        data = {
+            "decision_id": decision_id,
+            "summary": _expect_string(mutation["summary"], "mutation.summary", max_bytes=2048),
+            "rationale": _expect_string(mutation["rationale"], "mutation.rationale", max_bytes=4096),
+            "state": "confirmed",
+            "evolution": "confirmed",
+        }
+        records["Pending Items"].append(
+            {"item_id": decision_id, "item_kind": "decision", "topic_id": topic_id, "data_json": _canonical_json(data)}
+        )
+        result["decision_id"] = decision_id
+    elif mutation_type == "set-active-question":
+        _expect_keys(mutation, {"type", "prompt", "recommendation", "reason"}, "set-active-question mutation")
+        snapshot = _topic_snapshot(records, topic_id)
+        if any(item["state"] == "active" for item in snapshot["questions"]):
+            raise ProtocolError("active_question_conflict", "the topic already has one active question")
+        question_id = f"Q-{seed}"
+        data = {
+            "question_id": question_id,
+            "prompt": _expect_string(mutation["prompt"], "mutation.prompt", max_bytes=4096),
+            "recommendation": _expect_string(mutation["recommendation"], "mutation.recommendation", max_bytes=4096),
+            "reason": _expect_string(mutation["reason"], "mutation.reason", max_bytes=4096),
+            "state": "active",
+        }
+        records["Pending Items"].append(
+            {"item_id": question_id, "item_kind": "question", "topic_id": topic_id, "data_json": _canonical_json(data)}
+        )
+        result["question_id"] = question_id
+    elif mutation_type == "insert-idea":
+        _expect_keys(mutation, {"type", "summary"}, "insert-idea mutation")
+        active_records = []
+        for record in records["Pending Items"]:
+            if record.get("topic_id") == topic_id and record.get("item_kind") == "question":
+                data = _json_field(record, "data_json", "question")
+                if data["state"] == "active":
+                    data["state"] = "suspended"
+                    record["data_json"] = _canonical_json(data)
+                    active_records.append(data)
+        if len(active_records) > 1:
+            raise ProtocolError("state_corrupt", "topic has multiple active questions")
+        idea_id = f"I-{seed}"
+        idea = {
+            "idea_id": idea_id,
+            "summary": _expect_string(mutation["summary"], "mutation.summary", max_bytes=4096),
+            "suspended_question_id": active_records[0]["question_id"] if active_records else None,
+        }
+        records["Pending Items"].append(
+            {"item_id": idea_id, "item_kind": "idea", "topic_id": topic_id, "data_json": _canonical_json(idea)}
+        )
+        result.update({"idea_id": idea_id, "suspended_question_id": idea["suspended_question_id"]})
+    elif mutation_type == "resolve-inserted-idea":
+        expected = {"type", "question_id", "action"}
+        if mutation.get("action") == "adjust":
+            expected.add("adjusted_prompt")
+        _expect_keys(mutation, expected, "resolve-inserted-idea mutation")
+        action = mutation["action"]
+        if action not in QUESTION_ACTIONS:
+            raise ProtocolError("invalid_request", "question action is unsupported")
+        record = _record_by_id(records["Pending Items"], "item_id", mutation["question_id"], "question_id")
+        data = _json_field(record, "data_json", "question")
+        if data["state"] != "suspended":
+            raise ProtocolError("question_state_conflict", "only a suspended question can be resolved")
+        data["state"] = "invalidated" if action == "invalidate" else "active"
+        if action == "adjust":
+            data["prompt"] = _expect_string(mutation["adjusted_prompt"], "mutation.adjusted_prompt", max_bytes=4096)
+        record["data_json"] = _canonical_json(data)
+        result.update({"question_id": data["question_id"], "question_action": action})
+    elif mutation_type == "change-direction":
+        _expect_keys(mutation, {"type", "summary", "affected_decision_ids"}, "change-direction mutation")
+        affected = mutation["affected_decision_ids"]
+        if not isinstance(affected, list) or not affected or len(set(affected)) != len(affected):
+            raise ProtocolError("invalid_request", "affected_decision_ids must be a non-empty unique array")
+        known = {item["decision_id"] for item in _topic_snapshot(records, topic_id)["decisions"]}
+        if any(not isinstance(item, str) or item not in known for item in affected):
+            raise ProtocolError("decision_not_found", "an affected decision is unknown")
+        direction = _expect_string(mutation["summary"], "mutation.summary", max_bytes=4096)
+        impact_ids = []
+        for index, decision_id in enumerate(affected):
+            impact_id = f"IMP-{seed}-{index + 1}"
+            impact = {
+                "impact_id": impact_id,
+                "decision_id": decision_id,
+                "direction": direction,
+                "state": "pending",
+                "action": None,
+            }
+            records["Impacts"].append(
+                {"impact_id": impact_id, "topic_id": topic_id, "data_json": _canonical_json(impact)}
+            )
+            impact_ids.append(impact_id)
+        result["impact_ids"] = impact_ids
+    else:
+        expected = {"type", "impact_id", "decision_id", "action", "summary"}
+        _expect_keys(mutation, expected, "resolve-impact mutation")
+        action = mutation["action"]
+        if action not in IMPACT_ACTIONS:
+            raise ProtocolError("invalid_request", "impact action is unsupported")
+        record = _record_by_id(records["Impacts"], "impact_id", mutation["impact_id"], "impact_id")
+        impact = _json_field(record, "data_json", "impact")
+        if impact["decision_id"] != mutation["decision_id"] or impact["state"] != "pending":
+            raise ProtocolError("impact_state_conflict", "impact is not pending for this decision")
+        impact["state"] = "resolved"
+        impact["action"] = action
+        record["data_json"] = _canonical_json(impact)
+        decision_record = _record_by_id(records["Pending Items"], "item_id", mutation["decision_id"], "decision_id")
+        decision = _json_field(decision_record, "data_json", "decision")
+        summary = _expect_string(mutation["summary"], "mutation.summary", max_bytes=4096)
+        if action == "adjust":
+            decision["summary"] = summary
+            decision["evolution"] = f"adjusted: {summary}"
+        elif action == "replace":
+            decision["summary"] = summary
+            decision["evolution"] = f"replaced: {summary}"
+        elif action == "discard":
+            decision["state"] = "discarded"
+            decision["evolution"] = f"discarded: {summary}"
+        else:
+            decision["evolution"] = f"kept: {summary}"
+        decision_record["data_json"] = _canonical_json(decision)
+        result.update({"impact_id": impact["impact_id"], "decision_id": decision["decision_id"], "impact_action": action})
+    return result
+
+
+def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request)
+    allowed = {
+        "protocol_version", "operation", "project_path", "project_id", "tree_id",
+        "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision",
+        "expected_topic_revision", "idempotency_key", "mutation",
+    }
+    _expect_keys(request, allowed, "prepare-topic-update request")
+    _validate_uuid4(request["idempotency_key"], "idempotency_key")
+    mutation = _validate_mutation(request["mutation"], request["idempotency_key"])
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        active_write = _active_pending_write(records)
+        if active_write is not None:
+            raise ProtocolError(
+                "document_write_reconciliation_required",
+                "a confirmed document update remains pending reconciliation",
+                context={"state": "confirmed-but-pending", "ledger_revision": ledger_revision, "record_revision": topic_revision},
+            )
+        snapshot = _topic_snapshot(records, request["actor_topic_id"])
+        suspended_questions = [
+            question for question in snapshot["questions"] if question["state"] == "suspended"
+        ]
+        if suspended_questions and mutation["type"] != "resolve-inserted-idea":
+            raise ProtocolError(
+                "question_state_conflict",
+                "the suspended question must be resumed, adjusted or invalidated first",
+            )
+        pending_impacts = [
+            impact for impact in snapshot["impacts"] if impact["state"] == "pending"
+        ]
+        if pending_impacts and mutation["type"] != "resolve-impact":
+            raise ProtocolError(
+                "impact_state_conflict",
+                "each pending decision impact must be resolved separately first",
+            )
+        current_bytes = _require_regular_nosymlink(topic_path, "topic document")
+        next_records = {name: [dict(record) for record in values] for name, values in records.items()}
+        mutation_result = _apply_mutation_to_records(
+            next_records,
+            topic_id=request["actor_topic_id"],
+            mutation=mutation,
+            idempotency_key=request["idempotency_key"],
+        )
+        next_revision = ledger_revision + 1
+        next_topic_revision = topic_revision + 1
+        next_snapshot = _topic_snapshot(next_records, request["actor_topic_id"])
+        manifest = _parse_frontmatter(
+            _require_regular_nosymlink(project / "docs" / "discussions" / ".codex-project.md", "project identity manifest"),
+            "project identity manifest",
+        )
+        after_bytes = _render_evolved_topic(
+            project_id=request["project_id"], tree_id=request["tree_id"],
+            topic_id=request["actor_topic_id"], root_slug=manifest["root_slug"],
+            topic_revision=next_topic_revision, snapshot=next_snapshot,
+        )
+        write_id = f"DW-{uuid.UUID(request['idempotency_key']).hex}"
+        payload_path = ledger_path.parent / "pending-writes" / f"{write_id}.payload"
+        payload_path.parent.mkdir(exist_ok=True)
+        _write_new_file(payload_path, after_bytes, [])
+        payload_path.chmod(0o400)
+        write_record = {
+            "document_write_id": write_id,
+            "topic_id": request["actor_topic_id"],
+            "owner_ref": owner_ref,
+            "topic_path": str(topic_path),
+            "payload_path": str(payload_path),
+            "before_sha256": _sha256(current_bytes),
+            "after_sha256": _sha256(after_bytes),
+            "state": "confirmed-but-pending",
+            "lease_id": None,
+            "lease_version": None,
+        }
+        next_records["Pending Document Writes"].append(write_record)
+        next_topic_record = _record_by_id(next_records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        next_topic_record["record_revision"] = next_topic_revision
+        result = {
+            "ok": True, "state": "confirmed-but-pending", "idempotent_replay": False,
+            "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision, "record_revision": next_topic_revision,
+            "document_write_id": write_id, "payload_path": str(payload_path),
+            "before_sha256": write_record["before_sha256"], "after_sha256": write_record["after_sha256"],
+            **mutation_result,
+        }
+        _append_event(next_records, request, revision=next_revision, event_type="topic-update-prepared", result=result)
+        frontmatter["ledger_revision"] = str(next_revision)
+        frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
+        _atomic_replace(ledger_path, _render_records_ledger(frontmatter, next_records))
+        return result
+
+
+def _run_supervision_cli(arguments: list[str], error_code: str) -> dict[str, Any]:
+    script_path = (
+        Path(__file__).parents[2]
+        / "guided-implementation"
+        / "scripts"
+        / "supervision_protocol.py"
+    )
+    completed = subprocess.run(
+        [sys.executable, str(script_path), *arguments],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise ProtocolError(
+            error_code,
+            "supervision protocol rejected the document lease proof",
+            cause=completed.stderr.strip() or None,
+        )
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise ProtocolError(
+            error_code,
+            "supervision protocol returned an invalid lease response",
+            cause=str(error),
+        ) from error
+    if not isinstance(result, dict):
+        raise ProtocolError(error_code, "supervision lease response must be an object")
+    return result
+
+
+def _verify_live_lease(
+    credential: Any, *, project: Path, owner_ref: str
+) -> tuple[dict[str, Any], Path]:
+    if not isinstance(credential, dict):
+        raise ProtocolError("document_lease_invalid", "document_lease must be an object")
+    _expect_keys(credential, {"path", "lease_id", "version"}, "document_lease")
+    path = Path(_expect_string(credential["path"], "document_lease.path", max_bytes=4096))
+    if path != project / ".git" / "cc-switch-document-lease.json":
+        raise ProtocolError("document_lease_invalid", "document lease path does not belong to this checkout")
+    document = _run_supervision_cli(
+        [
+            "verify-document-lease", "--file", str(path),
+            "--id", str(credential["lease_id"]),
+            "--version", str(credential["version"]),
+        ],
+        "document_lease_invalid",
+    )
+    holder = document.get("holder")
+    if (
+        document.get("repository") != str(project)
+        or document.get("version") != credential["version"]
+        or not isinstance(holder, dict)
+        or holder.get("lease_id") != credential["lease_id"]
+        or holder.get("owner_task_id") != owner_ref
+        or holder.get("purpose") != "document-write"
+        or holder.get("stage") != "design-discussion"
+        or not isinstance(holder.get("expires_at_epoch"), int)
+        or document.get("verified") is not True
+        or holder["expires_at_epoch"] <= int(time.time())
+    ):
+        raise ProtocolError("document_lease_invalid", "document lease proof is stale or does not authorize this write")
+    return document, path
+
+
+def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request)
+    _expect_keys(
+        request,
+        {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key", "document_write_id", "document_lease"},
+        "apply-document-write request",
+    )
+    _validate_uuid4(request["idempotency_key"], "idempotency_key")
+    lease, _ = _verify_live_lease(
+        request["document_lease"], project=project, owner_ref=owner_ref
+    )
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        write = _record_by_id(records["Pending Document Writes"], "document_write_id", request["document_write_id"], "document_write_id")
+        if write["owner_ref"] != owner_ref or write["state"] != "confirmed-but-pending":
+            raise ProtocolError("document_write_state_conflict", "document write is not pending for this owner")
+        payload_path = Path(write["payload_path"])
+        payload = _require_regular_nosymlink(payload_path, "pending document payload")
+        if _sha256(payload) != write["after_sha256"]:
+            raise ProtocolError("document_write_payload_damaged", "pending document payload digest does not match")
+        current = _require_regular_nosymlink(topic_path, "topic document")
+        current_digest = _sha256(current)
+        if current_digest == write["before_sha256"]:
+            _atomic_replace(topic_path, payload)
+        elif current_digest != write["after_sha256"]:
+            raise ProtocolError("document_write_before_conflict", "topic document changed since the write was prepared")
+        verified = _require_regular_nosymlink(topic_path, "topic document")
+        if _sha256(verified) != write["after_sha256"] or verified != payload:
+            raise ProtocolError("document_write_verification_failed", "topic document did not verify after apply")
+        next_revision = ledger_revision + 1
+        next_topic_revision = topic_revision
+        write["state"] = "applied-pending-release"
+        write["lease_id"] = request["document_lease"]["lease_id"]
+        write["lease_version"] = request["document_lease"]["version"]
+        result = {
+            "ok": True, "state": "applied-pending-release", "idempotent_replay": False,
+            "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision, "record_revision": next_topic_revision,
+            "document_write_id": write["document_write_id"], "document_verified": True,
+            "after_sha256": write["after_sha256"], "lease_id": lease["holder"]["lease_id"],
+            "lease_version": lease["version"], "release_allowed": True,
+        }
+        _append_event(records, request, revision=next_revision, event_type="document-write-applied", result=result)
+        frontmatter["ledger_revision"] = str(next_revision)
+        frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
+        _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
+        return result
+
+
+def _complete_document_write(request: dict[str, Any]) -> dict[str, Any]:
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request)
+    _expect_keys(
+        request,
+        {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key", "document_write_id", "document_lease_release"},
+        "complete-document-write request",
+    )
+    _validate_uuid4(request["idempotency_key"], "idempotency_key")
+    release = request["document_lease_release"]
+    if not isinstance(release, dict):
+        raise ProtocolError("document_lease_invalid", "document_lease_release must be an object")
+    _expect_keys(release, {"path", "lease_id", "version"}, "document_lease_release")
+    lease_path = Path(
+        _expect_string(release["path"], "document_lease_release.path", max_bytes=4096)
+    )
+    if lease_path != project / ".git" / "cc-switch-document-lease.json":
+        raise ProtocolError(
+            "document_lease_release_unverified",
+            "document lease path does not belong to this checkout",
+        )
+    lease_document = _run_supervision_cli(
+        ["inspect-document-lease", "--repository", str(project)],
+        "document_lease_release_unverified",
+    )
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        write = _record_by_id(records["Pending Document Writes"], "document_write_id", request["document_write_id"], "document_write_id")
+        if write["state"] != "applied-pending-release" or write["lease_id"] != release["lease_id"]:
+            raise ProtocolError("document_write_state_conflict", "document write is not awaiting this lease release")
+        if lease_document.get("path") != str(lease_path) or lease_document.get("state") != "available" or lease_document.get("holder") is not None or lease_document.get("version") != release["version"] or release["version"] != write["lease_version"] + 1:
+            raise ProtocolError("document_lease_release_unverified", "document lease release cannot be verified")
+        current = _require_regular_nosymlink(topic_path, "topic document")
+        if _sha256(current) != write["after_sha256"]:
+            raise ProtocolError("document_write_verification_failed", "topic document changed before release completion")
+        next_revision = ledger_revision + 1
+        next_topic_revision = topic_revision
+        write["state"] = "completed"
+        result = {
+            "ok": True, "state": "completed", "idempotent_replay": False,
+            "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision, "record_revision": next_topic_revision,
+            "document_write_id": write["document_write_id"], "document_verified": True,
+            "release_verified": True, "after_sha256": write["after_sha256"],
+        }
+        _append_event(records, request, revision=next_revision, event_type="document-write-completed", result=result)
+        frontmatter["ledger_revision"] = str(next_revision)
+        frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
+        _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
+        return result
+
+
+def _validate_pending_writes(
+    ledger_path: Path, records: dict[str, list[dict[str, Any]]]
+) -> None:
+    expected_paths: set[Path] = set()
+    for write in records["Pending Document Writes"]:
+        path = Path(write["payload_path"])
+        expected_paths.add(path)
+        payload = _require_regular_nosymlink(path, "pending document payload")
+        if _sha256(payload) != write["after_sha256"]:
+            raise ProtocolError("document_write_payload_damaged", "pending document payload digest does not match")
+    directory = ledger_path.parent / "pending-writes"
+    if directory.exists():
+        observed = {path for path in directory.iterdir() if path.is_file()}
+        if observed != expected_paths:
+            raise ProtocolError("orphaned_document_write", "pending-writes contains an unowned or missing payload")
+
+
+def _read_topic(request: dict[str, Any], *, validate_only: bool = False) -> dict[str, Any]:
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, query=True)
+    allowed = {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref"}
+    _expect_keys(request, allowed, f"{request['operation']} request")
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _validate_pending_writes(ledger_path, records)
+        topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        snapshot = _topic_snapshot(records, request["actor_topic_id"])
+        active_questions = [question for question in snapshot["questions"] if question["state"] == "active"]
+        if len(active_questions) > 1:
+            raise ProtocolError("state_corrupt", "topic has more than one active question")
+        current_digest = _sha256(_require_regular_nosymlink(topic_path, "topic document"))
+        pending = [dict(record) for record in records["Pending Document Writes"]]
+        if validate_only:
+            return {
+                "ok": True, "state": "valid", "ledger_revision": int(frontmatter["ledger_revision"]),
+                "record_revision": topic_record["record_revision"], "topic_document_sha256": current_digest,
+                "active_question_count": len(active_questions), "pending_document_write_count": len([item for item in pending if item["state"] != "completed"]),
+            }
+        return {
+            "ok": True, "state": "read", "ledger_revision": int(frontmatter["ledger_revision"]),
+            "record_revision": topic_record["record_revision"], "topic_document_sha256": current_digest,
+            "active_question": active_questions[0] if active_questions else None,
+            "pending_document_writes": pending, **snapshot,
+        }
+
+
 def handle(request: Any) -> dict[str, Any]:
     if not isinstance(request, dict):
         raise ProtocolError("invalid_request", "request must be a JSON object")
@@ -882,9 +1712,20 @@ def handle(request: Any) -> dict[str, Any]:
             "unsupported_protocol_version",
             f"protocol_version must be {PROTOCOL_VERSION}",
         )
-    if request.get("operation") != "bootstrap":
-        raise ProtocolError("unsupported_operation", "Ticket 01 supports only bootstrap")
-    return _bootstrap(request)
+    operation = request.get("operation")
+    if operation == "bootstrap":
+        return _bootstrap(request)
+    if operation == "prepare-topic-update":
+        return _prepare_topic_update(request)
+    if operation == "apply-document-write":
+        return _apply_document_write(request)
+    if operation == "complete-document-write":
+        return _complete_document_write(request)
+    if operation == "read-topic":
+        return _read_topic(request)
+    if operation == "validate":
+        return _read_topic(request, validate_only=True)
+    raise ProtocolError("unsupported_operation", "discussion protocol operation is unsupported")
 
 
 def main() -> int:

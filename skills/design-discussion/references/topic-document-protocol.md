@@ -35,5 +35,16 @@ Do not edit the ledger or topic document ad hoc. Create the immutable pending
 document-write payload through `discussion_protocol.py`, acquire and verify the
 shared document lease with stage `design-discussion`, apply exactly the
 authorized bytes, reread them, release the lease, and complete the payload.
-Ticket 01 exposes bootstrap only, so stop if those later operations are not yet
-available.
+
+Use `prepare-topic-update` for one confirmed mutation, then
+`apply-document-write` with the current supervision-protocol lease receipt,
+then `complete-document-write` only after that exact lease has been released.
+Every update carries expected ledger and topic revisions plus a UUIDv4
+idempotency key. Exact replay returns the original result; a reused key with
+different parameters is a conflict.
+
+Treat any non-completed `DW-*` as a discussion freeze. Do not ask or persist a
+new substantive question until `read-topic` and `validate` can verify the
+payload, document digest, single active question and release state. Missing,
+orphaned or damaged payloads require reconciliation; they are never silently
+recreated from the current Markdown.
