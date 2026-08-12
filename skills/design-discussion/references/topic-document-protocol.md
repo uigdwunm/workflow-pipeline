@@ -43,6 +43,12 @@ Every update carries expected ledger and topic revisions plus a UUIDv4
 idempotency key. Exact replay returns the original result; a reused key with
 different parameters is a conflict.
 
+When the caller cannot prove whether apply or release persisted, use
+`reconcile-document-write`. Reconciliation rereads the immutable payload,
+current document digest and the supervision-protocol lease state; it never
+reconstructs intent from Markdown. The shared lease lives in `.git` for Git
+projects and in `.codex` for non-Git projects.
+
 Treat any non-completed `DW-*` as a discussion freeze. Do not ask or persist a
 new substantive question until `read-topic` and `validate` can verify the
 payload, document digest, single active question and release state. Missing,

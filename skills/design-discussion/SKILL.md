@@ -98,6 +98,16 @@ The update sequence is:
    release path, lease ID and new version to `complete-document-write`.
 4. Call `validate` or `read-topic` before continuing substantive discussion.
 
+If an apply or release result is uncertain, call `reconcile-document-write`
+with the same `DW-*` and current revisions. It compares the immutable payload,
+the current document bytes and the authoritative supervision lease state. It
+may keep the checkpoint pending, adopt verified applied bytes, or complete a
+verified release; conflicting facts stop reconciliation.
+
+Git projects store the shared document lease under `.git`; non-Git projects
+use the supervision-owned lease under the project's `.codex` coordination
+directory. Callers always use the exact path returned by the supervision CLI.
+
 While any `DW-*` is not `completed`, do not prepare another substantive
 update. Lease timeout, stale credentials, outcome uncertainty, missing or
 damaged payloads, or release verification failure leave a recoverable

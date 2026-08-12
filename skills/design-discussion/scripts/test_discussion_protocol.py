@@ -639,6 +639,19 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(blocked["error"]["code"], "document_write_reconciliation_required")
         self.assertEqual(blocked["state"], "confirmed-but-pending")
 
+        returncode, reconciled, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="reconcile-document-write",
+                expected_revision=2,
+                expected_topic_revision=2,
+                document_write_id=first["document_write_id"],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(reconciled["state"], "confirmed-but-pending")
+        self.assertFalse(reconciled["document_verified"])
+
     def test_ownership_conflict_and_stale_lease_cannot_apply_pending_write(self) -> None:
         project = self.make_project("write-authority", git=True)
         topic = self.bootstrap_topic(project)
@@ -733,6 +746,79 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                     else "orphaned_document_write"
                 )
                 self.assertEqual(response["error"]["code"], expected)
+
+    def test_reconcile_adopts_uncertain_apply_and_completes_after_release(self) -> None:
+        project = self.make_project("reconcile-uncertain", git=True)
+        topic = self.bootstrap_topic(project)
+        returncode, prepared, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-topic-update",
+                expected_revision=1,
+                mutation={
+                    "type": "confirm-decision",
+                    "summary": "Recover outcome-unknown writes.",
+                    "rationale": "The durable checkpoint must survive caller uncertainty.",
+                },
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        lease = self.acquire_document_lease(project)
+        holder = lease["holder"]
+        assert isinstance(holder, dict)
+        Path(str(topic["topic_document_path"])).write_bytes(
+            Path(str(prepared["payload_path"])).read_bytes()
+        )
+
+        returncode, adopted, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="reconcile-document-write",
+                expected_revision=2,
+                expected_topic_revision=2,
+                document_write_id=prepared["document_write_id"],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(adopted["state"], "applied-pending-release")
+        self.assertTrue(adopted["document_verified"])
+
+        self.release_document_lease(lease)
+        returncode, completed, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="reconcile-document-write",
+                expected_revision=3,
+                expected_topic_revision=2,
+                document_write_id=prepared["document_write_id"],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(completed["state"], "completed")
+        self.assertTrue(completed["release_verified"])
+
+    def test_non_git_topic_update_uses_shared_codex_document_lease(self) -> None:
+        project = self.make_project("non-git-update", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=1,
+            topic_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Support non-Git topics.",
+                "rationale": "Topic evolution is project-agnostic.",
+            },
+        )
+        self.assertRegex(str(prepared["decision_id"]), r"^D-[0-9a-f]{32}$")
+        self.assertEqual((project / ".codex" / "cc-switch-document-lease.json").is_file(), True)
+        returncode, response, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(response["ledger_revision"], ledger_revision)
+        self.assertEqual(response["record_revision"], topic_revision)
 
     def test_inserted_idea_suspends_then_adjusts_the_only_active_question(self) -> None:
         project = self.make_project("inserted-idea", git=True)

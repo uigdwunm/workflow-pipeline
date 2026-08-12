@@ -76,6 +76,7 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "question_state_conflict": "该问题当前不是可恢复、调整或失效的挂起状态。",
         "record_not_found": "请求引用的权威记录不存在或不唯一。",
         "record_revision_conflict": "话题记录修订已变化，请重读后重试。",
+        "reconciliation_conflict": "待写入检查点与当前文档或租约状态冲突。",
         "invalid_entry_mode": "当前入口不是明确的持久化 0讨论 触发。",
         "invalid_json": "标准输入必须只包含一个有效 JSON 值。",
         "invalid_project_path": "项目路径必须是已存在且规范化的绝对目录。",
@@ -1509,6 +1510,10 @@ def _run_supervision_cli(arguments: list[str], error_code: str) -> dict[str, Any
     return result
 
 
+def _expected_document_lease_path(project: Path) -> Path:
+    return project / (".git" if (project / ".git").is_dir() else ".codex") / "cc-switch-document-lease.json"
+
+
 def _verify_live_lease(
     credential: Any, *, project: Path, owner_ref: str
 ) -> tuple[dict[str, Any], Path]:
@@ -1516,7 +1521,7 @@ def _verify_live_lease(
         raise ProtocolError("document_lease_invalid", "document_lease must be an object")
     _expect_keys(credential, {"path", "lease_id", "version"}, "document_lease")
     path = Path(_expect_string(credential["path"], "document_lease.path", max_bytes=4096))
-    if path != project / ".git" / "cc-switch-document-lease.json":
+    if path != _expected_document_lease_path(project):
         raise ProtocolError("document_lease_invalid", "document lease path does not belong to this checkout")
     document = _run_supervision_cli(
         [
@@ -1614,7 +1619,7 @@ def _complete_document_write(request: dict[str, Any]) -> dict[str, Any]:
     lease_path = Path(
         _expect_string(release["path"], "document_lease_release.path", max_bytes=4096)
     )
-    if lease_path != project / ".git" / "cc-switch-document-lease.json":
+    if lease_path != _expected_document_lease_path(project):
         raise ProtocolError(
             "document_lease_release_unverified",
             "document lease path does not belong to this checkout",
@@ -1651,6 +1656,133 @@ def _complete_document_write(request: dict[str, Any]) -> dict[str, Any]:
             "release_verified": True, "after_sha256": write["after_sha256"],
         }
         _append_event(records, request, revision=next_revision, event_type="document-write-completed", result=result)
+        frontmatter["ledger_revision"] = str(next_revision)
+        frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
+        _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
+        return result
+
+
+def _reconcile_document_write(request: dict[str, Any]) -> dict[str, Any]:
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request)
+    _expect_keys(
+        request,
+        {
+            "protocol_version", "operation", "project_path", "project_id", "tree_id",
+            "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision",
+            "expected_topic_revision", "idempotency_key", "document_write_id",
+        },
+        "reconcile-document-write request",
+    )
+    _validate_uuid4(request["idempotency_key"], "idempotency_key")
+    lease_document = _run_supervision_cli(
+        ["inspect-document-lease", "--repository", str(project)],
+        "reconciliation_conflict",
+    )
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic_record = _record_by_id(
+            records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id"
+        )
+        ledger_revision, topic_revision = _validate_revisions(
+            request, frontmatter, topic_record
+        )
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        write = _record_by_id(
+            records["Pending Document Writes"],
+            "document_write_id",
+            request["document_write_id"],
+            "document_write_id",
+        )
+        if write["owner_ref"] != owner_ref or write["state"] == "completed":
+            raise ProtocolError(
+                "document_write_state_conflict",
+                "document write is not reconcilable for this owner",
+            )
+        payload = _require_regular_nosymlink(Path(write["payload_path"]), "pending document payload")
+        if _sha256(payload) != write["after_sha256"]:
+            raise ProtocolError(
+                "document_write_payload_damaged",
+                "pending document payload digest does not match",
+            )
+        current_digest = _sha256(
+            _require_regular_nosymlink(topic_path, "topic document")
+        )
+        next_state: str
+        if write["state"] == "confirmed-but-pending":
+            if current_digest == write["before_sha256"]:
+                next_state = "confirmed-but-pending"
+            elif current_digest == write["after_sha256"]:
+                holder = lease_document.get("holder")
+                if (
+                    lease_document.get("state") != "held"
+                    or not isinstance(holder, dict)
+                    or holder.get("owner_task_id") != owner_ref
+                    or holder.get("stage") != "design-discussion"
+                    or holder.get("purpose") != "document-write"
+                ):
+                    raise ProtocolError(
+                        "reconciliation_conflict",
+                        "applied bytes exist but the authorizing lease cannot be proven",
+                    )
+                write["state"] = "applied-pending-release"
+                write["lease_id"] = holder["lease_id"]
+                write["lease_version"] = lease_document["version"]
+                next_state = "applied-pending-release"
+            else:
+                raise ProtocolError(
+                    "document_write_before_conflict",
+                    "topic document matches neither pending write digest",
+                )
+        else:
+            if current_digest != write["after_sha256"]:
+                raise ProtocolError(
+                    "document_write_verification_failed",
+                    "applied document bytes no longer match the pending payload",
+                )
+            if (
+                lease_document.get("state") == "available"
+                and lease_document.get("holder") is None
+                and lease_document.get("version") == write["lease_version"] + 1
+            ):
+                write["state"] = "completed"
+                next_state = "completed"
+            elif (
+                lease_document.get("state") == "held"
+                and isinstance(lease_document.get("holder"), dict)
+                and lease_document["holder"].get("lease_id") == write["lease_id"]
+                and lease_document.get("version") == write["lease_version"]
+            ):
+                next_state = "applied-pending-release"
+            else:
+                raise ProtocolError(
+                    "reconciliation_conflict",
+                    "document lease state cannot be reconciled with the pending write",
+                )
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True,
+            "state": next_state,
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic_revision,
+            "document_write_id": write["document_write_id"],
+            "document_verified": current_digest == write["after_sha256"],
+            "release_verified": next_state == "completed",
+        }
+        _append_event(
+            records,
+            request,
+            revision=next_revision,
+            event_type="document-write-reconciled",
+            result=result,
+        )
         frontmatter["ledger_revision"] = str(next_revision)
         frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
         _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
@@ -1721,6 +1853,8 @@ def handle(request: Any) -> dict[str, Any]:
         return _apply_document_write(request)
     if operation == "complete-document-write":
         return _complete_document_write(request)
+    if operation == "reconcile-document-write":
+        return _reconcile_document_write(request)
     if operation == "read-topic":
         return _read_topic(request)
     if operation == "validate":

@@ -1390,11 +1390,74 @@ def _now_epoch() -> int:
 
 
 def _document_lease_path(repository: Path) -> Path:
-    return Path(repository) / ".git" / DOCUMENT_LEASE_FILENAME
+    repository = Path(repository)
+    coordination_directory = (
+        repository / ".git" if (repository / ".git").is_dir() else repository / ".codex"
+    )
+    return coordination_directory / DOCUMENT_LEASE_FILENAME
 
 
 def _document_lease_guard_path(repository: Path) -> Path:
-    return Path(repository) / ".git" / DOCUMENT_LEASE_GUARD_FILENAME
+    repository = Path(repository)
+    coordination_directory = (
+        repository / ".git" if (repository / ".git").is_dir() else repository / ".codex"
+    )
+    return coordination_directory / DOCUMENT_LEASE_GUARD_FILENAME
+
+
+def _open_document_lease_directory(repository: Path) -> tuple[Path, int]:
+    repository = _expect_absolute_path(repository, "repository")
+    if (repository / ".git").is_dir():
+        return _open_repository_git_directory(repository)
+    if Path(os.path.realpath(repository)) != repository:
+        raise ProtocolError(
+            f"repository path contains a symbolic-link component: {repository}"
+        )
+    try:
+        repository_stat = os.lstat(repository)
+    except OSError as error:
+        raise ProtocolError(f"cannot lstat repository {repository}: {error}") from error
+    if not stat.S_ISDIR(repository_stat.st_mode) or repository_stat.st_uid != os.getuid():
+        raise ProtocolError(f"non-Git project must be an owned real directory: {repository}")
+    coordination_directory = repository / ".codex"
+    try:
+        coordination_directory.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    try:
+        coordination_stat = os.lstat(coordination_directory)
+    except OSError as error:
+        raise ProtocolError(
+            f"cannot lstat non-Git coordination directory {coordination_directory}: {error}"
+        ) from error
+    if (
+        not stat.S_ISDIR(coordination_stat.st_mode)
+        or coordination_stat.st_uid != os.getuid()
+        or _mode_bits(coordination_stat) & 0o022
+    ):
+        raise ProtocolError(
+            f"non-Git coordination directory is unsafe: {coordination_directory}"
+        )
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(coordination_directory, os.O_RDONLY | nofollow)
+    except OSError as error:
+        raise ProtocolError(
+            f"cannot open non-Git coordination directory {coordination_directory}: {error}"
+        ) from error
+    return coordination_directory, descriptor
+
+
+def _repository_from_document_lease_path(lease_path: Path) -> Path:
+    if lease_path.parent.name not in {".git", ".codex"}:
+        raise ProtocolError(
+            "document lease must be directly inside a project .git or .codex directory: "
+            f"{lease_path}"
+        )
+    repository = _expect_absolute_path(lease_path.parent.parent, "repository")
+    if _document_lease_path(repository) != lease_path:
+        raise ProtocolError(f"document lease path is invalid for repository: {lease_path}")
+    return repository
 
 
 def _empty_document_lease(repository: Path) -> dict[str, Any]:
@@ -1630,7 +1693,7 @@ def _document_lease_state(report: dict[str, Any], *, now_epoch: int) -> dict[str
 
 def inspect_document_lease(repository: Path) -> dict[str, Any]:
     repository = _expect_absolute_path(repository, "repository")
-    git_directory, git_fd = _open_repository_git_directory(repository)
+    git_directory, git_fd = _open_document_lease_directory(repository)
     guard_fd = -1
     try:
         guard_fd = _open_document_lease_guard(git_fd)
@@ -1652,7 +1715,7 @@ def _attempt_acquire_document_lease(
     purpose: str,
     ttl_seconds: int,
 ) -> dict[str, Any]:
-    git_directory, git_fd = _open_repository_git_directory(repository)
+    git_directory, git_fd = _open_document_lease_directory(repository)
     guard_fd = -1
     try:
         guard_fd = _open_document_lease_guard(git_fd)
@@ -1799,12 +1862,7 @@ def verify_document_lease(
     lease_path = Path(lease_path)
     if not lease_path.is_absolute() or lease_path.name != DOCUMENT_LEASE_FILENAME:
         raise ProtocolError(f"document lease path is invalid: {lease_path}")
-    if lease_path.parent.name != ".git":
-        raise ProtocolError(
-            "document lease must be directly inside an ordinary checkout .git "
-            f"directory: {lease_path}"
-        )
-    repository = lease_path.parent.parent
+    repository = _repository_from_document_lease_path(lease_path)
     report = inspect_document_lease(repository)
     holder = report["holder"]
     expected_id = _expect_handoff_id(expected_id, "expected document lease ID")
@@ -1842,12 +1900,7 @@ def renew_document_lease(
     lease_path = Path(lease_path)
     if not lease_path.is_absolute() or lease_path.name != DOCUMENT_LEASE_FILENAME:
         raise ProtocolError(f"document lease path is invalid: {lease_path}")
-    if lease_path.parent.name != ".git":
-        raise ProtocolError(
-            "document lease must be directly inside an ordinary checkout .git "
-            f"directory: {lease_path}"
-        )
-    repository = _expect_absolute_path(lease_path.parent.parent, "repository")
+    repository = _repository_from_document_lease_path(lease_path)
     expected_id = _expect_handoff_id(expected_id, "expected document lease ID")
     expected_version = _expect_int(
         expected_version, "expected document lease version", 1, 2**63 - 2
@@ -1855,7 +1908,7 @@ def renew_document_lease(
     ttl_seconds = _expect_int(
         ttl_seconds, "ttl_seconds", 1, MAX_DOCUMENT_LEASE_TTL_SECONDS
     )
-    git_directory, git_fd = _open_repository_git_directory(repository)
+    git_directory, git_fd = _open_document_lease_directory(repository)
     guard_fd = -1
     try:
         guard_fd = _open_document_lease_guard(git_fd)
@@ -1899,17 +1952,12 @@ def release_document_lease(
     lease_path = Path(lease_path)
     if not lease_path.is_absolute() or lease_path.name != DOCUMENT_LEASE_FILENAME:
         raise ProtocolError(f"document lease path is invalid: {lease_path}")
-    if lease_path.parent.name != ".git":
-        raise ProtocolError(
-            "document lease must be directly inside an ordinary checkout .git "
-            f"directory: {lease_path}"
-        )
-    repository = _expect_absolute_path(lease_path.parent.parent, "repository")
+    repository = _repository_from_document_lease_path(lease_path)
     expected_id = _expect_handoff_id(expected_id, "expected document lease ID")
     expected_version = _expect_int(
         expected_version, "expected document lease version", 1, 2**63 - 2
     )
-    git_directory, git_fd = _open_repository_git_directory(repository)
+    git_directory, git_fd = _open_document_lease_directory(repository)
     guard_fd = -1
     try:
         guard_fd = _open_document_lease_guard(git_fd)

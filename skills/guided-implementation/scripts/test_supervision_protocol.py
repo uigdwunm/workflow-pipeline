@@ -218,6 +218,35 @@ class DocumentLeaseTests(unittest.TestCase):
             expected_version=acquired["version"],
         )
 
+    def test_non_git_project_uses_shared_codex_document_lease(self) -> None:
+        non_git_project = self.root / "non-git-project"
+        non_git_project.mkdir()
+        self.repository = non_git_project
+        lease_input = self.write_input(
+            "non-git-document-lease.json",
+            task_id="discussion-task",
+            stage="design-discussion",
+        )
+        acquired = PROTOCOL.acquire_document_lease(
+            lease_input, wait_seconds=0, max_retries=0
+        )
+        self.assertEqual(
+            Path(acquired["path"]),
+            non_git_project / ".codex" / PROTOCOL.DOCUMENT_LEASE_FILENAME,
+        )
+        verified = PROTOCOL.verify_document_lease(
+            Path(acquired["path"]),
+            expected_id=acquired["holder"]["lease_id"],
+            expected_version=acquired["version"],
+        )
+        self.assertTrue(verified["verified"])
+        released = PROTOCOL.release_document_lease(
+            Path(acquired["path"]),
+            expected_id=acquired["holder"]["lease_id"],
+            expected_version=acquired["version"],
+        )
+        self.assertTrue(released["released"])
+
     def test_expired_lease_can_be_replaced_but_old_owner_cannot_release(self) -> None:
         first_input = self.write_input("first.json", task_id="task-a", ttl_seconds=10)
         second_input = self.write_input("second.json", task_id="task-b", ttl_seconds=10)
