@@ -121,6 +121,10 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "phase_dependency_drift": "依赖状态已变化，必须重新准备 Phase Run。",
         "phase_coordination_drift": "协调状态已变化，必须重新准备 Phase Run。",
         "phase_authorization_required": "该 Phase Run 操作需要来源话题授权。",
+        "phase_carrier_claim_required": "专用阶段载体必须先验证来源并认领当前 attempt。",
+        "phase_checkpoint_invalid": "阶段来源检查点不存在、未完成、已过期或身份不匹配。",
+        "phase_requirement_incomplete": "1 到 3 的需求完整性门禁尚未全部满足。",
+        "phase_flow_mode_invalid": "连续模式只能来自成功的 1拷问 footer。",
         "phase_completion_not_claimed": "Phase Run 尚未提交可验收的完成声明。",
         "phase_reconciliation_required": "Phase Run 结果未知，必须先完成对账。",
         "context_not_initialized": "document_only 上下文尚未获得用户授权初始化本地协调状态。",
@@ -973,6 +977,15 @@ PHASE_DRIFT_CODES = {
     "dependency": "phase_dependency_drift",
     "coordination": "phase_coordination_drift",
 }
+WRAPPER_CARRIER_ROUTES = {
+    "current-problem-framing": {(0, 1)},
+    "dedicated-grilling": {(0, 1)},
+    "solution-designer": {(0, 2), (1, 2)},
+    "guided-implementation": {(1, 3)},
+}
+DIRECT_IMPLEMENTATION_COMPLETENESS = {
+    "scope", "behavior", "failures", "acceptance_conditions", "test_seam"
+}
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -1117,18 +1130,45 @@ def _record_by_id(
 
 
 def _verify_topic_owner(
-    records: dict[str, list[dict[str, Any]]], topic_id: str, owner_ref: str
+    records: dict[str, list[dict[str, Any]]],
+    topic_id: str,
+    owner_ref: str,
+    *,
+    allow_active_grilling: bool = False,
 ) -> None:
     active = [
         record
         for record in records["Conversation Bindings"]
         if record.get("topic_id") == topic_id and record.get("binding_state") == "active"
     ]
-    if len(active) != 1 or active[0].get("conversation_ref") != owner_ref:
+    if len(active) == 1 and active[0].get("conversation_ref") == owner_ref:
+        return
+    if not allow_active_grilling:
         raise ProtocolError(
             "document_ownership_conflict",
             "the caller is not the active document owner for this topic",
         )
+    active_grilling_carriers = []
+    for record in records["Phase Runs"]:
+        if record.get("run_kind") != "phase-run" or record.get("state") != "active":
+            continue
+        data = _json_field(record, "data_json", "phase run")
+        if (
+            data.get("wrapper_integration") is True
+            and data.get("carrier_kind") == "dedicated-grilling"
+            and data.get("source_topic_id") == topic_id
+        ):
+            active_grilling_carriers.extend(
+                attempt.get("carrier_ref")
+                for attempt in data.get("attempts", [])
+                if attempt.get("state") == "active" and attempt.get("claimed") is True
+            )
+    if active_grilling_carriers == [owner_ref]:
+        return
+    raise ProtocolError(
+        "document_ownership_conflict",
+        "the caller is not the active document owner for this topic",
+    )
 
 
 def _active_pending_write(records: dict[str, list[dict[str, Any]]]) -> dict[str, Any] | None:
@@ -1493,7 +1533,12 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(
+            records,
+            request["actor_topic_id"],
+            owner_ref,
+            allow_active_grilling=True,
+        )
         active_write = _active_pending_write(records)
         if active_write is not None:
             raise ProtocolError(
@@ -1662,7 +1707,12 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(
+            records,
+            request["actor_topic_id"],
+            owner_ref,
+            allow_active_grilling=True,
+        )
         write = _record_by_id(records["Pending Document Writes"], "document_write_id", request["document_write_id"], "document_write_id")
         if write["owner_ref"] != owner_ref or write["state"] != "confirmed-but-pending":
             raise ProtocolError("document_write_state_conflict", "document write is not pending for this owner")
@@ -1731,7 +1781,12 @@ def _complete_document_write(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(
+            records,
+            request["actor_topic_id"],
+            owner_ref,
+            allow_active_grilling=True,
+        )
         write = _record_by_id(records["Pending Document Writes"], "document_write_id", request["document_write_id"], "document_write_id")
         if write["state"] != "applied-pending-release" or write["lease_id"] != release["lease_id"]:
             raise ProtocolError("document_write_state_conflict", "document write is not awaiting this lease release")
@@ -1785,7 +1840,12 @@ def _reconcile_document_write(request: dict[str, Any]) -> dict[str, Any]:
         ledger_revision, topic_revision = _validate_revisions(
             request, frontmatter, topic_record
         )
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(
+            records,
+            request["actor_topic_id"],
+            owner_ref,
+            allow_active_grilling=True,
+        )
         write = _record_by_id(
             records["Pending Document Writes"],
             "document_write_id",
@@ -3483,6 +3543,300 @@ def _phase_check_evidence(data: dict[str, Any], supplied: dict[str, str]) -> Non
             )
 
 
+def _completed_checkpoint(
+    records: dict[str, list[dict[str, Any]]], checkpoint_id: Any
+) -> dict[str, Any]:
+    record = _checkpoint_record(
+        records, _expect_string(checkpoint_id, "source_checkpoint_id", max_bytes=64)
+    )
+    checkpoint = _checkpoint_data(record)
+    if (
+        checkpoint.get("state") != "completed"
+        or checkpoint.get("purpose") not in {"stage-entry", "implementation-source"}
+        or not checkpoint.get("published_identity")
+    ):
+        raise ProtocolError(
+            "phase_checkpoint_invalid",
+            "wrapper phase source must be a completed stage checkpoint",
+        )
+    return checkpoint
+
+
+def _pending_topic_impacts(
+    records: dict[str, list[dict[str, Any]]], topic_id: str
+) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in _topic_snapshot(records, topic_id)["impacts"]
+        if item.get("state") == "pending"
+    ]
+
+
+def _verify_wrapper_checkpoint_current(
+    records: dict[str, list[dict[str, Any]]],
+    data: dict[str, Any],
+    topic_path: Path,
+) -> None:
+    checkpoint = _completed_checkpoint(records, data["source_checkpoint_id"])
+    if (
+        checkpoint.get("topic_id") != data.get("source_topic_id")
+        or checkpoint.get("published_identity") != data.get("source_checkpoint_identity")
+    ):
+        raise ProtocolError("phase_checkpoint_invalid", "wrapper checkpoint identity has changed")
+    completed_sources = [
+        _checkpoint_data(item)
+        for item in records["Checkpoints"]
+        if item.get("topic_id") == data.get("source_topic_id")
+        and item.get("state") == "completed"
+        and _checkpoint_data(item).get("purpose") in {"stage-entry", "implementation-source"}
+    ]
+    if not completed_sources or completed_sources[-1]["checkpoint_id"] != checkpoint["checkpoint_id"]:
+        raise ProtocolError("phase_checkpoint_invalid", "wrapper checkpoint is no longer the latest source")
+    document_digests = json.loads(checkpoint["document_digests_json"])
+    if _sha256(_require_regular_nosymlink(topic_path, "topic document")) not in document_digests.values():
+        raise ProtocolError("phase_source_drift", "topic document differs from the frozen checkpoint")
+
+
+def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
+    ledger_path, topic_path, lock_path, owner_ref = _phase_request_context(
+        request,
+        {
+            "from_phase", "to_phase", "route", "carrier_kind",
+            "source_checkpoint_id", "flow_mode", "flow_mode_source",
+            "requirement_completeness", "scope",
+        },
+    )[:4]
+    from_phase = request["from_phase"]
+    to_phase = request["to_phase"]
+    if not isinstance(from_phase, int) or not isinstance(to_phase, int):
+        raise ProtocolError("invalid_request", "phase values must be integers")
+    route = (from_phase, to_phase)
+    if route not in PHASE_ROUTES:
+        raise ProtocolError("invalid_phase_route", "only the six approved forward routes are legal")
+    supplied_route = _expect_string(request["route"], "route", max_bytes=32)
+    if supplied_route not in {f"{from_phase}->{to_phase}", f"{from_phase}\u2192{to_phase}"}:
+        raise ProtocolError("phase_route_conflict", "route label does not match the requested phase transition")
+    carrier_kind = _expect_string(request["carrier_kind"], "carrier_kind", max_bytes=64)
+    if route not in WRAPPER_CARRIER_ROUTES.get(carrier_kind, set()):
+        raise ProtocolError("phase_route_conflict", "wrapper carrier is not approved for this route")
+    flow_mode = _expect_string(request["flow_mode"], "flow_mode", max_bytes=32)
+    flow_source = _expect_string(request["flow_mode_source"], "flow_mode_source", max_bytes=64)
+    if flow_mode not in {"stepwise", "continuous"}:
+        raise ProtocolError("phase_flow_mode_invalid", "flow_mode is unsupported")
+    if flow_mode == "continuous" and (
+        from_phase != 1 or flow_source != "successful-stage-1-footer"
+    ):
+        raise ProtocolError(
+            "phase_flow_mode_invalid",
+            "continuous mode requires a successful stage-1 footer",
+        )
+    if flow_mode == "stepwise" and flow_source not in {
+        "explicit-stage-confirmation", "successful-stage-1-footer"
+    }:
+        raise ProtocolError("phase_flow_mode_invalid", "stepwise flow source is unsupported")
+    scope = _validated_string_list(request["scope"], "scope")
+    completeness = request["requirement_completeness"]
+    if route == (1, 3):
+        if (
+            not isinstance(completeness, dict)
+            or set(completeness) != DIRECT_IMPLEMENTATION_COMPLETENESS
+            or any(value is not True for value in completeness.values())
+        ):
+            raise ProtocolError(
+                "phase_requirement_incomplete",
+                "direct implementation requires complete scope, behavior, failures, acceptance conditions and test seam",
+            )
+    elif completeness is not None:
+        raise ProtocolError("invalid_request", "requirement_completeness is only valid for route 1->3")
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(
+            records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id"
+        )
+        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        if topic.get("current_phase") != from_phase:
+            raise ProtocolError("phase_route_conflict", "route source phase does not match current topic phase")
+        if _pending_topic_impacts(records, request["actor_topic_id"]):
+            raise ProtocolError("phase_impact_drift", "pending impacts must be resolved before stage routing")
+        checkpoint = _completed_checkpoint(records, request["source_checkpoint_id"])
+        if checkpoint.get("topic_id") != request["actor_topic_id"]:
+            raise ProtocolError("phase_checkpoint_invalid", "checkpoint belongs to another topic")
+        checkpoint_data = {
+            "source_topic_id": request["actor_topic_id"],
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_checkpoint_identity": checkpoint["published_identity"],
+        }
+        _verify_wrapper_checkpoint_current(records, checkpoint_data, topic_path)
+        active_runs = [
+            item for item in records["Phase Runs"]
+            if item.get("run_kind") == "phase-run"
+            and item.get("state") in {
+                "prepared", "setup-pending", "ready", "active",
+                "completion-claimed", "completion-pending", "outcome-unknown",
+            }
+            and _json_field(item, "data_json", "phase run").get("source_topic_id")
+            == request["actor_topic_id"]
+        ]
+        if active_runs:
+            raise ProtocolError("phase_coordination_drift", "an active Phase Run already owns this source topic")
+        evidence = _authoritative_phase_evidence(topic_path, records, topic)
+        run_id = f"PR-{ledger_revision + 1:08d}"
+        attempt_id = f"PA-{run_id[3:]}-1"
+        stage_ownership = (
+            ["spec", "adr", "tickets", "planning-commit"]
+            if carrier_kind == "solution-designer"
+            else ["shared-0-1-topic"]
+            if to_phase == 1
+            else ["implementation"]
+        )
+        data = {
+            "run_id": run_id,
+            "run_kind": "phase-run",
+            "record_revision": 1,
+            "state": "prepared",
+            "from_phase": from_phase,
+            "to_phase": to_phase,
+            "route": list(route),
+            "carrier_kind": carrier_kind,
+            "source_topic_id": request["actor_topic_id"],
+            "evidence": evidence,
+            "attempts": [{
+                "attempt_id": attempt_id,
+                "attempt_number": 1,
+                "state": "setup-pending",
+                "authorization": False,
+                "carrier_ref": None,
+                "reason": None,
+                "claimed": False,
+            }],
+            "creation_idempotency_key": request["idempotency_key"],
+            "wrapper_integration": True,
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_checkpoint_identity": checkpoint["published_identity"],
+            "flow_mode": flow_mode,
+            "flow_mode_source": flow_source,
+            "scope": scope,
+            "requirement_completeness": completeness,
+            "requirement_document_mode": "shared-0-1-topic" if to_phase == 1 else "frozen-read-only",
+            "stage_ownership": stage_ownership,
+            "may_modify_requirement_source": to_phase == 1,
+        }
+        record = {
+            "run_id": run_id,
+            "run_kind": "phase-run",
+            "state": "prepared",
+            "record_revision": 1,
+            "data_json": _canonical_json(data),
+        }
+        records["Phase Runs"].append(record)
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True,
+            "state": "prepared",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic_revision,
+            "phase_run_id": run_id,
+            "attempt_id": attempt_id,
+            "route": list(route),
+            "evidence": evidence,
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_checkpoint_identity": checkpoint["published_identity"],
+            "topic_document_path": str(topic_path),
+            "requirement_document_mode": data["requirement_document_mode"],
+            "stage_ownership": stage_ownership,
+            "may_modify_requirement_source": data["may_modify_requirement_source"],
+            "flow_mode": flow_mode,
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="wrapper-phase-run-prepared",
+            result=result,
+        )
+        return result
+
+
+def _claim_phase_carrier(request: dict[str, Any]) -> dict[str, Any]:
+    ledger_path, _, lock_path, owner_ref = _phase_request_context(
+        request,
+        {
+            "phase_run_id", "attempt_id", "carrier_ref",
+            "source_checkpoint_id", "source_checkpoint_identity",
+        },
+    )[:4]
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
+        record = _phase_record(records, request["phase_run_id"])
+        data = _phase_data(record)
+        _verify_phase_source(data, request["actor_topic_id"])
+        attempt = _phase_attempt(data, request["attempt_id"])
+        if data.get("wrapper_integration") is not True:
+            raise ProtocolError("phase_identity_conflict", "carrier claims apply only to wrapper Phase Runs")
+        if (
+            data["state"] != "setup-pending"
+            or attempt["state"] != "setup-pending"
+            or attempt.get("authorization") is not True
+            or attempt.get("claimed") is True
+        ):
+            raise ProtocolError("phase_attempt_state_conflict", "attempt is not claimable")
+        carrier_ref = _expect_string(request["carrier_ref"], "carrier_ref", max_bytes=1024)
+        if carrier_ref != owner_ref or carrier_ref != attempt.get("carrier_ref"):
+            raise ProtocolError("phase_identity_conflict", "claimant does not match the authorized carrier")
+        checkpoint = _completed_checkpoint(records, request["source_checkpoint_id"])
+        if (
+            checkpoint["checkpoint_id"] != data["source_checkpoint_id"]
+            or checkpoint["published_identity"] != data["source_checkpoint_identity"]
+            or request["source_checkpoint_identity"] != data["source_checkpoint_identity"]
+        ):
+            raise ProtocolError("phase_checkpoint_invalid", "carrier checkpoint proof does not match the frozen source")
+        attempt["claimed"] = True
+        data["record_revision"] += 1
+        _store_phase(record, data)
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True,
+            "state": "setup-pending",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic_revision,
+            "phase_run_id": data["run_id"],
+            "attempt_id": attempt["attempt_id"],
+            "attempt_claimed": True,
+            "source_checkpoint_id": data["source_checkpoint_id"],
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="phase-carrier-claimed",
+            result=result,
+        )
+        return result
+
+
 def _authoritative_phase_evidence(
     topic_path: Path, records: dict[str, list[dict[str, Any]]], topic: dict[str, Any]
 ) -> dict[str, str]:
@@ -3635,6 +3989,11 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                 raise ProtocolError("phase_attempt_state_conflict", "attempt is not setup-pending")
             if attempt.get("authorization") is not True:
                 raise ProtocolError("phase_authorization_required", "carrier has not been authorized by the source topic")
+            if data.get("wrapper_integration") is True and attempt.get("claimed") is not True:
+                raise ProtocolError(
+                    "phase_carrier_claim_required",
+                    "wrapper carrier must claim the frozen source before reporting ready",
+                )
             if request["carrier_ref"] != attempt.get("carrier_ref") or attempt["carrier_ref"] != owner_ref:
                 raise ProtocolError("phase_identity_conflict", "ready carrier identity does not match the caller")
             _phase_check_evidence(data, supplied_evidence)
@@ -3645,7 +4004,25 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                 raise ProtocolError("phase_attempt_state_conflict", "attempt is not ready")
             _phase_check_evidence(data, supplied_evidence)
             _phase_check_evidence(data, _authoritative_phase_evidence(topic_path, records, topic))
+            if data.get("wrapper_integration") is True:
+                _verify_wrapper_checkpoint_current(records, data, topic_path)
             attempt["state"] = "active"; data["state"] = "active"
+            if data.get("wrapper_integration") is True and data.get("route") == [1, 3]:
+                result_id = f"PH-{data['run_id'][3:]}-NA2"
+                records["Phase Results"].append({
+                    "result_id": result_id,
+                    "result_kind": "phase-result",
+                    "state": "not_applicable",
+                    "record_revision": 1,
+                    "data_json": _canonical_json({
+                        "result_id": result_id,
+                        "phase_run_id": data["run_id"],
+                        "phase": 2,
+                        "state": "not_applicable",
+                        "scope": data["scope"],
+                        "reason": "stage-1 requirement completeness gate satisfied",
+                    }),
+                })
         else:
             if target == "completion-claimed" and data["state"] != "active":
                 raise ProtocolError("phase_attempt_state_conflict", "completion can only be claimed by an active attempt")
@@ -3667,6 +4044,8 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
         _store_phase(record, data)
         next_revision = ledger_revision + 1
         result = {"ok": True, "state": target, "idempotent_replay": False, "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"], "ledger_revision": next_revision, "record_revision": topic_revision, "phase_run_id": data["run_id"], "attempt_id": attempt["attempt_id"]}
+        if target == "active" and data.get("wrapper_integration") is True and data.get("route") == [1, 3]:
+            result.update({"not_applicable_phase": 2, "not_applicable_scope": data["scope"]})
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type=event_type, result=result)
         return result
 
@@ -4945,10 +5324,14 @@ def handle(request: Any) -> dict[str, Any]:
         return _initialize_document_context(request)
     if operation in {"prepare-phase-run", "route-phase"}:
         return _prepare_phase_run(request)
+    if operation == "prepare-wrapper-phase-run":
+        return _prepare_wrapper_phase_run(request)
     if operation == "phase-ready":
         return _transition_phase_attempt(request, "ready", "phase-attempt-ready")
     if operation == "authorize-phase-carrier":
         return _authorize_phase_carrier(request)
+    if operation == "claim-phase-carrier":
+        return _claim_phase_carrier(request)
     if operation == "phase-activate":
         return _transition_phase_attempt(request, "active", "phase-attempt-activated")
     if operation == "revoke-phase-authorization":

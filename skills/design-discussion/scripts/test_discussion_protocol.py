@@ -424,6 +424,498 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         return prepared
 
+    def publish_non_git_stage_entry_checkpoint(
+        self,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int,
+        topic_revision: int = 1,
+    ) -> dict[str, object]:
+        prepared = self.prepare_checkpoint(
+            topic,
+            ledger_revision=ledger_revision,
+            purpose="stage-entry",
+        )
+        code, published, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="publish-non-git-checkpoint",
+                ledger_revision=ledger_revision + 1,
+                topic_revision=topic_revision,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=prepared["checkpoint_record_revision"],
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        return published
+
+    def wrapper_phase_request(
+        self,
+        topic: dict[str, object],
+        revision: int,
+        *,
+        from_phase: int,
+        to_phase: int,
+        carrier_kind: str,
+        source_checkpoint_id: str,
+        flow_mode: str = "stepwise",
+        flow_mode_source: str = "explicit-stage-confirmation",
+        requirement_completeness: dict[str, bool] | None = None,
+        scope: list[str] | None = None,
+    ) -> dict[str, object]:
+        return self.phase_request(
+            topic,
+            "prepare-wrapper-phase-run",
+            revision,
+            from_phase=from_phase,
+            to_phase=to_phase,
+            route=f"{from_phase}->{to_phase}",
+            carrier_kind=carrier_kind,
+            source_checkpoint_id=source_checkpoint_id,
+            flow_mode=flow_mode,
+            flow_mode_source=flow_mode_source,
+            requirement_completeness=requirement_completeness,
+            scope=scope or ["repository"],
+        )
+
+    def test_wrapper_current_and_dedicated_problem_framing_share_topic_document(self) -> None:
+        for carrier_kind, carrier_ref in (
+            ("current-problem-framing", "discussion-task"),
+            ("dedicated-grilling", "codex-thread:grilling"),
+        ):
+            project = self.make_project(f"wrapper-{carrier_kind}", git=False)
+            topic = self.bootstrap_topic(project)
+            checkpoint = self.publish_non_git_stage_entry_checkpoint(
+                topic, ledger_revision=1
+            )
+            code, prepared, stderr = self.run_cli(
+                self.wrapper_phase_request(
+                    topic,
+                    3,
+                    from_phase=0,
+                    to_phase=1,
+                    carrier_kind=carrier_kind,
+                    source_checkpoint_id=str(checkpoint["checkpoint_id"]),
+                )
+            )
+            self.assertEqual(code, 0, stderr)
+            self.assertEqual(prepared["topic_document_path"], topic["topic_document_path"])
+            self.assertEqual(prepared["requirement_document_mode"], "shared-0-1-topic")
+            _, _, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "authorize-phase-carrier",
+                    4,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref=carrier_ref,
+                )
+            )
+            claim = self.phase_request(
+                topic,
+                "claim-phase-carrier",
+                5,
+                phase_run_id=prepared["phase_run_id"],
+                attempt_id=prepared["attempt_id"],
+                carrier_ref=carrier_ref,
+                source_checkpoint_id=checkpoint["checkpoint_id"],
+                source_checkpoint_identity=checkpoint["snapshot_digest"],
+            )
+            claim["actor_conversation_ref"] = carrier_ref
+            code, claimed, stderr = self.run_cli(claim)
+            self.assertEqual(code, 0, stderr)
+            self.assertTrue(claimed["attempt_claimed"])
+            ready = self.phase_request(
+                topic,
+                "phase-ready",
+                6,
+                phase_run_id=prepared["phase_run_id"],
+                attempt_id=prepared["attempt_id"],
+                carrier_ref=carrier_ref,
+                evidence=prepared["evidence"],
+            )
+            ready["actor_conversation_ref"] = carrier_ref
+            code, _, stderr = self.run_cli(ready)
+            self.assertEqual(code, 0, stderr)
+            if carrier_kind == "dedicated-grilling":
+                before_active = self.evolution_request(
+                    topic,
+                    operation="prepare-topic-update",
+                    expected_revision=7,
+                    expected_topic_revision=1,
+                    owner_ref=carrier_ref,
+                    mutation={
+                        "type": "confirm-decision",
+                        "summary": "Use the shared topic draft.",
+                        "rationale": "The dedicated carrier must not create another draft.",
+                    },
+                )
+                code, rejected, _ = self.run_cli(before_active)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "document_ownership_conflict")
+            code, _, stderr = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "phase-activate",
+                    7,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    evidence=prepared["evidence"],
+                )
+            )
+            self.assertEqual(code, 0, stderr)
+            if carrier_kind == "dedicated-grilling":
+                forbidden_checkpoint = self.checkpoint_request(
+                    topic,
+                    operation="prepare-checkpoint",
+                    ledger_revision=8,
+                    owner_ref=carrier_ref,
+                    purpose="stage-entry",
+                    base_ref="HEAD",
+                )
+                code, rejected, _ = self.run_cli(forbidden_checkpoint)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "document_ownership_conflict")
+                code, update, stderr = self.run_cli(
+                    self.evolution_request(
+                        topic,
+                        operation="prepare-topic-update",
+                        expected_revision=8,
+                        expected_topic_revision=1,
+                        owner_ref=carrier_ref,
+                        mutation={
+                            "type": "confirm-decision",
+                            "summary": "Use the shared topic draft.",
+                            "rationale": "The dedicated carrier owns only the activated shared draft.",
+                        },
+                    )
+                )
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(update["payload_path"].endswith(".payload"), True)
+                self.assertEqual(
+                    Path(str(topic["topic_document_path"])).name,
+                    "topic.md",
+                )
+
+    def test_solution_wrapper_requires_claim_ready_activation_and_current_source(self) -> None:
+        project = self.make_project("wrapper-solution", git=False)
+        topic = self.bootstrap_topic(project)
+        checkpoint = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+        code, prepared, stderr = self.run_cli(
+            self.wrapper_phase_request(
+                topic,
+                3,
+                from_phase=0,
+                to_phase=2,
+                carrier_kind="solution-designer",
+                source_checkpoint_id=str(checkpoint["checkpoint_id"]),
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(
+            prepared["stage_ownership"],
+            ["spec", "adr", "tickets", "planning-commit"],
+        )
+        self.assertFalse(prepared["may_modify_requirement_source"])
+        _, _, _ = self.run_cli(
+            self.phase_request(
+                topic,
+                "authorize-phase-carrier",
+                4,
+                phase_run_id=prepared["phase_run_id"],
+                attempt_id=prepared["attempt_id"],
+                carrier_ref="agent:solution-designer",
+            )
+        )
+        unclaimed_ready = self.phase_request(
+            topic,
+            "phase-ready",
+            5,
+            phase_run_id=prepared["phase_run_id"],
+            attempt_id=prepared["attempt_id"],
+            carrier_ref="agent:solution-designer",
+            evidence=prepared["evidence"],
+        )
+        unclaimed_ready["actor_conversation_ref"] = "agent:solution-designer"
+        code, rejected, _ = self.run_cli(unclaimed_ready)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_carrier_claim_required")
+        claim = self.phase_request(
+            topic,
+            "claim-phase-carrier",
+            5,
+            phase_run_id=prepared["phase_run_id"],
+            attempt_id=prepared["attempt_id"],
+            carrier_ref="agent:solution-designer",
+            source_checkpoint_id=checkpoint["checkpoint_id"],
+            source_checkpoint_identity=checkpoint["snapshot_digest"],
+        )
+        claim["actor_conversation_ref"] = "agent:solution-designer"
+        code, _, stderr = self.run_cli(claim)
+        self.assertEqual(code, 0, stderr)
+        ready = dict(unclaimed_ready)
+        ready["idempotency_key"] = str(uuid.uuid4())
+        ready["expected_ledger_revision"] = 6
+        code, result, stderr = self.run_cli(ready)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(result["state"], "ready")
+        topic_path = Path(str(topic["topic_document_path"]))
+        topic_path.write_text(topic_path.read_text(encoding="utf-8") + "\nsource drift\n", encoding="utf-8")
+        code, drifted, _ = self.run_cli(
+            self.phase_request(
+                topic,
+                "phase-activate",
+                7,
+                phase_run_id=prepared["phase_run_id"],
+                attempt_id=prepared["attempt_id"],
+                evidence=prepared["evidence"],
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(drifted["error"]["code"], "phase_source_drift")
+
+    def test_wrapper_pending_impacts_and_direct_to_three_completeness(self) -> None:
+        impacted_project = self.make_project("wrapper-pending-impact", git=False)
+        impacted = self.bootstrap_topic(impacted_project)
+        ledger = Path(str(impacted["ledger_path"]))
+        marker = "## Impacts\n\n```yaml\nrecords:\n  []\n```"
+        replacement = (
+            "## Impacts\n\n```yaml\nrecords:\n"
+            "  - impact_id: \"IMP-pending\"\n"
+            f"    topic_id: \"{impacted['topic_id']}\"\n"
+            '    data_json: "{\\"action\\":null,\\"decision_id\\":\\"D-pending\\",'
+            '\\"direction\\":\\"changed\\",\\"impact_id\\":\\"IMP-pending\\",'
+            '\\"state\\":\\"pending\\"}"\n```'
+        )
+        self.rewrite_ledger_with_valid_digest(ledger, marker, replacement)
+        checkpoint = self.publish_non_git_stage_entry_checkpoint(impacted, ledger_revision=1)
+        code, rejected, _ = self.run_cli(
+            self.wrapper_phase_request(
+                impacted,
+                3,
+                from_phase=0,
+                to_phase=2,
+                carrier_kind="solution-designer",
+                source_checkpoint_id=str(checkpoint["checkpoint_id"]),
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_impact_drift")
+
+        project = self.make_project("wrapper-direct-three", git=False)
+        topic = self.bootstrap_topic(project)
+        phase_ledger = Path(str(topic["ledger_path"]))
+        self.rewrite_ledger_with_valid_digest(
+            phase_ledger, "current_phase: 0", "current_phase: 1"
+        )
+        checkpoint = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+        incomplete = {
+            "scope": True,
+            "behavior": True,
+            "failures": True,
+            "acceptance_conditions": True,
+            "test_seam": False,
+        }
+        code, rejected, _ = self.run_cli(
+            self.wrapper_phase_request(
+                topic,
+                3,
+                from_phase=1,
+                to_phase=3,
+                carrier_kind="guided-implementation",
+                source_checkpoint_id=str(checkpoint["checkpoint_id"]),
+                requirement_completeness=incomplete,
+                scope=["skills/design-discussion/scripts"],
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_requirement_incomplete")
+        complete = {key: True for key in incomplete}
+        code, prepared, stderr = self.run_cli(
+            self.wrapper_phase_request(
+                topic,
+                3,
+                from_phase=1,
+                to_phase=3,
+                carrier_kind="guided-implementation",
+                source_checkpoint_id=str(checkpoint["checkpoint_id"]),
+                requirement_completeness=complete,
+                scope=["skills/design-discussion/scripts"],
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        evidence = prepared["evidence"]
+        _, _, _ = self.run_cli(
+            self.phase_request(topic, "authorize-phase-carrier", 4, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="agent:implementation")
+        )
+        claim = self.phase_request(topic, "claim-phase-carrier", 5, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="agent:implementation", source_checkpoint_id=checkpoint["checkpoint_id"], source_checkpoint_identity=checkpoint["snapshot_digest"])
+        claim["actor_conversation_ref"] = "agent:implementation"
+        self.assertEqual(self.run_cli(claim)[0], 0)
+        ready = self.phase_request(topic, "phase-ready", 6, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="agent:implementation", evidence=evidence)
+        ready["actor_conversation_ref"] = "agent:implementation"
+        self.assertEqual(self.run_cli(ready)[0], 0)
+        code, activated, stderr = self.run_cli(self.phase_request(topic, "phase-activate", 7, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], evidence=evidence))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(activated["not_applicable_phase"], 2)
+        self.assertEqual(activated["not_applicable_scope"], ["skills/design-discussion/scripts"])
+        activated_ledger = phase_ledger.read_text(encoding="utf-8")
+        self.assertIn('state: "not_applicable"', activated_ledger)
+        self.assertNotIn("planning_artifact", activated_ledger)
+        completion = self.phase_request(topic, "claim-phase-completion", 8, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="agent:implementation", evidence=evidence)
+        completion["actor_conversation_ref"] = "agent:implementation"
+        self.assertEqual(self.run_cli(completion)[0], 0)
+        self.assertEqual(self.run_cli(self.phase_request(topic, "complete-phase-run", 9, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], evidence=evidence))[0], 0)
+        code, finalized, stderr = self.run_cli(self.phase_request(topic, "finalize-phase-run", 10, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], evidence=evidence))
+        self.assertEqual(code, 0, stderr)
+        ledger_text = phase_ledger.read_text(encoding="utf-8")
+        self.assertIn('state: "not_applicable"', ledger_text)
+        self.assertNotIn("planning_artifact", ledger_text)
+
+    def test_wrapper_continuous_mode_only_inherits_successful_stage_one_footer(self) -> None:
+        project = self.make_project("wrapper-continuous-zero", git=False)
+        topic = self.bootstrap_topic(project)
+        checkpoint = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+        code, rejected, _ = self.run_cli(
+            self.wrapper_phase_request(
+                topic,
+                3,
+                from_phase=0,
+                to_phase=2,
+                carrier_kind="solution-designer",
+                source_checkpoint_id=str(checkpoint["checkpoint_id"]),
+                flow_mode="continuous",
+                flow_mode_source="successful-stage-1-footer",
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_flow_mode_invalid")
+
+        stage_one_project = self.make_project("wrapper-continuous-one", git=False)
+        stage_one = self.bootstrap_topic(stage_one_project)
+        stage_one_ledger = Path(str(stage_one["ledger_path"]))
+        self.rewrite_ledger_with_valid_digest(
+            stage_one_ledger, "current_phase: 0", "current_phase: 1"
+        )
+        stage_one_checkpoint = self.publish_non_git_stage_entry_checkpoint(
+            stage_one, ledger_revision=1
+        )
+        code, continuous, stderr = self.run_cli(
+            self.wrapper_phase_request(
+                stage_one,
+                3,
+                from_phase=1,
+                to_phase=2,
+                carrier_kind="solution-designer",
+                source_checkpoint_id=str(stage_one_checkpoint["checkpoint_id"]),
+                flow_mode="continuous",
+                flow_mode_source="successful-stage-1-footer",
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(continuous["flow_mode"], "continuous")
+
+        legacy = self.make_project("wrapper-no-context", git=False)
+        before = sorted(legacy.rglob("*"))
+        code, located, stderr = self.run_cli(
+            {
+                "protocol_version": 1,
+                "operation": "discover-context",
+                "project_path": str(legacy),
+            }
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(located["context"], "none")
+        self.assertEqual(before, sorted(legacy.rglob("*")))
+
+        ambiguous_root = legacy / "docs" / "discussions"
+        for number in (1, 2):
+            document = ambiguous_root / f"candidate-{number}" / "topic.md"
+            document.parent.mkdir(parents=True, exist_ok=True)
+            document.write_text(
+                "---\n"
+                f"project_id: project-{'1' * 32}\n"
+                f"tree_id: tree-{'2' * 32}\n"
+                f"topic_id: topic-{str(number) * 32}\n"
+                "---\n",
+                encoding="utf-8",
+            )
+        ambiguous_before = {
+            path: path.read_bytes() for path in legacy.rglob("*") if path.is_file()
+        }
+        code, ambiguous, stderr = self.run_cli(
+            {
+                "protocol_version": 1,
+                "operation": "discover-context",
+                "project_path": str(legacy),
+            }
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(ambiguous["context"], "ambiguous")
+        self.assertEqual(
+            ambiguous_before,
+            {path: path.read_bytes() for path in legacy.rglob("*") if path.is_file()},
+        )
+
+    def test_wrapper_rejects_superseded_checkpoint_and_wrong_carrier_route(self) -> None:
+        project = self.make_project("wrapper-latest-checkpoint", git=False)
+        topic = self.bootstrap_topic(project)
+        first = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+        second = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=3)
+        code, rejected, _ = self.run_cli(
+            self.wrapper_phase_request(
+                topic,
+                5,
+                from_phase=0,
+                to_phase=2,
+                carrier_kind="solution-designer",
+                source_checkpoint_id=str(first["checkpoint_id"]),
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_checkpoint_invalid")
+        wrong = self.wrapper_phase_request(
+            topic,
+            5,
+            from_phase=0,
+            to_phase=2,
+            carrier_kind="dedicated-grilling",
+            source_checkpoint_id=str(second["checkpoint_id"]),
+        )
+        code, rejected, _ = self.run_cli(wrong)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_route_conflict")
+
+    def test_wrapper_activation_rechecks_latest_checkpoint(self) -> None:
+        project = self.make_project("wrapper-activation-checkpoint", git=False)
+        topic = self.bootstrap_topic(project)
+        first = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+        code, prepared, stderr = self.run_cli(
+            self.wrapper_phase_request(
+                topic,
+                3,
+                from_phase=0,
+                to_phase=2,
+                carrier_kind="solution-designer",
+                source_checkpoint_id=str(first["checkpoint_id"]),
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        _, _, _ = self.run_cli(
+            self.phase_request(topic, "authorize-phase-carrier", 4, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="agent:solution-designer")
+        )
+        claim = self.phase_request(topic, "claim-phase-carrier", 5, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="agent:solution-designer", source_checkpoint_id=first["checkpoint_id"], source_checkpoint_identity=first["snapshot_digest"])
+        claim["actor_conversation_ref"] = "agent:solution-designer"
+        self.assertEqual(self.run_cli(claim)[0], 0)
+        ready = self.phase_request(topic, "phase-ready", 6, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="agent:solution-designer", evidence=prepared["evidence"])
+        ready["actor_conversation_ref"] = "agent:solution-designer"
+        self.assertEqual(self.run_cli(ready)[0], 0)
+        self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=7)
+        code, rejected, _ = self.run_cli(
+            self.phase_request(topic, "phase-activate", 9, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], evidence=prepared["evidence"])
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_checkpoint_invalid")
+
     def test_phase_run_requires_owner_and_uses_single_revision_events(self) -> None:
         project = self.make_project("phase-run", git=False)
         topic = self.bootstrap_topic(project)
