@@ -3635,14 +3635,14 @@ def _verify_wrapper_checkpoint_current(
         raise ProtocolError("phase_source_drift", "topic document differs from the frozen checkpoint")
 
 
-def _verify_continuous_flow_authority(
+def _verify_stage_one_checkpoint(
     records: dict[str, list[dict[str, Any]]], checkpoint: dict[str, Any]
-) -> None:
+) -> str:
     result_id = checkpoint.get("stage_entry_phase_result_id")
     if checkpoint.get("stage_entry_phase") != 1 or not isinstance(result_id, str):
         raise ProtocolError(
             "phase_flow_mode_invalid",
-            "continuous mode requires persisted successful stage-1 authority",
+            "continuous mode requires a checkpoint from a completed stage 1",
         )
     result_record = _record_by_id(
         records["Phase Results"], "result_id", result_id, "phase_result_id"
@@ -3656,7 +3656,7 @@ def _verify_continuous_flow_authority(
     ):
         raise ProtocolError(
             "phase_flow_mode_invalid",
-            "continuous mode stage-1 authority is invalid",
+            "continuous mode stage-1 result is invalid",
         )
     phase_run_record = _phase_record(records, result.get("phase_run_id"))
     phase_run = _phase_data(phase_run_record)
@@ -3668,8 +3668,165 @@ def _verify_continuous_flow_authority(
     ):
         raise ProtocolError(
             "phase_flow_mode_invalid",
-            "continuous mode stage-1 authority does not match the source topic",
+            "continuous mode stage-1 result does not match the source topic",
         )
+    return result_id
+
+
+def _verify_continuous_flow_authority(
+    records: dict[str, list[dict[str, Any]]],
+    checkpoint: dict[str, Any],
+    authorization_id: str | None = None,
+) -> dict[str, Any]:
+    result_id = _verify_stage_one_checkpoint(records, checkpoint)
+    matches = []
+    for record in records["Phase Results"]:
+        if (
+            record.get("result_kind") != "continuous-flow-authorization"
+            or record.get("state") != "authorized"
+            or (authorization_id is not None and record.get("result_id") != authorization_id)
+        ):
+            continue
+        authority = _json_field(record, "data_json", "continuous flow authorization")
+        if (
+            authority.get("topic_id") == checkpoint.get("topic_id")
+            and authority.get("phase_result_id") == result_id
+            and authority.get("source_checkpoint_id") == checkpoint.get("checkpoint_id")
+            and authority.get("source_checkpoint_identity")
+            == checkpoint.get("published_identity")
+            and authority.get("user_reply") == "执行后续全部流程"
+        ):
+            matches.append(authority)
+    if len(matches) != 1:
+        raise ProtocolError(
+            "phase_flow_mode_invalid",
+            "continuous mode requires one exact successful-footer authorization",
+        )
+    return matches[0]
+
+
+def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
+    ledger_path, topic_path, lock_path, owner_ref = _phase_request_context(
+        request,
+        {
+            "source_checkpoint_id",
+            "source_checkpoint_identity",
+            "phase_result_id",
+            "user_reply",
+        },
+    )[:4]
+    user_reply = _expect_string(request["user_reply"], "user_reply", max_bytes=128)
+    source_checkpoint_identity = _expect_string(
+        request["source_checkpoint_identity"],
+        "source_checkpoint_identity",
+        max_bytes=128,
+    )
+    requested_phase_result_id = _expect_string(
+        request["phase_result_id"], "phase_result_id", max_bytes=64
+    )
+    if user_reply != "执行后续全部流程":
+        raise ProtocolError(
+            "phase_flow_mode_invalid",
+            "continuous authorization requires the exact successful-footer reply",
+        )
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(
+            records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id"
+        )
+        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        if topic.get("current_phase") != 1:
+            raise ProtocolError(
+                "phase_flow_mode_invalid",
+                "continuous authorization is available only after stage 1",
+            )
+        checkpoint = _completed_checkpoint(records, request["source_checkpoint_id"])
+        if (
+            checkpoint.get("topic_id") != request["actor_topic_id"]
+            or source_checkpoint_identity != checkpoint.get("published_identity")
+        ):
+            raise ProtocolError(
+                "phase_checkpoint_invalid",
+                "continuous authorization checkpoint proof does not match the source topic",
+            )
+        _verify_wrapper_checkpoint_current(
+            records,
+            {
+                "source_topic_id": request["actor_topic_id"],
+                "source_checkpoint_id": checkpoint["checkpoint_id"],
+                "source_checkpoint_identity": checkpoint["published_identity"],
+            },
+            topic_path,
+        )
+        phase_result_id = _verify_stage_one_checkpoint(records, checkpoint)
+        if requested_phase_result_id != phase_result_id:
+            raise ProtocolError(
+                "phase_flow_mode_invalid",
+                "continuous authorization phase result does not match the checkpoint",
+            )
+        existing = [
+            item
+            for item in records["Phase Results"]
+            if item.get("result_kind") == "continuous-flow-authorization"
+            and item.get("state") == "authorized"
+            and _json_field(item, "data_json", "continuous flow authorization").get(
+                "source_checkpoint_id"
+            )
+            == checkpoint["checkpoint_id"]
+        ]
+        if existing:
+            raise ProtocolError(
+                "phase_flow_mode_invalid",
+                "continuous flow is already authorized for this checkpoint",
+            )
+        authorization_id = f"CF-{uuid.UUID(request['idempotency_key']).hex}"
+        authority = {
+            "authorization_id": authorization_id,
+            "topic_id": request["actor_topic_id"],
+            "phase_result_id": phase_result_id,
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_checkpoint_identity": checkpoint["published_identity"],
+            "user_reply": user_reply,
+        }
+        records["Phase Results"].append(
+            {
+                "result_id": authorization_id,
+                "result_kind": "continuous-flow-authorization",
+                "state": "authorized",
+                "record_revision": 1,
+                "data_json": _canonical_json(authority),
+            }
+        )
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True,
+            "state": "authorized",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic_revision,
+            "continuous_authorization_id": authorization_id,
+            "phase_result_id": phase_result_id,
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_checkpoint_identity": checkpoint["published_identity"],
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="continuous-flow-authorized",
+            result=result,
+        )
+        return result
 
 
 def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
@@ -3747,8 +3904,9 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             "source_checkpoint_identity": checkpoint["published_identity"],
         }
         _verify_wrapper_checkpoint_current(records, checkpoint_data, topic_path)
+        continuous_authority = None
         if flow_mode == "continuous":
-            _verify_continuous_flow_authority(records, checkpoint)
+            continuous_authority = _verify_continuous_flow_authority(records, checkpoint)
         active_runs = [
             item for item in records["Phase Runs"]
             if item.get("run_kind") == "phase-run"
@@ -3797,6 +3955,11 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             "source_checkpoint_identity": checkpoint["published_identity"],
             "flow_mode": flow_mode,
             "flow_mode_source": flow_source,
+            "continuous_authorization_id": (
+                continuous_authority["authorization_id"]
+                if continuous_authority is not None
+                else None
+            ),
             "scope": scope,
             "requirement_completeness": completeness,
             "requirement_document_mode": "shared-0-1-topic" if to_phase == 1 else "frozen-read-only",
@@ -3832,6 +3995,7 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             "stage_ownership": stage_ownership,
             "may_modify_requirement_source": data["may_modify_requirement_source"],
             "flow_mode": flow_mode,
+            "continuous_authorization_id": data["continuous_authorization_id"],
         }
         _write_ledger_transaction(
             ledger_path,
@@ -4087,6 +4251,7 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                     _verify_continuous_flow_authority(
                         records,
                         _completed_checkpoint(records, data["source_checkpoint_id"]),
+                        data.get("continuous_authorization_id"),
                     )
             attempt["state"] = "active"; data["state"] = "active"
             if data.get("wrapper_integration") is True and data.get("route") == [1, 3]:
@@ -5408,6 +5573,8 @@ def handle(request: Any) -> dict[str, Any]:
         return _prepare_phase_run(request)
     if operation == "prepare-wrapper-phase-run":
         return _prepare_wrapper_phase_run(request)
+    if operation == "authorize-continuous-flow":
+        return _authorize_continuous_flow(request)
     if operation == "phase-ready":
         return _transition_phase_attempt(request, "ready", "phase-attempt-ready")
     if operation == "authorize-phase-carrier":

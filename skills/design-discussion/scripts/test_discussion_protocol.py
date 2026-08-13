@@ -567,6 +567,28 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 0, stderr)
         return completed
 
+    def authorize_continuous_flow(
+        self,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int,
+        checkpoint: dict[str, object],
+        phase_result_id: str,
+        user_reply: str = "执行后续全部流程",
+    ) -> tuple[int, dict[str, object], str]:
+        return self.run_cli(
+            self.phase_request(
+                topic,
+                "authorize-continuous-flow",
+                ledger_revision,
+                topic_revision=2,
+                source_checkpoint_id=checkpoint["checkpoint_id"],
+                source_checkpoint_identity=checkpoint["snapshot_digest"],
+                phase_result_id=phase_result_id,
+                user_reply=user_reply,
+            )
+        )
+
     def wrapper_phase_request(
         self,
         topic: dict[str, object],
@@ -912,12 +934,12 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
 
         stage_one_project = self.make_project("wrapper-continuous-one", git=False)
         stage_one = self.bootstrap_topic(stage_one_project)
-        self.complete_stage_one(stage_one)
+        stage_one_result = self.complete_stage_one(stage_one)
         stage_one_checkpoint = self.publish_non_git_stage_entry_checkpoint(
             stage_one, ledger_revision=8, topic_revision=2
         )
         self.assertIsNotNone(stage_one_checkpoint["stage_entry_phase_result_id"])
-        code, continuous, stderr = self.run_cli(
+        code, rejected, _ = self.run_cli(
             self.wrapper_phase_request(
                 stage_one,
                 10,
@@ -930,8 +952,59 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 topic_revision=2,
             )
         )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_flow_mode_invalid")
+
+        code, rejected, _ = self.authorize_continuous_flow(
+            stage_one,
+            ledger_revision=10,
+            checkpoint=stage_one_checkpoint,
+            phase_result_id=str(stage_one_result["phase_result_id"]),
+            user_reply="执行后续全部流程。",
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_flow_mode_invalid")
+        code, authorized, stderr = self.authorize_continuous_flow(
+            stage_one,
+            ledger_revision=10,
+            checkpoint=stage_one_checkpoint,
+            phase_result_id=str(stage_one_result["phase_result_id"]),
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(authorized["state"], "authorized")
+        foreign = self.phase_request(
+            stage_one,
+            "authorize-continuous-flow",
+            11,
+            topic_revision=2,
+            source_checkpoint_id=stage_one_checkpoint["checkpoint_id"],
+            source_checkpoint_identity=stage_one_checkpoint["snapshot_digest"],
+            phase_result_id=stage_one_result["phase_result_id"],
+            user_reply="执行后续全部流程",
+        )
+        foreign["actor_conversation_ref"] = "codex-thread:not-source-owner"
+        code, rejected, _ = self.run_cli(foreign)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "document_ownership_conflict")
+        code, continuous, stderr = self.run_cli(
+            self.wrapper_phase_request(
+                stage_one,
+                11,
+                from_phase=1,
+                to_phase=2,
+                carrier_kind="solution-designer",
+                source_checkpoint_id=str(stage_one_checkpoint["checkpoint_id"]),
+                flow_mode="continuous",
+                flow_mode_source="successful-stage-1-footer",
+                topic_revision=2,
+            )
+        )
         self.assertEqual(code, 0, stderr)
         self.assertEqual(continuous["flow_mode"], "continuous")
+        self.assertEqual(
+            continuous["continuous_authorization_id"],
+            authorized["continuous_authorization_id"],
+        )
 
         forged_project = self.make_project("wrapper-continuous-forged", git=False)
         forged = self.bootstrap_topic(forged_project)
