@@ -77,6 +77,7 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "checkpoint_base_invalid": "检查点基础 Git 引用无效。",
         "checkpoint_changed_draft": "当前草案已偏离冻结字节，必须取消或替代旧检查点意图。",
         "checkpoint_gc_confirmation_mismatch": "检查点清理确认与当前候选或账本修订不一致。",
+        "checkpoint_gc_reconciliation_required": "存在结果不确定的检查点清理，必须先完成对账。",
         "checkpoint_history_ambiguous": "Git 历史中存在多个完全匹配的检查点候选。",
         "checkpoint_history_mismatch": "检查点提交、路径、树、blob 或摘要无法完全验证。",
         "checkpoint_identity_conflict": "检查点身份、状态或幂等意图冲突。",
@@ -1844,6 +1845,7 @@ def _validate_pending_writes(
 
 CHECKPOINT_PURPOSES = {"pause", "handoff", "split", "stage-entry", "implementation-source"}
 CHECKPOINT_ACTIVE_STATES = {"prepared", "outcome-unknown"}
+CHECKPOINT_GC_ACTIVE_STATES = {"outcome-unknown"}
 
 
 def _inject_failure(name: str) -> None:
@@ -1853,6 +1855,10 @@ def _inject_failure(name: str) -> None:
         )
 def _checkpoint_id(idempotency_key: str) -> str:
     return f"CP-{uuid.UUID(idempotency_key).hex}"
+
+
+def _checkpoint_gc_id(idempotency_key: str) -> str:
+    return f"GC-{uuid.UUID(idempotency_key).hex}"
 
 
 def _checkpoint_record(
@@ -1879,6 +1885,41 @@ def _active_checkpoint(records: dict[str, list[dict[str, Any]]]) -> dict[str, An
     ]
     if len(active) > 1:
         raise ProtocolError("state_corrupt", "more than one checkpoint intent is active")
+    return active[0] if active else None
+
+
+def _checkpoint_gc_data(record: dict[str, Any]) -> dict[str, Any]:
+    return _json_field(record, "data_json", "checkpoint GC")
+
+
+def _checkpoint_gc_record(
+    records: dict[str, list[dict[str, Any]]], gc_operation_id: str
+) -> dict[str, Any]:
+    return _record_by_id(
+        records["Phase Results"],
+        "result_id",
+        gc_operation_id,
+        "gc_operation_id",
+    )
+
+
+def _store_checkpoint_gc(record: dict[str, Any], operation: dict[str, Any]) -> None:
+    record["state"] = operation["state"]
+    record["record_revision"] = operation["record_revision"]
+    record["data_json"] = _canonical_json(operation)
+
+
+def _active_checkpoint_gc(
+    records: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any] | None:
+    active = [
+        record
+        for record in records["Phase Results"]
+        if record.get("result_kind") == "checkpoint-gc"
+        and record.get("state") in CHECKPOINT_GC_ACTIVE_STATES
+    ]
+    if len(active) > 1:
+        raise ProtocolError("state_corrupt", "more than one checkpoint GC is active")
     return active[0] if active else None
 
 
@@ -2173,6 +2214,31 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)
         frontmatter, records = _load_records(ledger_path)
+        checkpoint_id = _checkpoint_id(request["idempotency_key"])
+        existing_records = [
+            record
+            for record in records["Checkpoints"]
+            if record.get("checkpoint_id") == checkpoint_id
+        ]
+        if len(existing_records) > 1:
+            raise ProtocolError("state_corrupt", "checkpoint identity is duplicated")
+        if existing_records:
+            existing = _checkpoint_data(existing_records[0])
+            fingerprint = _mutation_fingerprint(request)
+            if (
+                existing.get("creation_idempotency_key") != request["idempotency_key"]
+                or existing.get("creation_fingerprint") != fingerprint
+            ):
+                raise ProtocolError(
+                    "idempotency_conflict",
+                    "checkpoint creation identity was reused with different frozen intent",
+                )
+            creation_result = json.loads(existing["creation_result_json"])
+            creation_result["idempotent_replay"] = True
+            creation_result["state"] = existing["state"]
+            creation_result["checkpoint_record_revision"] = existing["record_revision"]
+            creation_result["identity_reusable"] = False
+            return creation_result
         replay = _idempotent_result(records, request)
         if replay is not None:
             return replay
@@ -2181,6 +2247,13 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         if _active_pending_write(records) is not None:
             raise ProtocolError("document_write_reconciliation_required", "document write must complete before checkpoint preparation")
+        active_gc = _active_checkpoint_gc(records)
+        if active_gc is not None:
+            raise ProtocolError(
+                "checkpoint_gc_reconciliation_required",
+                "checkpoint GC must be reconciled before preparing another checkpoint",
+                context={"gc_operation_id": active_gc["result_id"]},
+            )
         active = _active_checkpoint(records)
         if active is not None:
             active_data = _checkpoint_data(active)
@@ -2215,7 +2288,6 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             snapshot_bytes = (_canonical_json(snapshot) + "\n").encode("utf-8")
             snapshot_digest = _sha256(snapshot_bytes)
             snapshot_bytes_b64 = base64.b64encode(snapshot_bytes).decode("ascii")
-        checkpoint_id = _checkpoint_id(request["idempotency_key"])
         next_revision = ledger_revision + 1
         checkpoint = {
             "checkpoint_id": checkpoint_id,
@@ -2239,6 +2311,9 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "active_source_ack_revision": None,
             "snapshot_digest": snapshot_digest,
             "snapshot_bytes_b64": snapshot_bytes_b64,
+            "creation_idempotency_key": request["idempotency_key"],
+            "creation_fingerprint": _mutation_fingerprint(request),
+            "creation_result_json": None,
         }
         record = {
             "checkpoint_id": checkpoint_id,
@@ -2257,7 +2332,10 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "purpose": purpose, "base_ref": base_ref, "base_commit": base_commit,
             "paths": paths, "path_set_digest": checkpoint["path_set_digest"],
             "document_digests": digests, "decision_digest": decision_digest,
+            "identity_reusable": False,
         }
+        checkpoint["creation_result_json"] = _canonical_json(result)
+        record["data_json"] = _canonical_json(checkpoint)
         _inject_failure("checkpoint-before-prepared-ledger-write")
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="checkpoint-prepared", result=result)
         _inject_failure("checkpoint-after-prepared-ledger-write")
@@ -2505,6 +2583,13 @@ def _publish_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        active_gc = _active_checkpoint_gc(records)
+        if active_gc is not None:
+            raise ProtocolError(
+                "checkpoint_gc_reconciliation_required",
+                "checkpoint GC must be reconciled before publishing a snapshot",
+                context={"gc_operation_id": active_gc["result_id"]},
+            )
         record = _checkpoint_record(records, _expect_string(request["checkpoint_id"], "checkpoint_id"))
         checkpoint = _checkpoint_data(record)
         if request["expected_checkpoint_revision"] != checkpoint["record_revision"] or checkpoint["state"] != "prepared":
@@ -2828,7 +2913,10 @@ def _checkpoint_gc_candidates(ledger_path: Path, records: dict[str, list[dict[st
     for checkpoint in (
         _checkpoint_data(record) for record in records["Checkpoints"]
     ):
-        if checkpoint.get("storage_kind") != "non-git" or checkpoint.get("state") != "outcome-unknown":
+        if (
+            checkpoint.get("storage_kind") != "non-git"
+            or checkpoint.get("state") not in CHECKPOINT_ACTIVE_STATES
+        ):
             continue
         uncertain_objects.add(checkpoint["snapshot_digest"])
     candidates = []
@@ -2852,6 +2940,13 @@ def _checkpoint_gc_dry_run(request: dict[str, Any]) -> dict[str, Any]:
         _flock_with_timeout(lock_stream)
         frontmatter, records = _load_records(ledger_path)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        active_gc = _active_checkpoint_gc(records)
+        if active_gc is not None:
+            raise ProtocolError(
+                "checkpoint_gc_reconciliation_required",
+                "checkpoint GC must be reconciled before another dry-run",
+                context={"gc_operation_id": active_gc["result_id"]},
+            )
         candidates = _checkpoint_gc_candidates(ledger_path, records)
         candidate_digest = _sha256(_canonical_json(candidates).encode("utf-8"))
         return {
@@ -2888,6 +2983,13 @@ def _checkpoint_gc_confirm(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        active_gc = _active_checkpoint_gc(records)
+        if active_gc is not None:
+            raise ProtocolError(
+                "checkpoint_gc_reconciliation_required",
+                "checkpoint GC must be reconciled before another confirmation",
+                context={"gc_operation_id": active_gc["result_id"]},
+            )
         actual = _checkpoint_gc_candidates(ledger_path, records)
         actual_digest = _sha256(_canonical_json(actual).encode("utf-8"))
         if actual != supplied_candidates or request["candidate_digest"] != actual_digest:
@@ -2899,17 +3001,158 @@ def _checkpoint_gc_confirm(request: dict[str, Any]) -> dict[str, Any]:
             if _sha256(content) != item["digest"]:
                 raise ProtocolError("checkpoint_snapshot_corrupt", "GC candidate digest does not match its object name")
         _inject_failure("gc-before-delete")
+        gc_operation_id = _checkpoint_gc_id(request["idempotency_key"])
+        gc_operation = {
+            "gc_operation_id": gc_operation_id,
+            "record_revision": 1,
+            "state": "outcome-unknown",
+            "candidate_digest": actual_digest,
+            "candidates_json": _canonical_json(actual),
+            "confirmation_ledger_revision": ledger_revision,
+        }
+        gc_record = {
+            "result_id": gc_operation_id,
+            "result_kind": "checkpoint-gc",
+            "state": "outcome-unknown",
+            "record_revision": 1,
+            "data_json": _canonical_json(gc_operation),
+        }
+        records["Phase Results"].append(gc_record)
+        outcome_revision = ledger_revision + 1
+        outcome_result = {
+            "ok": True,
+            "state": "outcome-unknown",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": outcome_revision,
+            "record_revision": topic_revision,
+            "gc_operation_id": gc_operation_id,
+            "gc_record_revision": 1,
+            "candidate_digest": actual_digest,
+            "candidates": actual,
+            "reconcile_required": True,
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=outcome_revision,
+            event_type="checkpoint-gc-outcome-unknown",
+            result=outcome_result,
+        )
+        _inject_failure("gc-after-outcome-unknown-record")
         for item in actual:
             Path(item["path"]).unlink()
             deleted.append(item)
-        next_revision = ledger_revision + 1
+            _inject_failure("gc-during-delete")
+        _inject_failure("gc-after-delete-before-result-record")
+        gc_operation["state"] = "completed"
+        gc_operation["record_revision"] += 1
+        gc_operation["deleted_json"] = _canonical_json(deleted)
+        _store_checkpoint_gc(gc_record, gc_operation)
+        next_revision = outcome_revision + 1
         result = {
             "ok": True, "state": "completed", "idempotent_replay": False,
             "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
             "ledger_revision": next_revision, "record_revision": topic_revision,
+            "gc_operation_id": gc_operation_id,
+            "gc_record_revision": gc_operation["record_revision"],
             "deleted": deleted, "candidate_digest": actual_digest,
         }
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="checkpoint-gc-completed", result=result)
+        return result
+
+
+def _reconcile_checkpoint_gc(request: dict[str, Any]) -> dict[str, Any]:
+    project, ledger_path, _, lock_path, owner_ref, storage_kind = _checkpoint_paths(request)
+    if storage_kind != "non-git":
+        raise ProtocolError("checkpoint_identity_conflict", "snapshot GC requires a non-Git project")
+    _expect_keys(
+        request,
+        {
+            "protocol_version", "operation", "project_path", "project_id", "tree_id",
+            "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision",
+            "expected_topic_revision", "idempotency_key", "gc_operation_id",
+            "expected_gc_revision",
+        },
+        "reconcile-checkpoint-gc request",
+    )
+    _validate_uuid4(request["idempotency_key"], "idempotency_key")
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        record = _checkpoint_gc_record(
+            records, _expect_string(request["gc_operation_id"], "gc_operation_id")
+        )
+        operation = _checkpoint_gc_data(record)
+        if (
+            request["expected_gc_revision"] != operation["record_revision"]
+            or operation["state"] != "outcome-unknown"
+        ):
+            raise ProtocolError(
+                "checkpoint_gc_confirmation_mismatch",
+                "checkpoint GC is not the expected outcome-unknown operation",
+            )
+        candidates = json.loads(operation["candidates_json"])
+        if operation["candidate_digest"] != _sha256(
+            _canonical_json(candidates).encode("utf-8")
+        ):
+            raise ProtocolError("state_corrupt", "checkpoint GC frozen candidates are invalid")
+        already_deleted = []
+        deleted = []
+        for item in candidates:
+            path = Path(item["path"])
+            if not path.exists():
+                already_deleted.append(item)
+                continue
+            content = _require_regular_nosymlink(path, "checkpoint snapshot GC candidate")
+            if _sha256(content) != item["digest"]:
+                raise ProtocolError(
+                    "checkpoint_snapshot_corrupt",
+                    "remaining GC candidate digest does not match its object name",
+                )
+            path.unlink()
+            deleted.append(item)
+        operation["state"] = "completed"
+        operation["record_revision"] += 1
+        operation["deleted_json"] = _canonical_json(candidates)
+        _store_checkpoint_gc(record, operation)
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True,
+            "state": "completed",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic_revision,
+            "gc_operation_id": operation["gc_operation_id"],
+            "gc_record_revision": operation["record_revision"],
+            "candidate_digest": operation["candidate_digest"],
+            "deleted": candidates,
+            "deleted_during_reconciliation": deleted,
+            "already_deleted": already_deleted,
+            "recovered_outcome_unknown": True,
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="checkpoint-gc-reconciled",
+            result=result,
+        )
         return result
 
 
@@ -2920,10 +3163,19 @@ def _validate_checkpoints(
     checkpoints = []
     for record in records["Checkpoints"]:
         checkpoint = _checkpoint_data(record)
+        try:
+            creation_key = str(uuid.UUID(checkpoint["creation_idempotency_key"]))
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise ProtocolError(
+                "state_corrupt", "checkpoint creation identity is invalid"
+            ) from error
         if (
             record.get("checkpoint_id") != checkpoint.get("checkpoint_id")
             or record.get("state") != checkpoint.get("state")
             or record.get("record_revision") != checkpoint.get("record_revision")
+            or checkpoint["checkpoint_id"] != _checkpoint_id(creation_key)
+            or not isinstance(checkpoint.get("creation_fingerprint"), str)
+            or not isinstance(checkpoint.get("creation_result_json"), str)
         ):
             raise ProtocolError("state_corrupt", "checkpoint record envelope does not match its data")
         paths = json.loads(checkpoint["paths_json"])
@@ -3029,6 +3281,8 @@ def handle(request: Any) -> dict[str, Any]:
         return _checkpoint_gc_dry_run(request)
     if operation == "checkpoint-gc-confirm":
         return _checkpoint_gc_confirm(request)
+    if operation == "reconcile-checkpoint-gc":
+        return _reconcile_checkpoint_gc(request)
     if operation == "read-topic":
         return _read_topic(request)
     if operation == "validate":

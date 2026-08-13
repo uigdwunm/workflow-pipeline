@@ -511,6 +511,47 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             **parameters,
         )
 
+    def append_noop_events(
+        self, topic: dict[str, object], *, ledger_revision: int, count: int
+    ) -> int:
+        ledger_path = Path(str(topic["ledger_path"]))
+        script = (
+            "import importlib.util,json,pathlib,sys,uuid\n"
+            "spec=importlib.util.spec_from_file_location('discussion_protocol',sys.argv[1])\n"
+            "module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\n"
+            "ledger=pathlib.Path(sys.argv[2]);count=int(sys.argv[3])\n"
+            "frontmatter,records=module._load_records(ledger)\n"
+            "topic_id=records['Current Topics'][0]['topic_id']\n"
+            "revision=int(frontmatter['ledger_revision'])\n"
+            "for index in range(count):\n"
+            " revision+=1\n"
+            " request={'actor_topic_id':topic_id,'idempotency_key':str(uuid.uuid4()),'operation':'test-noop','sequence':index}\n"
+            " result={'ok':True,'state':'test-noop','ledger_revision':revision}\n"
+            " module._append_event(records,request,revision=revision,event_type='test-noop',result=result)\n"
+            "frontmatter['ledger_revision']=str(revision)\n"
+            "frontmatter['event_count']=str(int(frontmatter['event_count'])+count)\n"
+            "module._atomic_replace(ledger,module._render_records_ledger(frontmatter,records))\n"
+            "print(json.dumps({'ledger_revision':revision,'recent_event_count':len(records['Recent Events'])}))\n"
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(SCRIPT_PATH),
+                str(ledger_path),
+                str(count),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["ledger_revision"], ledger_revision + count)
+        self.assertEqual(result["recent_event_count"], 200)
+        return int(result["ledger_revision"])
+
     def prepare_checkpoint(
         self,
         topic: dict[str, object],
@@ -1605,6 +1646,153 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(reconciled["state"], "completed")
+
+    def test_checkpoint_creation_identity_survives_recent_event_truncation(self) -> None:
+        project = self.make_project("checkpoint-identity-window", git=False)
+        topic = self.bootstrap_topic(project)
+        creation_key = str(uuid.uuid4())
+        request = self.checkpoint_request(
+            topic,
+            operation="prepare-checkpoint",
+            ledger_revision=1,
+            purpose="pause",
+            base_ref="project-root",
+            idempotency_key=creation_key,
+        )
+        returncode, prepared, stderr = self.run_cli(request)
+        self.assertEqual(returncode, 0, stderr)
+        ledger_revision = self.append_noop_events(
+            topic, ledger_revision=2, count=201
+        )
+
+        self.assertEqual(ledger_revision, 203)
+        returncode, replayed, stderr = self.run_cli(request)
+        self.assertEqual(returncode, 0, stderr)
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(replayed["checkpoint_id"], prepared["checkpoint_id"])
+        self.assertEqual(replayed["ledger_revision"], prepared["ledger_revision"])
+        self.assertFalse(replayed["identity_reusable"])
+
+        conflicting = dict(request)
+        conflicting["purpose"] = "handoff"
+        returncode, conflict, _ = self.run_cli(conflicting)
+        self.assertEqual(returncode, 1)
+        self.assertEqual(conflict["error"]["code"], "idempotency_conflict")
+
+        returncode, inspected, stderr = self.run_cli(
+            self.checkpoint_request(topic, operation="read-topic")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        matches = [
+            item
+            for item in inspected["checkpoints"]
+            if item["checkpoint_id"] == prepared["checkpoint_id"]
+        ]
+        self.assertEqual(len(matches), 1)
+
+    def test_gc_outcome_unknown_recovers_mid_delete_without_touching_workspace(self) -> None:
+        project = self.make_project("gc-mid-delete", git=False)
+        workspace_file = project / "unrelated.txt"
+        workspace_file.write_text("preserve me\n", encoding="utf-8")
+        topic = self.bootstrap_topic(project)
+        snapshot_root = Path(str(topic["ledger_path"])).parents[4] / "checkpoints" / "sha256"
+        candidates = []
+        for content in (b'{"orphan":1}\n', b'{"orphan":2}\n'):
+            digest = hashlib.sha256(content).hexdigest()
+            path = snapshot_root / digest[:2] / digest
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            candidates.append({"digest": digest, "path": str(path)})
+        returncode, dry_run, stderr = self.run_cli(
+            self.checkpoint_request(topic, operation="checkpoint-gc-dry-run")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(dry_run["candidates"], sorted(candidates, key=lambda item: item["path"]))
+        confirm_key = str(uuid.uuid4())
+        confirm_request = self.checkpoint_request(
+            topic,
+            operation="checkpoint-gc-confirm",
+            ledger_revision=1,
+            candidate_digest=dry_run["candidate_digest"],
+            candidates=dry_run["candidates"],
+            idempotency_key=confirm_key,
+        )
+        returncode, injected, _ = self.run_cli(
+            confirm_request, failpoint="gc-during-delete"
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(injected["error"]["code"], "injected_failure")
+        self.assertEqual(workspace_file.read_text(encoding="utf-8"), "preserve me\n")
+        remaining = [Path(str(item["path"])).exists() for item in dry_run["candidates"]]
+        self.assertEqual(remaining.count(False), 1)
+        self.assertEqual(remaining.count(True), 1)
+
+        returncode, blocked, _ = self.run_cli(
+            self.checkpoint_request(topic, operation="checkpoint-gc-dry-run")
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(
+            blocked["error"]["code"], "checkpoint_gc_reconciliation_required"
+        )
+        gc_operation_id = f"GC-{uuid.UUID(confirm_key).hex}"
+        returncode, recovered, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="reconcile-checkpoint-gc",
+                ledger_revision=2,
+                gc_operation_id=gc_operation_id,
+                expected_gc_revision=1,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertTrue(recovered["recovered_outcome_unknown"])
+        self.assertEqual(len(recovered["already_deleted"]), 1)
+        self.assertEqual(len(recovered["deleted_during_reconciliation"]), 1)
+        self.assertTrue(all(not Path(str(item["path"])).exists() for item in candidates))
+        self.assertEqual(workspace_file.read_text(encoding="utf-8"), "preserve me\n")
+
+    def test_gc_outcome_unknown_recovers_after_all_deletes_before_result_record(self) -> None:
+        project = self.make_project("gc-after-delete", git=False)
+        workspace_file = project / "unrelated.txt"
+        workspace_file.write_text("preserve me\n", encoding="utf-8")
+        topic = self.bootstrap_topic(project)
+        snapshot_root = Path(str(topic["ledger_path"])).parents[4] / "checkpoints" / "sha256"
+        content = b'{"orphan":true}\n'
+        digest = hashlib.sha256(content).hexdigest()
+        path = snapshot_root / digest[:2] / digest
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        returncode, dry_run, stderr = self.run_cli(
+            self.checkpoint_request(topic, operation="checkpoint-gc-dry-run")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        confirm_key = str(uuid.uuid4())
+        returncode, injected, _ = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="checkpoint-gc-confirm",
+                ledger_revision=1,
+                candidate_digest=dry_run["candidate_digest"],
+                candidates=dry_run["candidates"],
+                idempotency_key=confirm_key,
+            ),
+            failpoint="gc-after-delete-before-result-record",
+        )
+        self.assertEqual(returncode, 1)
+        self.assertFalse(path.exists())
+        returncode, recovered, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="reconcile-checkpoint-gc",
+                ledger_revision=2,
+                gc_operation_id=f"GC-{uuid.UUID(confirm_key).hex}",
+                expected_gc_revision=1,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(recovered["already_deleted"], dry_run["candidates"])
+        self.assertEqual(recovered["deleted_during_reconciliation"], [])
+        self.assertEqual(workspace_file.read_text(encoding="utf-8"), "preserve me\n")
 
     def test_non_git_snapshot_is_immutable_reusable_and_gc_confirmation_is_exact(
         self,

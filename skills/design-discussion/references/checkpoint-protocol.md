@@ -23,9 +23,10 @@ Acquire `acquire-repository-coordination-lease` from
 `checkpoint-publish`, the authenticated conversation/task owner, and a short
 TTL. Pass the exact path, lease ID, and version to `publish-git-checkpoint`.
 The protocol creates a documentation-only commit through a private temporary
-index, without changing the caller's index, `HEAD`, or refs. The verified
-commit identity is recorded durably in the discussion ledger and pinned by a
-checkpoint ref below `refs/codex/design-discussion/checkpoints/`.
+index, without changing the caller's index, working tree, `HEAD`, or ordinary
+branch refs. It creates or updates only the dedicated checkpoint ref below
+`refs/codex/design-discussion/checkpoints/`; reconcile and repair may update
+that same ref after full verification.
 
 The commit must have the frozen parent, exact resulting tree, exact paths and
 blobs, and these trailers:
@@ -71,4 +72,12 @@ For non-Git snapshot cleanup, call `checkpoint-gc-dry-run` first. Pass its
 exact candidate objects, candidate digest, and ledger revision to
 `checkpoint-gc-confirm`. Any revision or list drift stops deletion. Referenced,
 uncertain, or broken snapshots are never candidates; every candidate digest is
-reverified before deletion.
+reverified before deletion. Confirmation first records a durable GC operation
+as `outcome-unknown`, then deletes only the frozen content-addressed paths and
+records completion. If the caller loses the result, deletion stops partway, or
+all objects are gone before completion is recorded, call
+`reconcile-checkpoint-gc` with the exact GC operation identity and revision.
+Reconciliation treats already-absent frozen objects as completed deletions,
+reverifies every remaining object's digest before deleting it, and blocks new
+checkpoint preparation, snapshot publication, and GC dry-runs or confirmations
+until the uncertain operation is completed.
