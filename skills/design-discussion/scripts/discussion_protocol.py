@@ -2930,6 +2930,31 @@ def _checkpoint_gc_candidates(ledger_path: Path, records: dict[str, list[dict[st
     return candidates
 
 
+def _canonical_checkpoint_snapshot_path(ledger_path: Path, digest: str) -> Path:
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ProtocolError("checkpoint_snapshot_corrupt", "GC candidate digest is invalid")
+    root = (ledger_path.parents[4] / "checkpoints" / "sha256").resolve()
+    path = root / digest[:2] / digest
+    if path.parent != root / digest[:2] or not path.is_absolute():
+        raise ProtocolError("checkpoint_snapshot_corrupt", "GC candidate path is invalid")
+    return path
+
+
+def _validate_checkpoint_gc_candidate_path(
+    ledger_path: Path, item: dict[str, Any]
+) -> Path:
+    if set(item) != {"digest", "path"}:
+        raise ProtocolError("checkpoint_snapshot_corrupt", "GC candidate shape is invalid")
+    expected = _canonical_checkpoint_snapshot_path(ledger_path, item["digest"])
+    supplied = Path(_expect_string(item["path"], "GC candidate path", max_bytes=4096))
+    if supplied != expected:
+        raise ProtocolError(
+            "checkpoint_snapshot_corrupt",
+            "GC candidate path is outside the canonical snapshot root",
+        )
+    return expected
+
+
 def _checkpoint_gc_dry_run(request: dict[str, Any]) -> dict[str, Any]:
     project, ledger_path, _, lock_path, owner_ref = _evolution_paths(request, query=True)
     _, storage_kind = _coordination_root(project)
@@ -2996,7 +3021,7 @@ def _checkpoint_gc_confirm(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("checkpoint_gc_confirmation_mismatch", "GC confirmation does not bind the current exact candidates")
         deleted = []
         for item in actual:
-            path = Path(item["path"])
+            path = _validate_checkpoint_gc_candidate_path(ledger_path, item)
             content = _require_regular_nosymlink(path, "checkpoint snapshot GC candidate")
             if _sha256(content) != item["digest"]:
                 raise ProtocolError("checkpoint_snapshot_corrupt", "GC candidate digest does not match its object name")
@@ -3045,7 +3070,7 @@ def _checkpoint_gc_confirm(request: dict[str, Any]) -> dict[str, Any]:
         )
         _inject_failure("gc-after-outcome-unknown-record")
         for item in actual:
-            Path(item["path"]).unlink()
+            _validate_checkpoint_gc_candidate_path(ledger_path, item).unlink()
             deleted.append(item)
             _inject_failure("gc-during-delete")
         _inject_failure("gc-after-delete-before-result-record")
@@ -3110,7 +3135,7 @@ def _reconcile_checkpoint_gc(request: dict[str, Any]) -> dict[str, Any]:
         already_deleted = []
         deleted = []
         for item in candidates:
-            path = Path(item["path"])
+            path = _validate_checkpoint_gc_candidate_path(ledger_path, item)
             if not path.exists():
                 already_deleted.append(item)
                 continue
