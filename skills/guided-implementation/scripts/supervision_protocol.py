@@ -55,6 +55,14 @@ DOCUMENT_LEASE_WAIT_SECONDS = 10
 DOCUMENT_LEASE_MAX_RETRIES = 10
 MAX_DOCUMENT_LEASE_BYTES = 16_384
 MAX_DOCUMENT_LEASE_TTL_SECONDS = 86_400
+REPOSITORY_COORDINATION_LEASE_FILENAME = "cc-switch-repository-coordination-lease.json"
+REPOSITORY_COORDINATION_LEASE_GUARD_FILENAME = "cc-switch-repository-coordination-lease.guard"
+REPOSITORY_COORDINATION_LEASE_VERSION = 1
+REPOSITORY_COORDINATION_LEASE_SCHEMA = 1
+REPOSITORY_COORDINATION_LEASE_PURPOSES = {"checkpoint-publish"}
+REPOSITORY_COORDINATION_LEASE_STAGES = {"design-discussion"}
+MAX_REPOSITORY_COORDINATION_LEASE_TTL_SECONDS = 900
+MAX_REPOSITORY_COORDINATION_LEASE_BYTES = 16_384
 SUPERVISION_VERSION = 1
 MANIFEST_VERSION = 1
 LEGACY_CONTROL_VERSION = 1
@@ -1984,6 +1992,410 @@ def release_document_lease(
             "previous_version": expected_version,
             "released": True,
             "released_lease_id": expected_id,
+        }
+    finally:
+        if guard_fd >= 0:
+            os.close(guard_fd)
+        os.close(git_fd)
+
+
+def _repository_coordination_lease_path(repository: Path) -> Path:
+    repository = Path(repository)
+    return repository / ".git" / REPOSITORY_COORDINATION_LEASE_FILENAME
+
+
+def _repository_coordination_lease_guard_path(repository: Path) -> Path:
+    repository = Path(repository)
+    return repository / ".git" / REPOSITORY_COORDINATION_LEASE_GUARD_FILENAME
+
+
+def _repository_from_coordination_lease_path(lease_path: Path) -> Path:
+    if lease_path.parent.name != ".git":
+        raise ProtocolError(
+            "repository coordination lease must be directly inside a repository .git directory"
+        )
+    repository = _expect_absolute_path(lease_path.parent.parent, "repository")
+    if _repository_coordination_lease_path(repository) != lease_path:
+        raise ProtocolError(
+            f"repository coordination lease path is invalid: {lease_path}"
+        )
+    return repository
+
+
+def _validate_repository_coordination_holder(
+    value: Any, label: str
+) -> dict[str, Any]:
+    holder = _expect_object(value, label)
+    _expect_keys(
+        holder,
+        {
+            "acquired_at_epoch",
+            "expires_at_epoch",
+            "lease_id",
+            "owner_host_id",
+            "owner_task_id",
+            "purpose",
+            "stage",
+        },
+        label,
+    )
+    acquired_at_epoch = _expect_int(
+        holder["acquired_at_epoch"], f"{label}.acquired_at_epoch", 0, 2**63 - 1
+    )
+    expires_at_epoch = _expect_int(
+        holder["expires_at_epoch"], f"{label}.expires_at_epoch", 1, 2**63 - 1
+    )
+    if expires_at_epoch <= acquired_at_epoch:
+        raise ProtocolError(
+            f"{label}.expires_at_epoch must be later than acquired_at_epoch"
+        )
+    stage = _expect_nonempty_string(holder["stage"], f"{label}.stage", max_bytes=128)
+    purpose = _expect_nonempty_string(
+        holder["purpose"], f"{label}.purpose", max_bytes=128
+    )
+    if stage not in REPOSITORY_COORDINATION_LEASE_STAGES:
+        raise ProtocolError(f"{label}.stage is unsupported: {stage!r}")
+    if purpose not in REPOSITORY_COORDINATION_LEASE_PURPOSES:
+        raise ProtocolError(f"{label}.purpose is unsupported: {purpose!r}")
+    return {
+        "acquired_at_epoch": acquired_at_epoch,
+        "expires_at_epoch": expires_at_epoch,
+        "lease_id": _expect_handoff_id(holder["lease_id"], f"{label}.lease_id"),
+        "owner_host_id": _expect_nonempty_string(
+            holder["owner_host_id"], f"{label}.owner_host_id", max_bytes=256
+        ),
+        "owner_task_id": _expect_nonempty_string(
+            holder["owner_task_id"], f"{label}.owner_task_id", max_bytes=256
+        ),
+        "purpose": purpose,
+        "stage": stage,
+    }
+
+
+def _empty_repository_coordination_lease(repository: Path) -> dict[str, Any]:
+    return {
+        "holder": None,
+        "repository": str(repository),
+        "repository_coordination_lease_version": REPOSITORY_COORDINATION_LEASE_VERSION,
+        "schema": REPOSITORY_COORDINATION_LEASE_SCHEMA,
+        "version": 0,
+    }
+
+
+def _validate_repository_coordination_document(
+    value: Any, label: str, *, repository: Path
+) -> dict[str, Any]:
+    document = _expect_object(value, label)
+    _expect_keys(
+        document,
+        {
+            "holder",
+            "repository",
+            "repository_coordination_lease_version",
+            "schema",
+            "version",
+        },
+        label,
+    )
+    if document["repository_coordination_lease_version"] != REPOSITORY_COORDINATION_LEASE_VERSION:
+        raise ProtocolError(f"{label}.repository_coordination_lease_version mismatch")
+    if document["schema"] != REPOSITORY_COORDINATION_LEASE_SCHEMA:
+        raise ProtocolError(f"{label}.schema mismatch")
+    observed_repository = str(
+        _expect_absolute_path(document["repository"], f"{label}.repository")
+    )
+    if observed_repository != str(repository):
+        raise ProtocolError(f"{label}.repository mismatch")
+    holder = (
+        None
+        if document["holder"] is None
+        else _validate_repository_coordination_holder(
+            document["holder"], f"{label}.holder"
+        )
+    )
+    return {
+        "holder": holder,
+        "repository": observed_repository,
+        "repository_coordination_lease_version": REPOSITORY_COORDINATION_LEASE_VERSION,
+        "schema": REPOSITORY_COORDINATION_LEASE_SCHEMA,
+        "version": _expect_int(document["version"], f"{label}.version", 0, 2**63 - 2),
+    }
+
+
+def _open_repository_coordination_guard(git_fd: int) -> int:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        guard_fd = os.open(
+            REPOSITORY_COORDINATION_LEASE_GUARD_FILENAME,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow,
+            0o600,
+            dir_fd=git_fd,
+        )
+    except FileExistsError:
+        guard_fd = os.open(
+            REPOSITORY_COORDINATION_LEASE_GUARD_FILENAME,
+            os.O_RDWR | nofollow,
+            dir_fd=git_fd,
+        )
+    try:
+        guard_stat = os.fstat(guard_fd)
+        if (
+            not stat.S_ISREG(guard_stat.st_mode)
+            or guard_stat.st_uid != os.getuid()
+            or guard_stat.st_nlink != 1
+            or _mode_bits(guard_stat) != 0o600
+        ):
+            raise ProtocolError("repository coordination lease guard is unsafe")
+        fcntl.flock(guard_fd, fcntl.LOCK_EX)
+        return guard_fd
+    except Exception:
+        os.close(guard_fd)
+        raise
+
+
+def _read_repository_coordination_locked(
+    git_directory: Path, git_fd: int, repository: Path
+) -> dict[str, Any]:
+    try:
+        os.stat(
+            REPOSITORY_COORDINATION_LEASE_FILENAME,
+            dir_fd=git_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        document = _empty_repository_coordination_lease(repository)
+        return {
+            **document,
+            "file_bytes": 0,
+            "file_sha256": None,
+            "path": str(git_directory / REPOSITORY_COORDINATION_LEASE_FILENAME),
+        }
+    data, _ = _read_runtime_file(
+        git_fd,
+        REPOSITORY_COORDINATION_LEASE_FILENAME,
+        max_bytes=MAX_REPOSITORY_COORDINATION_LEASE_BYTES,
+        label="repository coordination lease",
+    )
+    document = _validate_repository_coordination_document(
+        _load_json_bytes(
+            data, "repository coordination lease", require_canonical=True
+        ),
+        "repository coordination lease",
+        repository=repository,
+    )
+    return {
+        **document,
+        "file_bytes": len(data),
+        "file_sha256": _sha256(data),
+        "path": str(git_directory / REPOSITORY_COORDINATION_LEASE_FILENAME),
+    }
+
+
+def _write_repository_coordination_locked(
+    git_fd: int, *, document: dict[str, Any], existed: bool
+) -> None:
+    data = _canonical_json_bytes(document)
+    if existed:
+        _replace_private_file(
+            git_fd,
+            name=REPOSITORY_COORDINATION_LEASE_FILENAME,
+            data=data,
+            max_bytes=MAX_REPOSITORY_COORDINATION_LEASE_BYTES,
+            label="repository coordination lease",
+        )
+    else:
+        _publish_group(git_fd, [(REPOSITORY_COORDINATION_LEASE_FILENAME, data)])
+    os.fsync(git_fd)
+
+
+def _repository_coordination_state(
+    report: dict[str, Any], *, now_epoch: int
+) -> dict[str, Any]:
+    holder = report["holder"]
+    if holder is None:
+        state = "available"
+        remaining_seconds = 0
+    elif holder["expires_at_epoch"] <= now_epoch:
+        state = "expired"
+        remaining_seconds = 0
+    else:
+        state = "held"
+        remaining_seconds = holder["expires_at_epoch"] - now_epoch
+    return {
+        **report,
+        "now_epoch": now_epoch,
+        "remaining_seconds": remaining_seconds,
+        "state": state,
+    }
+
+
+def inspect_repository_coordination_lease(repository: Path) -> dict[str, Any]:
+    repository = _expect_absolute_path(repository, "repository")
+    git_directory, git_fd = _open_repository_git_directory(repository)
+    guard_fd = -1
+    try:
+        guard_fd = _open_repository_coordination_guard(git_fd)
+        report = _read_repository_coordination_locked(
+            git_directory, git_fd, repository
+        )
+        return _repository_coordination_state(report, now_epoch=_now_epoch())
+    finally:
+        if guard_fd >= 0:
+            os.close(guard_fd)
+        os.close(git_fd)
+
+
+def acquire_repository_coordination_lease(input_path: Path) -> dict[str, Any]:
+    source = _expect_object(
+        _load_json_bytes(
+            _read_regular_file(
+                input_path,
+                max_bytes=MAX_REPOSITORY_COORDINATION_LEASE_BYTES,
+                label="repository coordination lease input",
+            ),
+            "repository coordination lease input",
+        ),
+        "repository coordination lease input",
+    )
+    _expect_keys(
+        source,
+        {
+            "owner_host_id",
+            "owner_task_id",
+            "purpose",
+            "repository",
+            "stage",
+            "ttl_seconds",
+        },
+        "repository coordination lease input",
+    )
+    repository = _expect_absolute_path(source["repository"], "repository")
+    stage = _expect_nonempty_string(source["stage"], "stage", max_bytes=128)
+    purpose = _expect_nonempty_string(source["purpose"], "purpose", max_bytes=128)
+    if stage not in REPOSITORY_COORDINATION_LEASE_STAGES:
+        raise ProtocolError(f"repository coordination stage is unsupported: {stage!r}")
+    if purpose not in REPOSITORY_COORDINATION_LEASE_PURPOSES:
+        raise ProtocolError(f"repository coordination purpose is unsupported: {purpose!r}")
+    ttl_seconds = _expect_int(
+        source["ttl_seconds"],
+        "ttl_seconds",
+        1,
+        MAX_REPOSITORY_COORDINATION_LEASE_TTL_SECONDS,
+    )
+    git_directory, git_fd = _open_repository_git_directory(repository)
+    guard_fd = -1
+    try:
+        guard_fd = _open_repository_coordination_guard(git_fd)
+        current = _read_repository_coordination_locked(
+            git_directory, git_fd, repository
+        )
+        now_epoch = _now_epoch()
+        state = _repository_coordination_state(current, now_epoch=now_epoch)
+        if state["state"] == "held":
+            return {**state, "acquired": False}
+        lease_id = secrets.token_hex(16)
+        document = {
+            "holder": {
+                "acquired_at_epoch": now_epoch,
+                "expires_at_epoch": now_epoch + ttl_seconds,
+                "lease_id": lease_id,
+                "owner_host_id": _expect_nonempty_string(
+                    source["owner_host_id"], "owner_host_id", max_bytes=256
+                ),
+                "owner_task_id": _expect_nonempty_string(
+                    source["owner_task_id"], "owner_task_id", max_bytes=256
+                ),
+                "purpose": purpose,
+                "stage": stage,
+            },
+            "repository": str(repository),
+            "repository_coordination_lease_version": REPOSITORY_COORDINATION_LEASE_VERSION,
+            "schema": REPOSITORY_COORDINATION_LEASE_SCHEMA,
+            "version": current["version"] + 1,
+        }
+        _write_repository_coordination_locked(
+            git_fd, document=document, existed=current["file_bytes"] > 0
+        )
+        written = _read_repository_coordination_locked(
+            git_directory, git_fd, repository
+        )
+        return {
+            **_repository_coordination_state(written, now_epoch=now_epoch),
+            "acquired": True,
+            "replaced_expired_lease_id": (
+                current["holder"]["lease_id"] if state["state"] == "expired" else None
+            ),
+        }
+    finally:
+        if guard_fd >= 0:
+            os.close(guard_fd)
+        os.close(git_fd)
+
+
+def verify_repository_coordination_lease(
+    lease_path: Path, *, expected_id: str, expected_version: int
+) -> dict[str, Any]:
+    lease_path = Path(lease_path)
+    if (
+        not lease_path.is_absolute()
+        or lease_path.name != REPOSITORY_COORDINATION_LEASE_FILENAME
+    ):
+        raise ProtocolError(f"repository coordination lease path is invalid: {lease_path}")
+    repository = _repository_from_coordination_lease_path(lease_path)
+    report = inspect_repository_coordination_lease(repository)
+    holder = report["holder"]
+    expected_id = _expect_handoff_id(expected_id, "expected repository coordination lease ID")
+    expected_version = _expect_int(expected_version, "expected version", 1, 2**63 - 2)
+    if (
+        report["path"] != str(lease_path)
+        or report["state"] != "held"
+        or holder is None
+        or report["version"] != expected_version
+        or holder["lease_id"] != expected_id
+    ):
+        raise ProtocolError("repository coordination lease verification failed")
+    return {**report, "verified": True}
+
+
+def release_repository_coordination_lease(
+    lease_path: Path, *, expected_id: str, expected_version: int
+) -> dict[str, Any]:
+    lease_path = Path(lease_path)
+    repository = _repository_from_coordination_lease_path(lease_path)
+    expected_id = _expect_handoff_id(expected_id, "expected repository coordination lease ID")
+    expected_version = _expect_int(expected_version, "expected version", 1, 2**63 - 2)
+    git_directory, git_fd = _open_repository_git_directory(repository)
+    guard_fd = -1
+    try:
+        guard_fd = _open_repository_coordination_guard(git_fd)
+        current = _read_repository_coordination_locked(
+            git_directory, git_fd, repository
+        )
+        holder = current["holder"]
+        if (
+            current["version"] != expected_version
+            or holder is None
+            or holder["lease_id"] != expected_id
+        ):
+            raise ProtocolError("repository coordination lease CAS mismatch during release")
+        document = {
+            "holder": None,
+            "repository": str(repository),
+            "repository_coordination_lease_version": REPOSITORY_COORDINATION_LEASE_VERSION,
+            "schema": REPOSITORY_COORDINATION_LEASE_SCHEMA,
+            "version": current["version"] + 1,
+        }
+        _write_repository_coordination_locked(
+            git_fd, document=document, existed=True
+        )
+        written = _read_repository_coordination_locked(
+            git_directory, git_fd, repository
+        )
+        return {
+            **_repository_coordination_state(written, now_epoch=_now_epoch()),
+            "released": True,
+            "released_lease_id": expected_id,
+            "previous_version": expected_version,
         }
     finally:
         if guard_fd >= 0:
@@ -4610,6 +5022,30 @@ def _build_parser() -> argparse.ArgumentParser:
     release_document_lease_parser.add_argument("--id", required=True)
     release_document_lease_parser.add_argument("--version", required=True, type=int)
 
+    inspect_repository_coordination_parser = subparsers.add_parser(
+        "inspect-repository-coordination-lease"
+    )
+    inspect_repository_coordination_parser.add_argument("--repository", required=True, type=Path)
+
+    acquire_repository_coordination_parser = subparsers.add_parser(
+        "acquire-repository-coordination-lease"
+    )
+    acquire_repository_coordination_parser.add_argument("--input", required=True, type=Path)
+
+    verify_repository_coordination_parser = subparsers.add_parser(
+        "verify-repository-coordination-lease"
+    )
+    verify_repository_coordination_parser.add_argument("--file", required=True, type=Path)
+    verify_repository_coordination_parser.add_argument("--id", required=True)
+    verify_repository_coordination_parser.add_argument("--version", required=True, type=int)
+
+    release_repository_coordination_parser = subparsers.add_parser(
+        "release-repository-coordination-lease"
+    )
+    release_repository_coordination_parser.add_argument("--file", required=True, type=Path)
+    release_repository_coordination_parser.add_argument("--id", required=True)
+    release_repository_coordination_parser.add_argument("--version", required=True, type=int)
+
     create_handoff_parser = subparsers.add_parser("create-handoff")
     create_handoff_parser.add_argument("--input", required=True, type=Path)
 
@@ -4726,6 +5162,26 @@ def main(argv: list[str] | None = None) -> int:
         elif arguments.command == "release-document-lease":
             _emit_json(
                 release_document_lease(
+                    arguments.file,
+                    expected_id=arguments.id,
+                    expected_version=arguments.version,
+                )
+            )
+        elif arguments.command == "inspect-repository-coordination-lease":
+            _emit_json(inspect_repository_coordination_lease(arguments.repository))
+        elif arguments.command == "acquire-repository-coordination-lease":
+            _emit_json(acquire_repository_coordination_lease(arguments.input))
+        elif arguments.command == "verify-repository-coordination-lease":
+            _emit_json(
+                verify_repository_coordination_lease(
+                    arguments.file,
+                    expected_id=arguments.id,
+                    expected_version=arguments.version,
+                )
+            )
+        elif arguments.command == "release-repository-coordination-lease":
+            _emit_json(
+                release_repository_coordination_lease(
                     arguments.file,
                     expected_id=arguments.id,
                     expected_version=arguments.version,

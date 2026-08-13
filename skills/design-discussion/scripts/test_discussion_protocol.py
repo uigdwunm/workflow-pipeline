@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -459,6 +460,168 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             "--version",
             str(lease["version"]),
         )
+
+    def acquire_repository_coordination_lease(
+        self, project: Path, *, owner_ref: str = "discussion-task"
+    ) -> dict[str, object]:
+        input_path = self.root / f"repository-coordination-{uuid.uuid4().hex}.json"
+        input_path.write_text(
+            json.dumps(
+                {
+                    "owner_host_id": "test-host",
+                    "owner_task_id": owner_ref,
+                    "purpose": "checkpoint-publish",
+                    "repository": str(project),
+                    "stage": "design-discussion",
+                    "ttl_seconds": 300,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return self.supervision_cli(
+            "acquire-repository-coordination-lease", "--input", str(input_path)
+        )
+
+    def checkpoint_request(
+        self,
+        topic: dict[str, object],
+        *,
+        operation: str,
+        ledger_revision: int | None = None,
+        topic_revision: int = 1,
+        **parameters: object,
+    ) -> dict[str, object]:
+        return self.evolution_request(
+            topic,
+            operation=operation,
+            expected_revision=ledger_revision,
+            expected_topic_revision=topic_revision,
+            **parameters,
+        )
+
+    def prepare_checkpoint(
+        self,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int,
+        purpose: str = "pause",
+        base_ref: str = "HEAD",
+    ) -> dict[str, object]:
+        returncode, prepared, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="prepare-checkpoint",
+                ledger_revision=ledger_revision,
+                purpose=purpose,
+                base_ref=base_ref,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        return prepared
+
+    def publish_git_checkpoint(
+        self,
+        project: Path,
+        topic: dict[str, object],
+        prepared: dict[str, object],
+        *,
+        ledger_revision: int,
+    ) -> dict[str, object]:
+        lease = self.acquire_repository_coordination_lease(project)
+        holder = lease["holder"]
+        assert isinstance(holder, dict)
+        returncode, published, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="publish-git-checkpoint",
+                ledger_revision=ledger_revision,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=prepared["checkpoint_record_revision"],
+                repository_coordination_lease={
+                    "path": lease["path"],
+                    "lease_id": holder["lease_id"],
+                    "version": lease["version"],
+                },
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.supervision_cli(
+            "release-repository-coordination-lease",
+            "--file",
+            str(lease["path"]),
+            "--id",
+            str(holder["lease_id"]),
+            "--version",
+            str(lease["version"]),
+        )
+        return published
+
+    def create_matching_checkpoint_commit(
+        self,
+        project: Path,
+        prepared: dict[str, object],
+        *,
+        timestamp: str,
+    ) -> str:
+        path = str(prepared["paths"][0])
+        document = (project / path).read_bytes()
+        blob_id = subprocess.run(
+            ["git", "-C", str(project), "hash-object", "-w", "--stdin"],
+            input=document,
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout.decode("ascii").strip()
+        index_path = self.root / f"index-{uuid.uuid4().hex}"
+        environment = dict(os.environ)
+        environment["GIT_INDEX_FILE"] = str(index_path)
+        subprocess.run(
+            ["git", "-C", str(project), "read-tree", str(prepared["base_commit"])],
+            check=True,
+            env=environment,
+        )
+        subprocess.run(
+            ["git", "-C", str(project), "update-index", "--add", "--cacheinfo", "100644", blob_id, path],
+            check=True,
+            env=environment,
+        )
+        tree_id = subprocess.run(
+            ["git", "-C", str(project), "write-tree"],
+            check=True,
+            env=environment,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        message = (
+            f"discussion checkpoint: {prepared['purpose']}\n\n"
+            f"Codex-Discussion-Checkpoint: {prepared['checkpoint_id']}\n"
+            f"Codex-Document-SHA256: {prepared['document_digests'][path]}\n"
+            f"Codex-Discussion-Decision-SHA256: {prepared['decision_digest']}\n"
+            f"Codex-Discussion-Paths-SHA256: {prepared['path_set_digest']}\n"
+        )
+        environment.update(
+            {
+                "GIT_AUTHOR_NAME": "Checkpoint Test",
+                "GIT_AUTHOR_EMAIL": "checkpoint@example.com",
+                "GIT_AUTHOR_DATE": timestamp,
+                "GIT_COMMITTER_NAME": "Checkpoint Test",
+                "GIT_COMMITTER_EMAIL": "checkpoint@example.com",
+                "GIT_COMMITTER_DATE": timestamp,
+            }
+        )
+        return subprocess.run(
+            [
+                "git", "-C", str(project), "commit-tree", tree_id, "-p",
+                str(prepared["base_commit"]),
+            ],
+            input=message,
+            check=True,
+            env=environment,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
 
     def complete_update(
         self,
@@ -924,6 +1087,357 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(
             [item["action"] for item in current["impacts"]], actions
         )
+
+    def test_git_checkpoint_freezes_and_publishes_exact_document_commit(self) -> None:
+        project = self.make_project("git-checkpoint", git=True)
+        (project / "unrelated.txt").write_text("keep me\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(project), "add", "unrelated.txt"], check=True
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(project), "-c", "user.name=Test", "-c",
+                "user.email=test@example.com", "commit", "-qm", "base",
+            ],
+            check=True,
+        )
+        topic = self.bootstrap_topic(project)
+        index_before = subprocess.run(
+            ["git", "-C", str(project), "write-tree"],
+            check=True, stdout=subprocess.PIPE, text=True,
+        ).stdout.strip()
+        head_before = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "HEAD"],
+            check=True, stdout=subprocess.PIPE, text=True,
+        ).stdout.strip()
+        prepared = self.prepare_checkpoint(topic, ledger_revision=1)
+        self.assertEqual(prepared["base_commit"], head_before)
+        self.assertEqual(prepared["paths"], ["docs/discussions/checkout-redesign/topic.md"])
+        published = self.publish_git_checkpoint(
+            project, topic, prepared, ledger_revision=2
+        )
+        self.assertEqual(published["state"], "completed")
+        commit_id = str(published["commit_id"])
+        message = subprocess.run(
+            ["git", "-C", str(project), "show", "-s", "--format=%B", commit_id],
+            check=True, stdout=subprocess.PIPE, text=True,
+        ).stdout
+        self.assertIn(
+            f"Codex-Discussion-Checkpoint: {prepared['checkpoint_id']}", message
+        )
+        self.assertIn(
+            "Codex-Document-SHA256: "
+            + str(prepared["document_digests"][prepared["paths"][0]]),
+            message,
+        )
+        changed_paths = subprocess.run(
+            [
+                "git", "-C", str(project), "diff-tree", "--no-commit-id",
+                "--name-only", "-r", commit_id,
+            ],
+            check=True, stdout=subprocess.PIPE, text=True,
+        ).stdout.splitlines()
+        self.assertEqual(changed_paths, prepared["paths"])
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(project), "rev-parse", "HEAD"],
+                check=True, stdout=subprocess.PIPE, text=True,
+            ).stdout.strip(),
+            head_before,
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(project), "write-tree"],
+                check=True, stdout=subprocess.PIPE, text=True,
+            ).stdout.strip(),
+            index_before,
+        )
+        self.assertEqual(
+            (project / "unrelated.txt").read_text(encoding="utf-8"), "keep me\n"
+        )
+        returncode, validated, stderr = self.run_cli(
+            self.checkpoint_request(topic, operation="validate")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(validated["checkpoint_count"], 1)
+
+    def test_changed_draft_cancels_identity_and_uncertain_checkpoint_blocks_new_intent(
+        self,
+    ) -> None:
+        project = self.make_project("checkpoint-intents", git=True)
+        (project / "base.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(project), "add", "base.txt"], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(project), "-c", "user.name=Test", "-c",
+                "user.email=test@example.com", "commit", "-qm", "base",
+            ],
+            check=True,
+        )
+        topic = self.bootstrap_topic(project)
+        first = self.prepare_checkpoint(topic, ledger_revision=1)
+        Path(str(topic["topic_document_path"])).write_text("changed\n", encoding="utf-8")
+        returncode, cancelled, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="cancel-checkpoint",
+                ledger_revision=2,
+                checkpoint_id=first["checkpoint_id"],
+                reason="draft changed",
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertTrue(cancelled["draft_changed"])
+        self.assertFalse(cancelled["identity_reusable"])
+        second = self.prepare_checkpoint(topic, ledger_revision=3)
+        self.assertNotEqual(second["checkpoint_id"], first["checkpoint_id"])
+        returncode, unknown, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="record-checkpoint-outcome-unknown",
+                ledger_revision=4,
+                checkpoint_id=second["checkpoint_id"],
+                expected_checkpoint_revision=1,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(unknown["state"], "outcome-unknown")
+        returncode, blocked, _ = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="prepare-checkpoint",
+                ledger_revision=5,
+                purpose="handoff",
+                base_ref="HEAD",
+            )
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(
+            blocked["error"]["code"], "checkpoint_reconciliation_required"
+        )
+        returncode, reconciled, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="reconcile-git-checkpoint",
+                ledger_revision=5,
+                checkpoint_id=second["checkpoint_id"],
+                expected_checkpoint_revision=2,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(reconciled["state"], "prepared")
+        self.assertTrue(reconciled["retry_allowed"])
+
+    def test_uncertain_git_commit_is_adopted_only_after_full_unique_match(self) -> None:
+        project = self.make_project("git-reconcile", git=True)
+        (project / "base.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(project), "add", "base.txt"], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(project), "-c", "user.name=Test", "-c",
+                "user.email=test@example.com", "commit", "-qm", "base",
+            ],
+            check=True,
+        )
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_checkpoint(topic, ledger_revision=1)
+        published = self.publish_git_checkpoint(
+            project, topic, prepared, ledger_revision=2
+        )
+        commit_id = str(published["commit_id"])
+        returncode, active, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="register-active-checkpoint-source",
+                ledger_revision=3,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=2,
+                implementation_id="implementation-1",
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(active["state"], "active")
+        returncode, broken, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="mark-checkpoint-broken",
+                ledger_revision=4,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=2,
+                broken_identity=commit_id,
+                reason="history rewritten",
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertTrue(broken["original_fact_preserved"])
+        returncode, ack_required, _ = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="repair-checkpoint",
+                ledger_revision=5,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=3,
+                replacement_commit=commit_id,
+                active_source_ack=None,
+            )
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(
+            ack_required["error"]["code"],
+            "checkpoint_active_source_ack_required",
+        )
+        returncode, repaired, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="repair-checkpoint",
+                ledger_revision=5,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=3,
+                replacement_commit=commit_id,
+                active_source_ack={
+                    "acknowledged": True,
+                    "checkpoint_id": prepared["checkpoint_id"],
+                    "broken_identity": commit_id,
+                },
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(repaired["broken_identity"], commit_id)
+        self.assertEqual(repaired["replacement_identity"], commit_id)
+        self.assertTrue(repaired["original_fact_preserved"])
+
+    def test_outcome_unknown_adopts_one_unreferenced_matching_commit_and_rejects_two(
+        self,
+    ) -> None:
+        for match_count in (1, 2):
+            with self.subTest(match_count=match_count):
+                project = self.make_project(f"unknown-{match_count}", git=True)
+                (project / "base.txt").write_text("base\n", encoding="utf-8")
+                subprocess.run(
+                    ["git", "-C", str(project), "add", "base.txt"], check=True
+                )
+                subprocess.run(
+                    [
+                        "git", "-C", str(project), "-c", "user.name=Test", "-c",
+                        "user.email=test@example.com", "commit", "-qm", "base",
+                    ],
+                    check=True,
+                )
+                topic = self.bootstrap_topic(project)
+                prepared = self.prepare_checkpoint(topic, ledger_revision=1)
+                commits = [
+                    self.create_matching_checkpoint_commit(
+                        project,
+                        prepared,
+                        timestamp=f"2026-01-0{index + 1}T00:00:00+00:00",
+                    )
+                    for index in range(match_count)
+                ]
+                self.assertEqual(len(set(commits)), match_count)
+                returncode, unknown, stderr = self.run_cli(
+                    self.checkpoint_request(
+                        topic,
+                        operation="record-checkpoint-outcome-unknown",
+                        ledger_revision=2,
+                        checkpoint_id=prepared["checkpoint_id"],
+                        expected_checkpoint_revision=1,
+                    )
+                )
+                self.assertEqual(returncode, 0, stderr)
+                returncode, reconciled, reconcile_stderr = self.run_cli(
+                    self.checkpoint_request(
+                        topic,
+                        operation="reconcile-git-checkpoint",
+                        ledger_revision=3,
+                        checkpoint_id=prepared["checkpoint_id"],
+                        expected_checkpoint_revision=unknown[
+                            "checkpoint_record_revision"
+                        ],
+                    )
+                )
+                if match_count == 1:
+                    self.assertEqual(returncode, 0, reconcile_stderr)
+                    self.assertEqual(reconciled["state"], "completed")
+                    self.assertEqual(reconciled["commit_id"], commits[0])
+                else:
+                    self.assertEqual(returncode, 1)
+                    self.assertEqual(
+                        reconciled["error"]["code"],
+                        "checkpoint_history_ambiguous",
+                    )
+
+    def test_non_git_snapshot_is_immutable_reusable_and_gc_confirmation_is_exact(
+        self,
+    ) -> None:
+        project = self.make_project("snapshot-checkpoint", git=False)
+        topic = self.bootstrap_topic(project)
+        first = self.prepare_checkpoint(topic, ledger_revision=1, base_ref="project-root")
+        returncode, published, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="publish-non-git-checkpoint",
+                ledger_revision=2,
+                checkpoint_id=first["checkpoint_id"],
+                expected_checkpoint_revision=1,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        snapshot_path = Path(str(published["snapshot_path"]))
+        self.assertEqual(
+            hashlib.sha256(snapshot_path.read_bytes()).hexdigest(),
+            published["snapshot_digest"],
+        )
+        self.assertEqual(snapshot_path.stat().st_mode & 0o777, 0o400)
+        second = self.prepare_checkpoint(topic, ledger_revision=3, base_ref="project-root")
+        returncode, reused, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="publish-non-git-checkpoint",
+                ledger_revision=4,
+                checkpoint_id=second["checkpoint_id"],
+                expected_checkpoint_revision=1,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertTrue(reused["snapshot_reused"])
+        self.assertEqual(reused["snapshot_digest"], published["snapshot_digest"])
+        orphan_bytes = b'{"orphan":true}\n'
+        orphan_digest = hashlib.sha256(orphan_bytes).hexdigest()
+        orphan_path = snapshot_path.parents[1] / orphan_digest[:2] / orphan_digest
+        orphan_path.parent.mkdir(parents=True, exist_ok=True)
+        orphan_path.write_bytes(orphan_bytes)
+        returncode, dry_run, stderr = self.run_cli(
+            self.checkpoint_request(topic, operation="checkpoint-gc-dry-run")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(dry_run["candidates"], [{"digest": orphan_digest, "path": str(orphan_path)}])
+        returncode, mismatch, _ = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="checkpoint-gc-confirm",
+                ledger_revision=5,
+                candidate_digest="0" * 64,
+                candidates=dry_run["candidates"],
+            )
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(
+            mismatch["error"]["code"], "checkpoint_gc_confirmation_mismatch"
+        )
+        self.assertTrue(orphan_path.exists())
+        returncode, deleted, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="checkpoint-gc-confirm",
+                ledger_revision=5,
+                candidate_digest=dry_run["candidate_digest"],
+                candidates=dry_run["candidates"],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(deleted["deleted"], dry_run["candidates"])
+        self.assertFalse(orphan_path.exists())
+        self.assertTrue(snapshot_path.exists())
 
 
 if __name__ == "__main__":

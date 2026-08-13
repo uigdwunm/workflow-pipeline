@@ -82,6 +82,26 @@ class DocumentLeaseTests(unittest.TestCase):
         )
         return path
 
+    def write_repository_coordination_input(self, name: str) -> Path:
+        path = self.root / name
+        path.write_text(
+            json.dumps(
+                {
+                    "owner_host_id": "host-1",
+                    "owner_task_id": "discussion-task",
+                    "purpose": "checkpoint-publish",
+                    "repository": str(self.repository),
+                    "stage": "design-discussion",
+                    "ttl_seconds": 300,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return path
+
     def test_new_repository_lease_uses_v2_and_legacy_v1_still_inspects(self) -> None:
         lease_input = self.write_repository_lease_input("repository-lease.json")
         acquired = PROTOCOL.acquire_repository_lease(lease_input)
@@ -200,6 +220,42 @@ class DocumentLeaseTests(unittest.TestCase):
         self.assertEqual(released["state"], "available")
         self.assertEqual(released["version"], 3)
         self.assertIsNone(released["holder"])
+
+    def test_repository_coordination_lease_is_separate_and_cas_protected(self) -> None:
+        input_path = self.write_repository_coordination_input(
+            "repository-coordination.json"
+        )
+        with mock.patch.object(PROTOCOL, "_now_epoch", return_value=1_000):
+            acquired = PROTOCOL.acquire_repository_coordination_lease(input_path)
+        self.assertTrue(acquired["acquired"])
+        self.assertEqual(acquired["state"], "held")
+        self.assertEqual(
+            Path(acquired["path"]),
+            self.repository / ".git" / PROTOCOL.REPOSITORY_COORDINATION_LEASE_FILENAME,
+        )
+        self.assertFalse(
+            (self.repository / ".git" / PROTOCOL.DOCUMENT_LEASE_FILENAME).exists()
+        )
+        with mock.patch.object(PROTOCOL, "_now_epoch", return_value=1_010):
+            verified = PROTOCOL.verify_repository_coordination_lease(
+                Path(acquired["path"]),
+                expected_id=acquired["holder"]["lease_id"],
+                expected_version=acquired["version"],
+            )
+            self.assertTrue(verified["verified"])
+            released = PROTOCOL.release_repository_coordination_lease(
+                Path(acquired["path"]),
+                expected_id=acquired["holder"]["lease_id"],
+                expected_version=acquired["version"],
+            )
+        self.assertTrue(released["released"])
+        self.assertEqual(released["state"], "available")
+        with self.assertRaises(PROTOCOL.ProtocolError):
+            PROTOCOL.release_repository_coordination_lease(
+                Path(acquired["path"]),
+                expected_id=acquired["holder"]["lease_id"],
+                expected_version=acquired["version"],
+            )
 
     def test_design_discussion_is_an_accepted_document_lease_stage(self) -> None:
         lease_input = self.write_input(

@@ -114,6 +114,31 @@ damaged payloads, or release verification failure leave a recoverable
 confirmed-but-pending checkpoint; reconcile it before asking the next design
 question. Never edit or delete the payload to force recovery.
 
+## Publish a verifiable checkpoint
+
+Before pausing, handing off, splitting a topic, or entering a later stage,
+read [references/checkpoint-protocol.md](references/checkpoint-protocol.md) and
+publish one verified `CP-*`. `prepare-checkpoint` freezes the purpose, exact
+topic-document bytes and SHA-256, decision digest, sorted path set, base ref,
+resolved base commit for Git, and a new immutable identity. Do not reuse a
+cancelled or superseded identity.
+
+For Git projects, acquire the supervision-owned short repository coordination
+lease with stage `design-discussion` and purpose `checkpoint-publish`, pass its
+exact credential to `publish-git-checkpoint`, verify the returned commit, then
+release the lease. This lease is separate from the document lease and grants
+only the bounded checkpoint publication. For non-Git projects,
+`publish-non-git-checkpoint` creates or reuses an immutable content-addressed
+snapshot.
+
+An uncertain Git result must become `outcome-unknown` and be reconciled before
+any new checkpoint is prepared. A changed draft requires `cancel-checkpoint`
+and a fresh `CP-*`. Repair records the broken identity permanently and maps it
+only to one fully verified replacement; an active implementation source also
+requires a fresh acknowledgement. Snapshot GC always begins with
+`checkpoint-gc-dry-run`; confirmation must bind the exact candidate array and
+ledger revision returned by that dry run.
+
 Read the applicable reference only when the action is requested:
 
 - [references/child-topic-protocol.md](references/child-topic-protocol.md) for
