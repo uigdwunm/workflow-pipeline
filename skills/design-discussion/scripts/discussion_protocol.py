@@ -3582,6 +3582,26 @@ def _bind_handoff(request: dict[str, Any]) -> dict[str, Any]:
                     "handoff_identity_conflict",
                     "continuation must bind a new conversation reference",
                 )
+            prior_handoff_id = active[0].get("handoff_id")
+            prior_attempt_id = active[0].get("attempt_id")
+            if prior_handoff_id is not None or prior_attempt_id is not None:
+                if not isinstance(prior_handoff_id, str) or not isinstance(prior_attempt_id, str):
+                    raise ProtocolError("state_corrupt", "active continuation binding provenance is incomplete")
+                prior_record = _handoff_record(records, prior_handoff_id)
+                prior_handoff = _handoff_data(prior_record)
+                prior_attempt = _handoff_attempt(prior_handoff, prior_attempt_id)
+                if (
+                    prior_handoff["target_topic_id"] != handoff["target_topic_id"]
+                    or prior_attempt.get("conversation_ref") != superseded
+                    or prior_attempt["state"] not in {
+                        "bound-pending-acceptance", "accepted-awaiting-next-turn", "active"
+                    }
+                ):
+                    raise ProtocolError("state_corrupt", "active continuation binding provenance is invalid")
+                prior_attempt["state"] = "superseded"
+                prior_handoff["state"] = "superseded"
+                prior_handoff["record_revision"] += 1
+                _store_handoff(prior_record, prior_handoff)
             active[0]["binding_state"] = "superseded"
             active[0]["superseded_by"] = conversation_ref
             relation = _record_by_id(
@@ -4169,17 +4189,32 @@ def _validate_handoffs(records: dict[str, list[dict[str, Any]]]) -> int:
                 eligible += 1
         if eligible > 1:
             raise ProtocolError("state_corrupt", "handoff has multiple binding-eligible attempts")
-        active_bindings = [
-            binding for binding in records["Conversation Bindings"]
-            if binding.get("topic_id") == handoff["target_topic_id"]
-            and binding.get("binding_state") == "active"
-            and binding.get("handoff_id") == handoff["handoff_id"]
-        ]
         bound_attempts = [attempt for attempt in attempts if attempt.get("conversation_ref")]
-        if bound_attempts and len(active_bindings) != 1:
-            raise ProtocolError("state_corrupt", "bound handoff does not have exactly one active binding")
-        if active_bindings and active_bindings[0].get("attempt_id") != bound_attempts[-1].get("attempt_id"):
-            raise ProtocolError("state_corrupt", "active binding does not match the bound attempt")
+        for bound_attempt in bound_attempts:
+            attempt_bindings = [
+                binding for binding in records["Conversation Bindings"]
+                if binding.get("topic_id") == handoff["target_topic_id"]
+                and binding.get("handoff_id") == handoff["handoff_id"]
+                and binding.get("attempt_id") == bound_attempt["attempt_id"]
+                and binding.get("conversation_ref") == bound_attempt["conversation_ref"]
+                and binding.get("binding_state") in {"active", "superseded"}
+            ]
+            if len(attempt_bindings) != 1:
+                raise ProtocolError(
+                    "state_corrupt", "bound handoff attempt does not have one traceable binding"
+                )
+        if handoff["state"] in {"bound-pending-acceptance", "accepted-awaiting-next-turn", "active"}:
+            current = bound_attempts[-1] if bound_attempts else None
+            current_bindings = [
+                binding for binding in records["Conversation Bindings"]
+                if current is not None
+                and binding.get("topic_id") == handoff["target_topic_id"]
+                and binding.get("handoff_id") == handoff["handoff_id"]
+                and binding.get("attempt_id") == current["attempt_id"]
+                and binding.get("binding_state") == "active"
+            ]
+            if len(current_bindings) != 1:
+                raise ProtocolError("state_corrupt", "current handoff does not own its active binding")
     return len(handoffs)
 
 

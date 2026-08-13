@@ -832,6 +832,52 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(len(active), 1)
         self.assertEqual(active[0]["conversation_ref"], winner["conversation_ref"])
 
+        second = self.handoff_request(
+            topic,
+            operation="prepare-handoff",
+            ledger_revision=3,
+            owner_ref=winner["conversation_ref"],
+            handoff_kind="continuation",
+            target_slug="checkout-redesign",
+            scope=["root"],
+            work_snapshot={"goal": "Continue the continuation conversation."},
+            authoritative_references=[],
+        )
+        returncode, second_prepared, stderr = self.run_cli(second)
+        self.assertEqual(returncode, 0, stderr)
+        returncode, second_bound, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="bind-handoff",
+                ledger_revision=4,
+                owner_ref=winner["conversation_ref"],
+                handoff_id=second_prepared["handoff_id"],
+                attempt_id=second_prepared["attempt_id"],
+                conversation_ref="codex-thread:continuation-three",
+                verified_identity={
+                    "project_id": topic["project_id"],
+                    "tree_id": topic["tree_id"],
+                    "topic_id": topic["topic_id"],
+                    "handoff_id": second_prepared["handoff_id"],
+                    "attempt_id": second_prepared["attempt_id"],
+                    "payload_sha256": second_prepared["payload_sha256"],
+                },
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(
+            second_bound["superseded_conversation_ref"], winner["conversation_ref"]
+        )
+        validate = self.handoff_request(
+            topic,
+            operation="validate",
+            owner_ref=second_bound["conversation_ref"],
+        )
+        returncode, valid, stderr = self.run_cli(validate)
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(valid["state"], "valid")
+        self.assertEqual(valid["handoff_count"], 2)
+
     def test_child_result_absorbs_only_within_scope_and_records_cross_topic_impact(self) -> None:
         project = self.make_project("child-result", git=False)
         topic = self.bootstrap_topic(project)
