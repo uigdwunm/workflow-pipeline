@@ -388,6 +388,591 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(returncode, 0, stderr)
         return response
 
+    def phase_request(self, topic, operation, revision, **parameters):
+        return {
+            "protocol_version": 1,
+            "operation": operation,
+            "project_path": str(Path(str(topic["topic_document_path"])).parents[3]),
+            "project_id": topic["project_id"],
+            "tree_id": topic["tree_id"],
+            "actor_topic_id": topic["topic_id"],
+            "actor_conversation_ref": "discussion-task",
+            "expected_ledger_revision": revision,
+            "expected_topic_revision": parameters.pop("topic_revision", 1),
+            "idempotency_key": str(uuid.uuid4()),
+            **parameters,
+        }
+
+    def prepare_phase_run(
+        self, topic, *, revision=1, from_phase=0, to_phase=1, carrier_kind="worker"
+    ):
+        code, prepared, stderr = self.run_cli(
+            self.phase_request(
+                topic,
+                "prepare-phase-run",
+                revision,
+                from_phase=from_phase,
+                to_phase=to_phase,
+                route=f"{from_phase}->{to_phase}",
+                carrier_kind=carrier_kind,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(
+            set(prepared["evidence"]),
+            {"source", "route", "impact", "coverage", "dependency", "coordination"},
+        )
+        return prepared
+
+    def test_phase_run_requires_owner_and_uses_single_revision_events(self) -> None:
+        project = self.make_project("phase-run", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_phase_run(topic, carrier_kind="problem-framing")
+        evidence = prepared["evidence"]
+        _, authorized, _ = self.run_cli(self.phase_request(topic, "authorize-phase-carrier", 2, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="untrusted"))
+        read_request = self.phase_request(
+            topic,
+            "read-phase-run",
+            0,
+            phase_run_id=prepared["phase_run_id"],
+        )
+        for key in ("expected_ledger_revision", "expected_topic_revision", "idempotency_key"):
+            read_request.pop(key)
+        _, setup, _ = self.run_cli(read_request)
+        self.assertEqual(setup["phase_run"]["state"], "setup-pending")
+        request = self.phase_request(topic, "phase-ready", 3, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="untrusted", evidence=evidence)
+        request["actor_conversation_ref"] = "untrusted"
+        request["carrier_ref"] = "untrusted"
+        code, rejected, _ = self.run_cli(request)
+        self.assertEqual(code, 0)
+        code, active, stderr = self.run_cli(self.phase_request(topic, "phase-activate", 4, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], evidence=evidence))
+        self.assertEqual(code, 0, stderr)
+        claim = self.phase_request(topic, "claim-phase-completion", 5, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="untrusted", evidence=evidence)
+        claim["actor_conversation_ref"] = "untrusted"
+        code, claimed, stderr = self.run_cli(claim)
+        self.assertEqual(code, 0, stderr)
+        code, pending, stderr = self.run_cli(self.phase_request(topic, "complete-phase-run", 6, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], evidence=evidence))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(pending["state"], "completion-pending")
+        code, completed, stderr = self.run_cli(self.phase_request(topic, "finalize-phase-run", 7, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], evidence=evidence))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(completed["ledger_revision"], 8)
+        self.assertEqual(completed["current_phase"], 1)
+        ledger_text = Path(str(topic["ledger_path"])).read_text(encoding="utf-8")
+        self.assertIn("ledger_revision: 8", ledger_text)
+        self.assertIn("event_count: 8", ledger_text)
+        self.assertEqual(ledger_text.count("event_id: "), 8)
+        self.assertEqual(ledger_text.count("ledger_revision: 8"), 2)
+
+    def test_phase_drift_and_late_terminal_are_rejected(self) -> None:
+        project = self.make_project("phase-drift", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_phase_run(topic)
+        evidence = prepared["evidence"]
+        topic_path = Path(str(topic["topic_document_path"]))
+        _, _, _ = self.run_cli(self.phase_request(topic, "authorize-phase-carrier", 2, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="discussion-task"))
+        _, ready, _ = self.run_cli(self.phase_request(topic, "phase-ready", 3, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="discussion-task", evidence=evidence))
+        topic_path.write_text(topic_path.read_text(encoding="utf-8") + "\nchanged\n", encoding="utf-8")
+        code, drifted, _ = self.run_cli(self.phase_request(topic, "phase-activate", 4, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], evidence=evidence))
+        self.assertEqual(code, 1)
+        self.assertEqual(drifted["error"]["code"], "phase_source_drift")
+        topic_path.write_text(topic_path.read_text(encoding="utf-8").removesuffix("\nchanged\n"), encoding="utf-8")
+        _, cancelled, _ = self.run_cli(self.phase_request(topic, "cancel-phase-run", 4, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], reason="cancel"))
+        code, late, _ = self.run_cli(self.phase_request(topic, "claim-phase-completion", 5, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="discussion-task", evidence=evidence))
+        self.assertEqual(code, 1)
+        self.assertEqual(late["error"]["code"], "phase_attempt_state_conflict")
+
+    def test_discovery_none_ambiguous_and_document_only_are_zero_write(self) -> None:
+        project = self.make_project("discovery", git=False)
+        before = sorted(project.rglob("*"))
+        code, none, stderr = self.run_cli({"protocol_version": 1, "operation": "discover-context", "project_path": str(project)})
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(none["context"], "none")
+        self.assertEqual(before, sorted(project.rglob("*")))
+        root = project / "docs" / "discussions"
+        for number in (1, 2):
+            path = root / f"topic-{number}" / "topic.md"
+            path.parent.mkdir(parents=True)
+            path.write_text("---\nproject_id: project-" + "1" * 32 + "\ntree_id: tree-" + "2" * 32 + "\ntopic_id: topic-" + f"{number}" * 32 + "\n---\n", encoding="utf-8")
+        snapshot = {path: path.read_bytes() for path in project.rglob("*") if path.is_file()}
+        _, ambiguous, _ = self.run_cli({"protocol_version": 1, "operation": "discover-context", "project_path": str(project)})
+        self.assertEqual(ambiguous["context"], "ambiguous")
+        self.assertEqual(snapshot, {path: path.read_bytes() for path in project.rglob("*") if path.is_file()})
+
+    def test_every_legal_route_and_illegal_route_matrix(self) -> None:
+        legal = {(0, 1), (0, 2), (1, 2), (1, 3), (2, 3), (3, 4)}
+        evidence = {key: "0" * 64 for key in ("source", "route", "impact", "coverage", "dependency", "coordination")}
+        for source in range(5):
+            for target in range(5):
+                project = self.make_project(f"route-{source}-{target}", git=False)
+                topic = self.bootstrap_topic(project)
+                if source:
+                    ledger = Path(str(topic["ledger_path"]))
+                    self.rewrite_ledger_with_valid_digest(ledger, "current_phase: 0", f"current_phase: {source}")
+                request = self.phase_request(topic, "prepare-phase-run", 1, from_phase=source, to_phase=target, route=f"{source}->{target}", carrier_kind="worker")
+                code, response, _ = self.run_cli(request)
+                if (source, target) in legal:
+                    self.assertEqual(code, 0, (source, target, response))
+                else:
+                    self.assertEqual(code, 1, (source, target, response))
+                    self.assertEqual(response["error"]["code"], "invalid_phase_route")
+
+    def test_failed_attempt_retries_monotonically_and_duplicate_terminal_is_rejected(self) -> None:
+        project = self.make_project("phase-retry", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_phase_run(topic)
+        evidence = prepared["evidence"]
+        _, _, _ = self.run_cli(self.phase_request(topic, "authorize-phase-carrier", 2, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="discussion-task"))
+        _, ready, _ = self.run_cli(self.phase_request(topic, "phase-ready", 3, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="discussion-task", evidence=evidence))
+        _, failed, _ = self.run_cli(self.phase_request(topic, "fail-phase-run", 4, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], reason="provider failed"))
+        _, retried, _ = self.run_cli(self.phase_request(topic, "retry-phase-run", 5, phase_run_id=prepared["phase_run_id"], prior_attempt_id=prepared["attempt_id"]))
+        self.assertEqual(retried["state"], "prepared")
+        self.assertTrue(str(retried["attempt_id"]).endswith("-2"))
+        _, _, _ = self.run_cli(self.phase_request(topic, "authorize-phase-carrier", 6, phase_run_id=prepared["phase_run_id"], attempt_id=retried["attempt_id"], carrier_ref="discussion-task"))
+        code, second_ready, stderr = self.run_cli(self.phase_request(topic, "phase-ready", 7, phase_run_id=prepared["phase_run_id"], attempt_id=retried["attempt_id"], carrier_ref="discussion-task", evidence=evidence))
+        self.assertEqual(code, 0, stderr)
+        _, cancelled, _ = self.run_cli(self.phase_request(topic, "cancel-phase-run", 8, phase_run_id=prepared["phase_run_id"], attempt_id=retried["attempt_id"], reason="cancelled"))
+        code, duplicate, _ = self.run_cli(self.phase_request(topic, "cancel-phase-run", 9, phase_run_id=prepared["phase_run_id"], attempt_id=retried["attempt_id"], reason="again"))
+        self.assertEqual(code, 1)
+        self.assertEqual(duplicate["error"]["code"], "phase_attempt_state_conflict")
+
+    def test_phase_run_and_attempt_identities_are_monotonic(self) -> None:
+        project = self.make_project("phase-identities", git=False)
+        topic = self.bootstrap_topic(project)
+        first = self.prepare_phase_run(topic)
+        self.assertEqual(first["phase_run_id"], "PR-00000002")
+        self.assertEqual(first["attempt_id"], "PA-00000002-1")
+        _, _, _ = self.run_cli(
+            self.phase_request(
+                topic,
+                "cancel-phase-run",
+                2,
+                phase_run_id=first["phase_run_id"],
+                attempt_id=first["attempt_id"],
+                reason="use a replacement run",
+            )
+        )
+        second = self.prepare_phase_run(topic, revision=3)
+        self.assertEqual(second["phase_run_id"], "PR-00000004")
+        self.assertEqual(second["attempt_id"], "PA-00000004-1")
+
+    def test_phase_run_mutations_reject_another_owned_topic(self) -> None:
+        project = self.make_project("phase-source-identity", git=False)
+        source = self.bootstrap_topic(project)
+        handoff = self.prepare_child_handoff(source)
+        bind = self.handoff_request(
+            source,
+            operation="bind-handoff",
+            ledger_revision=2,
+            handoff_id=handoff["handoff_id"],
+            attempt_id=handoff["attempt_id"],
+            conversation_ref="discussion-task",
+            verified_identity={
+                "project_id": source["project_id"],
+                "tree_id": source["tree_id"],
+                "topic_id": handoff["target_topic_id"],
+                "handoff_id": handoff["handoff_id"],
+                "attempt_id": handoff["attempt_id"],
+                "payload_sha256": handoff["payload_sha256"],
+            },
+        )
+        code, _, stderr = self.run_cli(bind)
+        self.assertEqual(code, 0, stderr)
+        prepared = self.prepare_phase_run(source, revision=3)
+        foreign_topic = {**source, "topic_id": handoff["target_topic_id"]}
+        common = {
+            "phase_run_id": prepared["phase_run_id"],
+            "attempt_id": prepared["attempt_id"],
+        }
+        mutations = {
+            "retry-phase-run": {
+                "phase_run_id": prepared["phase_run_id"],
+                "prior_attempt_id": prepared["attempt_id"],
+            },
+            "reconcile-phase-run": {
+                **common,
+                "outcome": "not-created",
+                "reason": "foreign reconciliation",
+                "evidence": prepared["evidence"],
+            },
+            "revoke-phase-authorization": {**common, "reason": "foreign revocation"},
+            "authorize-phase-carrier": {**common, "carrier_ref": "discussion-task"},
+            "complete-phase-run": {**common, "evidence": prepared["evidence"]},
+            "finalize-phase-run": {**common, "evidence": prepared["evidence"]},
+            "supersede-phase-run": {**common, "reason": "foreign supersession"},
+        }
+        for operation, parameters in mutations.items():
+            with self.subTest(operation=operation):
+                code, rejected, _ = self.run_cli(
+                    self.phase_request(foreign_topic, operation, 4, **parameters)
+                )
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "phase_identity_conflict")
+
+        read_request = self.phase_request(
+            source,
+            "read-phase-run",
+            0,
+            phase_run_id=prepared["phase_run_id"],
+        )
+        for key in ("expected_ledger_revision", "expected_topic_revision", "idempotency_key"):
+            read_request.pop(key)
+        code, read, stderr = self.run_cli(read_request)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(read["ledger_revision"], 4)
+        self.assertEqual(read["phase_run"]["state"], "prepared")
+
+    def test_phase_evidence_is_required_and_stale_footer_dimensions_are_rejected(self) -> None:
+        for dimension in ("source", "route", "impact", "coverage", "dependency", "coordination"):
+            project = self.make_project(f"phase-evidence-{dimension}", git=False)
+            topic = self.bootstrap_topic(project)
+            prepared = self.prepare_phase_run(topic)
+            _, _, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "authorize-phase-carrier",
+                    2,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref="discussion-task",
+                )
+            )
+            stale = dict(prepared["evidence"])
+            stale[dimension] = "f" * 64
+            ready = self.phase_request(
+                topic,
+                "phase-ready",
+                3,
+                phase_run_id=prepared["phase_run_id"],
+                attempt_id=prepared["attempt_id"],
+                carrier_ref="discussion-task",
+                evidence=stale,
+            )
+            code, rejected, _ = self.run_cli(ready)
+            self.assertEqual(code, 1, dimension)
+            self.assertEqual(rejected["error"]["code"], f"phase_{dimension}_drift")
+
+        project = self.make_project("phase-invalid-evidence", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_phase_run(topic)
+        _, _, _ = self.run_cli(
+            self.phase_request(
+                topic,
+                "authorize-phase-carrier",
+                2,
+                phase_run_id=prepared["phase_run_id"],
+                attempt_id=prepared["attempt_id"],
+                carrier_ref="discussion-task",
+            )
+        )
+        invalid = self.phase_request(
+            topic,
+            "phase-ready",
+            3,
+            phase_run_id=prepared["phase_run_id"],
+            attempt_id=prepared["attempt_id"],
+            carrier_ref="discussion-task",
+            evidence={"source": "not-a-digest"},
+        )
+        code, rejected, _ = self.run_cli(invalid)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "invalid_request")
+
+    def test_each_authoritative_drift_dimension_rejects_activation(self) -> None:
+        replacements = {
+            "source": ("topic-document", ""),
+            "route": ("phase_state: \"active\"", "phase_state: \"paused\""),
+            "impact": ("## Impacts\n\n```yaml\nrecords:\n  []\n```", "## Impacts\n\n```yaml\nrecords:\n  - impact_id: \"IMP-drift\"\n    topic_id: \"TOPIC_ID\"\n    data_json: \"{}\"\n```"),
+            "coverage": ("## Relations and Coverage\n\n```yaml\nrecords:\n  []\n```", "## Relations and Coverage\n\n```yaml\nrecords:\n  - relation_id: \"REL-drift\"\n    source_topic_id: \"TOPIC_ID\"\n    target_topic_id: \"topic-99999999999999999999999999999999\"\n```"),
+            "dependency": ("## Dependencies and Active Implementations\n\n```yaml\nrecords:\n  []\n```", "## Dependencies and Active Implementations\n\n```yaml\nrecords:\n  - dependency_id: \"DEP-drift\"\n    state: \"unknown\"\n```"),
+            "coordination": (
+                "binding_state: \"active\"\n    record_revision: 1",
+                "binding_state: \"active\"\n    record_revision: 2",
+            ),
+        }
+        for dimension, (old, new) in replacements.items():
+            project = self.make_project(f"authority-drift-{dimension}", git=False)
+            topic = self.bootstrap_topic(project)
+            prepared = self.prepare_phase_run(topic)
+            evidence = prepared["evidence"]
+            _, _, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "authorize-phase-carrier",
+                    2,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref="discussion-task",
+                )
+            )
+            _, _, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "phase-ready",
+                    3,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref="discussion-task",
+                    evidence=evidence,
+                )
+            )
+            if dimension == "source":
+                topic_path = Path(str(topic["topic_document_path"]))
+                topic_path.write_text(topic_path.read_text(encoding="utf-8") + "\ndrift\n", encoding="utf-8")
+            else:
+                ledger = Path(str(topic["ledger_path"]))
+                self.rewrite_ledger_with_valid_digest(
+                    ledger,
+                    old,
+                    new.replace("TOPIC_ID", str(topic["topic_id"])),
+                )
+            code, rejected, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "phase-activate",
+                    4,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    evidence=evidence,
+                )
+            )
+            self.assertEqual(code, 1, dimension)
+            self.assertEqual(rejected["error"]["code"], f"phase_{dimension}_drift")
+
+    def test_supersession_and_authorization_loss_reject_late_carrier_signals(self) -> None:
+        for operation in ("supersede-phase-run", "revoke-phase-authorization"):
+            project = self.make_project(f"late-{operation}", git=False)
+            topic = self.bootstrap_topic(project)
+            prepared = self.prepare_phase_run(topic)
+            evidence = prepared["evidence"]
+            _, _, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "authorize-phase-carrier",
+                    2,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref="discussion-task",
+                )
+            )
+            _, _, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "phase-ready",
+                    3,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref="discussion-task",
+                    evidence=evidence,
+                )
+            )
+            _, _, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "phase-activate",
+                    4,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    evidence=evidence,
+                )
+            )
+            _, terminal, stderr = self.run_cli(
+                self.phase_request(
+                    topic,
+                    operation,
+                    5,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    reason="source stopped this carrier",
+                )
+            )
+            self.assertEqual(stderr, "")
+            self.assertEqual(terminal["state"], "superseded" if operation.startswith("supersede") else "blocked")
+            claim = self.phase_request(
+                topic,
+                "claim-phase-completion",
+                6,
+                phase_run_id=prepared["phase_run_id"],
+                attempt_id=prepared["attempt_id"],
+                carrier_ref="discussion-task",
+                evidence=evidence,
+            )
+            code, late, _ = self.run_cli(claim)
+            self.assertEqual(code, 1)
+            self.assertEqual(late["error"]["code"], "phase_attempt_state_conflict")
+
+    def test_outcome_unknown_requires_reconciliation_and_preserves_monotonic_attempts(self) -> None:
+        for outcome, expected_state in (
+            ("not-created", "failed"),
+            ("not-completed", "failed"),
+            ("completed", "completion-claimed"),
+        ):
+            project = self.make_project(f"reconcile-{outcome}", git=False)
+            topic = self.bootstrap_topic(project)
+            prepared = self.prepare_phase_run(topic)
+            evidence = prepared["evidence"]
+            _, _, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "authorize-phase-carrier",
+                    2,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref="discussion-task",
+                )
+            )
+            _, _, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "phase-ready",
+                    3,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref="discussion-task",
+                    evidence=evidence,
+                )
+            )
+            _, _, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "phase-activate",
+                    4,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    evidence=evidence,
+                )
+            )
+            _, unknown, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "phase-outcome-unknown",
+                    5,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    reason="provider result unavailable",
+                )
+            )
+            self.assertEqual(unknown["state"], "outcome-unknown")
+            code, retry_rejected, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "retry-phase-run",
+                    6,
+                    phase_run_id=prepared["phase_run_id"],
+                    prior_attempt_id=prepared["attempt_id"],
+                )
+            )
+            self.assertEqual(code, 1)
+            self.assertEqual(retry_rejected["error"]["code"], "phase_reconciliation_required")
+            _, reconciled, _ = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "reconcile-phase-run",
+                    6,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    outcome=outcome,
+                    reason="verified provider outcome",
+                    evidence=evidence,
+                )
+            )
+            self.assertEqual(reconciled["state"], expected_state)
+            if expected_state == "failed":
+                _, retried, _ = self.run_cli(
+                    self.phase_request(
+                        topic,
+                        "retry-phase-run",
+                        7,
+                        phase_run_id=prepared["phase_run_id"],
+                        prior_attempt_id=prepared["attempt_id"],
+                    )
+                )
+                self.assertTrue(str(retried["attempt_id"]).endswith("-2"))
+
+    def test_reopen_requires_explicit_affected_decision_review(self) -> None:
+        project = self.make_project("phase-reopen", git=False)
+        topic = self.bootstrap_topic(project)
+        code, decision, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-topic-update",
+                expected_revision=1,
+                mutation={
+                    "type": "confirm-decision",
+                    "summary": "Keep lifecycle state durable.",
+                    "rationale": "Reopen must review this result.",
+                },
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        decision_id = decision["decision_id"]
+        ledger = Path(str(topic["ledger_path"]))
+        self.rewrite_ledger_with_valid_digest(ledger, "current_phase: 0", "current_phase: 2")
+        missing = self.phase_request(
+            topic,
+            "reopen-phase",
+            2,
+            topic_revision=2,
+            affected_decision_ids=[decision_id],
+            review={},
+            reason="requirements changed",
+        )
+        code, rejected, _ = self.run_cli(missing)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_reopen_review_required")
+        reopened = dict(missing)
+        reopened["idempotency_key"] = str(uuid.uuid4())
+        reopened["review"] = {decision_id: "adjust"}
+        code, result, stderr = self.run_cli(reopened)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(result["state"], "reopened")
+        self.assertEqual(result["current_phase"], 0)
+
+    def test_document_only_discovery_and_authorized_verified_import(self) -> None:
+        project = self.make_project("document-only", git=False)
+        seed = self.bootstrap_topic(project)
+        ledger = Path(str(seed["ledger_path"]))
+        ledger.unlink()
+        result_path = project / "phase-result.md"
+        result_path.write_text("verified result\n", encoding="utf-8")
+        digest = hashlib.sha256(result_path.read_bytes()).hexdigest()
+        before = {path: path.read_bytes() for path in project.rglob("*") if path.is_file()}
+        code, discovered, stderr = self.run_cli(
+            {
+                "protocol_version": 1,
+                "operation": "discover-context",
+                "project_path": str(project),
+                "document_path": seed["topic_document_path"],
+            }
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(discovered["context"], "document_only")
+        self.assertEqual(discovered["coordination_state"], "unknown")
+        self.assertEqual(before, {path: path.read_bytes() for path in project.rglob("*") if path.is_file()})
+        request = {
+            "protocol_version": 1,
+            "operation": "initialize-document-context",
+            "project_path": str(project),
+            "conversation_ref": "discussion-task",
+            "idempotency_key": str(uuid.uuid4()),
+            "user_authorization": False,
+            "verified_results": [{
+                "result_id": "PH-" + "2" * 32,
+                "phase": 1,
+                "state": "completed",
+                "path": str(result_path),
+                "sha256": digest,
+            }],
+        }
+        code, unauthorized, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(unauthorized["error"]["code"], "context_not_initialized")
+        request["user_authorization"] = True
+        code, initialized, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(initialized["imported_result_count"], 1)
+        self.assertEqual(initialized["coordination_state"], "unknown")
+
     def evolution_request(
         self,
         topic: dict[str, object],
