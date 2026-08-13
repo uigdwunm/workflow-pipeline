@@ -2186,7 +2186,7 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             active_data = _checkpoint_data(active)
             code = (
                 "checkpoint_reconciliation_required"
-                if active_data["state"] in {"outcome-unknown", "pending-verification"}
+                if active_data["state"] == "outcome-unknown"
                 else "checkpoint_identity_conflict"
             )
             raise ProtocolError(code, "an older checkpoint intent must be resolved first", context={"state": active_data["state"]})
@@ -2198,9 +2198,23 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         digests = {relative_path: document_digest}
         blob_ids: dict[str, str] = {}
         base_commit = None
+        snapshot_digest = None
+        snapshot_bytes_b64 = None
         if storage_kind == "git":
             base_commit = _verify_git_base(project, base_ref)
             blob_ids[relative_path] = _git(project, ["hash-object", "-w", "--stdin"], input_bytes=document).decode("ascii").strip()
+        else:
+            snapshot = {
+                "decision_digest": decision_digest,
+                "documents": {relative_path: base64.b64encode(document).decode("ascii")},
+                "document_digests": digests,
+                "path_set_digest": _sha256(_canonical_json(paths).encode("utf-8")),
+                "paths": paths,
+                "purpose": purpose,
+            }
+            snapshot_bytes = (_canonical_json(snapshot) + "\n").encode("utf-8")
+            snapshot_digest = _sha256(snapshot_bytes)
+            snapshot_bytes_b64 = base64.b64encode(snapshot_bytes).decode("ascii")
         checkpoint_id = _checkpoint_id(request["idempotency_key"])
         next_revision = ledger_revision + 1
         checkpoint = {
@@ -2223,6 +2237,8 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "replacement_identity": None,
             "repaired_from": None,
             "active_source_ack_revision": None,
+            "snapshot_digest": snapshot_digest,
+            "snapshot_bytes_b64": snapshot_bytes_b64,
         }
         record = {
             "checkpoint_id": checkpoint_id,
@@ -2444,6 +2460,12 @@ def _reconcile_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         if matches:
             checkpoint["published_identity"] = matches[0]["commit_id"]
             checkpoint["tree_id"] = matches[0]["tree_id"]
+            checkpoint_ref = (
+                "refs/codex/design-discussion/checkpoints/"
+                + checkpoint["checkpoint_id"].lower()
+            )
+            _git(project, ["update-ref", checkpoint_ref, matches[0]["commit_id"]])
+            checkpoint["checkpoint_ref"] = checkpoint_ref
         _store_checkpoint(record, checkpoint)
         next_revision = ledger_revision + 1
         result = {
@@ -2453,6 +2475,7 @@ def _reconcile_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "checkpoint_id": checkpoint["checkpoint_id"], "checkpoint_record_revision": checkpoint["record_revision"],
             "commit_id": matches[0]["commit_id"] if matches else None,
             "retry_allowed": not matches, "match_count": len(matches),
+            "checkpoint_ref": checkpoint.get("checkpoint_ref"),
         }
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="git-checkpoint-reconciled", result=result)
         return result
@@ -2491,16 +2514,10 @@ def _publish_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         document = _require_regular_nosymlink(topic_path, "topic document")
         if _sha256(document) != digests[paths[0]]:
             raise ProtocolError("checkpoint_changed_draft", "topic document bytes differ from the frozen checkpoint intent")
-        snapshot = {
-            "decision_digest": checkpoint["decision_digest"],
-            "documents": {paths[0]: base64.b64encode(document).decode("ascii")},
-            "document_digests": digests,
-            "path_set_digest": checkpoint["path_set_digest"],
-            "paths": paths,
-            "purpose": checkpoint["purpose"],
-        }
-        snapshot_bytes = (_canonical_json(snapshot) + "\n").encode("utf-8")
-        snapshot_digest = _sha256(snapshot_bytes)
+        snapshot_bytes = base64.b64decode(checkpoint["snapshot_bytes_b64"], validate=True)
+        snapshot_digest = checkpoint["snapshot_digest"]
+        if _sha256(snapshot_bytes) != snapshot_digest:
+            raise ProtocolError("state_corrupt", "frozen snapshot bytes do not match their prepared digest")
         snapshot_path = ledger_path.parents[4] / "checkpoints" / "sha256" / snapshot_digest[:2] / snapshot_digest
         snapshot_path.parent.mkdir(parents=True, exist_ok=True)
         _inject_failure("snapshot-before-create")
@@ -2568,19 +2585,10 @@ def _reconcile_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         checkpoint = _checkpoint_data(record)
         if request["expected_checkpoint_revision"] != checkpoint["record_revision"] or checkpoint["state"] != "outcome-unknown":
             raise ProtocolError("checkpoint_identity_conflict", "checkpoint is not awaiting snapshot reconciliation")
-        paths = json.loads(checkpoint["paths_json"])
-        digests = json.loads(checkpoint["document_digests_json"])
-        document = _require_regular_nosymlink(topic_path, "topic document")
-        snapshot = {
-            "decision_digest": checkpoint["decision_digest"],
-            "documents": {paths[0]: base64.b64encode(document).decode("ascii")},
-            "document_digests": digests,
-            "path_set_digest": checkpoint["path_set_digest"],
-            "paths": paths,
-            "purpose": checkpoint["purpose"],
-        }
-        snapshot_bytes = (_canonical_json(snapshot) + "\n").encode("utf-8")
-        snapshot_digest = _sha256(snapshot_bytes)
+        snapshot_bytes = base64.b64decode(checkpoint["snapshot_bytes_b64"], validate=True)
+        snapshot_digest = checkpoint["snapshot_digest"]
+        if _sha256(snapshot_bytes) != snapshot_digest:
+            raise ProtocolError("state_corrupt", "frozen snapshot bytes do not match their prepared digest")
         snapshot_path = ledger_path.parents[4] / "checkpoints" / "sha256" / snapshot_digest[:2] / snapshot_digest
         if snapshot_path.exists():
             existing = _require_regular_nosymlink(snapshot_path, "checkpoint snapshot")
@@ -2720,11 +2728,13 @@ def _repair_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision",
             "expected_topic_revision", "idempotency_key", "checkpoint_id",
             "expected_checkpoint_revision", "replacement_commit", "active_source_ack",
+            "replacement_base_ref",
         },
         "repair-checkpoint request",
     )
     _validate_uuid4(request["idempotency_key"], "idempotency_key")
     replacement = _expect_string(request["replacement_commit"], "replacement_commit", max_bytes=128)
+    replacement_base_ref = _expect_string(request["replacement_base_ref"], "replacement_base_ref", max_bytes=512)
     ack = request["active_source_ack"]
     if ack is not None:
         if not isinstance(ack, dict):
@@ -2743,8 +2753,7 @@ def _repair_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         checkpoint = _checkpoint_data(record)
         if request["expected_checkpoint_revision"] != checkpoint["record_revision"] or checkpoint["state"] != "broken":
             raise ProtocolError("checkpoint_identity_conflict", "checkpoint is not the expected broken fact")
-        metadata = _commit_metadata(project, replacement) if _git_object_type(project, replacement) == "commit" else {"parents": []}
-        replacement_parent = metadata["parents"][0] if len(metadata["parents"]) == 1 else None
+        replacement_parent = _verify_git_base(project, replacement_base_ref)
         match = (
             _commit_matches_checkpoint(
                 project,
@@ -2775,6 +2784,7 @@ def _repair_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             or ack.get("broken_identity") != checkpoint["broken_identity"]
         ):
             raise ProtocolError("checkpoint_active_source_ack_required", "active implementations require a fresh acknowledgement before checkpoint repair")
+        _inject_failure("repair-before-result-record")
         checkpoint["state"] = "completed"
         checkpoint["record_revision"] += 1
         checkpoint["replacement_identity"] = replacement
@@ -2782,6 +2792,9 @@ def _repair_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         checkpoint["published_identity"] = replacement
         checkpoint["tree_id"] = match["tree_id"]
         checkpoint["replacement_parent"] = replacement_parent
+        checkpoint_ref = checkpoint.get("checkpoint_ref")
+        if checkpoint_ref:
+            _git(project, ["update-ref", checkpoint_ref, replacement])
         checkpoint["active_source_ack_revision"] = checkpoint["record_revision"] if active_sources else None
         _store_checkpoint(record, checkpoint)
         next_revision = ledger_revision + 1
@@ -2817,21 +2830,7 @@ def _checkpoint_gc_candidates(ledger_path: Path, records: dict[str, list[dict[st
     ):
         if checkpoint.get("storage_kind") != "non-git" or checkpoint.get("state") != "outcome-unknown":
             continue
-        paths = json.loads(checkpoint["paths_json"])
-        digests = json.loads(checkpoint["document_digests_json"])
-        topic_path = Path(records["Current Topics"][0]["topic_document_path"])
-        document = _require_regular_nosymlink(topic_path, "uncertain checkpoint topic document")
-        if _sha256(document) != digests[paths[0]]:
-            raise ProtocolError("checkpoint_changed_draft", "uncertain snapshot source bytes changed before reconciliation")
-        snapshot = {
-            "decision_digest": checkpoint["decision_digest"],
-            "documents": {paths[0]: base64.b64encode(document).decode("ascii")},
-            "document_digests": digests,
-            "path_set_digest": checkpoint["path_set_digest"],
-            "paths": paths,
-            "purpose": checkpoint["purpose"],
-        }
-        uncertain_objects.add(_sha256((_canonical_json(snapshot) + "\n").encode("utf-8")))
+        uncertain_objects.add(checkpoint["snapshot_digest"])
     candidates = []
     for path in sorted(snapshot_root.glob("*/*")):
         if not path.is_file():
@@ -2939,7 +2938,12 @@ def _validate_checkpoints(
             raise ProtocolError("state_corrupt", "checkpoint frozen paths or digests are invalid")
         if checkpoint["state"] == "completed":
             if checkpoint["storage_kind"] == "git":
-                if _commit_matches_checkpoint(project, checkpoint["published_identity"], checkpoint) is None:
+                expected_parent = checkpoint.get("replacement_parent")
+                if checkpoint.get("checkpoint_ref"):
+                    ref_commit = _git(project, ["rev-parse", "--verify", checkpoint["checkpoint_ref"]]).decode("ascii").strip()
+                    if ref_commit != checkpoint["published_identity"]:
+                        raise ProtocolError("checkpoint_history_mismatch", "checkpoint ref does not resolve to published identity")
+                if _commit_matches_checkpoint(project, checkpoint["published_identity"], checkpoint, expected_parent=expected_parent) is None:
                     raise ProtocolError("checkpoint_history_mismatch", "completed Git checkpoint no longer fully verifies")
             else:
                 snapshot_path = Path(checkpoint["snapshot_path"])

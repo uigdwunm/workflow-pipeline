@@ -14,7 +14,7 @@ sorted path set and digest, storage kind, and resolved Git base commit.
 Only one checkpoint intent may be active. If draft bytes change while the
 intent is still `prepared`, call `cancel-checkpoint`, preserve that identity as
 cancelled, and prepare a new identity. If the older state is
-`outcome-unknown` or `pending-verification`, reconcile it first.
+`outcome-unknown`, reconcile it first.
 
 ## Publish Git checkpoints
 
@@ -61,7 +61,9 @@ the object is absent.
 
 Use `mark-checkpoint-broken` to preserve the original missing or invalid
 identity and reason. `repair-checkpoint` accepts only a unique fully verified
-replacement. If `register-active-checkpoint-source` shows an active
+replacement under an independently resolved `replacement_base_ref`; the
+candidate cannot choose its own verification lineage. If
+`register-active-checkpoint-source` shows an active
 implementation, the repair request must include a fresh acknowledgement bound
 to the checkpoint and original broken identity.
 
