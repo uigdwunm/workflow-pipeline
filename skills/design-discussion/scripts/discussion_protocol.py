@@ -92,6 +92,7 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "handoff_next_turn_required": "交接首轮只能验收，必须等待下一轮再开始实质讨论。",
         "handoff_payload_too_large": "交接工作快照或完整载荷超过大小限制。",
         "handoff_reconciliation_required": "外部创建结果未知，必须先对账或由用户明确强制重试。",
+        "child_result_state_conflict": "子话题结果声明当前状态不允许此操作。",
         "ledger_revision_conflict": "讨论账本修订已变化，请重读后重试。",
         "orphaned_document_write": "发现孤立、缺失或未归属的待写入载荷。",
         "question_state_conflict": "该问题当前不是可恢复、调整或失效的挂起状态。",
@@ -3576,6 +3577,11 @@ def _bind_handoff(request: dict[str, Any]) -> dict[str, Any]:
             if len(active) != 1 or active[0].get("conversation_ref") != owner_ref:
                 raise ProtocolError("handoff_attempt_state_conflict", "continuation source binding changed")
             superseded = active[0]["conversation_ref"]
+            if conversation_ref == superseded:
+                raise ProtocolError(
+                    "handoff_identity_conflict",
+                    "continuation must bind a new conversation reference",
+                )
             active[0]["binding_state"] = "superseded"
             active[0]["superseded_by"] = conversation_ref
             relation = _record_by_id(
@@ -3854,12 +3860,90 @@ def _reconcile_handoff_attempt(request: dict[str, Any]) -> dict[str, Any]:
         return result
 
 
-def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
+def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
     ledger_path, lock_path, _, owner_ref = _handoff_mutation_context(
-        request, {"handoff_id", "result_scope", "summary", "effect"}
+        request, {"handoff_id", "attempt_id", "result_scope", "summary"}
     )
     result_scope = _validated_string_list(request["result_scope"], "result_scope")
     summary = _expect_string(request["summary"], "summary", max_bytes=4096)
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        record = _handoff_record(records, request["handoff_id"])
+        handoff = _handoff_data(record)
+        if (
+            handoff["kind"] != "child"
+            or handoff["target_topic_id"] != request["actor_topic_id"]
+        ):
+            raise ProtocolError(
+                "child_result_state_conflict",
+                "result does not originate from this child topic",
+            )
+        active_binding = [
+            binding for binding in records["Conversation Bindings"]
+            if binding.get("topic_id") == request["actor_topic_id"]
+            and binding.get("conversation_ref") == owner_ref
+            and binding.get("binding_state") == "active"
+        ]
+        if len(active_binding) != 1 or active_binding[0].get("attempt_id") != request["attempt_id"]:
+            raise ProtocolError(
+                "child_result_state_conflict",
+                "result attempt is not the current active child binding",
+            )
+        provenance_handoff = _handoff_data(
+            _handoff_record(records, active_binding[0].get("handoff_id"))
+        )
+        attempt = _handoff_attempt(provenance_handoff, request["attempt_id"])
+        if (
+            provenance_handoff["target_topic_id"] != request["actor_topic_id"]
+            or attempt["state"] != "active"
+            or attempt.get("conversation_ref") != owner_ref
+        ):
+            raise ProtocolError(
+                "child_result_state_conflict",
+                "only the active accepted child attempt may submit a result",
+            )
+        seed = uuid.UUID(request["idempotency_key"]).hex
+        child_result_id = f"CR-{seed}"
+        next_revision = ledger_revision + 1
+        claim = {
+            "result_id": child_result_id,
+            "result_kind": "child-topic-result",
+            "handoff_id": handoff["handoff_id"],
+            "attempt_id": attempt["attempt_id"],
+            "provenance_handoff_id": provenance_handoff["handoff_id"],
+            "source_topic_id": handoff["target_topic_id"],
+            "target_topic_id": handoff["source_topic_id"],
+            "result_scope_json": _canonical_json(result_scope),
+            "summary": summary,
+            "state": "pending",
+            "record_revision": 1,
+        }
+        records["Phase Results"].append(claim)
+        result = {
+            "ok": True, "state": "pending-parent-acceptance", "idempotent_replay": False,
+            "project_id": request["project_id"], "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"], "ledger_revision": next_revision,
+            "record_revision": topic_revision, "handoff_id": handoff["handoff_id"],
+            "attempt_id": attempt["attempt_id"], "child_result_id": child_result_id,
+        }
+        _write_ledger_transaction(
+            ledger_path, frontmatter, records, request,
+            ledger_revision=next_revision, event_type="child-result-submitted", result=result,
+        )
+        return result
+
+
+def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
+    ledger_path, lock_path, _, owner_ref = _handoff_mutation_context(
+        request, {"handoff_id", "child_result_id", "effect"}
+    )
     effect = _expect_string(request["effect"], "effect", max_bytes=32)
     if effect not in {"absorb", "impact"}:
         raise ProtocolError("invalid_request", "effect must be absorb or impact")
@@ -3876,6 +3960,21 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
         handoff = _handoff_data(record)
         if handoff["kind"] != "child" or handoff["source_topic_id"] != request["actor_topic_id"]:
             raise ProtocolError("handoff_identity_conflict", "result is not owned by this child handoff parent")
+        claim = _record_by_id(
+            records["Phase Results"], "result_id",
+            _expect_string(request["child_result_id"], "child_result_id", max_bytes=64),
+            "child_result_id",
+        )
+        if (
+            claim.get("result_kind") != "child-topic-result"
+            or claim.get("handoff_id") != handoff["handoff_id"]
+            or claim.get("source_topic_id") != handoff["target_topic_id"]
+            or claim.get("target_topic_id") != request["actor_topic_id"]
+            or claim.get("state") != "pending"
+        ):
+            raise ProtocolError("child_result_state_conflict", "child result claim is not pending for this parent")
+        result_scope = _json_field(claim, "result_scope_json", "child result")
+        summary = claim["summary"]
         within_scope = set(result_scope).issubset(set(handoff["scope"]))
         if effect == "absorb" and not within_scope:
             raise ProtocolError("impact_state_conflict", "cross-topic result cannot be silently absorbed")
@@ -3902,6 +4001,7 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
                 "record_revision": topic_revision, "handoff_id": handoff["handoff_id"],
                 "relation_id": relation_id,
             }
+            claim["state"] = "absorbed"
         else:
             impact_id = f"IMP-{seed}"
             impact = {
@@ -3923,6 +4023,8 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
                 "record_revision": topic_revision, "handoff_id": handoff["handoff_id"],
                 "impact_id": impact_id,
             }
+            claim["state"] = "impact-recorded"
+        claim["record_revision"] += 1
         _write_ledger_transaction(
             ledger_path, frontmatter, records, request,
             ledger_revision=next_revision, event_type=f"child-result-{result['state']}", result=result,
@@ -4184,6 +4286,8 @@ def handle(request: Any) -> dict[str, Any]:
         return _retry_handoff(request)
     if operation == "reconcile-handoff-attempt":
         return _reconcile_handoff_attempt(request)
+    if operation == "submit-child-result":
+        return _submit_child_result(request)
     if operation == "record-child-result":
         return _record_child_result(request)
     if operation == "read-handoff":

@@ -771,6 +771,25 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(prepared["target_topic_id"], topic["topic_id"])
+        same_ref = self.handoff_request(
+            topic,
+            operation="bind-handoff",
+            ledger_revision=2,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            conversation_ref="discussion-task",
+            verified_identity={
+                "project_id": topic["project_id"],
+                "tree_id": topic["tree_id"],
+                "topic_id": topic["topic_id"],
+                "handoff_id": prepared["handoff_id"],
+                "attempt_id": prepared["attempt_id"],
+                "payload_sha256": prepared["payload_sha256"],
+            },
+        )
+        returncode, rejected, _ = self.run_cli(same_ref)
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "handoff_identity_conflict")
         requests = []
         for suffix in ("one", "two"):
             requests.append(
@@ -817,27 +836,123 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         project = self.make_project("child-result", git=False)
         topic = self.bootstrap_topic(project)
         prepared = self.prepare_child_handoff(topic, scope=["api"])
+        forged = self.handoff_request(
+            topic,
+            operation="record-child-result",
+            ledger_revision=2,
+            handoff_id=prepared["handoff_id"],
+            child_result_id="CR-" + "0" * 32,
+            effect="absorb",
+        )
+        returncode, rejected, _ = self.run_cli(forged)
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "record_not_found")
+
+        child_ref = "codex-thread:result-child"
+        returncode, bound, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="bind-handoff",
+                ledger_revision=2,
+                handoff_id=prepared["handoff_id"],
+                attempt_id=prepared["attempt_id"],
+                conversation_ref=child_ref,
+                verified_identity={
+                    "project_id": topic["project_id"],
+                    "tree_id": topic["tree_id"],
+                    "topic_id": prepared["target_topic_id"],
+                    "handoff_id": prepared["handoff_id"],
+                    "attempt_id": prepared["attempt_id"],
+                    "payload_sha256": prepared["payload_sha256"],
+                },
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        accept = self.handoff_request(
+            topic,
+            operation="accept-handoff",
+            ledger_revision=3,
+            owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            payload_sha256=prepared["payload_sha256"],
+            source_reference_sha256=prepared["authoritative_references_sha256"],
+            turn_number=1,
+        )
+        accept["actor_topic_id"] = prepared["target_topic_id"]
+        returncode, _, stderr = self.run_cli(accept)
+        self.assertEqual(returncode, 0, stderr)
+        authorize = self.handoff_request(
+            topic,
+            operation="authorize-handoff-discussion",
+            ledger_revision=4,
+            owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            turn_number=2,
+        )
+        authorize["actor_topic_id"] = prepared["target_topic_id"]
+        returncode, _, stderr = self.run_cli(authorize)
+        self.assertEqual(returncode, 0, stderr)
+
+        submit = self.handoff_request(
+            topic,
+            operation="submit-child-result",
+            ledger_revision=5,
+            owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            result_scope=["api"],
+            summary="Use typed request objects.",
+        )
+        submit["actor_topic_id"] = prepared["target_topic_id"]
+        returncode, claimed, stderr = self.run_cli(submit)
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(claimed["state"], "pending-parent-acceptance")
         returncode, absorbed, stderr = self.run_cli(
             self.handoff_request(
                 topic,
                 operation="record-child-result",
-                ledger_revision=2,
+                ledger_revision=6,
                 handoff_id=prepared["handoff_id"],
-                result_scope=["api"],
-                summary="Use typed request objects.",
+                child_result_id=claimed["child_result_id"],
                 effect="absorb",
             )
         )
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(absorbed["state"], "absorbed")
+        duplicate = self.handoff_request(
+            topic,
+            operation="record-child-result",
+            ledger_revision=7,
+            handoff_id=prepared["handoff_id"],
+            child_result_id=claimed["child_result_id"],
+            effect="impact",
+        )
+        returncode, rejected, _ = self.run_cli(duplicate)
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "child_result_state_conflict")
+
+        submit = self.handoff_request(
+            topic,
+            operation="submit-child-result",
+            ledger_revision=7,
+            owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            result_scope=["storage"],
+            summary="Change the parent ledger format.",
+        )
+        submit["actor_topic_id"] = prepared["target_topic_id"]
+        returncode, claimed, stderr = self.run_cli(submit)
+        self.assertEqual(returncode, 0, stderr)
         returncode, impact, stderr = self.run_cli(
             self.handoff_request(
                 topic,
                 operation="record-child-result",
-                ledger_revision=3,
+                ledger_revision=8,
                 handoff_id=prepared["handoff_id"],
-                result_scope=["storage"],
-                summary="Change the parent ledger format.",
+                child_result_id=claimed["child_result_id"],
                 effect="impact",
             )
         )
