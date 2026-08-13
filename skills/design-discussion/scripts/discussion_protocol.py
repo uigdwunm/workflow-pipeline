@@ -2407,6 +2407,36 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             snapshot_digest = _sha256(snapshot_bytes)
             snapshot_bytes_b64 = base64.b64encode(snapshot_bytes).decode("ascii")
         next_revision = ledger_revision + 1
+        stage_entry_phase = topic_record.get("current_phase") if purpose == "stage-entry" else None
+        stage_entry_phase_result_id = None
+        if purpose == "stage-entry":
+            for phase_result_record in reversed(records["Phase Results"]):
+                if (
+                    phase_result_record.get("result_kind") != "phase-result"
+                    or phase_result_record.get("state") != "completed"
+                ):
+                    continue
+                phase_result = _json_field(
+                    phase_result_record, "data_json", "phase result"
+                )
+                if phase_result.get("to_phase") != stage_entry_phase:
+                    continue
+                phase_run_record = _record_by_id(
+                    records["Phase Runs"],
+                    "run_id",
+                    phase_result.get("phase_run_id"),
+                    "phase_run_id",
+                )
+                phase_run = _json_field(
+                    phase_run_record, "data_json", "phase run"
+                )
+                if (
+                    phase_run_record.get("state") == "completed"
+                    and phase_run.get("source_topic_id") == request["actor_topic_id"]
+                    and phase_run.get("to_phase") == stage_entry_phase
+                ):
+                    stage_entry_phase_result_id = phase_result["result_id"]
+                    break
         checkpoint = {
             "checkpoint_id": checkpoint_id,
             "record_revision": 1,
@@ -2429,6 +2459,8 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "active_source_ack_revision": None,
             "snapshot_digest": snapshot_digest,
             "snapshot_bytes_b64": snapshot_bytes_b64,
+            "stage_entry_phase": stage_entry_phase,
+            "stage_entry_phase_result_id": stage_entry_phase_result_id,
             "creation_idempotency_key": request["idempotency_key"],
             "creation_fingerprint": _mutation_fingerprint(request),
             "creation_result_json": None,
@@ -2450,6 +2482,8 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "purpose": purpose, "base_ref": base_ref, "base_commit": base_commit,
             "paths": paths, "path_set_digest": checkpoint["path_set_digest"],
             "document_digests": digests, "decision_digest": decision_digest,
+            "stage_entry_phase": stage_entry_phase,
+            "stage_entry_phase_result_id": stage_entry_phase_result_id,
             "identity_reusable": False,
         }
         checkpoint["creation_result_json"] = _canonical_json(result)
@@ -2573,6 +2607,8 @@ def _publish_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "checkpoint_id": checkpoint["checkpoint_id"], "checkpoint_record_revision": checkpoint["record_revision"],
             "commit_id": commit_id, "checkpoint_tree_id": tree_id, "paths_verified": paths,
             "checkpoint_ref": checkpoint_ref,
+            "stage_entry_phase": checkpoint.get("stage_entry_phase"),
+            "stage_entry_phase_result_id": checkpoint.get("stage_entry_phase_result_id"),
         }
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="git-checkpoint-published", result=result)
         return result
@@ -2755,6 +2791,8 @@ def _publish_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "ledger_revision": next_revision, "record_revision": topic_revision,
             "checkpoint_id": checkpoint["checkpoint_id"], "checkpoint_record_revision": checkpoint["record_revision"],
             "snapshot_digest": snapshot_digest, "snapshot_path": str(snapshot_path), "snapshot_reused": reused,
+            "stage_entry_phase": checkpoint.get("stage_entry_phase"),
+            "stage_entry_phase_result_id": checkpoint.get("stage_entry_phase_result_id"),
         }
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="non-git-checkpoint-published", result=result)
         return result
@@ -3552,7 +3590,7 @@ def _completed_checkpoint(
     checkpoint = _checkpoint_data(record)
     if (
         checkpoint.get("state") != "completed"
-        or checkpoint.get("purpose") not in {"stage-entry", "implementation-source"}
+        or checkpoint.get("purpose") != "stage-entry"
         or not checkpoint.get("published_identity")
     ):
         raise ProtocolError(
@@ -3588,13 +3626,50 @@ def _verify_wrapper_checkpoint_current(
         for item in records["Checkpoints"]
         if item.get("topic_id") == data.get("source_topic_id")
         and item.get("state") == "completed"
-        and _checkpoint_data(item).get("purpose") in {"stage-entry", "implementation-source"}
+        and _checkpoint_data(item).get("purpose") == "stage-entry"
     ]
     if not completed_sources or completed_sources[-1]["checkpoint_id"] != checkpoint["checkpoint_id"]:
         raise ProtocolError("phase_checkpoint_invalid", "wrapper checkpoint is no longer the latest source")
     document_digests = json.loads(checkpoint["document_digests_json"])
     if _sha256(_require_regular_nosymlink(topic_path, "topic document")) not in document_digests.values():
         raise ProtocolError("phase_source_drift", "topic document differs from the frozen checkpoint")
+
+
+def _verify_continuous_flow_authority(
+    records: dict[str, list[dict[str, Any]]], checkpoint: dict[str, Any]
+) -> None:
+    result_id = checkpoint.get("stage_entry_phase_result_id")
+    if checkpoint.get("stage_entry_phase") != 1 or not isinstance(result_id, str):
+        raise ProtocolError(
+            "phase_flow_mode_invalid",
+            "continuous mode requires persisted successful stage-1 authority",
+        )
+    result_record = _record_by_id(
+        records["Phase Results"], "result_id", result_id, "phase_result_id"
+    )
+    result = _json_field(result_record, "data_json", "phase result")
+    if (
+        result_record.get("result_kind") != "phase-result"
+        or result_record.get("state") != "completed"
+        or result.get("from_phase") != 0
+        or result.get("to_phase") != 1
+    ):
+        raise ProtocolError(
+            "phase_flow_mode_invalid",
+            "continuous mode stage-1 authority is invalid",
+        )
+    phase_run_record = _phase_record(records, result.get("phase_run_id"))
+    phase_run = _phase_data(phase_run_record)
+    if (
+        phase_run.get("state") != "completed"
+        or phase_run.get("source_topic_id") != checkpoint.get("topic_id")
+        or phase_run.get("from_phase") != 0
+        or phase_run.get("to_phase") != 1
+    ):
+        raise ProtocolError(
+            "phase_flow_mode_invalid",
+            "continuous mode stage-1 authority does not match the source topic",
+        )
 
 
 def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
@@ -3672,6 +3747,8 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             "source_checkpoint_identity": checkpoint["published_identity"],
         }
         _verify_wrapper_checkpoint_current(records, checkpoint_data, topic_path)
+        if flow_mode == "continuous":
+            _verify_continuous_flow_authority(records, checkpoint)
         active_runs = [
             item for item in records["Phase Runs"]
             if item.get("run_kind") == "phase-run"
@@ -4006,6 +4083,11 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
             _phase_check_evidence(data, _authoritative_phase_evidence(topic_path, records, topic))
             if data.get("wrapper_integration") is True:
                 _verify_wrapper_checkpoint_current(records, data, topic_path)
+                if data.get("flow_mode") == "continuous":
+                    _verify_continuous_flow_authority(
+                        records,
+                        _completed_checkpoint(records, data["source_checkpoint_id"]),
+                    )
             attempt["state"] = "active"; data["state"] = "active"
             if data.get("wrapper_integration") is True and data.get("route") == [1, 3]:
                 result_id = f"PH-{data['run_id'][3:]}-NA2"

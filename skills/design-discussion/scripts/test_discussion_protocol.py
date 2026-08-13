@@ -434,6 +434,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         prepared = self.prepare_checkpoint(
             topic,
             ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
             purpose="stage-entry",
         )
         code, published, stderr = self.run_cli(
@@ -449,6 +450,123 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 0, stderr)
         return published
 
+    def publish_non_git_checkpoint(
+        self,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int,
+        purpose: str,
+        topic_revision: int = 1,
+    ) -> dict[str, object]:
+        prepared = self.prepare_checkpoint(
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            purpose=purpose,
+        )
+        code, published, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="publish-non-git-checkpoint",
+                ledger_revision=ledger_revision + 1,
+                topic_revision=topic_revision,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=prepared["checkpoint_record_revision"],
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        return published
+
+    def complete_stage_one(self, topic: dict[str, object]) -> dict[str, object]:
+        prepared = self.prepare_phase_run(
+            topic,
+            revision=1,
+            from_phase=0,
+            to_phase=1,
+            carrier_kind="problem-framing",
+        )
+        evidence = prepared["evidence"]
+        carrier = "discussion-task"
+        self.assertEqual(
+            self.run_cli(
+                self.phase_request(
+                    topic,
+                    "authorize-phase-carrier",
+                    2,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref=carrier,
+                )
+            )[0],
+            0,
+        )
+        self.assertEqual(
+            self.run_cli(
+                self.phase_request(
+                    topic,
+                    "phase-ready",
+                    3,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref=carrier,
+                    evidence=evidence,
+                )
+            )[0],
+            0,
+        )
+        self.assertEqual(
+            self.run_cli(
+                self.phase_request(
+                    topic,
+                    "phase-activate",
+                    4,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    evidence=evidence,
+                )
+            )[0],
+            0,
+        )
+        self.assertEqual(
+            self.run_cli(
+                self.phase_request(
+                    topic,
+                    "claim-phase-completion",
+                    5,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref=carrier,
+                    evidence=evidence,
+                )
+            )[0],
+            0,
+        )
+        self.assertEqual(
+            self.run_cli(
+                self.phase_request(
+                    topic,
+                    "complete-phase-run",
+                    6,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    evidence=evidence,
+                )
+            )[0],
+            0,
+        )
+        code, completed, stderr = self.run_cli(
+            self.phase_request(
+                topic,
+                "finalize-phase-run",
+                7,
+                phase_run_id=prepared["phase_run_id"],
+                attempt_id=prepared["attempt_id"],
+                evidence=evidence,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        return completed
+
     def wrapper_phase_request(
         self,
         topic: dict[str, object],
@@ -462,11 +580,13 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         flow_mode_source: str = "explicit-stage-confirmation",
         requirement_completeness: dict[str, bool] | None = None,
         scope: list[str] | None = None,
+        topic_revision: int = 1,
     ) -> dict[str, object]:
         return self.phase_request(
             topic,
             "prepare-wrapper-phase-run",
             revision,
+            topic_revision=topic_revision,
             from_phase=from_phase,
             to_phase=to_phase,
             route=f"{from_phase}->{to_phase}",
@@ -792,27 +912,51 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
 
         stage_one_project = self.make_project("wrapper-continuous-one", git=False)
         stage_one = self.bootstrap_topic(stage_one_project)
-        stage_one_ledger = Path(str(stage_one["ledger_path"]))
-        self.rewrite_ledger_with_valid_digest(
-            stage_one_ledger, "current_phase: 0", "current_phase: 1"
-        )
+        self.complete_stage_one(stage_one)
         stage_one_checkpoint = self.publish_non_git_stage_entry_checkpoint(
-            stage_one, ledger_revision=1
+            stage_one, ledger_revision=8, topic_revision=2
         )
+        self.assertIsNotNone(stage_one_checkpoint["stage_entry_phase_result_id"])
         code, continuous, stderr = self.run_cli(
             self.wrapper_phase_request(
                 stage_one,
-                3,
+                10,
                 from_phase=1,
                 to_phase=2,
                 carrier_kind="solution-designer",
                 source_checkpoint_id=str(stage_one_checkpoint["checkpoint_id"]),
                 flow_mode="continuous",
                 flow_mode_source="successful-stage-1-footer",
+                topic_revision=2,
             )
         )
         self.assertEqual(code, 0, stderr)
         self.assertEqual(continuous["flow_mode"], "continuous")
+
+        forged_project = self.make_project("wrapper-continuous-forged", git=False)
+        forged = self.bootstrap_topic(forged_project)
+        forged_ledger = Path(str(forged["ledger_path"]))
+        self.rewrite_ledger_with_valid_digest(
+            forged_ledger, "current_phase: 0", "current_phase: 1"
+        )
+        forged_checkpoint = self.publish_non_git_stage_entry_checkpoint(
+            forged, ledger_revision=1
+        )
+        self.assertIsNone(forged_checkpoint["stage_entry_phase_result_id"])
+        code, rejected, _ = self.run_cli(
+            self.wrapper_phase_request(
+                forged,
+                3,
+                from_phase=1,
+                to_phase=2,
+                carrier_kind="solution-designer",
+                source_checkpoint_id=str(forged_checkpoint["checkpoint_id"]),
+                flow_mode="continuous",
+                flow_mode_source="successful-stage-1-footer",
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_flow_mode_invalid")
 
         legacy = self.make_project("wrapper-no-context", git=False)
         before = sorted(legacy.rglob("*"))
@@ -884,6 +1028,81 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         code, rejected, _ = self.run_cli(wrong)
         self.assertEqual(code, 1)
         self.assertEqual(rejected["error"]["code"], "phase_route_conflict")
+
+    def test_wrapper_accepts_only_latest_stage_entry_checkpoint(self) -> None:
+        wrong_project = self.make_project("wrapper-wrong-purpose", git=False)
+        wrong_topic = self.bootstrap_topic(wrong_project)
+        implementation_source = self.publish_non_git_checkpoint(
+            wrong_topic,
+            ledger_revision=1,
+            purpose="implementation-source",
+        )
+        code, rejected, _ = self.run_cli(
+            self.wrapper_phase_request(
+                wrong_topic,
+                3,
+                from_phase=0,
+                to_phase=2,
+                carrier_kind="solution-designer",
+                source_checkpoint_id=str(implementation_source["checkpoint_id"]),
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_checkpoint_invalid")
+
+        current_project = self.make_project("wrapper-cross-purpose-recency", git=False)
+        current_topic = self.bootstrap_topic(current_project)
+        stage_entry = self.publish_non_git_stage_entry_checkpoint(
+            current_topic, ledger_revision=1
+        )
+        later_implementation = self.publish_non_git_checkpoint(
+            current_topic,
+            ledger_revision=3,
+            purpose="implementation-source",
+        )
+        code, prepared, stderr = self.run_cli(
+            self.wrapper_phase_request(
+                current_topic,
+                5,
+                from_phase=0,
+                to_phase=2,
+                carrier_kind="solution-designer",
+                source_checkpoint_id=str(stage_entry["checkpoint_id"]),
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(prepared["source_checkpoint_id"], stage_entry["checkpoint_id"])
+        self.assertNotEqual(
+            prepared["source_checkpoint_id"], later_implementation["checkpoint_id"]
+        )
+
+        self.assertEqual(
+            self.run_cli(
+                self.phase_request(
+                    current_topic,
+                    "authorize-phase-carrier",
+                    6,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    carrier_ref="agent:solution-designer",
+                )
+            )[0],
+            0,
+        )
+        claim = self.phase_request(
+            current_topic,
+            "claim-phase-carrier",
+            7,
+            phase_run_id=prepared["phase_run_id"],
+            attempt_id=prepared["attempt_id"],
+            carrier_ref="agent:solution-designer",
+            source_checkpoint_id=later_implementation["checkpoint_id"],
+            source_checkpoint_identity=later_implementation["snapshot_digest"],
+        )
+        claim["actor_conversation_ref"] = "agent:solution-designer"
+        code, rejected, _ = self.run_cli(claim)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_checkpoint_invalid")
 
     def test_wrapper_activation_rechecks_latest_checkpoint(self) -> None:
         project = self.make_project("wrapper-activation-checkpoint", git=False)
@@ -2205,6 +2424,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         topic: dict[str, object],
         *,
         ledger_revision: int,
+        topic_revision: int = 1,
         purpose: str = "pause",
         base_ref: str = "HEAD",
     ) -> dict[str, object]:
@@ -2213,6 +2433,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 topic,
                 operation="prepare-checkpoint",
                 ledger_revision=ledger_revision,
+                topic_revision=topic_revision,
                 purpose=purpose,
                 base_ref=base_ref,
             )
