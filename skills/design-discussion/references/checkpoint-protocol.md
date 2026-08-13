@@ -24,7 +24,8 @@ Acquire `acquire-repository-coordination-lease` from
 TTL. Pass the exact path, lease ID, and version to `publish-git-checkpoint`.
 The protocol creates a documentation-only commit through a private temporary
 index, without changing the caller's index, `HEAD`, or refs. The verified
-commit identity is recorded durably in the discussion ledger.
+commit identity is recorded durably in the discussion ledger and pinned by a
+checkpoint ref below `refs/codex/design-discussion/checkpoints/`.
 
 The commit must have the frozen parent, exact resulting tree, exact paths and
 blobs, and these trailers:
@@ -49,6 +50,12 @@ with an ambiguity error. Never infer adoption from a trailer or digest alone.
 coordination root at `checkpoints/sha256/<prefix>/<digest>`. An existing object
 is reused only when its bytes match exactly; a mismatching content-addressed
 object is corruption and must not be overwritten.
+
+If snapshot creation may have succeeded before result recording,
+`record-checkpoint-outcome-unknown` freezes GC and
+`reconcile-non-git-checkpoint` recomputes the exact expected content address.
+It adopts only matching bytes, or returns the same identity to `prepared` when
+the object is absent.
 
 ## Repair and GC
 

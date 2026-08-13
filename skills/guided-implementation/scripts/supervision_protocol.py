@@ -2004,11 +2004,6 @@ def _repository_coordination_lease_path(repository: Path) -> Path:
     return repository / ".git" / REPOSITORY_COORDINATION_LEASE_FILENAME
 
 
-def _repository_coordination_lease_guard_path(repository: Path) -> Path:
-    repository = Path(repository)
-    return repository / ".git" / REPOSITORY_COORDINATION_LEASE_GUARD_FILENAME
-
-
 def _repository_from_coordination_lease_path(lease_path: Path) -> Path:
     if lease_path.parent.name != ".git":
         raise ProtocolError(
@@ -2353,7 +2348,13 @@ def verify_repository_coordination_lease(
         or report["version"] != expected_version
         or holder["lease_id"] != expected_id
     ):
-        raise ProtocolError("repository coordination lease verification failed")
+        raise ProtocolError(
+            "repository coordination lease verification failed; "
+            f"expected_path={lease_path}; observed_path={report['path']}; "
+            f"expected_state=held; observed_state={report['state']}; "
+            f"expected_version={expected_version}; observed_version={report['version']}; "
+            f"expected_id={expected_id}; observed_id={holder['lease_id'] if holder else None}"
+        )
     return {**report, "verified": True}
 
 
@@ -2377,7 +2378,11 @@ def release_repository_coordination_lease(
             or holder is None
             or holder["lease_id"] != expected_id
         ):
-            raise ProtocolError("repository coordination lease CAS mismatch during release")
+            raise ProtocolError(
+                "repository coordination lease CAS mismatch during release; "
+                f"expected_version={expected_version}; observed_version={current['version']}; "
+                f"expected_id={expected_id}; observed_id={holder['lease_id'] if holder else None}"
+            )
         document = {
             "holder": None,
             "repository": str(repository),

@@ -68,13 +68,22 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
             )
         return request
 
-    def run_cli(self, request: dict[str, object]) -> tuple[int, dict[str, object], str]:
+    def run_cli(
+        self,
+        request: dict[str, object],
+        *,
+        failpoint: str | None = None,
+    ) -> tuple[int, dict[str, object], str]:
+        environment = dict(os.environ)
+        if failpoint is not None:
+            environment["CODEX_DISCUSSION_TEST_FAILPOINT"] = failpoint
         completed = subprocess.run(
             [sys.executable, str(SCRIPT_PATH)],
             input=json.dumps(request),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=environment,
         )
         self.assertTrue(completed.stdout, completed.stderr)
         return completed.returncode, json.loads(completed.stdout), completed.stderr
@@ -565,6 +574,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         prepared: dict[str, object],
         *,
         timestamp: str,
+        parent_commit: str | None = None,
     ) -> str:
         path = str(prepared["paths"][0])
         document = (project / path).read_bytes()
@@ -577,8 +587,9 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         index_path = self.root / f"index-{uuid.uuid4().hex}"
         environment = dict(os.environ)
         environment["GIT_INDEX_FILE"] = str(index_path)
+        parent = parent_commit or str(prepared["base_commit"])
         subprocess.run(
-            ["git", "-C", str(project), "read-tree", str(prepared["base_commit"])],
+            ["git", "-C", str(project), "read-tree", parent],
             check=True,
             env=environment,
         )
@@ -614,7 +625,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         return subprocess.run(
             [
                 "git", "-C", str(project), "commit-tree", tree_id, "-p",
-                str(prepared["base_commit"]),
+                parent,
             ],
             input=message,
             check=True,
@@ -1153,6 +1164,18 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             index_before,
         )
         self.assertEqual(
+            subprocess.run(
+                [
+                    "git", "-C", str(project), "rev-parse",
+                    str(published["checkpoint_ref"]),
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip(),
+            commit_id,
+        )
+        self.assertEqual(
             (project / "unrelated.txt").read_text(encoding="utf-8"), "keep me\n"
         )
         returncode, validated, stderr = self.run_cli(
@@ -1257,6 +1280,32 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(active["state"], "active")
+        rewritten_parent_tree = subprocess.run(
+            ["git", "-C", str(project), "show", "-s", "--format=%T", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        rewritten_parent = subprocess.run(
+            ["git", "-C", str(project), "commit-tree", rewritten_parent_tree],
+            input="rewritten base\n",
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            },
+        ).stdout.strip()
+        replacement_commit = self.create_matching_checkpoint_commit(
+            project,
+            prepared,
+            timestamp="2026-02-01T00:00:00+00:00",
+            parent_commit=rewritten_parent,
+        )
         returncode, broken, stderr = self.run_cli(
             self.checkpoint_request(
                 topic,
@@ -1277,7 +1326,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 ledger_revision=5,
                 checkpoint_id=prepared["checkpoint_id"],
                 expected_checkpoint_revision=3,
-                replacement_commit=commit_id,
+                replacement_commit=replacement_commit,
                 active_source_ack=None,
             )
         )
@@ -1293,7 +1342,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 ledger_revision=5,
                 checkpoint_id=prepared["checkpoint_id"],
                 expected_checkpoint_revision=3,
-                replacement_commit=commit_id,
+                replacement_commit=replacement_commit,
                 active_source_ack={
                     "acknowledged": True,
                     "checkpoint_id": prepared["checkpoint_id"],
@@ -1303,7 +1352,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(repaired["broken_identity"], commit_id)
-        self.assertEqual(repaired["replacement_identity"], commit_id)
+        self.assertEqual(repaired["replacement_identity"], replacement_commit)
+        self.assertNotEqual(repaired["replacement_identity"], commit_id)
         self.assertTrue(repaired["original_fact_preserved"])
 
     def test_outcome_unknown_adopts_one_unreferenced_matching_commit_and_rejects_two(
@@ -1366,6 +1416,124 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                         "checkpoint_history_ambiguous",
                     )
 
+    def test_failure_injection_recovers_git_and_snapshot_result_recording(self) -> None:
+        git_project = self.make_project("git-failure-injection", git=True)
+        (git_project / "base.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(git_project), "add", "base.txt"], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(git_project), "-c", "user.name=Test", "-c",
+                "user.email=test@example.com", "commit", "-qm", "base",
+            ],
+            check=True,
+        )
+        topic = self.bootstrap_topic(git_project)
+        failed_prepare = self.checkpoint_request(
+            topic,
+            operation="prepare-checkpoint",
+            ledger_revision=1,
+            purpose="pause",
+            base_ref="HEAD",
+        )
+        returncode, injected, _ = self.run_cli(
+            failed_prepare, failpoint="checkpoint-before-prepared-ledger-write"
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(injected["error"]["code"], "injected_failure")
+        returncode, validated, stderr = self.run_cli(
+            self.checkpoint_request(topic, operation="validate")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(validated["ledger_revision"], 1)
+
+        prepared = self.prepare_checkpoint(topic, ledger_revision=1)
+        lease = self.acquire_repository_coordination_lease(git_project)
+        holder = lease["holder"]
+        assert isinstance(holder, dict)
+        publish_request = self.checkpoint_request(
+            topic,
+            operation="publish-git-checkpoint",
+            ledger_revision=2,
+            checkpoint_id=prepared["checkpoint_id"],
+            expected_checkpoint_revision=1,
+            repository_coordination_lease={
+                "path": lease["path"],
+                "lease_id": holder["lease_id"],
+                "version": lease["version"],
+            },
+        )
+        returncode, injected, _ = self.run_cli(
+            publish_request, failpoint="git-after-commit-before-result-record"
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(injected["error"]["code"], "injected_failure")
+        returncode, unknown, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="record-checkpoint-outcome-unknown",
+                ledger_revision=2,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=1,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        returncode, adopted, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="reconcile-git-checkpoint",
+                ledger_revision=3,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=unknown["checkpoint_record_revision"],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(adopted["state"], "completed")
+
+        non_git = self.make_project("snapshot-failure-injection", git=False)
+        snapshot_topic = self.bootstrap_topic(non_git)
+        snapshot_prepared = self.prepare_checkpoint(
+            snapshot_topic, ledger_revision=1, base_ref="project-root"
+        )
+        snapshot_request = self.checkpoint_request(
+            snapshot_topic,
+            operation="publish-non-git-checkpoint",
+            ledger_revision=2,
+            checkpoint_id=snapshot_prepared["checkpoint_id"],
+            expected_checkpoint_revision=1,
+        )
+        returncode, injected, _ = self.run_cli(
+            snapshot_request, failpoint="snapshot-after-create-before-result-record"
+        )
+        self.assertEqual(returncode, 1)
+        returncode, snapshot_unknown, stderr = self.run_cli(
+            self.checkpoint_request(
+                snapshot_topic,
+                operation="record-checkpoint-outcome-unknown",
+                ledger_revision=2,
+                checkpoint_id=snapshot_prepared["checkpoint_id"],
+                expected_checkpoint_revision=1,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        returncode, dry_run, stderr = self.run_cli(
+            self.checkpoint_request(snapshot_topic, operation="checkpoint-gc-dry-run")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(dry_run["candidates"], [])
+        returncode, reconciled, stderr = self.run_cli(
+            self.checkpoint_request(
+                snapshot_topic,
+                operation="reconcile-non-git-checkpoint",
+                ledger_revision=3,
+                checkpoint_id=snapshot_prepared["checkpoint_id"],
+                expected_checkpoint_revision=snapshot_unknown[
+                    "checkpoint_record_revision"
+                ],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(reconciled["state"], "completed")
+
     def test_non_git_snapshot_is_immutable_reusable_and_gc_confirmation_is_exact(
         self,
     ) -> None:
@@ -1424,6 +1592,19 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(
             mismatch["error"]["code"], "checkpoint_gc_confirmation_mismatch"
         )
+        self.assertTrue(orphan_path.exists())
+        returncode, injected, _ = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="checkpoint-gc-confirm",
+                ledger_revision=5,
+                candidate_digest=dry_run["candidate_digest"],
+                candidates=dry_run["candidates"],
+            ),
+            failpoint="gc-before-delete",
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(injected["error"]["code"], "injected_failure")
         self.assertTrue(orphan_path.exists())
         returncode, deleted, stderr = self.run_cli(
             self.checkpoint_request(
