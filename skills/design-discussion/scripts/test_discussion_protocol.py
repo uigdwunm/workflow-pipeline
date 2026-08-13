@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 
 SCRIPT_PATH = Path(__file__).with_name("discussion_protocol.py")
@@ -510,6 +511,456 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             expected_topic_revision=topic_revision,
             **parameters,
         )
+
+    def handoff_request(
+        self,
+        topic: dict[str, object],
+        *,
+        operation: str,
+        ledger_revision: int | None = None,
+        topic_revision: int = 1,
+        owner_ref: str = "discussion-task",
+        **parameters: object,
+    ) -> dict[str, object]:
+        return self.evolution_request(
+            topic,
+            operation=operation,
+            expected_revision=ledger_revision,
+            expected_topic_revision=topic_revision,
+            owner_ref=owner_ref,
+            **parameters,
+        )
+
+    def prepare_child_handoff(
+        self,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int = 1,
+        scope: list[str] | None = None,
+        work_snapshot: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        returncode, prepared, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="prepare-handoff",
+                ledger_revision=ledger_revision,
+                handoff_kind="child",
+                target_slug="api-shape",
+                scope=scope or ["api"],
+                work_snapshot=work_snapshot
+                or {
+                    "goal": "Choose the public API shape.",
+                    "confirmed_decisions": [],
+                    "pending_questions": ["Which requests are public?"],
+                },
+                authoritative_references=[
+                    {
+                        "kind": "checkpoint",
+                        "identity": "CP-source",
+                        "sha256": "1" * 64,
+                    }
+                ],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        return prepared
+
+    def test_child_handoff_persists_topic_attempt_and_bounded_identity_payload(self) -> None:
+        project = self.make_project("child-handoff", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic)
+        self.assertEqual(prepared["state"], "setup-pending")
+        self.assertRegex(str(prepared["handoff_id"]), r"^H-[0-9a-f]{32}$")
+        self.assertRegex(str(prepared["attempt_id"]), r"^A-[0-9a-f]{32}-1$")
+        self.assertRegex(str(prepared["target_topic_id"]), r"^topic-[0-9a-f]{32}$")
+        self.assertNotEqual(prepared["target_topic_id"], topic["topic_id"])
+        self.assertEqual(
+            set(prepared["identity_envelope"]),
+            {"project_id", "tree_id", "topic_id", "parent_topic_id", "handoff_id", "attempt_id"},
+        )
+        self.assertRegex(str(prepared["payload_sha256"]), r"^[0-9a-f]{64}$")
+        self.assertLessEqual(prepared["work_snapshot_bytes"], 16000)
+        self.assertLessEqual(prepared["handoff_payload_bytes"], 32000)
+
+        returncode, read, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="read-handoff",
+                handoff_id=prepared["handoff_id"],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(read["handoff"]["state"], "setup-pending")
+        self.assertEqual(read["attempts"][0]["state"], "setup-pending")
+        self.assertEqual(read["target_topic"]["parent_topic_id"], topic["topic_id"])
+
+        oversized = self.handoff_request(
+            topic,
+            operation="prepare-handoff",
+            ledger_revision=2,
+            handoff_kind="child",
+            target_slug="too-large",
+            scope=["api"],
+            work_snapshot={"goal": "x" * 16001},
+            authoritative_references=[],
+        )
+        returncode, rejected, _ = self.run_cli(oversized)
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "handoff_payload_too_large")
+
+    def test_handoff_requires_verified_binding_then_first_turn_acceptance_and_later_turn(self) -> None:
+        project = self.make_project("handoff-gate", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic)
+        bind = self.handoff_request(
+            topic,
+            operation="bind-handoff",
+            ledger_revision=2,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            conversation_ref="codex-thread:child-real",
+            verified_identity={
+                "project_id": topic["project_id"],
+                "tree_id": topic["tree_id"],
+                "topic_id": prepared["target_topic_id"],
+                "handoff_id": prepared["handoff_id"],
+                "attempt_id": prepared["attempt_id"],
+                "payload_sha256": prepared["payload_sha256"],
+            },
+        )
+        returncode, bound, stderr = self.run_cli(bind)
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(bound["state"], "bound-pending-acceptance")
+
+        accept = self.handoff_request(
+            topic,
+            operation="accept-handoff",
+            ledger_revision=3,
+            owner_ref="codex-thread:child-real",
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            payload_sha256=prepared["payload_sha256"],
+            source_reference_sha256=prepared["authoritative_references_sha256"],
+            turn_number=1,
+        )
+        accept["actor_topic_id"] = prepared["target_topic_id"]
+        returncode, accepted, stderr = self.run_cli(accept)
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(accepted["state"], "accepted-awaiting-next-turn")
+        self.assertFalse(accepted["substantive_discussion_allowed"])
+
+        same_turn = self.handoff_request(
+            topic,
+            operation="authorize-handoff-discussion",
+            ledger_revision=4,
+            owner_ref="codex-thread:child-real",
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            turn_number=1,
+        )
+        same_turn["actor_topic_id"] = prepared["target_topic_id"]
+        returncode, rejected, _ = self.run_cli(same_turn)
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "handoff_next_turn_required")
+
+        next_turn = dict(same_turn)
+        next_turn["idempotency_key"] = str(uuid.uuid4())
+        next_turn["turn_number"] = 2
+        returncode, authorized, stderr = self.run_cli(next_turn)
+        self.assertEqual(returncode, 0, stderr)
+        self.assertTrue(authorized["substantive_discussion_allowed"])
+
+    def test_outcome_unknown_cancel_late_arrival_and_forced_retry_preserve_attempt_history(self) -> None:
+        project = self.make_project("handoff-recovery", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic)
+        returncode, unknown, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="record-handoff-outcome-unknown",
+                ledger_revision=2,
+                handoff_id=prepared["handoff_id"],
+                attempt_id=prepared["attempt_id"],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(unknown["state"], "outcome-unknown")
+
+        returncode, blocked, _ = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="retry-handoff",
+                ledger_revision=3,
+                handoff_id=prepared["handoff_id"],
+                prior_attempt_id=prepared["attempt_id"],
+                forced=False,
+            )
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(blocked["error"]["code"], "handoff_reconciliation_required")
+
+        returncode, cancelled, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="cancel-handoff-attempt",
+                ledger_revision=3,
+                handoff_id=prepared["handoff_id"],
+                attempt_id=prepared["attempt_id"],
+                reason="user abandoned uncertain creation",
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(cancelled["state"], "cancelled")
+        self.assertFalse(cancelled["binding_eligible"])
+
+        returncode, late, _ = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="bind-handoff",
+                ledger_revision=4,
+                handoff_id=prepared["handoff_id"],
+                attempt_id=prepared["attempt_id"],
+                conversation_ref="codex-thread:late",
+                verified_identity={
+                    "project_id": topic["project_id"],
+                    "tree_id": topic["tree_id"],
+                    "topic_id": prepared["target_topic_id"],
+                    "handoff_id": prepared["handoff_id"],
+                    "attempt_id": prepared["attempt_id"],
+                    "payload_sha256": prepared["payload_sha256"],
+                },
+            )
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(late["error"]["code"], "handoff_late_arrival")
+
+        returncode, retried, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="retry-handoff",
+                ledger_revision=4,
+                handoff_id=prepared["handoff_id"],
+                prior_attempt_id=prepared["attempt_id"],
+                forced=True,
+                user_authorization="Create a replacement task despite the cancelled outcome.",
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertRegex(str(retried["attempt_id"]), r"^A-[0-9a-f]{32}-2$")
+        self.assertNotEqual(retried["attempt_id"], prepared["attempt_id"])
+        returncode, read, stderr = self.run_cli(
+            self.handoff_request(topic, operation="read-handoff", handoff_id=prepared["handoff_id"])
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual([item["state"] for item in read["attempts"]], ["cancelled", "setup-pending"])
+
+    def test_continuation_atomically_supersedes_binding_and_parallel_claim_has_one_winner(self) -> None:
+        project = self.make_project("continuation-binding", git=False)
+        topic = self.bootstrap_topic(project)
+        returncode, prepared, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="prepare-handoff",
+                ledger_revision=1,
+                handoff_kind="continuation",
+                target_slug="checkout-redesign",
+                scope=["root"],
+                work_snapshot={"goal": "Continue an unavailable conversation."},
+                authoritative_references=[],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(prepared["target_topic_id"], topic["topic_id"])
+        requests = []
+        for suffix in ("one", "two"):
+            requests.append(
+                self.handoff_request(
+                    topic,
+                    operation="bind-handoff",
+                    ledger_revision=2,
+                    handoff_id=prepared["handoff_id"],
+                    attempt_id=prepared["attempt_id"],
+                    conversation_ref=f"codex-thread:continuation-{suffix}",
+                    verified_identity={
+                        "project_id": topic["project_id"],
+                        "tree_id": topic["tree_id"],
+                        "topic_id": topic["topic_id"],
+                        "handoff_id": prepared["handoff_id"],
+                        "attempt_id": prepared["attempt_id"],
+                        "payload_sha256": prepared["payload_sha256"],
+                    },
+                )
+            )
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(self.run_cli, requests))
+        successes = [item for item in outcomes if item[0] == 0]
+        failures = [item for item in outcomes if item[0] == 1]
+        self.assertEqual(len(successes), 1)
+        self.assertEqual(len(failures), 1)
+        self.assertIn(
+            failures[0][1]["error"]["code"],
+            {"ledger_revision_conflict", "handoff_attempt_state_conflict"},
+        )
+        winner = successes[0][1]
+        self.assertEqual(winner["superseded_conversation_ref"], "discussion-task")
+        self.assertEqual(winner["active_conversation_ref"], winner["conversation_ref"])
+
+        returncode, read, stderr = self.run_cli(
+            self.handoff_request(topic, operation="read-handoff", handoff_id=prepared["handoff_id"])
+        )
+        self.assertEqual(returncode, 0, stderr)
+        active = [item for item in read["bindings"] if item["binding_state"] == "active"]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0]["conversation_ref"], winner["conversation_ref"])
+
+    def test_child_result_absorbs_only_within_scope_and_records_cross_topic_impact(self) -> None:
+        project = self.make_project("child-result", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic, scope=["api"])
+        returncode, absorbed, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="record-child-result",
+                ledger_revision=2,
+                handoff_id=prepared["handoff_id"],
+                result_scope=["api"],
+                summary="Use typed request objects.",
+                effect="absorb",
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(absorbed["state"], "absorbed")
+        returncode, impact, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="record-child-result",
+                ledger_revision=3,
+                handoff_id=prepared["handoff_id"],
+                result_scope=["storage"],
+                summary="Change the parent ledger format.",
+                effect="impact",
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(impact["state"], "pending-impact")
+        self.assertRegex(str(impact["impact_id"]), r"^IMP-[0-9a-f]{32}$")
+
+    def test_handoff_allowlists_and_explicit_failure_reconciliation_are_recoverable(self) -> None:
+        project = self.make_project("handoff-explicit-recovery", git=False)
+        topic = self.bootstrap_topic(project)
+        invalid = self.handoff_request(
+            topic,
+            operation="prepare-handoff",
+            ledger_revision=1,
+            handoff_kind="child",
+            target_slug="bad-envelope",
+            scope=["api"],
+            work_snapshot={"goal": "Choose the API.", "conversation_history": ["secret"]},
+            authoritative_references=[],
+        )
+        returncode, rejected, _ = self.run_cli(invalid)
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "invalid_request")
+
+        prepared = self.prepare_child_handoff(topic)
+        returncode, failed, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="record-handoff-failure",
+                ledger_revision=2,
+                handoff_id=prepared["handoff_id"],
+                attempt_id=prepared["attempt_id"],
+                reason="task creation was explicitly rejected",
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(failed["state"], "failed")
+        returncode, retried, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="retry-handoff",
+                ledger_revision=3,
+                handoff_id=prepared["handoff_id"],
+                prior_attempt_id=prepared["attempt_id"],
+                forced=False,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertTrue(retried["attempt_id"].endswith("-2"))
+
+        returncode, unknown, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="record-handoff-outcome-unknown",
+                ledger_revision=4,
+                handoff_id=prepared["handoff_id"],
+                attempt_id=retried["attempt_id"],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(unknown["state"], "outcome-unknown")
+        returncode, reconciled, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="reconcile-handoff-attempt",
+                ledger_revision=5,
+                handoff_id=prepared["handoff_id"],
+                attempt_id=retried["attempt_id"],
+                outcome="not-created",
+                reason="provider confirmed no task exists",
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(reconciled["state"], "failed")
+        self.assertFalse(reconciled["binding_eligible"])
+
+    def test_binding_failure_before_ledger_commit_leaves_no_partial_claim(self) -> None:
+        project = self.make_project("handoff-binding-fault", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic)
+        bind = self.handoff_request(
+            topic,
+            operation="bind-handoff",
+            ledger_revision=2,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            conversation_ref="codex-thread:faulted-child",
+            verified_identity={
+                "project_id": topic["project_id"],
+                "tree_id": topic["tree_id"],
+                "topic_id": prepared["target_topic_id"],
+                "handoff_id": prepared["handoff_id"],
+                "attempt_id": prepared["attempt_id"],
+                "payload_sha256": prepared["payload_sha256"],
+            },
+        )
+        returncode, failed, _ = self.run_cli(
+            bind, failpoint="handoff-before-binding-ledger-write"
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(failed["error"]["code"], "injected_failure")
+
+        returncode, before_retry, stderr = self.run_cli(
+            self.handoff_request(
+                topic, operation="read-handoff", handoff_id=prepared["handoff_id"]
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(before_retry["attempts"][0]["state"], "setup-pending")
+        self.assertEqual(before_retry["bindings"], [])
+
+        bind["idempotency_key"] = str(uuid.uuid4())
+        returncode, bound, stderr = self.run_cli(bind)
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(bound["state"], "bound-pending-acceptance")
+        returncode, final, stderr = self.run_cli(
+            self.handoff_request(
+                topic, operation="read-handoff", handoff_id=prepared["handoff_id"]
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        active = [item for item in final["bindings"] if item["binding_state"] == "active"]
+        self.assertEqual(len(active), 1)
 
     def prepare_checkpoint(
         self,
