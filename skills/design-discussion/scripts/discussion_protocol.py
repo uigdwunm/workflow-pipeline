@@ -3300,6 +3300,8 @@ def _parallelism_evaluation(
         if scope["base_commit"] != other["base_commit"]:
             conflicts.append({"dimension": "base_commit", "reason": "relationship-unknown"})
     for worktree in worktrees["worktrees"]:
+        if worktree["branch"] == scope["branch"]:
+            conflicts.append({"dimension": "branch", "reason": worktree["implementation_id"]})
         if worktree["path"] == scope["worktree_path"] and worktree["implementation_id"] not in {item["implementation_id"] for item in active}:
             conflicts.append({"dimension": "active_worktrees", "reason": worktree["implementation_id"]})
     if any(item["reason"] == "relationship-unknown" for item in conflicts):

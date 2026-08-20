@@ -4670,6 +4670,127 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 1, stderr)
         self.assertEqual(unknown["error"]["code"], "supervision_receipt_invalid")
 
+    def test_parallelism_blocks_active_worktree_branch_or_path_conflicts(self) -> None:
+        project = self.make_project("implementation-worktree-conflicts", git=True)
+        topic = self.bootstrap_topic(project)
+        subprocess.run(["git", "-C", str(project), "add", "docs"], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(project),
+                "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "-qm", "base",
+            ],
+            check=True,
+        )
+        base_commit = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        checkout_branch = subprocess.run(
+            ["git", "-C", str(project), "branch", "--show-current"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+
+        receipt_input = self.root / "worktree-conflict-receipt.json"
+        receipt_input.write_text(
+            json.dumps(
+                {
+                    "project_id": topic["project_id"],
+                    "repository": str(project),
+                    "topic_id": topic["topic_id"],
+                    "tree_id": topic["tree_id"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ) + "\n",
+            encoding="utf-8",
+        )
+
+        def check_scope(
+            *,
+            implementation_id: str,
+            expected_revision: int,
+            branch: str,
+            worktree_path: Path,
+        ) -> dict[str, object]:
+            scope = {
+                "paths": [f"src/{implementation_id}.py"],
+                "modules": [implementation_id],
+                "interfaces": [implementation_id],
+                "database_objects": [],
+                "dependencies": [],
+                "base_commit": base_commit,
+                "branch": branch,
+                "worktree_path": str(worktree_path),
+            }
+            code, _, stderr = self.run_cli(
+                self.evolution_request(
+                    topic,
+                    operation="prepare-implementation-run",
+                    expected_revision=expected_revision,
+                    expected_topic_revision=1,
+                    implementation_id=implementation_id,
+                    scope=scope,
+                )
+            )
+            self.assertEqual(code, 0, stderr)
+            issued = self.supervision_cli(
+                "create-worktree-state-receipt", "--input", str(receipt_input)
+            )
+            receipt = {
+                key: issued[key]
+                for key in ("file_bytes", "file_sha256", "path", "version")
+            }
+            code, checked, stderr = self.run_cli(
+                self.evolution_request(
+                    topic,
+                    operation="check-implementation-parallelism",
+                    expected_revision=expected_revision + 1,
+                    expected_topic_revision=1,
+                    implementation_id=implementation_id,
+                    worktree_receipt=receipt,
+                )
+            )
+            self.assertEqual(code, 0, stderr)
+            return checked
+
+        safe = check_scope(
+            implementation_id="implementation-safe",
+            expected_revision=1,
+            branch="codex/safe",
+            worktree_path=project / ".worktrees" / "safe",
+        )
+        self.assertEqual(safe["verdict"], "safe")
+        self.assertEqual(safe["conflicts"], [])
+
+        branch_conflict = check_scope(
+            implementation_id="implementation-branch-conflict",
+            expected_revision=3,
+            branch=checkout_branch,
+            worktree_path=project / ".worktrees" / "branch-conflict",
+        )
+        self.assertEqual(branch_conflict["verdict"], "blocked")
+        self.assertEqual(
+            branch_conflict["conflicts"],
+            [{"dimension": "branch", "reason": "ordinary-checkout"}],
+        )
+
+        path_conflict = check_scope(
+            implementation_id="implementation-path-conflict",
+            expected_revision=5,
+            branch="codex/path-conflict",
+            worktree_path=project,
+        )
+        self.assertEqual(path_conflict["verdict"], "blocked")
+        self.assertEqual(
+            path_conflict["conflicts"],
+            [{"dimension": "active_worktrees", "reason": "ordinary-checkout"}],
+        )
+
     def test_activation_releases_ledger_lock_and_revalidates_expected_revision(self) -> None:
         project = self.make_project("activation-lock-order", git=True)
         topic = self.bootstrap_topic(project)
