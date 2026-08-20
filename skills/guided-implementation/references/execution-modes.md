@@ -19,7 +19,9 @@ checkpoint. Never copy either state machine into the other protocol.
 
 1. Use `prepare-implementation-run` with normalized repository-relative paths,
    modules, interfaces, database objects, dependencies, base commit, branch and
-   canonical worktree path.
+   canonical worktree path. When the implementation consumes only selected
+   source-topic decisions, include their sorted unique `decision_ids`; omission
+   preserves the legacy meaning of all currently confirmed decisions.
 2. Use `check-implementation-parallelism`. A `safe` result is only a technical
    result; it is not permission to create a worktree. `blocked` stops the
    isolated launch. `unknown` requires more evidence and never falls back to
@@ -62,17 +64,38 @@ whose bytes bind all of:
 - implementation branch and base commit;
 - normalized scope SHA-256;
 - every sensitive shared surface; and
+- the authenticated source task identity; and
 - the fact that worktree creation is authorized for this run only.
 
-Create the worktree only while holding a short repository coordination lease.
-Immediately acquire the long-lived execution lease:
+Write the user decision as canonical JSON with one trailing newline. Its exact
+schema is `isolated-worktree-user-decision-v1`, with `confirmed: true`,
+`creation_action: create-isolated-worktree`, `source_task_id`, and every field
+of the frozen binding (`repository`, `topic_id`, `phase_run_id`,
+`implementation_id`, `base_commit`, `implementation_branch`, `worktree_path`,
+`scope_sha256`, and sorted `sensitive_shared_surfaces`). Then execute this exact
+order; each `<input>` is canonical JSON for the named CLI schema:
 
 ```text
-supervision_protocol.py acquire-worktree-execution-lease --input <input>
+supervision_protocol.py record-isolated-worktree-confirmation \
+  --input <confirmation-input>
+supervision_protocol.py acquire-repository-coordination-lease \
+  --input <worktree-creation-coordination-input>
+supervision_protocol.py create-isolated-worktree \
+  --input <creation-input>
+supervision_protocol.py acquire-worktree-execution-lease \
+  --input <execution-lease-input>
+supervision_protocol.py release-repository-coordination-lease \
+  --file <coordination-lease> --id <id> --version <version>
 ```
 
-The input binds repository, topic, Phase Run, implementation, base, branch,
-worktree path, scope digest, sensitive surfaces, owner and TTL. Before Git,
+The confirmation input binds the typed user-decision file and current safe
+`parallelism_validation`; it performs no Git side effect and needs no lease.
+Acquire the short lease with stage `guided-implementation` and purpose
+`worktree-creation`. The creation input binds that lease to the immutable
+confirmation. The execution-lease input binds repository, topic, Phase Run,
+implementation, base, branch, worktree path, scope digest, sensitive surfaces,
+owner and TTL. Release the short lease immediately after the execution lease is
+durable. Before later Git,
 project execution, implementation mutation, test execution or commit, verify:
 
 ```text
@@ -98,8 +121,12 @@ repository coordination lease with stage `guided-implementation` and purpose
 supervision_protocol.py revalidate-integration --input <input>
 ```
 
-The expected and current snapshots must match for source identity, dependency
-receipt and active-implementation receipt. Any stale dimension blocks merge.
+The input contains exactly `repository`, the exact serial-integration
+`coordination_lease`, and a `discussion_validation` request for the current
+`validate-integration-authority-receipt` schema. Caller-supplied `expected` and
+`current` snapshots are invalid. The returned current discussion authority must
+match the repository HEAD and held execution leases; any stale dimension blocks
+merge.
 Also rerun the discussion parallelism/source validation, candidate checks and
 document barrier checks against the current shared base. Integrate exactly one
 candidate, release the coordination lease, then allow the next candidate to
@@ -112,7 +139,13 @@ authority.
 ## Refresh an unaffected source
 
 A source change first records `no-impact`, `affected` or `unknown` against the
-implementation's decisions and scope. `affected` and `unknown` remain paused.
+implementation's frozen source identity, normalized declared scope and exact
+decision IDs. The impact receipt contains only ledger impacts for those frozen
+decision IDs, so an unrelated resolved impact does not mark the implementation
+affected. A relevant pending impact is `unknown`; a newly resolved relevant
+impact is `affected`. Absence of a relevant impact is `no-impact` only when the
+authoritative changed decision set is disjoint from the frozen target.
+`affected` and `unknown` remain paused.
 For `no-impact` only:
 
 1. `prepare-source-refresh` records a candidate pointing to a different,

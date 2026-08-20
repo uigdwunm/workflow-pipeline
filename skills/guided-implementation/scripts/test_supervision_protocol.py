@@ -186,6 +186,7 @@ class DocumentLeaseTests(unittest.TestCase):
         worktree: Path,
         ledger_revision: int,
         fault_after_git: bool = False,
+        exercise_invalid_decision: bool = False,
     ) -> dict[str, object]:
         scope = {
             "paths": [f"src/{implementation_id}.py"],
@@ -282,9 +283,55 @@ class DocumentLeaseTests(unittest.TestCase):
             "topic_id": topic["topic_id"],
             "worktree_path": str(worktree),
         }
-        decision_file = self.root / f"decision-{implementation_id}.txt"
+        decision_file = self.root / f"decision-{implementation_id}.json"
+        if exercise_invalid_decision:
+            decision_file.write_text("任意非空确认文本。\n", encoding="utf-8")
+            invalid_confirmation_input = self.root / f"invalid-confirmation-{implementation_id}.json"
+            invalid_confirmation_input.write_text(
+                json.dumps(
+                    {
+                        "binding": binding,
+                        "parallelism_validation": self.discussion_request(
+                            topic,
+                            "validate-implementation-parallelism",
+                            implementation_id=implementation_id,
+                            receipt=checked["receipt"],
+                            worktree_receipt=state_receipt,
+                        ),
+                        "source_task_id": implementation_id,
+                        "user_decision_file": str(decision_file),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            rejected = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "record-isolated-worktree-confirmation", "--input", str(invalid_confirmation_input)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(rejected.returncode, 2)
+            self.assertEqual(
+                json.loads(rejected.stdout)["error"]["code"],
+                "isolated_confirmation_required",
+            )
         decision_file.write_text(
-            f"确认创建 {worktree} on {branch} from {base} for {implementation_id}.\n",
+            json.dumps(
+                {
+                    **binding,
+                    "confirmed": True,
+                    "creation_action": "create-isolated-worktree",
+                    "schema": "isolated-worktree-user-decision-v1",
+                    "source_task_id": implementation_id,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
             encoding="utf-8",
         )
         confirmation_input = self.root / f"confirmation-{implementation_id}.json"
@@ -292,7 +339,6 @@ class DocumentLeaseTests(unittest.TestCase):
             json.dumps(
                 {
                     "binding": binding,
-                    "coordination_lease": coordination_receipt,
                     "parallelism_validation": self.discussion_request(
                         topic,
                         "validate-implementation-parallelism",
@@ -300,6 +346,7 @@ class DocumentLeaseTests(unittest.TestCase):
                         receipt=checked["receipt"],
                         worktree_receipt=state_receipt,
                     ),
+                    "source_task_id": implementation_id,
                     "user_decision_file": str(decision_file),
                 },
                 ensure_ascii=False,
@@ -803,6 +850,45 @@ class DocumentLeaseTests(unittest.TestCase):
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
 
+        stale_release = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "release-worktree-execution-lease", "--file", lease["path"], "--id", lease["holder"]["lease_id"], "--version", str(lease["version"])],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.assertEqual(stale_release.returncode, 2)
+        self.assertEqual(json.loads(stale_release.stdout)["error"]["code"], "worktree_lease_release_cas_mismatch")
+
+        invalid_availability = self.root / "invalid-availability.json"
+        invalid_availability.write_text(
+            json.dumps({"execution_mode": "caller-invented", "repository": str(self.repository)}, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        invalid = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "check-execution-availability", "--input", str(invalid_availability)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.assertEqual(invalid.returncode, 2)
+        self.assertEqual(json.loads(invalid.stdout)["error"]["code"], "execution_availability_invalid")
+
+        invalid_reconcile = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "reconcile-worktree-execution-lease", "--file", second["path"], "--id", second["holder"]["lease_id"], "--version", str(second["version"]), "--platform-cwd", str(second_worktree), "--outcome", "caller-invented"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.assertEqual(invalid_reconcile.returncode, 2)
+        self.assertEqual(json.loads(invalid_reconcile.stdout)["error"]["code"], "worktree_reconciliation_invalid_outcome")
+
+    def test_isolated_user_decision_requires_canonical_exact_payload(self) -> None:
+        topic, base = self.bootstrap_discussion_repository()
+        lease = self.create_coordinated_worktree_lease(
+            topic,
+            base=base,
+            implementation_id="implementation-canonical-decision",
+            branch="codex/canonical-decision",
+            worktree=self.root / "isolated-canonical-decision",
+            ledger_revision=1,
+            exercise_invalid_decision=True,
+        )
+        self.assertEqual(lease["state"], "held")
+
     def test_serial_integration_revalidates_source_dependencies_and_active_runs(self) -> None:
         lease_input = self.root / "serial-integration-lease.json"
         lease_input.write_text(
@@ -852,6 +938,57 @@ class DocumentLeaseTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertEqual(report["error"]["code"], "discussion_receipt_invalid")
         self.assertIn("self-comparison", report["error"]["message"])
+
+        subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "release-repository-coordination-lease", "--file", lease["path"], "--id", holder["lease_id"], "--version", str(lease["version"])],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        wrong_lease_input = self.root / "wrong-integration-lease.json"
+        wrong_lease_input.write_text(
+            json.dumps(
+                {
+                    "owner_host_id": "host-1",
+                    "owner_task_id": "integration-task",
+                    "purpose": "worktree-creation",
+                    "repository": str(self.repository),
+                    "stage": "guided-implementation",
+                    "ttl_seconds": 300,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        wrong_lease = json.loads(
+            subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "acquire-repository-coordination-lease", "--input", str(wrong_lease_input)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            ).stdout
+        )
+        request_path.write_text(
+            json.dumps(
+                {
+                    "coordination_lease": {
+                        "lease_id": wrong_lease["holder"]["lease_id"],
+                        "path": wrong_lease["path"],
+                        "version": wrong_lease["version"],
+                    },
+                    "discussion_validation": {},
+                    "repository": str(self.repository),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        wrong = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "revalidate-integration", "--input", str(request_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.assertEqual(wrong.returncode, 2)
+        self.assertEqual(json.loads(wrong.stdout)["error"]["code"], "integration_lease_invalid")
 
     def test_dual_mode_handoffs_are_v4_and_legacy_v3_remains_verifiable(self) -> None:
         runtime_root = self.root / "runtime"

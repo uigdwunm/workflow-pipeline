@@ -3043,14 +3043,17 @@ def _normalized_string_set(value: Any, label: str) -> list[str]:
 def _normalize_implementation_scope(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProtocolError("invalid_request", f"{label} must be an object")
-    _expect_keys(
-        value,
-        {
-            "paths", "modules", "interfaces", "database_objects", "dependencies",
-            "base_commit", "branch", "worktree_path",
-        },
-        label,
-    )
+    required = {
+        "paths", "modules", "interfaces", "database_objects", "dependencies",
+        "base_commit", "branch", "worktree_path",
+    }
+    if set(value) not in {frozenset(required), frozenset(required | {"decision_ids"})}:
+        raise ProtocolError(
+            "invalid_request",
+            f"{label} fields do not match the implementation scope schema; "
+            f"missing={sorted(required - set(value))!r}; "
+            f"unexpected={sorted(set(value) - required - {'decision_ids'})!r}",
+        )
     paths = _normalized_string_set(value["paths"], f"{label}.paths")
     for path in paths:
         candidate = Path(path)
@@ -3062,7 +3065,7 @@ def _normalize_implementation_scope(value: Any, label: str) -> dict[str, Any]:
     worktree_path = Path(_expect_string(value["worktree_path"], f"{label}.worktree_path", max_bytes=4096))
     if not worktree_path.is_absolute() or str(worktree_path.resolve(strict=False)) != str(worktree_path):
         raise ProtocolError("invalid_request", f"{label}.worktree_path must be canonical and absolute")
-    return {
+    normalized = {
         "paths": paths,
         "modules": _normalized_string_set(value["modules"], f"{label}.modules"),
         "interfaces": _normalized_string_set(value["interfaces"], f"{label}.interfaces"),
@@ -3072,6 +3075,11 @@ def _normalize_implementation_scope(value: Any, label: str) -> dict[str, Any]:
         "branch": _expect_string(value["branch"], f"{label}.branch", max_bytes=1024),
         "worktree_path": str(worktree_path),
     }
+    if "decision_ids" in value:
+        normalized["decision_ids"] = _normalized_string_set(
+            value["decision_ids"], f"{label}.decision_ids"
+        )
+    return normalized
 
 
 def _normalize_active_implementations(value: Any) -> list[dict[str, Any]]:
@@ -3146,15 +3154,27 @@ def _authoritative_active_implementations(
 
 def _call_supervision(command: str, request: dict[str, Any]) -> dict[str, Any]:
     script = Path(__file__).resolve().parents[2] / "guided-implementation" / "scripts" / "supervision_protocol.py"
+    if os.environ.get("CODEX_DISCUSSION_TEST_FAILPOINT") == "delay-supervision":
+        print("TEST_SUPERVISION_CALL_STARTED", file=sys.stderr, flush=True)
+        time.sleep(0.5)
     with tempfile.NamedTemporaryFile(prefix="discussion-supervision-", suffix=".json", delete=False) as stream:
         path = Path(stream.name)
         stream.write((_canonical_json(request) + "\n").encode("utf-8"))
     try:
-        completed = subprocess.run(
-            [sys.executable, str(script), command, "--input", str(path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        try:
+            completed = subprocess.run(
+                [sys.executable, str(script), command, "--input", str(path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ProtocolError(
+                "supervision_receipt_invalid",
+                "supervision verifier exceeded the bounded ten second deadline",
+                retryable=True,
+                cause=str(error),
+            ) from error
     finally:
         path.unlink(missing_ok=True)
     try:
@@ -3214,8 +3234,6 @@ def _parallelism_evaluation(
         return "unknown", [{"dimension": "active_worktrees", "reason": "verification-unavailable"}], digest
     conflicts: list[dict[str, str]] = []
     for implementation in active:
-        if implementation["state"] not in {"active", "integrating", "closing"}:
-            continue
         other = implementation["scope"]
         for dimension in ("paths", "modules", "interfaces", "database_objects", "dependencies"):
             overlap = _paths_overlap(scope[dimension], other[dimension]) if dimension == "paths" else bool(set(scope[dimension]) & set(other[dimension]))
@@ -3346,16 +3364,52 @@ def _verified_implementation_source(
     return checkpoint
 
 
+def _implementation_decision_ids(
+    records: dict[str, list[dict[str, Any]]],
+    topic_id: str,
+    declared: list[str] | None = None,
+) -> list[str]:
+    confirmed = sorted(
+        data["decision_id"]
+        for record in records["Pending Items"]
+        if record.get("topic_id") == topic_id and record.get("item_kind") == "decision"
+        for data in [_json_field(record, "data_json", "decision")]
+        if data.get("state") == "confirmed"
+    )
+    if declared is None:
+        return confirmed
+    if any(item not in set(confirmed) for item in declared):
+        raise ProtocolError(
+            "implementation_identity_conflict",
+            "implementation scope decision_ids must identify confirmed source-topic decisions",
+        )
+    return list(declared)
+
+
 def _authoritative_source_impact(
-    records: dict[str, list[dict[str, Any]]], topic_id: str, baseline: str | None
+    records: dict[str, list[dict[str, Any]]],
+    topic_id: str,
+    baseline: str | None,
+    *,
+    decision_ids: list[str],
+    scope: dict[str, Any],
 ) -> tuple[str, str, list[str]]:
+    decision_set = set(decision_ids)
     impacts = [
         _json_field(record, "data_json", "impact")
         for record in records["Impacts"]
         if record.get("topic_id") == topic_id
     ]
-    impacts = sorted(impacts, key=lambda item: item["impact_id"])
-    digest = _sha256(_canonical_json(impacts).encode("utf-8"))
+    impacts = sorted(
+        (item for item in impacts if item.get("decision_id") in decision_set),
+        key=lambda item: item["impact_id"],
+    )
+    target = {
+        "decision_ids": decision_ids,
+        "impacts": impacts,
+        "scope": scope,
+    }
+    digest = _sha256(_canonical_json(target).encode("utf-8"))
     pending = [item["impact_id"] for item in impacts if item.get("state") == "pending"]
     if pending:
         return "unknown", digest, pending
@@ -3396,6 +3450,15 @@ def _activate_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
         "activate-implementation-run request",
     )
     _validate_uuid4(request["idempotency_key"], "idempotency_key")
+    mode = _expect_string(request["execution_mode"], "execution_mode")
+    if mode not in {"exclusive-checkout-v2", "isolated-worktree-v1"}:
+        raise ProtocolError("invalid_request", "execution_mode is unsupported")
+    supplied_receipt = _expect_string(
+        request["parallelism_receipt"], "parallelism_receipt", max_bytes=64
+    )
+
+    # Snapshot only discussion-owned authority while holding the ledger lock.
+    # Cross-protocol verification deliberately happens after this block.
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)
         frontmatter, records = _load_records(ledger_path)
@@ -3407,25 +3470,76 @@ def _activate_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         record = _implementation_record(records, _expect_string(request["implementation_id"], "implementation_id"))
         data = _implementation_data(record)
-        mode = _expect_string(request["execution_mode"], "execution_mode")
         if data.get("execution") is not None or data.get("state") != "prepared":
             raise ProtocolError("execution_mode_frozen", "activated implementation mode cannot be changed")
-        if mode not in {"exclusive-checkout-v2", "isolated-worktree-v1"}:
-            raise ProtocolError("invalid_request", "execution_mode is unsupported")
-        worktrees = _verified_worktree_snapshot(request, request["worktree_receipt"])
-        active = _authoritative_active_implementations(records, data["implementation_id"])
-        verdict, _, receipt = _parallelism_evaluation(data["scope"], active, worktrees)
-        supplied_receipt = _expect_string(request["parallelism_receipt"], "parallelism_receipt", max_bytes=64)
-        if supplied_receipt != receipt or data.get("parallelism", {}).get("receipt") != receipt:
-            raise ProtocolError("implementation_parallelism_stale", "parallelism inputs changed before activation")
-        confirmation = None
-        if mode == "isolated-worktree-v1":
-            if verdict != "safe":
-                raise ProtocolError("isolated_worktree_confirmation_required", "isolated execution requires a safe parallelism receipt")
-            confirmation = _validate_isolated_confirmation(request, request["isolated_confirmation"], data["scope"], receipt)
-        elif request["isolated_confirmation"] is not None:
+        if mode == "exclusive-checkout-v2" and request["isolated_confirmation"] is not None:
             raise ProtocolError("invalid_request", "exclusive checkout activation does not accept isolated confirmation")
         checkpoint = _verified_implementation_source(records, request["source_checkpoint_id"], request["source_identity"])
+        snapshot = {
+            "active": _authoritative_active_implementations(records, data["implementation_id"]),
+            "implementation_id": data["implementation_id"],
+            "implementation_record_revision": data["record_revision"],
+            "parallelism": data.get("parallelism"),
+            "scope": data["scope"],
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_identity": checkpoint["published_identity"],
+        }
+
+    worktrees = _verified_worktree_snapshot(request, request["worktree_receipt"])
+    verdict, _, receipt = _parallelism_evaluation(
+        snapshot["scope"], snapshot["active"], worktrees
+    )
+    if supplied_receipt != receipt or (snapshot["parallelism"] or {}).get("receipt") != receipt:
+        raise ProtocolError(
+            "implementation_parallelism_stale",
+            "parallelism inputs changed before activation",
+        )
+    confirmation = None
+    if mode == "isolated-worktree-v1":
+        if verdict != "safe":
+            raise ProtocolError(
+                "isolated_worktree_confirmation_required",
+                "isolated execution requires a safe parallelism receipt",
+            )
+        confirmation = _validate_isolated_confirmation(
+            request, request["isolated_confirmation"], snapshot["scope"], receipt
+        )
+
+    # Commit with the caller's expected revision as the CAS. Any ledger change
+    # during external verification fails deterministically before mutation.
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        record = _implementation_record(records, snapshot["implementation_id"])
+        data = _implementation_data(record)
+        checkpoint = _verified_implementation_source(
+            records, request["source_checkpoint_id"], request["source_identity"]
+        )
+        current_identity = {
+            "active": _authoritative_active_implementations(records, data["implementation_id"]),
+            "implementation_id": data["implementation_id"],
+            "implementation_record_revision": data["record_revision"],
+            "parallelism": data.get("parallelism"),
+            "scope": data["scope"],
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_identity": checkpoint["published_identity"],
+        }
+        if current_identity != snapshot or data.get("execution") is not None or data.get("state") != "prepared":
+            raise ProtocolError(
+                "implementation_identity_conflict",
+                "implementation authority changed during external verification",
+            )
+        decision_ids = _implementation_decision_ids(
+            records,
+            request["actor_topic_id"],
+            data["scope"].get("decision_ids"),
+        )
         data["state"] = "active"
         data["record_revision"] += 1
         data["execution"] = {
@@ -3434,7 +3548,14 @@ def _activate_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
             "source_identity": checkpoint["published_identity"],
             "parallelism_receipt": receipt,
             "explicit_confirmation": confirmation,
-            "impact_receipt": _authoritative_source_impact(records, request["actor_topic_id"], None)[1],
+            "decision_ids": decision_ids,
+            "impact_receipt": _authoritative_source_impact(
+                records,
+                request["actor_topic_id"],
+                None,
+                decision_ids=decision_ids,
+                scope=data["scope"],
+            )[1],
         }
         _store_implementation(record, data)
         next_revision = ledger_revision + 1
@@ -3476,7 +3597,13 @@ def _prepare_source_refresh(request: dict[str, Any]) -> dict[str, Any]:
         checkpoint = _verified_implementation_source(records, request["source_checkpoint_id"], request["source_identity"])
         if checkpoint["published_identity"] == data["execution"]["source_identity"]:
             raise ProtocolError("source_refresh_state_conflict", "source refresh must advance to a different committed identity")
-        impact, impact_receipt, impact_ids = _authoritative_source_impact(records, request["actor_topic_id"], data["execution"].get("impact_receipt"))
+        impact, impact_receipt, impact_ids = _authoritative_source_impact(
+            records,
+            request["actor_topic_id"],
+            data["execution"].get("impact_receipt"),
+            decision_ids=data["execution"].get("decision_ids", []),
+            scope=data["scope"],
+        )
         if claimed_impact != impact:
             raise ProtocolError("source_refresh_impact_mismatch", f"claimed source impact differs from authoritative ledger; claimed={claimed_impact}; authoritative={impact}", context={"state": "blocked", "ledger_revision": ledger_revision, "record_revision": data["record_revision"], "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"]})
         refresh_id = "REF-" + _sha256(f"{data['implementation_id']}:{checkpoint['checkpoint_id']}".encode("utf-8"))[:16]

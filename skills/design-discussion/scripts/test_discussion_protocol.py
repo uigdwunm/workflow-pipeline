@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import fcntl
 import os
 from pathlib import Path
 import re
@@ -4541,7 +4542,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertTrue(snapshot_path.exists())
 
 
-    def test_implementation_parallelism_is_deterministic_and_receipts_go_stale(self) -> None:
+    def test_parallelism_counts_overlapping_paused_and_refresh_pending_runs(self) -> None:
         project = self.make_project("implementation-parallelism", git=True)
         topic = self.bootstrap_topic(project)
         subprocess.run(["git", "-C", str(project), "add", "docs"], check=True)
@@ -4622,7 +4623,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         code, _, stderr = self.run_cli(self.evolution_request(topic, operation="prepare-implementation-run", expected_revision=3, expected_topic_revision=1, implementation_id="implementation-other", scope=other_scope))
         self.assertEqual(code, 0, stderr)
         ledger = Path(str(topic["ledger_path"]))
-        self.rewrite_ledger_with_valid_digest(ledger, '\\"state\\":\\"prepared\\"', '\\"state\\":\\"active\\"')
+        self.rewrite_ledger_with_valid_digest(ledger, '\\"state\\":\\"prepared\\"', '\\"state\\":\\"paused\\"')
         code, blocked, stderr = self.run_cli(
             self.evolution_request(
                 topic,
@@ -4637,13 +4638,28 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(blocked["verdict"], "blocked")
         self.assertIn("paths", [item["dimension"] for item in blocked["conflicts"]])
 
+        self.rewrite_ledger_with_valid_digest(ledger, '\\"state\\":\\"paused\\"', '\\"state\\":\\"refresh-pending\\"')
+        code, refresh_blocked, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="check-implementation-parallelism",
+                expected_revision=5,
+                expected_topic_revision=1,
+                implementation_id="implementation-wi07",
+                worktree_receipt=fresh_receipt,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(refresh_blocked["verdict"], "blocked")
+        self.assertIn("paths", [item["dimension"] for item in refresh_blocked["conflicts"]])
+
         forged = dict(fresh_receipt)
         forged["file_sha256"] = "0" * 64
         code, unknown, stderr = self.run_cli(
             self.evolution_request(
                 topic,
                 operation="check-implementation-parallelism",
-                expected_revision=5,
+                expected_revision=6,
                 expected_topic_revision=1,
                 implementation_id="implementation-wi07",
                 worktree_receipt=forged,
@@ -4651,6 +4667,120 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(code, 1, stderr)
         self.assertEqual(unknown["error"]["code"], "supervision_receipt_invalid")
+
+    def test_activation_releases_ledger_lock_and_revalidates_expected_revision(self) -> None:
+        project = self.make_project("activation-lock-order", git=True)
+        topic = self.bootstrap_topic(project)
+        subprocess.run(["git", "-C", str(project), "add", "docs"], check=True)
+        subprocess.run(
+            ["git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+            check=True,
+        )
+        base = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        source = self.prepare_checkpoint(topic, ledger_revision=1, purpose="implementation-source")
+        source = self.publish_git_checkpoint(project, topic, source, ledger_revision=2)
+        scope = {
+            "paths": ["src/activation.py"],
+            "modules": ["activation"],
+            "interfaces": ["discussion-cli"],
+            "database_objects": [],
+            "dependencies": [],
+            "base_commit": base,
+            "branch": "codex/activation-lock-order",
+            "worktree_path": str(project / ".worktrees" / "activation-lock-order"),
+        }
+        self.assertEqual(
+            self.run_cli(
+                self.evolution_request(
+                    topic,
+                    operation="prepare-implementation-run",
+                    expected_revision=3,
+                    expected_topic_revision=1,
+                    implementation_id="implementation-lock-order",
+                    scope=scope,
+                )
+            )[0],
+            0,
+        )
+        receipt_input = self.root / "activation-lock-state.json"
+        receipt_input.write_text(
+            json.dumps({"project_id": topic["project_id"], "repository": str(project), "topic_id": topic["topic_id"], "tree_id": topic["tree_id"]}, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        issued = self.supervision_cli("create-worktree-state-receipt", "--input", str(receipt_input))
+        worktree_receipt = {key: issued[key] for key in ("file_bytes", "file_sha256", "path", "version")}
+        checked = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="check-implementation-parallelism",
+                expected_revision=4,
+                expected_topic_revision=1,
+                implementation_id="implementation-lock-order",
+                worktree_receipt=worktree_receipt,
+            )
+        )[1]
+        activation = self.evolution_request(
+            topic,
+            operation="activate-implementation-run",
+            expected_revision=5,
+            expected_topic_revision=1,
+            implementation_id="implementation-lock-order",
+            execution_mode="exclusive-checkout-v2",
+            source_checkpoint_id=source["checkpoint_id"],
+            source_identity=source["commit_id"],
+            parallelism_receipt=checked["receipt"],
+            worktree_receipt=worktree_receipt,
+            isolated_confirmation=None,
+            phase_run_id="PR-lock-order",
+            sensitive_shared_surfaces=["git-common-dir"],
+        )
+        environment = {**os.environ, "CODEX_DISCUSSION_TEST_FAILPOINT": "delay-supervision"}
+        process = subprocess.Popen(
+            [sys.executable, str(SCRIPT_PATH)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        assert process.stdin is not None and process.stderr is not None
+        process.stdin.write(json.dumps(activation))
+        process.stdin.close()
+        self.assertEqual(process.stderr.readline().strip(), "TEST_SUPERVISION_CALL_STARTED")
+
+        common_dir = self.git_common_dir(project)
+        lock_path = common_dir / "cc-switch" / "design-discussion" / "v1" / "locks" / (hashlib.sha256(str(project).encode()).hexdigest() + ".lock")
+        with lock_path.open("a+b") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+
+        other_scope = {**scope, "paths": ["src/other.py"], "modules": ["other"], "branch": "codex/other", "worktree_path": str(project / ".worktrees" / "other")}
+        self.assertEqual(
+            self.run_cli(
+                self.evolution_request(
+                    topic,
+                    operation="prepare-implementation-run",
+                    expected_revision=5,
+                    expected_topic_revision=1,
+                    implementation_id="implementation-concurrent",
+                    scope=other_scope,
+                )
+            )[0],
+            0,
+        )
+        stdout = process.stdout.read() if process.stdout is not None else ""
+        process.wait(timeout=10)
+        if process.stdout is not None:
+            process.stdout.close()
+        process.stderr.read()
+        process.stderr.close()
+        self.assertEqual(process.returncode, 1)
+        self.assertEqual(json.loads(stdout)["error"]["code"], "ledger_revision_conflict")
 
     def test_execution_mode_and_committed_source_are_frozen_with_no_impact_refresh(self) -> None:
         project = self.make_project("implementation-source-refresh", git=True)
@@ -4709,12 +4839,12 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         coordination_input.write_text(json.dumps({"owner_host_id": "test-host", "owner_task_id": "implementation-task", "purpose": "worktree-creation", "repository": str(project), "stage": "guided-implementation", "ttl_seconds": 300}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         coordination = self.supervision_cli("acquire-repository-coordination-lease", "--input", str(coordination_input))
         coordination_receipt = {"lease_id": coordination["holder"]["lease_id"], "path": coordination["path"], "version": coordination["version"]}
-        decision_file = self.root / "user-decision.txt"
-        decision_file.write_text("用户确认按此精确 path/branch/base/scope 创建 isolated worktree。\n", encoding="utf-8")
         binding = {"base_commit": scope["base_commit"], "implementation_branch": scope["branch"], "implementation_id": "implementation-refresh", "phase_run_id": phase_run_id, "repository": str(project), "scope_sha256": hashlib.sha256(json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "sensitive_shared_surfaces": surfaces, "topic_id": topic["topic_id"], "worktree_path": scope["worktree_path"]}
+        decision_file = self.root / "user-decision.json"
+        decision_file.write_text(json.dumps({**binding, "confirmed": True, "creation_action": "create-isolated-worktree", "schema": "isolated-worktree-user-decision-v1", "source_task_id": "implementation-task"}, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         confirmation_input = self.root / "isolated-confirmation.json"
         validation = self.evolution_request(topic, operation="validate-implementation-parallelism", implementation_id="implementation-refresh", receipt=checked["receipt"], worktree_receipt=worktree_receipt)
-        confirmation_input.write_text(json.dumps({"binding": binding, "coordination_lease": coordination_receipt, "parallelism_validation": validation, "user_decision_file": str(decision_file)}, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        confirmation_input.write_text(json.dumps({"binding": binding, "parallelism_validation": validation, "source_task_id": "implementation-task", "user_decision_file": str(decision_file)}, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         confirmation = self.supervision_cli("record-isolated-worktree-confirmation", "--input", str(confirmation_input))
         confirmation_receipt = {key: confirmation[key] for key in ("file_bytes", "file_sha256", "path", "version")}
         code, activated, stderr = self.run_cli(
@@ -4842,9 +4972,9 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 impact_summary="Caller claims the pending decision impact is unrelated.",
             )
         )
-        self.assertEqual(code, 1, stderr)
-        self.assertEqual(forged_no_impact["error"]["code"], "source_refresh_impact_mismatch")
-        self.assertIn("authoritative=unknown", forged_no_impact["error"]["message"])
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(forged_no_impact["state"], "refresh-candidate")
+        self.assertEqual(forged_no_impact["impact"], "no-impact")
 
     def test_integration_revalidation_uses_current_cross_cli_authority(self) -> None:
         project = self.make_project("integration-authority", git=True)

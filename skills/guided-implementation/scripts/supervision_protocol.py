@@ -84,6 +84,7 @@ WORKTREE_STATE_RECEIPT_DIRECTORY = "cc-switch-worktree-state-receipts"
 WORKTREE_STATE_RECEIPT_VERSION = 1
 ISOLATED_CONFIRMATION_DIRECTORY = "cc-switch-isolated-worktree-confirmations"
 ISOLATED_CONFIRMATION_VERSION = 1
+ISOLATED_USER_DECISION_SCHEMA = "isolated-worktree-user-decision-v1"
 SUPERVISION_VERSION = 1
 MANIFEST_VERSION = 1
 LEGACY_CONTROL_VERSION = 1
@@ -238,6 +239,12 @@ def _error_response(error: ProtocolError, command: str) -> dict[str, Any]:
         "discussion_receipt_invalid": "讨论协议未能验证当前来源、依赖或活动运行凭证。",
         "integration_state_stale": "集成前的权威来源、依赖、活动运行或 Git 状态已变化。",
         "outcome_unknown": "操作结果未知，必须先检查权威状态再恢复。",
+        "execution_availability_invalid": "执行可用性请求包含不支持的执行模式。",
+        "integration_lease_invalid": "集成操作未持有精确的串行集成协调租约。",
+        "worktree_branch_mismatch": "精确 worktree 的分支或基础提交与冻结绑定不一致。",
+        "worktree_exact_missing": "冻结绑定中的精确 worktree 不存在。",
+        "worktree_lease_release_cas_mismatch": "worktree execution lease 的释放 CAS 已变化。",
+        "worktree_reconciliation_invalid_outcome": "worktree execution lease 对账结果不受支持。",
     }
     return {
         "ok": False,
@@ -1692,12 +1699,21 @@ def verify_worktree_state_receipt(input_path: Path) -> dict[str, Any]:
 
 def _verify_discussion_request(request: dict[str, Any]) -> dict[str, Any]:
     script = Path(__file__).resolve().parents[2] / "design-discussion" / "scripts" / "discussion_protocol.py"
-    completed = subprocess.run(
-        [sys.executable, str(script)],
-        input=_canonical_json_bytes(request),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(script)],
+            input=_canonical_json_bytes(request),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ProtocolError(
+            "discussion_receipt_invalid",
+            "discussion verifier exceeded the bounded ten second deadline",
+            retryable=True,
+            cause=str(error),
+        ) from error
     try:
         result = json.loads(completed.stdout)
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
@@ -1715,11 +1731,19 @@ def _confirmation_path(repository: Path, implementation_id: str) -> Path:
 def _verify_creation_coordination(value: Any, repository: Path) -> dict[str, Any]:
     lease = _expect_object(value, "coordination_lease")
     _expect_keys(lease, {"lease_id", "path", "version"}, "coordination_lease")
-    report = verify_repository_coordination_lease(
-        _expect_absolute_path(lease["path"], "coordination_lease.path"),
-        expected_id=lease["lease_id"],
-        expected_version=lease["version"],
-    )
+    try:
+        report = verify_repository_coordination_lease(
+            _expect_absolute_path(lease["path"], "coordination_lease.path"),
+            expected_id=lease["lease_id"],
+            expected_version=lease["version"],
+        )
+    except ProtocolError as error:
+        raise ProtocolError(
+            "repository_coordination_required",
+            "worktree creation coordination lease identity or CAS verification failed",
+            cause=str(error),
+            context={"repository": str(repository)},
+        ) from error
     holder = report["holder"]
     if report["repository"] != str(repository) or holder is None or holder["stage"] != "guided-implementation" or holder["purpose"] != "worktree-creation":
         raise ProtocolError("repository_coordination_required", "exact guided-implementation worktree-creation coordination lease is required", context={"repository": str(repository)})
@@ -1730,12 +1754,71 @@ def _confirmation_report(path: Path, document: dict[str, Any], data: bytes) -> d
     return {**document, "file_bytes": len(data), "file_sha256": _sha256(data), "path": str(path)}
 
 
+def _validate_isolated_user_decision(
+    data: bytes,
+    *,
+    binding: dict[str, Any],
+    source_task_id: str,
+) -> dict[str, Any]:
+    try:
+        value = _expect_object(
+            _load_json_bytes(data, "user decision", require_canonical=True),
+            "user decision",
+        )
+    except ProtocolError as error:
+        raise ProtocolError(
+            "isolated_confirmation_required",
+            "user decision must be the canonical typed durable payload",
+            cause=str(error),
+        ) from error
+    try:
+        _expect_keys(
+            value,
+            {
+                "base_commit",
+                "confirmed",
+                "creation_action",
+                "implementation_branch",
+                "implementation_id",
+                "phase_run_id",
+                "repository",
+                "schema",
+                "scope_sha256",
+                "sensitive_shared_surfaces",
+                "source_task_id",
+                "topic_id",
+                "worktree_path",
+            },
+            "user decision",
+        )
+    except ProtocolError as error:
+        raise ProtocolError(
+            "isolated_confirmation_required",
+            "user decision is missing required canonical identity fields",
+            cause=str(error),
+            context={"repository": binding["repository"], "topic_id": binding["topic_id"]},
+        ) from error
+    expected = {
+        **binding,
+        "confirmed": True,
+        "creation_action": "create-isolated-worktree",
+        "schema": ISOLATED_USER_DECISION_SCHEMA,
+        "source_task_id": source_task_id,
+    }
+    if value != expected:
+        raise ProtocolError(
+            "isolated_confirmation_required",
+            "user decision does not equal the exact worktree identity and creation action",
+            context={"repository": binding["repository"], "topic_id": binding["topic_id"]},
+        )
+    return value
+
+
 def record_isolated_confirmation(input_path: Path) -> dict[str, Any]:
     source = _expect_object(_load_json_bytes(_read_regular_file(input_path, max_bytes=MAX_INPUT_BYTES, label="isolated confirmation input"), "isolated confirmation input"), "isolated confirmation input")
-    _expect_keys(source, {"binding", "coordination_lease", "parallelism_validation", "user_decision_file"}, "isolated confirmation input")
+    _expect_keys(source, {"binding", "parallelism_validation", "source_task_id", "user_decision_file"}, "isolated confirmation input")
     binding = _normalize_worktree_binding(source["binding"], "binding")
     repository = Path(binding["repository"])
-    coordination = _verify_creation_coordination(source["coordination_lease"], repository)
     if any(item["path"] == binding["worktree_path"] for item in _active_git_worktrees(repository)) or Path(binding["worktree_path"]).exists():
         raise ProtocolError("worktree_creation_uncoordinated", "isolated path must not exist before durable confirmation", context={"repository": str(repository), "topic_id": binding["topic_id"]})
     parallelism = _verify_discussion_request(_expect_object(source["parallelism_validation"], "parallelism_validation"))
@@ -1743,12 +1826,13 @@ def record_isolated_confirmation(input_path: Path) -> dict[str, Any]:
         raise ProtocolError("isolated_confirmation_required", "confirmation requires the exact current safe parallelism receipt", context={"repository": str(repository), "topic_id": binding["topic_id"]})
     decision_path = _expect_absolute_path(source["user_decision_file"], "user_decision_file")
     decision_bytes = _read_regular_file(decision_path, max_bytes=16_384, label="user decision")
-    try:
-        decision = decision_bytes.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ProtocolError("isolated_confirmation_required", "user decision must be byte-exact UTF-8", cause=str(error)) from error
-    if not decision.strip():
-        raise ProtocolError("isolated_confirmation_required", "user decision must be non-empty")
+    decision = _validate_isolated_user_decision(
+        decision_bytes,
+        binding=binding,
+        source_task_id=_expect_nonempty_string(
+            source["source_task_id"], "source_task_id", max_bytes=256
+        ),
+    )
     path = _confirmation_path(repository, binding["implementation_id"])
     directory, directory_fd, git_fd = _open_private_git_subdirectory(repository, ISOLATED_CONFIRMATION_DIRECTORY)
     try:
@@ -1756,11 +1840,15 @@ def record_isolated_confirmation(input_path: Path) -> dict[str, Any]:
             raise ProtocolError("isolated_confirmation_required", "an isolated confirmation already exists and must be reconciled")
         document = {
             "binding": binding,
-            "coordination_lease": {"lease_id": coordination["holder"]["lease_id"], "path": coordination["path"], "version": coordination["version"]},
             "parallelism": {"ledger_revision": parallelism["ledger_revision"], "receipt": parallelism["receipt"], "verdict": "safe"},
             "schema": ISOLATED_CONFIRMATION_VERSION,
             "state": "confirmed",
-            "user_decision": {"bytes": len(decision_bytes), "sha256": _sha256(decision_bytes), "utf8_b64": base64.b64encode(decision_bytes).decode("ascii")},
+            "user_decision": {
+                "bytes": len(decision_bytes),
+                "payload": decision,
+                "sha256": _sha256(decision_bytes),
+                "utf8_b64": base64.b64encode(decision_bytes).decode("ascii"),
+            },
             "version": 1,
         }
         data = _canonical_json_bytes(document)
@@ -1808,6 +1896,20 @@ def _replace_confirmation_document(
     return _confirmation_report(path, confirmation, data)
 
 
+def _confirmation_matches_coordination(
+    confirmation: dict[str, Any], coordination: dict[str, Any]
+) -> bool:
+    holder = coordination.get("holder") or {}
+    payload = (confirmation.get("user_decision") or {}).get("payload")
+    if isinstance(payload, dict):
+        return payload.get("source_task_id") == holder.get("owner_task_id")
+    return confirmation.get("coordination_lease") == {
+        "lease_id": holder.get("lease_id"),
+        "path": coordination.get("path"),
+        "version": coordination.get("version"),
+    }
+
+
 def create_isolated_worktree(input_path: Path) -> dict[str, Any]:
     source = _expect_object(_load_json_bytes(_read_regular_file(input_path, max_bytes=MAX_INPUT_BYTES, label="isolated worktree creation input"), "isolated worktree creation input"), "isolated worktree creation input")
     _expect_keys(source, {"confirmation", "coordination_lease", "repository"}, "isolated worktree creation input")
@@ -1815,8 +1917,8 @@ def create_isolated_worktree(input_path: Path) -> dict[str, Any]:
     coordination = _verify_creation_coordination(source["coordination_lease"], repository)
     path, confirmation, _ = _verify_confirmation(source["confirmation"], repository, required_state="confirmed")
     binding = confirmation["binding"]
-    if confirmation["coordination_lease"] != {"lease_id": coordination["holder"]["lease_id"], "path": coordination["path"], "version": coordination["version"]}:
-        raise ProtocolError("repository_coordination_required", "confirmation and creation coordination lease differ", context={"repository": str(repository), "topic_id": binding["topic_id"]})
+    if not _confirmation_matches_coordination(confirmation, coordination):
+        raise ProtocolError("repository_coordination_required", "confirmation source task and creation coordination lease differ", context={"repository": str(repository), "topic_id": binding["topic_id"]})
     try:
         subprocess.run(["git", "-C", str(repository), "worktree", "add", "-b", binding["implementation_branch"], binding["worktree_path"], binding["base_commit"]], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as error:
@@ -1854,8 +1956,8 @@ def reconcile_isolated_worktree_creation(input_path: Path) -> dict[str, Any]:
     coordination = _verify_creation_coordination(source["coordination_lease"], repository)
     path, confirmation, _ = _verify_confirmation(source["confirmation"], repository, required_state={"confirmed", "outcome-unknown"})
     binding = confirmation["binding"]
-    if confirmation["coordination_lease"] != {"lease_id": coordination["holder"]["lease_id"], "path": coordination["path"], "version": coordination["version"]}:
-        raise ProtocolError("repository_coordination_required", "confirmation and reconciliation coordination lease differ", context={"repository": str(repository), "topic_id": binding["topic_id"]})
+    if not _confirmation_matches_coordination(confirmation, coordination):
+        raise ProtocolError("repository_coordination_required", "confirmation source task and reconciliation coordination lease differ", context={"repository": str(repository), "topic_id": binding["topic_id"]})
     matches = [item for item in _active_git_worktrees(repository) if item["path"] == binding["worktree_path"]]
     if not matches and not Path(binding["worktree_path"]).exists():
         updated = {**confirmation, "creation_observation": [], "state": "confirmed", "version": confirmation["version"] + 1}
@@ -1972,7 +2074,9 @@ def _validate_worktree_binding_present(
     matches = [item for item in _active_git_worktrees(repository) if item["path"] == binding["worktree_path"]]
     if len(matches) != 1:
         raise ProtocolError(
-            f"exact worktree binding is unavailable; expected={binding['worktree_path']}"
+            "worktree_exact_missing",
+            f"exact worktree binding is unavailable; expected={binding['worktree_path']}",
+            context={"repository": binding["repository"], "topic_id": binding["topic_id"]},
         )
     observed = matches[0]
     head_matches = observed.get("head") == binding["base_commit"]
@@ -1989,9 +2093,11 @@ def _validate_worktree_binding_present(
             head_matches = False
     if observed.get("detached") or observed.get("branch") != binding["implementation_branch"] or not head_matches:
         raise ProtocolError(
+            "worktree_branch_mismatch",
             "exact worktree binding mismatch; "
             f"expected_branch={binding['implementation_branch']!r}; observed_branch={observed.get('branch')!r}; "
-            f"expected_base={binding['base_commit']}; observed_head={observed.get('head')}"
+            f"expected_base={binding['base_commit']}; observed_head={observed.get('head')}",
+            context={"repository": binding["repository"], "topic_id": binding["topic_id"]},
         )
     return observed
 
@@ -2041,7 +2147,7 @@ def acquire_worktree_execution_lease(input_path: Path) -> dict[str, Any]:
     repository = Path(binding["repository"])
     coordination = _verify_creation_coordination(source["coordination_lease"], repository)
     _, confirmation, _ = _verify_confirmation(source["confirmation"], repository, required_state="created")
-    if confirmation["binding"] != binding or confirmation["coordination_lease"] != {"lease_id": coordination["holder"]["lease_id"], "path": coordination["path"], "version": coordination["version"]}:
+    if confirmation["binding"] != binding or not _confirmation_matches_coordination(confirmation, coordination):
         raise ProtocolError("worktree_creation_uncoordinated", "execution lease binding is not the exact coordinated creation", context={"repository": str(repository), "topic_id": binding["topic_id"]})
     path = _worktree_execution_lease_path(repository, Path(binding["worktree_path"]))
     directory, directory_fd, git_fd = _open_worktree_execution_directory(repository)
@@ -2110,18 +2216,28 @@ def release_worktree_execution_lease(lease_path: Path, *, expected_id: str, expe
     )
     if lease_path != expected_path:
         raise ProtocolError(
-            f"worktree execution lease path mismatch; expected={expected_path}; observed={lease_path}"
+            "worktree_lease_release_cas_mismatch",
+            f"worktree execution lease path mismatch; expected={expected_path}; observed={lease_path}",
+            context={"repository": report["repository"], "topic_id": report["binding"]["topic_id"]},
         )
     holder = report["holder"]
     if report["state"] != "held" or holder is None or holder["lease_id"] != _expect_handoff_id(expected_id, "expected worktree lease ID") or report["version"] != expected_version:
-        raise ProtocolError("worktree execution lease CAS release failed")
+        raise ProtocolError(
+            "worktree_lease_release_cas_mismatch",
+            "worktree execution lease CAS release failed",
+            context={"repository": report["repository"], "topic_id": report["binding"]["topic_id"]},
+        )
     repository = Path(report["repository"])
     _, directory_fd, git_fd = _open_worktree_execution_directory(repository)
     guard_fd = _open_worktree_execution_guard(git_fd)
     try:
         current, _ = _read_worktree_execution_lease(lease_path)
         if current["version"] != expected_version or current["holder"] is None or current["holder"]["lease_id"] != expected_id:
-            raise ProtocolError("worktree execution lease changed before release")
+            raise ProtocolError(
+                "worktree_lease_release_cas_mismatch",
+                "worktree execution lease changed before release",
+                context={"repository": report["repository"], "topic_id": report["binding"]["topic_id"]},
+            )
         updated = {**current, "holder": None, "version": current["version"] + 1}
         updated_data = _canonical_json_bytes(updated)
         _replace_private_file(directory_fd, name=lease_path.name, data=updated_data, max_bytes=MAX_WORKTREE_EXECUTION_LEASE_BYTES, label="worktree execution lease")
@@ -2150,7 +2266,11 @@ def check_execution_availability(input_path: Path) -> dict[str, Any]:
     mode = _expect_nonempty_string(source["execution_mode"], "execution_mode", max_bytes=128)
     repository = _expect_absolute_path(source["repository"], "repository")
     if mode not in {LEASE_MODE, "isolated-worktree-v1"}:
-        raise ProtocolError(f"unsupported execution mode: {mode!r}")
+        raise ProtocolError(
+            "execution_availability_invalid",
+            f"unsupported execution mode: {mode!r}",
+            context={"repository": str(repository)},
+        )
     leases = [item for item in inspect_worktree_execution_leases(repository)["leases"] if item["state"] == "held"]
     active_execution_leases = [
         {
@@ -2240,7 +2360,10 @@ def reconcile_worktree_execution_lease(
             ),
             "reconciled": True,
         }
-    raise ProtocolError(f"unsupported worktree execution reconciliation outcome: {outcome!r}")
+    raise ProtocolError(
+        "worktree_reconciliation_invalid_outcome",
+        f"unsupported worktree execution reconciliation outcome: {outcome!r}",
+    )
 
 
 def revalidate_integration(input_path: Path) -> dict[str, Any]:
@@ -2269,14 +2392,26 @@ def revalidate_integration(input_path: Path) -> dict[str, Any]:
     repository = _expect_absolute_path(source["repository"], "repository")
     lease = _expect_object(source["coordination_lease"], "coordination_lease")
     _expect_keys(lease, {"lease_id", "path", "version"}, "coordination_lease")
-    report = verify_repository_coordination_lease(
-        _expect_absolute_path(lease["path"], "coordination_lease.path"),
-        expected_id=lease["lease_id"],
-        expected_version=lease["version"],
-    )
+    try:
+        report = verify_repository_coordination_lease(
+            _expect_absolute_path(lease["path"], "coordination_lease.path"),
+            expected_id=lease["lease_id"],
+            expected_version=lease["version"],
+        )
+    except ProtocolError as error:
+        raise ProtocolError(
+            "integration_lease_invalid",
+            "integration coordination lease identity or CAS verification failed",
+            cause=str(error),
+            context={"repository": str(repository)},
+        ) from error
     holder = report["holder"]
     if report["repository"] != str(repository) or holder is None or holder["stage"] != "guided-implementation" or holder["purpose"] != "serial-integration":
-        raise ProtocolError("integration requires the exact guided-implementation serial-integration lease")
+        raise ProtocolError(
+            "integration_lease_invalid",
+            "integration requires the exact guided-implementation serial-integration lease",
+            context={"repository": str(repository)},
+        )
     authority = _verify_discussion_request(_expect_object(source["discussion_validation"], "discussion_validation"))
     if authority.get("project_path") != str(repository):
         raise ProtocolError("receipt_identity_mismatch", "discussion receipt repository does not match integration repository", context={"repository": str(repository), "topic_id": authority.get("topic_id"), "receipt_id": authority.get("receipt")})
@@ -6024,7 +6159,7 @@ def _build_parser() -> argparse.ArgumentParser:
     reconcile_worktree_execution_parser.add_argument("--version", required=True, type=int)
     reconcile_worktree_execution_parser.add_argument("--platform-cwd", required=True, type=Path)
     reconcile_worktree_execution_parser.add_argument(
-        "--outcome", required=True, choices=["active", "released"]
+        "--outcome", required=True
     )
 
     execution_availability_parser = subparsers.add_parser(
