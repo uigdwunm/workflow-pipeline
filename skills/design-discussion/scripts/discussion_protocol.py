@@ -3903,7 +3903,8 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         ):
             raise ProtocolError(
                 "phase_requirement_incomplete",
-                "direct implementation requires complete scope, behavior, failures, acceptance conditions and test seam",
+                "direct implementation requires complete scope, behavior, failures, "
+                "acceptance conditions and test seam",
             )
     elif completeness is not None:
         raise ProtocolError("invalid_request", "requirement_completeness is only valid for route 1->3")
@@ -4074,7 +4075,10 @@ def _claim_phase_carrier(request: dict[str, Any]) -> dict[str, Any]:
             or checkpoint["published_identity"] != data["source_checkpoint_identity"]
             or request["source_checkpoint_identity"] != data["source_checkpoint_identity"]
         ):
-            raise ProtocolError("phase_checkpoint_invalid", "carrier checkpoint proof does not match the frozen source")
+            raise ProtocolError(
+                "phase_checkpoint_invalid",
+                "carrier checkpoint proof does not match the frozen source",
+            )
         attempt["claimed"] = True
         data["record_revision"] += 1
         _store_phase(record, data)
@@ -4111,11 +4115,47 @@ def _authoritative_phase_evidence(
     topic_id = topic["topic_id"]
     dimensions = {
         "source": _sha256(_require_regular_nosymlink(topic_path, "topic document")),
-        "route": _sha256(_canonical_json({"current_phase": topic["current_phase"], "phase_state": topic["phase_state"]}).encode("utf-8")),
-        "impact": _sha256(_canonical_json([item for item in records["Impacts"] if item.get("topic_id") == topic_id]).encode("utf-8")),
-        "coverage": _sha256(_canonical_json([item for item in records["Relations and Coverage"] if topic_id in {item.get("source_topic_id"), item.get("target_topic_id")}]).encode("utf-8")),
-        "dependency": _sha256(_canonical_json(records["Dependencies and Active Implementations"]).encode("utf-8")),
-        "coordination": _sha256(_canonical_json([item for item in records["Conversation Bindings"] if item.get("topic_id") == topic_id]).encode("utf-8")),
+        "route": _sha256(
+            _canonical_json(
+                {
+                    "current_phase": topic["current_phase"],
+                    "phase_state": topic["phase_state"],
+                }
+            ).encode("utf-8")
+        ),
+        "impact": _sha256(
+            _canonical_json(
+                [
+                    item
+                    for item in records["Impacts"]
+                    if item.get("topic_id") == topic_id
+                ]
+            ).encode("utf-8")
+        ),
+        "coverage": _sha256(
+            _canonical_json(
+                [
+                    item
+                    for item in records["Relations and Coverage"]
+                    if topic_id
+                    in {item.get("source_topic_id"), item.get("target_topic_id")}
+                ]
+            ).encode("utf-8")
+        ),
+        "dependency": _sha256(
+            _canonical_json(
+                records["Dependencies and Active Implementations"]
+            ).encode("utf-8")
+        ),
+        "coordination": _sha256(
+            _canonical_json(
+                [
+                    item
+                    for item in records["Conversation Bindings"]
+                    if item.get("topic_id") == topic_id
+                ]
+            ).encode("utf-8")
+        ),
     }
     return dimensions
 
@@ -4139,7 +4179,12 @@ def _prepare_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         replay = _idempotent_result(records, request)
         if replay is not None:
             return replay
-        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        topic = _record_by_id(
+            records["Current Topics"],
+            "topic_id",
+            request["actor_topic_id"],
+            "topic_id",
+        )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         if topic.get("current_phase") != request["from_phase"]:
@@ -4147,7 +4192,16 @@ def _prepare_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         active_runs = [
             item for item in records["Phase Runs"]
             if item.get("run_kind") == "phase-run"
-            and item.get("state") in {"prepared", "setup-pending", "ready", "active", "completion-claimed", "completion-pending", "outcome-unknown"}
+            and item.get("state")
+            in {
+                "prepared",
+                "setup-pending",
+                "ready",
+                "active",
+                "completion-claimed",
+                "completion-pending",
+                "outcome-unknown",
+            }
             and _json_field(item, "data_json", "phase run").get("source_topic_id") == request["actor_topic_id"]
         ]
         if active_runs:
@@ -4158,40 +4212,131 @@ def _prepare_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("idempotency_conflict", "Phase Run creation identity already exists")
         attempt_id = f"PA-{run_id[3:]}-1"
         data = {
-            "run_id": run_id, "run_kind": "phase-run", "record_revision": 1,
-            "state": "prepared", "from_phase": request["from_phase"], "to_phase": request["to_phase"],
-            "route": list(route), "carrier_kind": carrier_kind, "source_topic_id": request["actor_topic_id"],
-            "evidence": evidence, "attempts": [{
-            "attempt_id": attempt_id, "attempt_number": 1, "state": "setup-pending",
-                "authorization": False, "carrier_ref": None, "reason": None,
-            }], "creation_idempotency_key": request["idempotency_key"],
+            "run_id": run_id,
+            "run_kind": "phase-run",
+            "record_revision": 1,
+            "state": "prepared",
+            "from_phase": request["from_phase"],
+            "to_phase": request["to_phase"],
+            "route": list(route),
+            "carrier_kind": carrier_kind,
+            "source_topic_id": request["actor_topic_id"],
+            "evidence": evidence,
+            "attempts": [
+                {
+                    "attempt_id": attempt_id,
+                    "attempt_number": 1,
+                    "state": "setup-pending",
+                    "authorization": False,
+                    "carrier_ref": None,
+                    "reason": None,
+                }
+            ],
+            "creation_idempotency_key": request["idempotency_key"],
         }
-        record = {"run_id": run_id, "run_kind": "phase-run", "state": "prepared", "record_revision": 1, "data_json": _canonical_json(data)}
+        record = {
+            "run_id": run_id,
+            "run_kind": "phase-run",
+            "state": "prepared",
+            "record_revision": 1,
+            "data_json": _canonical_json(data),
+        }
         records["Phase Runs"].append(record)
         next_revision = ledger_revision + 1
-        result = {"ok": True, "state": "prepared", "idempotent_replay": False, "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"], "ledger_revision": next_revision, "record_revision": topic_revision, "phase_run_id": run_id, "attempt_id": attempt_id, "route": list(route), "evidence": evidence}
-        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="phase-run-prepared", result=result)
+        result = {
+            "ok": True,
+            "state": "prepared",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic_revision,
+            "phase_run_id": run_id,
+            "attempt_id": attempt_id,
+            "route": list(route),
+            "evidence": evidence,
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="phase-run-prepared",
+            result=result,
+        )
         return result
 
 
 def _retry_phase_run(request: dict[str, Any]) -> dict[str, Any]:
-    ledger_path, _, lock_path, owner_ref = _phase_request_context(request, {"phase_run_id", "prior_attempt_id"})[:4]
+    ledger_path, _, lock_path, owner_ref = _phase_request_context(
+        request,
+        {"phase_run_id", "prior_attempt_id"},
+    )[:4]
     with lock_path.open("a+b") as lock_stream:
-        _flock_with_timeout(lock_stream); frontmatter, records = _load_records(ledger_path)
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
         replay = _idempotent_result(records, request)
-        if replay is not None: return replay
-        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic); _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        record = _phase_record(records, request["phase_run_id"]); data = _phase_data(record)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(
+            records["Current Topics"],
+            "topic_id",
+            request["actor_topic_id"],
+            "topic_id",
+        )
+        ledger_revision, topic_revision = _validate_revisions(
+            request,
+            frontmatter,
+            topic,
+        )
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        record = _phase_record(records, request["phase_run_id"])
+        data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
         prior = _phase_attempt(data, request["prior_attempt_id"])
         if data.get("state") != "failed" or prior["state"] != "failed" or prior is not data["attempts"][-1]:
             raise ProtocolError("phase_reconciliation_required", "only an explicitly failed attempt can be retried")
-        number = len(data["attempts"]) + 1; attempt_id = f"PA-{data['run_id'][3:]}-{number}"
-        attempt = {"attempt_id": attempt_id, "attempt_number": number, "state": "setup-pending", "authorization": False, "carrier_ref": None, "reason": None}
-        data["attempts"].append(attempt); data["state"] = "prepared"; data["record_revision"] += 1; _store_phase(record, data)
-        next_revision = ledger_revision + 1; result = {"ok": True, "state": "prepared", "idempotent_replay": False, "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"], "ledger_revision": next_revision, "record_revision": data["record_revision"], "topic_record_revision": topic_revision, "phase_run_id": data["run_id"], "attempt_id": attempt_id, "prior_attempt_id": prior["attempt_id"]}
-        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="phase-attempt-retried", result=result); return result
+        number = len(data["attempts"]) + 1
+        attempt_id = f"PA-{data['run_id'][3:]}-{number}"
+        attempt = {
+            "attempt_id": attempt_id,
+            "attempt_number": number,
+            "state": "setup-pending",
+            "authorization": False,
+            "carrier_ref": None,
+            "reason": None,
+        }
+        data["attempts"].append(attempt)
+        data["state"] = "prepared"
+        data["record_revision"] += 1
+        _store_phase(record, data)
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True,
+            "state": "prepared",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": data["record_revision"],
+            "topic_record_revision": topic_revision,
+            "phase_run_id": data["run_id"],
+            "attempt_id": attempt_id,
+            "prior_attempt_id": prior["attempt_id"],
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="phase-attempt-retried",
+            result=result,
+        )
+        return result
 
 
 def _reconcile_phase_run(request: dict[str, Any]) -> dict[str, Any]:
@@ -4202,26 +4347,72 @@ def _reconcile_phase_run(request: dict[str, Any]) -> dict[str, Any]:
     if outcome not in {"not-created", "not-completed", "completed"}:
         raise ProtocolError("invalid_request", "phase reconciliation outcome is unsupported")
     with lock_path.open("a+b") as lock_stream:
-        _flock_with_timeout(lock_stream); frontmatter, records = _load_records(ledger_path)
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
         replay = _idempotent_result(records, request)
-        if replay is not None: return replay
-        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic); _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        record = _phase_record(records, request["phase_run_id"]); data = _phase_data(record)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(
+            records["Current Topics"],
+            "topic_id",
+            request["actor_topic_id"],
+            "topic_id",
+        )
+        ledger_revision, topic_revision = _validate_revisions(
+            request,
+            frontmatter,
+            topic,
+        )
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        record = _phase_record(records, request["phase_run_id"])
+        data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
         attempt = _phase_attempt(data, request["attempt_id"])
-        if attempt["state"] != "outcome-unknown": raise ProtocolError("phase_reconciliation_required", "only outcome-unknown attempts can be reconciled")
+        if attempt["state"] != "outcome-unknown":
+            raise ProtocolError(
+                "phase_reconciliation_required",
+                "only outcome-unknown attempts can be reconciled",
+            )
         if outcome == "completed":
             if attempt.get("authorization") is not True:
-                raise ProtocolError("phase_authorization_required", "an unauthorized unknown outcome cannot be completed")
+                raise ProtocolError(
+                    "phase_authorization_required",
+                    "an unauthorized unknown outcome cannot be completed",
+                )
             _phase_check_evidence(data, _phase_evidence(request, required=True))
             _phase_check_evidence(data, _authoritative_phase_evidence(topic_path, records, topic))
-            attempt["state"] = "completion-claimed"; data["state"] = "completion-claimed"
+            attempt["state"] = "completion-claimed"
+            data["state"] = "completion-claimed"
         else:
-            attempt["state"] = "failed"; data["state"] = "failed"
-        attempt["reason"] = request["reason"]; data["record_revision"] += 1; _store_phase(record, data)
-        next_revision = ledger_revision + 1; result = {"ok": True, "state": data["state"], "idempotent_replay": False, "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"], "ledger_revision": next_revision, "record_revision": topic_revision, "phase_run_id": data["run_id"], "attempt_id": attempt["attempt_id"], "outcome": outcome}
-        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="phase-run-reconciled", result=result); return result
+            attempt["state"] = "failed"
+            data["state"] = "failed"
+        attempt["reason"] = request["reason"]
+        data["record_revision"] += 1
+        _store_phase(record, data)
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True,
+            "state": data["state"],
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic_revision,
+            "phase_run_id": data["run_id"],
+            "attempt_id": attempt["attempt_id"],
+            "outcome": outcome,
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="phase-run-reconciled",
+            result=result,
+        )
+        return result
 
 
 def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: str) -> dict[str, Any]:
@@ -4256,7 +4447,10 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
             if data["state"] != "setup-pending" or attempt["state"] != "setup-pending":
                 raise ProtocolError("phase_attempt_state_conflict", "attempt is not setup-pending")
             if attempt.get("authorization") is not True:
-                raise ProtocolError("phase_authorization_required", "carrier has not been authorized by the source topic")
+                raise ProtocolError(
+                    "phase_authorization_required",
+                    "carrier has not been authorized by the source topic",
+                )
             if data.get("wrapper_integration") is True and attempt.get("claimed") is not True:
                 raise ProtocolError(
                     "phase_carrier_claim_required",
@@ -4266,7 +4460,8 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                 raise ProtocolError("phase_identity_conflict", "ready carrier identity does not match the caller")
             _phase_check_evidence(data, supplied_evidence)
             _phase_check_evidence(data, _authoritative_phase_evidence(topic_path, records, topic))
-            attempt["state"] = "ready"; data["state"] = "ready"
+            attempt["state"] = "ready"
+            data["state"] = "ready"
         elif target == "active":
             if data["state"] != "ready" or attempt["state"] != "ready":
                 raise ProtocolError("phase_attempt_state_conflict", "attempt is not ready")
@@ -4280,7 +4475,8 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                         _completed_checkpoint(records, data["source_checkpoint_id"]),
                         data.get("continuous_authorization_id"),
                     )
-            attempt["state"] = "active"; data["state"] = "active"
+            attempt["state"] = "active"
+            data["state"] = "active"
             if data.get("wrapper_integration") is True and data.get("route") == [1, 3]:
                 result_id = f"PH-{data['run_id'][3:]}-NA2"
                 records["Phase Results"].append({
@@ -4299,10 +4495,23 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                 })
         else:
             if target == "completion-claimed" and data["state"] != "active":
-                raise ProtocolError("phase_attempt_state_conflict", "completion can only be claimed by an active attempt")
-            if target == "outcome-unknown" and data["state"] not in {"active", "completion-claimed", "completion-pending"}:
+                raise ProtocolError(
+                    "phase_attempt_state_conflict",
+                    "completion can only be claimed by an active attempt",
+                )
+            if target == "outcome-unknown" and data["state"] not in {
+                "active",
+                "completion-claimed",
+                "completion-pending",
+            }:
                 raise ProtocolError("phase_attempt_state_conflict", "unknown outcome requires an executing attempt")
-            if target not in PHASE_ATTEMPT_STATES or attempt["state"] in {"completed", "cancelled", "failed", "blocked", "superseded"}:
+            if target not in PHASE_ATTEMPT_STATES or attempt["state"] in {
+                "completed",
+                "cancelled",
+                "failed",
+                "blocked",
+                "superseded",
+            }:
                 raise ProtocolError("phase_attempt_state_conflict", "terminal attempt cannot transition")
             if target == "completion-claimed" and attempt.get("authorization") is not True:
                 raise ProtocolError("phase_authorization_required", "completion claim is no longer authorized")
@@ -4312,53 +4521,161 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                 raise ProtocolError("phase_identity_conflict", "completion caller is not the ready carrier")
             if target == "completion-claimed":
                 _phase_check_evidence(data, supplied_evidence)
-            attempt["state"] = target; attempt["reason"] = request.get("reason")
+            attempt["state"] = target
+            attempt["reason"] = request.get("reason")
             data["state"] = target
         data["record_revision"] += 1
         _store_phase(record, data)
         next_revision = ledger_revision + 1
-        result = {"ok": True, "state": target, "idempotent_replay": False, "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"], "ledger_revision": next_revision, "record_revision": topic_revision, "phase_run_id": data["run_id"], "attempt_id": attempt["attempt_id"]}
+        result = {
+            "ok": True,
+            "state": target,
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic_revision,
+            "phase_run_id": data["run_id"],
+            "attempt_id": attempt["attempt_id"],
+        }
         if target == "active" and data.get("wrapper_integration") is True and data.get("route") == [1, 3]:
             result.update({"not_applicable_phase": 2, "not_applicable_scope": data["scope"]})
-        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type=event_type, result=result)
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type=event_type,
+            result=result,
+        )
         return result
 
 
 def _revoke_phase_authorization(request: dict[str, Any]) -> dict[str, Any]:
-    ledger_path, _, lock_path, owner_ref = _phase_request_context(request, {"phase_run_id", "attempt_id", "reason"})[:4]
+    ledger_path, _, lock_path, owner_ref = _phase_request_context(
+        request,
+        {"phase_run_id", "attempt_id", "reason"},
+    )[:4]
     with lock_path.open("a+b") as lock_stream:
-        _flock_with_timeout(lock_stream); frontmatter, records = _load_records(ledger_path)
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
         replay = _idempotent_result(records, request)
-        if replay is not None: return replay
-        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic); _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        record = _phase_record(records, request["phase_run_id"]); data = _phase_data(record)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(
+            records["Current Topics"],
+            "topic_id",
+            request["actor_topic_id"],
+            "topic_id",
+        )
+        ledger_revision, topic_revision = _validate_revisions(
+            request,
+            frontmatter,
+            topic,
+        )
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        record = _phase_record(records, request["phase_run_id"])
+        data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
         attempt = _phase_attempt(data, request["attempt_id"])
         if attempt["state"] in {"completed", "cancelled", "failed", "blocked", "superseded"}:
             raise ProtocolError("phase_attempt_state_conflict", "terminal attempt cannot lose authorization")
-        attempt["authorization"] = False; attempt["state"] = "blocked"; attempt["reason"] = request["reason"]; data["state"] = "blocked"; data["record_revision"] += 1; _store_phase(record, data)
-        next_revision = ledger_revision + 1; result = {"ok": True, "state": "blocked", "idempotent_replay": False, "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"], "ledger_revision": next_revision, "record_revision": topic_revision, "phase_run_id": data["run_id"], "attempt_id": attempt["attempt_id"]}
-        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="phase-authorization-revoked", result=result); return result
+        attempt["authorization"] = False
+        attempt["state"] = "blocked"
+        attempt["reason"] = request["reason"]
+        data["state"] = "blocked"
+        data["record_revision"] += 1
+        _store_phase(record, data)
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True,
+            "state": "blocked",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic_revision,
+            "phase_run_id": data["run_id"],
+            "attempt_id": attempt["attempt_id"],
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="phase-authorization-revoked",
+            result=result,
+        )
+        return result
 
 
 def _authorize_phase_carrier(request: dict[str, Any]) -> dict[str, Any]:
-    ledger_path, _, lock_path, owner_ref = _phase_request_context(request, {"phase_run_id", "attempt_id", "carrier_ref"})[:4]
+    ledger_path, _, lock_path, owner_ref = _phase_request_context(
+        request,
+        {"phase_run_id", "attempt_id", "carrier_ref"},
+    )[:4]
     carrier_ref = _expect_string(request["carrier_ref"], "carrier_ref", max_bytes=1024)
     with lock_path.open("a+b") as lock_stream:
-        _flock_with_timeout(lock_stream); frontmatter, records = _load_records(ledger_path)
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
         replay = _idempotent_result(records, request)
-        if replay is not None: return replay
-        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic); _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        record = _phase_record(records, request["phase_run_id"]); data = _phase_data(record)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(
+            records["Current Topics"],
+            "topic_id",
+            request["actor_topic_id"],
+            "topic_id",
+        )
+        ledger_revision, topic_revision = _validate_revisions(
+            request,
+            frontmatter,
+            topic,
+        )
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        record = _phase_record(records, request["phase_run_id"])
+        data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
         attempt = _phase_attempt(data, request["attempt_id"])
         if data["state"] != "prepared" or attempt["state"] != "setup-pending" or attempt.get("authorization") is True:
-            raise ProtocolError("phase_attempt_state_conflict", "only a prepared setup-pending attempt can authorize one carrier")
-        attempt["authorization"] = True; attempt["carrier_ref"] = carrier_ref; data["state"] = "setup-pending"; data["record_revision"] += 1; _store_phase(record, data)
-        next_revision = ledger_revision + 1; result = {"ok": True, "state": "setup-pending", "idempotent_replay": False, "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"], "ledger_revision": next_revision, "record_revision": data["record_revision"], "topic_record_revision": topic_revision, "phase_run_id": data["run_id"], "attempt_id": attempt["attempt_id"], "carrier_ref": carrier_ref}
-        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="phase-carrier-authorized", result=result); return result
+            raise ProtocolError(
+                "phase_attempt_state_conflict",
+                "only a prepared setup-pending attempt can authorize one carrier",
+            )
+        attempt["authorization"] = True
+        attempt["carrier_ref"] = carrier_ref
+        data["state"] = "setup-pending"
+        data["record_revision"] += 1
+        _store_phase(record, data)
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True,
+            "state": "setup-pending",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": data["record_revision"],
+            "topic_record_revision": topic_revision,
+            "phase_run_id": data["run_id"],
+            "attempt_id": attempt["attempt_id"],
+            "carrier_ref": carrier_ref,
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="phase-carrier-authorized",
+            result=result,
+        )
+        return result
 
 
 def _claim_phase_completion(request: dict[str, Any]) -> dict[str, Any]:
@@ -4366,7 +4683,10 @@ def _claim_phase_completion(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _complete_phase_run(request: dict[str, Any]) -> dict[str, Any]:
-    ledger_path, topic_path, lock_path, owner_ref = _phase_request_context(request, {"phase_run_id", "attempt_id", "evidence"})[:4]
+    ledger_path, topic_path, lock_path, owner_ref = _phase_request_context(
+        request,
+        {"phase_run_id", "attempt_id", "evidence"},
+    )[:4]
     supplied_evidence = _phase_evidence(request, required=True)
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)
@@ -4377,45 +4697,127 @@ def _complete_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        record = _phase_record(records, request["phase_run_id"]); data = _phase_data(record)
+        record = _phase_record(records, request["phase_run_id"])
+        data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
         attempt = _phase_attempt(data, request["attempt_id"])
         if data["state"] != "completion-claimed" or attempt["state"] != "completion-claimed":
             raise ProtocolError("phase_completion_not_claimed", "completion must be claimed before acceptance")
         _phase_check_evidence(data, supplied_evidence)
         _phase_check_evidence(data, _authoritative_phase_evidence(topic_path, records, topic))
-        attempt["state"] = "completion-pending"; data["state"] = "completion-pending"; data["record_revision"] += 1
+        attempt["state"] = "completion-pending"
+        data["state"] = "completion-pending"
+        data["record_revision"] += 1
         _store_phase(record, data)
         pending_revision = ledger_revision + 1
-        pending_result = {"ok": True, "state": "completion-pending", "idempotent_replay": False, "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"], "ledger_revision": pending_revision, "record_revision": topic_revision, "phase_run_id": data["run_id"], "attempt_id": attempt["attempt_id"]}
-        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=pending_revision, event_type="phase-completion-pending", result=pending_result)
+        pending_result = {
+            "ok": True,
+            "state": "completion-pending",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": pending_revision,
+            "record_revision": topic_revision,
+            "phase_run_id": data["run_id"],
+            "attempt_id": attempt["attempt_id"],
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=pending_revision,
+            event_type="phase-completion-pending",
+            result=pending_result,
+        )
         return pending_result
 
 
 def _finalize_phase_run(request: dict[str, Any]) -> dict[str, Any]:
-    ledger_path, topic_path, lock_path, owner_ref = _phase_request_context(request, {"phase_run_id", "attempt_id", "evidence"})[:4]
+    ledger_path, topic_path, lock_path, owner_ref = _phase_request_context(
+        request,
+        {"phase_run_id", "attempt_id", "evidence"},
+    )[:4]
     supplied_evidence = _phase_evidence(request, required=True)
     with lock_path.open("a+b") as lock_stream:
-        _flock_with_timeout(lock_stream); frontmatter, records = _load_records(ledger_path)
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
         replay = _idempotent_result(records, request)
-        if replay is not None: return replay
-        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        ledger_revision, _ = _validate_revisions(request, frontmatter, topic); _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        record = _phase_record(records, request["phase_run_id"]); data = _phase_data(record)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(
+            records["Current Topics"],
+            "topic_id",
+            request["actor_topic_id"],
+            "topic_id",
+        )
+        ledger_revision, _ = _validate_revisions(request, frontmatter, topic)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        record = _phase_record(records, request["phase_run_id"])
+        data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
         attempt = _phase_attempt(data, request["attempt_id"])
         if data["state"] != "completion-pending" or attempt["state"] != "completion-pending":
             raise ProtocolError("phase_run_state_conflict", "only completion-pending Phase Runs can be finalized")
         _phase_check_evidence(data, supplied_evidence)
         _phase_check_evidence(data, _authoritative_phase_evidence(topic_path, records, topic))
-        attempt["state"] = "completed"; data["state"] = "completed"; data["record_revision"] += 1
-        topic["current_phase"] = data["to_phase"]; topic["phase_state"] = "active"; topic["record_revision"] = int(topic["record_revision"]) + 1
+        attempt["state"] = "completed"
+        data["state"] = "completed"
+        data["record_revision"] += 1
+        topic["current_phase"] = data["to_phase"]
+        topic["phase_state"] = "active"
+        topic["record_revision"] = int(topic["record_revision"]) + 1
         result_id = f"PH-{data['run_id'][3:]}"
-        records["Phase Results"].append({"result_id": result_id, "result_kind": "phase-result", "state": "completed", "record_revision": 1, "data_json": _canonical_json({"result_id": result_id, "phase_run_id": data["run_id"], "from_phase": data["from_phase"], "to_phase": data["to_phase"], "evidence": data["evidence"]})})
+        affected_decision_ids = sorted(
+            item["decision_id"]
+            for item in _topic_snapshot(records, request["actor_topic_id"])["decisions"]
+            if item.get("state") != "discarded"
+        )
+        records["Phase Results"].append(
+            {
+                "result_id": result_id,
+                "result_kind": "phase-result",
+                "state": "completed",
+                "record_revision": 1,
+                "data_json": _canonical_json(
+                    {
+                        "result_id": result_id,
+                        "phase_run_id": data["run_id"],
+                        "topic_id": request["actor_topic_id"],
+                        "from_phase": data["from_phase"],
+                        "to_phase": data["to_phase"],
+                        "affected_decision_ids": affected_decision_ids,
+                        "evidence": data["evidence"],
+                    }
+                ),
+            }
+        )
         _store_phase(record, data)
         next_revision = ledger_revision + 1
-        result = {"ok": True, "state": "completed", "idempotent_replay": False, "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"], "ledger_revision": next_revision, "record_revision": topic["record_revision"], "phase_run_id": data["run_id"], "attempt_id": attempt["attempt_id"], "phase_result_id": result_id, "current_phase": topic["current_phase"]}
-        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="phase-run-completed", result=result)
+        result = {
+            "ok": True,
+            "state": "completed",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic["record_revision"],
+            "phase_run_id": data["run_id"],
+            "attempt_id": attempt["attempt_id"],
+            "phase_result_id": result_id,
+            "current_phase": topic["current_phase"],
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="phase-run-completed",
+            result=result,
+        )
         return result
 
 
@@ -4474,11 +4876,21 @@ def _supersede_phase_run(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _read_phase_run(request: dict[str, Any]) -> dict[str, Any]:
-    ledger_path, _, lock_path, _ = _phase_request_context(request, {"phase_run_id"}, query=True)[:4]
+    ledger_path, _, lock_path, _ = _phase_request_context(
+        request,
+        {"phase_run_id"},
+        query=True,
+    )[:4]
     with lock_path.open("a+b") as lock_stream:
-        _flock_with_timeout(lock_stream); frontmatter, records = _load_records(ledger_path)
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
         data = _phase_data(_phase_record(records, request["phase_run_id"]))
-        return {"ok": True, "state": "read", "ledger_revision": int(frontmatter["ledger_revision"]), "phase_run": data}
+        return {
+            "ok": True,
+            "state": "read",
+            "ledger_revision": int(frontmatter["ledger_revision"]),
+            "phase_run": data,
+        }
 
 
 def _route_phase(request: dict[str, Any]) -> dict[str, Any]:
@@ -4486,47 +4898,172 @@ def _route_phase(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
-    ledger_path, _, lock_path, owner_ref = _phase_request_context(request, {"affected_decision_ids", "review", "reason"})[:4]
+    ledger_path, _, lock_path, owner_ref = _phase_request_context(
+        request,
+        {"affected_decision_ids", "review", "reason"},
+    )[:4]
     affected = request["affected_decision_ids"]
     review = request["review"]
-    if not isinstance(affected, list) or not affected or any(not isinstance(item, str) for item in affected) or len(set(affected)) != len(affected) or not isinstance(review, dict) or set(review) != set(affected):
-        raise ProtocolError("phase_reopen_review_required", "reopen requires affected_decision_ids")
+    if (
+        not isinstance(affected, list)
+        or not affected
+        or any(not isinstance(item, str) for item in affected)
+        or len(set(affected)) != len(affected)
+        or not isinstance(review, dict)
+        or set(review) != set(affected)
+    ):
+        raise ProtocolError(
+            "phase_reopen_review_required",
+            "reopen requires affected_decision_ids",
+        )
     if any(action not in {"keep", "adjust", "replace", "discard"} for action in review.values()):
-        raise ProtocolError("phase_reopen_review_required", "each affected decision requires an explicit review action")
+        raise ProtocolError(
+            "phase_reopen_review_required",
+            "each affected decision requires an explicit review action",
+        )
     with lock_path.open("a+b") as lock_stream:
-        _flock_with_timeout(lock_stream); frontmatter, records = _load_records(ledger_path)
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
         replay = _idempotent_result(records, request)
-        if replay is not None: return replay
-        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic); _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(
+            records["Current Topics"],
+            "topic_id",
+            request["actor_topic_id"],
+            "topic_id",
+        )
+        ledger_revision, topic_revision = _validate_revisions(
+            request,
+            frontmatter,
+            topic,
+        )
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         if topic.get("current_phase") == 0:
             raise ProtocolError("phase_route_conflict", "topic is already in phase 0")
         active_runs = [
             item for item in records["Phase Runs"]
             if item.get("run_kind") == "phase-run"
-            and item.get("state") in {"prepared", "setup-pending", "ready", "active", "completion-claimed", "completion-pending", "outcome-unknown"}
+            and item.get("state")
+            in {
+                "prepared",
+                "setup-pending",
+                "ready",
+                "active",
+                "completion-claimed",
+                "completion-pending",
+                "outcome-unknown",
+            }
             and _json_field(item, "data_json", "phase run").get("source_topic_id") == request["actor_topic_id"]
         ]
         if active_runs:
-            raise ProtocolError("phase_coordination_drift", "active Phase Runs must be cancelled or reconciled before reopen")
-        known = {item["decision_id"] for item in _topic_snapshot(records, request["actor_topic_id"])["decisions"]}
-        if any(item not in known for item in affected): raise ProtocolError("phase_reopen_review_required", "every affected decision must be known")
+            raise ProtocolError(
+                "phase_coordination_drift",
+                "active Phase Runs must be cancelled or reconciled before reopen",
+            )
+        topic_snapshot = _topic_snapshot(records, request["actor_topic_id"])
+        known = {item["decision_id"] for item in topic_snapshot["decisions"]}
+        authoritative_affected = {
+            item["decision_id"]
+            for item in topic_snapshot["decisions"]
+            if item.get("state") != "discarded"
+        }
+        authoritative_affected.update(
+            item["decision_id"] for item in topic_snapshot["impacts"]
+        )
+        review_pending_results = []
+        for result_record in records["Phase Results"]:
+            if result_record.get("result_kind") not in {
+                "phase-result",
+                "imported-phase-result",
+            }:
+                continue
+            result_data = _json_field(result_record, "data_json", "phase result")
+            result_topic_id = result_data.get("topic_id")
+            if result_topic_id is None and result_record.get("result_kind") == "phase-result":
+                phase_run = _phase_data(
+                    _phase_record(records, result_data.get("phase_run_id"))
+                )
+                result_topic_id = phase_run.get("source_topic_id")
+            if result_topic_id != request["actor_topic_id"]:
+                continue
+            result_decisions = result_data.get("affected_decision_ids")
+            if isinstance(result_decisions, list) and all(
+                isinstance(item, str) for item in result_decisions
+            ):
+                authoritative_affected.update(result_decisions)
+            else:
+                authoritative_affected.update(known)
+            if result_record.get("state") == "completed":
+                review_pending_results.append((result_record, result_data))
+        if set(affected) != authoritative_affected or not authoritative_affected <= known:
+            raise ProtocolError(
+                "phase_reopen_review_required",
+                "affected_decision_ids must exactly match authoritative topic results and impacts",
+            )
         for item in records["Pending Items"]:
             if item.get("item_kind") == "decision" and item.get("item_id") in review:
                 decision = _json_field(item, "data_json", "decision")
                 decision["reopen_review"] = review[item["item_id"]]
                 item["data_json"] = _canonical_json(decision)
-        topic["current_phase"] = 0; topic["phase_state"] = "active"; topic["record_revision"] = int(topic["record_revision"]) + 1
-        next_revision = ledger_revision + 1; result = {"ok": True, "state": "reopened", "idempotent_replay": False, "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"], "ledger_revision": next_revision, "record_revision": topic["record_revision"], "current_phase": 0, "affected_decision_ids": affected}
-        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="phase-reopened", result=result); return result
+        review_pending_result_ids = []
+        for result_record, result_data in review_pending_results:
+            result_record["state"] = "review-pending"
+            result_record["record_revision"] = int(result_record["record_revision"]) + 1
+            result_data["review_state"] = "pending"
+            result_data["reopen_affected_decision_ids"] = sorted(authoritative_affected)
+            result_record["data_json"] = _canonical_json(result_data)
+            review_pending_result_ids.append(result_record["result_id"])
+        topic["current_phase"] = 0
+        topic["phase_state"] = "active"
+        topic["record_revision"] = int(topic["record_revision"]) + 1
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True,
+            "state": "reopened",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic["record_revision"],
+            "current_phase": 0,
+            "affected_decision_ids": sorted(authoritative_affected),
+            "review_pending_result_ids": sorted(review_pending_result_ids),
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="phase-reopened",
+            result=result,
+        )
+        return result
 
 
 def _discover_context(request: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"protocol_version", "operation", "project_path", "authenticated_identity", "conversation_ref", "document_path", "footer_identity"}
+    allowed = {
+        "protocol_version",
+        "operation",
+        "project_path",
+        "authenticated_identity",
+        "conversation_ref",
+        "document_path",
+        "footer_identity",
+    }
     if any(key not in allowed for key in request):
         raise ProtocolError("invalid_request", "discover-context request contains unsupported evidence")
     project = _validate_project_path(request["project_path"])
-    strong_identities = [item for item in (request.get("authenticated_identity"), request.get("footer_identity")) if item is not None]
+    strong_identities = [
+        item
+        for item in (
+            request.get("authenticated_identity"),
+            request.get("footer_identity"),
+        )
+        if item is not None
+    ]
     for identity in strong_identities:
         if not isinstance(identity, dict) or set(identity) != {"project_id", "tree_id", "topic_id"}:
             raise ProtocolError("invalid_request", "strong identity evidence has an invalid shape")
@@ -4552,12 +5089,37 @@ def _discover_context(request: dict[str, Any]) -> dict[str, Any]:
         if len(candidates) == 1 and evidence_path is not None:
             topic_path = candidates[0]
             if evidence_path is not None and evidence_path != topic_path:
-                raise ProtocolError("discussion_identity_conflict", "document evidence conflicts with the unique topic")
-            topic_frontmatter = _parse_frontmatter(_require_regular_nosymlink(topic_path, "topic document"), "topic document")
-            observed = {key: topic_frontmatter.get(key) for key in ("project_id", "tree_id", "topic_id")}
-            if any(value is None for value in observed.values()) or any(identity != observed for identity in strong_identities):
-                raise ProtocolError("discussion_identity_conflict", "strong evidence conflicts with the unique document")
-            return {"ok": True, "state": "discovered", "context": "document_only", "created": False, "candidate_count": 1, "topic_document_path": str(topic_path), "project_id": topic_frontmatter.get("project_id"), "tree_id": topic_frontmatter.get("tree_id"), "topic_id": topic_frontmatter.get("topic_id"), "coordination_state": "unknown"}
+                raise ProtocolError(
+                    "discussion_identity_conflict",
+                    "document evidence conflicts with the unique topic",
+                )
+            topic_frontmatter = _parse_frontmatter(
+                _require_regular_nosymlink(topic_path, "topic document"),
+                "topic document",
+            )
+            observed = {
+                key: topic_frontmatter.get(key)
+                for key in ("project_id", "tree_id", "topic_id")
+            }
+            if any(value is None for value in observed.values()) or any(
+                identity != observed for identity in strong_identities
+            ):
+                raise ProtocolError(
+                    "discussion_identity_conflict",
+                    "strong evidence conflicts with the unique document",
+                )
+            return {
+                "ok": True,
+                "state": "discovered",
+                "context": "document_only",
+                "created": False,
+                "candidate_count": 1,
+                "topic_document_path": str(topic_path),
+                "project_id": topic_frontmatter.get("project_id"),
+                "tree_id": topic_frontmatter.get("tree_id"),
+                "topic_id": topic_frontmatter.get("topic_id"),
+                "coordination_state": "unknown",
+            }
         return {
             "ok": True,
             "state": "ambiguous" if len(candidates) > 1 else "none",
@@ -4565,7 +5127,10 @@ def _discover_context(request: dict[str, Any]) -> dict[str, Any]:
             "candidate_count": len(candidates),
             "created": False,
         }
-    manifest = _parse_frontmatter(_require_regular_nosymlink(manifest_path, "project identity manifest"), "project identity manifest")
+    manifest = _parse_frontmatter(
+        _require_regular_nosymlink(manifest_path, "project identity manifest"),
+        "project identity manifest",
+    )
     if not all(key in manifest for key in ("project_id", "tree_id", "topic_id", "root_slug")):
         raise ProtocolError("context_identity_conflict", "project identity manifest is incomplete")
     coordination_root, storage_mode = _coordination_root(project)
@@ -4573,25 +5138,115 @@ def _discover_context(request: dict[str, Any]) -> dict[str, Any]:
     topic_path = project / "docs" / "discussions" / manifest["root_slug"] / "topic.md"
     if ledger_path.exists():
         _, records = _load_records(ledger_path)
+        selected_topic_id = None
         for strong in strong_identities:
-            if any(strong.get(key) != manifest[key] for key in ("project_id", "tree_id", "topic_id")):
-                raise ProtocolError("discussion_identity_conflict", "strong lifecycle evidence conflicts with the ledger identity")
-        if evidence_path is not None and evidence_path != topic_path:
-            raise ProtocolError("discussion_identity_conflict", "document evidence conflicts with the ledger topic")
+            if any(strong.get(key) != manifest[key] for key in ("project_id", "tree_id")):
+                raise ProtocolError(
+                    "discussion_identity_conflict",
+                    "strong lifecycle evidence conflicts with the ledger identity",
+                )
+            strong_topics = [
+                item
+                for item in records["Current Topics"]
+                if item.get("topic_id") == strong["topic_id"]
+            ]
+            if len(strong_topics) != 1:
+                raise ProtocolError(
+                    "discussion_identity_conflict",
+                    "strong lifecycle evidence does not identify one ledger topic",
+                )
+            selected_topic_id = strong["topic_id"]
         if request.get("conversation_ref") is not None:
             ref = _expect_string(request["conversation_ref"], "conversation_ref", max_bytes=1024)
-            if not any(item.get("conversation_ref") == ref and item.get("binding_state") == "active" for item in records["Conversation Bindings"]):
-                raise ProtocolError("discussion_identity_conflict", "conversation evidence is not an active binding")
-        return {"ok": True, "state": "discovered", "context": "ledger", "storage_mode": storage_mode, "project_id": manifest["project_id"], "tree_id": manifest["tree_id"], "topic_id": manifest["topic_id"], "ledger_path": str(ledger_path), "topic_document_path": str(topic_path), "created": False}
+            active_bindings = [
+                item
+                for item in records["Conversation Bindings"]
+                if item.get("conversation_ref") == ref
+                and item.get("binding_state") == "active"
+            ]
+            if len(active_bindings) != 1:
+                raise ProtocolError(
+                    "discussion_identity_conflict",
+                    "conversation evidence is not one active binding",
+                )
+            binding_topic_id = active_bindings[0].get("topic_id")
+            if selected_topic_id is not None and binding_topic_id != selected_topic_id:
+                raise ProtocolError(
+                    "discussion_identity_conflict",
+                    "conversation evidence conflicts with stronger lifecycle evidence",
+                )
+            selected_topic_id = binding_topic_id
+        if evidence_path is not None:
+            document_topics = [
+                item
+                for item in records["Current Topics"]
+                if item.get("topic_document_path") == str(evidence_path)
+            ]
+            if len(document_topics) != 1:
+                raise ProtocolError(
+                    "discussion_identity_conflict",
+                    "document evidence does not identify one ledger topic",
+                )
+            document_topic_id = document_topics[0].get("topic_id")
+            if selected_topic_id is not None and document_topic_id != selected_topic_id:
+                raise ProtocolError(
+                    "discussion_identity_conflict",
+                    "document evidence conflicts with stronger lifecycle evidence",
+                )
+            selected_topic_id = document_topic_id
+        if selected_topic_id is None:
+            selected_topic_id = manifest["topic_id"]
+        selected_topic = _record_by_id(
+            records["Current Topics"],
+            "topic_id",
+            selected_topic_id,
+            "discovered topic_id",
+        )
+        selected_topic_path = selected_topic.get("topic_document_path")
+        return {
+            "ok": True,
+            "state": "discovered",
+            "context": "ledger",
+            "storage_mode": storage_mode,
+            "project_id": manifest["project_id"],
+            "tree_id": manifest["tree_id"],
+            "topic_id": selected_topic_id,
+            "ledger_path": str(ledger_path),
+            "topic_document_path": selected_topic_path,
+            "created": False,
+        }
     if topic_path.exists():
-        topic_frontmatter = _parse_frontmatter(_require_regular_nosymlink(topic_path, "topic document"), "topic document")
+        topic_frontmatter = _parse_frontmatter(
+            _require_regular_nosymlink(topic_path, "topic document"),
+            "topic document",
+        )
         if any(topic_frontmatter.get(key) != manifest[key] for key in ("project_id", "tree_id", "topic_id")):
-            raise ProtocolError("discussion_identity_conflict", "document identity conflicts with the project manifest")
+            raise ProtocolError(
+                "discussion_identity_conflict",
+                "document identity conflicts with the project manifest",
+            )
         if evidence_path is not None and evidence_path != topic_path:
             raise ProtocolError("discussion_identity_conflict", "document evidence conflicts with manifest topic")
-        if any(any(identity.get(key) != manifest[key] for key in ("project_id", "tree_id", "topic_id")) for identity in strong_identities):
+        if any(
+            any(
+                identity.get(key) != manifest[key]
+                for key in ("project_id", "tree_id", "topic_id")
+            )
+            for identity in strong_identities
+        ):
             raise ProtocolError("discussion_identity_conflict", "strong evidence conflicts with document-only context")
-        return {"ok": True, "state": "discovered", "context": "document_only", "storage_mode": storage_mode, "project_id": manifest["project_id"], "tree_id": manifest["tree_id"], "topic_id": manifest["topic_id"], "topic_document_path": str(topic_path), "coordination_state": "unknown", "created": False}
+        return {
+            "ok": True,
+            "state": "discovered",
+            "context": "document_only",
+            "storage_mode": storage_mode,
+            "project_id": manifest["project_id"],
+            "tree_id": manifest["tree_id"],
+            "topic_id": manifest["topic_id"],
+            "topic_document_path": str(topic_path),
+            "coordination_state": "unknown",
+            "created": False,
+        }
     return {"ok": True, "state": "none", "context": "none", "created": False}
 
 
@@ -4606,9 +5261,37 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
     )
     project = _validate_project_path(request["project_path"])
     if request["user_authorization"] is not True:
-        raise ProtocolError("context_not_initialized", "document_only initialization requires explicit user_authorization=true")
+        raise ProtocolError(
+            "context_not_initialized",
+            "document_only initialization requires explicit user_authorization=true",
+        )
     conversation_ref = _expect_string(request["conversation_ref"], "conversation_ref")
     key = _validate_uuid4(request["idempotency_key"], "idempotency_key")
+    manifest_path = project / "docs" / "discussions" / ".codex-project.md"
+    manifest = _parse_frontmatter(
+        _require_regular_nosymlink(manifest_path, "project identity manifest"),
+        "project identity manifest",
+    )
+    for field in ("project_id", "tree_id", "topic_id", "root_slug"):
+        if field not in manifest:
+            raise ProtocolError(
+                "context_identity_conflict",
+                "document-only manifest is incomplete",
+            )
+    topic_path = project / "docs" / "discussions" / manifest["root_slug"] / "topic.md"
+    if not topic_path.exists():
+        raise ProtocolError(
+            "context_identity_conflict",
+            "document-only topic document is missing",
+        )
+    topic_data = _require_regular_nosymlink(topic_path, "topic document")
+    topic_frontmatter = _parse_frontmatter(topic_data, "topic document")
+    for field in ("project_id", "tree_id", "topic_id"):
+        if topic_frontmatter.get(field) != manifest[field]:
+            raise ProtocolError(
+                "context_identity_conflict",
+                "document-only topic identity conflicts with manifest",
+            )
     verified_results = request["verified_results"]
     if not isinstance(verified_results, list):
         raise ProtocolError("invalid_request", "verified_results must be an array")
@@ -4616,6 +5299,19 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
     for item in verified_results:
         if not isinstance(item, dict) or set(item) != {"result_id", "phase", "state", "path", "sha256"}:
             raise ProtocolError("invalid_request", "verified result has an invalid shape")
+        result_id = _expect_string(item["result_id"], "verified result_id", max_bytes=64)
+        phase = item["phase"]
+        if not isinstance(phase, int) or isinstance(phase, bool) or phase not in range(5):
+            raise ProtocolError(
+                "invalid_request",
+                "verified result phase must be an integer from 0 through 4",
+            )
+        state = _expect_string(item["state"], "verified result state", max_bytes=64)
+        if state != "completed":
+            raise ProtocolError(
+                "invalid_request",
+                "only completed stable phase results can be imported",
+            )
         result_path = Path(_expect_string(item["path"], "verified result path", max_bytes=4096))
         try:
             result_path.relative_to(project)
@@ -4623,57 +5319,190 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("invalid_request", "verified result path must be inside the project") from error
         result_bytes = _require_regular_nosymlink(result_path, "verified phase result")
         if not SHA256_RE.fullmatch(str(item["sha256"])) or _sha256(result_bytes) != item["sha256"]:
-            raise ProtocolError("context_identity_conflict", "verified phase result digest does not match")
-        imported_results.append(dict(item))
-    manifest_path = project / "docs" / "discussions" / ".codex-project.md"
-    manifest = _parse_frontmatter(_require_regular_nosymlink(manifest_path, "project identity manifest"), "project identity manifest")
-    for field in ("project_id", "tree_id", "topic_id", "root_slug"):
-        if field not in manifest:
-            raise ProtocolError("context_identity_conflict", "document-only manifest is incomplete")
+            raise ProtocolError(
+                "context_identity_conflict",
+                "verified phase result digest does not match",
+            )
+        result_metadata = _parse_frontmatter(result_bytes, "verified phase result")
+        expected_metadata = {
+            "project_id": manifest["project_id"],
+            "tree_id": manifest["tree_id"],
+            "topic_id": manifest["topic_id"],
+            "result_id": result_id,
+            "phase": str(phase),
+            "state": state,
+        }
+        if any(result_metadata.get(field) != value for field, value in expected_metadata.items()):
+            raise ProtocolError(
+                "context_identity_conflict",
+                "verified phase result metadata does not match its requested identity",
+            )
+        imported_results.append(
+            {
+                **item,
+                "project_id": manifest["project_id"],
+                "tree_id": manifest["tree_id"],
+                "topic_id": manifest["topic_id"],
+            }
+        )
+    imported_result_ids = [item["result_id"] for item in imported_results]
+    if len(imported_result_ids) != len(set(imported_result_ids)):
+        raise ProtocolError(
+            "invalid_request",
+            "verified result identities must be unique",
+        )
     coordination_root, storage_mode = _coordination_root(project)
     ledger_path = coordination_root / "projects" / manifest["project_id"] / "trees" / manifest["tree_id"] / "ledger.md"
-    topic_path = project / "docs" / "discussions" / manifest["root_slug"] / "topic.md"
+    fingerprint = _sha256(
+        _canonical_json(
+            {
+                "conversation_ref": conversation_ref,
+                "entry_mode": "document-only",
+                "project_path": str(project),
+                "root_slug": manifest["root_slug"],
+                "verified_results": imported_results,
+            }
+        ).encode("utf-8")
+    )
     if ledger_path.exists():
         frontmatter, records = _load_records(ledger_path)
         events = [event for event in records["Recent Events"] if event.get("idempotency_key") == key]
-        fingerprint = _request_fingerprint(project=project, root_slug=manifest["root_slug"], conversation_ref=conversation_ref, entry_mode="document-only")
         if not events:
-            raise ProtocolError("context_not_initialized", "document-only context is already initialized with a different authorization")
+            raise ProtocolError(
+                "context_not_initialized",
+                "document-only context is already initialized with a different authorization",
+            )
         if events[-1].get("request_fingerprint") != fingerprint:
-            raise ProtocolError("idempotency_conflict", "document-only initialization key was reused with different parameters")
-        return {"ok": True, "state": "initialized", "context": "ledger", "created": False, "storage_mode": storage_mode, "project_id": manifest["project_id"], "tree_id": manifest["tree_id"], "topic_id": manifest["topic_id"], "ledger_revision": int(frontmatter["ledger_revision"]), "topic_revision": 1, "ledger_path": str(ledger_path), "topic_document_path": str(topic_path), "idempotent_replay": True}
-    if not topic_path.exists():
-        raise ProtocolError("context_identity_conflict", "document-only topic document is missing")
-    topic_data = _require_regular_nosymlink(topic_path, "topic document")
-    topic_frontmatter = _parse_frontmatter(topic_data, "topic document")
-    for field in ("project_id", "tree_id", "topic_id"):
-        if topic_frontmatter.get(field) != manifest[field]:
-            raise ProtocolError("context_identity_conflict", "document-only topic identity conflicts with manifest")
+            raise ProtocolError(
+                "idempotency_conflict",
+                "document-only initialization key was reused with different parameters",
+            )
+        return {
+            "ok": True,
+            "state": "initialized",
+            "context": "ledger",
+            "created": False,
+            "storage_mode": storage_mode,
+            "project_id": manifest["project_id"],
+            "tree_id": manifest["tree_id"],
+            "topic_id": manifest["topic_id"],
+            "ledger_revision": int(frontmatter["ledger_revision"]),
+            "topic_revision": 1,
+            "ledger_path": str(ledger_path),
+            "topic_document_path": str(topic_path),
+            "imported_result_count": len(imported_results),
+            "coordination_state": "unknown",
+            "idempotent_replay": True,
+        }
     lock_path = coordination_root / "locks" / _project_lock_name(project)
     created_directories: list[Path] = []
     created_files: list[Path] = []
     try:
-        _mkdirs(ledger_path.parent, created_directories); _mkdirs(lock_path.parent, created_directories)
+        _mkdirs(ledger_path.parent, created_directories)
+        _mkdirs(lock_path.parent, created_directories)
         lock_stream = lock_path.open("a+b")
         try:
             fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
             if ledger_path.exists():
-                return _discover_context({"protocol_version": 1, "operation": "discover-context", "project_path": str(project)})
-            fingerprint = _request_fingerprint(project=project, root_slug=manifest["root_slug"], conversation_ref=conversation_ref, entry_mode="document-only")
-            data = _render_ledger(project_id=manifest["project_id"], tree_id=manifest["tree_id"], topic_id=manifest["topic_id"], root_slug=manifest["root_slug"], conversation_ref=conversation_ref, idempotency_key=key, request_fingerprint=fingerprint, project_manifest_path=manifest_path, topic_document_path=topic_path)
-            _write_new_file(ledger_path, data, created_files)
-            if imported_results:
                 frontmatter, records = _load_records(ledger_path)
+                events = [
+                    event
+                    for event in records["Recent Events"]
+                    if event.get("idempotency_key") == key
+                ]
+                if not events:
+                    raise ProtocolError(
+                        "context_not_initialized",
+                        "document-only context was concurrently initialized by another authorization",
+                    )
+                if events[-1].get("request_fingerprint") != fingerprint:
+                    raise ProtocolError(
+                        "idempotency_conflict",
+                        "document-only initialization key was reused with different parameters",
+                    )
+                return {
+                    "ok": True,
+                    "state": "initialized",
+                    "context": "ledger",
+                    "created": False,
+                    "storage_mode": storage_mode,
+                    "project_id": manifest["project_id"],
+                    "tree_id": manifest["tree_id"],
+                    "topic_id": manifest["topic_id"],
+                    "ledger_revision": int(frontmatter["ledger_revision"]),
+                    "topic_revision": 1,
+                    "ledger_path": str(ledger_path),
+                    "topic_document_path": str(topic_path),
+                    "imported_result_count": len(imported_results),
+                    "coordination_state": "unknown",
+                    "idempotent_replay": True,
+                }
+            data = _render_ledger(
+                project_id=manifest["project_id"],
+                tree_id=manifest["tree_id"],
+                topic_id=manifest["topic_id"],
+                root_slug=manifest["root_slug"],
+                conversation_ref=conversation_ref,
+                idempotency_key=key,
+                request_fingerprint=fingerprint,
+                project_manifest_path=manifest_path,
+                topic_document_path=topic_path,
+            )
+            if imported_results:
+                frontmatter, text = _verify_ledger_digest(data)
+                sections = _ledger_sections(text)
+                records = {
+                    name: _parse_record_section(sections[name], name)
+                    for name in LEDGER_SECTION_NAMES
+                }
                 for item in imported_results:
-                    records["Phase Results"].append({"result_id": item["result_id"], "result_kind": "imported-phase-result", "state": item["state"], "record_revision": 1, "data_json": _canonical_json(item)})
-                _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
-            return {"ok": True, "state": "initialized", "context": "ledger", "created": True, "storage_mode": storage_mode, "project_id": manifest["project_id"], "tree_id": manifest["tree_id"], "topic_id": manifest["topic_id"], "ledger_revision": 1, "topic_revision": 1, "ledger_path": str(ledger_path), "topic_document_path": str(topic_path), "imported_result_count": len(imported_results), "coordination_state": "unknown"}
+                    records["Phase Results"].append(
+                        {
+                            "result_id": item["result_id"],
+                            "result_kind": "imported-phase-result",
+                            "state": item["state"],
+                            "record_revision": 1,
+                            "data_json": _canonical_json(item),
+                        }
+                    )
+                data = _render_records_ledger(frontmatter, records)
+            _inject_failure("document-context-before-ledger-create")
+            _write_new_file(ledger_path, data, created_files)
+            if _require_regular_nosymlink(ledger_path, "ledger") != data:
+                raise ProtocolError(
+                    "initialization_verification_failed",
+                    "document-only ledger did not reread with its committed bytes",
+                )
+            return {
+                "ok": True,
+                "state": "initialized",
+                "context": "ledger",
+                "created": True,
+                "storage_mode": storage_mode,
+                "project_id": manifest["project_id"],
+                "tree_id": manifest["tree_id"],
+                "topic_id": manifest["topic_id"],
+                "ledger_revision": 1,
+                "topic_revision": 1,
+                "ledger_path": str(ledger_path),
+                "topic_document_path": str(topic_path),
+                "imported_result_count": len(imported_results),
+                "coordination_state": "unknown",
+                "idempotent_replay": False,
+            }
         finally:
-            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN); lock_stream.close()
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+            lock_stream.close()
     except ProtocolError:
-        _rollback(created_files, created_directories); raise
+        _rollback(created_files, created_directories)
+        raise
     except OSError as error:
-        _rollback(created_files, created_directories); raise ProtocolError("initialization_failed", "document-only initialization failed", cause=str(error)) from error
+        _rollback(created_files, created_directories)
+        raise ProtocolError(
+            "initialization_failed",
+            "document-only initialization failed",
+            cause=str(error),
+        ) from error
 
 
 def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:

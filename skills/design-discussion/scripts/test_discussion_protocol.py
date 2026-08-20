@@ -1283,6 +1283,73 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(ambiguous["context"], "ambiguous")
         self.assertEqual(snapshot, {path: path.read_bytes() for path in project.rglob("*") if path.is_file()})
 
+    def test_discovery_prioritizes_authenticated_child_identity_and_active_binding(self) -> None:
+        project = self.make_project("discovery-child", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic)
+        child_identity = {
+            "project_id": topic["project_id"],
+            "tree_id": topic["tree_id"],
+            "topic_id": prepared["target_topic_id"],
+        }
+
+        code, authenticated, stderr = self.run_cli(
+            {
+                "protocol_version": 1,
+                "operation": "discover-context",
+                "project_path": str(project),
+                "authenticated_identity": child_identity,
+            }
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(authenticated["topic_id"], prepared["target_topic_id"])
+
+        code, bound, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="bind-handoff",
+                ledger_revision=2,
+                handoff_id=prepared["handoff_id"],
+                attempt_id=prepared["attempt_id"],
+                conversation_ref="codex-thread:child-discovery",
+                verified_identity={
+                    **child_identity,
+                    "handoff_id": prepared["handoff_id"],
+                    "attempt_id": prepared["attempt_id"],
+                    "payload_sha256": prepared["payload_sha256"],
+                },
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(bound["active_conversation_ref"], "codex-thread:child-discovery")
+
+        code, active, stderr = self.run_cli(
+            {
+                "protocol_version": 1,
+                "operation": "discover-context",
+                "project_path": str(project),
+                "conversation_ref": "codex-thread:child-discovery",
+            }
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(active["topic_id"], prepared["target_topic_id"])
+
+        code, conflict, _ = self.run_cli(
+            {
+                "protocol_version": 1,
+                "operation": "discover-context",
+                "project_path": str(project),
+                "authenticated_identity": {
+                    "project_id": topic["project_id"],
+                    "tree_id": topic["tree_id"],
+                    "topic_id": topic["topic_id"],
+                },
+                "conversation_ref": "codex-thread:child-discovery",
+            }
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(conflict["error"]["code"], "discussion_identity_conflict")
+
     def test_every_legal_route_and_illegal_route_matrix(self) -> None:
         legal = {(0, 1), (0, 2), (1, 2), (1, 3), (2, 3), (3, 4)}
         evidence = {key: "0" * 64 for key in ("source", "route", "impact", "coverage", "dependency", "coordination")}
@@ -1712,13 +1779,135 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(result["state"], "reopened")
         self.assertEqual(result["current_phase"], 0)
 
+    def test_reopen_rejects_omitted_authoritative_decisions_and_marks_results_for_review(self) -> None:
+        project = self.make_project("phase-reopen-complete-review", git=False)
+        topic = self.bootstrap_topic(project)
+        decisions = []
+        ledger_revision = 1
+        topic_revision = 1
+        for number in (1, 2):
+            prepared, ledger_revision, topic_revision = self.complete_update(
+                project,
+                topic,
+                ledger_revision=ledger_revision,
+                topic_revision=topic_revision,
+                mutation={
+                    "type": "confirm-decision",
+                    "summary": f"Stable decision {number}",
+                    "rationale": "The completed phase depends on this decision.",
+                },
+            )
+            decisions.append(str(prepared["decision_id"]))
+
+        code, prepared, stderr = self.run_cli(
+            self.phase_request(
+                topic,
+                "prepare-phase-run",
+                ledger_revision,
+                topic_revision=topic_revision,
+                from_phase=0,
+                to_phase=1,
+                route="0->1",
+                carrier_kind="problem-framing",
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        evidence = prepared["evidence"]
+        transitions = (
+            (
+                "authorize-phase-carrier",
+                {
+                    "carrier_ref": "discussion-task",
+                },
+            ),
+            (
+                "phase-ready",
+                {
+                    "carrier_ref": "discussion-task",
+                    "evidence": evidence,
+                },
+            ),
+            ("phase-activate", {"evidence": evidence}),
+            (
+                "claim-phase-completion",
+                {
+                    "carrier_ref": "discussion-task",
+                    "evidence": evidence,
+                },
+            ),
+            ("complete-phase-run", {"evidence": evidence}),
+            ("finalize-phase-run", {"evidence": evidence}),
+        )
+        completed = None
+        for offset, (operation, parameters) in enumerate(transitions, start=1):
+            code, response, stderr = self.run_cli(
+                self.phase_request(
+                    topic,
+                    operation,
+                    ledger_revision + offset,
+                    topic_revision=topic_revision,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    **parameters,
+                )
+            )
+            self.assertEqual(code, 0, stderr)
+            completed = response
+        assert completed is not None
+
+        omitted = self.phase_request(
+            topic,
+            "reopen-phase",
+            ledger_revision + len(transitions) + 1,
+            topic_revision=topic_revision + 1,
+            affected_decision_ids=[decisions[0]],
+            review={decisions[0]: "adjust"},
+            reason="Both stable decisions changed.",
+        )
+        code, rejected, _ = self.run_cli(omitted)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_reopen_review_required")
+
+        complete = dict(omitted)
+        complete["idempotency_key"] = str(uuid.uuid4())
+        complete["affected_decision_ids"] = decisions
+        complete["review"] = {decision_id: "adjust" for decision_id in decisions}
+        code, reopened, stderr = self.run_cli(complete)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(reopened["affected_decision_ids"], sorted(decisions))
+        self.assertEqual(
+            reopened["review_pending_result_ids"],
+            [completed["phase_result_id"]],
+        )
+
+        code, replayed, stderr = self.run_cli(complete)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(replayed["ledger_revision"], reopened["ledger_revision"])
+        self.assertEqual(
+            replayed["review_pending_result_ids"],
+            reopened["review_pending_result_ids"],
+        )
+
     def test_document_only_discovery_and_authorized_verified_import(self) -> None:
         project = self.make_project("document-only", git=False)
         seed = self.bootstrap_topic(project)
         ledger = Path(str(seed["ledger_path"]))
         ledger.unlink()
         result_path = project / "phase-result.md"
-        result_path.write_text("verified result\n", encoding="utf-8")
+        result_id = "PH-" + "2" * 32
+        result_path.write_text(
+            "---\n"
+            f"project_id: {seed['project_id']}\n"
+            f"tree_id: {seed['tree_id']}\n"
+            f"topic_id: {seed['topic_id']}\n"
+            f"result_id: {result_id}\n"
+            "phase: 1\n"
+            "state: completed\n"
+            "---\n"
+            "verified result\n",
+            encoding="utf-8",
+        )
         digest = hashlib.sha256(result_path.read_bytes()).hexdigest()
         before = {path: path.read_bytes() for path in project.rglob("*") if path.is_file()}
         code, discovered, stderr = self.run_cli(
@@ -1741,7 +1930,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             "idempotency_key": str(uuid.uuid4()),
             "user_authorization": False,
             "verified_results": [{
-                "result_id": "PH-" + "2" * 32,
+                "result_id": result_id,
                 "phase": 1,
                 "state": "completed",
                 "path": str(result_path),
@@ -1756,6 +1945,71 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(initialized["imported_result_count"], 1)
         self.assertEqual(initialized["coordination_state"], "unknown")
+
+    def test_document_only_import_validates_metadata_and_initializes_atomically(self) -> None:
+        project = self.make_project("document-only-atomic", git=False)
+        seed = self.bootstrap_topic(project)
+        ledger = Path(str(seed["ledger_path"]))
+        ledger.unlink()
+        result_path = project / "stable-phase-result.md"
+        result_id = "PH-" + "3" * 32
+
+        def write_result(*, file_result_id: str) -> str:
+            result_path.write_text(
+                "---\n"
+                f"project_id: {seed['project_id']}\n"
+                f"tree_id: {seed['tree_id']}\n"
+                f"topic_id: {seed['topic_id']}\n"
+                f"result_id: {file_result_id}\n"
+                "phase: 1\n"
+                "state: completed\n"
+                "---\n"
+                "# Stable phase result\n",
+                encoding="utf-8",
+            )
+            return hashlib.sha256(result_path.read_bytes()).hexdigest()
+
+        request = {
+            "protocol_version": 1,
+            "operation": "initialize-document-context",
+            "project_path": str(project),
+            "conversation_ref": "discussion-task",
+            "idempotency_key": str(uuid.uuid4()),
+            "user_authorization": True,
+            "verified_results": [
+                {
+                    "result_id": result_id,
+                    "phase": 1,
+                    "state": "completed",
+                    "path": str(result_path),
+                    "sha256": write_result(file_result_id="PH-" + "4" * 32),
+                }
+            ],
+        }
+        code, mismatch, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(mismatch["error"]["code"], "context_identity_conflict")
+        self.assertFalse(ledger.exists())
+
+        request["verified_results"][0]["sha256"] = write_result(file_result_id=result_id)
+        code, injected, _ = self.run_cli(
+            request,
+            failpoint="document-context-before-ledger-create",
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(injected["error"]["code"], "injected_failure")
+        self.assertFalse(ledger.exists())
+
+        code, initialized, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(initialized["created"])
+        self.assertEqual(initialized["imported_result_count"], 1)
+
+        code, replayed, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(replayed["imported_result_count"], 1)
+        self.assertEqual(replayed["ledger_revision"], initialized["ledger_revision"])
 
     def evolution_request(
         self,
