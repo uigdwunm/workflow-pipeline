@@ -3006,6 +3006,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         prepared: dict[str, object],
         *,
         ledger_revision: int,
+        topic_revision: int = 1,
     ) -> dict[str, object]:
         lease = self.acquire_repository_coordination_lease(project)
         holder = lease["holder"]
@@ -3015,6 +3016,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 topic,
                 operation="publish-git-checkpoint",
                 ledger_revision=ledger_revision,
+                topic_revision=topic_revision,
                 checkpoint_id=prepared["checkpoint_id"],
                 expected_checkpoint_revision=prepared["checkpoint_record_revision"],
                 repository_coordination_lease={
@@ -4959,7 +4961,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 "affected_decision_ids": [decision["decision_id"]],
             },
         )
-        code, forged_no_impact, stderr = self.run_cli(
+        before_stale_source = Path(str(topic["ledger_path"])).read_bytes()
+        code, stale_source, stderr = self.run_cli(
             self.evolution_request(
                 topic,
                 operation="prepare-source-refresh",
@@ -4972,9 +4975,9 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 impact_summary="Caller claims the pending decision impact is unrelated.",
             )
         )
-        self.assertEqual(code, 0, stderr)
-        self.assertEqual(forged_no_impact["state"], "refresh-candidate")
-        self.assertEqual(forged_no_impact["impact"], "no-impact")
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(stale_source["error"]["code"], "implementation_source_invalid")
+        self.assertEqual(Path(str(topic["ledger_path"])).read_bytes(), before_stale_source)
 
     def test_integration_revalidation_uses_current_cross_cli_authority(self) -> None:
         project = self.make_project("integration-authority", git=True)
@@ -5188,6 +5191,547 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(replayed.returncode, 2)
         self.assertEqual(json.loads(replayed.stdout)["error"]["code"], "discussion_receipt_invalid")
+
+    def test_wi07_sibling_topic_owner_cannot_operate_another_topic_run_or_checkpoint(self) -> None:
+        project = self.make_project("implementation-topic-authority", git=True)
+        topic = self.bootstrap_topic(project)
+        subprocess.run(["git", "-C", str(project), "add", "docs"], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(project), "-c", "user.name=Test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "base",
+            ],
+            check=True,
+        )
+        base_commit = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        source = self.prepare_checkpoint(
+            topic, ledger_revision=1, purpose="implementation-source"
+        )
+        source = self.publish_git_checkpoint(
+            project, topic, source, ledger_revision=2
+        )
+        replacement = self.prepare_checkpoint(
+            topic, ledger_revision=3, purpose="implementation-source"
+        )
+        replacement = self.publish_git_checkpoint(
+            project, topic, replacement, ledger_revision=4
+        )
+        scope = {
+            "paths": ["src/topic-authority.py"],
+            "modules": ["topic-authority"],
+            "interfaces": ["discussion-cli"],
+            "database_objects": [],
+            "dependencies": [],
+            "base_commit": base_commit,
+            "branch": "codex/topic-authority",
+            "worktree_path": str(project / ".worktrees" / "topic-authority"),
+        }
+        code, _, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-implementation-run",
+                expected_revision=5,
+                expected_topic_revision=1,
+                implementation_id="implementation-topic-authority",
+                scope=scope,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        receipt_input = self.root / "topic-authority-worktrees.json"
+        receipt_input.write_text(
+            json.dumps(
+                {
+                    "project_id": topic["project_id"],
+                    "repository": str(project),
+                    "topic_id": topic["topic_id"],
+                    "tree_id": topic["tree_id"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        issued = self.supervision_cli(
+            "create-worktree-state-receipt", "--input", str(receipt_input)
+        )
+        worktree_receipt = {
+            key: issued[key] for key in ("file_bytes", "file_sha256", "path", "version")
+        }
+        code, checked, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="check-implementation-parallelism",
+                expected_revision=6,
+                expected_topic_revision=1,
+                implementation_id="implementation-topic-authority",
+                worktree_receipt=worktree_receipt,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        code, activated, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="activate-implementation-run",
+                expected_revision=7,
+                expected_topic_revision=1,
+                implementation_id="implementation-topic-authority",
+                execution_mode="exclusive-checkout-v2",
+                source_checkpoint_id=source["checkpoint_id"],
+                source_identity=source["commit_id"],
+                parallelism_receipt=checked["receipt"],
+                worktree_receipt=worktree_receipt,
+                isolated_confirmation=None,
+                phase_run_id="PR-topic-authority",
+                sensitive_shared_surfaces=["git-common-dir"],
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+
+        sibling_topic_id = "topic-" + "b" * 32
+        sibling_owner = "codex-thread:sibling-topic"
+        ledger = Path(str(topic["ledger_path"]))
+        ledger_text = ledger.read_text(encoding="utf-8")
+        ledger_text = ledger_text.replace(
+            "\n```\n\n## Pending Items",
+            "\n  - topic_id: \"" + sibling_topic_id + "\"\n"
+            "    record_revision: 1\n"
+            "    root_slug: \"sibling\"\n"
+            "    parent_topic_id: \"" + str(topic["topic_id"]) + "\"\n"
+            "    current_phase: 3\n"
+            "    phase_state: \"active\"\n"
+            "    review_state: \"unreviewed\"\n"
+            "    topic_state: \"open\"\n"
+            "    topic_document_path: null\n"
+            "```\n\n## Pending Items",
+            1,
+        )
+        ledger_text = ledger_text.replace(
+            "\n```\n\n## Recent Events",
+            "\n  - topic_id: \"" + sibling_topic_id + "\"\n"
+            "    conversation_ref: \"" + sibling_owner + "\"\n"
+            "    binding_state: \"active\"\n"
+            "    record_revision: 1\n"
+            "```\n\n## Recent Events",
+            1,
+        )
+        ledger.write_text(ledger_text, encoding="utf-8")
+        self.rewrite_ledger_with_valid_digest(ledger, "topic_state: \"open\"", "topic_state: \"open\"")
+        sibling = {**topic, "topic_id": sibling_topic_id}
+
+        operation_requests = {
+            "check": self.evolution_request(
+                sibling, operation="check-implementation-parallelism",
+                expected_revision=8, expected_topic_revision=1,
+                owner_ref=sibling_owner,
+                implementation_id="implementation-topic-authority",
+                worktree_receipt=worktree_receipt,
+            ),
+            "validate-parallelism": self.evolution_request(
+                sibling, operation="validate-implementation-parallelism",
+                owner_ref=sibling_owner,
+                implementation_id="implementation-topic-authority",
+                receipt=checked["receipt"], worktree_receipt=worktree_receipt,
+            ),
+            "activate": self.evolution_request(
+                sibling, operation="activate-implementation-run",
+                expected_revision=8, expected_topic_revision=1,
+                owner_ref=sibling_owner,
+                implementation_id="implementation-topic-authority",
+                execution_mode="exclusive-checkout-v2",
+                source_checkpoint_id=source["checkpoint_id"],
+                source_identity=source["commit_id"],
+                parallelism_receipt=checked["receipt"],
+                worktree_receipt=worktree_receipt, isolated_confirmation=None,
+                phase_run_id="PR-topic-authority",
+                sensitive_shared_surfaces=["git-common-dir"],
+            ),
+            "prepare-refresh": self.evolution_request(
+                sibling, operation="prepare-source-refresh",
+                expected_revision=8, expected_topic_revision=1,
+                owner_ref=sibling_owner,
+                implementation_id="implementation-topic-authority",
+                source_checkpoint_id=replacement["checkpoint_id"],
+                source_identity=replacement["commit_id"], impact="no-impact",
+                impact_summary="Sibling must not control this run.",
+            ),
+            "ack-refresh": self.evolution_request(
+                sibling, operation="ack-source-refresh",
+                expected_revision=8, expected_topic_revision=1,
+                owner_ref=sibling_owner,
+                implementation_id="implementation-topic-authority",
+                refresh_id="REF-forged", implementation_ack={},
+            ),
+            "commit-refresh": self.evolution_request(
+                sibling, operation="commit-source-refresh",
+                expected_revision=8, expected_topic_revision=1,
+                owner_ref=sibling_owner,
+                implementation_id="implementation-topic-authority",
+                refresh_id="REF-forged",
+                source_checkpoint_id=replacement["checkpoint_id"],
+                source_identity=replacement["commit_id"],
+            ),
+            "issue-integration": self.evolution_request(
+                sibling, operation="issue-integration-authority-receipt",
+                owner_ref=sibling_owner,
+                implementation_id="implementation-topic-authority",
+            ),
+            "validate-integration": self.evolution_request(
+                sibling, operation="validate-integration-authority-receipt",
+                owner_ref=sibling_owner,
+                implementation_id="implementation-topic-authority",
+                authority_receipt={},
+            ),
+        }
+        for label, request in operation_requests.items():
+            with self.subTest(operation=label):
+                before = ledger.read_bytes()
+                code, rejected, _ = self.run_cli(request)
+                self.assertEqual(code, 1)
+                self.assertEqual(
+                    rejected["error"]["code"], "implementation_identity_conflict"
+                )
+                self.assertEqual(ledger.read_bytes(), before)
+
+        cross_topic_source = dict(replacement)
+        checkpoint_id = str(cross_topic_source["checkpoint_id"])
+        ledger_text = ledger.read_text(encoding="utf-8")
+        checkpoint_lines = []
+        for line in ledger_text.splitlines():
+            if "data_json:" in line and checkpoint_id in line:
+                line = line.replace(
+                    f'\\"topic_id\\":\\"{topic["topic_id"]}\\"',
+                    f'\\"topic_id\\":\\"{sibling_topic_id}\\"',
+                )
+            checkpoint_lines.append(line)
+        ledger.write_text("\n".join(checkpoint_lines) + "\n", encoding="utf-8")
+        self.rewrite_ledger_with_valid_digest(
+            ledger, "topic_state: \"open\"", "topic_state: \"open\""
+        )
+        before = ledger.read_bytes()
+        code, rejected, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-source-refresh",
+                expected_revision=8,
+                expected_topic_revision=1,
+                implementation_id="implementation-topic-authority",
+                source_checkpoint_id=replacement["checkpoint_id"],
+                source_identity=replacement["commit_id"],
+                impact="no-impact",
+                impact_summary="Cross-topic checkpoints are not source authority.",
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "implementation_source_invalid")
+        self.assertEqual(ledger.read_bytes(), before)
+
+    def prepare_source_impact_run(self, label: str) -> dict[str, object]:
+        project = self.make_project(f"source-impact-{label}", git=True)
+        topic = self.bootstrap_topic(project)
+        subprocess.run(["git", "-C", str(project), "add", "docs"], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(project), "-c", "user.name=Test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "base",
+            ],
+            check=True,
+        )
+        base_commit = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        decision, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=1,
+            topic_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Keep the WI07 authority boundary exact.",
+                "rationale": "The active run explicitly depends on this decision.",
+            },
+        )
+        source = self.prepare_checkpoint(
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            purpose="implementation-source",
+        )
+        source = self.publish_git_checkpoint(
+            project,
+            topic,
+            source,
+            ledger_revision=ledger_revision + 1,
+            topic_revision=topic_revision,
+        )
+        ledger_revision += 2
+        scope = {
+            "paths": ["src/source-impact.py"],
+            "modules": ["source-impact"],
+            "interfaces": ["discussion-cli"],
+            "database_objects": [],
+            "dependencies": [],
+            "base_commit": base_commit,
+            "branch": f"codex/source-impact-{label}",
+            "worktree_path": str(project / ".worktrees" / f"source-impact-{label}"),
+            "decision_ids": [decision["decision_id"]],
+        }
+        implementation_id = f"implementation-source-impact-{label}"
+        code, _, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-implementation-run",
+                expected_revision=ledger_revision,
+                expected_topic_revision=topic_revision,
+                implementation_id=implementation_id,
+                scope=scope,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        ledger_revision += 1
+        receipt_input = self.root / f"source-impact-{label}.json"
+        receipt_input.write_text(
+            json.dumps(
+                {
+                    "project_id": topic["project_id"],
+                    "repository": str(project),
+                    "topic_id": topic["topic_id"],
+                    "tree_id": topic["tree_id"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        issued = self.supervision_cli(
+            "create-worktree-state-receipt", "--input", str(receipt_input)
+        )
+        worktree_receipt = {
+            key: issued[key] for key in ("file_bytes", "file_sha256", "path", "version")
+        }
+        code, checked, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="check-implementation-parallelism",
+                expected_revision=ledger_revision,
+                expected_topic_revision=topic_revision,
+                implementation_id=implementation_id,
+                worktree_receipt=worktree_receipt,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        ledger_revision += 1
+        code, _, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="activate-implementation-run",
+                expected_revision=ledger_revision,
+                expected_topic_revision=topic_revision,
+                implementation_id=implementation_id,
+                execution_mode="exclusive-checkout-v2",
+                source_checkpoint_id=source["checkpoint_id"],
+                source_identity=source["commit_id"],
+                parallelism_receipt=checked["receipt"],
+                worktree_receipt=worktree_receipt,
+                isolated_confirmation=None,
+                phase_run_id=f"PR-source-impact-{label}",
+                sensitive_shared_surfaces=["git-common-dir"],
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        return {
+            "project": project,
+            "topic": topic,
+            "decision": decision,
+            "implementation_id": implementation_id,
+            "ledger_revision": ledger_revision + 1,
+            "topic_revision": topic_revision,
+        }
+
+    def prepare_and_refresh_source_impact(
+        self, case: dict[str, object], *, impact: str
+    ) -> tuple[int, dict[str, object], str]:
+        project = case["project"]
+        topic = case["topic"]
+        assert isinstance(project, Path) and isinstance(topic, dict)
+        replacement = self.prepare_checkpoint(
+            topic,
+            ledger_revision=int(case["ledger_revision"]),
+            topic_revision=int(case["topic_revision"]),
+            purpose="implementation-source",
+        )
+        replacement = self.publish_git_checkpoint(
+            project,
+            topic,
+            replacement,
+            ledger_revision=int(case["ledger_revision"]) + 1,
+            topic_revision=int(case["topic_revision"]),
+        )
+        return self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-source-refresh",
+                expected_revision=int(case["ledger_revision"]) + 2,
+                expected_topic_revision=int(case["topic_revision"]),
+                implementation_id=case["implementation_id"],
+                source_checkpoint_id=replacement["checkpoint_id"],
+                source_identity=replacement["commit_id"],
+                impact=impact,
+                impact_summary=f"Expected authoritative impact: {impact}.",
+            )
+        )
+
+    def test_source_refresh_related_pending_impact_is_unknown(self) -> None:
+        case = self.prepare_source_impact_run("related-pending")
+        project = case["project"]
+        topic = case["topic"]
+        decision = case["decision"]
+        assert isinstance(project, Path) and isinstance(topic, dict) and isinstance(decision, dict)
+        _, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=int(case["ledger_revision"]),
+            topic_revision=int(case["topic_revision"]),
+            mutation={
+                "type": "change-direction",
+                "summary": "Revisit the target authority decision.",
+                "affected_decision_ids": [decision["decision_id"]],
+            },
+        )
+        case.update(ledger_revision=ledger_revision, topic_revision=topic_revision)
+        code, refreshed, stderr = self.prepare_and_refresh_source_impact(
+            case, impact="unknown"
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(refreshed["impact"], "unknown")
+        self.assertEqual(refreshed["state"], "impact-pending")
+
+    def test_source_refresh_related_resolved_impact_is_affected(self) -> None:
+        case = self.prepare_source_impact_run("related-resolved")
+        project = case["project"]
+        topic = case["topic"]
+        decision = case["decision"]
+        assert isinstance(project, Path) and isinstance(topic, dict) and isinstance(decision, dict)
+        direction, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=int(case["ledger_revision"]),
+            topic_revision=int(case["topic_revision"]),
+            mutation={
+                "type": "change-direction",
+                "summary": "Replace the target authority decision.",
+                "affected_decision_ids": [decision["decision_id"]],
+            },
+        )
+        _, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "resolve-impact",
+                "impact_id": direction["impact_ids"][0],
+                "decision_id": decision["decision_id"],
+                "action": "replace",
+                "summary": "Use the revised target authority decision.",
+            },
+        )
+        case.update(ledger_revision=ledger_revision, topic_revision=topic_revision)
+        code, refreshed, stderr = self.prepare_and_refresh_source_impact(
+            case, impact="affected"
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(refreshed["impact"], "affected")
+
+    def test_source_refresh_changed_decision_without_impact_is_unknown(self) -> None:
+        case = self.prepare_source_impact_run("missing-impact")
+        topic = case["topic"]
+        decision = case["decision"]
+        assert isinstance(topic, dict) and isinstance(decision, dict)
+        ledger = Path(str(topic["ledger_path"]))
+        self.rewrite_ledger_with_valid_digest(
+            ledger,
+            "Keep the WI07 authority boundary exact.",
+            "Change the WI07 authority boundary without an impact record.",
+        )
+        code, refreshed, stderr = self.prepare_and_refresh_source_impact(
+            case, impact="unknown"
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(refreshed["impact"], "unknown")
+
+    def test_source_refresh_scope_only_change_without_impact_is_unknown(self) -> None:
+        case = self.prepare_source_impact_run("scope-only")
+        topic = case["topic"]
+        assert isinstance(topic, dict)
+        ledger = Path(str(topic["ledger_path"]))
+        self.rewrite_ledger_with_valid_digest(
+            ledger,
+            '\\"modules\\":[\\"source-impact\\"]',
+            '\\"modules\\":[\\"source-impact-v2\\"]',
+        )
+        code, refreshed, stderr = self.prepare_and_refresh_source_impact(
+            case, impact="unknown"
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(refreshed["impact"], "unknown")
+
+    def test_source_refresh_unrelated_resolved_and_new_decisions_are_no_impact(self) -> None:
+        case = self.prepare_source_impact_run("unrelated-resolved")
+        project = case["project"]
+        topic = case["topic"]
+        assert isinstance(project, Path) and isinstance(topic, dict)
+        unrelated, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=int(case["ledger_revision"]),
+            topic_revision=int(case["topic_revision"]),
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Add an unrelated reporting decision.",
+                "rationale": "It is explicitly outside the active implementation scope.",
+            },
+        )
+        direction, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "change-direction",
+                "summary": "Revise only the unrelated reporting decision.",
+                "affected_decision_ids": [unrelated["decision_id"]],
+            },
+        )
+        _, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "resolve-impact",
+                "impact_id": direction["impact_ids"][0],
+                "decision_id": unrelated["decision_id"],
+                "action": "replace",
+                "summary": "Use revised unrelated reporting behavior.",
+            },
+        )
+        case.update(ledger_revision=ledger_revision, topic_revision=topic_revision)
+        code, refreshed, stderr = self.prepare_and_refresh_source_impact(
+            case, impact="no-impact"
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(refreshed["impact"], "no-impact")
+        self.assertEqual(refreshed["state"], "refresh-candidate")
 
 
 if __name__ == "__main__":
