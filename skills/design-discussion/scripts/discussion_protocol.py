@@ -5301,12 +5301,15 @@ def _discover_context(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
+    base_fields = {
+        "protocol_version", "operation", "project_path", "conversation_ref",
+        "idempotency_key", "user_authorization", "verified_results",
+    }
+    topic_fields = {"topic_identity", "topic_document_path"}
+    expected_fields = base_fields | topic_fields if set(request) & topic_fields else base_fields
     _expect_keys(
         request,
-        {
-            "protocol_version", "operation", "project_path", "conversation_ref",
-            "idempotency_key", "user_authorization", "verified_results",
-        },
+        expected_fields,
         "initialize-document-context request",
     )
     project = _validate_project_path(request["project_path"])
@@ -5328,7 +5331,78 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
                 "context_identity_conflict",
                 "document-only manifest is incomplete",
             )
-    topic_path = project / "docs" / "discussions" / manifest["root_slug"] / "topic.md"
+    explicit_topic = "topic_identity" in request
+    if explicit_topic:
+        topic_identity = request["topic_identity"]
+        if not isinstance(topic_identity, dict) or set(topic_identity) != {
+            "project_id", "tree_id", "topic_id",
+        }:
+            raise ProtocolError("invalid_request", "topic_identity has an invalid shape")
+        for field, kind in (
+            ("project_id", "project"),
+            ("tree_id", "tree"),
+            ("topic_id", "topic"),
+        ):
+            value = _expect_string(topic_identity[field], f"topic_identity.{field}")
+            if not value.startswith(f"{kind}-") or not IDENTITY_RE.fullmatch(value):
+                raise ProtocolError(
+                    "discussion_identity_conflict",
+                    f"topic_identity.{field} is invalid",
+                )
+        if any(topic_identity[field] != manifest[field] for field in ("project_id", "tree_id")):
+            raise ProtocolError(
+                "context_identity_conflict",
+                "topic identity conflicts with the project manifest",
+            )
+        topic_path = Path(
+            _expect_string(
+                request["topic_document_path"],
+                "topic_document_path",
+                max_bytes=4096,
+            )
+        )
+        try:
+            resolved_topic_path = topic_path.resolve(strict=True)
+        except OSError as error:
+            raise ProtocolError(
+                "context_identity_conflict",
+                "topic document is missing",
+                cause=str(error),
+            ) from error
+        if topic_path != resolved_topic_path:
+            raise ProtocolError(
+                "invalid_request",
+                "topic_document_path must be canonical and contain no symbolic-link or relative components",
+            )
+        try:
+            topic_relative_path = topic_path.relative_to(project / "docs" / "discussions")
+        except ValueError as error:
+            raise ProtocolError(
+                "invalid_request",
+                "topic_document_path must be inside the project's discussion documents",
+            ) from error
+        if len(topic_relative_path.parts) != 2 or topic_relative_path.name != "topic.md":
+            raise ProtocolError(
+                "context_identity_conflict",
+                "topic_document_path does not identify one discussion topic document",
+            )
+        topic_root_slug = topic_relative_path.parts[0]
+        if not ROOT_SLUG_RE.fullmatch(topic_root_slug):
+            raise ProtocolError(
+                "context_identity_conflict",
+                "topic document slug is invalid",
+            )
+        selected_identity = {
+            field: topic_identity[field]
+            for field in ("project_id", "tree_id", "topic_id")
+        }
+    else:
+        topic_path = project / "docs" / "discussions" / manifest["root_slug"] / "topic.md"
+        topic_root_slug = manifest["root_slug"]
+        selected_identity = {
+            field: manifest[field]
+            for field in ("project_id", "tree_id", "topic_id")
+        }
     if not topic_path.exists():
         raise ProtocolError(
             "context_identity_conflict",
@@ -5337,10 +5411,10 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
     topic_data = _require_regular_nosymlink(topic_path, "topic document")
     topic_frontmatter = _parse_frontmatter(topic_data, "topic document")
     for field in ("project_id", "tree_id", "topic_id"):
-        if topic_frontmatter.get(field) != manifest[field]:
+        if topic_frontmatter.get(field) != selected_identity[field]:
             raise ProtocolError(
                 "context_identity_conflict",
-                "document-only topic identity conflicts with manifest",
+                "document-only topic identity conflicts with the requested context",
             )
     verified_results = request["verified_results"]
     if not isinstance(verified_results, list):
@@ -5375,9 +5449,9 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
             )
         result_metadata = _parse_frontmatter(result_bytes, "verified phase result")
         expected_metadata = {
-            "project_id": manifest["project_id"],
-            "tree_id": manifest["tree_id"],
-            "topic_id": manifest["topic_id"],
+            "project_id": selected_identity["project_id"],
+            "tree_id": selected_identity["tree_id"],
+            "topic_id": selected_identity["topic_id"],
             "result_id": result_id,
             "phase": str(phase),
             "state": state,
@@ -5390,9 +5464,7 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
         imported_results.append(
             {
                 **item,
-                "project_id": manifest["project_id"],
-                "tree_id": manifest["tree_id"],
-                "topic_id": manifest["topic_id"],
+                **selected_identity,
             }
         )
     imported_result_ids = [item["result_id"] for item in imported_results]
@@ -5409,8 +5481,16 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
                 "conversation_ref": conversation_ref,
                 "entry_mode": "document-only",
                 "project_path": str(project),
-                "root_slug": manifest["root_slug"],
+                "root_slug": topic_root_slug,
                 "verified_results": imported_results,
+                **(
+                    {
+                        "topic_identity": selected_identity,
+                        "topic_document_path": str(topic_path),
+                    }
+                    if explicit_topic
+                    else {}
+                ),
             }
         ).encode("utf-8")
     )
@@ -5435,7 +5515,7 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
             "storage_mode": storage_mode,
             "project_id": manifest["project_id"],
             "tree_id": manifest["tree_id"],
-            "topic_id": manifest["topic_id"],
+            "topic_id": selected_identity["topic_id"],
             "ledger_revision": int(frontmatter["ledger_revision"]),
             "topic_revision": 1,
             "ledger_path": str(ledger_path),
@@ -5478,7 +5558,7 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
                     "storage_mode": storage_mode,
                     "project_id": manifest["project_id"],
                     "tree_id": manifest["tree_id"],
-                    "topic_id": manifest["topic_id"],
+                    "topic_id": selected_identity["topic_id"],
                     "ledger_revision": int(frontmatter["ledger_revision"]),
                     "topic_revision": 1,
                     "ledger_path": str(ledger_path),
@@ -5490,8 +5570,8 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
             data = _render_ledger(
                 project_id=manifest["project_id"],
                 tree_id=manifest["tree_id"],
-                topic_id=manifest["topic_id"],
-                root_slug=manifest["root_slug"],
+                topic_id=selected_identity["topic_id"],
+                root_slug=topic_root_slug,
                 conversation_ref=conversation_ref,
                 idempotency_key=key,
                 request_fingerprint=fingerprint,
@@ -5531,7 +5611,7 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
                 "storage_mode": storage_mode,
                 "project_id": manifest["project_id"],
                 "tree_id": manifest["tree_id"],
-                "topic_id": manifest["topic_id"],
+                "topic_id": selected_identity["topic_id"],
                 "ledger_revision": 1,
                 "topic_revision": 1,
                 "ledger_path": str(ledger_path),

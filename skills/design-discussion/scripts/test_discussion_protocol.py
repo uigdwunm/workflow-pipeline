@@ -2029,6 +2029,153 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(initialized["imported_result_count"], 1)
         self.assertEqual(initialized["coordination_state"], "unknown")
 
+    def test_discovered_child_document_can_initialize_exact_authorized_context(self) -> None:
+        project = self.make_project("document-only-child-initialize", git=False)
+        root = self.bootstrap_topic(project)
+        ledger = Path(str(root["ledger_path"]))
+        ledger.unlink()
+        child_topic_id = "topic-" + "c" * 32
+        child_path = project / "docs" / "discussions" / "api-shape" / "topic.md"
+        child_path.parent.mkdir(parents=True)
+        child_path.write_text(
+            "---\n"
+            "schema_version: 1\n"
+            f"project_id: {root['project_id']}\n"
+            f"tree_id: {root['tree_id']}\n"
+            f"topic_id: {child_topic_id}\n"
+            f"parent_topic_id: {root['topic_id']}\n"
+            "topic_revision: 1\n"
+            "---\n"
+            "# API shape\n",
+            encoding="utf-8",
+        )
+        child_identity = {
+            "project_id": root["project_id"],
+            "tree_id": root["tree_id"],
+            "topic_id": child_topic_id,
+        }
+        code, discovered, stderr = self.run_cli(
+            {
+                "protocol_version": 1,
+                "operation": "discover-context",
+                "project_path": str(project),
+                "authenticated_identity": child_identity,
+                "document_path": str(child_path),
+            }
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(discovered["context"], "document_only")
+        self.assertEqual(discovered["topic_id"], child_topic_id)
+
+        result_path = project / "child-phase-result.md"
+        result_id = "PH-" + "5" * 32
+
+        def write_result(topic_id: str) -> str:
+            result_path.write_text(
+                "---\n"
+                f"project_id: {root['project_id']}\n"
+                f"tree_id: {root['tree_id']}\n"
+                f"topic_id: {topic_id}\n"
+                f"result_id: {result_id}\n"
+                "phase: 1\n"
+                "state: completed\n"
+                "---\n"
+                "# Stable child result\n",
+                encoding="utf-8",
+            )
+            return hashlib.sha256(result_path.read_bytes()).hexdigest()
+
+        request = {
+            "protocol_version": 1,
+            "operation": "initialize-document-context",
+            "project_path": str(project),
+            "conversation_ref": "codex-thread:child-initialize",
+            "idempotency_key": str(uuid.uuid4()),
+            "user_authorization": False,
+            "topic_identity": child_identity,
+            "topic_document_path": discovered["topic_document_path"],
+            "verified_results": [
+                {
+                    "result_id": result_id,
+                    "phase": 1,
+                    "state": "completed",
+                    "path": str(result_path),
+                    "sha256": write_result(child_topic_id),
+                }
+            ],
+        }
+        before = {
+            path: path.read_bytes() for path in project.rglob("*") if path.is_file()
+        }
+        code, unauthorized, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(unauthorized["error"]["code"], "context_not_initialized")
+        self.assertEqual(
+            before,
+            {path: path.read_bytes() for path in project.rglob("*") if path.is_file()},
+        )
+
+        request["user_authorization"] = True
+        request["topic_document_path"] = root["topic_document_path"]
+        before_conflict = {
+            path: path.read_bytes() for path in project.rglob("*") if path.is_file()
+        }
+        code, conflict, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(conflict["error"]["code"], "context_identity_conflict")
+        self.assertFalse(ledger.exists())
+        self.assertEqual(
+            before_conflict,
+            {path: path.read_bytes() for path in project.rglob("*") if path.is_file()},
+        )
+
+        request["topic_document_path"] = discovered["topic_document_path"]
+        request["verified_results"][0]["sha256"] = write_result(str(root["topic_id"]))
+        before_result_conflict = {
+            path: path.read_bytes() for path in project.rglob("*") if path.is_file()
+        }
+        code, result_conflict, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(result_conflict["error"]["code"], "context_identity_conflict")
+        self.assertFalse(ledger.exists())
+        self.assertEqual(
+            before_result_conflict,
+            {path: path.read_bytes() for path in project.rglob("*") if path.is_file()},
+        )
+
+        request["verified_results"][0]["sha256"] = write_result(child_topic_id)
+        code, initialized, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(initialized["created"])
+        self.assertEqual(initialized["topic_id"], child_topic_id)
+        self.assertEqual(initialized["topic_document_path"], str(child_path))
+        self.assertEqual(initialized["imported_result_count"], 1)
+        ledger_text = ledger.read_text(encoding="utf-8")
+        current_topics = ledger_text.split("## Current Topics\n\n", 1)[1].split(
+            "\n## Pending Items\n\n", 1
+        )[0]
+        bindings = ledger_text.split("## Conversation Bindings\n\n", 1)[1].split(
+            "\n## Recent Events\n\n", 1
+        )[0]
+        phase_results = ledger_text.split("## Phase Results\n\n", 1)[1].split(
+            "\n## Checkpoints\n\n", 1
+        )[0]
+        self.assertIn(f'topic_id: "{child_topic_id}"', current_topics)
+        self.assertIn(f'topic_document_path: "{child_path}"', current_topics)
+        self.assertNotIn(str(root["topic_id"]), current_topics)
+        self.assertIn(f'topic_id: "{child_topic_id}"', bindings)
+        self.assertIn('conversation_ref: "codex-thread:child-initialize"', bindings)
+        self.assertIn(f'result_id: "{result_id}"', phase_results)
+        self.assertIn(f'\\"topic_id\\":\\"{child_topic_id}\\"', phase_results)
+
+        initialized_ledger = ledger.read_bytes()
+        code, replayed, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(replayed["topic_id"], child_topic_id)
+        self.assertEqual(replayed["ledger_revision"], initialized["ledger_revision"])
+        self.assertEqual(ledger.read_bytes(), initialized_ledger)
+
     def test_document_only_import_validates_metadata_and_initializes_atomically(self) -> None:
         project = self.make_project("document-only-atomic", git=False)
         seed = self.bootstrap_topic(project)
