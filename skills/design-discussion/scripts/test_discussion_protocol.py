@@ -4541,5 +4541,249 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertTrue(snapshot_path.exists())
 
 
+    def test_implementation_parallelism_is_deterministic_and_receipts_go_stale(self) -> None:
+        project = self.make_project("implementation-parallelism", git=False)
+        topic = self.bootstrap_topic(project)
+        common = {
+            "paths": ["skills/design-discussion/scripts/discussion_protocol.py"],
+            "modules": ["design-discussion"],
+            "interfaces": ["discussion-cli"],
+            "database_objects": [],
+            "dependencies": ["python-stdlib"],
+            "base_commit": "a" * 40,
+            "branch": "codex/wi07",
+            "worktree_path": str(project / ".worktrees" / "wi07"),
+        }
+        code, _, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-implementation-run",
+                expected_revision=1,
+                expected_topic_revision=1,
+                implementation_id="implementation-wi07",
+                scope=common,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+
+        safe_worktrees = {
+            "verification_state": "verified",
+            "worktrees": [
+                {
+                    "path": str(project / ".worktrees" / "other"),
+                    "branch": "codex/other",
+                    "base_commit": "a" * 40,
+                    "implementation_id": "implementation-other",
+                }
+            ],
+        }
+        active = [{
+            "implementation_id": "implementation-other",
+            "state": "active",
+            "scope": {
+                **common,
+                "paths": ["skills/guided-implementation/scripts/supervision_protocol.py"],
+                "modules": ["guided-implementation"],
+                "interfaces": ["supervision-cli"],
+                "dependencies": ["git"],
+                "branch": "codex/other",
+                "worktree_path": str(project / ".worktrees" / "other"),
+            },
+        }]
+        code, safe, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="check-implementation-parallelism",
+                expected_revision=2,
+                expected_topic_revision=1,
+                implementation_id="implementation-wi07",
+                active_implementations=active,
+                active_worktrees=safe_worktrees,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(safe["verdict"], "safe")
+        self.assertEqual(
+            safe["dimensions"],
+            ["paths", "modules", "interfaces", "database_objects", "dependencies", "base_commit", "branch", "active_worktrees"],
+        )
+
+        changed_worktrees = {
+            "verification_state": "verified",
+            "worktrees": [{**safe_worktrees["worktrees"][0], "path": common["worktree_path"]}],
+        }
+        code, stale, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="validate-implementation-parallelism",
+                implementation_id="implementation-wi07",
+                receipt=safe["receipt"],
+                active_implementations=active,
+                active_worktrees=changed_worktrees,
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(stale["error"]["code"], "implementation_parallelism_stale")
+
+        blocked_active = [{
+            **active[0],
+            "scope": {
+                **active[0]["scope"],
+                "paths": common["paths"],
+            },
+        }]
+        code, blocked, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="check-implementation-parallelism",
+                expected_revision=3,
+                expected_topic_revision=1,
+                implementation_id="implementation-wi07",
+                active_implementations=blocked_active,
+                active_worktrees=safe_worktrees,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(blocked["verdict"], "blocked")
+        self.assertIn("paths", [item["dimension"] for item in blocked["conflicts"]])
+
+        code, unknown, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="check-implementation-parallelism",
+                expected_revision=4,
+                expected_topic_revision=1,
+                implementation_id="implementation-wi07",
+                active_implementations=[],
+                active_worktrees={"verification_state": "unknown", "worktrees": []},
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(unknown["verdict"], "unknown")
+
+    def test_execution_mode_and_committed_source_are_frozen_with_no_impact_refresh(self) -> None:
+        project = self.make_project("implementation-source-refresh", git=True)
+        topic = self.bootstrap_topic(project)
+        subprocess.run(
+            ["git", "-C", str(project), "add", "docs"], check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            ["git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+            check=True,
+        )
+        base_commit = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "HEAD"], check=True,
+            stdout=subprocess.PIPE, text=True,
+        ).stdout.strip()
+        source = self.prepare_checkpoint(topic, ledger_revision=1, purpose="implementation-source")
+        source = self.publish_git_checkpoint(project, topic, source, ledger_revision=2)
+        scope = {
+            "paths": ["skills/design-discussion/scripts/discussion_protocol.py"],
+            "modules": ["design-discussion"],
+            "interfaces": ["discussion-cli"],
+            "database_objects": [],
+            "dependencies": ["python-stdlib"],
+            "base_commit": base_commit,
+            "branch": "codex/source-refresh",
+            "worktree_path": str(project / ".worktrees" / "source-refresh"),
+        }
+        _, prepared, _ = self.run_cli(
+            self.evolution_request(topic, operation="prepare-implementation-run", expected_revision=3, expected_topic_revision=1, implementation_id="implementation-refresh", scope=scope)
+        )
+        active_worktrees = {"verification_state": "verified", "worktrees": []}
+        _, checked, _ = self.run_cli(
+            self.evolution_request(topic, operation="check-implementation-parallelism", expected_revision=4, expected_topic_revision=1, implementation_id="implementation-refresh", active_implementations=[], active_worktrees=active_worktrees)
+        )
+        confirmation = {
+            "confirmed": True,
+            "worktree_path": scope["worktree_path"],
+            "branch": scope["branch"],
+            "base_commit": scope["base_commit"],
+            "scope_sha256": hashlib.sha256(json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "sensitive_shared_surfaces": ["discussion-ledger", "git-common-dir"],
+        }
+        code, rejected_confirmation, _ = self.run_cli(
+            self.evolution_request(
+                topic, operation="activate-implementation-run", expected_revision=5,
+                expected_topic_revision=1, implementation_id="implementation-refresh",
+                execution_mode="isolated-worktree-v1", source_checkpoint_id=source["checkpoint_id"],
+                source_identity=source["commit_id"], parallelism_receipt=checked["receipt"],
+                active_implementations=[], active_worktrees=active_worktrees,
+                explicit_confirmation={**confirmation, "branch": "codex/not-confirmed"},
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected_confirmation["error"]["code"], "isolated_worktree_confirmation_required")
+        code, activated, stderr = self.run_cli(
+            self.evolution_request(
+                topic, operation="activate-implementation-run", expected_revision=5,
+                expected_topic_revision=1, implementation_id="implementation-refresh",
+                execution_mode="isolated-worktree-v1", source_checkpoint_id=source["checkpoint_id"],
+                source_identity=source["commit_id"], parallelism_receipt=checked["receipt"],
+                active_implementations=[], active_worktrees=active_worktrees,
+                explicit_confirmation=confirmation,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(activated["execution_mode"], "isolated-worktree-v1")
+        self.assertEqual(activated["source_identity"], source["commit_id"])
+
+        code, frozen, _ = self.run_cli(
+            self.evolution_request(
+                topic, operation="activate-implementation-run", expected_revision=6,
+                expected_topic_revision=1, implementation_id="implementation-refresh",
+                execution_mode="exclusive-checkout-v2", source_checkpoint_id=source["checkpoint_id"],
+                source_identity=source["commit_id"], parallelism_receipt=checked["receipt"],
+                active_implementations=[], active_worktrees=active_worktrees,
+                explicit_confirmation=None,
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(frozen["error"]["code"], "execution_mode_frozen")
+
+        replacement = self.prepare_checkpoint(topic, ledger_revision=6, purpose="implementation-source")
+        replacement = self.publish_git_checkpoint(project, topic, replacement, ledger_revision=7)
+        _, candidate, _ = self.run_cli(
+            self.evolution_request(
+                topic, operation="prepare-source-refresh", expected_revision=8,
+                expected_topic_revision=1, implementation_id="implementation-refresh",
+                source_checkpoint_id=replacement["checkpoint_id"], source_identity=replacement["commit_id"],
+                impact="no-impact", impact_summary="Only unrelated discussion metadata changed.",
+            )
+        )
+        self.assertEqual(candidate["state"], "refresh-candidate")
+        _, acknowledged, _ = self.run_cli(
+            self.evolution_request(
+                topic, operation="ack-source-refresh", expected_revision=9,
+                expected_topic_revision=1, implementation_id="implementation-refresh",
+                refresh_id=candidate["refresh_id"], implementation_ack={"acknowledged": True, "implementation_id": "implementation-refresh", "source_identity": replacement["commit_id"]},
+            )
+        )
+        self.assertEqual(acknowledged["state"], "refresh-acknowledged")
+        code, resumed, stderr = self.run_cli(
+            self.evolution_request(
+                topic, operation="commit-source-refresh", expected_revision=10,
+                expected_topic_revision=1, implementation_id="implementation-refresh",
+                refresh_id=candidate["refresh_id"], source_checkpoint_id=replacement["checkpoint_id"],
+                source_identity=replacement["commit_id"],
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(resumed["state"], "active")
+        self.assertEqual(resumed["implementation_id"], "implementation-refresh")
+        self.assertEqual(resumed["source_identity"], replacement["commit_id"])
+        code, impacted, stderr = self.run_cli(
+            self.evolution_request(
+                topic, operation="prepare-source-refresh", expected_revision=11,
+                expected_topic_revision=1, implementation_id="implementation-refresh",
+                source_checkpoint_id=source["checkpoint_id"], source_identity=source["commit_id"],
+                impact="affected", impact_summary="The implementation scope changed.",
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(impacted["state"], "impact-pending")
+
+
 if __name__ == "__main__":
     unittest.main()

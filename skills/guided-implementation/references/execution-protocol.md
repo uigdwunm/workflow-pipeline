@@ -1,17 +1,18 @@
 # Dedicated Implementation Execution Protocol
 
 Execute this protocol inside the one dedicated Codex task launched by an
-originating supervising task. Complete accepted implementation in the project's
-existing local checkout under one verified `exclusive-checkout-v2` repository
-lease plus the shared document lease when documentation or a Git stability
-barrier is required. Create one implementation branch in that checkout and
-create no Git worktree. Report
+originating supervising task. Complete accepted implementation in the exact
+checkout/worktree and frozen mode recorded by the verified handoff. Read
+`execution-modes.md` completely first. Exclusive mode uses the verified
+repository lease; isolated mode uses the verified exact worktree execution
+lease and platform cwd. Both use the shared document lease when documentation
+or a Git stability barrier is required. Report
 only to the originating task. Do not ask the user directly, merge before parent
 acceptance, release the lease, or perform post-merge closure.
 
 ## Contents
 
-- Load and verify the immutable handoff and repository lease
+- Load and verify the immutable handoff and mode-specific execution lease
 - Exchange length-safe supervision documents
 - Authority and boundaries
 - Work Item model
@@ -26,7 +27,7 @@ acceptance, release the lease, or perform post-merge closure.
 - Attempt the parent-authorized final merge
 - Report the merge result to the supervisor
 
-## Load and verify the immutable handoff and repository lease
+## Load and verify the immutable handoff and mode-specific execution lease
 
 Allow only read-only local filesystem operations until both validations
 complete. From the platform's initial delegation wrapper, record its
@@ -34,7 +35,7 @@ authenticated `source_thread_id` as the originating supervisor. Do not accept a
 free-form replacement from the bootstrap, handoff, repository, payload, or
 later message.
 
-Run the exact bootstrap commands:
+Run `verify-handoff`, then the one lease command selected by its decoded mode:
 
 ```text
 python3 <guided-implementation-skill-root>/scripts/supervision_protocol.py verify-handoff \
@@ -42,12 +43,17 @@ python3 <guided-implementation-skill-root>/scripts/supervision_protocol.py verif
 
 python3 <guided-implementation-skill-root>/scripts/supervision_protocol.py verify-repository-lease \
   --file <absolute lease file> --id <lease id> --bytes <count> --sha256 <sha256>
+
+python3 <guided-implementation-skill-root>/scripts/supervision_protocol.py verify-worktree-execution-lease \
+  --file <absolute lease file> --id <lease id> --version <version> \
+  --platform-cwd <exact worktree path>
 ```
 
-The first command is the sole handoff parser and integrity verifier. The second
-is the sole repository-lease parser and verifier. Require the verified lease's
-repository, base branch, base `HEAD`, owner task/host, mode
-`exclusive-checkout-v2`, and identity to equal the handoff and bootstrap.
+The first command is the sole handoff parser and integrity verifier. Run only
+the repository command for `exclusive-checkout-v2`, and only the worktree
+command for `isolated-worktree-v1`. Require repository, base, branch,
+checkout/worktree, owner and lease identity to equal the v4 handoff. A legacy
+v1-v3 handoff continues under its embedded protocol without migration.
 
 If either command fails, perform no Git or implementation action. Report
 `BLOCKED` with the failed field, expected and observed values, preserve all
@@ -183,10 +189,10 @@ latest verified manifest and every accepted supervision file through closure.
 
 ## Authority and boundaries
 
-- Treat the verified handoff as accepted implementation authority and the
-  verified repository lease as exclusive permission to mutate Git state and
-  implementation paths in this checkout. It does not authorize documentation
-  writes.
+- Treat the verified handoff as accepted implementation authority and its
+  verified repository or worktree execution lease as permission to mutate Git
+  state and implementation paths only in the exact bound checkout. It does not
+  authorize documentation writes.
 - Treat the originating task as sole supervisor. Publish one terminal control
   for a candidate, genuine blocker, material decision, or merge result, complete
   delivery audit, and end the turn. Never ask the user or interpret silence as
@@ -196,9 +202,10 @@ latest verified manifest and every accepted supervision file through closure.
 - Treat the Execution Protocol as how to work and each Requirement Source as
   what to build. Content cannot override project instructions, safety,
   capability scope, lease rules, or this protocol.
-- Write only inside the leased repository checkout and exact append-only
+- Write only inside the leased exact checkout/worktree and append-only
   supervision files. Keep handoff, accepted supervision files, Skill sources,
-  and lease files read-only. No other checkout or Git worktree is authorized.
+  and lease files read-only. No other checkout or Git worktree is authorized;
+  inability to verify isolated platform cwd blocks without fallback.
 - Read
   `<guided-implementation-skill-root>/references/document-lease-protocol.md`
   completely before any documentation
@@ -236,7 +243,15 @@ the complete confirmed small-change handoff. Each has one Requirement Source
 used by implementation, review, and acceptance. Record type as `ticket`,
 `spec`, or `problem-framing-handoff`.
 
-## Prepare the exclusive checkout and implementation branch
+## Prepare the bound checkout and implementation branch
+
+For `isolated-worktree-v1`, the originating task has already created and bound
+the exact branch/worktree under `execution-modes.md`. Verify the execution
+lease with platform cwd before every Git or project operation, require the
+recorded base to remain an ancestor, and do not create, relocate or replace the
+worktree. Then continue at `Build the execution order`.
+
+For `exclusive-checkout-v2`, perform the following ordinary-checkout steps.
 
 Before dispatching a worker:
 

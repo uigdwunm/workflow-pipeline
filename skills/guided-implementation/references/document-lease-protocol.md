@@ -12,10 +12,12 @@ coordination lease. Its CLI commands are
 `acquire-repository-coordination-lease`,
 `verify-repository-coordination-lease`, and
 `release-repository-coordination-lease`. The input is the same owner/repository
-shape as a document lease but allows only stage `design-discussion`, purpose
-`checkpoint-publish`, and a TTL of at most 900 seconds. It lives directly in
-`.git`, is CAS/version protected, and authorizes only one bounded checkpoint
-publication; it is not document-write or implementation authority.
+shape as a document lease and a TTL of at most 900 seconds. Allowed typed
+critical sections are `design-discussion/checkpoint-publish`,
+`guided-implementation/serial-integration`, and
+`change-closure/closure-critical-section`. It lives directly in `.git`, is
+CAS/version protected, and authorizes only the named bounded critical section;
+it is not document-write or general implementation authority.
 
 ## Contents
 

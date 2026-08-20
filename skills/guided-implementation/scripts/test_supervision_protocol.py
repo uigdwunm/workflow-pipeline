@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -381,6 +383,272 @@ class DocumentLeaseTests(unittest.TestCase):
         self.assertEqual(
             sorted(result["state"] for result in results), ["held", "timeout"]
         )
+
+    def test_worktree_execution_lease_cli_binds_exact_worktree_and_v2_queues(self) -> None:
+        (self.repository / "base.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repository), "add", "base.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repository), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+            check=True,
+        )
+        base = subprocess.run(
+            ["git", "-C", str(self.repository), "rev-parse", "HEAD"],
+            check=True, stdout=subprocess.PIPE, text=True,
+        ).stdout.strip()
+        worktree = self.root / "isolated-wi07"
+        subprocess.run(
+            ["git", "-C", str(self.repository), "worktree", "add", "-q", "-b", "codex/isolated-wi07", str(worktree), base],
+            check=True,
+        )
+        lease_input = self.root / "worktree-execution.json"
+        lease_input.write_text(
+            json.dumps(
+                {
+                    "base_commit": base,
+                    "implementation_branch": "codex/isolated-wi07",
+                    "implementation_id": "implementation-wi07",
+                    "owner_host_id": "host-1",
+                    "owner_task_id": "task-wi07",
+                    "phase_run_id": "PR-00000007",
+                    "repository": str(self.repository),
+                    "scope_sha256": "7" * 64,
+                    "sensitive_shared_surfaces": ["git-common-dir"],
+                    "topic_id": "topic-" + "7" * 32,
+                    "ttl_seconds": 3600,
+                    "worktree_path": str(worktree),
+                },
+                sort_keys=True, separators=(",", ":"),
+            ) + "\n",
+            encoding="utf-8",
+        )
+        acquire = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "acquire-worktree-execution-lease", "--input", str(lease_input)],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        lease = json.loads(acquire.stdout)
+        self.assertEqual(lease["state"], "held")
+        self.assertEqual(lease["binding"]["worktree_path"], str(worktree))
+
+        verified = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "verify-worktree-execution-lease", "--file", lease["path"], "--id", lease["holder"]["lease_id"], "--version", str(lease["version"]), "--platform-cwd", str(worktree)],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.assertTrue(json.loads(verified.stdout)["verified"])
+        blocked = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "verify-worktree-execution-lease", "--file", lease["path"], "--id", lease["holder"]["lease_id"], "--version", str(lease["version"]), "--platform-cwd", str(self.repository)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.assertEqual(blocked.returncode, 2)
+        self.assertIn("platform working directory", blocked.stderr)
+
+        second_worktree = self.root / "isolated-wi08"
+        subprocess.run(
+            ["git", "-C", str(self.repository), "worktree", "add", "-q", "-b", "codex/isolated-wi08", str(second_worktree), base],
+            check=True,
+        )
+        second_input = self.root / "worktree-execution-2.json"
+        second_source = json.loads(lease_input.read_text(encoding="utf-8"))
+        second_source.update(
+            {
+                "implementation_branch": "codex/isolated-wi08",
+                "implementation_id": "implementation-wi08",
+                "owner_task_id": "task-wi08",
+                "phase_run_id": "PR-00000008",
+                "scope_sha256": "8" * 64,
+                "topic_id": "topic-" + "8" * 32,
+                "worktree_path": str(second_worktree),
+            }
+        )
+        second_input.write_text(
+            json.dumps(second_source, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        second = json.loads(
+            subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "acquire-worktree-execution-lease", "--input", str(second_input)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            ).stdout
+        )
+        inspected = json.loads(
+            subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "inspect-worktree-execution-leases", "--repository", str(self.repository)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            ).stdout
+        )
+        self.assertEqual(
+            {item["binding"]["implementation_id"] for item in inspected["leases"] if item["state"] == "held"},
+            {"implementation-wi07", "implementation-wi08"},
+        )
+
+        availability_input = self.root / "availability.json"
+        availability_input.write_text(
+            json.dumps({"execution_mode": "exclusive-checkout-v2", "repository": str(self.repository)}, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        availability = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "check-execution-availability", "--input", str(availability_input)],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        queued = json.loads(availability.stdout)
+        self.assertEqual(queued["state"], "queued")
+        self.assertIn(lease["holder"]["lease_id"], {item["lease_id"] for item in queued["blockers"]})
+        availability_input.write_text(
+            json.dumps({"execution_mode": "isolated-worktree-v1", "repository": str(self.repository)}, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        isolated_availability = json.loads(
+            subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "check-execution-availability", "--input", str(availability_input)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            ).stdout
+        )
+        self.assertEqual(isolated_availability["state"], "ready")
+        self.assertEqual(len(isolated_availability["active_execution_leases"]), 2)
+
+        released = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "release-worktree-execution-lease", "--file", lease["path"], "--id", lease["holder"]["lease_id"], "--version", str(lease["version"])],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.assertEqual(json.loads(released.stdout)["state"], "available")
+        subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "reconcile-worktree-execution-lease", "--file", second["path"], "--id", second["holder"]["lease_id"], "--version", str(second["version"]), "--platform-cwd", str(second_worktree), "--outcome", "released"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+    def test_serial_integration_revalidates_source_dependencies_and_active_runs(self) -> None:
+        lease_input = self.root / "serial-integration-lease.json"
+        lease_input.write_text(
+            json.dumps(
+                {
+                    "owner_host_id": "host-1",
+                    "owner_task_id": "integration-task",
+                    "purpose": "serial-integration",
+                    "repository": str(self.repository),
+                    "stage": "guided-implementation",
+                    "ttl_seconds": 300,
+                },
+                sort_keys=True, separators=(",", ":"),
+            ) + "\n",
+            encoding="utf-8",
+        )
+        acquired = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "acquire-repository-coordination-lease", "--input", str(lease_input)],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        lease = json.loads(acquired.stdout)
+        holder = lease["holder"]
+        expected = {
+            "source_identity": "1" * 40,
+            "dependency_receipt": "2" * 64,
+            "active_implementations_receipt": "3" * 64,
+        }
+        request_path = self.root / "integration-revalidation.json"
+        request_path.write_text(
+            json.dumps(
+                {
+                    "coordination_lease": {"lease_id": holder["lease_id"], "path": lease["path"], "version": lease["version"]},
+                    "current": expected,
+                    "expected": expected,
+                    "repository": str(self.repository),
+                },
+                sort_keys=True, separators=(",", ":"),
+            ) + "\n",
+            encoding="utf-8",
+        )
+        ready = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "revalidate-integration", "--input", str(request_path)],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.assertEqual(json.loads(ready.stdout)["state"], "ready")
+
+        stale = {**expected, "source_identity": "4" * 40, "dependency_receipt": "5" * 64}
+        request_path.write_text(
+            json.dumps(
+                {
+                    "coordination_lease": {"lease_id": holder["lease_id"], "path": lease["path"], "version": lease["version"]},
+                    "current": stale,
+                    "expected": expected,
+                    "repository": str(self.repository),
+                },
+                sort_keys=True, separators=(",", ":"),
+            ) + "\n",
+            encoding="utf-8",
+        )
+        blocked = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "revalidate-integration", "--input", str(request_path)],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        report = json.loads(blocked.stdout)
+        self.assertEqual(report["state"], "blocked")
+        self.assertEqual(report["stale_dimensions"], ["source", "dependencies"])
+
+    def test_dual_mode_handoffs_are_v4_and_legacy_v3_remains_verifiable(self) -> None:
+        runtime_root = self.root / "runtime"
+        environment = {**os.environ, "CC_SWITCH_RUNTIME_ROOT": str(runtime_root)}
+        source = {
+            "checkpoint_id": "CP-implementation-source",
+            "commit_id": "1" * 40,
+            "committed": True,
+            "read_only": True,
+            "sha256": "2" * 64,
+        }
+        envelopes = [
+            {
+                "checkout_path": str(self.repository),
+                "execution_mode": "exclusive-checkout-v2",
+                "implementation_source_checkpoint": source,
+                "repository": str(self.repository),
+                "repository_lease": {"lease_id": "3" * 32, "mode": "exclusive-checkout-v2", "path": str(self.repository / ".git" / PROTOCOL.LEASE_FILENAME)},
+                "worktree_count": 0,
+            },
+            {
+                "execution_mode": "isolated-worktree-v1",
+                "implementation_source_checkpoint": source,
+                "isolated_worktree": {
+                    "base_commit": "1" * 40,
+                    "branch": "codex/isolated",
+                    "execution_lease": {"lease_id": "4" * 32, "path": str(self.repository / ".git" / PROTOCOL.WORKTREE_EXECUTION_LEASE_DIRECTORY / ("a" * 64 + ".json")), "version": 1},
+                    "parallelism_receipt": "5" * 64,
+                    "scope_sha256": "6" * 64,
+                    "sensitive_shared_surfaces": ["git-common-dir"],
+                    "worktree_path": str(self.root / "isolated"),
+                },
+                "repository": str(self.repository),
+            },
+        ]
+        reports = []
+        for index, envelope in enumerate(envelopes):
+            input_path = self.root / f"handoff-{index}.json"
+            input_path.write_text(
+                json.dumps({"artifacts": [], "envelope": envelope, "work_items": [{"id": "WI07"}]}, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            created = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "create-handoff", "--input", str(input_path)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment,
+            )
+            report = json.loads(created.stdout)
+            verified = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "verify-handoff", "--file", report["path"], "--id", Path(report["path"]).parent.name, "--bytes", str(report["file_bytes"]), "--sha256", report["file_sha256"]],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment,
+            )
+            decoded = json.loads(verified.stdout)
+            self.assertEqual(decoded["handoff_version"], 4)
+            self.assertEqual(decoded["envelope"]["execution_mode"], envelope["execution_mode"])
+            reports.append(report)
+
+        legacy_path = Path(reports[0]["path"])
+        legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+        legacy["handoff_version"] = 3
+        legacy_bytes = json.dumps(legacy, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        legacy_path.chmod(0o600)
+        legacy_path.write_bytes(legacy_bytes)
+        legacy_path.chmod(0o400)
+        verified_legacy = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "verify-handoff", "--file", str(legacy_path), "--id", legacy_path.parent.name, "--bytes", str(len(legacy_bytes)), "--sha256", hashlib.sha256(legacy_bytes).hexdigest()],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment,
+        )
+        self.assertEqual(json.loads(verified_legacy.stdout)["handoff_version"], 3)
 
 
 if __name__ == "__main__":
