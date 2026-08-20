@@ -5215,26 +5215,76 @@ def _discover_context(request: dict[str, Any]) -> dict[str, Any]:
             "topic_document_path": selected_topic_path,
             "created": False,
         }
-    if topic_path.exists():
-        topic_frontmatter = _parse_frontmatter(
+    candidate_paths = sorted(
+        path
+        for path in (project / "docs" / "discussions").glob("*/topic.md")
+        if path.is_file()
+    )
+    selected_path = None
+    selected_identity = None
+    if strong_identities:
+        strong_identity = strong_identities[0]
+        if any(strong_identity[key] != manifest[key] for key in ("project_id", "tree_id")):
+            raise ProtocolError(
+                "discussion_identity_conflict",
+                "strong lifecycle evidence conflicts with the project manifest",
+            )
+        matching_documents = []
+        for candidate_path in candidate_paths:
+            candidate_identity = _parse_frontmatter(
+                _require_regular_nosymlink(candidate_path, "topic document"),
+                "topic document",
+            )
+            if all(
+                candidate_identity.get(key) == strong_identity[key]
+                for key in ("project_id", "tree_id", "topic_id")
+            ):
+                matching_documents.append((candidate_path, candidate_identity))
+        if len(matching_documents) != 1:
+            raise ProtocolError(
+                "discussion_identity_conflict",
+                "strong lifecycle evidence does not identify one topic document",
+            )
+        selected_path, selected_identity = matching_documents[0]
+    if evidence_path is not None:
+        if evidence_path not in candidate_paths:
+            raise ProtocolError(
+                "discussion_identity_conflict",
+                "document evidence does not identify one topic document",
+            )
+        document_identity = _parse_frontmatter(
+            _require_regular_nosymlink(evidence_path, "topic document"),
+            "topic document",
+        )
+        if any(document_identity.get(key) != manifest[key] for key in ("project_id", "tree_id")):
+            raise ProtocolError(
+                "discussion_identity_conflict",
+                "document evidence conflicts with the project manifest",
+            )
+        if selected_identity is not None and any(
+            document_identity.get(key) != selected_identity.get(key)
+            for key in ("project_id", "tree_id", "topic_id")
+        ):
+            raise ProtocolError(
+                "discussion_identity_conflict",
+                "document evidence conflicts with stronger lifecycle evidence",
+            )
+        selected_path, selected_identity = evidence_path, document_identity
+    if selected_path is None and topic_path.exists():
+        selected_path = topic_path
+        selected_identity = _parse_frontmatter(
             _require_regular_nosymlink(topic_path, "topic document"),
             "topic document",
         )
-        if any(topic_frontmatter.get(key) != manifest[key] for key in ("project_id", "tree_id", "topic_id")):
+        if any(
+            selected_identity.get(key) != manifest[key]
+            for key in ("project_id", "tree_id", "topic_id")
+        ):
             raise ProtocolError(
                 "discussion_identity_conflict",
                 "document identity conflicts with the project manifest",
             )
-        if evidence_path is not None and evidence_path != topic_path:
-            raise ProtocolError("discussion_identity_conflict", "document evidence conflicts with manifest topic")
-        if any(
-            any(
-                identity.get(key) != manifest[key]
-                for key in ("project_id", "tree_id", "topic_id")
-            )
-            for identity in strong_identities
-        ):
-            raise ProtocolError("discussion_identity_conflict", "strong evidence conflicts with document-only context")
+    if selected_path is not None and selected_identity is not None:
         return {
             "ok": True,
             "state": "discovered",
@@ -5242,8 +5292,8 @@ def _discover_context(request: dict[str, Any]) -> dict[str, Any]:
             "storage_mode": storage_mode,
             "project_id": manifest["project_id"],
             "tree_id": manifest["tree_id"],
-            "topic_id": manifest["topic_id"],
-            "topic_document_path": str(topic_path),
+            "topic_id": selected_identity["topic_id"],
+            "topic_document_path": str(selected_path),
             "coordination_state": "unknown",
             "created": False,
         }

@@ -1350,6 +1350,89 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 1)
         self.assertEqual(conflict["error"]["code"], "discussion_identity_conflict")
 
+    def test_discovery_without_ledger_selects_exact_child_evidence_zero_write(self) -> None:
+        project = self.make_project("discovery-child-document-only", git=False)
+        topic = self.bootstrap_topic(project)
+        child_topic_id = "topic-" + "c" * 32
+        child_path = project / "docs" / "discussions" / "api-shape" / "topic.md"
+        child_path.parent.mkdir(parents=True)
+        child_path.write_text(
+            "---\n"
+            "schema_version: 1\n"
+            f"project_id: {topic['project_id']}\n"
+            f"tree_id: {topic['tree_id']}\n"
+            f"topic_id: {child_topic_id}\n"
+            f"parent_topic_id: {topic['topic_id']}\n"
+            "topic_revision: 1\n"
+            "---\n"
+            "# API shape\n",
+            encoding="utf-8",
+        )
+        Path(str(topic["ledger_path"])).unlink()
+        snapshot = {
+            path: path.read_bytes() for path in project.rglob("*") if path.is_file()
+        }
+        child_identity = {
+            "project_id": topic["project_id"],
+            "tree_id": topic["tree_id"],
+            "topic_id": child_topic_id,
+        }
+
+        evidence_requests = (
+            {"authenticated_identity": child_identity},
+            {"document_path": str(child_path)},
+            {
+                "authenticated_identity": child_identity,
+                "document_path": str(child_path),
+            },
+        )
+        for evidence in evidence_requests:
+            with self.subTest(evidence=sorted(evidence)):
+                code, discovered, stderr = self.run_cli(
+                    {
+                        "protocol_version": 1,
+                        "operation": "discover-context",
+                        "project_path": str(project),
+                        **evidence,
+                    }
+                )
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(discovered["context"], "document_only")
+                self.assertEqual(discovered["topic_id"], child_topic_id)
+                self.assertEqual(discovered["topic_document_path"], str(child_path))
+
+        code, conflict, _ = self.run_cli(
+            {
+                "protocol_version": 1,
+                "operation": "discover-context",
+                "project_path": str(project),
+                "authenticated_identity": {
+                    "project_id": topic["project_id"],
+                    "tree_id": topic["tree_id"],
+                    "topic_id": topic["topic_id"],
+                },
+                "document_path": str(child_path),
+            }
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(conflict["error"]["code"], "discussion_identity_conflict")
+
+        code, fallback, stderr = self.run_cli(
+            {
+                "protocol_version": 1,
+                "operation": "discover-context",
+                "project_path": str(project),
+            }
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(fallback["context"], "document_only")
+        self.assertEqual(fallback["topic_id"], topic["topic_id"])
+        self.assertEqual(fallback["topic_document_path"], topic["topic_document_path"])
+        self.assertEqual(
+            snapshot,
+            {path: path.read_bytes() for path in project.rglob("*") if path.is_file()},
+        )
+
     def test_every_legal_route_and_illegal_route_matrix(self) -> None:
         legal = {(0, 1), (0, 2), (1, 2), (1, 3), (2, 3), (3, 4)}
         evidence = {key: "0" * 64 for key in ("source", "route", "impact", "coverage", "dependency", "coordination")}
