@@ -3167,6 +3167,160 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(validated["checkpoint_count"], 1)
 
+    def test_checkpoint_publication_rejects_stale_decision_digest(self) -> None:
+        for git in (True, False):
+            with self.subTest(storage_kind="git" if git else "non-git"):
+                project = self.make_project(f"stale-decision-{'git' if git else 'snapshot'}", git=git)
+                if git:
+                    (project / "base.txt").write_text("base\n", encoding="utf-8")
+                    subprocess.run(
+                        ["git", "-C", str(project), "add", "base.txt"], check=True
+                    )
+                    subprocess.run(
+                        [
+                            "git", "-C", str(project), "-c", "user.name=Test",
+                            "-c", "user.email=test@example.com", "commit", "-qm", "base",
+                        ],
+                        check=True,
+                    )
+                topic = self.bootstrap_topic(project)
+                prepared = self.prepare_checkpoint(
+                    topic,
+                    ledger_revision=1,
+                    base_ref="HEAD" if git else "project-root",
+                )
+                returncode, update, stderr = self.run_cli(
+                    self.evolution_request(
+                        topic,
+                        operation="prepare-topic-update",
+                        expected_revision=2,
+                        expected_topic_revision=1,
+                        mutation={
+                            "type": "confirm-decision",
+                            "summary": "Publish only the current decision digest.",
+                            "rationale": "A checkpoint must not freeze a stale authority.",
+                        },
+                    )
+                )
+                self.assertEqual(returncode, 0, stderr)
+                self.assertEqual(update["record_revision"], 2)
+                self.assertEqual(
+                    hashlib.sha256(
+                        Path(str(topic["topic_document_path"])).read_bytes()
+                    ).hexdigest(),
+                    prepared["document_digests"][prepared["paths"][0]],
+                )
+
+                publish_parameters: dict[str, object] = {}
+                lease: dict[str, object] | None = None
+                if git:
+                    lease = self.acquire_repository_coordination_lease(project)
+                    holder = lease["holder"]
+                    assert isinstance(holder, dict)
+                    publish_parameters["repository_coordination_lease"] = {
+                        "path": lease["path"],
+                        "lease_id": holder["lease_id"],
+                        "version": lease["version"],
+                    }
+                returncode, rejected, publish_stderr = self.run_cli(
+                    self.checkpoint_request(
+                        topic,
+                        operation=(
+                            "publish-git-checkpoint"
+                            if git
+                            else "publish-non-git-checkpoint"
+                        ),
+                        ledger_revision=3,
+                        topic_revision=2,
+                        checkpoint_id=prepared["checkpoint_id"],
+                        expected_checkpoint_revision=1,
+                        **publish_parameters,
+                    )
+                )
+                if lease is not None:
+                    holder = lease["holder"]
+                    assert isinstance(holder, dict)
+                    self.supervision_cli(
+                        "release-repository-coordination-lease",
+                        "--file", str(lease["path"]),
+                        "--id", str(holder["lease_id"]),
+                        "--version", str(lease["version"]),
+                    )
+                self.assertEqual(returncode, 1, publish_stderr)
+                self.assertEqual(
+                    rejected["error"]["code"], "checkpoint_changed_draft"
+                )
+
+    def test_checkpoint_publication_conflict_reports_current_authority(self) -> None:
+        for git in (True, False):
+            with self.subTest(storage_kind="git" if git else "non-git"):
+                project = self.make_project(f"checkpoint-conflict-{'git' if git else 'snapshot'}", git=git)
+                if git:
+                    (project / "base.txt").write_text("base\n", encoding="utf-8")
+                    subprocess.run(
+                        ["git", "-C", str(project), "add", "base.txt"], check=True
+                    )
+                    subprocess.run(
+                        [
+                            "git", "-C", str(project), "-c", "user.name=Test",
+                            "-c", "user.email=test@example.com", "commit", "-qm", "base",
+                        ],
+                        check=True,
+                    )
+                topic = self.bootstrap_topic(project)
+                prepared = self.prepare_checkpoint(
+                    topic,
+                    ledger_revision=1,
+                    base_ref="HEAD" if git else "project-root",
+                )
+                publish_parameters: dict[str, object] = {}
+                lease: dict[str, object] | None = None
+                if git:
+                    lease = self.acquire_repository_coordination_lease(project)
+                    holder = lease["holder"]
+                    assert isinstance(holder, dict)
+                    publish_parameters["repository_coordination_lease"] = {
+                        "path": lease["path"],
+                        "lease_id": holder["lease_id"],
+                        "version": lease["version"],
+                    }
+                returncode, conflict, stderr = self.run_cli(
+                    self.checkpoint_request(
+                        topic,
+                        operation=(
+                            "publish-git-checkpoint"
+                            if git
+                            else "publish-non-git-checkpoint"
+                        ),
+                        ledger_revision=2,
+                        checkpoint_id=prepared["checkpoint_id"],
+                        expected_checkpoint_revision=999,
+                        **publish_parameters,
+                    )
+                )
+                if lease is not None:
+                    holder = lease["holder"]
+                    assert isinstance(holder, dict)
+                    self.supervision_cli(
+                        "release-repository-coordination-lease",
+                        "--file", str(lease["path"]),
+                        "--id", str(holder["lease_id"]),
+                        "--version", str(lease["version"]),
+                    )
+                self.assertEqual(returncode, 1, stderr)
+                self.assertEqual(
+                    conflict["error"]["code"], "checkpoint_identity_conflict"
+                )
+                self.assertEqual(conflict["state"], "prepared")
+                self.assertEqual(conflict["ledger_revision"], 2)
+                self.assertEqual(conflict["record_revision"], 1)
+                self.assertEqual(conflict["project_id"], topic["project_id"])
+                self.assertEqual(conflict["tree_id"], topic["tree_id"])
+                self.assertEqual(conflict["topic_id"], topic["topic_id"])
+                self.assertEqual(
+                    conflict["checkpoint_id"], prepared["checkpoint_id"]
+                )
+
     def test_changed_draft_cancels_identity_and_uncertain_checkpoint_blocks_new_intent(
         self,
     ) -> None:

@@ -145,6 +145,7 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "project_id": error.context.get("project_id"),
         "tree_id": error.context.get("tree_id"),
         "topic_id": error.context.get("topic_id"),
+        "checkpoint_id": error.context.get("checkpoint_id"),
         "error": detail,
     }
 
@@ -2056,6 +2057,20 @@ def _checkpoint_decision_digest(records: dict[str, list[dict[str, Any]]], topic_
     return _sha256(_canonical_json(normalized).encode("utf-8"))
 
 
+def _checkpoint_authority_context(
+    request: dict[str, Any], ledger_revision: int, checkpoint: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "state": checkpoint["state"],
+        "ledger_revision": ledger_revision,
+        "record_revision": checkpoint["record_revision"],
+        "project_id": request["project_id"],
+        "tree_id": request["tree_id"],
+        "topic_id": request["actor_topic_id"],
+        "checkpoint_id": checkpoint["checkpoint_id"],
+    }
+
+
 def _project_relative_path(project: Path, path: Path, label: str) -> str:
     try:
         relative = path.relative_to(project)
@@ -2567,12 +2582,18 @@ def _publish_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         record = _checkpoint_record(records, _expect_string(request["checkpoint_id"], "checkpoint_id"))
         checkpoint = _checkpoint_data(record)
         if request["expected_checkpoint_revision"] != checkpoint["record_revision"] or checkpoint["state"] != "prepared":
-            raise ProtocolError("checkpoint_identity_conflict", "checkpoint is not the expected prepared intent")
+            raise ProtocolError(
+                "checkpoint_identity_conflict",
+                "checkpoint is not the expected prepared intent",
+                context=_checkpoint_authority_context(request, ledger_revision, checkpoint),
+            )
         paths = json.loads(checkpoint["paths_json"])
         digests = json.loads(checkpoint["document_digests_json"])
         current = _require_regular_nosymlink(topic_path, "topic document")
         if _sha256(current) != digests[paths[0]]:
             raise ProtocolError("checkpoint_changed_draft", "topic document bytes differ from the frozen checkpoint intent")
+        if _checkpoint_decision_digest(records, request["actor_topic_id"]) != checkpoint["decision_digest"]:
+            raise ProtocolError("checkpoint_changed_draft", "topic decisions differ from the frozen checkpoint intent")
         base_commit = _verify_git_base(project, checkpoint["base_ref"])
         if base_commit != checkpoint["base_commit"]:
             raise ProtocolError("checkpoint_base_invalid", "checkpoint base_ref no longer resolves to the frozen base commit")
@@ -2747,12 +2768,18 @@ def _publish_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         record = _checkpoint_record(records, _expect_string(request["checkpoint_id"], "checkpoint_id"))
         checkpoint = _checkpoint_data(record)
         if request["expected_checkpoint_revision"] != checkpoint["record_revision"] or checkpoint["state"] != "prepared":
-            raise ProtocolError("checkpoint_identity_conflict", "checkpoint is not the expected prepared intent")
+            raise ProtocolError(
+                "checkpoint_identity_conflict",
+                "checkpoint is not the expected prepared intent",
+                context=_checkpoint_authority_context(request, ledger_revision, checkpoint),
+            )
         paths = json.loads(checkpoint["paths_json"])
         digests = json.loads(checkpoint["document_digests_json"])
         document = _require_regular_nosymlink(topic_path, "topic document")
         if _sha256(document) != digests[paths[0]]:
             raise ProtocolError("checkpoint_changed_draft", "topic document bytes differ from the frozen checkpoint intent")
+        if _checkpoint_decision_digest(records, request["actor_topic_id"]) != checkpoint["decision_digest"]:
+            raise ProtocolError("checkpoint_changed_draft", "topic decisions differ from the frozen checkpoint intent")
         snapshot_bytes = base64.b64decode(checkpoint["snapshot_bytes_b64"], validate=True)
         snapshot_digest = checkpoint["snapshot_digest"]
         if _sha256(snapshot_bytes) != snapshot_digest:
