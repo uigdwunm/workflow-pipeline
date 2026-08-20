@@ -131,6 +131,10 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "context_identity_conflict": "发现的讨论上下文身份存在强冲突。",
         "implementation_identity_conflict": "实现运行身份或冻结计划不匹配。",
         "implementation_parallelism_stale": "并行判定输入已变化，必须重新检查。",
+        "supervision_receipt_invalid": "监督协议凭证无效、过期、重放或不属于当前话题。",
+        "implementation_authority_mismatch": "调用方提供的活动实现与讨论账本权威状态不一致。",
+        "source_refresh_impact_mismatch": "来源刷新影响与讨论账本权威决定/范围记录不一致。",
+        "integration_receipt_stale": "集成凭证已偏离当前讨论来源、依赖或活动运行状态。",
         "execution_mode_frozen": "实现运行激活后执行模式不可切换。",
         "implementation_source_invalid": "实现来源必须是已提交且完整验证的 implementation-source 检查点。",
         "isolated_worktree_confirmation_required": "isolated worktree 需要对精确安排的显式确认。",
@@ -3122,6 +3126,78 @@ def _normalize_active_worktrees(value: Any) -> dict[str, Any]:
     return {"verification_state": verification_state, "worktrees": sorted(worktrees, key=lambda item: (item["path"], item["implementation_id"]))}
 
 
+def _authoritative_active_implementations(
+    records: dict[str, list[dict[str, Any]]], target_id: str
+) -> list[dict[str, Any]]:
+    active = []
+    for record in records["Dependencies and Active Implementations"]:
+        data = _implementation_data(record)
+        if data["implementation_id"] == target_id or data.get("state") not in {"active", "integrating", "closing", "refresh-pending", "paused"}:
+            continue
+        active.append(
+            {
+                "implementation_id": data["implementation_id"],
+                "scope": data["scope"],
+                "state": data["state"],
+            }
+        )
+    return sorted(active, key=lambda item: item["implementation_id"])
+
+
+def _call_supervision(command: str, request: dict[str, Any]) -> dict[str, Any]:
+    script = Path(__file__).resolve().parents[2] / "guided-implementation" / "scripts" / "supervision_protocol.py"
+    with tempfile.NamedTemporaryFile(prefix="discussion-supervision-", suffix=".json", delete=False) as stream:
+        path = Path(stream.name)
+        stream.write((_canonical_json(request) + "\n").encode("utf-8"))
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(script), command, "--input", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    finally:
+        path.unlink(missing_ok=True)
+    try:
+        result = json.loads(completed.stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ProtocolError("supervision_receipt_invalid", "supervision verifier returned invalid JSON", cause=completed.stderr.decode("utf-8", "replace")[:1024]) from error
+    if completed.returncode != 0 or not isinstance(result, dict) or result.get("verified") is not True:
+        code = result.get("error", {}).get("code") if isinstance(result, dict) else None
+        raise ProtocolError("supervision_receipt_invalid", f"supervision authority rejected receipt; code={code!r}", cause=completed.stderr.decode("utf-8", "replace")[:1024])
+    return result
+
+
+def _verified_worktree_snapshot(request: dict[str, Any], receipt: Any) -> dict[str, Any]:
+    value = receipt if isinstance(receipt, dict) else {}
+    _expect_keys(value, {"file_bytes", "file_sha256", "path", "version"}, "worktree_receipt")
+    verified = _call_supervision(
+        "verify-worktree-state-receipt",
+        {
+            **value,
+            "project_id": request["project_id"],
+            "repository": request["project_path"],
+            "topic_id": request["actor_topic_id"],
+            "tree_id": request["tree_id"],
+        },
+    )
+    leases_by_path = {
+        item["binding"]["worktree_path"]: item["binding"]["implementation_id"]
+        for item in verified["snapshot"]["execution_leases"]
+        if item["state"] == "held"
+    }
+    worktrees = []
+    for item in verified["snapshot"]["git_worktrees"]:
+        worktrees.append(
+            {
+                "path": item["path"],
+                "branch": item.get("branch", "detached"),
+                "base_commit": item["head"],
+                "implementation_id": leases_by_path.get(item["path"], "ordinary-checkout"),
+            }
+        )
+    return {"verification_state": "verified", "worktrees": worktrees, "authority": {"receipt_id": verified["receipt_id"], "version": verified["version"]}}
+
+
 def _paths_overlap(left: list[str], right: list[str]) -> bool:
     return any(
         a == b or a.startswith(b.rstrip("/") + "/") or b.startswith(a.rstrip("/") + "/")
@@ -3193,10 +3269,9 @@ def _prepare_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
 
 def _check_implementation_parallelism(request: dict[str, Any]) -> dict[str, Any]:
     _, ledger_path, _, lock_path, owner_ref = _evolution_paths(request)
-    _expect_keys(request, {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key", "implementation_id", "active_implementations", "active_worktrees"}, "check-implementation-parallelism request")
+    _expect_keys(request, {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key", "implementation_id", "worktree_receipt"}, "check-implementation-parallelism request")
     _validate_uuid4(request["idempotency_key"], "idempotency_key")
-    active = _normalize_active_implementations(request["active_implementations"])
-    worktrees = _normalize_active_worktrees(request["active_worktrees"])
+    worktrees = _verified_worktree_snapshot(request, request["worktree_receipt"])
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)
         frontmatter, records = _load_records(ledger_path)
@@ -3208,6 +3283,7 @@ def _check_implementation_parallelism(request: dict[str, Any]) -> dict[str, Any]
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         record = _implementation_record(records, _expect_string(request["implementation_id"], "implementation_id"))
         data = _implementation_data(record)
+        active = _authoritative_active_implementations(records, data["implementation_id"])
         verdict, conflicts, receipt = _parallelism_evaluation(data["scope"], active, worktrees)
         data["parallelism"] = {"receipt": receipt, "verdict": verdict, "conflicts": conflicts, "dimensions": IMPLEMENTATION_PARALLELISM_DIMENSIONS}
         data["record_revision"] += 1
@@ -3220,19 +3296,32 @@ def _check_implementation_parallelism(request: dict[str, Any]) -> dict[str, Any]
 
 def _validate_implementation_parallelism(request: dict[str, Any]) -> dict[str, Any]:
     _, ledger_path, _, lock_path, owner_ref = _evolution_paths(request, query=True)
-    _expect_keys(request, {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "implementation_id", "receipt", "active_implementations", "active_worktrees"}, "validate-implementation-parallelism request")
-    active = _normalize_active_implementations(request["active_implementations"])
-    worktrees = _normalize_active_worktrees(request["active_worktrees"])
+    _expect_keys(request, {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "implementation_id", "receipt", "worktree_receipt"}, "validate-implementation-parallelism request")
+    worktrees = _verified_worktree_snapshot(request, request["worktree_receipt"])
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)
         frontmatter, records = _load_records(ledger_path)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         data = _implementation_data(_implementation_record(records, _expect_string(request["implementation_id"], "implementation_id")))
+        active = _authoritative_active_implementations(records, data["implementation_id"])
         verdict, conflicts, receipt = _parallelism_evaluation(data["scope"], active, worktrees)
         supplied = _expect_string(request["receipt"], "receipt", max_bytes=64)
         if supplied != receipt or data.get("parallelism", {}).get("receipt") != receipt:
             raise ProtocolError("implementation_parallelism_stale", "parallelism inputs changed after the recorded check", context={"state": "stale", "ledger_revision": int(frontmatter["ledger_revision"]), "record_revision": data["record_revision"], "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"]})
-        return {"ok": True, "state": "valid", "ledger_revision": int(frontmatter["ledger_revision"]), "record_revision": data["record_revision"], "implementation_id": data["implementation_id"], "verdict": verdict, "conflicts": conflicts, "receipt": receipt}
+        return {
+            "ok": True,
+            "state": "valid",
+            "project_path": request["project_path"],
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": int(frontmatter["ledger_revision"]),
+            "record_revision": data["record_revision"],
+            "implementation_id": data["implementation_id"],
+            "verdict": verdict,
+            "conflicts": conflicts,
+            "receipt": receipt,
+        }
 
 
 def _verified_implementation_source(
@@ -3257,38 +3346,56 @@ def _verified_implementation_source(
     return checkpoint
 
 
-def _validate_isolated_confirmation(value: Any, scope: dict[str, Any]) -> dict[str, Any]:
+def _authoritative_source_impact(
+    records: dict[str, list[dict[str, Any]]], topic_id: str, baseline: str | None
+) -> tuple[str, str, list[str]]:
+    impacts = [
+        _json_field(record, "data_json", "impact")
+        for record in records["Impacts"]
+        if record.get("topic_id") == topic_id
+    ]
+    impacts = sorted(impacts, key=lambda item: item["impact_id"])
+    digest = _sha256(_canonical_json(impacts).encode("utf-8"))
+    pending = [item["impact_id"] for item in impacts if item.get("state") == "pending"]
+    if pending:
+        return "unknown", digest, pending
+    if baseline is not None and digest != baseline:
+        return "affected", digest, [item["impact_id"] for item in impacts]
+    return "no-impact", digest, []
+
+
+def _validate_isolated_confirmation(
+    request: dict[str, Any], value: Any, scope: dict[str, Any], receipt: str
+) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise ProtocolError("isolated_worktree_confirmation_required", "explicit_confirmation must be an object")
-    _expect_keys(
-        value,
-        {"confirmed", "worktree_path", "branch", "base_commit", "scope_sha256", "sensitive_shared_surfaces"},
-        "explicit_confirmation",
-    )
-    surfaces = _normalized_string_set(value["sensitive_shared_surfaces"], "explicit_confirmation.sensitive_shared_surfaces")
-    expected = {
-        "confirmed": True,
-        "worktree_path": scope["worktree_path"],
-        "branch": scope["branch"],
+        raise ProtocolError("isolated_worktree_confirmation_required", "isolated_confirmation must be a supervision receipt")
+    _expect_keys(value, {"file_bytes", "file_sha256", "path", "version"}, "isolated_confirmation")
+    binding = {
         "base_commit": scope["base_commit"],
+        "implementation_branch": scope["branch"],
+        "implementation_id": request["implementation_id"],
+        "phase_run_id": request["phase_run_id"],
+        "repository": request["project_path"],
         "scope_sha256": _sha256(_canonical_json(scope).encode("utf-8")),
-        "sensitive_shared_surfaces": surfaces,
+        "sensitive_shared_surfaces": request["sensitive_shared_surfaces"],
+        "topic_id": request["actor_topic_id"],
+        "worktree_path": scope["worktree_path"],
     }
-    if value != expected or not surfaces:
-        raise ProtocolError("isolated_worktree_confirmation_required", "confirmation does not bind the exact isolated arrangement")
-    return expected
+    verified = _call_supervision(
+        "verify-isolated-worktree-confirmation",
+        {"binding": binding, "confirmation": value, "parallelism_receipt": receipt, "repository": request["project_path"]},
+    )
+    return {"file_sha256": verified["file_sha256"], "path": value["path"], "version": value["version"], "user_decision": verified["user_decision"]}
 
 
 def _activate_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
     _, ledger_path, _, lock_path, owner_ref = _evolution_paths(request)
     _expect_keys(
         request,
-        {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key", "implementation_id", "execution_mode", "source_checkpoint_id", "source_identity", "parallelism_receipt", "active_implementations", "active_worktrees", "explicit_confirmation"},
+        {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key", "implementation_id", "execution_mode", "source_checkpoint_id", "source_identity", "parallelism_receipt", "worktree_receipt", "isolated_confirmation", "phase_run_id", "sensitive_shared_surfaces"},
         "activate-implementation-run request",
     )
     _validate_uuid4(request["idempotency_key"], "idempotency_key")
-    active = _normalize_active_implementations(request["active_implementations"])
-    worktrees = _normalize_active_worktrees(request["active_worktrees"])
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)
         frontmatter, records = _load_records(ledger_path)
@@ -3305,6 +3412,8 @@ def _activate_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("execution_mode_frozen", "activated implementation mode cannot be changed")
         if mode not in {"exclusive-checkout-v2", "isolated-worktree-v1"}:
             raise ProtocolError("invalid_request", "execution_mode is unsupported")
+        worktrees = _verified_worktree_snapshot(request, request["worktree_receipt"])
+        active = _authoritative_active_implementations(records, data["implementation_id"])
         verdict, _, receipt = _parallelism_evaluation(data["scope"], active, worktrees)
         supplied_receipt = _expect_string(request["parallelism_receipt"], "parallelism_receipt", max_bytes=64)
         if supplied_receipt != receipt or data.get("parallelism", {}).get("receipt") != receipt:
@@ -3313,8 +3422,8 @@ def _activate_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
         if mode == "isolated-worktree-v1":
             if verdict != "safe":
                 raise ProtocolError("isolated_worktree_confirmation_required", "isolated execution requires a safe parallelism receipt")
-            confirmation = _validate_isolated_confirmation(request["explicit_confirmation"], data["scope"])
-        elif request["explicit_confirmation"] is not None:
+            confirmation = _validate_isolated_confirmation(request, request["isolated_confirmation"], data["scope"], receipt)
+        elif request["isolated_confirmation"] is not None:
             raise ProtocolError("invalid_request", "exclusive checkout activation does not accept isolated confirmation")
         checkpoint = _verified_implementation_source(records, request["source_checkpoint_id"], request["source_identity"])
         data["state"] = "active"
@@ -3325,6 +3434,7 @@ def _activate_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
             "source_identity": checkpoint["published_identity"],
             "parallelism_receipt": receipt,
             "explicit_confirmation": confirmation,
+            "impact_receipt": _authoritative_source_impact(records, request["actor_topic_id"], None)[1],
         }
         _store_implementation(record, data)
         next_revision = ledger_revision + 1
@@ -3346,8 +3456,8 @@ def _source_refresh_context(request: dict[str, Any], extra: set[str]) -> tuple[P
 
 def _prepare_source_refresh(request: dict[str, Any]) -> dict[str, Any]:
     ledger_path, lock_path, owner_ref = _source_refresh_context(request, {"source_checkpoint_id", "source_identity", "impact", "impact_summary"})
-    impact = _expect_string(request["impact"], "impact")
-    if impact not in {"no-impact", "affected", "unknown"}:
+    claimed_impact = _expect_string(request["impact"], "impact")
+    if claimed_impact not in {"no-impact", "affected", "unknown"}:
         raise ProtocolError("invalid_request", "source refresh impact is unsupported")
     summary = _expect_string(request["impact_summary"], "impact_summary", max_bytes=2048)
     with lock_path.open("a+b") as lock_stream:
@@ -3366,8 +3476,11 @@ def _prepare_source_refresh(request: dict[str, Any]) -> dict[str, Any]:
         checkpoint = _verified_implementation_source(records, request["source_checkpoint_id"], request["source_identity"])
         if checkpoint["published_identity"] == data["execution"]["source_identity"]:
             raise ProtocolError("source_refresh_state_conflict", "source refresh must advance to a different committed identity")
+        impact, impact_receipt, impact_ids = _authoritative_source_impact(records, request["actor_topic_id"], data["execution"].get("impact_receipt"))
+        if claimed_impact != impact:
+            raise ProtocolError("source_refresh_impact_mismatch", f"claimed source impact differs from authoritative ledger; claimed={claimed_impact}; authoritative={impact}", context={"state": "blocked", "ledger_revision": ledger_revision, "record_revision": data["record_revision"], "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"]})
         refresh_id = "REF-" + _sha256(f"{data['implementation_id']}:{checkpoint['checkpoint_id']}".encode("utf-8"))[:16]
-        refresh = {"refresh_id": refresh_id, "state": "candidate" if impact == "no-impact" else "impact-pending", "impact": impact, "impact_summary": summary, "source_checkpoint_id": checkpoint["checkpoint_id"], "source_identity": checkpoint["published_identity"], "implementation_ack": None}
+        refresh = {"refresh_id": refresh_id, "state": "candidate" if impact == "no-impact" else "impact-pending", "impact": impact, "impact_receipt": impact_receipt, "impact_ids": impact_ids, "impact_summary": summary, "source_checkpoint_id": checkpoint["checkpoint_id"], "source_identity": checkpoint["published_identity"], "implementation_ack": None}
         data["source_refresh"] = refresh
         data["state"] = "refresh-pending" if impact == "no-impact" else "paused"
         data["record_revision"] += 1
@@ -3428,6 +3541,7 @@ def _commit_source_refresh(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("source_refresh_state_conflict", "source topic commit does not match the acknowledged refresh")
         data["execution"]["source_checkpoint_id"] = checkpoint["checkpoint_id"]
         data["execution"]["source_identity"] = checkpoint["published_identity"]
+        data["execution"]["impact_receipt"] = refresh["impact_receipt"]
         data["source_refresh"] = None
         data["state"] = "active"
         data["record_revision"] += 1
@@ -3436,6 +3550,82 @@ def _commit_source_refresh(request: dict[str, Any]) -> dict[str, Any]:
         result = {"ok": True, "state": "active", "idempotent_replay": False, "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"], "ledger_revision": next_revision, "record_revision": topic_revision, "implementation_id": data["implementation_id"], "implementation_record_revision": data["record_revision"], "refresh_id": refresh["refresh_id"], "source_checkpoint_id": checkpoint["checkpoint_id"], "source_identity": checkpoint["published_identity"]}
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="implementation-source-refreshed", result=result)
         return result
+
+
+def _integration_authority(
+    request: dict[str, Any], frontmatter: dict[str, str], records: dict[str, list[dict[str, Any]]]
+) -> dict[str, Any]:
+    implementation_id = _expect_string(request["implementation_id"], "implementation_id")
+    target = _implementation_data(_implementation_record(records, implementation_id))
+    execution = target.get("execution")
+    if not isinstance(execution, dict) or target.get("state") not in {"active", "integrating", "closing", "refresh-pending", "paused"}:
+        raise ProtocolError("implementation_identity_conflict", "integration authority requires an activated implementation")
+    active = []
+    for item in _authoritative_active_implementations(records, ""):
+        item_data = _implementation_data(_implementation_record(records, item["implementation_id"]))
+        item_execution = item_data.get("execution") or {}
+        active.append(
+            {
+                "execution_mode": item_execution.get("mode"),
+                "implementation_id": item["implementation_id"],
+                "state": item["state"],
+                "worktree_path": item["scope"]["worktree_path"],
+            }
+        )
+    dependencies = sorted(
+        {
+            dependency
+            for record in records["Dependencies and Active Implementations"]
+            for dependency in (
+                _implementation_data(record).get("scope", {}).get("dependencies", [])
+                if record.get("implementation_id")
+                else []
+            )
+        }
+    )
+    body = {
+        "active_implementations": active,
+        "active_implementations_receipt": _sha256(_canonical_json(active).encode("utf-8")),
+        "base_commit": target["scope"]["base_commit"],
+        "dependency_receipt": _sha256(_canonical_json(dependencies).encode("utf-8")),
+        "implementation_id": implementation_id,
+        "implementation_record_revision": target["record_revision"],
+        "ledger_revision": int(frontmatter["ledger_revision"]),
+        "project_id": request["project_id"],
+        "source_identity": execution["source_identity"],
+        "topic_id": request["actor_topic_id"],
+        "tree_id": request["tree_id"],
+    }
+    return {**body, "receipt": _sha256(_canonical_json(body).encode("utf-8"))}
+
+
+def _issue_integration_authority_receipt(request: dict[str, Any]) -> dict[str, Any]:
+    _, ledger_path, _, lock_path, owner_ref = _evolution_paths(request, query=True)
+    _expect_keys(request, {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "implementation_id"}, "issue-integration-authority-receipt request")
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        authority = _integration_authority(request, frontmatter, records)
+        return {"ok": True, "state": "issued", "project_path": request["project_path"], "authority_receipt": authority, **authority}
+
+
+def _validate_integration_authority_receipt(request: dict[str, Any]) -> dict[str, Any]:
+    _, ledger_path, _, lock_path, owner_ref = _evolution_paths(request, query=True)
+    _expect_keys(request, {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "implementation_id", "authority_receipt"}, "validate-integration-authority-receipt request")
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        current = _integration_authority(request, frontmatter, records)
+        if request["authority_receipt"] != current:
+            raise ProtocolError("integration_receipt_stale", "integration authority receipt no longer equals discussion ledger state", retryable=True, context={"state": "stale", "ledger_revision": int(frontmatter["ledger_revision"]), "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"]})
+        return {
+            "ok": True,
+            "state": "valid",
+            "project_path": request["project_path"],
+            **current,
+        }
 
 
 def _repair_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
@@ -7088,6 +7278,10 @@ def handle(request: Any) -> dict[str, Any]:
         return _ack_source_refresh(request)
     if operation == "commit-source-refresh":
         return _commit_source_refresh(request)
+    if operation == "issue-integration-authority-receipt":
+        return _issue_integration_authority_receipt(request)
+    if operation == "validate-integration-authority-receipt":
+        return _validate_integration_authority_receipt(request)
     if operation == "repair-checkpoint":
         return _repair_checkpoint(request)
     if operation == "checkpoint-gc-dry-run":

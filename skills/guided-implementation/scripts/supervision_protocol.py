@@ -64,6 +64,7 @@ REPOSITORY_COORDINATION_LEASE_SCHEMA = 1
 REPOSITORY_COORDINATION_LEASE_PURPOSES = {
     "checkpoint-publish",
     "serial-integration",
+    "worktree-creation",
     "closure-critical-section",
 }
 REPOSITORY_COORDINATION_LEASE_STAGES = {
@@ -79,6 +80,10 @@ WORKTREE_EXECUTION_LEASE_VERSION = 1
 WORKTREE_EXECUTION_LEASE_SCHEMA = 1
 MAX_WORKTREE_EXECUTION_LEASE_BYTES = 32_768
 MAX_WORKTREE_EXECUTION_LEASE_TTL_SECONDS = 604_800
+WORKTREE_STATE_RECEIPT_DIRECTORY = "cc-switch-worktree-state-receipts"
+WORKTREE_STATE_RECEIPT_VERSION = 1
+ISOLATED_CONFIRMATION_DIRECTORY = "cc-switch-isolated-worktree-confirmations"
+ISOLATED_CONFIRMATION_VERSION = 1
 SUPERVISION_VERSION = 1
 MANIFEST_VERSION = 1
 LEGACY_CONTROL_VERSION = 1
@@ -204,6 +209,52 @@ CLOSURE_PHASES = (
 
 class ProtocolError(ValueError):
     """Raised when protocol data or filesystem state is invalid."""
+
+    def __init__(
+        self,
+        code_or_message: str,
+        message: str | None = None,
+        *,
+        retryable: bool = False,
+        cause: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        self.code = code_or_message if message is not None else "supervision_protocol_error"
+        self.message = message if message is not None else code_or_message
+        self.retryable = retryable
+        self.cause = cause
+        self.context = context or {}
+        super().__init__(self.message)
+
+
+def _error_response(error: ProtocolError, command: str) -> dict[str, Any]:
+    chinese = {
+        "receipt_identity_mismatch": "凭证不属于当前仓库、项目、话题或版本。",
+        "receipt_cas_mismatch": "凭证字节、摘要或 CAS 版本已变化。",
+        "receipt_stale": "权威状态已变化，必须重新生成凭证。",
+        "isolated_confirmation_required": "缺少监督协议持久化的精确 isolated 创建确认。",
+        "repository_coordination_required": "创建 isolated worktree 必须持有精确的仓库协调租约。",
+        "worktree_creation_uncoordinated": "worktree 不是在已确认的创建临界区内生成。",
+        "discussion_receipt_invalid": "讨论协议未能验证当前来源、依赖或活动运行凭证。",
+        "integration_state_stale": "集成前的权威来源、依赖、活动运行或 Git 状态已变化。",
+        "outcome_unknown": "操作结果未知，必须先检查权威状态再恢复。",
+    }
+    return {
+        "ok": False,
+        "state": error.context.get("state", "stopped"),
+        "command": command,
+        "repository": error.context.get("repository"),
+        "topic_id": error.context.get("topic_id"),
+        "receipt_id": error.context.get("receipt_id"),
+        "current": error.context.get("current"),
+        "error": {
+            "code": error.code,
+            "message": error.message,
+            "message_zh": chinese.get(error.code, "监督协议操作失败。"),
+            "retryable": error.retryable,
+            "cause": error.cause,
+        },
+    }
 
 
 def _sha256(data: bytes) -> str:
@@ -1527,6 +1578,308 @@ def _active_git_worktrees(repository: Path) -> list[dict[str, Any]]:
     return sorted(records, key=lambda item: item["path"])
 
 
+def _open_private_git_subdirectory(repository: Path, name: str) -> tuple[Path, int, int]:
+    git_directory, git_fd = _open_repository_git_directory(repository)
+    directory = git_directory / name
+    try:
+        os.mkdir(name, 0o700, dir_fd=git_fd)
+        os.fsync(git_fd)
+    except FileExistsError:
+        pass
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        directory_fd = os.open(name, flags, dir_fd=git_fd)
+    except OSError as error:
+        os.close(git_fd)
+        raise ProtocolError("supervision_protocol_error", f"cannot open private protocol directory {name}: {error}") from error
+    status = os.fstat(directory_fd)
+    if not stat.S_ISDIR(status.st_mode) or status.st_uid != os.getuid() or _mode_bits(status) != 0o700:
+        os.close(directory_fd)
+        os.close(git_fd)
+        raise ProtocolError("supervision_protocol_error", f"private protocol directory is unsafe: {directory}")
+    return directory, directory_fd, git_fd
+
+
+def _worktree_state_snapshot(repository: Path) -> dict[str, Any]:
+    worktrees = _active_git_worktrees(repository)
+    leases = []
+    lease_directory = _worktree_execution_directory(repository)
+    if lease_directory.exists():
+        for path in sorted(lease_directory.glob("*.json")):
+            document, data = _read_worktree_execution_lease(path)
+            report = _worktree_lease_report(path, document, data)
+            leases.append(
+                {
+                    "binding": report["binding"],
+                    "file_sha256": report["file_sha256"],
+                    "lease_id": report["holder"]["lease_id"] if report["holder"] else None,
+                    "state": report["state"],
+                    "version": report["version"],
+                }
+            )
+    return {"execution_leases": leases, "git_worktrees": worktrees}
+
+
+def _worktree_state_receipt_path(repository: Path, topic_id: str) -> Path:
+    name = hashlib.sha256(topic_id.encode("utf-8")).hexdigest() + ".json"
+    return repository / ".git" / WORKTREE_STATE_RECEIPT_DIRECTORY / name
+
+
+def create_worktree_state_receipt(input_path: Path) -> dict[str, Any]:
+    source = _expect_object(
+        _load_json_bytes(
+            _read_regular_file(input_path, max_bytes=MAX_WORKTREE_EXECUTION_LEASE_BYTES, label="worktree state receipt input"),
+            "worktree state receipt input",
+        ),
+        "worktree state receipt input",
+    )
+    _expect_keys(source, {"project_id", "repository", "topic_id", "tree_id"}, "worktree state receipt input")
+    repository = _expect_absolute_path(source["repository"], "repository")
+    identity = {
+        "project_id": _expect_nonempty_string(source["project_id"], "project_id", max_bytes=128),
+        "repository": str(repository),
+        "topic_id": _expect_nonempty_string(source["topic_id"], "topic_id", max_bytes=128),
+        "tree_id": _expect_nonempty_string(source["tree_id"], "tree_id", max_bytes=128),
+    }
+    path = _worktree_state_receipt_path(repository, identity["topic_id"])
+    directory, directory_fd, git_fd = _open_private_git_subdirectory(repository, WORKTREE_STATE_RECEIPT_DIRECTORY)
+    try:
+        version = 1
+        if path.exists():
+            old = _expect_object(_load_json_bytes(_read_regular_file(path, max_bytes=MAX_WORKTREE_EXECUTION_LEASE_BYTES, label="worktree state receipt"), "worktree state receipt", require_canonical=True), "worktree state receipt")
+            version = _expect_int(old.get("version"), "worktree state receipt.version", 1, 2**63 - 2) + 1
+        snapshot = _worktree_state_snapshot(repository)
+        document = {
+            **identity,
+            "receipt_id": _sha256(_canonical_json_bytes({"identity": identity, "snapshot": snapshot, "version": version})),
+            "schema": WORKTREE_STATE_RECEIPT_VERSION,
+            "snapshot": snapshot,
+            "version": version,
+        }
+        data = _canonical_json_bytes(document)
+        if path.exists():
+            _replace_private_file(directory_fd, name=path.name, data=data, max_bytes=MAX_WORKTREE_EXECUTION_LEASE_BYTES, label="worktree state receipt")
+        else:
+            _publish_group(directory_fd, [(path.name, data)])
+        os.fsync(directory_fd)
+        return {**document, "file_bytes": len(data), "file_sha256": _sha256(data), "path": str(path), "state": "issued"}
+    finally:
+        os.close(directory_fd)
+        os.close(git_fd)
+
+
+def verify_worktree_state_receipt(input_path: Path) -> dict[str, Any]:
+    source = _expect_object(_load_json_bytes(_read_regular_file(input_path, max_bytes=MAX_WORKTREE_EXECUTION_LEASE_BYTES, label="worktree state verification input"), "worktree state verification input"), "worktree state verification input")
+    _expect_keys(source, {"file_bytes", "file_sha256", "path", "project_id", "repository", "topic_id", "tree_id", "version"}, "worktree state verification input")
+    repository = _expect_absolute_path(source["repository"], "repository")
+    topic_id = _expect_nonempty_string(source["topic_id"], "topic_id", max_bytes=128)
+    path = _expect_absolute_path(source["path"], "receipt path")
+    expected_path = _worktree_state_receipt_path(repository, topic_id)
+    if path != expected_path:
+        raise ProtocolError("receipt_identity_mismatch", f"worktree receipt path mismatch; expected={expected_path}; observed={path}", context={"repository": str(repository), "topic_id": topic_id})
+    data = _read_regular_file(path, max_bytes=MAX_WORKTREE_EXECUTION_LEASE_BYTES, label="worktree state receipt")
+    if len(data) != _expect_int(source["file_bytes"], "file_bytes", 1, MAX_WORKTREE_EXECUTION_LEASE_BYTES) or _sha256(data) != _expect_sha256(source["file_sha256"], "file_sha256"):
+        raise ProtocolError("receipt_cas_mismatch", "worktree receipt byte identity changed", context={"repository": str(repository), "topic_id": topic_id})
+    receipt = _expect_object(_load_json_bytes(data, "worktree state receipt", require_canonical=True), "worktree state receipt")
+    for key in ("project_id", "repository", "topic_id", "tree_id", "version"):
+        if receipt.get(key) != source[key]:
+            raise ProtocolError("receipt_identity_mismatch", f"worktree receipt {key} mismatch", context={"repository": str(repository), "topic_id": topic_id, "receipt_id": receipt.get("receipt_id")})
+    current = _worktree_state_snapshot(repository)
+    if receipt.get("snapshot") != current:
+        raise ProtocolError("receipt_stale", "Git worktree or execution lease state changed after receipt issuance", retryable=True, context={"repository": str(repository), "topic_id": topic_id, "receipt_id": receipt.get("receipt_id"), "current": current})
+    return {**receipt, "file_bytes": len(data), "file_sha256": _sha256(data), "path": str(path), "state": "valid", "verified": True}
+
+
+def _verify_discussion_request(request: dict[str, Any]) -> dict[str, Any]:
+    script = Path(__file__).resolve().parents[2] / "design-discussion" / "scripts" / "discussion_protocol.py"
+    completed = subprocess.run(
+        [sys.executable, str(script)],
+        input=_canonical_json_bytes(request),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        result = json.loads(completed.stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ProtocolError("discussion_receipt_invalid", "discussion receipt verifier returned invalid JSON", cause=completed.stderr.decode("utf-8", "replace")[:1024]) from error
+    if completed.returncode != 0 or not isinstance(result, dict) or result.get("ok") is not True:
+        code = result.get("error", {}).get("code") if isinstance(result, dict) else None
+        raise ProtocolError("discussion_receipt_invalid", f"discussion authority rejected receipt; code={code!r}", cause=completed.stderr.decode("utf-8", "replace")[:1024])
+    return result
+
+
+def _confirmation_path(repository: Path, implementation_id: str) -> Path:
+    return repository / ".git" / ISOLATED_CONFIRMATION_DIRECTORY / (hashlib.sha256(implementation_id.encode("utf-8")).hexdigest() + ".json")
+
+
+def _verify_creation_coordination(value: Any, repository: Path) -> dict[str, Any]:
+    lease = _expect_object(value, "coordination_lease")
+    _expect_keys(lease, {"lease_id", "path", "version"}, "coordination_lease")
+    report = verify_repository_coordination_lease(
+        _expect_absolute_path(lease["path"], "coordination_lease.path"),
+        expected_id=lease["lease_id"],
+        expected_version=lease["version"],
+    )
+    holder = report["holder"]
+    if report["repository"] != str(repository) or holder is None or holder["stage"] != "guided-implementation" or holder["purpose"] != "worktree-creation":
+        raise ProtocolError("repository_coordination_required", "exact guided-implementation worktree-creation coordination lease is required", context={"repository": str(repository)})
+    return report
+
+
+def _confirmation_report(path: Path, document: dict[str, Any], data: bytes) -> dict[str, Any]:
+    return {**document, "file_bytes": len(data), "file_sha256": _sha256(data), "path": str(path)}
+
+
+def record_isolated_confirmation(input_path: Path) -> dict[str, Any]:
+    source = _expect_object(_load_json_bytes(_read_regular_file(input_path, max_bytes=MAX_INPUT_BYTES, label="isolated confirmation input"), "isolated confirmation input"), "isolated confirmation input")
+    _expect_keys(source, {"binding", "coordination_lease", "parallelism_validation", "user_decision_file"}, "isolated confirmation input")
+    binding = _normalize_worktree_binding(source["binding"], "binding")
+    repository = Path(binding["repository"])
+    coordination = _verify_creation_coordination(source["coordination_lease"], repository)
+    if any(item["path"] == binding["worktree_path"] for item in _active_git_worktrees(repository)) or Path(binding["worktree_path"]).exists():
+        raise ProtocolError("worktree_creation_uncoordinated", "isolated path must not exist before durable confirmation", context={"repository": str(repository), "topic_id": binding["topic_id"]})
+    parallelism = _verify_discussion_request(_expect_object(source["parallelism_validation"], "parallelism_validation"))
+    if parallelism.get("verdict") != "safe" or parallelism.get("implementation_id") != binding["implementation_id"] or parallelism.get("topic_id") != binding["topic_id"]:
+        raise ProtocolError("isolated_confirmation_required", "confirmation requires the exact current safe parallelism receipt", context={"repository": str(repository), "topic_id": binding["topic_id"]})
+    decision_path = _expect_absolute_path(source["user_decision_file"], "user_decision_file")
+    decision_bytes = _read_regular_file(decision_path, max_bytes=16_384, label="user decision")
+    try:
+        decision = decision_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ProtocolError("isolated_confirmation_required", "user decision must be byte-exact UTF-8", cause=str(error)) from error
+    if not decision.strip():
+        raise ProtocolError("isolated_confirmation_required", "user decision must be non-empty")
+    path = _confirmation_path(repository, binding["implementation_id"])
+    directory, directory_fd, git_fd = _open_private_git_subdirectory(repository, ISOLATED_CONFIRMATION_DIRECTORY)
+    try:
+        if path.exists():
+            raise ProtocolError("isolated_confirmation_required", "an isolated confirmation already exists and must be reconciled")
+        document = {
+            "binding": binding,
+            "coordination_lease": {"lease_id": coordination["holder"]["lease_id"], "path": coordination["path"], "version": coordination["version"]},
+            "parallelism": {"ledger_revision": parallelism["ledger_revision"], "receipt": parallelism["receipt"], "verdict": "safe"},
+            "schema": ISOLATED_CONFIRMATION_VERSION,
+            "state": "confirmed",
+            "user_decision": {"bytes": len(decision_bytes), "sha256": _sha256(decision_bytes), "utf8_b64": base64.b64encode(decision_bytes).decode("ascii")},
+            "version": 1,
+        }
+        data = _canonical_json_bytes(document)
+        _publish_group(directory_fd, [(path.name, data)])
+        os.fsync(directory_fd)
+        return {**_confirmation_report(path, document, data), "ok": True}
+    finally:
+        os.close(directory_fd)
+        os.close(git_fd)
+
+
+def _verify_confirmation(
+    value: Any,
+    repository: Path,
+    *,
+    required_state: str | set[str],
+) -> tuple[Path, dict[str, Any], bytes]:
+    receipt = _expect_object(value, "confirmation")
+    _expect_keys(receipt, {"file_bytes", "file_sha256", "path", "version"}, "confirmation")
+    path = _expect_absolute_path(receipt["path"], "confirmation.path")
+    data = _read_regular_file(path, max_bytes=MAX_WORKTREE_EXECUTION_LEASE_BYTES, label="isolated confirmation")
+    if len(data) != _expect_int(receipt["file_bytes"], "confirmation.file_bytes", 1, MAX_WORKTREE_EXECUTION_LEASE_BYTES) or _sha256(data) != _expect_sha256(receipt["file_sha256"], "confirmation.file_sha256"):
+        raise ProtocolError("receipt_cas_mismatch", "isolated confirmation byte identity changed", context={"repository": str(repository)})
+    document = _expect_object(_load_json_bytes(data, "isolated confirmation", require_canonical=True), "isolated confirmation")
+    binding = _normalize_worktree_binding(document.get("binding"), "isolated confirmation.binding")
+    if path != _confirmation_path(repository, binding["implementation_id"]) or binding["repository"] != str(repository) or document.get("schema") != ISOLATED_CONFIRMATION_VERSION or document.get("version") != receipt["version"]:
+        raise ProtocolError("receipt_identity_mismatch", "isolated confirmation identity/version mismatch", context={"repository": str(repository), "topic_id": binding.get("topic_id")})
+    allowed_states = {required_state} if isinstance(required_state, str) else required_state
+    if document.get("state") not in allowed_states:
+        raise ProtocolError("isolated_confirmation_required", f"isolated confirmation state must be one of {sorted(allowed_states)}; observed={document.get('state')!r}", context={"repository": str(repository), "topic_id": binding["topic_id"]})
+    return path, document, data
+
+
+def _replace_confirmation_document(
+    repository: Path, path: Path, confirmation: dict[str, Any]
+) -> dict[str, Any]:
+    data = _canonical_json_bytes(confirmation)
+    _, directory_fd, git_fd = _open_private_git_subdirectory(repository, ISOLATED_CONFIRMATION_DIRECTORY)
+    try:
+        _replace_private_file(directory_fd, name=path.name, data=data, max_bytes=MAX_WORKTREE_EXECUTION_LEASE_BYTES, label="isolated confirmation")
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+        os.close(git_fd)
+    return _confirmation_report(path, confirmation, data)
+
+
+def create_isolated_worktree(input_path: Path) -> dict[str, Any]:
+    source = _expect_object(_load_json_bytes(_read_regular_file(input_path, max_bytes=MAX_INPUT_BYTES, label="isolated worktree creation input"), "isolated worktree creation input"), "isolated worktree creation input")
+    _expect_keys(source, {"confirmation", "coordination_lease", "repository"}, "isolated worktree creation input")
+    repository = _expect_absolute_path(source["repository"], "repository")
+    coordination = _verify_creation_coordination(source["coordination_lease"], repository)
+    path, confirmation, _ = _verify_confirmation(source["confirmation"], repository, required_state="confirmed")
+    binding = confirmation["binding"]
+    if confirmation["coordination_lease"] != {"lease_id": coordination["holder"]["lease_id"], "path": coordination["path"], "version": coordination["version"]}:
+        raise ProtocolError("repository_coordination_required", "confirmation and creation coordination lease differ", context={"repository": str(repository), "topic_id": binding["topic_id"]})
+    try:
+        subprocess.run(["git", "-C", str(repository), "worktree", "add", "-b", binding["implementation_branch"], binding["worktree_path"], binding["base_commit"]], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as error:
+        uncertain = {
+            **confirmation,
+            "creation_observation": _active_git_worktrees(repository),
+            "state": "outcome-unknown",
+            "version": confirmation["version"] + 1,
+        }
+        current = _replace_confirmation_document(repository, path, uncertain)
+        raise ProtocolError("outcome_unknown", "git worktree creation failed or its outcome is unknown", retryable=True, cause=error.stderr.decode("utf-8", "replace")[:1024], context={"repository": str(repository), "topic_id": binding["topic_id"], "current": current}) from error
+    observed = _validate_worktree_binding_present(binding)
+    if os.environ.get("CODEX_SUPERVISION_TEST_FAILPOINT") == "create-isolated-after-git":
+        uncertain = {
+            **confirmation,
+            "creation_observation": observed,
+            "state": "outcome-unknown",
+            "version": confirmation["version"] + 1,
+        }
+        current = _replace_confirmation_document(repository, path, uncertain)
+        raise ProtocolError(
+            "outcome_unknown",
+            "worktree exists but durable creation completion is outcome-unknown",
+            retryable=True,
+            context={"repository": str(repository), "topic_id": binding["topic_id"], "current": current},
+        )
+    updated = {**confirmation, "creation": observed, "state": "created", "version": confirmation["version"] + 1}
+    return {**_replace_confirmation_document(repository, path, updated), "created": True, "ok": True}
+
+
+def reconcile_isolated_worktree_creation(input_path: Path) -> dict[str, Any]:
+    source = _expect_object(_load_json_bytes(_read_regular_file(input_path, max_bytes=MAX_INPUT_BYTES, label="isolated worktree reconciliation input"), "isolated worktree reconciliation input"), "isolated worktree reconciliation input")
+    _expect_keys(source, {"confirmation", "coordination_lease", "repository"}, "isolated worktree reconciliation input")
+    repository = _expect_absolute_path(source["repository"], "repository")
+    coordination = _verify_creation_coordination(source["coordination_lease"], repository)
+    path, confirmation, _ = _verify_confirmation(source["confirmation"], repository, required_state={"confirmed", "outcome-unknown"})
+    binding = confirmation["binding"]
+    if confirmation["coordination_lease"] != {"lease_id": coordination["holder"]["lease_id"], "path": coordination["path"], "version": coordination["version"]}:
+        raise ProtocolError("repository_coordination_required", "confirmation and reconciliation coordination lease differ", context={"repository": str(repository), "topic_id": binding["topic_id"]})
+    matches = [item for item in _active_git_worktrees(repository) if item["path"] == binding["worktree_path"]]
+    if not matches and not Path(binding["worktree_path"]).exists():
+        updated = {**confirmation, "creation_observation": [], "state": "confirmed", "version": confirmation["version"] + 1}
+        return {**_replace_confirmation_document(repository, path, updated), "created": False, "ok": True, "reconciled": True}
+    try:
+        observed = _validate_worktree_binding_present(binding)
+    except ProtocolError as error:
+        raise ProtocolError("outcome_unknown", "worktree creation state exists but does not match the durable binding", retryable=True, cause=str(error), context={"repository": str(repository), "topic_id": binding["topic_id"], "current": _active_git_worktrees(repository)}) from error
+    updated = {**confirmation, "creation": observed, "state": "created", "version": confirmation["version"] + 1}
+    return {**_replace_confirmation_document(repository, path, updated), "created": True, "ok": True, "reconciled": True}
+
+
+def verify_isolated_confirmation(input_path: Path) -> dict[str, Any]:
+    source = _expect_object(_load_json_bytes(_read_regular_file(input_path, max_bytes=MAX_INPUT_BYTES, label="isolated confirmation verification input"), "isolated confirmation verification input"), "isolated confirmation verification input")
+    _expect_keys(source, {"binding", "confirmation", "parallelism_receipt", "repository"}, "isolated confirmation verification input")
+    repository = _expect_absolute_path(source["repository"], "repository")
+    _, confirmation, data = _verify_confirmation(source["confirmation"], repository, required_state="confirmed")
+    binding = _normalize_worktree_binding(source["binding"], "binding")
+    receipt = _expect_sha256(source["parallelism_receipt"], "parallelism_receipt")
+    if confirmation["binding"] != binding or confirmation["parallelism"].get("receipt") != receipt or confirmation["parallelism"].get("verdict") != "safe":
+        raise ProtocolError("isolated_confirmation_required", "durable confirmation does not bind the exact scope and safe receipt", context={"repository": str(repository), "topic_id": binding["topic_id"]})
+    return {**confirmation, "file_sha256": _sha256(data), "state": "valid", "verified": True}
+
+
 def _worktree_execution_directory(repository: Path) -> Path:
     return repository / ".git" / WORKTREE_EXECUTION_LEASE_DIRECTORY
 
@@ -1681,11 +2034,15 @@ def _worktree_lease_report(path: Path, document: dict[str, Any], data: bytes) ->
 
 def acquire_worktree_execution_lease(input_path: Path) -> dict[str, Any]:
     source = _expect_object(_load_json_bytes(_read_regular_file(input_path, max_bytes=MAX_WORKTREE_EXECUTION_LEASE_BYTES, label="worktree execution lease input"), "worktree execution lease input"), "worktree execution lease input")
-    _expect_keys(source, {"base_commit", "implementation_branch", "implementation_id", "owner_host_id", "owner_task_id", "phase_run_id", "repository", "scope_sha256", "sensitive_shared_surfaces", "topic_id", "ttl_seconds", "worktree_path"}, "worktree execution lease input")
-    binding = _normalize_worktree_binding({key: value for key, value in source.items() if key not in {"owner_host_id", "owner_task_id", "ttl_seconds"}}, "worktree execution lease input binding")
+    _expect_keys(source, {"base_commit", "confirmation", "coordination_lease", "implementation_branch", "implementation_id", "owner_host_id", "owner_task_id", "phase_run_id", "repository", "scope_sha256", "sensitive_shared_surfaces", "topic_id", "ttl_seconds", "worktree_path"}, "worktree execution lease input")
+    binding = _normalize_worktree_binding({key: value for key, value in source.items() if key not in {"confirmation", "coordination_lease", "owner_host_id", "owner_task_id", "ttl_seconds"}}, "worktree execution lease input binding")
     _validate_worktree_binding_present(binding)
     ttl = _expect_int(source["ttl_seconds"], "worktree execution lease input.ttl_seconds", 1, MAX_WORKTREE_EXECUTION_LEASE_TTL_SECONDS)
     repository = Path(binding["repository"])
+    coordination = _verify_creation_coordination(source["coordination_lease"], repository)
+    _, confirmation, _ = _verify_confirmation(source["confirmation"], repository, required_state="created")
+    if confirmation["binding"] != binding or confirmation["coordination_lease"] != {"lease_id": coordination["holder"]["lease_id"], "path": coordination["path"], "version": coordination["version"]}:
+        raise ProtocolError("worktree_creation_uncoordinated", "execution lease binding is not the exact coordinated creation", context={"repository": str(repository), "topic_id": binding["topic_id"]})
     path = _worktree_execution_lease_path(repository, Path(binding["worktree_path"]))
     directory, directory_fd, git_fd = _open_worktree_execution_directory(repository)
     guard_fd = _open_worktree_execution_guard(git_fd)
@@ -1723,13 +2080,23 @@ def verify_worktree_execution_lease(lease_path: Path, *, expected_id: str, expec
     )
     if lease_path != expected_path:
         raise ProtocolError(
-            f"worktree execution lease path mismatch; expected={expected_path}; observed={lease_path}"
+            "receipt_identity_mismatch",
+            f"worktree execution lease path mismatch; expected={expected_path}; observed={lease_path}",
+            context={"repository": report["repository"], "topic_id": report["binding"]["topic_id"]},
         )
     holder = report["holder"]
     if report["state"] != "held" or holder is None or holder["lease_id"] != _expect_handoff_id(expected_id, "expected worktree lease ID") or report["version"] != _expect_int(expected_version, "expected worktree lease version", 1, 2**63 - 2):
-        raise ProtocolError("worktree execution lease CAS verification failed")
+        raise ProtocolError(
+            "receipt_cas_mismatch",
+            "worktree execution lease CAS verification failed",
+            context={"repository": report["repository"], "topic_id": report["binding"]["topic_id"]},
+        )
     if str(platform_cwd) != report["binding"]["worktree_path"]:
-        raise ProtocolError(f"platform working directory does not match exact worktree binding; expected={report['binding']['worktree_path']}; observed={platform_cwd}")
+        raise ProtocolError(
+            "receipt_identity_mismatch",
+            f"platform working directory does not match exact worktree binding; expected={report['binding']['worktree_path']}; observed={platform_cwd}",
+            context={"repository": report["repository"], "topic_id": report["binding"]["topic_id"]},
+        )
     _validate_worktree_binding_present(report["binding"], allow_descendant=True)
     return {**report, "verified": True}
 
@@ -1876,20 +2243,6 @@ def reconcile_worktree_execution_lease(
     raise ProtocolError(f"unsupported worktree execution reconciliation outcome: {outcome!r}")
 
 
-def _normalize_integration_snapshot(value: Any, label: str) -> dict[str, str]:
-    source = _expect_object(value, label)
-    _expect_keys(
-        source,
-        {"source_identity", "dependency_receipt", "active_implementations_receipt"},
-        label,
-    )
-    return {
-        "source_identity": _expect_git_oid(source["source_identity"], f"{label}.source_identity"),
-        "dependency_receipt": _expect_sha256(source["dependency_receipt"], f"{label}.dependency_receipt"),
-        "active_implementations_receipt": _expect_sha256(source["active_implementations_receipt"], f"{label}.active_implementations_receipt"),
-    }
-
-
 def revalidate_integration(input_path: Path) -> dict[str, Any]:
     source = _expect_object(
         _load_json_bytes(
@@ -1902,9 +2255,15 @@ def revalidate_integration(input_path: Path) -> dict[str, Any]:
         ),
         "integration revalidation input",
     )
+    if set(source) == {"coordination_lease", "current", "expected", "repository"}:
+        raise ProtocolError(
+            "discussion_receipt_invalid",
+            "integration revalidation no longer accepts caller-supplied expected/current self-comparison; provide a current discussion validation request",
+            context={"repository": source.get("repository")},
+        )
     _expect_keys(
         source,
-        {"coordination_lease", "current", "expected", "repository"},
+        {"coordination_lease", "discussion_validation", "repository"},
         "integration revalidation input",
     )
     repository = _expect_absolute_path(source["repository"], "repository")
@@ -1918,26 +2277,45 @@ def revalidate_integration(input_path: Path) -> dict[str, Any]:
     holder = report["holder"]
     if report["repository"] != str(repository) or holder is None or holder["stage"] != "guided-implementation" or holder["purpose"] != "serial-integration":
         raise ProtocolError("integration requires the exact guided-implementation serial-integration lease")
-    expected = _normalize_integration_snapshot(source["expected"], "expected")
-    current = _normalize_integration_snapshot(source["current"], "current")
-    dimensions = []
-    if current["source_identity"] != expected["source_identity"]:
+    authority = _verify_discussion_request(_expect_object(source["discussion_validation"], "discussion_validation"))
+    if authority.get("project_path") != str(repository):
+        raise ProtocolError("receipt_identity_mismatch", "discussion receipt repository does not match integration repository", context={"repository": str(repository), "topic_id": authority.get("topic_id"), "receipt_id": authority.get("receipt")})
+    dimensions: list[str] = []
+    current_head = _expect_git_oid(_git_text(repository, ["rev-parse", "HEAD"]).strip(), "current repository HEAD")
+    if current_head != authority["base_commit"]:
         dimensions.append("source")
-    if current["dependency_receipt"] != expected["dependency_receipt"]:
-        dimensions.append("dependencies")
-    if current["active_implementations_receipt"] != expected["active_implementations_receipt"]:
-        dimensions.append("active-implementations")
+    active_leases = {
+        item["binding"]["implementation_id"]: item
+        for item in inspect_worktree_execution_leases(repository)["leases"]
+        if item["state"] == "held"
+    }
+    for implementation in authority["active_implementations"]:
+        if implementation["execution_mode"] == "isolated-worktree-v1":
+            lease_report = active_leases.get(implementation["implementation_id"])
+            if lease_report is None or lease_report["binding"]["topic_id"] != authority["topic_id"] or lease_report["binding"]["worktree_path"] != implementation["worktree_path"]:
+                dimensions.append("active-implementations")
+                break
+    if dimensions:
+        state = "blocked"
+    else:
+        state = "ready"
     return {
+        "ok": True,
         "repository": str(repository),
-        "state": "blocked" if dimensions else "ready",
+        "state": state,
         "stale_dimensions": dimensions,
         "coordination_lease": {
             "lease_id": holder["lease_id"],
             "path": report["path"],
             "version": report["version"],
         },
-        "expected": expected,
-        "current": current,
+        "authority": {
+            "ledger_revision": authority["ledger_revision"],
+            "receipt": authority["receipt"],
+            "base_commit": authority["base_commit"],
+            "source_identity": authority["source_identity"],
+        },
+        "current": {"head": current_head, "held_execution_lease_ids": sorted(active_leases)},
     }
 
 
@@ -5600,6 +5978,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inspect_worktree_execution_parser.add_argument("--repository", required=True, type=Path)
 
+    create_worktree_state_parser = subparsers.add_parser("create-worktree-state-receipt")
+    create_worktree_state_parser.add_argument("--input", required=True, type=Path)
+
+    verify_worktree_state_parser = subparsers.add_parser("verify-worktree-state-receipt")
+    verify_worktree_state_parser.add_argument("--input", required=True, type=Path)
+
+    record_isolated_confirmation_parser = subparsers.add_parser("record-isolated-worktree-confirmation")
+    record_isolated_confirmation_parser.add_argument("--input", required=True, type=Path)
+
+    verify_isolated_confirmation_parser = subparsers.add_parser("verify-isolated-worktree-confirmation")
+    verify_isolated_confirmation_parser.add_argument("--input", required=True, type=Path)
+
+    create_isolated_worktree_parser = subparsers.add_parser("create-isolated-worktree")
+    create_isolated_worktree_parser.add_argument("--input", required=True, type=Path)
+
+    reconcile_isolated_worktree_parser = subparsers.add_parser("reconcile-isolated-worktree-creation")
+    reconcile_isolated_worktree_parser.add_argument("--input", required=True, type=Path)
+
     acquire_worktree_execution_parser = subparsers.add_parser(
         "acquire-worktree-execution-lease"
     )
@@ -5784,6 +6180,18 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif arguments.command == "inspect-worktree-execution-leases":
             _emit_json(inspect_worktree_execution_leases(arguments.repository))
+        elif arguments.command == "create-worktree-state-receipt":
+            _emit_json(create_worktree_state_receipt(arguments.input))
+        elif arguments.command == "verify-worktree-state-receipt":
+            _emit_json(verify_worktree_state_receipt(arguments.input))
+        elif arguments.command == "record-isolated-worktree-confirmation":
+            _emit_json(record_isolated_confirmation(arguments.input))
+        elif arguments.command == "verify-isolated-worktree-confirmation":
+            _emit_json(verify_isolated_confirmation(arguments.input))
+        elif arguments.command == "create-isolated-worktree":
+            _emit_json(create_isolated_worktree(arguments.input))
+        elif arguments.command == "reconcile-isolated-worktree-creation":
+            _emit_json(reconcile_isolated_worktree_creation(arguments.input))
         elif arguments.command == "acquire-worktree-execution-lease":
             _emit_json(acquire_worktree_execution_lease(arguments.input))
         elif arguments.command == "verify-worktree-execution-lease":
@@ -5885,6 +6293,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             parser.error(f"unknown command: {arguments.command}")
     except ProtocolError as error:
+        _emit_json(_error_response(error, arguments.command))
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
     return 0

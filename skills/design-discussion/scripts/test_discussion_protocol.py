@@ -4542,15 +4542,18 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
 
 
     def test_implementation_parallelism_is_deterministic_and_receipts_go_stale(self) -> None:
-        project = self.make_project("implementation-parallelism", git=False)
+        project = self.make_project("implementation-parallelism", git=True)
         topic = self.bootstrap_topic(project)
+        subprocess.run(["git", "-C", str(project), "add", "docs"], check=True)
+        subprocess.run(["git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"], check=True)
+        base_commit = subprocess.run(["git", "-C", str(project), "rev-parse", "HEAD"], check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
         common = {
             "paths": ["skills/design-discussion/scripts/discussion_protocol.py"],
             "modules": ["design-discussion"],
             "interfaces": ["discussion-cli"],
             "database_objects": [],
             "dependencies": ["python-stdlib"],
-            "base_commit": "a" * 40,
+            "base_commit": base_commit,
             "branch": "codex/wi07",
             "worktree_path": str(project / ".worktrees" / "wi07"),
         }
@@ -4566,30 +4569,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(code, 0, stderr)
 
-        safe_worktrees = {
-            "verification_state": "verified",
-            "worktrees": [
-                {
-                    "path": str(project / ".worktrees" / "other"),
-                    "branch": "codex/other",
-                    "base_commit": "a" * 40,
-                    "implementation_id": "implementation-other",
-                }
-            ],
-        }
-        active = [{
-            "implementation_id": "implementation-other",
-            "state": "active",
-            "scope": {
-                **common,
-                "paths": ["skills/guided-implementation/scripts/supervision_protocol.py"],
-                "modules": ["guided-implementation"],
-                "interfaces": ["supervision-cli"],
-                "dependencies": ["git"],
-                "branch": "codex/other",
-                "worktree_path": str(project / ".worktrees" / "other"),
-            },
-        }]
+        receipt_input = self.root / "worktree-receipt.json"
+        receipt_input.write_text(json.dumps({"project_id": topic["project_id"], "repository": str(project), "topic_id": topic["topic_id"], "tree_id": topic["tree_id"]}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        issued = self.supervision_cli("create-worktree-state-receipt", "--input", str(receipt_input))
+        worktree_receipt = {key: issued[key] for key in ("file_bytes", "file_sha256", "path", "version")}
         code, safe, stderr = self.run_cli(
             self.evolution_request(
                 topic,
@@ -4597,8 +4580,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 expected_revision=2,
                 expected_topic_revision=1,
                 implementation_id="implementation-wi07",
-                active_implementations=active,
-                active_worktrees=safe_worktrees,
+                worktree_receipt=worktree_receipt,
             )
         )
         self.assertEqual(code, 0, stderr)
@@ -4608,58 +4590,67 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             ["paths", "modules", "interfaces", "database_objects", "dependencies", "base_commit", "branch", "active_worktrees"],
         )
 
-        changed_worktrees = {
-            "verification_state": "verified",
-            "worktrees": [{**safe_worktrees["worktrees"][0], "path": common["worktree_path"]}],
-        }
+        stale_path = project / ".worktrees" / "stale"
+        stale_path.parent.mkdir()
+        subprocess.run(["git", "-C", str(project), "worktree", "add", "-q", "-b", "codex/stale", str(stale_path), base_commit], check=True)
         code, stale, _ = self.run_cli(
             self.evolution_request(
                 topic,
                 operation="validate-implementation-parallelism",
                 implementation_id="implementation-wi07",
                 receipt=safe["receipt"],
-                active_implementations=active,
-                active_worktrees=changed_worktrees,
+                worktree_receipt=worktree_receipt,
             )
         )
         self.assertEqual(code, 1)
-        self.assertEqual(stale["error"]["code"], "implementation_parallelism_stale")
+        self.assertEqual(stale["error"]["code"], "supervision_receipt_invalid")
 
-        blocked_active = [{
-            **active[0],
-            "scope": {
-                **active[0]["scope"],
-                "paths": common["paths"],
-            },
-        }]
-        code, blocked, stderr = self.run_cli(
+        fresh = self.supervision_cli("create-worktree-state-receipt", "--input", str(receipt_input))
+        fresh_receipt = {key: fresh[key] for key in ("file_bytes", "file_sha256", "path", "version")}
+        code, replayed_receipt, stderr = self.run_cli(
             self.evolution_request(
                 topic,
-                operation="check-implementation-parallelism",
-                expected_revision=3,
-                expected_topic_revision=1,
+                operation="validate-implementation-parallelism",
                 implementation_id="implementation-wi07",
-                active_implementations=blocked_active,
-                active_worktrees=safe_worktrees,
+                receipt=safe["receipt"],
+                worktree_receipt=worktree_receipt,
             )
         )
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(replayed_receipt["error"]["code"], "supervision_receipt_invalid")
+        other_scope = {**common, "branch": "codex/other", "worktree_path": str(project / ".worktrees" / "other")}
+        code, _, stderr = self.run_cli(self.evolution_request(topic, operation="prepare-implementation-run", expected_revision=3, expected_topic_revision=1, implementation_id="implementation-other", scope=other_scope))
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(blocked["verdict"], "blocked")
-        self.assertIn("paths", [item["dimension"] for item in blocked["conflicts"]])
-
-        code, unknown, stderr = self.run_cli(
+        ledger = Path(str(topic["ledger_path"]))
+        self.rewrite_ledger_with_valid_digest(ledger, '\\"state\\":\\"prepared\\"', '\\"state\\":\\"active\\"')
+        code, blocked, stderr = self.run_cli(
             self.evolution_request(
                 topic,
                 operation="check-implementation-parallelism",
                 expected_revision=4,
                 expected_topic_revision=1,
                 implementation_id="implementation-wi07",
-                active_implementations=[],
-                active_worktrees={"verification_state": "unknown", "worktrees": []},
+                worktree_receipt=fresh_receipt,
             )
         )
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(unknown["verdict"], "unknown")
+        self.assertEqual(blocked["verdict"], "blocked")
+        self.assertIn("paths", [item["dimension"] for item in blocked["conflicts"]])
+
+        forged = dict(fresh_receipt)
+        forged["file_sha256"] = "0" * 64
+        code, unknown, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="check-implementation-parallelism",
+                expected_revision=5,
+                expected_topic_revision=1,
+                implementation_id="implementation-wi07",
+                worktree_receipt=forged,
+            )
+        )
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(unknown["error"]["code"], "supervision_receipt_invalid")
 
     def test_execution_mode_and_committed_source_are_frozen_with_no_impact_refresh(self) -> None:
         project = self.make_project("implementation-source-refresh", git=True)
@@ -4691,43 +4682,69 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         _, prepared, _ = self.run_cli(
             self.evolution_request(topic, operation="prepare-implementation-run", expected_revision=3, expected_topic_revision=1, implementation_id="implementation-refresh", scope=scope)
         )
-        active_worktrees = {"verification_state": "verified", "worktrees": []}
+        receipt_input = self.root / "source-worktree-receipt.json"
+        receipt_input.write_text(json.dumps({"project_id": topic["project_id"], "repository": str(project), "topic_id": topic["topic_id"], "tree_id": topic["tree_id"]}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        issued = self.supervision_cli("create-worktree-state-receipt", "--input", str(receipt_input))
+        worktree_receipt = {key: issued[key] for key in ("file_bytes", "file_sha256", "path", "version")}
         _, checked, _ = self.run_cli(
-            self.evolution_request(topic, operation="check-implementation-parallelism", expected_revision=4, expected_topic_revision=1, implementation_id="implementation-refresh", active_implementations=[], active_worktrees=active_worktrees)
+            self.evolution_request(topic, operation="check-implementation-parallelism", expected_revision=4, expected_topic_revision=1, implementation_id="implementation-refresh", worktree_receipt=worktree_receipt)
         )
-        confirmation = {
-            "confirmed": True,
-            "worktree_path": scope["worktree_path"],
-            "branch": scope["branch"],
-            "base_commit": scope["base_commit"],
-            "scope_sha256": hashlib.sha256(json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-            "sensitive_shared_surfaces": ["discussion-ledger", "git-common-dir"],
-        }
+        phase_run_id = "PR-00000007"
+        surfaces = ["discussion-ledger", "git-common-dir"]
         code, rejected_confirmation, _ = self.run_cli(
             self.evolution_request(
                 topic, operation="activate-implementation-run", expected_revision=5,
                 expected_topic_revision=1, implementation_id="implementation-refresh",
                 execution_mode="isolated-worktree-v1", source_checkpoint_id=source["checkpoint_id"],
                 source_identity=source["commit_id"], parallelism_receipt=checked["receipt"],
-                active_implementations=[], active_worktrees=active_worktrees,
-                explicit_confirmation={**confirmation, "branch": "codex/not-confirmed"},
+                worktree_receipt=worktree_receipt, phase_run_id=phase_run_id,
+                sensitive_shared_surfaces=surfaces,
+                isolated_confirmation={"file_bytes": 1, "file_sha256": "0" * 64, "path": str(project / ".git" / "forged.json"), "version": 1},
             )
         )
         self.assertEqual(code, 1)
-        self.assertEqual(rejected_confirmation["error"]["code"], "isolated_worktree_confirmation_required")
+        self.assertEqual(rejected_confirmation["error"]["code"], "supervision_receipt_invalid")
+
+        coordination_input = self.root / "creation-coordination.json"
+        coordination_input.write_text(json.dumps({"owner_host_id": "test-host", "owner_task_id": "implementation-task", "purpose": "worktree-creation", "repository": str(project), "stage": "guided-implementation", "ttl_seconds": 300}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        coordination = self.supervision_cli("acquire-repository-coordination-lease", "--input", str(coordination_input))
+        coordination_receipt = {"lease_id": coordination["holder"]["lease_id"], "path": coordination["path"], "version": coordination["version"]}
+        decision_file = self.root / "user-decision.txt"
+        decision_file.write_text("用户确认按此精确 path/branch/base/scope 创建 isolated worktree。\n", encoding="utf-8")
+        binding = {"base_commit": scope["base_commit"], "implementation_branch": scope["branch"], "implementation_id": "implementation-refresh", "phase_run_id": phase_run_id, "repository": str(project), "scope_sha256": hashlib.sha256(json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "sensitive_shared_surfaces": surfaces, "topic_id": topic["topic_id"], "worktree_path": scope["worktree_path"]}
+        confirmation_input = self.root / "isolated-confirmation.json"
+        validation = self.evolution_request(topic, operation="validate-implementation-parallelism", implementation_id="implementation-refresh", receipt=checked["receipt"], worktree_receipt=worktree_receipt)
+        confirmation_input.write_text(json.dumps({"binding": binding, "coordination_lease": coordination_receipt, "parallelism_validation": validation, "user_decision_file": str(decision_file)}, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        confirmation = self.supervision_cli("record-isolated-worktree-confirmation", "--input", str(confirmation_input))
+        confirmation_receipt = {key: confirmation[key] for key in ("file_bytes", "file_sha256", "path", "version")}
         code, activated, stderr = self.run_cli(
             self.evolution_request(
                 topic, operation="activate-implementation-run", expected_revision=5,
                 expected_topic_revision=1, implementation_id="implementation-refresh",
                 execution_mode="isolated-worktree-v1", source_checkpoint_id=source["checkpoint_id"],
                 source_identity=source["commit_id"], parallelism_receipt=checked["receipt"],
-                active_implementations=[], active_worktrees=active_worktrees,
-                explicit_confirmation=confirmation,
+                worktree_receipt=worktree_receipt, phase_run_id=phase_run_id,
+                sensitive_shared_surfaces=surfaces, isolated_confirmation=confirmation_receipt,
             )
         )
         self.assertEqual(code, 0, stderr)
         self.assertEqual(activated["execution_mode"], "isolated-worktree-v1")
         self.assertEqual(activated["source_identity"], source["commit_id"])
+
+        creation_input = self.root / "create-isolated.json"
+        creation_input.write_text(json.dumps({"confirmation": confirmation_receipt, "coordination_lease": coordination_receipt, "repository": str(project)}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        created = self.supervision_cli("create-isolated-worktree", "--input", str(creation_input))
+        created_confirmation = {key: created[key] for key in ("file_bytes", "file_sha256", "path", "version")}
+        lease_input = self.root / "execution-lease.json"
+        lease_input.write_text(json.dumps({**binding, "confirmation": created_confirmation, "coordination_lease": coordination_receipt, "owner_host_id": "test-host", "owner_task_id": "implementation-task", "ttl_seconds": 300}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        execution_lease = self.supervision_cli("acquire-worktree-execution-lease", "--input", str(lease_input))
+        self.assertTrue(execution_lease["acquired"])
+        self.supervision_cli(
+            "release-repository-coordination-lease",
+            "--file", coordination["path"],
+            "--id", coordination["holder"]["lease_id"],
+            "--version", str(coordination["version"]),
+        )
 
         code, frozen, _ = self.run_cli(
             self.evolution_request(
@@ -4735,8 +4752,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 expected_topic_revision=1, implementation_id="implementation-refresh",
                 execution_mode="exclusive-checkout-v2", source_checkpoint_id=source["checkpoint_id"],
                 source_identity=source["commit_id"], parallelism_receipt=checked["receipt"],
-                active_implementations=[], active_worktrees=active_worktrees,
-                explicit_confirmation=None,
+                worktree_receipt=worktree_receipt, phase_run_id=phase_run_id,
+                sensitive_shared_surfaces=surfaces, isolated_confirmation=None,
             )
         )
         self.assertEqual(code, 1)
@@ -4744,35 +4761,41 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
 
         replacement = self.prepare_checkpoint(topic, ledger_revision=6, purpose="implementation-source")
         replacement = self.publish_git_checkpoint(project, topic, replacement, ledger_revision=7)
-        _, candidate, _ = self.run_cli(
-            self.evolution_request(
-                topic, operation="prepare-source-refresh", expected_revision=8,
-                expected_topic_revision=1, implementation_id="implementation-refresh",
-                source_checkpoint_id=replacement["checkpoint_id"], source_identity=replacement["commit_id"],
-                impact="no-impact", impact_summary="Only unrelated discussion metadata changed.",
-            )
+        candidate_request = self.evolution_request(
+            topic, operation="prepare-source-refresh", expected_revision=8,
+            expected_topic_revision=1, implementation_id="implementation-refresh",
+            source_checkpoint_id=replacement["checkpoint_id"], source_identity=replacement["commit_id"],
+            impact="no-impact", impact_summary="Only unrelated discussion metadata changed.",
         )
+        _, candidate, _ = self.run_cli(candidate_request)
         self.assertEqual(candidate["state"], "refresh-candidate")
-        _, acknowledged, _ = self.run_cli(
-            self.evolution_request(
-                topic, operation="ack-source-refresh", expected_revision=9,
-                expected_topic_revision=1, implementation_id="implementation-refresh",
-                refresh_id=candidate["refresh_id"], implementation_ack={"acknowledged": True, "implementation_id": "implementation-refresh", "source_identity": replacement["commit_id"]},
-            )
+        _, candidate_replay, _ = self.run_cli(candidate_request)
+        self.assertTrue(candidate_replay["idempotent_replay"])
+        self.assertEqual(candidate_replay["refresh_id"], candidate["refresh_id"])
+        ack_request = self.evolution_request(
+            topic, operation="ack-source-refresh", expected_revision=9,
+            expected_topic_revision=1, implementation_id="implementation-refresh",
+            refresh_id=candidate["refresh_id"], implementation_ack={"acknowledged": True, "implementation_id": "implementation-refresh", "source_identity": replacement["commit_id"]},
         )
+        _, acknowledged, _ = self.run_cli(ack_request)
         self.assertEqual(acknowledged["state"], "refresh-acknowledged")
-        code, resumed, stderr = self.run_cli(
-            self.evolution_request(
-                topic, operation="commit-source-refresh", expected_revision=10,
-                expected_topic_revision=1, implementation_id="implementation-refresh",
-                refresh_id=candidate["refresh_id"], source_checkpoint_id=replacement["checkpoint_id"],
-                source_identity=replacement["commit_id"],
-            )
+        _, acknowledged_replay, _ = self.run_cli(ack_request)
+        self.assertTrue(acknowledged_replay["idempotent_replay"])
+        commit_request = self.evolution_request(
+            topic, operation="commit-source-refresh", expected_revision=10,
+            expected_topic_revision=1, implementation_id="implementation-refresh",
+            refresh_id=candidate["refresh_id"], source_checkpoint_id=replacement["checkpoint_id"],
+            source_identity=replacement["commit_id"],
         )
+        code, resumed, stderr = self.run_cli(commit_request)
         self.assertEqual(code, 0, stderr)
         self.assertEqual(resumed["state"], "active")
         self.assertEqual(resumed["implementation_id"], "implementation-refresh")
         self.assertEqual(resumed["source_identity"], replacement["commit_id"])
+        code, resumed_replay, stderr = self.run_cli(commit_request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(resumed_replay["idempotent_replay"])
+        self.assertEqual(resumed_replay["implementation_id"], "implementation-refresh")
         code, impacted, stderr = self.run_cli(
             self.evolution_request(
                 topic, operation="prepare-source-refresh", expected_revision=11,
@@ -4781,8 +4804,260 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 impact="affected", impact_summary="The implementation scope changed.",
             )
         )
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(impacted["error"]["code"], "source_refresh_impact_mismatch")
+
+        decision, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=11,
+            topic_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Keep source refresh scoped to authoritative impacts.",
+                "rationale": "Callers cannot self-declare no impact.",
+            },
+        )
+        _, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "change-direction",
+                "summary": "Change an implementation-source decision.",
+                "affected_decision_ids": [decision["decision_id"]],
+            },
+        )
+        code, forged_no_impact, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-source-refresh",
+                expected_revision=ledger_revision,
+                expected_topic_revision=topic_revision,
+                implementation_id="implementation-refresh",
+                source_checkpoint_id=source["checkpoint_id"],
+                source_identity=source["commit_id"],
+                impact="no-impact",
+                impact_summary="Caller claims the pending decision impact is unrelated.",
+            )
+        )
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(forged_no_impact["error"]["code"], "source_refresh_impact_mismatch")
+        self.assertIn("authoritative=unknown", forged_no_impact["error"]["message"])
+
+    def test_integration_revalidation_uses_current_cross_cli_authority(self) -> None:
+        project = self.make_project("integration-authority", git=True)
+        topic = self.bootstrap_topic(project)
+        subprocess.run(["git", "-C", str(project), "add", "docs"], check=True)
+        subprocess.run(
+            ["git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+            check=True,
+        )
+        base_commit = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        source = self.prepare_checkpoint(topic, ledger_revision=1, purpose="implementation-source")
+        source = self.publish_git_checkpoint(project, topic, source, ledger_revision=2)
+        scope = {
+            "paths": ["skills/design-discussion/scripts/discussion_protocol.py"],
+            "modules": ["design-discussion"],
+            "interfaces": ["discussion-cli"],
+            "database_objects": [],
+            "dependencies": ["python-stdlib"],
+            "base_commit": base_commit,
+            "branch": "codex/integration-authority",
+            "worktree_path": str(project / ".worktrees" / "integration-authority"),
+        }
+        code, _, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-implementation-run",
+                expected_revision=3,
+                expected_topic_revision=1,
+                implementation_id="implementation-integration",
+                scope=scope,
+            )
+        )
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(impacted["state"], "impact-pending")
+        receipt_input = self.root / "integration-worktree-receipt.json"
+        receipt_input.write_text(
+            json.dumps(
+                {
+                    "project_id": topic["project_id"],
+                    "repository": str(project),
+                    "topic_id": topic["topic_id"],
+                    "tree_id": topic["tree_id"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        issued = self.supervision_cli("create-worktree-state-receipt", "--input", str(receipt_input))
+        worktree_receipt = {key: issued[key] for key in ("file_bytes", "file_sha256", "path", "version")}
+        code, checked, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="check-implementation-parallelism",
+                expected_revision=4,
+                expected_topic_revision=1,
+                implementation_id="implementation-integration",
+                worktree_receipt=worktree_receipt,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        code, _, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="activate-implementation-run",
+                expected_revision=5,
+                expected_topic_revision=1,
+                implementation_id="implementation-integration",
+                execution_mode="exclusive-checkout-v2",
+                source_checkpoint_id=source["checkpoint_id"],
+                source_identity=source["commit_id"],
+                parallelism_receipt=checked["receipt"],
+                worktree_receipt=worktree_receipt,
+                isolated_confirmation=None,
+                phase_run_id="PR-00000008",
+                sensitive_shared_surfaces=["git-common-dir"],
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        code, issued_authority, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="issue-integration-authority-receipt",
+                implementation_id="implementation-integration",
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+
+        coordination_input = self.root / "serial-integration.json"
+        coordination_input.write_text(
+            json.dumps(
+                {
+                    "owner_host_id": "test-host",
+                    "owner_task_id": "integration-task",
+                    "purpose": "serial-integration",
+                    "repository": str(project),
+                    "stage": "guided-implementation",
+                    "ttl_seconds": 300,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        coordination = self.supervision_cli("acquire-repository-coordination-lease", "--input", str(coordination_input))
+        coordination_receipt = {
+            "lease_id": coordination["holder"]["lease_id"],
+            "path": coordination["path"],
+            "version": coordination["version"],
+        }
+        validation = self.evolution_request(
+            topic,
+            operation="validate-integration-authority-receipt",
+            implementation_id="implementation-integration",
+            authority_receipt=issued_authority["authority_receipt"],
+        )
+        integration_input = self.root / "integration-validation.json"
+        integration_input.write_text(
+            json.dumps(
+                {
+                    "coordination_lease": coordination_receipt,
+                    "discussion_validation": validation,
+                    "repository": str(project),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        ready = self.supervision_cli("revalidate-integration", "--input", str(integration_input))
+        self.assertEqual(ready["state"], "ready", ready)
+        self.assertEqual(ready["authority"]["receipt"], issued_authority["receipt"])
+
+        (project / "drift.txt").write_text("drift\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(project), "add", "drift.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "drift"],
+            check=True,
+        )
+        stale_git = self.supervision_cli("revalidate-integration", "--input", str(integration_input))
+        self.assertEqual(stale_git["state"], "blocked")
+        self.assertEqual(stale_git["stale_dimensions"], ["source"])
+
+        for label, mutate in (
+            ("wrong-topic", lambda request: request.update(actor_topic_id="topic-" + "f" * 32)),
+            ("wrong-repository", lambda request: request.update(project_path=str(self.root / "wrong-repository"))),
+            ("forged-version", lambda request: request["authority_receipt"].update(ledger_revision=999)),
+        ):
+            forged_validation = json.loads(json.dumps(validation))
+            mutate(forged_validation)
+            integration_input.write_text(
+                json.dumps(
+                    {
+                        "coordination_lease": coordination_receipt,
+                        "discussion_validation": forged_validation,
+                        "repository": str(project),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            failed = subprocess.run(
+                [sys.executable, str(SUPERVISION_SCRIPT_PATH), "revalidate-integration", "--input", str(integration_input)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(failed.returncode, 2, label)
+            error = json.loads(failed.stdout)
+            self.assertFalse(error["ok"])
+            self.assertEqual(error["error"]["code"], "discussion_receipt_invalid")
+
+        code, _, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-implementation-run",
+                expected_revision=6,
+                expected_topic_revision=1,
+                implementation_id="implementation-later",
+                scope={**scope, "branch": "codex/later", "worktree_path": str(project / ".worktrees" / "later")},
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        integration_input.write_text(
+            json.dumps(
+                {
+                    "coordination_lease": coordination_receipt,
+                    "discussion_validation": validation,
+                    "repository": str(project),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        replayed = subprocess.run(
+            [sys.executable, str(SUPERVISION_SCRIPT_PATH), "revalidate-integration", "--input", str(integration_input)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(replayed.returncode, 2)
+        self.assertEqual(json.loads(replayed.stdout)["error"]["code"], "discussion_receipt_invalid")
 
 
 if __name__ == "__main__":
