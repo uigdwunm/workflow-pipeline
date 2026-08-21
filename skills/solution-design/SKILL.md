@@ -96,127 +96,27 @@ Continuous mode never authorizes a changed target, expanded permissions,
 destructive workspace action, implementation during stage 2, or silent
 deviation from the accepted requirement source or published plan.
 
-## Launch one subagent
+## Load subagent actions only at their seam
 
-This section applies only to the primary-orchestrator role.
+Immediately before launch, resume, review routing or completion intake, read
+[references/subagent-protocol.md](references/subagent-protocol.md) and the
+matching block in [references/templates.md](references/templates.md). Do not
+preload retry, review or intake details while requirement-source validation is
+still unresolved.
 
-Resolve the primary thread's exact current model and reasoning effort. Never
-show or pass “inherit”, “default”, or a guessed value. To guarantee inheritance
-despite configured subagent defaults, pass both resolved values explicitly to
-`spawn_agent` with:
+The primary orchestrator creates exactly one context-isolated
+`solution_designer` with the disclosed model and effort and the fixed
+bootstrap. The trusted child owns native Spec/ADR/Tickets work and exact-target
+publication; the primary owns identity, user decisions, anomaly routing and
+mechanical intake. Neither role implements code or changes the accepted
+requirement source.
 
-- task name `solution_designer`;
-- `fork_turns: "none"`;
-- the exact primary-thread model;
-- the exact primary-thread reasoning effort; and
-- the fixed bootstrap prompt from `references/templates.md`.
-
-Before the call, show the complete fixed launch block:
-
-- in stepwise mode, end the turn and require exact `确认`;
-- in continuous mode, make the automatic-launch disclosure the final
-  user-visible commentary immediately before `spawn_agent`, then call it in the
-  same turn without waiting for confirmation.
-
-Any edit to target, draft, project, repository, planning carrier, model, effort,
-permissions, prompt, or flow mode invalidates the stepwise confirmation. Show a
-fresh complete block.
-
-Save the exact agent identity returned by `spawn_agent`. Trust only that result,
-not an identity written inside child text. Do not spawn a replacement after an
-uncertain result until actual agent state is known.
-
-## Delegate complete stage ownership
-
-The child owns:
-
-- repository exploration and domain terminology use;
-- `$to-spec`, including Spec creation and native publication;
-- ADR creation when a hard-to-reverse decision requires one;
-- `$ask-matt` to decide whether Tickets are useful;
-- `$to-tickets`, including drafting, dependency relationships and publication;
-- exact-target local documentation commits and standard native remote actions;
-  and
-- `SOLUTION_DESIGN_STARTED`, review, anomaly, and completion messages.
-
-Before using a delegated Skill, the child must read its complete `SKILL.md` from
-the selected project's registered Skill link and follow its native behavior. If
-`$to-spec`, `$ask-matt`, or `$to-tickets` is unavailable or resolves outside the
-selected project, report an anomaly instead of improvising a replacement.
-
-The child must not implement code, create a PR, deploy, release, change the
-planning target, enter `3实现`, modify the immutable requirement draft, or work
-on unrelated tasks. Do not create a worktree. The primary agent must not edit
-Spec, ADR, or Tickets while the child owns the stage.
-
-The child may write exact local planning-document paths while another task
-holds `exclusive-checkout-v2`, but only under `stage: solution-design` and
-`purpose: document-write`. It must release the document lease before waiting
-for review. It must not stage or commit until the repository lease is
-available. Document-lease timeout uses the fixed shared timeout block and is
-reported through `SOLUTION_DESIGN_ANOMALY` only to preserve the exact retry
-checkpoint; it is not a plan mismatch and does not authorize redesign.
-
-## Route reviews and anomalies
-
-In stepwise mode:
-
-1. Present `SOLUTION_REVIEW_REQUIRED` from the trusted child. On exact `确认`,
-   send the fixed parent decision to the same child. Send requested edits to the
-   same child and require a fresh review block.
-2. When Tickets are needed, handle `TICKETS_REVIEW_REQUIRED` the same way. Do
-   not add a separate confirmation when the child decides Tickets are not
-   needed.
-
-In continuous mode, treat the user's earlier mode selection as advance approval
-for the normal `$to-spec` testing-seam question and `$to-tickets` quiz. The child
-must choose and publish without those review messages.
-
-In both modes, report `SOLUTION_DESIGN_ANOMALY` only for:
-
-- an execution failure or uncertain side effect;
-- an unexpected condition;
-- actual state inconsistent with the accepted requirement source or published
-  plan; or
-- a need to adjust the plan, scope, architecture, order, Tickets, acceptance
-  conditions, testing approach, target, or permissions.
-
-Ordinary difficulty and choices already left open by the plan are not
-anomalies. Stop the affected flow on an anomaly. Do not change the plan before
-the user decides.
-
-## Wait and resume
-
-Use subagent orchestration, not Codex task management. Never call
-`wait_threads`, create a user-owned task, or ask the user to enter the child
-thread.
-
-- After launch or a resume that leaves the trusted child active, enter the
-  protocol's notification-wait loop. While waiting, call only `wait_agent` with
-  the maximum supported timeout; never poll state or perform other work.
-- On a review or anomaly, ask the user in the primary thread.
-- Resume the same child with `followup_task`; never create a replacement merely
-  because the child is idle.
-- Bind every response to the current review or anomaly ID.
-- Do not repeat a completed publication when resuming.
-
-## Accept completion
-
-Accept `SOLUTION_DESIGN_COMPLETE` only from the saved trusted child.
-
-- In stepwise mode, perform only the mechanical existence, identity,
-  publication-result, commit, and workspace checks defined in the protocol. Do
-  not semantically re-review the solution.
-- In continuous mode, perform no independent solution, artifact, publication,
-  commit, workspace, or quality check. Require only the fixed message type,
-  protocol version, flow mode, required fields, and saved child identity; this
-  is schema intake, not verification of the reported state. Trust the child
-  completion unless the child reports an anomaly or the orchestration result
-  itself fails.
-
-Process one trusted completion once. A duplicate receives only an idempotent
-acknowledgement and never re-enters `3实现`.
-
+Use the protocol's notification wait, review/anomaly and resume messages with
+the same child. Stepwise mode preserves launch, solution, optional Tickets and
+final confirmations. Continuous mode skips only the documented reviews and
+quality gates; it does not widen target, permissions or side effects. Process
+one trusted completion once and route any inconsistency through the anomaly
+checkpoint instead of improvising or spawning a replacement.
 ## Complete the stage
 
 In stepwise mode, show the fixed success footer from `references/templates.md`.

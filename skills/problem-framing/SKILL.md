@@ -112,80 +112,12 @@ the later task-creation confirmation.
   [references/dedicated-grilling-protocol.md](references/dedicated-grilling-protocol.md)
   completely and follow its source-task protocol.
 
-## Inspect the lease before the project baseline
+## Load repository coordination only when needed
 
-Resolve the repository root read-only, then run `inspect-repository-lease`
-before reading mutable checkout state or creating any draft.
-
-- If the lease is available, establish the normal project baseline below.
-- If the lease is held, do not inspect the owning task's mutable implementation
-  paths, branch, index, or code status. Record the verified lease base branch
-  and base `HEAD` as the pinned repository snapshot. Read implementation
-  evidence only from committed Git objects pinned to that `HEAD`, such as with
-  `git show` or `git cat-file`. Repository documentation writes remain allowed
-  only through the shared document lease below.
-
-## Establish the project baseline
-
-Before any selected Matt flow or migration draft writes project documentation,
-record the repository root, attached branch, `HEAD`, staged diff, and
-`git status --porcelain=v1 -z --untracked-files=all`.
-
-For standardized status, exclude only an untracked
-`.agents/skills/<name>` entry that is a symbolic link resolving exactly to the
-installed Skill directory for `<name>`. Resolve the expected target from the
-active Skill registry instead of assuming a user-specific install root. Record
-each excluded path and target. Never exclude a tracked change, non-symlink,
-wrong target, parent directory, or any other `.agents` path.
-
-The checkout is documentation-aware clean when the branch is attached, the
-index contains no unrelated staged change, implementation paths contain no
-unknown change, and every remaining unstaged or untracked entry is an exact
-recognized documentation path or verified managed Skill link. Never silently
-classify an unknown path as documentation.
-
-## Coordinate document writes and repository commits
-
-Read
-[../guided-implementation/references/document-lease-protocol.md](../guided-implementation/references/document-lease-protocol.md)
-completely before the first repository documentation write, document-lease
-retry, renewal, or release.
-
-Immediately before every documentation write, acquire the shared document
-lease with `stage: problem-framing` and `purpose: document-write`. Use its
-default immediate attempt plus ten 10-second retries. Proceed only on
-`acquired: true`; on `state: timeout`, emit the protocol's fixed Chinese timeout
-block and stop the dependent operation. Verify immediately before writing,
-renew when necessary, and release immediately after the bounded edit. Never
-hold it while waiting for the user or a Matt flow.
-
-While stage 3 holds `exclusive-checkout-v2`, write only exact documentation
-paths. Do not stage, commit, switch branches, stash, clean, reset, or touch
-implementation paths. Keep using pinned committed objects for code evidence.
-Record the active repository lease identity and document-lease ID/version in
-the draft metadata.
-
-At the completion gate, freeze the accepted draft bytes and recheck the
-repository lease:
-
-- if available, acquire the repository mutation authority required by this
-  stage, revalidate the branch, descendant `HEAD`, documentation-aware status,
-  target path, and native-document blobs, then stage and commit exact
-  stage-owned documentation;
-- if held, keep the completed in-repository draft unstaged and end with the
-  pending-planning-commit footer from `references/templates.md`. Do not repeat
-  questioning or the unchanged completion confirmation.
-
-On `$problem-framing 重试`, inspect actual draft bytes, document lease, repository
-lease, branch, `HEAD`, target paths, and native-document blobs. When the
-repository lease becomes available and the frozen understanding remains valid,
-commit and deliver the exact stage-owned documentation. A target collision,
-divergent base, or changed shared document requires reconciliation; never
-silently stage another task's documentation.
-
-The repository lease is required for staging, commits, branch/workspace
-actions, and transition checks. It is not required for a document-lease-owned
-documentation edit.
+Before repository inspection, the first documentation write or commit, any
+workspace decision, or a mechanical retry, read
+[references/repository-and-recovery.md](references/repository-and-recovery.md).
+Do not preload it for a current-task question that needs no repository action.
 
 ## Run the discussion flow
 
@@ -250,78 +182,12 @@ verbatim transcript. Keep these document authorities distinct:
 Summarize and link native documents from the draft instead of copying them
 wholesale. Later user corrections override older statements.
 
-## Commit stage-owned documentation
+## Commit and recover through the routed reference
 
-After shared understanding is reached:
-
-1. Freeze the exact accepted draft bytes and record the completion confirmation.
-2. Collect only durable documentation created or modified by the selected Matt
-   flows and this stage's draft. Exclude prototype code, implementation files,
-   generated output, and unrelated user files.
-3. Do not commit a path that was already staged, unstaged, or untracked in the
-   recorded baseline. Report it as pre-existing user work.
-4. If any unrelated staged change exists, do not stage or commit stage-owned
-   files.
-5. Inspect the repository lease. When it is held, leave the frozen stage-owned
-   documents unstaged, emit the pending-planning-commit footer, and do not
-   repeat completed questioning.
-6. When it is available, stage only exact stage-owned documentation paths,
-   verify the
-   staged diff contains nothing else, and commit with a concise discussion
-   documentation message. The explicit invocation authorizes this exact local
-   documentation-only commit.
-7. If no durable document changed, record `规划提交：none`; never create an empty
-   commit.
-8. Recompute documentation-aware status. Do not offer the next stage while the
-   index, implementation paths, or this stage's document paths remain dirty.
-   Unrelated recognized documentation paths may remain unstaged and must not be
-   included in this stage's commit.
-
-## Resolve pre-existing workspace work
-
-When unrelated or pre-existing work blocks a documentation commit or clean
-transition, inspect status and diffs read-only, separate stage-owned files from
-user work, and ask:
-
-```text
-工作区处理：需要决策
-当前阶段：`$problem-framing`
-阶段状态：受阻
-恢复类型：协助处理工作区
-待处理改动：<exact staged, unstaged and untracked paths and states>
-恢复检查点：仓库=<absolute path>; 分支=<branch>; HEAD=<sha>; 规划文档=<exact paths or none>; 共同理解=<concise accepted understanding>
-下一阶段：none
-待决问题：检测到已有工作区改动。是否由我协助处理这些改动，以便继续 1拷问？我会先保留并说明处理方案，不会擅自丢弃内容。
-恢复方式：回答上述问题；无需重新调用 Skill
-```
-
-A generic approval authorizes read-only inspection and a concrete proposal,
-not a silent choice among commit, stash, relocation, or discard. If the answer
-does not select an exact result, show only reasonable preservation choices and
-ask one material question.
-
-Before acting, state the working directory, exact commands, flags, pathspecs,
-affected paths, commit message, and whether untracked files enter a stash.
-Reset, clean, checkout replacement, overwrite, deletion, force, or another
-unrecoverable discard require separate explicit current-turn authorization for
-the exact targets.
-
-After the selected action, revalidate repository, branch, `HEAD`, baseline
-ownership, documentation authority, accepted understanding, and standardized
-status. Resume automatically only when they remain valid.
-
-## Retry a mechanical stage-owned failure
-
-Use retry only after shared understanding is complete and one exact document
-lease, planning commit, delivery, intake, archive, or transition gate is
-mechanically recoverable, or after the pending-planning-commit footer. Never
-repeat completed questioning. Record the fixed
-failure checkpoint from [references/templates.md](references/templates.md).
-
-On `$problem-framing 重试`, inspect actual state first and resume from the last
-successful checkpoint. Retry a clearly side-effect-free operation
-automatically at most once. Never retry a write with uncertain side effects
-until its actual state has been verified.
+After shared understanding, follow the exact stage-owned commit, workspace and
+retry rules in `references/repository-and-recovery.md`. The explicit invocation
+authorizes only that bounded local documentation commit; it never widens into
+implementation or destructive cleanup.
 
 ## Choose the next stage in the current task
 

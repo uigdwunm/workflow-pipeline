@@ -19,6 +19,9 @@ import sys
 import time
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).parent))
+from supervision_core import ArgumentSpec, CommandRegistry, CommandSpec, LeaseHolderPolicy
+
 
 _CC_SWITCH_HOME = Path(
     os.environ.get("CC_SWITCH_HOME", Path.home() / ".cc-switch")
@@ -2708,57 +2711,18 @@ def _empty_document_lease(repository: Path) -> dict[str, Any]:
 
 
 def _validate_document_lease_holder(value: Any, label: str) -> dict[str, Any]:
-    holder = _expect_object(value, label)
-    _expect_keys(
-        holder,
-        {
-            "acquired_at_epoch",
-            "expires_at_epoch",
-            "lease_id",
-            "owner_host_id",
-            "owner_task_id",
-            "purpose",
-            "stage",
-        },
-        label,
-    )
-    acquired_at_epoch = _expect_int(
-        holder["acquired_at_epoch"], f"{label}.acquired_at_epoch", 0, 2**63 - 1
-    )
-    expires_at_epoch = _expect_int(
-        holder["expires_at_epoch"], f"{label}.expires_at_epoch", 1, 2**63 - 1
-    )
-    if expires_at_epoch <= acquired_at_epoch:
-        raise ProtocolError(
-            f"{label}.expires_at_epoch must be later than acquired_at_epoch"
-        )
-    purpose = _expect_nonempty_string(
-        holder["purpose"], f"{label}.purpose", max_bytes=128
-    )
-    if purpose not in DOCUMENT_LEASE_PURPOSES:
-        raise ProtocolError(
-            f"{label}.purpose is unsupported; expected one of "
-            f"{sorted(DOCUMENT_LEASE_PURPOSES)!r}; observed={purpose!r}"
-        )
-    stage = _expect_nonempty_string(holder["stage"], f"{label}.stage", max_bytes=128)
-    if stage not in DOCUMENT_LEASE_STAGES:
-        raise ProtocolError(
-            f"{label}.stage is unsupported; expected one of "
-            f"{sorted(DOCUMENT_LEASE_STAGES)!r}; observed={stage!r}"
-        )
-    return {
-        "acquired_at_epoch": acquired_at_epoch,
-        "expires_at_epoch": expires_at_epoch,
-        "lease_id": _expect_handoff_id(holder["lease_id"], f"{label}.lease_id"),
-        "owner_host_id": _expect_nonempty_string(
-            holder["owner_host_id"], f"{label}.owner_host_id", max_bytes=256
-        ),
-        "owner_task_id": _expect_nonempty_string(
-            holder["owner_task_id"], f"{label}.owner_task_id", max_bytes=256
-        ),
-        "purpose": purpose,
-        "stage": stage,
-    }
+    return LeaseHolderPolicy(
+        stages=DOCUMENT_LEASE_STAGES,
+        purposes=DOCUMENT_LEASE_PURPOSES,
+        protocol_error=ProtocolError,
+        expect_object=_expect_object,
+        expect_keys=_expect_keys,
+        expect_int=_expect_int,
+        expect_string=_expect_nonempty_string,
+        expect_lease_id=_expect_handoff_id,
+        verbose_vocab_errors=True,
+        vocabulary_order=("purpose", "stage"),
+    ).validate(value, label)
 
 
 def _validate_document_lease_document(
@@ -3249,51 +3213,16 @@ def _repository_from_coordination_lease_path(lease_path: Path) -> Path:
 def _validate_repository_coordination_holder(
     value: Any, label: str
 ) -> dict[str, Any]:
-    holder = _expect_object(value, label)
-    _expect_keys(
-        holder,
-        {
-            "acquired_at_epoch",
-            "expires_at_epoch",
-            "lease_id",
-            "owner_host_id",
-            "owner_task_id",
-            "purpose",
-            "stage",
-        },
-        label,
-    )
-    acquired_at_epoch = _expect_int(
-        holder["acquired_at_epoch"], f"{label}.acquired_at_epoch", 0, 2**63 - 1
-    )
-    expires_at_epoch = _expect_int(
-        holder["expires_at_epoch"], f"{label}.expires_at_epoch", 1, 2**63 - 1
-    )
-    if expires_at_epoch <= acquired_at_epoch:
-        raise ProtocolError(
-            f"{label}.expires_at_epoch must be later than acquired_at_epoch"
-        )
-    stage = _expect_nonempty_string(holder["stage"], f"{label}.stage", max_bytes=128)
-    purpose = _expect_nonempty_string(
-        holder["purpose"], f"{label}.purpose", max_bytes=128
-    )
-    if stage not in REPOSITORY_COORDINATION_LEASE_STAGES:
-        raise ProtocolError(f"{label}.stage is unsupported: {stage!r}")
-    if purpose not in REPOSITORY_COORDINATION_LEASE_PURPOSES:
-        raise ProtocolError(f"{label}.purpose is unsupported: {purpose!r}")
-    return {
-        "acquired_at_epoch": acquired_at_epoch,
-        "expires_at_epoch": expires_at_epoch,
-        "lease_id": _expect_handoff_id(holder["lease_id"], f"{label}.lease_id"),
-        "owner_host_id": _expect_nonempty_string(
-            holder["owner_host_id"], f"{label}.owner_host_id", max_bytes=256
-        ),
-        "owner_task_id": _expect_nonempty_string(
-            holder["owner_task_id"], f"{label}.owner_task_id", max_bytes=256
-        ),
-        "purpose": purpose,
-        "stage": stage,
-    }
+    return LeaseHolderPolicy(
+        stages=REPOSITORY_COORDINATION_LEASE_STAGES,
+        purposes=REPOSITORY_COORDINATION_LEASE_PURPOSES,
+        protocol_error=ProtocolError,
+        expect_object=_expect_object,
+        expect_keys=_expect_keys,
+        expect_int=_expect_int,
+        expect_string=_expect_nonempty_string,
+        expect_lease_id=_expect_handoff_id,
+    ).validate(value, label)
 
 
 def _empty_repository_coordination_lease(repository: Path) -> dict[str, Any]:
@@ -6777,414 +6706,88 @@ def _emit_json(value: Any) -> None:
     sys.stdout.buffer.write(_canonical_json_bytes(value))
 
 
+def _argument(*flags: str, **options: Any) -> ArgumentSpec:
+    return ArgumentSpec(flags=flags, options=options)
+
+
+def _build_command_registry() -> CommandRegistry:
+    path_input = (_argument("--input", required=True, type=Path),)
+    repository = (_argument("--repository", required=True, type=Path),)
+    file_cas = (
+        _argument("--file", required=True, type=Path),
+        _argument("--id", required=True),
+        _argument("--version", required=True, type=int),
+    )
+    immutable_file = (
+        _argument("--file", required=True, type=Path),
+        _argument("--id", required=True),
+        _argument("--bytes", required=True, type=int),
+        _argument("--sha256", required=True),
+    )
+    return CommandRegistry(
+        [
+            CommandSpec("inspect-repository-lease", repository, lambda a: inspect_repository_lease(a.repository)),
+            CommandSpec("acquire-repository-lease", path_input, lambda a: acquire_repository_lease(a.input)),
+            CommandSpec("verify-repository-lease", immutable_file, lambda a: verify_repository_lease(a.file, expected_id=a.id, expected_bytes=a.bytes, expected_sha256=a.sha256)),
+            CommandSpec("release-repository-lease", immutable_file, lambda a: release_repository_lease(a.file, expected_id=a.id, expected_bytes=a.bytes, expected_sha256=a.sha256)),
+            CommandSpec("inspect-document-lease", repository, lambda a: inspect_document_lease(a.repository)),
+            CommandSpec("acquire-document-lease", path_input + (_argument("--wait-seconds", type=int, default=DOCUMENT_LEASE_WAIT_SECONDS), _argument("--max-retries", type=int, default=DOCUMENT_LEASE_MAX_RETRIES)), lambda a: acquire_document_lease(a.input, wait_seconds=a.wait_seconds, max_retries=a.max_retries)),
+            CommandSpec("verify-document-lease", file_cas, lambda a: verify_document_lease(a.file, expected_id=a.id, expected_version=a.version)),
+            CommandSpec("renew-document-lease", file_cas + (_argument("--ttl-seconds", required=True, type=int),), lambda a: renew_document_lease(a.file, expected_id=a.id, expected_version=a.version, ttl_seconds=a.ttl_seconds)),
+            CommandSpec("release-document-lease", file_cas, lambda a: release_document_lease(a.file, expected_id=a.id, expected_version=a.version)),
+            CommandSpec("inspect-repository-coordination-lease", repository, lambda a: inspect_repository_coordination_lease(a.repository)),
+            CommandSpec("acquire-repository-coordination-lease", path_input, lambda a: acquire_repository_coordination_lease(a.input)),
+            CommandSpec("verify-repository-coordination-lease", file_cas, lambda a: verify_repository_coordination_lease(a.file, expected_id=a.id, expected_version=a.version)),
+            CommandSpec("release-repository-coordination-lease", file_cas, lambda a: release_repository_coordination_lease(a.file, expected_id=a.id, expected_version=a.version)),
+            CommandSpec("inspect-worktree-execution-leases", repository, lambda a: inspect_worktree_execution_leases(a.repository)),
+            CommandSpec("create-worktree-state-receipt", path_input, lambda a: create_worktree_state_receipt(a.input)),
+            CommandSpec("verify-worktree-state-receipt", path_input, lambda a: verify_worktree_state_receipt(a.input)),
+            CommandSpec("record-isolated-worktree-confirmation", path_input, lambda a: record_isolated_confirmation(a.input)),
+            CommandSpec("verify-isolated-worktree-confirmation", path_input, lambda a: verify_isolated_confirmation(a.input)),
+            CommandSpec("create-isolated-worktree", path_input, lambda a: create_isolated_worktree(a.input)),
+            CommandSpec("reconcile-isolated-worktree-creation", path_input, lambda a: reconcile_isolated_worktree_creation(a.input)),
+            CommandSpec("acquire-worktree-execution-lease", path_input, lambda a: acquire_worktree_execution_lease(a.input)),
+            CommandSpec("verify-worktree-execution-lease", file_cas + (_argument("--platform-cwd", required=True, type=Path),), lambda a: verify_worktree_execution_lease(a.file, expected_id=a.id, expected_version=a.version, platform_cwd=a.platform_cwd)),
+            CommandSpec("release-worktree-execution-lease", file_cas, lambda a: release_worktree_execution_lease(a.file, expected_id=a.id, expected_version=a.version)),
+            CommandSpec("reconcile-worktree-execution-lease", file_cas + (_argument("--platform-cwd", required=True, type=Path), _argument("--outcome", required=True)), lambda a: reconcile_worktree_execution_lease(a.file, expected_id=a.id, expected_version=a.version, platform_cwd=a.platform_cwd, outcome=a.outcome)),
+            CommandSpec("check-execution-availability", path_input, lambda a: check_execution_availability(a.input)),
+            CommandSpec("revalidate-integration", path_input, lambda a: revalidate_integration(a.input)),
+            CommandSpec("create-handoff", path_input, lambda a: create_handoff(a.input, _bundled_protocol_path())),
+            CommandSpec("verify-handoff", immutable_file, lambda a: verify_handoff(a.file, expected_id=a.id, expected_bytes=a.bytes, expected_sha256=a.sha256)),
+            CommandSpec("publish-supervision", (_argument("--handoff-file", required=True, type=Path), _argument("--direction", required=True, choices=sorted(DIRECTIONS)), _argument("--kind", required=True), _argument("--payload-file", required=True, type=Path), _argument("--previous-manifest", type=Path)), lambda a: publish_supervision(a.handoff_file, direction=a.direction, kind=a.kind, payload_path=a.payload_file, previous_manifest_path=a.previous_manifest)),
+            CommandSpec("verify-supervision", (_argument("--handoff-file", required=True, type=Path), _argument("--manifest-file", required=True, type=Path), _argument("--expected-count", required=True, type=int)), lambda a: verify_supervision(a.handoff_file, a.manifest_file, expected_count=a.expected_count)),
+            CommandSpec("create-control", path_input, lambda a: create_control(a.input), raw_output=True),
+            CommandSpec("verify-control", path_input + (_argument("--handoff-file", required=True, type=Path),), lambda a: verify_control(a.input, a.handoff_file)),
+            CommandSpec("create-ack", (_argument("--control", required=True, type=Path), _argument("--handoff-file", required=True, type=Path)), lambda a: create_ack(a.control, a.handoff_file), raw_output=True),
+            CommandSpec("verify-ack", path_input + (_argument("--control", required=True, type=Path), _argument("--handoff-file", required=True, type=Path)), lambda a: verify_ack(a.input, a.control, a.handoff_file)),
+            CommandSpec("inspect-cleanup", (_argument("--checkpoint", required=True, type=Path),), lambda a: inspect_cleanup(a.checkpoint)),
+            CommandSpec("advance-cleanup", (_argument("--checkpoint", required=True, type=Path),), lambda a: advance_cleanup(a.checkpoint)),
+            CommandSpec("create-closure-checkpoint", path_input, lambda a: create_closure_checkpoint(a.input)),
+            CommandSpec("inspect-closure-checkpoint", (_argument("--checkpoint", required=True, type=Path),), lambda a: inspect_closure_checkpoint(a.checkpoint)),
+            CommandSpec("advance-closure-checkpoint", (_argument("--checkpoint", required=True, type=Path), _argument("--phase", required=True, choices=sorted(set(CLOSURE_PHASES[1:] + LEGACY_CLOSURE_PHASES[1:] + ISOLATED_CLOSURE_PHASES[1:]))), _argument("--result", type=Path)), lambda a: advance_closure_checkpoint(a.checkpoint, phase=a.phase, result_path=a.result)),
+            CommandSpec("converge-document-proposal", path_input, lambda a: converge_document_proposal(a.input)),
+        ]
+    )
+
+
+COMMAND_REGISTRY = _build_command_registry()
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    return COMMAND_REGISTRY.build_parser(
         description="Create and verify deterministic implementation, ACK and closure protocol data."
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    inspect_lease_parser = subparsers.add_parser("inspect-repository-lease")
-    inspect_lease_parser.add_argument("--repository", required=True, type=Path)
-
-    acquire_lease_parser = subparsers.add_parser("acquire-repository-lease")
-    acquire_lease_parser.add_argument("--input", required=True, type=Path)
-
-    verify_lease_parser = subparsers.add_parser("verify-repository-lease")
-    verify_lease_parser.add_argument("--file", required=True, type=Path)
-    verify_lease_parser.add_argument("--id", required=True)
-    verify_lease_parser.add_argument("--bytes", required=True, type=int)
-    verify_lease_parser.add_argument("--sha256", required=True)
-
-    release_lease_parser = subparsers.add_parser("release-repository-lease")
-    release_lease_parser.add_argument("--file", required=True, type=Path)
-    release_lease_parser.add_argument("--id", required=True)
-    release_lease_parser.add_argument("--bytes", required=True, type=int)
-    release_lease_parser.add_argument("--sha256", required=True)
-
-    inspect_document_lease_parser = subparsers.add_parser("inspect-document-lease")
-    inspect_document_lease_parser.add_argument("--repository", required=True, type=Path)
-
-    acquire_document_lease_parser = subparsers.add_parser("acquire-document-lease")
-    acquire_document_lease_parser.add_argument("--input", required=True, type=Path)
-    acquire_document_lease_parser.add_argument(
-        "--wait-seconds", type=int, default=DOCUMENT_LEASE_WAIT_SECONDS
-    )
-    acquire_document_lease_parser.add_argument(
-        "--max-retries", type=int, default=DOCUMENT_LEASE_MAX_RETRIES
-    )
-
-    verify_document_lease_parser = subparsers.add_parser("verify-document-lease")
-    verify_document_lease_parser.add_argument("--file", required=True, type=Path)
-    verify_document_lease_parser.add_argument("--id", required=True)
-    verify_document_lease_parser.add_argument("--version", required=True, type=int)
-
-    renew_document_lease_parser = subparsers.add_parser("renew-document-lease")
-    renew_document_lease_parser.add_argument("--file", required=True, type=Path)
-    renew_document_lease_parser.add_argument("--id", required=True)
-    renew_document_lease_parser.add_argument("--version", required=True, type=int)
-    renew_document_lease_parser.add_argument(
-        "--ttl-seconds", required=True, type=int
-    )
-
-    release_document_lease_parser = subparsers.add_parser("release-document-lease")
-    release_document_lease_parser.add_argument("--file", required=True, type=Path)
-    release_document_lease_parser.add_argument("--id", required=True)
-    release_document_lease_parser.add_argument("--version", required=True, type=int)
-
-    inspect_repository_coordination_parser = subparsers.add_parser(
-        "inspect-repository-coordination-lease"
-    )
-    inspect_repository_coordination_parser.add_argument("--repository", required=True, type=Path)
-
-    acquire_repository_coordination_parser = subparsers.add_parser(
-        "acquire-repository-coordination-lease"
-    )
-    acquire_repository_coordination_parser.add_argument("--input", required=True, type=Path)
-
-    verify_repository_coordination_parser = subparsers.add_parser(
-        "verify-repository-coordination-lease"
-    )
-    verify_repository_coordination_parser.add_argument("--file", required=True, type=Path)
-    verify_repository_coordination_parser.add_argument("--id", required=True)
-    verify_repository_coordination_parser.add_argument("--version", required=True, type=int)
-
-    release_repository_coordination_parser = subparsers.add_parser(
-        "release-repository-coordination-lease"
-    )
-    release_repository_coordination_parser.add_argument("--file", required=True, type=Path)
-    release_repository_coordination_parser.add_argument("--id", required=True)
-    release_repository_coordination_parser.add_argument("--version", required=True, type=int)
-
-    inspect_worktree_execution_parser = subparsers.add_parser(
-        "inspect-worktree-execution-leases"
-    )
-    inspect_worktree_execution_parser.add_argument("--repository", required=True, type=Path)
-
-    create_worktree_state_parser = subparsers.add_parser("create-worktree-state-receipt")
-    create_worktree_state_parser.add_argument("--input", required=True, type=Path)
-
-    verify_worktree_state_parser = subparsers.add_parser("verify-worktree-state-receipt")
-    verify_worktree_state_parser.add_argument("--input", required=True, type=Path)
-
-    record_isolated_confirmation_parser = subparsers.add_parser("record-isolated-worktree-confirmation")
-    record_isolated_confirmation_parser.add_argument("--input", required=True, type=Path)
-
-    verify_isolated_confirmation_parser = subparsers.add_parser("verify-isolated-worktree-confirmation")
-    verify_isolated_confirmation_parser.add_argument("--input", required=True, type=Path)
-
-    create_isolated_worktree_parser = subparsers.add_parser("create-isolated-worktree")
-    create_isolated_worktree_parser.add_argument("--input", required=True, type=Path)
-
-    reconcile_isolated_worktree_parser = subparsers.add_parser("reconcile-isolated-worktree-creation")
-    reconcile_isolated_worktree_parser.add_argument("--input", required=True, type=Path)
-
-    acquire_worktree_execution_parser = subparsers.add_parser(
-        "acquire-worktree-execution-lease"
-    )
-    acquire_worktree_execution_parser.add_argument("--input", required=True, type=Path)
-
-    verify_worktree_execution_parser = subparsers.add_parser(
-        "verify-worktree-execution-lease"
-    )
-    verify_worktree_execution_parser.add_argument("--file", required=True, type=Path)
-    verify_worktree_execution_parser.add_argument("--id", required=True)
-    verify_worktree_execution_parser.add_argument("--version", required=True, type=int)
-    verify_worktree_execution_parser.add_argument("--platform-cwd", required=True, type=Path)
-
-    release_worktree_execution_parser = subparsers.add_parser(
-        "release-worktree-execution-lease"
-    )
-    release_worktree_execution_parser.add_argument("--file", required=True, type=Path)
-    release_worktree_execution_parser.add_argument("--id", required=True)
-    release_worktree_execution_parser.add_argument("--version", required=True, type=int)
-
-    reconcile_worktree_execution_parser = subparsers.add_parser(
-        "reconcile-worktree-execution-lease"
-    )
-    reconcile_worktree_execution_parser.add_argument("--file", required=True, type=Path)
-    reconcile_worktree_execution_parser.add_argument("--id", required=True)
-    reconcile_worktree_execution_parser.add_argument("--version", required=True, type=int)
-    reconcile_worktree_execution_parser.add_argument("--platform-cwd", required=True, type=Path)
-    reconcile_worktree_execution_parser.add_argument(
-        "--outcome", required=True
-    )
-
-    execution_availability_parser = subparsers.add_parser(
-        "check-execution-availability"
-    )
-    execution_availability_parser.add_argument("--input", required=True, type=Path)
-
-    integration_revalidation_parser = subparsers.add_parser(
-        "revalidate-integration"
-    )
-    integration_revalidation_parser.add_argument("--input", required=True, type=Path)
-
-    create_handoff_parser = subparsers.add_parser("create-handoff")
-    create_handoff_parser.add_argument("--input", required=True, type=Path)
-
-    verify_handoff_parser = subparsers.add_parser("verify-handoff")
-    verify_handoff_parser.add_argument("--file", required=True, type=Path)
-    verify_handoff_parser.add_argument("--id", required=True)
-    verify_handoff_parser.add_argument("--bytes", required=True, type=int)
-    verify_handoff_parser.add_argument("--sha256", required=True)
-
-    publish_parser = subparsers.add_parser("publish-supervision")
-    publish_parser.add_argument("--handoff-file", required=True, type=Path)
-    publish_parser.add_argument("--direction", required=True, choices=sorted(DIRECTIONS))
-    publish_parser.add_argument("--kind", required=True)
-    publish_parser.add_argument("--payload-file", required=True, type=Path)
-    publish_parser.add_argument("--previous-manifest", type=Path)
-
-    verify_supervision_parser = subparsers.add_parser("verify-supervision")
-    verify_supervision_parser.add_argument("--handoff-file", required=True, type=Path)
-    verify_supervision_parser.add_argument("--manifest-file", required=True, type=Path)
-    verify_supervision_parser.add_argument("--expected-count", required=True, type=int)
-
-    create_control_parser = subparsers.add_parser("create-control")
-    create_control_parser.add_argument("--input", required=True, type=Path)
-
-    verify_control_parser = subparsers.add_parser("verify-control")
-    verify_control_parser.add_argument("--input", required=True, type=Path)
-    verify_control_parser.add_argument("--handoff-file", required=True, type=Path)
-
-    create_ack_parser = subparsers.add_parser("create-ack")
-    create_ack_parser.add_argument("--control", required=True, type=Path)
-    create_ack_parser.add_argument("--handoff-file", required=True, type=Path)
-
-    verify_ack_parser = subparsers.add_parser("verify-ack")
-    verify_ack_parser.add_argument("--input", required=True, type=Path)
-    verify_ack_parser.add_argument("--control", required=True, type=Path)
-    verify_ack_parser.add_argument("--handoff-file", required=True, type=Path)
-
-    inspect_parser = subparsers.add_parser("inspect-cleanup")
-    inspect_parser.add_argument("--checkpoint", required=True, type=Path)
-
-    advance_parser = subparsers.add_parser("advance-cleanup")
-    advance_parser.add_argument("--checkpoint", required=True, type=Path)
-
-    create_closure_parser = subparsers.add_parser("create-closure-checkpoint")
-    create_closure_parser.add_argument("--input", required=True, type=Path)
-
-    inspect_closure_parser = subparsers.add_parser("inspect-closure-checkpoint")
-    inspect_closure_parser.add_argument("--checkpoint", required=True, type=Path)
-
-    advance_closure_parser = subparsers.add_parser("advance-closure-checkpoint")
-    advance_closure_parser.add_argument("--checkpoint", required=True, type=Path)
-    advance_closure_parser.add_argument(
-        "--phase",
-        required=True,
-        choices=sorted(
-            set(
-                CLOSURE_PHASES[1:]
-                + LEGACY_CLOSURE_PHASES[1:]
-                + ISOLATED_CLOSURE_PHASES[1:]
-            )
-        ),
-    )
-    advance_closure_parser.add_argument("--result", type=Path)
-
-    converge_proposal_parser = subparsers.add_parser("converge-document-proposal")
-    converge_proposal_parser.add_argument("--input", required=True, type=Path)
-    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     arguments = parser.parse_args(argv)
     try:
-        if arguments.command == "inspect-repository-lease":
-            _emit_json(inspect_repository_lease(arguments.repository))
-        elif arguments.command == "acquire-repository-lease":
-            _emit_json(acquire_repository_lease(arguments.input))
-        elif arguments.command == "verify-repository-lease":
-            _emit_json(
-                verify_repository_lease(
-                    arguments.file,
-                    expected_id=arguments.id,
-                    expected_bytes=arguments.bytes,
-                    expected_sha256=arguments.sha256,
-                )
-            )
-        elif arguments.command == "release-repository-lease":
-            _emit_json(
-                release_repository_lease(
-                    arguments.file,
-                    expected_id=arguments.id,
-                    expected_bytes=arguments.bytes,
-                    expected_sha256=arguments.sha256,
-                )
-            )
-        elif arguments.command == "inspect-document-lease":
-            _emit_json(inspect_document_lease(arguments.repository))
-        elif arguments.command == "acquire-document-lease":
-            _emit_json(
-                acquire_document_lease(
-                    arguments.input,
-                    wait_seconds=arguments.wait_seconds,
-                    max_retries=arguments.max_retries,
-                )
-            )
-        elif arguments.command == "verify-document-lease":
-            _emit_json(
-                verify_document_lease(
-                    arguments.file,
-                    expected_id=arguments.id,
-                    expected_version=arguments.version,
-                )
-            )
-        elif arguments.command == "renew-document-lease":
-            _emit_json(
-                renew_document_lease(
-                    arguments.file,
-                    expected_id=arguments.id,
-                    expected_version=arguments.version,
-                    ttl_seconds=arguments.ttl_seconds,
-                )
-            )
-        elif arguments.command == "release-document-lease":
-            _emit_json(
-                release_document_lease(
-                    arguments.file,
-                    expected_id=arguments.id,
-                    expected_version=arguments.version,
-                )
-            )
-        elif arguments.command == "inspect-repository-coordination-lease":
-            _emit_json(inspect_repository_coordination_lease(arguments.repository))
-        elif arguments.command == "acquire-repository-coordination-lease":
-            _emit_json(acquire_repository_coordination_lease(arguments.input))
-        elif arguments.command == "verify-repository-coordination-lease":
-            _emit_json(
-                verify_repository_coordination_lease(
-                    arguments.file,
-                    expected_id=arguments.id,
-                    expected_version=arguments.version,
-                )
-            )
-        elif arguments.command == "release-repository-coordination-lease":
-            _emit_json(
-                release_repository_coordination_lease(
-                    arguments.file,
-                    expected_id=arguments.id,
-                    expected_version=arguments.version,
-                )
-            )
-        elif arguments.command == "inspect-worktree-execution-leases":
-            _emit_json(inspect_worktree_execution_leases(arguments.repository))
-        elif arguments.command == "create-worktree-state-receipt":
-            _emit_json(create_worktree_state_receipt(arguments.input))
-        elif arguments.command == "verify-worktree-state-receipt":
-            _emit_json(verify_worktree_state_receipt(arguments.input))
-        elif arguments.command == "record-isolated-worktree-confirmation":
-            _emit_json(record_isolated_confirmation(arguments.input))
-        elif arguments.command == "verify-isolated-worktree-confirmation":
-            _emit_json(verify_isolated_confirmation(arguments.input))
-        elif arguments.command == "create-isolated-worktree":
-            _emit_json(create_isolated_worktree(arguments.input))
-        elif arguments.command == "reconcile-isolated-worktree-creation":
-            _emit_json(reconcile_isolated_worktree_creation(arguments.input))
-        elif arguments.command == "acquire-worktree-execution-lease":
-            _emit_json(acquire_worktree_execution_lease(arguments.input))
-        elif arguments.command == "verify-worktree-execution-lease":
-            _emit_json(
-                verify_worktree_execution_lease(
-                    arguments.file,
-                    expected_id=arguments.id,
-                    expected_version=arguments.version,
-                    platform_cwd=arguments.platform_cwd,
-                )
-            )
-        elif arguments.command == "release-worktree-execution-lease":
-            _emit_json(
-                release_worktree_execution_lease(
-                    arguments.file,
-                    expected_id=arguments.id,
-                    expected_version=arguments.version,
-                )
-            )
-        elif arguments.command == "reconcile-worktree-execution-lease":
-            _emit_json(
-                reconcile_worktree_execution_lease(
-                    arguments.file,
-                    expected_id=arguments.id,
-                    expected_version=arguments.version,
-                    platform_cwd=arguments.platform_cwd,
-                    outcome=arguments.outcome,
-                )
-            )
-        elif arguments.command == "check-execution-availability":
-            _emit_json(check_execution_availability(arguments.input))
-        elif arguments.command == "revalidate-integration":
-            _emit_json(revalidate_integration(arguments.input))
-        elif arguments.command == "create-handoff":
-            _emit_json(
-                create_handoff(arguments.input, _bundled_protocol_path())
-            )
-        elif arguments.command == "verify-handoff":
-            _emit_json(
-                verify_handoff(
-                    arguments.file,
-                    expected_id=arguments.id,
-                    expected_bytes=arguments.bytes,
-                    expected_sha256=arguments.sha256,
-                )
-            )
-        elif arguments.command == "publish-supervision":
-            _emit_json(
-                publish_supervision(
-                    arguments.handoff_file,
-                    direction=arguments.direction,
-                    kind=arguments.kind,
-                    payload_path=arguments.payload_file,
-                    previous_manifest_path=arguments.previous_manifest,
-                )
-            )
-        elif arguments.command == "verify-supervision":
-            _emit_json(
-                verify_supervision(
-                    arguments.handoff_file,
-                    arguments.manifest_file,
-                    expected_count=arguments.expected_count,
-                )
-            )
-        elif arguments.command == "create-control":
-            sys.stdout.buffer.write(create_control(arguments.input))
-        elif arguments.command == "verify-control":
-            _emit_json(
-                verify_control(arguments.input, arguments.handoff_file)
-            )
-        elif arguments.command == "create-ack":
-            sys.stdout.buffer.write(
-                create_ack(arguments.control, arguments.handoff_file)
-            )
-        elif arguments.command == "verify-ack":
-            _emit_json(
-                verify_ack(
-                    arguments.input,
-                    arguments.control,
-                    arguments.handoff_file,
-                )
-            )
-        elif arguments.command == "inspect-cleanup":
-            _emit_json(inspect_cleanup(arguments.checkpoint))
-        elif arguments.command == "advance-cleanup":
-            _emit_json(advance_cleanup(arguments.checkpoint))
-        elif arguments.command == "create-closure-checkpoint":
-            _emit_json(create_closure_checkpoint(arguments.input))
-        elif arguments.command == "inspect-closure-checkpoint":
-            _emit_json(inspect_closure_checkpoint(arguments.checkpoint))
-        elif arguments.command == "advance-closure-checkpoint":
-            _emit_json(
-                advance_closure_checkpoint(
-                    arguments.checkpoint,
-                    phase=arguments.phase,
-                    result_path=arguments.result,
-                )
-            )
-        elif arguments.command == "converge-document-proposal":
-            _emit_json(converge_document_proposal(arguments.input))
+        raw_output, result = COMMAND_REGISTRY.dispatch(arguments)
+        if raw_output:
+            sys.stdout.buffer.write(result)
         else:
-            parser.error(f"unknown command: {arguments.command}")
+            _emit_json(result)
     except ProtocolError as error:
         _emit_json(_error_response(error, arguments.command))
         print(f"ERROR: {error}", file=sys.stderr)

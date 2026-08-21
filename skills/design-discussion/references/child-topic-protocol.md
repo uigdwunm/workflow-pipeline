@@ -1,18 +1,109 @@
 # Child Topic and Continuation Protocol
 
 Read this reference only when the user asks to split a mature topic or continue
-an unavailable conversation.
+an unavailable conversation. This is the action authority for the Codex task
+seam; do not duplicate its sequence in the root Skill.
 
-Do not implement child creation or continuation through bootstrap. Those
-actions require typed handoff, attempt and binding operations that are outside
-Ticket 01.
+## Freeze one user-confirmed direction
 
-When the later protocol is available, child creation must first persist a child
-topic and handoff intent, then call the external task-creation surface, then
-bind only the verified real conversation reference. A continuation retains the
-same `topic_id`, creates a new conversation, records `continuation_of`, and
-atomically supersedes the previous active binding. Never claim restoration of
-an unavailable conversation.
+Before external task creation, discuss the proposed child or continuation one
+item at a time. Require explicit agreement on the goal, scope, relevant
+confirmed decisions, open questions and why a separate conversation is useful.
+Do not treat a suggestion to split as authorization to create a task.
 
-Until those operations exist, keep the current topic at its last verified
-state and explain that splitting or continuation cannot be recorded safely.
+Complete every pending `DW-*`, publish the latest verified `CP-*` with purpose
+`split` for a child or `handoff` for a continuation, and include that checkpoint
+in `authoritative_references`. Then call `prepare-handoff` exactly once:
+
+- `handoff_kind: child` creates the child topic and parent relation before any
+  external effect;
+- `handoff_kind: continuation` retains the current `topic_id` and prepares a
+  continuation relation;
+- `scope`, `work_snapshot` and `authoritative_references` contain only the
+  confirmed, allowlisted context needed by the target; and
+- the returned `H-*`, `A-*`, identity envelope and digests are the only task
+  bootstrap authority. Never reconstruct or edit them in prose.
+
+Show a fixed creation confirmation naming the saved Codex project, child versus
+continuation, goal, scope, checkpoint, exact task count (`1`), and the absence
+of remote writes. Only an exact `确认` in reply authorizes `create_thread`.
+
+## Create and bind one Codex task
+
+After confirmation, call `create_thread` once in the same saved project. The
+bootstrap prompt contains only the target role, exact project/tree/topic,
+`handoff_id`, `attempt_id`, payload and reference digests, protocol path, and
+these rules: locate identity, wait for the active binding if publication races
+task startup, call `accept-handoff` as the first completed handoff action, and
+perform no substantive discussion in that turn.
+
+Use the exact `threadId` returned by `create_thread` as the authenticated
+conversation reference. Immediately call `bind-handoff` with that reference
+and the byte-for-byte `verified_identity` returned by `prepare-handoff`. Do not
+guess a task ID from title, order, timestamps or transcript text.
+
+After a verified bind, use `send_message_to_thread` only to deliver the exact
+binding facts when the task has not yet completed acceptance. Use
+`wait_threads` for one bounded progress snapshot; do not create another task
+because the target is slow. The child first turn may only:
+
+1. verify the identity envelope, payload digest, authoritative reference digest,
+   checkpoint and active binding;
+2. call `accept-handoff` with `turn_number: 1`; and
+3. report `substantive_discussion_allowed: false` and stop.
+
+On a later turn, the same authenticated child calls
+`authorize-handoff-discussion` with a strictly larger `turn_number`. Only a
+successful response with `substantive_discussion_allowed: true` permits the
+ordinary one-question discussion loop. A first-turn attempt to authorize must
+surface `handoff_next_turn_required`; never hide it by changing the turn number.
+
+## Return and absorb results
+
+The active child submits one scoped result through `submit-child-result`. The
+parent reads the claim and asks the user to confirm how it affects the parent:
+
+- `record-child-result` with `effect: absorb` is allowed only when the result
+  scope is contained by the frozen child scope; it records explicit coverage;
+- a cross-parent, sibling or out-of-scope effect uses `effect: impact`; and
+- every resulting pending impact is reviewed separately through the ordinary
+  impact protocol before parent decisions or lifecycle routing change.
+
+The parent never copies a child conclusion directly into its document. Any
+confirmed parent document change still uses a new immutable `DW-*` and the
+shared document lease.
+
+## Continue an unavailable conversation
+
+A continuation uses the same preparation, confirmation, `create_thread`, bind,
+accept and later-authorize sequence. `bind-handoff` must observe exactly one
+active old binding owned by the source conversation. In its single ledger
+transaction it activates `continuation_of`, marks the old binding superseded,
+and creates the new active binding while retaining the same `topic_id`.
+
+Never claim that the old conversation was restored. If the old active binding,
+owner or provenance changed, stop on the protocol error and prepare no new
+handoff until current authority is resolved.
+
+## Creation recovery
+
+- **Explicitly not created:** call `record-handoff-failure`, then
+  `retry-handoff` with `forced: false`. The new monotonic `A-*` is the only
+  eligible attempt and requires a fresh task-creation confirmation.
+- **Unknown result:** call `record-handoff-outcome-unknown`. Inspect the exact
+  external result. Use `reconcile-handoff-attempt` with `still-unknown` or
+  `not-created`; never blindly retry.
+- **Late task:** while the uncertain attempt remains binding-eligible, bind its
+  verified real `threadId`. A cancelled, failed or superseded attempt must fail
+  with `handoff_late_arrival`.
+- **Forced replacement:** only after a user explicitly authorizes the risk,
+  call `cancel-handoff-attempt` when applicable and `retry-handoff` with
+  `forced: true` plus the exact authorization. This permanently revokes the old
+  attempt before creating the next task.
+- **Duplicate bind:** treat the first committed active binding as authority.
+  Read the handoff and stop; never try to make both tasks active.
+- **Ambiguous external effect:** preserve the handoff and attempt, report the
+  exact recovery checkpoint, and create nothing else.
+
+At every recovery step, reread `read-handoff` and use the returned ledger and
+record revisions. Reusing an idempotency key is valid only for an exact replay.

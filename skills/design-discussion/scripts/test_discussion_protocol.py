@@ -16,6 +16,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, str(Path(__file__).parent))
+import discussion_protocol as PROTOCOL
+from discussion_core import RequestContext
 from matrix_proof import matrix_proof
 
 
@@ -29,6 +31,42 @@ SUPERVISION_SCRIPT_PATH = (
 
 
 class DiscussionProtocolBootstrapTests(unittest.TestCase):
+    def test_operation_registry_preserves_66_canonical_operations_and_aliases(self) -> None:
+        names = PROTOCOL.OPERATION_REGISTRY.names
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(len(names) - len(PROTOCOL.OPERATION_ALIASES), 66)
+        self.assertEqual(
+            set(PROTOCOL.OPERATION_ALIASES), {"locate-context", "route-phase"}
+        )
+        self.assertTrue(set(PROTOCOL.OPERATION_ALIASES).issubset(names))
+
+    def test_request_context_lazily_parses_each_common_field_once(self) -> None:
+        calls = {"project": 0, "string": 0}
+
+        def project(value: object) -> Path:
+            calls["project"] += 1
+            return Path(str(value))
+
+        def string(value: object, label: str, *, max_bytes: int = 512) -> str:
+            calls["string"] += 1
+            return str(value)
+
+        context = RequestContext.parse(
+            {
+                "protocol_version": 1,
+                "operation": "read-topic",
+                "project_path": "/tmp/project",
+                "project_id": "project-" + "1" * 32,
+            },
+            protocol_version=1,
+            error_type=PROTOCOL.ProtocolError,
+            parse_project_path=project,
+            parse_string=string,
+            known_operations=PROTOCOL.OPERATION_REGISTRY.names,
+        )
+        self.assertEqual(context.project_path, context.project_path)
+        self.assertEqual(context.project_id, context.project_id)
+        self.assertEqual(calls, {"project": 1, "string": 1})
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name).resolve()

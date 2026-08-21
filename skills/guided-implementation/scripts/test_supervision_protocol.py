@@ -39,6 +39,16 @@ matrix_proof = MATRIX_PROOF.matrix_proof
 
 
 class DocumentLeaseTests(unittest.TestCase):
+    def test_command_registry_is_the_single_complete_cli_authority(self) -> None:
+        self.assertEqual(len(PROTOCOL.COMMAND_REGISTRY.names), 40)
+        self.assertEqual(
+            set(PROTOCOL.COMMAND_REGISTRY.names),
+            set(PROTOCOL._build_parser()._subparsers._group_actions[0].choices),
+        )
+        source = SCRIPT_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("if arguments.command ==", source)
+        self.assertNotIn("elif arguments.command ==", source)
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name).resolve()

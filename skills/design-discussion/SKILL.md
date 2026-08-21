@@ -151,6 +151,13 @@ Read the applicable reference only when the action is requested:
 If the required deterministic operation is unavailable, stop and state that
 the discussion remains at its last verified durable state.
 
+For a child topic or continuation, the referenced protocol is executable now:
+complete the parent confirmation and checkpoint, prepare the handoff, obtain the
+separate exact task-creation confirmation, create and bind one real Codex task,
+enforce first-turn acceptance and later-turn authorization, then route the
+scoped result or impacts back to the parent. Do not replace this sequence with
+bootstrap or an informal prompt-only handoff.
+
 ## Judge maturity
 
 Judge maturity from goal, scope, user scenarios, behavior, constraints,

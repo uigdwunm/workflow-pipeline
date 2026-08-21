@@ -21,3 +21,4 @@ Blocked by: 03 — Publish verifiable discussion checkpoints.
 ## Comments
 
 - 已在候选 `07f80210be6dd2b7d3c7a35662ef5d5085851e81` 中验收，并由合并提交 `3624df56bca2d3884074c3a4e55506e4374aec9e` 集成；最终 145 项验证通过。
+- 2026-08-21 后续加固把原先停在“later protocol”占位的用户流程接到真实 Codex task seam：父题确认与最新 CP、prepare、独立创建确认、`create_thread`、真实 `threadId` bind、首轮 accept、后续 authorize、结果吸收/impact、continuation 原子 supersede 及完整创建恢复均已有 action authority 和机械验收。
