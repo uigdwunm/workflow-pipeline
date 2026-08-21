@@ -16,7 +16,7 @@ MARKDOWN_REFERENCE_PATTERN = re.compile(
     r"(?:\]\(|`)(?P<path>(?:\.\./)?(?:[a-z0-9-]+/)*references/[a-z0-9-]+\.md)(?:\)|`)"
 )
 SKILL_NAME_PATTERN = re.compile(r"^name:\s*([a-z][a-z0-9-]*)\s*$", re.MULTILINE)
-USER_PATH_PATTERN = re.compile(r"/Users/[^/\s]+/")
+USER_PATH_BYTES_PATTERN = re.compile(rb"/Users/[^/\s]+/")
 
 
 def relative(path: Path, repository: Path) -> str:
@@ -117,11 +117,7 @@ def validate(repository: Path) -> dict[str, object]:
         text = markdown_file.read_text(encoding="utf-8")
         invoked_names.update(DEPENDENCY_PATTERN.findall(text))
     for skill_path in sorted(path for path in skills_root.rglob("*") if path.is_file()):
-        try:
-            text = skill_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        if USER_PATH_PATTERN.search(text):
+        if USER_PATH_BYTES_PATTERN.search(skill_path.read_bytes()):
             issues.append(
                 {"code": "user-specific-absolute-path", "path": relative(skill_path, repository)}
             )

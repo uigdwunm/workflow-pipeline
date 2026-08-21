@@ -428,13 +428,21 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         }
 
     def prepare_phase_run(
-        self, topic, *, revision=1, from_phase=0, to_phase=1, carrier_kind="worker"
+        self,
+        topic,
+        *,
+        revision=1,
+        topic_revision=1,
+        from_phase=0,
+        to_phase=1,
+        carrier_kind="worker",
     ):
         code, prepared, stderr = self.run_cli(
             self.phase_request(
                 topic,
                 "prepare-phase-run",
                 revision,
+                topic_revision=topic_revision,
                 from_phase=from_phase,
                 to_phase=to_phase,
                 route=f"{from_phase}->{to_phase}",
@@ -447,6 +455,119 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             {"source", "route", "impact", "coverage", "dependency", "coordination"},
         )
         return prepared
+
+    def complete_current_topic_phase(
+        self,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int,
+        topic_revision: int,
+        from_phase: int,
+        to_phase: int,
+    ) -> tuple[dict[str, object], int, int]:
+        prepared = self.prepare_phase_run(
+            topic,
+            revision=ledger_revision,
+            topic_revision=topic_revision,
+            from_phase=from_phase,
+            to_phase=to_phase,
+            carrier_kind="current-topic",
+        )
+        evidence = prepared["evidence"]
+        revision = ledger_revision + 1
+        result: dict[str, object] = prepared
+        for operation, parameters in (
+            ("authorize-phase-carrier", {"carrier_ref": "discussion-task"}),
+            ("phase-ready", {"carrier_ref": "discussion-task", "evidence": evidence}),
+            ("phase-activate", {"evidence": evidence}),
+            (
+                "claim-phase-completion",
+                {"carrier_ref": "discussion-task", "evidence": evidence},
+            ),
+            ("complete-phase-run", {"evidence": evidence}),
+            ("finalize-phase-run", {"evidence": evidence}),
+        ):
+            code, result, stderr = self.run_cli(
+                self.phase_request(
+                    topic,
+                    operation,
+                    revision,
+                    topic_revision=topic_revision,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    **parameters,
+                )
+            )
+            self.assertEqual(code, 0, stderr)
+            revision += 1
+        return result, revision, topic_revision + 1
+
+    def test_root_discussion_executes_full_zero_through_four_lifecycle(self) -> None:
+        project = self.make_project("root-zero-through-four", git=False)
+        topic = self.bootstrap_topic(project)
+        ledger_revision = 1
+        topic_revision = 1
+        phase_result_ids: list[str] = []
+
+        for from_phase, to_phase in ((0, 1), (1, 2), (2, 3), (3, 4)):
+            completed, ledger_revision, topic_revision = self.complete_current_topic_phase(
+                topic,
+                ledger_revision=ledger_revision,
+                topic_revision=topic_revision,
+                from_phase=from_phase,
+                to_phase=to_phase,
+            )
+            self.assertEqual(completed["current_phase"], to_phase)
+            phase_result_ids.append(str(completed["phase_result_id"]))
+
+        self.assertEqual(len(set(phase_result_ids)), 4)
+        read_request = self.phase_request(topic, "validate", 0)
+        for key in ("expected_ledger_revision", "expected_topic_revision", "idempotency_key"):
+            read_request.pop(key)
+        code, validated, stderr = self.run_cli(read_request)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(validated["state"], "valid")
+        self.assertEqual(validated["record_revision"], 5)
+
+    def test_competing_phase_run_cannot_become_double_active(self) -> None:
+        project = self.make_project("no-double-active-phase-run", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_phase_run(topic)
+        evidence = prepared["evidence"]
+        transitions = (
+            ("authorize-phase-carrier", {"carrier_ref": "discussion-task"}),
+            ("phase-ready", {"carrier_ref": "discussion-task", "evidence": evidence}),
+            ("phase-activate", {"evidence": evidence}),
+        )
+        for revision, (operation, parameters) in enumerate(transitions, start=2):
+            code, _, stderr = self.run_cli(
+                self.phase_request(
+                    topic,
+                    operation,
+                    revision,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    **parameters,
+                )
+            )
+            self.assertEqual(code, 0, stderr)
+
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        code, rejected, _ = self.run_cli(
+            self.phase_request(
+                topic,
+                "prepare-phase-run",
+                5,
+                from_phase=0,
+                to_phase=2,
+                route="0->2",
+                carrier_kind="competing-carrier",
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_coordination_drift")
+        self.assertEqual(ledger.read_bytes(), before)
 
     def publish_non_git_stage_entry_checkpoint(
         self,

@@ -16,6 +16,10 @@ import unittest
 REPOSITORY = Path(__file__).parents[3]
 MATRIX = Path(__file__).with_name("compatibility_recovery_matrix.json")
 DISCUSSION = Path(__file__).with_name("discussion_protocol.py")
+LEGACY_DISCOVERY_OUTPUTS = {
+    "none": b'{"candidate_count":0,"context":"none","created":false,"ok":true,"state":"none"}\n',
+    "ambiguous": b'{"candidate_count":2,"context":"ambiguous","created":false,"ok":true,"state":"ambiguous"}\n',
+}
 
 
 class CompatibilityRecoveryMatrixTests(unittest.TestCase):
@@ -93,6 +97,15 @@ class CompatibilityRecoveryMatrixTests(unittest.TestCase):
             self.assertEqual({row["id"] for row in rows}, required_ids)
             for row in rows:
                 self.assertTrue(row["tests"], row["id"])
+                if section == "fault_boundaries":
+                    self.assertEqual(
+                        set(row),
+                        {"id", "failure", "recovery", "invariants", "tests"},
+                        row["id"],
+                    )
+                    self.assertTrue(row["failure"], row["id"])
+                    self.assertTrue(row["recovery"], row["id"])
+                    self.assertTrue(row["invariants"], row["id"])
                 for reference in row["tests"]:
                     relative_path, test_name = reference.split("::", 1)
                     known = known_by_file.setdefault(
@@ -112,6 +125,7 @@ class CompatibilityRecoveryMatrixTests(unittest.TestCase):
                 (none_second.returncode, none_second.stdout, none_second.stderr),
             )
             self.assertEqual(json.loads(none_first.stdout)["context"], "none")
+            self.assertEqual(none_first.stdout, LEGACY_DISCOVERY_OUTPUTS["none"])
             self.assertEqual(self.snapshot(project), empty_snapshot)
 
             for number in (1, 2):
@@ -134,6 +148,10 @@ class CompatibilityRecoveryMatrixTests(unittest.TestCase):
                 (ambiguous_second.returncode, ambiguous_second.stdout, ambiguous_second.stderr),
             )
             self.assertEqual(json.loads(ambiguous_first.stdout)["context"], "ambiguous")
+            self.assertEqual(
+                ambiguous_first.stdout,
+                LEGACY_DISCOVERY_OUTPUTS["ambiguous"],
+            )
             self.assertEqual(self.snapshot(project), ambiguous_snapshot)
             self.assertFalse((project / ".codex").exists())
 

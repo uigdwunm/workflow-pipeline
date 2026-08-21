@@ -766,6 +766,36 @@ class DocumentLeaseTests(unittest.TestCase):
             sorted(result["state"] for result in results), ["held", "timeout"]
         )
 
+    def test_lease_conflict_fault_recovers_only_after_exact_owner_release(self) -> None:
+        first_input = self.write_input("lease-boundary-first.json", task_id="task-a")
+        second_input = self.write_input("lease-boundary-second.json", task_id="task-b")
+        first = PROTOCOL.acquire_document_lease(
+            first_input, wait_seconds=0, max_retries=0
+        )
+        blocked = PROTOCOL.acquire_document_lease(
+            second_input, wait_seconds=0, max_retries=0
+        )
+        self.assertEqual(blocked["state"], "timeout")
+        self.assertFalse(blocked["acquired"])
+        with self.assertRaises(PROTOCOL.ProtocolError):
+            PROTOCOL.release_document_lease(
+                Path(first["path"]),
+                expected_id="0" * 32,
+                expected_version=first["version"],
+            )
+        still_held = PROTOCOL.inspect_document_lease(self.repository)
+        self.assertEqual(still_held["holder"]["lease_id"], first["holder"]["lease_id"])
+        PROTOCOL.release_document_lease(
+            Path(first["path"]),
+            expected_id=first["holder"]["lease_id"],
+            expected_version=first["version"],
+        )
+        recovered = PROTOCOL.acquire_document_lease(
+            second_input, wait_seconds=0, max_retries=0
+        )
+        self.assertTrue(recovered["acquired"])
+        self.assertEqual(recovered["holder"]["owner_task_id"], "task-b")
+
     def test_worktree_execution_lease_cli_binds_exact_worktree_and_v2_queues(self) -> None:
         topic, base = self.bootstrap_discussion_repository()
         worktree = self.root / "isolated-wi07"
@@ -990,6 +1020,128 @@ class DocumentLeaseTests(unittest.TestCase):
         self.assertEqual(wrong.returncode, 2)
         self.assertEqual(json.loads(wrong.stdout)["error"]["code"], "integration_lease_invalid")
 
+    def test_two_confirmed_isolated_implementations_merge_serially_from_shared_base(self) -> None:
+        topic, base = self.bootstrap_discussion_repository()
+        cases = (
+            ("implementation-left", "codex/isolated-left", "left.py"),
+            ("implementation-right", "codex/isolated-right", "right.py"),
+        )
+        candidates: list[tuple[dict[str, object], str, Path]] = []
+        ledger_revision = 1
+        for implementation_id, branch, filename in cases:
+            worktree = self.root / implementation_id
+            execution_lease = self.create_coordinated_worktree_lease(
+                topic,
+                base=base,
+                implementation_id=implementation_id,
+                branch=branch,
+                worktree=worktree,
+                ledger_revision=ledger_revision,
+            )
+            ledger_revision += 2
+            source = worktree / "src" / filename
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(f"VALUE = {implementation_id!r}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(worktree), "add", str(source)], check=True)
+            subprocess.run(
+                [
+                    "git", "-C", str(worktree), "-c", "user.name=Test",
+                    "-c", "user.email=test@example.com", "commit", "-qm",
+                    implementation_id,
+                ],
+                check=True,
+            )
+            candidate = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            parent = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD^"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(parent, base)
+            candidates.append((execution_lease, candidate, source.relative_to(worktree)))
+
+        coordination_input = self.root / "shared-base-serial-lease.json"
+        coordination_input.write_text(
+            json.dumps(
+                {
+                    "owner_host_id": "host-1",
+                    "owner_task_id": "serial-integration-task",
+                    "purpose": "serial-integration",
+                    "repository": str(self.repository),
+                    "stage": "guided-implementation",
+                    "ttl_seconds": 300,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ) + "\n",
+            encoding="utf-8",
+        )
+        coordination = PROTOCOL.acquire_repository_coordination_lease(
+            coordination_input
+        )
+        previous_head = base
+        for _, candidate, relative_source in candidates:
+            verified = PROTOCOL.verify_repository_coordination_lease(
+                Path(coordination["path"]),
+                expected_id=coordination["holder"]["lease_id"],
+                expected_version=coordination["version"],
+            )
+            self.assertTrue(verified["verified"])
+            current_head = subprocess.run(
+                ["git", "-C", str(self.repository), "rev-parse", "HEAD"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(current_head, previous_head)
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(self.repository), "merge-base", base, candidate],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    text=True,
+                ).stdout.strip(),
+                base,
+            )
+            subprocess.run(
+                [
+                    "git", "-C", str(self.repository), "-c", "user.name=Test",
+                    "-c", "user.email=test@example.com", "merge", "--no-ff",
+                    "--no-edit", candidate,
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            previous_head = subprocess.run(
+                ["git", "-C", str(self.repository), "rev-parse", "HEAD"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            self.assertTrue((self.repository / relative_source).is_file())
+
+        self.assertNotEqual(previous_head, base)
+        for execution_lease, _, _ in candidates:
+            released = PROTOCOL.release_worktree_execution_lease(
+                Path(execution_lease["path"]),
+                expected_id=execution_lease["holder"]["lease_id"],
+                expected_version=execution_lease["version"],
+            )
+            self.assertEqual(released["state"], "available")
+        released_coordination = PROTOCOL.release_repository_coordination_lease(
+            Path(coordination["path"]),
+            expected_id=coordination["holder"]["lease_id"],
+            expected_version=coordination["version"],
+        )
+        self.assertEqual(released_coordination["state"], "available")
+
     def test_dual_mode_handoffs_are_v4_and_legacy_v3_remains_verifiable(self) -> None:
         runtime_root = self.root / "runtime"
         environment = {**os.environ, "CC_SWITCH_RUNTIME_ROOT": str(runtime_root)}
@@ -1144,6 +1296,48 @@ class DocumentLeaseTests(unittest.TestCase):
         self.assertEqual(decoded["facts"]["worktree_path"], facts["worktree_path"])
         self.assertEqual(observed, checkpoint_data)
         self.assertEqual(checkpoint_path.read_bytes(), checkpoint_data)
+
+        external_results = {
+            "documents-committed": {
+                "closure_commit": None,
+                "documents_updated": [],
+                "verification": ["legacy-documents-preserved"],
+            },
+            "worktree-removed": {
+                "path": facts["worktree_path"],
+                "verified_absent": True,
+            },
+            "branch-removed": {
+                "name": facts["implementation_branch"],
+                "verified_absent": True,
+            },
+            "remote-verified": {"actions": [], "results": [], "verified": True},
+        }
+        continued = dict(decoded)
+        for phase in PROTOCOL.LEGACY_CLOSURE_PHASES[1:]:
+            result = (
+                PROTOCOL._validate_closure_phase_result(
+                    phase,
+                    external_results[phase],
+                    continued["facts"],
+                    closure_version=continued["closure_version"],
+                )
+                if phase in external_results
+                else {"cleanup_state": "intact" if phase == "evidence-cleanup" else "complete"}
+            )
+            continued = {
+                **continued,
+                "phase": phase,
+                "receipts": continued["receipts"] + [{"phase": phase, "result": result}],
+            }
+            self.assertEqual(continued["closure_version"], PROTOCOL.LEGACY_CLOSURE_VERSION)
+        self.assertEqual(continued["phase"], "complete")
+        self.assertEqual(
+            [receipt["phase"] for receipt in continued["receipts"]],
+            list(PROTOCOL.LEGACY_CLOSURE_PHASES),
+        )
+        for path, _, original in legacy_handoffs.values():
+            self.assertEqual(path.read_bytes(), original)
 
 
 class ArchiveIntegrationProtocolTests(DocumentLeaseTests):

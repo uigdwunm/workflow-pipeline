@@ -93,6 +93,23 @@ class RepositoryValidationTests(unittest.TestCase):
             [str(second.resolve()), str(first.resolve())],
         )
 
+    def test_non_utf8_skill_files_are_scanned_without_being_silently_skipped(self) -> None:
+        temporary_directory, repository = self.make_repository()
+        self.addCleanup(temporary_directory.cleanup)
+        binary = repository / "skills" / "alpha" / "scripts" / "fixture.bin"
+        binary.write_bytes(
+            b"\xffprefix " + b"/" + b"Users/private-user/secret suffix\x80"
+        )
+
+        completed = self.run_validator(repository)
+
+        self.assertEqual(completed.returncode, 1)
+        issues = json.loads(completed.stdout)["issues"]
+        self.assertEqual(
+            [(issue["code"], issue["path"]) for issue in issues],
+            [("user-specific-absolute-path", "skills/alpha/scripts/fixture.bin")],
+        )
+
     def test_implementation_range_rejects_documentation_paths(self) -> None:
         temporary_directory, repository = self.make_repository()
         self.addCleanup(temporary_directory.cleanup)
