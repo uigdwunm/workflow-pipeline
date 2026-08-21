@@ -1,7 +1,8 @@
 # Workflow Pipeline
 
-一套面向 Codex 的四阶段工程工作流，把需求澄清、方案设计、受控实现和变更归档拆成四个可组合的 Skill：
+一套面向 Codex 的工程工作流。可选的持久化设计讨论位于既有四阶段之前；没有唯一、可验证讨论上下文时，1—4 保持原有流程：
 
+0. **0讨论 — `$design-discussion`（可选）**：为需要跨对话延续的设计讨论维护可验证话题、文档与检查点。
 1. **1拷问 — `$problem-framing`**：通过追问冻结目标、范围、行为契约与验收条件。
 2. **2方案 — `$solution-design`**：把已确认需求转成 Spec、ADR 和必要的 Tickets。
 3. **3实现 — `$guided-implementation`**：在仓库租约、文档租约和独立验收约束下实施并合并。
@@ -31,7 +32,7 @@ npx skills@latest add mattpocock/skills
 npx skills@latest add uigdwunm/workflow-pipeline
 ```
 
-也可以克隆本仓库后，把 `skills/` 下的四个目录链接或复制到 Codex 的 Skill 目录。安装完成后运行：
+也可以克隆本仓库后，把 `skills/` 下的五个目录链接或复制到 Codex 的 Skill 目录。安装完成后运行：
 
 ```bash
 ./scripts/check-dependencies.sh
@@ -47,7 +48,9 @@ npx skills@latest add uigdwunm/workflow-pipeline
 $problem-framing 帮我明确这次需求
 ```
 
-阶段完成后，按成功页脚提示用 `确认` 逐阶段继续，或在明确提供该选项时用 `执行后续全部流程`。也可以在拥有合格输入时显式进入 `$solution-design`、`$guided-implementation` 或 `$change-closure`。
+需要持久化设计上下文时可显式从 `$design-discussion` 开始，并按验证后的路由进入 1 或 2；也可直接从 1 开始，或在拥有合格输入时进入 2、3、4。权威路由与恢复规则只在 [生命周期集成引用](skills/design-discussion/references/lifecycle-integration.md) 中维护。阶段完成后，按成功页脚提示用 `确认` 逐阶段继续，或在明确提供该选项时用 `执行后续全部流程`。
+
+0讨论不会自动创建实现 worktree，也不会扩大远程写入、付费、破坏性操作或其它外部副作用权限；这些动作仍按原阶段规则逐项确认。
 
 ## Matt 依赖需要特殊处理吗？
 
@@ -74,7 +77,7 @@ $problem-framing 帮我明确这次需求
 ./scripts/validate.sh
 ```
 
-该命令验证四个 Skill 的结构、运行 Python 单元测试，并检查仓库内是否残留个人绝对路径。
+该命令自动发现并验证全部 Skill、渐进引用和内外部依赖注册，自动运行 `skills/**/scripts/test_*.py`，并检查 Skill 文件中是否残留个人绝对路径。
 
 ## 许可证
 

@@ -10,6 +10,39 @@ Use Matt Pocock's discussion Skills for the questioning itself. Do not choose
 the engineering implementation or write implementation code in this stage.
 This restriction never permits deferring an unresolved behavior contract.
 
+## Attach a verified discussion source
+
+At entry, apply the discovery order in
+[`../design-discussion/references/lifecycle-integration.md`](../design-discussion/references/lifecycle-integration.md).
+Only attach when authenticated phase or handoff evidence, the active binding,
+the exact topic document or stable footer, and read-only `discover-context`
+resolve one `ledger` or authorized `document_only` context. On `none` or
+`ambiguous`, make no discussion-protocol write and continue every existing
+entry, draft, publication and footer rule below unchanged. Stop on a strong
+identity conflict; do not ask the user to choose an internal identity.
+
+In an attached context, 0 and 1 own one requirement document: the existing
+`docs/discussions/<root-slug>/topic.md`. Do not create a problem-framing draft
+or migrate that document to another path. The active topic conversation may
+run 1 directly. When a dedicated grilling carrier is needed, the source topic
+must first publish the latest effective `stage-entry` checkpoint and prepare a
+`0->1` wrapper Phase Run with carrier kind `dedicated-grilling`. The carrier
+must verify that exact checkpoint identity, claim its authorized `PA-*`, report
+ready, and wait. It may ask questions or prepare a shared-topic write only
+after the source topic rechecks evidence and activates the run. While active,
+all durable requirement updates still use the topic's immutable `DW-*` payload
+and `design-discussion` document-lease path; the dedicated carrier never owns a
+second draft.
+
+Before routing from 0 or 1, resolve every pending impact and publish the latest
+effective 0/1 checkpoint. Use `prepare-wrapper-phase-run`, not the generic
+Phase Run operation. Route `1->3` only when scope, behavior, failure semantics,
+acceptance conditions and an adequate test seam are all complete. Its source
+activation records phase 2 as `not_applicable` for the exact implementation
+scope and creates no Spec, ADR, Ticket or planning commit. Continuous mode can
+be selected only by the exact response to the successful stage-1 footer; a
+stage-0 route is always stepwise.
+
 ## Enter the stage
 
 - Start only from an explicit `$problem-framing` invocation.

@@ -62,11 +62,27 @@ Use one source:
 If a correction changes goal, scope, constraints, or acceptance conditions,
 keep it in `$problem-framing`; do not silently absorb it as solution design.
 
+For a verified discussion context, use the latest completed `stage-entry`
+checkpoint from phase 0 or 1 as the immutable requirement source. The source
+topic prepares `0->2` or `1->2` through `prepare-wrapper-phase-run` with carrier
+kind `solution-designer`. The trusted child must verify the frozen checkpoint
+identity, claim its authorized `PA-*`, report ready, and wait for the source
+topic to activate the run. It must not read mutable requirement bytes as new
+authority, begin `$to-spec`, or write planning artifacts before activation.
+Pending impacts, an older checkpoint, route drift, source drift or changed
+coordination evidence stops activation and requires a new source decision.
+
+After activation, stage 2 owns only Spec, necessary ADRs, Tickets and its exact
+planning commit. The shared 0/1 topic document remains read-only requirement
+authority; do not create or modify another requirement draft. Carrier
+completion is only a claim until the source topic accepts and finalizes the
+Phase Run.
+
 ## Track the flow mode
 
-Use `逐阶段确认` for an explicit invocation or exact `确认`. Preserve an
-authenticated inherited mode from `$problem-framing`. Only exact
-`执行后续全部流程` from a verified success footer enables
+Use `逐阶段确认` for an explicit invocation, a phase-0 discussion route or exact
+`确认`. Preserve an authenticated inherited mode only from `$problem-framing`.
+Only exact `执行后续全部流程` from a verified successful stage-1 footer enables
 `连续执行后续全部流程`.
 
 - In `逐阶段确认`, require the fixed launch confirmation, solution review,

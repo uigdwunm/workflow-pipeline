@@ -1,17 +1,18 @@
 # Dependency contract
 
-The four stages invoke other Skills by their registered names. Installation location is intentionally not fixed; the active Codex Skill registry is authoritative.
+The optional discussion stage and the four established stages invoke other Skills by their registered names. Installation location is intentionally not fixed; the active Codex Skill registry is authoritative.
 
 ## Internal dependencies
 
 | Stage | Internal Skills |
 | --- | --- |
-| `problem-framing` | `solution-design`, `guided-implementation` |
-| `solution-design` | `problem-framing`, `guided-implementation` |
-| `guided-implementation` | `problem-framing`, `solution-design`, `change-closure` |
-| `change-closure` | `guided-implementation` |
+| `design-discussion` | `guided-implementation` |
+| `problem-framing` | `design-discussion`, `solution-design`, `guided-implementation` |
+| `solution-design` | `design-discussion`, `problem-framing`, `guided-implementation` |
+| `guided-implementation` | `design-discussion`, `problem-framing`, `solution-design`, `change-closure` |
+| `change-closure` | `design-discussion`, `guided-implementation` |
 
-Install all four Skills together so cross-stage transitions remain available.
+Install all five Skills together so optional discovery, cross-stage transitions and shared lease verification remain available.
 
 ## Matt Pocock runtime dependencies
 
@@ -40,3 +41,7 @@ These dependencies are currently a documented runtime contract rather than vendo
 4. document any required minimum upstream version in the next release.
 
 Do not install duplicate copies of the same dependency under different Skill providers. A unique registered name is required for deterministic routing.
+
+## Validation contract
+
+`./scripts/validate.sh` discovers every `skills/**/scripts/test_*.py` test and mechanically verifies registered internal/external Skill names, reachable progressive references and the absence of user-specific absolute paths under `skills/`. Optional 0讨论 routes and recovery behavior are exercised without granting any new external-write authority.

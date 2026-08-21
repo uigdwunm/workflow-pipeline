@@ -8,14 +8,16 @@ Complete the feature with an executable compatibility and recovery matrix that p
 
 ## Acceptance criteria
 
-- [ ] The repository validation command discovers and runs every Skill and protocol test, checks dependency registration, progressive-reference integrity and user-specific path leakage.
-- [ ] End-to-end scenarios cover root discussion through 1/2/3/4, direct 0→2, direct 1→3, parent/child absorption and coverage, `no-code-integration`, two safe isolated implementations and serial shared-base integration.
-- [ ] Fault injection covers every boundary between ledger transaction, lease, Git/worktree, external carrier creation, ready/activate, terminal claim, documentation commit and cleanup.
-- [ ] The suite verifies no automatic unconfirmed worktree, no double-active run or binding, no stale-source integration, no documentation in implementation commits, no force cleanup of unknown work and no premature topic close.
-- [ ] `none`/`ambiguous` discovery fixtures demonstrate byte-for-byte equivalent existing 1—4 control flow and zero new persistent state.
-- [ ] Legacy v2, v1 and older worktree handoff/checkpoint fixtures continue through their embedded protocols without automatic conversion.
-- [ ] Project documentation explains 0讨论, optional lifecycle routes, dependencies and validation without duplicating protocol references or changing external-write authority.
+- [x] The repository validation command discovers and runs every Skill and protocol test, checks dependency registration, progressive-reference integrity and user-specific path leakage.
+- [x] End-to-end scenarios cover root discussion through 1/2/3/4, direct 0→2, direct 1→3, parent/child absorption and coverage, `no-code-integration`, two safe isolated implementations and serial shared-base integration.
+- [x] Fault injection covers every boundary between ledger transaction, lease, Git/worktree, external carrier creation, ready/activate, terminal claim, documentation commit and cleanup.
+- [x] The suite verifies no automatic unconfirmed worktree, no double-active run or binding, no stale-source integration, no documentation in implementation commits, no force cleanup of unknown work and no premature topic close.
+- [x] `none`/`ambiguous` discovery fixtures demonstrate byte-for-byte equivalent existing 1—4 control flow and zero new persistent state.
+- [x] Legacy v2, v1 and older worktree handoff/checkpoint fixtures continue through their embedded protocols without automatic conversion.
+- [x] Project documentation explains 0讨论, optional lifecycle routes, dependencies and validation without duplicating protocol references or changing external-write authority.
 
 Blocked by: 06 — Integrate 1拷问 and 2方案 with discussion sources; 07 — Run implementation in two controlled modes; 08 — Archive integrated results safely.
 
 ## Comments
+
+- 已在候选 `07f80210be6dd2b7d3c7a35662ef5d5085851e81` 中验收，并由合并提交 `3624df56bca2d3884074c3a4e55506e4374aec9e` 集成；最终 145 项验证通过。
