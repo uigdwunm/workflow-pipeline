@@ -178,7 +178,7 @@ Git 实现支持 `exclusive-checkout-v2` 与用户逐次明确授权的 `isolate
 ### Secondary seams
 
 - `supervision_protocol.py` 继续使用进程级 CLI 契约测试，新增 `design-discussion` document lease stage、短期 repository coordination lease、长期 worktree execution lease、双 execution mode handoff 与新版 closure checkpoint 的 acquire/verify/release/reconcile 行为。
-- Skill 与 reference 使用仓库级静态验证：quick validator、依赖解析、禁止用户绝对路径、reference 链接存在、Skill 行数与 reference 目录规则、稳定模板字段与旧流程兼容快照。
+- Skill 与 reference 使用仓库级静态验证：quick validator、依赖解析、禁止用户绝对路径、reference 链接存在、Skill 行数与 reference 目录规则、稳定模板字段，以及 none/ambiguous 下可机械观察的旧流程契约 invariants；不承诺生成式对话文本逐字节相同。
 - 包装 Skill 的生命周期行为以确定性协议的集成场景测试为主，不构造依赖自由文本措辞的脆弱单测。
 
 ### Behaviour coverage
@@ -226,6 +226,7 @@ Git 实现支持 `exclusive-checkout-v2` 与用户逐次明确授权的 `isolate
 
 ## Further Notes
 
+- 2026-08-21 后续加固：子话题/continuation 已接到真实 Codex task seam；fallback 验收改为可机械观察的 legacy contract invariants；discussion 使用 66 个 canonical operation 加 2 个兼容 alias 的单一 registry 和懒解析 `RequestContext`；supervision 使用 40 个 `CommandSpec` 的单一 registry 与参数化 holder policy；旧 Skill 改为 action-specific 渐进加载。`bash scripts/validate.sh` 最终 153 项通过，仓库验证为 5 个 Skill、17 个 reference、5 组自动发现测试且无问题。
 - 权威需求来源：`/Users/zhaolaiyuan/Documents/Codex/2026-08-06/wo/outputs/design-discussion-overall-design.md`，SHA-256 `9578fa64ba31461b4ada1d3245b5271bf732185286d0cfa21a56ba775fd86d1f`。
 - 迁移承接：`/Users/zhaolaiyuan/Documents/Codex/2026-08-06/wo/outputs/design-discussion-workflow-pipeline-continuation.md`，SHA-256 `e88a1ee1736ecce271d52bf719ef9323579c2eab60e79acda15ed640c32c051c`。
 - 本地 tracker 目标为 `.scratch/design-discussion/PRD.md` 与 `.scratch/design-discussion/issues/`；triage 状态使用 `ready-for-agent`。

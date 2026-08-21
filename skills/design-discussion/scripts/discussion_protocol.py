@@ -18,6 +18,9 @@ import time
 import uuid
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).parent))
+from discussion_core import OperationRegistry, RequestContext
+
 
 PROTOCOL_VERSION = 1
 EXPLICIT_ENTRY_MODES = {
@@ -817,8 +820,16 @@ def _bootstrap(request: dict[str, Any]) -> dict[str, Any]:
         },
         "bootstrap request",
     )
-    project = _validate_project_path(request["project_path"])
-    conversation_ref = _expect_string(request["conversation_ref"], "conversation_ref")
+    project = (
+        request.project_path
+        if isinstance(request, RequestContext) and request.project_path is not None
+        else _validate_project_path(request["project_path"])
+    )
+    conversation_ref = (
+        request.conversation_ref
+        if isinstance(request, RequestContext) and request.conversation_ref is not None
+        else _expect_string(request["conversation_ref"], "conversation_ref")
+    )
     idempotency_key = _validate_uuid4(request["idempotency_key"], "idempotency_key")
     root_slug = _expect_string(request["root_slug"], "root_slug", max_bytes=96)
     if not ROOT_SLUG_RE.fullmatch(root_slug):
@@ -1111,10 +1122,22 @@ def _evolution_paths(
             "invalid_request",
             f"request is missing fields: {sorted(required - set(request))!r}",
         )
-    project = _validate_project_path(request["project_path"])
-    project_id = _expect_string(request["project_id"], "project_id")
-    tree_id = _expect_string(request["tree_id"], "tree_id")
-    topic_id = _expect_string(request["actor_topic_id"], "actor_topic_id")
+    if isinstance(request, RequestContext):
+        project = request.project_path
+        project_id = request.project_id
+        tree_id = request.tree_id
+        topic_id = request.actor_topic_id
+        owner_ref = request.actor_conversation_ref
+        if None in {project, project_id, tree_id, topic_id, owner_ref}:
+            raise ProtocolError("invalid_request", "request common envelope is incomplete")
+    else:
+        project = _validate_project_path(request["project_path"])
+        project_id = _expect_string(request["project_id"], "project_id")
+        tree_id = _expect_string(request["tree_id"], "tree_id")
+        topic_id = _expect_string(request["actor_topic_id"], "actor_topic_id")
+        owner_ref = _expect_string(
+            request["actor_conversation_ref"], "actor_conversation_ref"
+        )
     for label, value, kind in (
         ("project_id", project_id, "project"),
         ("tree_id", tree_id, "tree"),
@@ -1122,9 +1145,6 @@ def _evolution_paths(
     ):
         if not value.startswith(f"{kind}-") or not IDENTITY_RE.fullmatch(value):
             raise ProtocolError("discussion_identity_conflict", f"{label} is invalid")
-    owner_ref = _expect_string(
-        request["actor_conversation_ref"], "actor_conversation_ref"
-    )
     manifest_path = project / "docs" / "discussions" / ".codex-project.md"
     manifest = _parse_frontmatter(
         _require_regular_nosymlink(manifest_path, "project identity manifest"),
@@ -8173,154 +8193,105 @@ def _read_topic(request: dict[str, Any], *, validate_only: bool = False) -> dict
         }
 
 
+def _build_operation_registry() -> OperationRegistry:
+    """Return the sole authority for all 66 stable operation names."""
+
+    return OperationRegistry(
+        [
+            ("bootstrap", _bootstrap),
+            ("discover-context", _discover_context),
+            ("locate-context", _discover_context),
+            ("initialize-document-context", _initialize_document_context),
+            ("prepare-phase-run", _prepare_phase_run),
+            ("route-phase", _prepare_phase_run),
+            ("prepare-wrapper-phase-run", _prepare_wrapper_phase_run),
+            ("prepare-no-code-integration-run", _prepare_no_code_integration_run),
+            ("authorize-continuous-flow", _authorize_continuous_flow),
+            ("phase-ready", lambda request: _transition_phase_attempt(request, "ready", "phase-attempt-ready")),
+            ("authorize-phase-carrier", _authorize_phase_carrier),
+            ("claim-phase-carrier", _claim_phase_carrier),
+            ("phase-activate", lambda request: _transition_phase_attempt(request, "active", "phase-attempt-activated")),
+            ("revoke-phase-authorization", _revoke_phase_authorization),
+            ("supersede-phase-run", _supersede_phase_run),
+            ("claim-phase-completion", _claim_phase_completion),
+            ("complete-phase-run", _complete_phase_run),
+            ("finalize-phase-run", _finalize_phase_run),
+            ("cancel-phase-run", lambda request: _transition_phase_attempt(request, "cancelled", "phase-run-cancelled")),
+            ("fail-phase-run", lambda request: _transition_phase_attempt(request, "failed", "phase-run-failed")),
+            ("block-phase-run", lambda request: _transition_phase_attempt(request, "blocked", "phase-run-blocked")),
+            ("phase-outcome-unknown", lambda request: _transition_phase_attempt(request, "outcome-unknown", "phase-run-outcome-unknown")),
+            ("retry-phase-run", _retry_phase_run),
+            ("reconcile-phase-run", _reconcile_phase_run),
+            ("read-phase-run", _read_phase_run),
+            ("reopen-phase", _reopen_phase),
+            ("prepare-topic-update", _prepare_topic_update),
+            ("apply-document-write", _apply_document_write),
+            ("complete-document-write", _complete_document_write),
+            ("reconcile-document-write", _reconcile_document_write),
+            ("prepare-checkpoint", _prepare_checkpoint),
+            ("cancel-checkpoint", _cancel_checkpoint),
+            ("publish-git-checkpoint", _publish_git_checkpoint),
+            ("publish-non-git-checkpoint", _publish_non_git_checkpoint),
+            ("record-checkpoint-outcome-unknown", _record_checkpoint_outcome_unknown),
+            ("reconcile-git-checkpoint", _reconcile_git_checkpoint),
+            ("reconcile-non-git-checkpoint", _reconcile_non_git_checkpoint),
+            ("mark-checkpoint-broken", _mark_checkpoint_broken),
+            ("register-active-checkpoint-source", _register_active_checkpoint_source),
+            ("prepare-implementation-run", _prepare_implementation_run),
+            ("check-implementation-parallelism", _check_implementation_parallelism),
+            ("validate-implementation-parallelism", _validate_implementation_parallelism),
+            ("activate-implementation-run", _activate_implementation_run),
+            ("prepare-source-refresh", _prepare_source_refresh),
+            ("ack-source-refresh", _ack_source_refresh),
+            ("commit-source-refresh", _commit_source_refresh),
+            ("issue-integration-authority-receipt", _issue_integration_authority_receipt),
+            ("validate-integration-authority-receipt", _validate_integration_authority_receipt),
+            ("record-archive-complete", _record_archive_complete),
+            ("close-archived-topic", _close_archived_topic),
+            ("repair-checkpoint", _repair_checkpoint),
+            ("checkpoint-gc-dry-run", _checkpoint_gc_dry_run),
+            ("checkpoint-gc-confirm", _checkpoint_gc_confirm),
+            ("reconcile-checkpoint-gc", _reconcile_checkpoint_gc),
+            ("prepare-handoff", _prepare_handoff),
+            ("bind-handoff", _bind_handoff),
+            ("accept-handoff", _accept_handoff),
+            ("authorize-handoff-discussion", _authorize_handoff_discussion),
+            ("record-handoff-outcome-unknown", lambda request: _transition_handoff_attempt(request, target_state="outcome-unknown", event_type="handoff-outcome-unknown")),
+            ("record-handoff-failure", lambda request: _transition_handoff_attempt(request, target_state="failed", event_type="handoff-failed")),
+            ("cancel-handoff-attempt", lambda request: _transition_handoff_attempt(request, target_state="cancelled", event_type="handoff-cancelled")),
+            ("retry-handoff", _retry_handoff),
+            ("reconcile-handoff-attempt", _reconcile_handoff_attempt),
+            ("submit-child-result", _submit_child_result),
+            ("record-child-result", _record_child_result),
+            ("read-handoff", _read_handoff),
+            ("read-topic", _read_topic),
+            ("validate", lambda request: _read_topic(request, validate_only=True)),
+        ]
+    )
+
+
+OPERATION_REGISTRY = _build_operation_registry()
+OPERATION_ALIASES = {
+    "locate-context": "discover-context",
+    "route-phase": "prepare-phase-run",
+}
+
+
 def handle(request: Any) -> dict[str, Any]:
-    if not isinstance(request, dict):
-        raise ProtocolError("invalid_request", "request must be a JSON object")
-    if request.get("protocol_version") != PROTOCOL_VERSION:
-        raise ProtocolError(
-            "unsupported_protocol_version",
-            f"protocol_version must be {PROTOCOL_VERSION}",
-        )
-    operation = request.get("operation")
-    if operation == "bootstrap":
-        return _bootstrap(request)
-    if operation in {"discover-context", "locate-context"}:
-        return _discover_context(request)
-    if operation == "initialize-document-context":
-        return _initialize_document_context(request)
-    if operation in {"prepare-phase-run", "route-phase"}:
-        return _prepare_phase_run(request)
-    if operation == "prepare-wrapper-phase-run":
-        return _prepare_wrapper_phase_run(request)
-    if operation == "prepare-no-code-integration-run":
-        return _prepare_no_code_integration_run(request)
-    if operation == "authorize-continuous-flow":
-        return _authorize_continuous_flow(request)
-    if operation == "phase-ready":
-        return _transition_phase_attempt(request, "ready", "phase-attempt-ready")
-    if operation == "authorize-phase-carrier":
-        return _authorize_phase_carrier(request)
-    if operation == "claim-phase-carrier":
-        return _claim_phase_carrier(request)
-    if operation == "phase-activate":
-        return _transition_phase_attempt(request, "active", "phase-attempt-activated")
-    if operation == "revoke-phase-authorization":
-        return _revoke_phase_authorization(request)
-    if operation == "supersede-phase-run":
-        return _supersede_phase_run(request)
-    if operation == "claim-phase-completion":
-        return _claim_phase_completion(request)
-    if operation == "complete-phase-run":
-        return _complete_phase_run(request)
-    if operation == "finalize-phase-run":
-        return _finalize_phase_run(request)
-    if operation == "cancel-phase-run":
-        return _transition_phase_attempt(request, "cancelled", "phase-run-cancelled")
-    if operation == "fail-phase-run":
-        return _transition_phase_attempt(request, "failed", "phase-run-failed")
-    if operation == "block-phase-run":
-        return _transition_phase_attempt(request, "blocked", "phase-run-blocked")
-    if operation == "phase-outcome-unknown":
-        return _transition_phase_attempt(request, "outcome-unknown", "phase-run-outcome-unknown")
-    if operation == "retry-phase-run":
-        return _retry_phase_run(request)
-    if operation == "reconcile-phase-run":
-        return _reconcile_phase_run(request)
-    if operation == "read-phase-run":
-        return _read_phase_run(request)
-    if operation == "reopen-phase":
-        return _reopen_phase(request)
-    if operation == "prepare-topic-update":
-        return _prepare_topic_update(request)
-    if operation == "apply-document-write":
-        return _apply_document_write(request)
-    if operation == "complete-document-write":
-        return _complete_document_write(request)
-    if operation == "reconcile-document-write":
-        return _reconcile_document_write(request)
-    if operation == "prepare-checkpoint":
-        return _prepare_checkpoint(request)
-    if operation == "cancel-checkpoint":
-        return _cancel_checkpoint(request)
-    if operation == "publish-git-checkpoint":
-        return _publish_git_checkpoint(request)
-    if operation == "publish-non-git-checkpoint":
-        return _publish_non_git_checkpoint(request)
-    if operation == "record-checkpoint-outcome-unknown":
-        return _record_checkpoint_outcome_unknown(request)
-    if operation == "reconcile-git-checkpoint":
-        return _reconcile_git_checkpoint(request)
-    if operation == "reconcile-non-git-checkpoint":
-        return _reconcile_non_git_checkpoint(request)
-    if operation == "mark-checkpoint-broken":
-        return _mark_checkpoint_broken(request)
-    if operation == "register-active-checkpoint-source":
-        return _register_active_checkpoint_source(request)
-    if operation == "prepare-implementation-run":
-        return _prepare_implementation_run(request)
-    if operation == "check-implementation-parallelism":
-        return _check_implementation_parallelism(request)
-    if operation == "validate-implementation-parallelism":
-        return _validate_implementation_parallelism(request)
-    if operation == "activate-implementation-run":
-        return _activate_implementation_run(request)
-    if operation == "prepare-source-refresh":
-        return _prepare_source_refresh(request)
-    if operation == "ack-source-refresh":
-        return _ack_source_refresh(request)
-    if operation == "commit-source-refresh":
-        return _commit_source_refresh(request)
-    if operation == "issue-integration-authority-receipt":
-        return _issue_integration_authority_receipt(request)
-    if operation == "validate-integration-authority-receipt":
-        return _validate_integration_authority_receipt(request)
-    if operation == "record-archive-complete":
-        return _record_archive_complete(request)
-    if operation == "close-archived-topic":
-        return _close_archived_topic(request)
-    if operation == "repair-checkpoint":
-        return _repair_checkpoint(request)
-    if operation == "checkpoint-gc-dry-run":
-        return _checkpoint_gc_dry_run(request)
-    if operation == "checkpoint-gc-confirm":
-        return _checkpoint_gc_confirm(request)
-    if operation == "reconcile-checkpoint-gc":
-        return _reconcile_checkpoint_gc(request)
-    if operation == "prepare-handoff":
-        return _prepare_handoff(request)
-    if operation == "bind-handoff":
-        return _bind_handoff(request)
-    if operation == "accept-handoff":
-        return _accept_handoff(request)
-    if operation == "authorize-handoff-discussion":
-        return _authorize_handoff_discussion(request)
-    if operation == "record-handoff-outcome-unknown":
-        return _transition_handoff_attempt(
-            request, target_state="outcome-unknown", event_type="handoff-outcome-unknown"
-        )
-    if operation == "record-handoff-failure":
-        return _transition_handoff_attempt(
-            request, target_state="failed", event_type="handoff-failed"
-        )
-    if operation == "cancel-handoff-attempt":
-        return _transition_handoff_attempt(
-            request, target_state="cancelled", event_type="handoff-cancelled"
-        )
-    if operation == "retry-handoff":
-        return _retry_handoff(request)
-    if operation == "reconcile-handoff-attempt":
-        return _reconcile_handoff_attempt(request)
-    if operation == "submit-child-result":
-        return _submit_child_result(request)
-    if operation == "record-child-result":
-        return _record_child_result(request)
-    if operation == "read-handoff":
-        return _read_handoff(request)
-    if operation == "read-topic":
-        return _read_topic(request)
-    if operation == "validate":
-        return _read_topic(request, validate_only=True)
-    raise ProtocolError("unsupported_operation", "discussion protocol operation is unsupported")
+    context = RequestContext.parse(
+        request,
+        protocol_version=PROTOCOL_VERSION,
+        error_type=ProtocolError,
+        parse_project_path=_validate_project_path,
+        parse_string=_expect_string,
+        known_operations=OPERATION_REGISTRY.names,
+    )
+    return OPERATION_REGISTRY.dispatch(
+        context,
+        unsupported=lambda: ProtocolError(
+            "unsupported_operation", "discussion protocol operation is unsupported"
+        ),
+    )
 
 
 def main() -> int:

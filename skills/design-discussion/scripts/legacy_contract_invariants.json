@@ -1,0 +1,62 @@
+{
+  "schema": "legacy-contract-invariants-v1",
+  "contexts": ["none", "ambiguous"],
+  "forbidden_discussion_actions": [
+    "bootstrap",
+    "initialize-document-context",
+    "prepare-checkpoint",
+    "prepare-wrapper-phase-run",
+    "prepare-phase-run",
+    "bind-handoff"
+  ],
+  "stages": [
+    {
+      "stage": 1,
+      "skill": "skills/problem-framing/SKILL.md",
+      "references": ["skills/problem-framing/references/repository-and-recovery.md"],
+      "entry_marker": "Start only from an explicit `$problem-framing` invocation.",
+      "role_marker": "Do not choose\nthe engineering implementation or write implementation code in this stage.",
+      "draft_marker": "the draft is the complete target-specific narrative and cross-task handoff;",
+      "commit_marker": "stage only exact stage-owned documentation paths",
+      "footer_fields": ["阶段结果：拷问完成", "规划提交：", "下一阶段：", "确认方式：回复 `确认`"]
+    },
+    {
+      "stage": 2,
+      "skill": "skills/solution-design/SKILL.md",
+      "references": ["skills/solution-design/references/subagent-protocol.md", "skills/solution-design/references/templates.md"],
+      "entry_marker": "an explicit `$solution-design` invocation;",
+      "role_marker": "Use one context-isolated subagent as the stage owner.",
+      "draft_marker": "Do not create a second requirement or\nsolution draft merely for delegation.",
+      "commit_marker": "trusted child owns native Spec/ADR/Tickets work and exact-target\npublication",
+      "footer_fields": ["阶段结果：方案完成", "规划提交：", "下一阶段：`$guided-implementation`", "进入条件：已满足"]
+    },
+    {
+      "stage": 3,
+      "skill": "skills/guided-implementation/SKILL.md",
+      "references": ["skills/guided-implementation/references/originating-task-protocol.md", "skills/guided-implementation/references/execution-protocol.md"],
+      "entry_marker": "Run only after an explicit `$guided-implementation` invocation",
+      "role_marker": "It never writes implementation code or polls routine progress.",
+      "draft_marker": "preserve recognized unstaged documentation",
+      "commit_marker": "one implementation branch",
+      "footer_fields": ["实现结果：成功", "合并结果：成功", "实现提交：", "下一阶段：`$change-closure`（4归档）"]
+    },
+    {
+      "stage": 4,
+      "skill": "skills/change-closure/SKILL.md",
+      "references": ["skills/change-closure/references/closure-actions.md", "skills/change-closure/references/closure-protocol.md"],
+      "entry_marker": "Run only after explicit invocation",
+      "role_marker": "Do not implement code",
+      "draft_marker": "Update existing documents in place",
+      "commit_marker": "stage only exact closure-owned document pathspecs",
+      "footer_fields": ["归档结果：成功", "变更生命周期：已归档；话题=", "归档提交：", "远程操作："]
+    }
+  ],
+  "normalized_sequence": [
+    "discover-context:read-only",
+    "select-legacy-branch",
+    "preserve-entry-and-role",
+    "preserve-draft-and-commit-owner",
+    "preserve-success-block-recovery-footers",
+    "require-no-discussion-identity"
+  ]
+}

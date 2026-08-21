@@ -18,6 +18,37 @@ VALIDATOR = REPOSITORY / "scripts" / "validate_repository.py"
 
 
 class RepositoryValidationTests(unittest.TestCase):
+    def test_child_topic_reference_reaches_the_real_codex_task_seam_in_order(self) -> None:
+        reference = (
+            REPOSITORY
+            / "skills/design-discussion/references/child-topic-protocol.md"
+        ).read_text(encoding="utf-8")
+        ordered = [
+            "publish the latest verified `CP-*`",
+            "`prepare-handoff` exactly once",
+            "Only an exact `确认`",
+            "call `create_thread` once",
+            "call `bind-handoff`",
+            "call `accept-handoff`",
+            "`authorize-handoff-discussion`",
+            "`submit-child-result`",
+            "`record-child-result`",
+        ]
+        cursor = 0
+        positions = []
+        for marker in ordered:
+            cursor = reference.index(marker, cursor)
+            positions.append(cursor)
+        for marker in (
+            "send_message_to_thread", "wait_threads", "handoff_next_turn_required",
+            "record-handoff-outcome-unknown", "reconcile-handoff-attempt",
+            "record-handoff-failure", "retry-handoff", "handoff_late_arrival",
+            "continuation_of", "marks the old binding superseded",
+        ):
+            self.assertIn(marker, reference)
+        self.assertNotIn("When the later protocol is available", reference)
+        self.assertNotIn("Until those operations exist", reference)
+
     def run_validator(self, repository: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(VALIDATOR), "--repository", str(repository), *arguments],

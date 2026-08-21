@@ -31,8 +31,10 @@
     {"id": "no-premature-topic-close", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_topic_close_keeps_blocked_and_failed_phase_runs_open"]}
   ],
   "compatibility": [
-    {"id": "none-byte-equivalent-zero-state", "tests": ["skills/design-discussion/scripts/test_compatibility_recovery_matrix.py::CompatibilityRecoveryMatrixTests.test_none_and_ambiguous_are_byte_stable_and_create_zero_state"]},
-    {"id": "ambiguous-byte-equivalent-zero-state", "tests": ["skills/design-discussion/scripts/test_compatibility_recovery_matrix.py::CompatibilityRecoveryMatrixTests.test_none_and_ambiguous_are_byte_stable_and_create_zero_state"]}
+    {"id": "none-protocol-zero-write", "tests": ["skills/design-discussion/scripts/test_compatibility_recovery_matrix.py::CompatibilityRecoveryMatrixTests.test_none_and_ambiguous_are_byte_stable_and_create_zero_state"]},
+    {"id": "ambiguous-protocol-zero-write", "tests": ["skills/design-discussion/scripts/test_compatibility_recovery_matrix.py::CompatibilityRecoveryMatrixTests.test_none_and_ambiguous_are_byte_stable_and_create_zero_state"]},
+    {"id": "none-legacy-contract-invariants", "tests": ["skills/design-discussion/scripts/test_compatibility_recovery_matrix.py::CompatibilityRecoveryMatrixTests.test_none_and_ambiguous_preserve_mechanical_legacy_contract_invariants"]},
+    {"id": "ambiguous-legacy-contract-invariants", "tests": ["skills/design-discussion/scripts/test_compatibility_recovery_matrix.py::CompatibilityRecoveryMatrixTests.test_none_and_ambiguous_preserve_mechanical_legacy_contract_invariants"]}
   ],
   "legacy": [
     {"id": "handoff-v2", "tests": ["skills/guided-implementation/scripts/test_supervision_protocol.py::DocumentLeaseTests.test_legacy_v2_v1_and_older_worktree_checkpoint_keep_embedded_protocol"]},

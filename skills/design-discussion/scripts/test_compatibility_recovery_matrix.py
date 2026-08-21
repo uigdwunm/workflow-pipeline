@@ -18,6 +18,7 @@ from matrix_proof import matrix_proof
 
 REPOSITORY = Path(__file__).parents[3]
 MATRIX = Path(__file__).with_name("compatibility_recovery_matrix.json")
+LEGACY_CONTRACT = Path(__file__).with_name("legacy_contract_invariants.json")
 DISCUSSION = Path(__file__).with_name("discussion_protocol.py")
 LEGACY_DISCOVERY_OUTPUTS = {
     "none": b'{"candidate_count":0,"context":"none","created":false,"ok":true,"state":"none"}\n',
@@ -99,7 +100,8 @@ class CompatibilityRecoveryMatrixTests(unittest.TestCase):
                 "no-force-cleanup-of-unknown-work", "no-premature-topic-close",
             },
             "compatibility": {
-                "none-byte-equivalent-zero-state", "ambiguous-byte-equivalent-zero-state",
+                "none-protocol-zero-write", "ambiguous-protocol-zero-write",
+                "none-legacy-contract-invariants", "ambiguous-legacy-contract-invariants",
             },
             "legacy": {"handoff-v2", "handoff-v1", "older-worktree-checkpoint"},
         }
@@ -148,8 +150,8 @@ class CompatibilityRecoveryMatrixTests(unittest.TestCase):
             )
 
     @matrix_proof(
-        "compatibility:none-byte-equivalent-zero-state",
-        "compatibility:ambiguous-byte-equivalent-zero-state",
+        "compatibility:none-protocol-zero-write",
+        "compatibility:ambiguous-protocol-zero-write",
     )
     def test_none_and_ambiguous_are_byte_stable_and_create_zero_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -192,6 +194,42 @@ class CompatibilityRecoveryMatrixTests(unittest.TestCase):
             )
             self.assertEqual(self.snapshot(project), ambiguous_snapshot)
             self.assertFalse((project / ".codex").exists())
+
+    @matrix_proof(
+        "compatibility:none-legacy-contract-invariants",
+        "compatibility:ambiguous-legacy-contract-invariants",
+    )
+    def test_none_and_ambiguous_preserve_mechanical_legacy_contract_invariants(self) -> None:
+        contract = json.loads(LEGACY_CONTRACT.read_text(encoding="utf-8"))
+        self.assertEqual(contract["schema"], "legacy-contract-invariants-v1")
+        lifecycle = (
+            REPOSITORY / "skills/design-discussion/references/lifecycle-integration.md"
+        ).read_text(encoding="utf-8")
+        normalized_lifecycle = " ".join(lifecycle.split())
+        self.assertIn("`none` and `ambiguous` remain zero-write legacy paths", normalized_lifecycle)
+        self.assertIn("do not initialize, bind, prepare", normalized_lifecycle)
+        for row in contract["stages"]:
+            text = (REPOSITORY / row["skill"]).read_text(encoding="utf-8")
+            for reference in row.get("references", []):
+                text += "\n" + (REPOSITORY / reference).read_text(encoding="utf-8")
+            normalized_text = " ".join(text.split())
+            for key in ("entry_marker", "role_marker", "draft_marker", "commit_marker"):
+                self.assertIn(
+                    " ".join(row[key].split()), normalized_text,
+                    f"stage {row['stage']} lost {key}",
+                )
+            for field in row["footer_fields"]:
+                self.assertIn(field, normalized_text, f"stage {row['stage']} lost footer {field}")
+        self.assertEqual(
+            contract["normalized_sequence"],
+            [
+                "discover-context:read-only", "select-legacy-branch",
+                "preserve-entry-and-role", "preserve-draft-and-commit-owner",
+                "preserve-success-block-recovery-footers",
+                "require-no-discussion-identity",
+            ],
+        )
+        self.assertNotIn("discussion-identity", contract["normalized_sequence"])
 
 
 if __name__ == "__main__":

@@ -74,281 +74,54 @@ Continuous flow skips only the successful stage-3-to-stage-4 confirmation. It
 does not widen task, filesystem, process, network, destructive, tracker, merge,
 or remote authority. Preserve every decision and blocker.
 
-## Resolve the project and current base
+## Resolve, freeze and launch through action references
 
-1. Resolve one exact saved Codex project whose repository root matches the
-   accepted handoff, Spec, and Tickets. Never choose another project or create
-   a projectless task.
-2. Verify trusted repository-base evidence for the accepted planning commit and
-   project manifests before reading repository prose or executing project
-   commands. Read applicable `AGENTS.md` and `AGENTS.override.md` afterward.
-3. Require an ordinary base checkout whose `<repository>/.git` is a real
-   directory and whose base branch is attached. For exclusive mode require
-   zero linked worktrees. For isolated mode treat every existing worktree as a
-   parallelism input and never substitute it for the explicitly bound path.
-4. Run `git status --porcelain=v1 -z --untracked-files=all`. Exclude only
-   verified untracked `.agents/skills/<name>` symlinks resolving exactly to the
-   installed Skill directory for `<name>`. Resolve the expected target from
-   the active Skill registry instead of assuming a user-specific install root.
-   Record their exact paths and targets as the managed-link baseline. Classify
-   every other entry as an implementation path, recognized documentation path,
-   or unknown path.
-   Require the index and implementation paths to be clean. Record recognized
-   unstaged documentation paths exactly; never hide an unknown path as
-   documentation.
-5. Compare the upstream recorded base with the current branch `HEAD`. If the
-   current `HEAD` is a descendant of the recorded planning/base commit, every
-   accepted local Spec and Ticket still has the same committed blob, the
-   planning commit remains an ancestor, and no accepted authority changed,
-   prove ancestry with `git merge-base --is-ancestor <recorded-commit> HEAD`,
-   then automatically adopt the current `HEAD` as the execution base. Record
-   both the upstream base and adopted execution base. Do not ask the user
-   merely because another completed task advanced the branch safely.
-6. Stop for a rewritten or divergent branch, changed governing artifact,
-   missing planning ancestry, ambiguous project, detached checkout, staged
-   documentation, implementation dirt, or unknown dirty state. Recognized
-   unstaged documentation is not a launch blocker.
+After accepting a transition, read only the references needed for the next
+action:
 
-## Freeze the execution mode and acquire its lease
+- for project resolution, checkout classification, repository lease, workspace
+  blockers, authority construction, immutable handoff publication and the
+  dedicated-task bootstrap, read the named sections of
+  [references/originating-task-protocol.md](references/originating-task-protocol.md);
+- before any documentation write or Git-stability barrier, read
+  [references/document-lease-protocol.md](references/document-lease-protocol.md);
+- for either execution mode, carrier bootstrap, exact workspace binding,
+  supervision controls and merge mechanics, read
+  [references/execution-protocol.md](references/execution-protocol.md); and
+- read [references/execution-modes.md](references/execution-modes.md) only when
+  a verified discussion context offers the isolated-worktree choice.
 
-First use the discussion CLI sequence from `execution-modes.md` to prepare the
-implementation, check all eight parallelism dimensions and activate one mode
-against a completed Git `implementation-source` checkpoint. Activation freezes
-the mode. Safe parallelism is not worktree-creation authority.
+The ordinary legacy path remains `exclusive-checkout-v2`: one attached checkout,
+zero worktrees, one repository lease, one implementation branch and one
+dedicated Codex project task. A verified discussion source may use
+`isolated-worktree-v1` only after `safe` parallelism and a separate exact user
+confirmation of path, branch, base, scope and sensitive shared surfaces. Freeze
+one mode in both the discussion run and handoff; never switch modes after
+activation.
 
-For `isolated-worktree-v1`, follow `Run in an isolated worktree` in that
-reference: acquire a short repository coordination lease for creation, then
-the long-lived exact worktree execution lease. If platform cwd verification is
-unavailable, block. Skip the exclusive repository-lease acquisition below.
+Build one complete immutable handoff from committed authority, create exactly
+one dedicated task, record its trusted task/host identity, and end the launch
+turn. Unknown task creation is reconciled before retry. No mode authorizes
+pushes, PRs, deployments, releases, tracker writes or destructive cleanup.
+## Supervise, accept and merge through the protocol
 
-For `exclusive-checkout-v2`, continue with this section.
+Read the supervision and merge sections of both originating-task and execution
+references only after the dedicated task publishes a terminal control. Every
+cross-task message uses the canonical deterministic control, authenticated
+platform source, cumulative manifest and at-most-once delivery state machine.
 
-Use only `scripts/supervision_protocol.py`:
+The originating task handles only material decisions, independently verifies a
+candidate against the exact lease, source, scope, commits, workspace,
+documentation separation, tests and both review axes, and returns remediation
+to the same task when needed. It never writes implementation code or polls
+routine progress.
 
-```text
-python3 <guided-implementation-skill-root>/scripts/supervision_protocol.py inspect-repository-lease \
-  --repository <absolute repository path>
-```
-
-If it reports `held`, do not inspect or alter the other task's checkout state.
-End with:
-
-```text
-3实现排队：等待仓库
-当前阶段：`$guided-implementation`
-阶段状态：等待
-恢复类型：等待仓库租约
-目标仓库：<absolute path>
-租约文件：<absolute path>
-租约所有者：<verified task and host IDs>
-流程模式：<逐阶段确认 | 连续执行后续全部流程>
-专用任务：none
-下一阶段：none
-恢复方式：租约释放后回复 `重试`；无需选择 commit、stash、清理或丢弃
-```
-
-When available, write one ordinary private input outside the repository with
-exact repository, adopted base branch and `HEAD`, and originating task/host
-IDs, then run `acquire-repository-lease`. Record its exact path, lease ID, byte
-count, SHA-256 and completion marker. The tool publishes one canonical `0400`
-lease file inside the real `.git` directory without replacement.
-
-Immediately rerun the documentation-aware status, branch, `HEAD`, managed-link and
-artifact checks after acquisition. Release the lease and retry from inspection
-if a race changed only the clean descendant base before any handoff or branch
-effect. Stop for dirty state, divergence, changed authority, or an ambiguous
-effect. Never overwrite, chmod, recreate, or manually delete a lease.
-
-Exclusive acquisitions use mode `exclusive-checkout-v2`. The lease is cooperative
-but mandatory for Git state, implementation-path mutation, branch switching,
-staging, commits, stash, reset, clean, merge, and branch removal. It does not
-grant or deny documentation writes.
-
-Read [references/document-lease-protocol.md](references/document-lease-protocol.md)
-completely. Stages 1 through 4 coordinate every repository documentation write
-through the shared CAS document lease. While stage 3 owns the repository lease,
-other requirements may question, read committed objects pinned to the lease
-base, and edit exact documentation paths under the document lease. They must
-not inspect mutable implementation state, run project commands against it,
-stage, commit, switch branches, or perform workspace cleanup.
-
-Stage 3 may also acquire the document lease with `purpose: document-write` to
-update documentation, but it leaves every such path unstaged for stage 4. For
-candidate commits, branch switching, merge preparation, merge commits, and
-final Git verification, acquire `purpose: git-stability-barrier`, perform no
-document write, and release immediately afterward. Use the protocol's default
-ten 10-second retries and fixed timeout report.
-
-## Resolve unknown workspace blockers
-
-Use workspace assistance only when no valid lease is held by another task and
-the documentation-aware status contains unknown user-owned changes. Read and follow
-`references/originating-task-protocol.md` section `Resolve unknown workspace
-blockers`. Generic approval authorizes inspection and a proposal only; exact
-preservation choices must be selected before acting, and destructive actions
-require separate exact current-turn authority.
-
-Never treat a held repository lease as a dirty-workspace decision. Queue behind
-the lease without asking the user to commit, stash, move, or discard another
-task's work.
-
-## Build and publish the implementation authority
-
-Read `references/originating-task-protocol.md` sections `Build the
-implementation authority`, `Publish the immutable handoff`, and `Build the
-dedicated-task bootstrap`. Read `references/execution-protocol.md` completely
-and use the mode dispatch in `references/execution-modes.md`.
-
-Build one complete `handoff_version: 4` envelope from accepted decisions and
-verified evidence. Include exact project identity, upstream and adopted base,
-the frozen execution mode, committed read-only implementation-source
-checkpoint, parallelism receipt, exact checkout/worktree binding, matching
-repository or worktree-execution lease, implementation-branch rules, recognized unstaged
-documentation paths, document-lease protocol, Work Item order,
-Requirement Sources, acceptance conditions, testing seams, artifact
-provenance, trusted repository evidence, least-privilege capability scope, and
-the fact that stage-2 publication authority has ended.
-
-Reject every uncommitted planning authority, unreadable or ambiguous source,
-and unaccepted third-party content before task creation. Recognized unstaged
-documentation is workspace state, not implementation authority. Keep committed
-local authority as path, Git-state, blob, and SHA-256 evidence. Snapshot only
-remote material already accepted by the current flow. Never include credentials
-or reconstruct missing authority from memory.
-
-Use only `supervision_protocol.py create-handoff` to publish one immutable
-`handoff.json` containing the exact execution protocol. Do not manually
-serialize, replace, repair, chmod, relocate, or delete it. If publication or
-task creation fails, preserve both handoff and lease and use the exact launch
-recovery checkpoint. An ambiguous creation result must resolve task identity
-before retrying.
-
-## Create one dedicated task
-
-Create exactly one Codex project task with:
-
-- the saved project matching the repository;
-- environment: the exact ordinary checkout or isolated worktree frozen in the
-  handoff;
-- model: `gpt-5.6-terra`;
-- reasoning effort: `high`;
-- title: `3实现 · <concise change name>`;
-- a short bootstrap containing only the dedicated role, authenticated source
-  identity, handoff path and integrity facts, matching execution-lease facts,
-  mandatory `verify-handoff` plus mode-specific lease verification commands, and instruction to
-  follow the embedded execution protocol.
-
-Stage entry authorizes this one task only, not another checkout, another task,
-remote writes, pushes, pull requests, releases, or tracker mutations. After
-successful creation, record task, host, handoff, lease, and `流程模式`; end the
-launch turn immediately. Never poll implementation progress.
-
-## Supervise by terminal push
-
-Read `Exchange supervision controls` in both protocol references. Use only the
-deterministic publication and canonical control commands. Every message
-must be source-authenticated, direction-correct, and bound to the handoff and
-latest cumulative manifest. Authenticate child-to-parent delivery against the
-recorded dedicated task and parent-to-child delivery against the initial
-delegation wrapper's `source_thread_id`; never trust identity copied into a
-message body.
-
-Every new cross-task message in either direction must be generated by
-`create-control` as one canonical v6 Chinese message card with
-`message_format: supervision-chinese-card-v1`. The visible message uses a fixed
-Chinese title and labels for direction, action, message ID, handoff ID, reply
-message, manifest, file count, checkpoint, commits, merge result, and summary.
-It contains no JSON and does not repeat delivery instructions. The script binds
-the card to `protocol: supervision-duplex-observe-v1`, one derived
-`message_id`, the exact final payload package, a five-second delivery check,
-one resend limit, and at-most-once processing. Write the summary and checkpoint
-in concise Chinese. Put detailed reports and instructions in the verified
-payload. Reject a changed card, unsupported route, or v1-v5 downgrade under a
-current card-format handoff. Allow an older control only for an
-already-published handoff embedding that exact older format.
-
-For every such message, execute the normative
-`supervision-delivery-observe-v1` state machine in
-`references/execution-protocol.md` exactly. Send only terminal controls with
-`send_message_to_thread`. After each send, wait five seconds, read the exact
-authenticated target task once, and inspect only byte-identical canonical
-message plus `message_id` presence. Resend once only after proven absence. The
-receiver authenticates the platform source, runs `verify-control`, and applies
-each `message_id` at most once; it sends no delivery ACK. Forbid every transcript
-read except the state machine's exact-target delivery audit. Do not duplicate
-or locally vary its delay, audit, resend, terminal-state, or duplicate-effect
-rules.
-
-Supported terminal statuses remain `PARENT_REVIEW_REQUIRED`,
-`PARENT_DECISION_REQUIRED`, `PARENT_BLOCKED`, and `MERGE_RESULT`; parent actions
-remain `PARENT_REMEDIATION`, `PARENT_DECISION`,
-`PARENT_ACCEPTED_FOR_MERGE`, and `PARENT_RETRY_MERGE`.
-
-## Decide, accept, and remediate
-
-For a decision or blocker, use the Requirement Source, project instructions,
-and capability scope first. Ask the user only for a genuinely absent material
-product, scope, security, permission, external-side-effect, or irreversible
-decision. The dedicated task never asks the user directly.
-
-For a candidate, independently verify the exact mode-specific execution lease, current
-implementation branch, candidate commit, implementation-only commit range,
-clean implementation paths and index, exact unstaged documentation paths,
-document-write receipts, changed paths,
-acceptance evidence, focused and full checks, typecheck/lint/build where
-applicable, both review axes, unresolved risks, planning-artifact blobs, and
-managed-link baseline. Do not require the base branch `HEAD` to equal the
-upstream stage-entry `HEAD`; safe drift was already adopted before lease
-acquisition, and the lease now prevents compliant mid-run writes.
-
-If acceptance fails, send exact checks back to the same dedicated task. Never
-edit implementation code in the originating task or create a replacement task
-merely because review failed. Stop for user direction when the same material failure repeats without new evidence
-or remediation would broaden authority.
-
-Keep the same mode-specific execution lease through every decision, blocker,
-remediation, acceptance, integration and merge checkpoint. Exclusive mode cannot safely lend the checkout to
-another task while this implementation branch may need recovery. Other tasks
-that require checkout mutation queue without asking the user to clean this
-repository; problem framing and solution design may continue under the rules
-above, and repository documentation work may continue under the document
-lease. Release the repository or worktree-execution lease only at its verified
-mode-specific cleanup checkpoint after a successful merge or an
-explicitly authorized and mechanically proven cancellation that restores the
-clean base branch.
-
-## Authorize and verify the merge
-
-After acceptance, send `PARENT_ACCEPTED_FOR_MERGE` naming the exact candidate.
-For isolated mode first acquire `purpose: serial-integration`, rerun
-`revalidate-integration` for current source, dependencies and active
-implementations, then integrate exactly one candidate as specified by
-`execution-modes.md`. Keep the isolated worktree, branch and execution lease
-until 4归档. For exclusive mode, continue with the ordinary-checkout merge below.
-
-The dedicated task reruns `verify-handoff`, `verify-control`, and
-`verify-repository-lease`; confirms the implementation branch and checkout are
-implementation-clean; acquires a `git-stability-barrier` document lease,
-requires the implementation range and staged paths to contain no documentation,
-switches the same checkout to the recorded base branch, confirms its `HEAD`
-still equals the lease base, and runs
-`git merge --no-ff --no-commit <implementation-branch>`.
-
-On conflict or merge failure, abort without resolving or editing code and prove
-the base state was restored. If the merge applies, run final verification,
-verify the staged paths contain no documentation, and commit only when it
-passes. Release the document barrier immediately after the stable Git
-operation. Do not push, delete the implementation branch, stage documentation,
-perform closure, or release the repository lease from the dedicated task.
-
-After a verified `MERGE_RESULT`, the originating task directly verifies the
-base branch, merge commit, candidate ancestry, implementation-clean checkout,
-unstaged documentation list and hashes, managed links, supervision evidence,
-and exact lease. In exclusive mode only, run `release-repository-lease` and
-require `state: available` plus `verified_absent: true`. In isolated mode keep
-the exact execution lease, worktree and branch held for 4归档 and report them as
-pending cleanup.
-
+After acceptance, authorize the same task to perform the protocol-defined
+non-committing merge preparation, final verification and merge commit for the
+frozen mode. Verify the reported result independently, preserve recognized
+unstaged documentation, and release the exact execution/repository lease only
+after a successful merge. Any ambiguity or conflict resumes from the immutable
+checkpoint; it never creates a replacement task or silently changes workspace.
 ## Complete stage 3
 
 Emit:
