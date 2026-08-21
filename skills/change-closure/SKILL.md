@@ -5,12 +5,12 @@ description: Use when the user explicitly invokes $change-closure (4归档), con
 
 # 4归档
 
-Close a successfully implemented and merged change. New runs use the project's
-one existing checkout and create zero Git worktrees. Reconcile established
-planning documents, commit only closure-owned documentation, safely delete the
-fully merged implementation branch, release the short closure lease, perform
-only separately authorized remote delivery, and release exact stage-3 evidence
-last.
+Close a successfully implemented and merged change from its source topic.
+Exclusive runs use the ordinary checkout with zero worktrees. Isolated runs
+keep their implementation worktree as proposal/evidence input while all
+documentation converges in the verified ordinary checkout. Clean exact
+resources non-forcing, release the mode-specific execution lease, and record
+archive completion before separately deciding whether the topic may close.
 
 Legacy in-flight handoffs embedding the previous execution protocol may finish
 their already-recorded worktree cleanup. Never convert a live legacy checkpoint
@@ -29,10 +29,11 @@ to the new zero-worktree checkpoint.
   `进入条件：已满足`, task and host IDs, repository and Git facts, immutable
   handoff identity, latest canonical manifest metadata, supervision count, and
   the documented continuation instruction.
-- For a new run, also require `执行模式：独占 Git 与实现区（零 worktree；文档区使用 document lease）`,
-  `Worktree：none`, and `仓库租约：已释放` with exact verified release
-  evidence. For a legacy in-flight run, require its real worktree path and
-  embedded legacy protocol instead.
+- For a new run, require immutable `execution_mode`. `exclusive-checkout-v2`
+  requires `Worktree: none` and its exact repository lease;
+  `isolated-worktree-v1` requires the exact worktree, branch, base, committed
+  implementation source and held worktree-execution lease. Legacy in-flight
+  runs retain their embedded protocol and checkpoint version.
 - After trimming surrounding whitespace, a user continuation must equal the
   entire token `确认` or `执行后续全部流程`. Punctuation, prefixes, suffixes,
   added conditions, `继续`, and `可以` are not stage entry. Same-turn
@@ -84,9 +85,13 @@ target, parent directory, or other `.agents` path.
    governing planning artifacts are unchanged, automatically adopt it. Do not
    ask the user merely because another completed task advanced the branch after
    stage 3 released its lease.
-5. Stop for rewritten/divergent history, missing merge ancestry, changed
+5. For `isolated-worktree-v1`, verify the same ancestry in the ordinary base
+   checkout plus the exact clean implementation worktree/branch, execution
+   lease, immutable implementation record, source chain and document proposals.
+   The worktree is never a document-application location.
+6. Stop for rewritten/divergent history, missing merge ancestry, changed
    governing artifact, unknown dirty state, or ambiguous implementation branch.
-6. For an in-flight `exclusive-checkout-v1` zero-worktree handoff, finish under
+7. For an in-flight `exclusive-checkout-v1` zero-worktree handoff, finish under
    its embedded clean-checkout protocol and existing closure checkpoint facts.
    For an older worktree handoff, follow its worktree cleanup facts and closure
    v1 checkpoint. Never convert an in-flight handoff to v2 semantics.
@@ -116,11 +121,12 @@ do not ask the user to clean it. End with:
 恢复方式：租约释放后回复 `重试`；无需选择 commit、stash、清理或丢弃
 ```
 
-When available, acquire a new `exclusive-checkout-v2` lease with current base
-branch/`HEAD` and this originating task/host identity. Record path, ID, bytes,
-SHA-256, and completion marker. Immediately revalidate branch, `HEAD`, status,
-managed links, merge ancestry, artifacts, and handoff. Never overwrite or
-manually delete a lease.
+When available, acquire the mode-specific short critical-section authority:
+the existing repository lease for exclusive runs, or a repository coordination
+lease with `stage: change-closure` and `purpose: closure-critical-section` for
+isolated runs. Do not release the long-lived worktree execution lease before
+its checkpointed cleanup phase. Immediately revalidate every source, checkout,
+lease, proposal, ancestry, handoff and retained-checkpoint fact.
 
 Then read
 [../guided-implementation/references/document-lease-protocol.md](../guided-implementation/references/document-lease-protocol.md)
@@ -194,10 +200,13 @@ targets, force options, or wider scope.
 
 ## Prepare and resume the retained checkpoint
 
-Read `references/closure-protocol.md`. For a new zero-worktree run, create or
-reuse closure checkpoint v2 with phases:
+Read `references/closure-protocol.md` and dispatch without migration:
 
-`prepared -> documents-committed -> branch-removed -> lease-released -> remote-verified -> evidence-cleanup -> complete`.
+- `exclusive-checkout-v2` uses checkpoint v2:
+  `prepared -> documents-committed -> branch-removed -> lease-released -> remote-verified -> evidence-cleanup -> complete`.
+- `isolated-worktree-v1` uses checkpoint v3:
+  `prepared -> documents-committed -> worktree-removed -> branch-removed -> execution-lease-released -> remote-verified -> evidence-cleanup -> complete`.
+- legacy checkpoint v1 retains its embedded order.
 
 Prepared facts include repository, checkout path, execution mode, base branch,
 implementation and merge commits, implementation branch, managed links,
@@ -219,8 +228,14 @@ one mechanically recoverable action.
 At `prepared`:
 
 1. Require the exact document lease remains verified.
-2. Apply only approved format-preserving updates, including final review of
-   exact stage-3 document writes and hashes.
+2. For isolated proposals call `converge-document-proposal` against the
+   ordinary checkout with the exact prepared v3 checkpoint. Do not supply a
+   proposal source path: the protocol derives `<frozen-worktree>/<target>`,
+   verifies the immutable handoff plus current implementation branch/HEAD, and
+   requires each target exactly once. Current=base is `applied`,
+   current=proposal is `no-op`, and every third state is
+   `document_proposal_conflict`. Preserve both sides and stop on conflict.
+   Exclusive runs apply approved format-preserving updates.
 3. Verify the complete diff belongs to this closure. For a shared file whose
    full diff includes another requirement, stage nothing and reconcile.
 4. Stage only exact closure-owned document pathspecs and commit concisely;
@@ -232,7 +247,9 @@ At `prepared`:
 7. Release the exact document lease after the verified commit or no-op. Require
    `state: available` and the returned incremented version.
 8. Advance to `documents-committed` only after commit/no-op and document-lease
-   release are proven.
+   release are proven. For isolated outcomes the protocol re-reads the frozen
+   worktree proposal and ordinary-checkout target and requires both actual
+   digests to equal the recorded proposal digest.
 
 ## Clean local implementation state
 
@@ -253,13 +270,26 @@ closure incomplete but does not invalidate implementation or merge.
 For a legacy v1 checkpoint only, perform its recorded non-force worktree removal
 and branch deletion exactly as the embedded protocol requires.
 
+For isolated checkpoint v3, ask `advance-closure-checkpoint` for each local
+cleanup phase with no result file. The CLI observes the exact worktree as
+`present-clean`, performs non-force `git worktree remove`, and verifies
+absence; missing or ambiguous state blocks. It then verifies the exact branch
+identity, performs non-force `git branch -d`, and verifies absence. Finally it
+releases the exact worktree-execution lease by CAS and requires the next
+version to report `state: available`. Caller-authored side-effect receipts are
+rejected. Each verified postcondition is recorded before the next action;
+branch refusal or release uncertainty leaves later resources intact for
+resume.
+
 ## Perform separately authorized remote delivery
 
-At `lease-released` for v2, or `branch-removed` for legacy v1, perform only
-current-turn authorized remote actions. Verify each action and advance to
-`remote-verified`. Record empty actions/results with `verified: true` when none
-were prepared. Resolve ambiguous remote outcomes from actual external state
-before retrying.
+At `lease-released` for v2, `execution-lease-released` for v3, or
+`branch-removed` for legacy v1, perform only current-turn authorized remote
+actions. Verify each action and advance to `remote-verified`. Record empty
+actions/results with `verified: true` when none were prepared. Resolve
+ambiguous remote outcomes from actual external state before retrying.
+For v3, bind results one-for-one and in order as `<action>:verified`; reject a
+non-empty action list with missing, extra or caller-wide-only verification.
 
 ## Release immutable stage-3 evidence
 
@@ -275,24 +305,42 @@ At `remote-verified`:
 Never manually unlink, weaken permissions, remove unexpected siblings, repeat
 an ambiguous effect, or recreate deleted evidence.
 
+## Complete archive and conditionally close the topic
+
+After the retained checkpoint reaches `complete`, call discussion
+`record-archive-complete` from the source topic with the effective phase-3
+result, source identity, immutable implementation record, frozen source
+task/host, mode, merge commit, proposal outcomes and exact retained-checkpoint
+receipt. The protocol binds its repository, branch, worktree when applicable,
+lease cleanup receipts and Phase Run before recording completion. This leaves
+the topic open. Then call `close-archived-topic`: pending impacts, absorption, active or
+queued runs, blockers, non-archived implementations, or unverified coordination
+owned by or related to this source topic keep it open. Unrelated sibling-topic
+activity is not a residual fact of the archived source topic. Internal IDs are
+evidence, never user-selectable controls.
+
 ## Report completion
 
 ```text
 归档结果：成功
-变更生命周期：已关闭
-执行模式：独占 Git 与实现区（零 worktree；文档区使用 document lease） | exclusive-checkout-v1-legacy | legacy-worktree
+变更生命周期：已归档；话题=<已关闭 | 保持开放（原因）>
+执行模式：exclusive-checkout-v2 | isolated-worktree-v1 | exclusive-checkout-v1-legacy | legacy-worktree
+有效来源：<effective source summary>
+阶段结果：实现=<result>; 归档=<result>
+清理责任：<mode-specific worktree/branch/lease/evidence results>
 Spec：<clickable path or URL, or none>
 Tickets：<clickable paths or URLs, or none>
 实现提交：<sha>
 合并提交：<sha>
 归档提交：<sha or none needed>
-Worktree 清理：不适用（零 worktree） | 成功（legacy）
+Worktree 清理：不适用（零 worktree） | 成功（isolated/legacy）
 本地分支清理：成功
 文档租约：已释放（<lease id; final version; path>） | legacy-not-applicable
 其它未暂存文档：<exact preserved paths | none>
 仓库租约：已释放（<lease id and path>） | legacy-not-applicable
 交接与监督文件清理：成功（<handoff id>; <count> 个监督文件）
-归档凭证：<absolute retained checkpoint>; version=<1 | 2>; phase=complete; bytes=<count>; SHA-256=<sha>
+归档凭证：<absolute retained checkpoint>; version=<1 | 2 | 3>; phase=complete; bytes=<count>; SHA-256=<sha>
+条件关闭：<topic-closed | topic-open with exact coordination reasons>
 远程操作：<results or 未请求>
 验证：<commands and results>
 ```

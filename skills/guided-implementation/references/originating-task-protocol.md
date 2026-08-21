@@ -97,7 +97,7 @@ merely to make status clean.
 
 ## Build the implementation authority
 
-Build one `handoff_version: 3` envelope containing:
+Build one `handoff_version: 4` envelope containing:
 
 - source stage and exact project identity;
 - Work Item mode and complete ordered Work Items;
@@ -108,9 +108,12 @@ Build one `handoff_version: 3` envelope containing:
   stage-2 authorization has ended;
 - upstream recorded branch/`HEAD`, planning commit, current adopted execution
   base, and evidence proving safe descendant adoption when they differ;
-- `execution_mode: exclusive-checkout-v2`, `worktree_count: 0`, exact ordinary
-  checkout path, implementation-branch rules, and prohibition on linked
-  checkout mode;
+- one frozen `execution_mode`, the exact completed Git `implementation-source`
+  checkpoint identity and SHA-256, and its current parallelism receipt;
+- for `exclusive-checkout-v2`, `worktree_count: 0`, the exact ordinary checkout,
+  implementation-branch rules and repository lease; for
+  `isolated-worktree-v1`, the explicitly confirmed path, branch, base, scope
+  digest, sensitive shared surfaces and long-lived worktree execution lease;
 - implementation-clean status, exact recognized unstaged documentation paths,
   and exact managed-link baseline at lease acquisition;
 - repository-lease path, ID, byte count, SHA-256, completion marker, base
@@ -120,8 +123,9 @@ Build one `handoff_version: 3` envelope containing:
   and SHA-256 when available;
 - provenance proving every Requirement Source was accepted by this flow,
   directly supplied, or exactly attested;
-- least-privilege capability scope: writable existing checkout only while the
-  repository lease is verified for Git and implementation paths; document
+- least-privilege capability scope: writable exact checkout/worktree only while
+  its repository or worktree execution lease is verified for Git and
+  implementation paths; document
   writes only while the shared document lease is verified; append-only
   supervision files, read-only supporting paths, allowed
   Git/project/task-control commands, and network `none` unless an exact
@@ -166,7 +170,7 @@ with runtime root:
 5. Delete only the ordinary input after successful publication. Never create,
    rewrite, chmod, relocate, or repair a runtime file manually.
 
-Preserve handoff and repository lease through ambiguous task creation,
+Preserve handoff and its mode-specific execution lease through ambiguous task creation,
 implementation, acceptance, merge, and closure blockers. They are recovery
 authority.
 
@@ -179,8 +183,9 @@ Build a short prompt containing only:
 2. handoff path, ID, bytes, SHA-256, and completeness marker;
 3. repository-lease path, ID, bytes, SHA-256, and completion marker;
 4. prohibition on Git, project execution, implementation, branch switching,
-   worktrees, and network until exact `verify-handoff` and
-   `verify-repository-lease` commands succeed;
+   worktrees, and network until exact `verify-handoff` and the handoff's
+   mode-specific lease verification command succeed; isolated verification
+   must include the exact platform cwd;
 5. instruction to derive supervisor identity only from authenticated
    `source_thread_id`, read the complete decoded `execution_protocol` returned
    by `verify-handoff`, and follow it verbatim without relying on the parent

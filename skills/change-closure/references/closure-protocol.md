@@ -1,14 +1,15 @@
 # Closure Checkpoint Protocol
 
-Use this reference only inside `$change-closure`. New zero-worktree runs use
-closure checkpoint version 2. Legacy in-flight handoffs embedding the previous
-execution protocol retain closure checkpoint version 1 and its recorded
-worktree phase. Never convert one version to the other.
+Use this reference only inside `$change-closure`. New `exclusive-checkout-v2`
+runs use closure checkpoint version 2; new `isolated-worktree-v1` runs use
+version 3. Legacy in-flight handoffs retain closure checkpoint version 1 and
+their recorded worktree phase. Never convert one version to another.
 
 ## Contents
 
 - Resume a retained closure
 - Prepare a version-2 checkpoint
+- Prepare an isolated version-3 checkpoint
 - Record phase receipts
 - Release immutable stage-3 evidence
 - Legacy version-1 compatibility
@@ -25,14 +26,15 @@ legacy-worktree, remote, or evidence-cleanup action remains.
 阶段状态：受阻
 恢复类型：重试当前阶段
 恢复条件：<exact condition>
-恢复检查点：仓库=<path>; 执行模式=<exclusive-checkout-v2 | exclusive-checkout-v1 | legacy-worktree>; 基础分支=<branch>; 当前 HEAD=<sha>; 合并提交=<sha>; 归档提交=<sha or none>; Spec=<path or URL or none>; Tickets=<paths or URLs or none>; Worktree=<none or legacy path and state>; 实现分支=<branch and state>; 仓库租约=<path, id and state or legacy-not-applicable>; 文档租约=<path, id, version and state or none>; 保留文档=<exact unstaged paths>; 管理链接基线=<paths and targets>; 专用任务=<thread id>; 任务主机=<host id>; 归档检查点=<absolute JSON>; 归档版本=<1 | 2>; 归档阶段=<version-appropriate phase>; 归档检查点字节=<count>; 归档检查点SHA-256=<sha>; 清理检查点=<path or deleted-after-complete>; 交接文件=<path and state or deleted-after-validation>; 交接ID=<id>; 交接字节=<count>; 交接SHA-256=<sha>; 交接完成标记=<HANDOFF_COMPLETE:id>; 监督清单元数据=<manifest or deleted-after-validation>; 监督文件数=<count>; 监督清理状态=<state>; 远程操作=<results or none>
+恢复检查点：仓库=<path>; 执行模式=<exclusive-checkout-v2 | isolated-worktree-v1 | exclusive-checkout-v1 | legacy-worktree>; 基础分支=<branch>; 当前 HEAD=<sha>; 合并提交=<sha>; 归档提交=<sha or none>; Spec=<path or URL or none>; Tickets=<paths or URLs or none>; Worktree=<none or exact isolated/legacy path and observed state>; 实现分支=<branch and state>; 执行租约=<repository lease | worktree execution lease | legacy-not-applicable; exact path, id, version/state>; 文档租约=<path, id, version and state or none>; 保留文档=<exact unstaged paths>; 管理链接基线=<paths and targets>; 专用任务=<thread id>; 任务主机=<host id>; 归档检查点=<absolute JSON>; 归档版本=<1 | 2 | 3>; 归档阶段=<version-appropriate phase>; 归档检查点字节=<count>; 归档检查点SHA-256=<sha>; 清理检查点=<path or deleted-after-complete>; 交接文件=<path and state or deleted-after-validation>; 交接ID=<id>; 交接字节=<count>; 交接SHA-256=<sha>; 交接完成标记=<HANDOFF_COMPLETE:id>; 监督清单元数据=<manifest or deleted-after-validation>; 监督文件数=<count>; 监督清理状态=<state>; 远程操作=<results or none>
 下一阶段：none
 恢复方式：满足条件后回复 `重试`
 ```
 
 On retry:
 
-1. Run `inspect-closure-checkpoint` first. Require its `closure_version`, facts,
+1. Run `inspect-closure-checkpoint` first. Require its immutable
+   `closure_version`, execution mode, facts,
    and receipts to match the stage-3 report and actual repository.
 2. Before `complete`, run `inspect-cleanup` and require its filesystem-derived
    state to match.
@@ -46,6 +48,10 @@ On retry:
    mode, or prepared facts changed.
 6. If actual state proves exactly one next action completed before interruption,
    verify its complete postcondition and record only that phase.
+
+Missing worktrees/branches and ambiguous lease release are not completed side
+effects. Preserve the checkpoint and report the exact observed state. Never
+advance from absence alone when the phase requires an `observed_before` fact.
 
 Use `恢复类型：需要决策` for force cleanup, ambiguous remote state, changed
 integration, document-format choices, or material judgment.
@@ -76,7 +82,12 @@ When none exists:
    - `repository_lease` containing exact `path`, `lease_id`, `file_bytes`,
      `file_sha256`, and `complete`;
    - `source_task_id`, `source_host_id`, `spec_references`,
-     `ticket_references`, and authorized `remote_actions`.
+     `ticket_references`, and authorized `remote_actions`;
+   - for a discussion-integrated archive, `discussion_binding` with exact
+     project/tree/topic, implementation, Phase Run, effective phase-result,
+     source checkpoint/identity, implementation record revision, and canonical
+     scope/execution SHA-256. Old retained checkpoints remain inspectable, but
+     cannot authorize a new discussion archive without this immutable binding.
 5. Store no credentials, bodies, command output, or supervision payloads.
 6. Run:
 
@@ -115,12 +126,68 @@ Version-2 order and receipts:
 - `evidence-cleanup` and `complete`: no result file; the tool derives cleanup
   state.
 
+## Prepare an isolated version-3 checkpoint
+
+Use the same `create-closure-checkpoint` command. When facts contain
+`execution_mode: isolated-worktree-v1`, the tool immutably dispatches version 3
+and requires the ordinary `checkout_path` equal `repository`, a distinct exact
+`worktree_path`, exact documentation-proposal paths and the exact worktree
+execution lease (`path`, `lease_id`, CAS `version`). Its phases are:
+
+`prepared -> documents-committed -> worktree-removed -> branch-removed -> execution-lease-released -> remote-verified -> evidence-cleanup -> complete`.
+
+At `prepared`, converge each proposal only in the ordinary checkout with
+`converge-document-proposal`. Pass the exact prepared v3 checkpoint, document
+lease, target and digests; never pass a proposal source path. The protocol
+requires the target to occur exactly once in the frozen proposal list, verifies
+the checkpoint against its immutable isolated handoff, verifies the current
+worktree branch/HEAD against the frozen implementation, and derives proposal
+bytes only from `<worktree>/<target>`. Duplicate targets and arbitrary proposal
+paths fail explicitly. The implementation worktree supplies immutable proposal
+bytes/evidence only. `applied` and `no-op` may proceed; a
+`document_proposal_conflict` preserves both sides and blocks.
+The `documents-committed` receipt freezes, in proposal-path order, each exact
+`path`, `base_sha256`, `proposal_sha256` and `outcome`; the discussion archive
+transition requires that byte-for-byte normalized list from the completed
+checkpoint and rejects caller-supplied summaries that do not match it.
+Before that receipt advances, the protocol re-reads both the frozen worktree
+proposal and the ordinary-checkout target and requires both actual digests to
+equal the recorded proposal digest.
+Discussion-integrated v3 facts use the same `discussion_binding` as v2 so a
+checkpoint cannot be replayed across implementations or Phase Runs that share
+Git commits and resource names.
+
+Version-3 local cleanup receipts are deliberately stronger than legacy
+receipts. The checkpoint CLI itself observes the precondition, performs the
+single non-force side effect, verifies the postcondition, and appends the
+receipt as the next protocol step. For these three phases, omit `--result`;
+caller-authored JSON is rejected:
+
+- `worktree-removed` requires exact path, `observed_before: present-clean`, and
+  `verified_absent: true` after non-force removal;
+- `branch-removed` requires exact name, `observed_before: present-merged`, and
+  `verified_absent: true` after `git branch -d`;
+- `execution-lease-released` releases the exact frozen execution lease by CAS
+  and requires exact ID/path, `state: available`, and exactly the next version.
+
+For version 3, `remote-verified.results` must bind one success to every frozen
+action in the same order, encoded as `<action>:verified`. Empty actions require
+empty results. A caller-wide `verified: true` never substitutes for per-action
+evidence. Versions 1 and 2 retain their immutable result schema.
+
+The checkpoint CLI publishes one receipt after each verified postcondition. A
+missing worktree, branch deletion refusal, or uncertain lease result has a
+stable error and stops before later cleanup; it cannot be hidden by a supplied
+`observed_before` value. On resume, inspect the checkpoint and actual
+authoritative state, then request only the first phase without a result file.
+
 After each mutation, verify its postcondition and record exactly one receipt
 before the next action. Stop when receipt publication fails.
 
 ## Release immutable stage-3 evidence
 
-Perform only after documents, branch deletion, repository-lease release, and
+Perform only after documents, mode-specific non-force resource cleanup,
+repository-lease release (v2) or exact execution-lease release (v3), and
 authorized remote actions succeeded and phase is `remote-verified`:
 
 1. Advance to `evidence-cleanup`; require cleanup state `intact`.
@@ -156,6 +223,6 @@ and repository lease. Its receipts remain:
 - `remote-verified`;
 - derived evidence-cleanup and complete receipts.
 
-Do not create a new version-1 checkpoint, add a worktree to a version-2 run, or
-replace a legacy checkpoint with version 2. The protocol tool accepts version 1
-only to finish already published in-flight evidence.
+Do not create a new version-1 checkpoint, add a worktree to version 2, remove
+the worktree phase from version 3, or replace a retained checkpoint with another
+version. The tool accepts version 1 only to finish published in-flight evidence.

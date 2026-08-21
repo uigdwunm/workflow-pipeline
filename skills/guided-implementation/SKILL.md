@@ -1,15 +1,17 @@
 ---
 name: guided-implementation
-description: Use when the user explicitly invokes $guided-implementation (3实现), confirms 执行后续全部流程 from a valid $problem-framing or $solution-design footer, resumes this Skill's exact launch/workspace/repository-lease/document-lease/recovery footer, or the originating task receives an authenticated terminal control. Require implementation paths and Git state to be clean, permit recognized unstaged documentation coordinated by the shared CAS document lease, acquire an exclusive-checkout-v2 repository lease for Git and implementation mutation, create zero Git worktrees and one implementation branch, commit only implementation artifacts, allow lease-protected document edits that remain unstaged for 4归档, publish one immutable handoff, independently accept and merge, and route closure. Never activate from ordinary conversation, inferred continuous flow, mismatched context, ambiguous task identity, unsafe implementation state, or another task's active repository lease; never implement in the originating task.
+description: Use when the user explicitly invokes $guided-implementation (3实现), confirms 执行后续全部流程 from a valid $problem-framing or $solution-design footer, resumes this Skill's exact launch/workspace/repository-lease/document-lease/recovery footer, or the originating task receives an authenticated terminal control. Freeze one committed implementation source and one execution mode; exclusive-checkout-v2 by default, or isolated-worktree-v1 only after safe parallelism and explicit exact confirmation. Require clean implementation state, typed leases, implementation-only commits, serialized integration, source-refresh recovery, independent acceptance and closure routing. Never activate from ordinary conversation, inferred continuous flow, mismatched context, ambiguous task identity, unsafe implementation state, or unverified execution authority; never implement in the originating task.
 ---
 
 # 3实现
 
-Run implementation in one dedicated Codex project task using the project's one
-existing checkout. The originating task validates authority, acquires one
-exclusive repository lease for checkout mutations, publishes one immutable `handoff.json`, launches
-one dedicated task, and ends the launch turn. The dedicated task creates an
-implementation branch in that checkout; no task creates a Git worktree.
+Run implementation in one dedicated Codex project task using one frozen mode.
+`exclusive-checkout-v2` uses the ordinary checkout and repository lease.
+`isolated-worktree-v1` requires a safe parallelism receipt plus a separate user
+confirmation binding the exact path, branch, base, scope and sensitive shared
+surfaces, then uses a long-lived worktree execution lease. Read
+[references/execution-modes.md](references/execution-modes.md) completely before
+choosing, activating, waiting, refreshing, integrating or cleaning either mode.
 
 The originating task wakes only for authenticated terminal controls. It
 independently accepts the candidate, returns remediation to
@@ -80,9 +82,10 @@ or remote authority. Preserve every decision and blocker.
 2. Verify trusted repository-base evidence for the accepted planning commit and
    project manifests before reading repository prose or executing project
    commands. Read applicable `AGENTS.md` and `AGENTS.override.md` afterward.
-3. Require an ordinary checkout whose `<repository>/.git` is a real directory,
-   an attached base branch, and no existing linked-checkout mode. This workflow
-   uses zero Git worktrees.
+3. Require an ordinary base checkout whose `<repository>/.git` is a real
+   directory and whose base branch is attached. For exclusive mode require
+   zero linked worktrees. For isolated mode treat every existing worktree as a
+   parallelism input and never substitute it for the explicitly bound path.
 4. Run `git status --porcelain=v1 -z --untracked-files=all`. Exclude only
    verified untracked `.agents/skills/<name>` symlinks resolving exactly to the
    installed Skill directory for `<name>`. Resolve the expected target from
@@ -106,7 +109,19 @@ or remote authority. Preserve every decision and blocker.
    documentation, implementation dirt, or unknown dirty state. Recognized
    unstaged documentation is not a launch blocker.
 
-## Acquire the exclusive repository lease
+## Freeze the execution mode and acquire its lease
+
+First use the discussion CLI sequence from `execution-modes.md` to prepare the
+implementation, check all eight parallelism dimensions and activate one mode
+against a completed Git `implementation-source` checkpoint. Activation freezes
+the mode. Safe parallelism is not worktree-creation authority.
+
+For `isolated-worktree-v1`, follow `Run in an isolated worktree` in that
+reference: acquire a short repository coordination lease for creation, then
+the long-lived exact worktree execution lease. If platform cwd verification is
+unavailable, block. Skip the exclusive repository-lease acquisition below.
+
+For `exclusive-checkout-v2`, continue with this section.
 
 Use only `scripts/supervision_protocol.py`:
 
@@ -144,7 +159,7 @@ if a race changed only the clean descendant base before any handoff or branch
 effect. Stop for dirty state, divergence, changed authority, or an ambiguous
 effect. Never overwrite, chmod, recreate, or manually delete a lease.
 
-New acquisitions use mode `exclusive-checkout-v2`. The lease is cooperative
+Exclusive acquisitions use mode `exclusive-checkout-v2`. The lease is cooperative
 but mandatory for Git state, implementation-path mutation, branch switching,
 staging, commits, stash, reset, clean, merge, and branch removal. It does not
 grant or deny documentation writes.
@@ -181,12 +196,14 @@ task's work.
 
 Read `references/originating-task-protocol.md` sections `Build the
 implementation authority`, `Publish the immutable handoff`, and `Build the
-dedicated-task bootstrap`. Read `references/execution-protocol.md` completely.
+dedicated-task bootstrap`. Read `references/execution-protocol.md` completely
+and use the mode dispatch in `references/execution-modes.md`.
 
-Build one complete `handoff_version: 3` envelope from accepted decisions and
+Build one complete `handoff_version: 4` envelope from accepted decisions and
 verified evidence. Include exact project identity, upstream and adopted base,
-`execution_mode: exclusive-checkout-v2`, zero-worktree requirement,
-implementation-branch rules, repository-lease identity, recognized unstaged
+the frozen execution mode, committed read-only implementation-source
+checkpoint, parallelism receipt, exact checkout/worktree binding, matching
+repository or worktree-execution lease, implementation-branch rules, recognized unstaged
 documentation paths, document-lease protocol, Work Item order,
 Requirement Sources, acceptance conditions, testing seams, artifact
 provenance, trusted repository evidence, least-privilege capability scope, and
@@ -211,13 +228,14 @@ before retrying.
 Create exactly one Codex project task with:
 
 - the saved project matching the repository;
-- environment: the project's existing local checkout;
+- environment: the exact ordinary checkout or isolated worktree frozen in the
+  handoff;
 - model: `gpt-5.6-terra`;
 - reasoning effort: `high`;
 - title: `3实现 · <concise change name>`;
 - a short bootstrap containing only the dedicated role, authenticated source
-  identity, handoff path and integrity facts, repository-lease facts, mandatory
-  `verify-handoff` and `verify-repository-lease` commands, and instruction to
+  identity, handoff path and integrity facts, matching execution-lease facts,
+  mandatory `verify-handoff` plus mode-specific lease verification commands, and instruction to
   follow the embedded execution protocol.
 
 Stage entry authorizes this one task only, not another checkout, another task,
@@ -273,7 +291,7 @@ and capability scope first. Ask the user only for a genuinely absent material
 product, scope, security, permission, external-side-effect, or irreversible
 decision. The dedicated task never asks the user directly.
 
-For a candidate, independently verify the exact repository lease, current
+For a candidate, independently verify the exact mode-specific execution lease, current
 implementation branch, candidate commit, implementation-only commit range,
 clean implementation paths and index, exact unstaged documentation paths,
 document-write receipts, changed paths,
@@ -288,19 +306,26 @@ edit implementation code in the originating task or create a replacement task
 merely because review failed. Stop for user direction when the same material failure repeats without new evidence
 or remediation would broaden authority.
 
-Keep the same lease through every decision, blocker, remediation, acceptance,
-and merge checkpoint. Zero-worktree mode cannot safely lend the checkout to
+Keep the same mode-specific execution lease through every decision, blocker,
+remediation, acceptance, integration and merge checkpoint. Exclusive mode cannot safely lend the checkout to
 another task while this implementation branch may need recovery. Other tasks
 that require checkout mutation queue without asking the user to clean this
 repository; problem framing and solution design may continue under the rules
 above, and repository documentation work may continue under the document
-lease. Release the repository lease only after a verified successful merge or an
+lease. Release the repository or worktree-execution lease only at its verified
+mode-specific cleanup checkpoint after a successful merge or an
 explicitly authorized and mechanically proven cancellation that restores the
 clean base branch.
 
 ## Authorize and verify the merge
 
 After acceptance, send `PARENT_ACCEPTED_FOR_MERGE` naming the exact candidate.
+For isolated mode first acquire `purpose: serial-integration`, rerun
+`revalidate-integration` for current source, dependencies and active
+implementations, then integrate exactly one candidate as specified by
+`execution-modes.md`. Keep the isolated worktree, branch and execution lease
+until 4归档. For exclusive mode, continue with the ordinary-checkout merge below.
+
 The dedicated task reruns `verify-handoff`, `verify-control`, and
 `verify-repository-lease`; confirms the implementation branch and checkout are
 implementation-clean; acquires a `git-stability-barrier` document lease,
@@ -319,9 +344,10 @@ perform closure, or release the repository lease from the dedicated task.
 After a verified `MERGE_RESULT`, the originating task directly verifies the
 base branch, merge commit, candidate ancestry, implementation-clean checkout,
 unstaged documentation list and hashes, managed links, supervision evidence,
-and exact lease. Only then run
-`release-repository-lease`. Require `state: available` and
-`verified_absent: true` before reporting stage success.
+and exact lease. In exclusive mode only, run `release-repository-lease` and
+require `state: available` plus `verified_absent: true`. In isolated mode keep
+the exact execution lease, worktree and branch held for 4归档 and report them as
+pending cleanup.
 
 ## Complete stage 3
 
@@ -333,13 +359,13 @@ Emit:
 专用任务：<thread id>
 任务主机：<host id>
 目标仓库：<absolute repository path>
-执行模式：独占 Git 与实现区（零 worktree；文档区使用 document lease）
+执行模式：<exclusive-checkout-v2 | isolated-worktree-v1>
 原始工作区：<absolute repository path>
 基础分支：<branch>
 上游记录 HEAD：<sha>
 执行基础 HEAD：<adopted sha>
 实现分支：<branch>
-Worktree：none
+Worktree：<none | exact isolated path retained for 4归档>
 实现依据类型：Ticket | Spec | 1拷问小改动
 实现依据：<clickable document reference or concise confirmed handoff>
 Spec：<clickable path or URL, or none>
@@ -352,7 +378,7 @@ Tickets：<clickable paths or URLs, or none>
 待归档文档：<exact paths, final SHA-256, document lease id/version, purpose and reason | none>
 其它未暂存文档：<exact paths and ownership facts | none>
 工作区基线：实现区与暂存区干净；文档区仅含上述未暂存改动；管理链接已验证
-仓库租约：已释放；<lease id>; <absolute path>; verified_absent=true
+执行租约：<repository lease released with verified_absent=true | worktree execution lease held with exact id/version/path>
 未解决风险：<risks or none>
 交接文件：<absolute handoff.json path>
 交接ID：<handoff id>

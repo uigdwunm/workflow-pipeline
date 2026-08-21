@@ -6,6 +6,19 @@ working tree. The document lease is cooperative and repository-scoped. It
 serializes documentation activity without granting Git, code, publication, or
 remote-write authority.
 
+Discussion checkpoint commits use a separate supervision-owned repository
+coordination lease. Its CLI commands are
+`inspect-repository-coordination-lease`,
+`acquire-repository-coordination-lease`,
+`verify-repository-coordination-lease`, and
+`release-repository-coordination-lease`. The input is the same owner/repository
+shape as a document lease and a TTL of at most 900 seconds. Allowed typed
+critical sections are `design-discussion/checkpoint-publish`,
+`guided-implementation/serial-integration`, and
+`change-closure/closure-critical-section`. It lives directly in `.git`, is
+CAS/version protected, and authorizes only the named bounded critical section;
+it is not document-write or general implementation authority.
+
 ## Contents
 
 1. Lease state and commands
@@ -55,7 +68,7 @@ The acquisition input must contain exactly:
   "owner_task_id": "<task id>",
   "purpose": "document-write | git-stability-barrier",
   "repository": "<absolute repository>",
-  "stage": "problem-framing | solution-design | guided-implementation | change-closure",
+  "stage": "design-discussion | problem-framing | solution-design | guided-implementation | change-closure",
   "ttl_seconds": 300
 }
 ```
