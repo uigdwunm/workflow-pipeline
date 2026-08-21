@@ -75,8 +75,11 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
         request: dict[str, object],
         *,
         failpoint: str | None = None,
+        environment_overrides: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, object], str]:
         environment = dict(os.environ)
+        if environment_overrides is not None:
+            environment.update(environment_overrides)
         if failpoint is not None:
             environment["CODEX_DISCUSSION_TEST_FAILPOINT"] = failpoint
         completed = subprocess.run(
@@ -110,6 +113,26 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
         digest = hashlib.sha256((without_digest + body).encode("utf-8")).hexdigest()
         text = re.sub(r"content_digest: [0-9a-f]{64}", f"content_digest: {digest}", text)
         ledger_path.write_text(text, encoding="utf-8")
+
+    def replace_empty_ledger_section(
+        self, ledger_path: Path, section: str, records: list[dict[str, object]]
+    ) -> None:
+        lines = ["```yaml", "records:"]
+        for record in records:
+            for index, (key, value) in enumerate(record.items()):
+                prefix = "  - " if index == 0 else "    "
+                scalar = (
+                    "true" if value is True else
+                    "false" if value is False else
+                    "null" if value is None else
+                    str(value) if isinstance(value, int) else
+                    json.dumps(value, ensure_ascii=False)
+                )
+                lines.append(f"{prefix}{key}: {scalar}")
+        lines.append("```")
+        old = f"## {section}\n\n```yaml\nrecords:\n  []\n```"
+        new = f"## {section}\n\n" + "\n".join(lines)
+        self.rewrite_ledger_with_valid_digest(ledger_path, old, new)
 
     def assert_initialized(self, project: Path, response: dict[str, object]) -> None:
         self.assertTrue(response["ok"])
@@ -382,7 +405,7 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
 class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
     def bootstrap_topic(
         self, project: Path, *, owner_ref: str = "discussion-task"
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], dict[str, str]]:
         returncode, response, stderr = self.run_cli(
             self.request(project, conversation_ref=owner_ref)
         )
@@ -2281,6 +2304,191 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
+
+    def complete_v2_closure(
+        self,
+        repository: Path,
+        *,
+        implementation_branch: str,
+        implementation_commit: str,
+        merge_commit: str,
+        source_checkpoint: dict[str, object],
+        source_host_id: str,
+        source_task_id: str,
+    ) -> dict[str, object]:
+        runtime = self.root / ("closure-runtime-" + uuid.uuid4().hex)
+        environment = {**os.environ, "CC_SWITCH_RUNTIME_ROOT": str(runtime)}
+
+        def invoke(*arguments: str) -> dict[str, object]:
+            completed = subprocess.run(
+                [sys.executable, str(SUPERVISION_SCRIPT_PATH), *arguments],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=environment,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            return json.loads(completed.stdout)
+
+        lease_id = uuid.uuid4().hex
+        handoff_input = self.root / f"archive-handoff-{uuid.uuid4().hex}.json"
+        handoff_input.write_text(
+            json.dumps(
+                {
+                    "artifacts": [],
+                    "envelope": {
+                        "checkout_path": str(repository),
+                        "execution_mode": "exclusive-checkout-v2",
+                        "implementation_source_checkpoint": {
+                            "checkpoint_id": source_checkpoint["checkpoint_id"],
+                            "commit_id": source_checkpoint["commit_id"],
+                            "committed": True,
+                            "read_only": True,
+                            "sha256": hashlib.sha256(
+                                str(source_checkpoint["commit_id"]).encode("utf-8")
+                            ).hexdigest(),
+                        },
+                        "repository": str(repository),
+                        "repository_lease": {
+                            "lease_id": lease_id,
+                            "mode": "exclusive-checkout-v2",
+                            "path": str(repository / ".git" / "cc-switch-guided-implementation-lease.json"),
+                        },
+                        "worktree_count": 0,
+                    },
+                    "work_items": [{"id": "WI08"}],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        handoff = invoke("create-handoff", "--input", str(handoff_input))
+        handoff_id = Path(str(handoff["path"])).parent.name
+        payload = self.root / f"archive-payload-{uuid.uuid4().hex}.txt"
+        payload.write_text("archive evidence\n", encoding="utf-8")
+        supervision = invoke(
+            "publish-supervision",
+            "--handoff-file",
+            str(handoff["path"]),
+            "--direction",
+            "parent-to-child",
+            "--kind",
+            "archive-evidence",
+            "--payload-file",
+            str(payload),
+        )
+        cleanup = self.root / f"archive-cleanup-{uuid.uuid4().hex}.json"
+        cleanup.write_text(
+            json.dumps(
+                {
+                    "cleanup_version": 1,
+                    "handoff_file": {
+                        "complete": f"HANDOFF_COMPLETE:{handoff_id}",
+                        "file_bytes": handoff["file_bytes"],
+                        "file_sha256": handoff["file_sha256"],
+                        "path": handoff["path"],
+                    },
+                    "handoff_id": handoff_id,
+                    "manifest_file": supervision["manifest_file"],
+                    "supervision_file_count": supervision["supervision_file_count"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        facts = {
+            "base_branch": "main",
+            "checkout_path": str(repository),
+            "execution_mode": "exclusive-checkout-v2",
+            "implementation_branch": implementation_branch,
+            "implementation_commit": implementation_commit,
+            "managed_links": [],
+            "merge_commit": merge_commit,
+            "remote_actions": [],
+            "repository": str(repository),
+            "repository_lease": {
+                "complete": f"REPOSITORY_LEASE_COMPLETE:{lease_id}",
+                "file_bytes": 1,
+                "file_sha256": "0" * 64,
+                "lease_id": lease_id,
+                "path": str(repository / ".git" / "cc-switch-guided-implementation-lease.json"),
+            },
+            "source_host_id": source_host_id,
+            "source_task_id": source_task_id,
+            "spec_references": [],
+            "ticket_references": ["WI08"],
+        }
+        closure_input = self.root / f"closure-input-{uuid.uuid4().hex}.json"
+        closure_input.write_text(
+            json.dumps(
+                {"cleanup_checkpoint": str(cleanup), "facts": facts},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        closure = invoke("create-closure-checkpoint", "--input", str(closure_input))
+
+        def advance(phase: str, result: dict[str, object] | None = None) -> dict[str, object]:
+            arguments = [
+                "advance-closure-checkpoint",
+                "--checkpoint",
+                str(closure["path"]),
+                "--phase",
+                phase,
+            ]
+            if result is not None:
+                result_path = self.root / f"closure-{phase}-{uuid.uuid4().hex}.json"
+                result_path.write_text(
+                    json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                arguments.extend(["--result", str(result_path)])
+            return invoke(*arguments)
+
+        advance(
+            "documents-committed",
+            {
+                "closure_commit": merge_commit,
+                "document_lease": {
+                    "lease_id": uuid.uuid4().hex,
+                    "path": str(repository / ".git" / "cc-switch-document-lease.json"),
+                    "state": "available",
+                    "version": 2,
+                },
+                "documents_updated": [],
+                "preserved_documents": [],
+                "verification": ["no documentation changes"],
+            },
+        )
+        advance(
+            "branch-removed",
+            {
+                "name": implementation_branch,
+                "verified_absent": True,
+            },
+        )
+        advance(
+            "lease-released",
+            {
+                "lease_id": lease_id,
+                "path": facts["repository_lease"]["path"],
+                "verified_absent": True,
+            },
+        )
+        advance("remote-verified", {"actions": [], "results": [], "verified": True})
+        advance("evidence-cleanup")
+        for _ in range(4):
+            cleanup_state = invoke("advance-cleanup", "--checkpoint", str(cleanup))
+            if cleanup_state["state"] == "complete":
+                break
+        self.assertEqual(cleanup_state["state"], "complete")
+        return advance("complete"), {"CC_SWITCH_RUNTIME_ROOT": str(runtime)}
 
     def acquire_document_lease(
         self, project: Path, *, owner_ref: str = "discussion-task"
@@ -4861,6 +5069,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             isolated_confirmation=None,
             phase_run_id="PR-lock-order",
             sensitive_shared_surfaces=["git-common-dir"],
+            source_host_id="test-host",
+            source_task_id="test-task",
         )
         environment = {**os.environ, "CODEX_DISCUSSION_TEST_FAILPOINT": "delay-supervision"}
         process = subprocess.Popen(
@@ -4952,6 +5162,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 source_identity=source["commit_id"], parallelism_receipt=checked["receipt"],
                 worktree_receipt=worktree_receipt, phase_run_id=phase_run_id,
                 sensitive_shared_surfaces=surfaces,
+                source_host_id="test-host", source_task_id="test-task",
                 isolated_confirmation={"file_bytes": 1, "file_sha256": "0" * 64, "path": str(project / ".git" / "forged.json"), "version": 1},
             )
         )
@@ -4978,6 +5189,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 source_identity=source["commit_id"], parallelism_receipt=checked["receipt"],
                 worktree_receipt=worktree_receipt, phase_run_id=phase_run_id,
                 sensitive_shared_surfaces=surfaces, isolated_confirmation=confirmation_receipt,
+                source_host_id="test-host", source_task_id="implementation-task",
             )
         )
         self.assertEqual(code, 0, stderr)
@@ -5007,6 +5219,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 source_identity=source["commit_id"], parallelism_receipt=checked["receipt"],
                 worktree_receipt=worktree_receipt, phase_run_id=phase_run_id,
                 sensitive_shared_surfaces=surfaces, isolated_confirmation=None,
+                source_host_id="test-host", source_task_id="test-task",
             )
         )
         self.assertEqual(code, 1)
@@ -5180,6 +5393,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 isolated_confirmation=None,
                 phase_run_id="PR-00000008",
                 sensitive_shared_surfaces=["git-common-dir"],
+                source_host_id="test-host",
+                source_task_id="test-task",
             )
         )
         self.assertEqual(code, 0, stderr)
@@ -5410,6 +5625,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 isolated_confirmation=None,
                 phase_run_id="PR-topic-authority",
                 sensitive_shared_surfaces=["git-common-dir"],
+                source_host_id="test-host",
+                source_task_id="test-task",
             )
         )
         self.assertEqual(code, 0, stderr)
@@ -5471,6 +5688,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 worktree_receipt=worktree_receipt, isolated_confirmation=None,
                 phase_run_id="PR-topic-authority",
                 sensitive_shared_surfaces=["git-common-dir"],
+                source_host_id="test-host", source_task_id="test-task",
             ),
             "prepare-refresh": self.evolution_request(
                 sibling, operation="prepare-source-refresh",
@@ -5666,6 +5884,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 isolated_confirmation=None,
                 phase_run_id=f"PR-source-impact-{label}",
                 sensitive_shared_surfaces=["git-common-dir"],
+                source_host_id="test-host",
+                source_task_id="test-task",
             )
         )
         self.assertEqual(code, 0, stderr)
@@ -5872,6 +6092,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 implementation_record_revision=1,
                 implementation_commit="c" * 40,
                 merge_commit="b" * 40,
+                source_host_id="test-host",
+                source_task_id="test-task",
                 documentation_proposals=[],
                 closure_checkpoint={
                     "file_bytes": 1,
@@ -5884,6 +6106,242 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 1)
         self.assertEqual(response["error"]["code"], "archive_checkpoint_invalid")
         self.assertEqual(Path(str(topic["ledger_path"])).read_bytes(), before)
+
+    def test_archive_completion_binds_checkpoint_and_leaves_pending_topic_open(self) -> None:
+        project = self.make_project("archive-complete-open", git=True)
+        topic = self.bootstrap_topic(project)
+        subprocess.run(["git", "-C", str(project), "add", "docs"], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(project), "-c", "user.name=Test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "base",
+            ],
+            check=True,
+        )
+        source = self.prepare_checkpoint(
+            topic, ledger_revision=1, purpose="implementation-source"
+        )
+        source = self.publish_git_checkpoint(
+            project, topic, source, ledger_revision=2
+        )
+        implementation_commit = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        implementation_id = "implementation-archive-complete"
+        phase_run_id = "PR-archive-complete"
+        branch = "codex/archive-complete"
+        source_host_id = "archive-host"
+        source_task_id = "archive-task"
+        ledger = Path(str(topic["ledger_path"]))
+        self.replace_empty_ledger_section(
+            ledger,
+            "Phase Runs",
+            [
+                {
+                    "run_id": phase_run_id,
+                    "run_kind": "phase-run",
+                    "state": "completed",
+                    "record_revision": 1,
+                    "data_json": json.dumps(
+                        {
+                            "attempts": [
+                                {
+                                    "attempt_id": "PA-archive-complete-1",
+                                    "attempt_number": 1,
+                                    "state": "completed",
+                                }
+                            ],
+                            "evidence": {
+                                key: "0" * 64
+                                for key in (
+                                    "source", "route", "impact", "coverage",
+                                    "dependency", "coordination",
+                                )
+                            },
+                            "run_id": phase_run_id,
+                            "source_topic_id": topic["topic_id"],
+                            "state": "completed",
+                            "to_phase": 3,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                }
+            ],
+        )
+        phase_result_id = "PH-archive-complete"
+        self.replace_empty_ledger_section(
+            ledger,
+            "Phase Results",
+            [
+                {
+                    "result_id": phase_result_id,
+                    "result_kind": "phase-result",
+                    "state": "completed",
+                    "record_revision": 1,
+                    "data_json": json.dumps(
+                        {
+                            "phase_run_id": phase_run_id,
+                            "result_id": phase_result_id,
+                            "to_phase": 3,
+                            "topic_id": topic["topic_id"],
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                }
+            ],
+        )
+        scope = {
+            "base_commit": implementation_commit,
+            "branch": branch,
+            "database_objects": [],
+            "dependencies": [],
+            "interfaces": ["discussion-cli"],
+            "modules": ["archive"],
+            "paths": ["skills/change-closure/SKILL.md"],
+            "worktree_path": str(project / ".worktrees" / "archive-complete"),
+        }
+        implementation = {
+            "execution": {
+                "mode": "exclusive-checkout-v2",
+                "phase_run_id": phase_run_id,
+                "source_checkpoint_id": source["checkpoint_id"],
+                "source_host_id": source_host_id,
+                "source_identity": source["commit_id"],
+                "source_task_id": source_task_id,
+            },
+            "implementation_id": implementation_id,
+            "project_id": topic["project_id"],
+            "record_revision": 1,
+            "scope": scope,
+            "state": "active",
+            "topic_id": topic["topic_id"],
+            "tree_id": topic["tree_id"],
+        }
+        self.replace_empty_ledger_section(
+            ledger,
+            "Dependencies and Active Implementations",
+            [
+                {
+                    "implementation_id": implementation_id,
+                    "topic_id": topic["topic_id"],
+                    "state": "active",
+                    "record_revision": 1,
+                    "data_json": json.dumps(
+                        implementation, sort_keys=True, separators=(",", ":")
+                    ),
+                }
+            ],
+        )
+        self.replace_empty_ledger_section(
+            ledger,
+            "Impacts",
+            [
+                {
+                    "impact_id": "IMP-pending-archive",
+                    "topic_id": topic["topic_id"],
+                    "data_json": json.dumps(
+                        {
+                            "impact_id": "IMP-pending-archive",
+                            "source_topic_id": "topic-" + "d" * 32,
+                            "target_topic_id": topic["topic_id"],
+                            "scope": [],
+                            "summary": "Pending absorbed result review.",
+                            "state": "pending",
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                }
+            ],
+        )
+        closure, closure_environment = self.complete_v2_closure(
+            project,
+            implementation_branch=branch,
+            implementation_commit=implementation_commit,
+            merge_commit=implementation_commit,
+            source_checkpoint=source,
+            source_host_id=source_host_id,
+            source_task_id=source_task_id,
+        )
+        closure_receipt = {
+            "file_bytes": closure["file_bytes"],
+            "file_sha256": closure["file_sha256"],
+            "path": closure["path"],
+            "version": closure["closure_version"],
+        }
+        mismatched_closure, mismatched_environment = self.complete_v2_closure(
+            project,
+            implementation_branch="codex/another-implementation",
+            implementation_commit=implementation_commit,
+            merge_commit=implementation_commit,
+            source_checkpoint=source,
+            source_host_id=source_host_id,
+            source_task_id=source_task_id,
+        )
+        archive_parameters = {
+            "implementation_id": implementation_id,
+            "effective_phase_result_id": phase_result_id,
+            "source_checkpoint_id": source["checkpoint_id"],
+            "source_identity": source["commit_id"],
+            "execution_mode": "exclusive-checkout-v2",
+            "implementation_record_revision": 1,
+            "implementation_commit": implementation_commit,
+            "merge_commit": implementation_commit,
+            "source_host_id": source_host_id,
+            "source_task_id": source_task_id,
+            "documentation_proposals": [],
+        }
+        before_rejection = ledger.read_bytes()
+        code, rejected, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="record-archive-complete",
+                expected_revision=3,
+                expected_topic_revision=1,
+                closure_checkpoint={
+                    "file_bytes": mismatched_closure["file_bytes"],
+                    "file_sha256": mismatched_closure["file_sha256"],
+                    "path": mismatched_closure["path"],
+                    "version": mismatched_closure["closure_version"],
+                },
+                **archive_parameters,
+            ),
+            environment_overrides=mismatched_environment,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "archive_checkpoint_invalid")
+        self.assertEqual(ledger.read_bytes(), before_rejection)
+        code, archived, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="record-archive-complete",
+                expected_revision=3,
+                expected_topic_revision=1,
+                closure_checkpoint=closure_receipt,
+                **archive_parameters,
+            ),
+            environment_overrides=closure_environment,
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(archived["state"], "archive-complete")
+        self.assertEqual(archived["topic_state"], "open")
+        code, deferred, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="close-archived-topic",
+                expected_revision=4,
+                expected_topic_revision=2,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(deferred["state"], "archive-complete")
+        self.assertEqual(deferred["topic_state"], "open")
+        self.assertEqual(deferred["blockers"], ["pending-impacts"])
 
     def test_topic_close_cannot_substitute_for_archive_completion(self) -> None:
         project = self.make_project("archive-close-separation", git=True)
@@ -5900,6 +6358,114 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(response["error"]["code"], "archive_authority_invalid")
         read = self.run_cli(self.evolution_request(topic, operation="read-topic"))[1]
         self.assertEqual(read["state"], "read")
+
+    def test_topic_close_is_scoped_and_active_absorption_allows_final_close(self) -> None:
+        project = self.make_project("archive-final-close", git=True)
+        topic = self.bootstrap_topic(project)
+        ledger = Path(str(topic["ledger_path"]))
+        sibling_topic_id = "topic-" + "f" * 32
+        self.rewrite_ledger_with_valid_digest(
+            ledger, 'phase_state: "active"', 'phase_state: "completed"'
+        )
+        self.replace_empty_ledger_section(
+            ledger,
+            "Phase Results",
+            [
+                {
+                    "result_id": "AR-" + "a" * 32,
+                    "result_kind": "archive-result",
+                    "state": "completed",
+                    "record_revision": 1,
+                    "data_json": json.dumps(
+                        {"topic_id": topic["topic_id"]},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                }
+            ],
+        )
+        self.replace_empty_ledger_section(
+            ledger,
+            "Phase Runs",
+            [
+                {
+                    "run_id": "PR-sibling",
+                    "run_kind": "phase-run",
+                    "state": "active",
+                    "record_revision": 1,
+                    "data_json": json.dumps(
+                        {"source_topic_id": sibling_topic_id},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                }
+            ],
+        )
+        self.replace_empty_ledger_section(
+            ledger,
+            "Dependencies and Active Implementations",
+            [
+                {
+                    "implementation_id": "implementation-sibling",
+                    "topic_id": sibling_topic_id,
+                    "state": "active",
+                    "record_revision": 1,
+                    "data_json": json.dumps(
+                        {
+                            "implementation_id": "implementation-sibling",
+                            "record_revision": 1,
+                            "state": "active",
+                            "topic_id": sibling_topic_id,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                }
+            ],
+        )
+        self.replace_empty_ledger_section(
+            ledger,
+            "Pending Document Writes",
+            [
+                {
+                    "document_write_id": "DW-sibling",
+                    "topic_id": sibling_topic_id,
+                    "state": "confirmed-but-pending",
+                }
+            ],
+        )
+        self.replace_empty_ledger_section(
+            ledger,
+            "Relations and Coverage",
+            [
+                {
+                    "relation_id": "REL-absorbed",
+                    "relation_type": "absorbs",
+                    "source_topic_id": topic["topic_id"],
+                    "target_topic_id": sibling_topic_id,
+                    "state": "active",
+                },
+                {
+                    "relation_id": "REL-sibling-blocker",
+                    "relation_type": "blocks",
+                    "source_topic_id": sibling_topic_id,
+                    "target_topic_id": "topic-" + "e" * 32,
+                    "state": "active",
+                },
+            ],
+        )
+        code, response, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="close-archived-topic",
+                expected_revision=1,
+                expected_topic_revision=1,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(response["state"], "closed")
+        self.assertEqual(response["topic_state"], "closed")
+        self.assertEqual(response["blockers"], [])
 
 
 if __name__ == "__main__":

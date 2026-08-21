@@ -279,6 +279,8 @@ At `lease-released` for v2, `execution-lease-released` for v3, or
 actions. Verify each action and advance to `remote-verified`. Record empty
 actions/results with `verified: true` when none were prepared. Resolve
 ambiguous remote outcomes from actual external state before retrying.
+For v3, bind results one-for-one and in order as `<action>:verified`; reject a
+non-empty action list with missing, extra or caller-wide-only verification.
 
 ## Release immutable stage-3 evidence
 
@@ -298,9 +300,11 @@ an ambiguous effect, or recreate deleted evidence.
 
 After the retained checkpoint reaches `complete`, call discussion
 `record-archive-complete` from the source topic with the effective phase-3
-result, source identity, immutable implementation record, mode, merge commit,
-proposal outcomes and exact retained-checkpoint receipt. This leaves the topic
-open. Then call `close-archived-topic`: pending impacts, absorption, active or
+result, source identity, immutable implementation record, frozen source
+task/host, mode, merge commit, proposal outcomes and exact retained-checkpoint
+receipt. The protocol binds its repository, branch, worktree when applicable,
+lease cleanup receipts and Phase Run before recording completion. This leaves
+the topic open. Then call `close-archived-topic`: pending impacts, absorption, active or
 queued runs, blockers, non-archived implementations, or unverified coordination
 keep it open. Internal IDs are evidence, never user-selectable controls.
 

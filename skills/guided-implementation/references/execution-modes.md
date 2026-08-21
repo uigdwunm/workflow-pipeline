@@ -29,9 +29,10 @@ checkpoint. Never copy either state machine into the other protocol.
 3. Freeze one completed Git `implementation-source` checkpoint. It must include
    the exact commit identity and content SHA-256 and remain read-only while the
    implementation is active.
-4. Call `activate-implementation-run` once. The selected mode and source become
-   immutable. A changed worktree observation makes the receipt stale and
-   requires a new check. Never change mode after activation.
+4. Call `activate-implementation-run` once with the exact `phase_run_id`,
+   `source_task_id` and `source_host_id`. The selected mode, source and carrier
+   identity become immutable. A changed worktree observation makes the receipt
+   stale and requires a new check. Never change mode after activation.
 
 New handoffs use `handoff_version: 4`. `verify-handoff` dispatches v1-v3
 handoffs under their embedded legacy protocol and does not upgrade them.

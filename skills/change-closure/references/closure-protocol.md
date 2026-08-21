@@ -147,7 +147,12 @@ Version-3 cleanup receipts are deliberately stronger than legacy receipts:
 - `branch-removed` requires exact name, `observed_before: present-merged`, and
   `verified_absent: true` after `git branch -d`;
 - `execution-lease-released` requires exact ID/path, `state: available`, and
-  exactly the next CAS version.
+exactly the next CAS version.
+
+For version 3, `remote-verified.results` must bind one success to every frozen
+action in the same order, encoded as `<action>:verified`. Empty actions require
+empty results. A caller-wide `verified: true` never substitutes for per-action
+evidence. Versions 1 and 2 retain their immutable result schema.
 
 Publish one receipt after each verified postcondition. A missing worktree,
 branch deletion refusal, or uncertain lease result stops before later cleanup.

@@ -6217,11 +6217,16 @@ def _validate_closure_phase_result(
             )
         if not _expect_bool(result["verified"], f"{label}.verified"):
             raise ProtocolError("remote receipt requires verified=true")
+        results = _expect_string_list(result["results"], f"{label}.results")
+        if closure_version == ISOLATED_CLOSURE_VERSION:
+            expected_results = [f"{action}:verified" for action in actions]
+            if results != expected_results:
+                raise ProtocolError(
+                    "isolated remote receipt must bind one verified result to each prepared action"
+                )
         return {
             "actions": actions,
-            "results": _expect_string_list(
-                result["results"], f"{label}.results"
-            ),
+            "results": results,
             "verified": True,
         }
     raise ProtocolError(f"phase {phase!r} does not accept an external result file")

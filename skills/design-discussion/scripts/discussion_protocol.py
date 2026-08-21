@@ -3611,7 +3611,22 @@ def _validate_isolated_confirmation(
         "verify-isolated-worktree-confirmation",
         {"binding": binding, "confirmation": value, "parallelism_receipt": receipt, "repository": request["project_path"]},
     )
-    return {"file_sha256": verified["file_sha256"], "path": value["path"], "version": value["version"], "user_decision": verified["user_decision"]}
+    source_task_id = (verified.get("user_decision") or {}).get("payload", {}).get(
+        "source_task_id"
+    )
+    if source_task_id != request["source_task_id"]:
+        raise ProtocolError(
+            "isolated_worktree_confirmation_required",
+            "isolated confirmation source task does not match activation authority",
+        )
+    return {
+        "binding": binding,
+        "file_sha256": verified["file_sha256"],
+        "path": value["path"],
+        "source_task_id": source_task_id,
+        "user_decision": verified["user_decision"],
+        "version": value["version"],
+    }
 
 
 def _activate_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
@@ -3620,7 +3635,7 @@ def _activate_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
     )
     _expect_keys(
         request,
-        {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key", "implementation_id", "execution_mode", "source_checkpoint_id", "source_identity", "parallelism_receipt", "worktree_receipt", "isolated_confirmation", "phase_run_id", "sensitive_shared_surfaces"},
+        {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key", "implementation_id", "execution_mode", "source_checkpoint_id", "source_identity", "parallelism_receipt", "worktree_receipt", "isolated_confirmation", "phase_run_id", "sensitive_shared_surfaces", "source_host_id", "source_task_id"},
         "activate-implementation-run request",
     )
     _validate_uuid4(request["idempotency_key"], "idempotency_key")
@@ -3630,6 +3645,9 @@ def _activate_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
     supplied_receipt = _expect_string(
         request["parallelism_receipt"], "parallelism_receipt", max_bytes=64
     )
+    phase_run_id = _expect_string(request["phase_run_id"], "phase_run_id", max_bytes=256)
+    source_host_id = _expect_string(request["source_host_id"], "source_host_id", max_bytes=256)
+    source_task_id = _expect_string(request["source_task_id"], "source_task_id", max_bytes=256)
 
     # Snapshot only discussion-owned authority while holding the ledger lock.
     # Cross-protocol verification deliberately happens after this block.
@@ -3734,6 +3752,9 @@ def _activate_implementation_run(request: dict[str, Any]) -> dict[str, Any]:
         data["record_revision"] += 1
         data["execution"] = {
             "mode": mode,
+            "phase_run_id": phase_run_id,
+            "source_host_id": source_host_id,
+            "source_task_id": source_task_id,
             "source_checkpoint_id": checkpoint["checkpoint_id"],
             "source_identity": checkpoint["published_identity"],
             "parallelism_receipt": receipt,
@@ -7543,6 +7564,7 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
             "effective_phase_result_id", "source_checkpoint_id", "source_identity",
             "execution_mode", "implementation_record_revision", "merge_commit",
             "implementation_commit", "documentation_proposals", "closure_checkpoint",
+            "source_host_id", "source_task_id",
         },
         "record-archive-complete request",
     )
@@ -7592,6 +7614,11 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
     if closure.get("closure_version") != expected_closure_version:
         raise ProtocolError("archive_checkpoint_invalid", "closure protocol does not match execution mode")
     merge_commit = _expect_string(request["merge_commit"], "merge_commit", max_bytes=128)
+    implementation_commit = _expect_string(
+        request["implementation_commit"], "implementation_commit", max_bytes=128
+    )
+    source_host_id = _expect_string(request["source_host_id"], "source_host_id", max_bytes=256)
+    source_task_id = _expect_string(request["source_task_id"], "source_task_id", max_bytes=256)
     ancestry = subprocess.run(
         ["git", "merge-base", "--is-ancestor", merge_commit, "HEAD"],
         cwd=project,
@@ -7604,6 +7631,19 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
             "archive_authority_invalid",
             "merge commit is not an ancestor of the verified base checkout",
             cause=ancestry.stderr.strip() or None,
+        )
+    implementation_ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", implementation_commit, merge_commit],
+        cwd=project,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if implementation_ancestry.returncode != 0:
+        raise ProtocolError(
+            "archive_authority_invalid",
+            "implementation commit is not an ancestor of the merge commit",
+            cause=implementation_ancestry.stderr.strip() or None,
         )
 
     with lock_path.open("a+b") as lock_stream:
@@ -7622,6 +7662,8 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
             or execution.get("mode") != execution_mode
             or execution.get("source_checkpoint_id") != request["source_checkpoint_id"]
             or execution.get("source_identity") != request["source_identity"]
+            or execution.get("source_host_id") != source_host_id
+            or execution.get("source_task_id") != source_task_id
             or implementation.get("record_revision") != request["implementation_record_revision"]
         ):
             raise ProtocolError("archive_authority_invalid", "implementation source chain or mode changed")
@@ -7632,20 +7674,32 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
             records["Phase Results"], "result_id", request["effective_phase_result_id"], "effective_phase_result_id"
         )
         phase_result = _json_field(phase_result_record, "data_json", "phase result")
+        phase_run_id = execution.get("phase_run_id")
+        phase_run_record = _record_by_id(
+            records["Phase Runs"], "run_id", phase_run_id, "phase_run_id"
+        )
+        phase_run = _phase_data(phase_run_record)
         if (
             phase_result_record.get("state") != "completed"
             or phase_result.get("topic_id") != request["actor_topic_id"]
             or phase_result.get("to_phase") != 3
+            or phase_result.get("phase_run_id") != phase_run_id
+            or phase_run_record.get("state") != "completed"
+            or phase_run.get("source_topic_id") != request["actor_topic_id"]
+            or phase_run.get("to_phase") != 3
         ):
             raise ProtocolError("archive_authority_invalid", "effective phase-3 result is not completed for this source topic")
-        implementation_commit = _expect_string(
-            request["implementation_commit"], "implementation_commit", max_bytes=128
-        )
         closure_facts = closure.get("facts", {})
+        scope = implementation.get("scope") or {}
         if (
-            closure_facts.get("execution_mode") != execution_mode
+            closure_facts.get("repository") != str(project)
+            or closure_facts.get("checkout_path") != str(project)
+            or closure_facts.get("execution_mode") != execution_mode
             or closure_facts.get("merge_commit") != merge_commit
             or closure_facts.get("implementation_commit") != implementation_commit
+            or closure_facts.get("implementation_branch") != scope.get("branch")
+            or closure_facts.get("source_host_id") != source_host_id
+            or closure_facts.get("source_task_id") != source_task_id
         ):
             raise ProtocolError("archive_checkpoint_invalid", "retained checkpoint facts do not match the implementation")
         documents_receipts = [
@@ -7657,7 +7711,8 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("archive_checkpoint_invalid", "closure lacks one document receipt")
         if execution_mode == "isolated-worktree-v1":
             if (
-                closure_facts.get("documentation_proposals")
+                closure_facts.get("worktree_path") != scope.get("worktree_path")
+                or closure_facts.get("documentation_proposals")
                 != [item["path"] for item in normalized_proposals]
                 or documents_receipts[0].get("proposal_outcomes") != normalized_proposals
             ):
@@ -7750,18 +7805,32 @@ def _close_archived_topic(request: dict[str, Any]) -> dict[str, Any]:
         if any(item["state"] == "pending" for item in _topic_snapshot(records, request["actor_topic_id"])["impacts"]):
             blockers.append("pending-impacts")
         active_run_states = {"prepared", "setup-pending", "ready", "active", "completion-claimed", "completion-pending", "outcome-unknown"}
-        if any(item.get("state") in active_run_states for item in records["Phase Runs"]):
+        if any(
+            item.get("state") in active_run_states
+            and _json_field(item, "data_json", "phase run").get("source_topic_id")
+            == request["actor_topic_id"]
+            for item in records["Phase Runs"]
+        ):
             blockers.append("active-or-queued-runs")
         implementations = [
             _json_field(item, "data_json", "implementation")
             for item in records["Dependencies and Active Implementations"]
-            if item.get("record_kind") == "implementation"
+            if item.get("topic_id") == request["actor_topic_id"]
         ]
         if any(item.get("state") != "archived" for item in implementations):
             blockers.append("active-implementations")
-        if any(item.get("state") not in {"completed", "cancelled", "superseded"} for item in records["Pending Document Writes"]):
+        if any(
+            item.get("topic_id") == request["actor_topic_id"]
+            and item.get("state") not in {"completed", "cancelled", "superseded"}
+            for item in records["Pending Document Writes"]
+        ):
             blockers.append("unverified-coordination")
         for relation in records["Relations and Coverage"]:
+            if request["actor_topic_id"] not in {
+                relation.get("source_topic_id"),
+                relation.get("target_topic_id"),
+            }:
+                continue
             relation_type = relation.get("relation_type")
             relation_state = relation.get("state")
             pending_absorption = relation_type == "absorbs" and relation_state in {

@@ -1331,7 +1331,7 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
             "implementation_commit": "a" * 40,
             "managed_links": [],
             "merge_commit": "b" * 40,
-            "remote_actions": [],
+            "remote_actions": ["push:origin"],
             "repository": str(self.repository),
             "source_host_id": "host",
             "source_task_id": "task",
@@ -1393,6 +1393,22 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
         uncertain = advance_fault("execution-lease-released", {"lease_id": lease_id, "path": facts["execution_lease"]["path"], "state": "unknown", "version": 8})
         self.assertEqual(uncertain["code"], 2)
         self.assertEqual(advance_fault("execution-lease-released", {"lease_id": lease_id, "path": facts["execution_lease"]["path"], "state": "available", "version": 8})["code"], 0)
+        unbound_remote = advance_fault(
+            "remote-verified",
+            {"actions": ["push:origin"], "results": [], "verified": True},
+        )
+        self.assertEqual(unbound_remote["code"], 2)
+        self.assertEqual(
+            advance_fault(
+                "remote-verified",
+                {
+                    "actions": ["push:origin"],
+                    "results": ["push:origin:verified"],
+                    "verified": True,
+                },
+            )["code"],
+            0,
+        )
 
 
 if __name__ == "__main__":
