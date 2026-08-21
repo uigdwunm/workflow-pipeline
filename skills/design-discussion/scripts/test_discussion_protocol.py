@@ -2315,6 +2315,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         source_checkpoint: dict[str, object],
         source_host_id: str,
         source_task_id: str,
+        discussion_binding: dict[str, object],
     ) -> dict[str, object]:
         runtime = self.root / ("closure-runtime-" + uuid.uuid4().hex)
         environment = {**os.environ, "CC_SWITCH_RUNTIME_ROOT": str(runtime)}
@@ -2403,6 +2404,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         facts = {
             "base_branch": "main",
             "checkout_path": str(repository),
+            "discussion_binding": discussion_binding,
             "execution_mode": "exclusive-checkout-v2",
             "implementation_branch": implementation_branch,
             "implementation_commit": implementation_commit,
@@ -6222,6 +6224,33 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             "topic_id": topic["topic_id"],
             "tree_id": topic["tree_id"],
         }
+        discussion_binding = {
+            "effective_phase_result_id": phase_result_id,
+            "execution_sha256": hashlib.sha256(
+                json.dumps(
+                    implementation["execution"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "implementation_id": implementation_id,
+            "implementation_record_revision": 1,
+            "phase_run_id": phase_run_id,
+            "project_id": topic["project_id"],
+            "scope_sha256": hashlib.sha256(
+                json.dumps(
+                    scope,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "source_checkpoint_id": source["checkpoint_id"],
+            "source_identity": source["commit_id"],
+            "topic_id": topic["topic_id"],
+            "tree_id": topic["tree_id"],
+        }
         self.replace_empty_ledger_section(
             ledger,
             "Dependencies and Active Implementations",
@@ -6267,6 +6296,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             source_checkpoint=source,
             source_host_id=source_host_id,
             source_task_id=source_task_id,
+            discussion_binding=discussion_binding,
         )
         closure_receipt = {
             "file_bytes": closure["file_bytes"],
@@ -6276,12 +6306,16 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         }
         mismatched_closure, mismatched_environment = self.complete_v2_closure(
             project,
-            implementation_branch="codex/another-implementation",
+            implementation_branch=branch,
             implementation_commit=implementation_commit,
             merge_commit=implementation_commit,
             source_checkpoint=source,
             source_host_id=source_host_id,
             source_task_id=source_task_id,
+            discussion_binding={
+                **discussion_binding,
+                "implementation_id": "implementation-from-another-closure",
+            },
         )
         archive_parameters = {
             "implementation_id": implementation_id,
@@ -6342,6 +6376,21 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(deferred["state"], "archive-complete")
         self.assertEqual(deferred["topic_state"], "open")
         self.assertEqual(deferred["blockers"], ["pending-impacts"])
+        self.rewrite_ledger_with_valid_digest(
+            ledger, '\\"state\\":\\"pending\\"', '\\"state\\":\\"resolved\\"'
+        )
+        code, closed, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="close-archived-topic",
+                expected_revision=5,
+                expected_topic_revision=2,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(closed["state"], "closed")
+        self.assertEqual(closed["topic_state"], "closed")
+        self.assertEqual(closed["blockers"], [])
 
     def test_topic_close_cannot_substitute_for_archive_completion(self) -> None:
         project = self.make_project("archive-close-separation", git=True)
@@ -6358,6 +6407,62 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(response["error"]["code"], "archive_authority_invalid")
         read = self.run_cli(self.evolution_request(topic, operation="read-topic"))[1]
         self.assertEqual(read["state"], "read")
+
+    def test_topic_close_keeps_blocked_and_failed_phase_runs_open(self) -> None:
+        for run_state in ("blocked", "failed"):
+            with self.subTest(run_state=run_state):
+                project = self.make_project(f"archive-{run_state}-run", git=True)
+                topic = self.bootstrap_topic(project)
+                ledger = Path(str(topic["ledger_path"]))
+                self.rewrite_ledger_with_valid_digest(
+                    ledger, 'phase_state: "active"', 'phase_state: "completed"'
+                )
+                self.replace_empty_ledger_section(
+                    ledger,
+                    "Phase Results",
+                    [
+                        {
+                            "result_id": "AR-" + "a" * 32,
+                            "result_kind": "archive-result",
+                            "state": "completed",
+                            "record_revision": 1,
+                            "data_json": json.dumps(
+                                {"topic_id": topic["topic_id"]},
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                        }
+                    ],
+                )
+                self.replace_empty_ledger_section(
+                    ledger,
+                    "Phase Runs",
+                    [
+                        {
+                            "run_id": f"PR-{run_state}",
+                            "run_kind": "phase-run",
+                            "state": run_state,
+                            "record_revision": 1,
+                            "data_json": json.dumps(
+                                {"source_topic_id": topic["topic_id"]},
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                        }
+                    ],
+                )
+                code, response, stderr = self.run_cli(
+                    self.evolution_request(
+                        topic,
+                        operation="close-archived-topic",
+                        expected_revision=1,
+                        expected_topic_revision=1,
+                    )
+                )
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(response["state"], "archive-complete")
+                self.assertEqual(response["topic_state"], "open")
+                self.assertEqual(response["blockers"], ["active-or-queued-runs"])
 
     def test_topic_close_is_scoped_and_active_absorption_allows_final_close(self) -> None:
         project = self.make_project("archive-final-close", git=True)

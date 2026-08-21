@@ -7691,6 +7691,19 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("archive_authority_invalid", "effective phase-3 result is not completed for this source topic")
         closure_facts = closure.get("facts", {})
         scope = implementation.get("scope") or {}
+        discussion_binding = {
+            "effective_phase_result_id": phase_result["result_id"],
+            "execution_sha256": _sha256(_canonical_json(execution).encode("utf-8")),
+            "implementation_id": implementation["implementation_id"],
+            "implementation_record_revision": implementation["record_revision"],
+            "phase_run_id": phase_run_id,
+            "project_id": request["project_id"],
+            "scope_sha256": _sha256(_canonical_json(scope).encode("utf-8")),
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_identity": checkpoint["published_identity"],
+            "topic_id": request["actor_topic_id"],
+            "tree_id": request["tree_id"],
+        }
         if (
             closure_facts.get("repository") != str(project)
             or closure_facts.get("checkout_path") != str(project)
@@ -7700,6 +7713,7 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
             or closure_facts.get("implementation_branch") != scope.get("branch")
             or closure_facts.get("source_host_id") != source_host_id
             or closure_facts.get("source_task_id") != source_task_id
+            or closure_facts.get("discussion_binding") != discussion_binding
         ):
             raise ProtocolError("archive_checkpoint_invalid", "retained checkpoint facts do not match the implementation")
         documents_receipts = [
@@ -7804,7 +7818,17 @@ def _close_archived_topic(request: dict[str, Any]) -> dict[str, Any]:
         blockers: list[str] = []
         if any(item["state"] == "pending" for item in _topic_snapshot(records, request["actor_topic_id"])["impacts"]):
             blockers.append("pending-impacts")
-        active_run_states = {"prepared", "setup-pending", "ready", "active", "completion-claimed", "completion-pending", "outcome-unknown"}
+        active_run_states = {
+            "prepared",
+            "setup-pending",
+            "ready",
+            "active",
+            "completion-claimed",
+            "completion-pending",
+            "blocked",
+            "failed",
+            "outcome-unknown",
+        }
         if any(
             item.get("state") in active_run_states
             and _json_field(item, "data_json", "phase run").get("source_topic_id")

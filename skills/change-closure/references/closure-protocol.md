@@ -82,7 +82,12 @@ When none exists:
    - `repository_lease` containing exact `path`, `lease_id`, `file_bytes`,
      `file_sha256`, and `complete`;
    - `source_task_id`, `source_host_id`, `spec_references`,
-     `ticket_references`, and authorized `remote_actions`.
+     `ticket_references`, and authorized `remote_actions`;
+   - for a discussion-integrated archive, `discussion_binding` with exact
+     project/tree/topic, implementation, Phase Run, effective phase-result,
+     source checkpoint/identity, implementation record revision, and canonical
+     scope/execution SHA-256. Old retained checkpoints remain inspectable, but
+     cannot authorize a new discussion archive without this immutable binding.
 5. Store no credentials, bodies, command output, or supervision payloads.
 6. Run:
 
@@ -132,32 +137,49 @@ execution lease (`path`, `lease_id`, CAS `version`). Its phases are:
 `prepared -> documents-committed -> worktree-removed -> branch-removed -> execution-lease-released -> remote-verified -> evidence-cleanup -> complete`.
 
 At `prepared`, converge each proposal only in the ordinary checkout with
-`converge-document-proposal`. The implementation worktree supplies immutable
-proposal bytes/evidence only. `applied` and `no-op` may proceed; a
+`converge-document-proposal`. Pass the exact prepared v3 checkpoint, document
+lease, target and digests; never pass a proposal source path. The protocol
+requires the target to occur exactly once in the frozen proposal list, verifies
+the checkpoint against its immutable isolated handoff, verifies the current
+worktree branch/HEAD against the frozen implementation, and derives proposal
+bytes only from `<worktree>/<target>`. Duplicate targets and arbitrary proposal
+paths fail explicitly. The implementation worktree supplies immutable proposal
+bytes/evidence only. `applied` and `no-op` may proceed; a
 `document_proposal_conflict` preserves both sides and blocks.
 The `documents-committed` receipt freezes, in proposal-path order, each exact
 `path`, `base_sha256`, `proposal_sha256` and `outcome`; the discussion archive
 transition requires that byte-for-byte normalized list from the completed
 checkpoint and rejects caller-supplied summaries that do not match it.
+Before that receipt advances, the protocol re-reads both the frozen worktree
+proposal and the ordinary-checkout target and requires both actual digests to
+equal the recorded proposal digest.
+Discussion-integrated v3 facts use the same `discussion_binding` as v2 so a
+checkpoint cannot be replayed across implementations or Phase Runs that share
+Git commits and resource names.
 
-Version-3 cleanup receipts are deliberately stronger than legacy receipts:
+Version-3 local cleanup receipts are deliberately stronger than legacy
+receipts. The checkpoint CLI itself observes the precondition, performs the
+single non-force side effect, verifies the postcondition, and appends the
+receipt as the next protocol step. For these three phases, omit `--result`;
+caller-authored JSON is rejected:
 
 - `worktree-removed` requires exact path, `observed_before: present-clean`, and
   `verified_absent: true` after non-force removal;
 - `branch-removed` requires exact name, `observed_before: present-merged`, and
   `verified_absent: true` after `git branch -d`;
-- `execution-lease-released` requires exact ID/path, `state: available`, and
-exactly the next CAS version.
+- `execution-lease-released` releases the exact frozen execution lease by CAS
+  and requires exact ID/path, `state: available`, and exactly the next version.
 
 For version 3, `remote-verified.results` must bind one success to every frozen
 action in the same order, encoded as `<action>:verified`. Empty actions require
 empty results. A caller-wide `verified: true` never substitutes for per-action
 evidence. Versions 1 and 2 retain their immutable result schema.
 
-Publish one receipt after each verified postcondition. A missing worktree,
-branch deletion refusal, or uncertain lease result stops before later cleanup.
-On resume, inspect the checkpoint and actual authoritative state, then perform
-only the first action without a receipt.
+The checkpoint CLI publishes one receipt after each verified postcondition. A
+missing worktree, branch deletion refusal, or uncertain lease result has a
+stable error and stops before later cleanup; it cannot be hidden by a supplied
+`observed_before` value. On resume, inspect the checkpoint and actual
+authoritative state, then request only the first phase without a result file.
 
 After each mutation, verify its postcondition and record exactly one receipt
 before the next action. Stop when receipt publication fails.

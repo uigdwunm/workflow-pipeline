@@ -1060,12 +1060,19 @@ class DocumentLeaseTests(unittest.TestCase):
 
 
 class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
-    def run_archive_cli(self, command: str, input_path: Path) -> tuple[int, dict[str, object]]:
+    def run_archive_cli(
+        self,
+        command: str,
+        input_path: Path,
+        *,
+        environment: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, object]]:
         completed = subprocess.run(
             [sys.executable, str(SCRIPT_PATH), command, "--input", str(input_path)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=environment,
         )
         return completed.returncode, json.loads(completed.stdout)
 
@@ -1086,6 +1093,7 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
     def proposal_input(
         self,
         *,
+        closure: dict[str, object],
         target: Path,
         proposal: Path,
         base: bytes,
@@ -1096,12 +1104,17 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
             json.dumps(
                 {
                     "base_sha256": hashlib.sha256(base).hexdigest(),
+                    "closure_checkpoint": {
+                        "file_bytes": closure["file_bytes"],
+                        "file_sha256": closure["file_sha256"],
+                        "path": closure["path"],
+                        "version": closure["closure_version"],
+                    },
                     "document_lease": {
                         "lease_id": lease["holder"]["lease_id"],
                         "path": lease["path"],
                         "version": lease["version"],
                     },
-                    "proposal_path": str(proposal),
                     "proposal_sha256": hashlib.sha256(proposal.read_bytes()).hexdigest(),
                     "repository": str(self.repository),
                     "target_path": str(target.relative_to(self.repository)),
@@ -1114,19 +1127,223 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
         )
         return input_path
 
+    def prepare_proposal_authority(
+        self, target: Path, proposed: bytes
+    ) -> tuple[Path, dict[str, object], dict[str, str]]:
+        subprocess.run(["git", "-C", str(self.repository), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.repository),
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "proposal base",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repository), "branch", "-M", "main"], check=True
+        )
+        implementation_commit = subprocess.run(
+            ["git", "-C", str(self.repository), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        worktree = self.root / "implementation-worktree"
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.repository),
+                "worktree",
+                "add",
+                "-b",
+                "codex/proposal",
+                str(worktree),
+                implementation_commit,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        proposal = worktree / target.relative_to(self.repository)
+        proposal.parent.mkdir(parents=True, exist_ok=True)
+        proposal.write_bytes(proposed)
+        runtime = self.root / "proposal-runtime"
+        environment = {**os.environ, "CC_SWITCH_RUNTIME_ROOT": str(runtime)}
+        execution_lease = {
+            "lease_id": "7" * 32,
+            "path": str(
+                self.repository
+                / ".git"
+                / PROTOCOL.WORKTREE_EXECUTION_LEASE_DIRECTORY
+                / ("8" * 64 + ".json")
+            ),
+            "version": 1,
+        }
+        handoff_input = self.root / "proposal-handoff-input.json"
+        handoff_input.write_text(
+            json.dumps(
+                {
+                    "artifacts": [],
+                    "envelope": {
+                        "execution_mode": "isolated-worktree-v1",
+                        "implementation_source_checkpoint": {
+                            "checkpoint_id": "CP-proposal-source",
+                            "commit_id": implementation_commit,
+                            "committed": True,
+                            "read_only": True,
+                            "sha256": "9" * 64,
+                        },
+                        "isolated_worktree": {
+                            "base_commit": implementation_commit,
+                            "branch": "codex/proposal",
+                            "execution_lease": execution_lease,
+                            "parallelism_receipt": "a" * 64,
+                            "scope_sha256": "b" * 64,
+                            "sensitive_shared_surfaces": ["git-common-dir"],
+                            "worktree_path": str(worktree),
+                        },
+                        "repository": str(self.repository),
+                    },
+                    "work_items": [{"id": "WI08"}],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        handoff = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "create-handoff",
+                    "--input",
+                    str(handoff_input),
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+                env=environment,
+            ).stdout
+        )
+        payload = self.root / "proposal-payload.txt"
+        payload.write_text("proposal authority\n")
+        supervision = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "publish-supervision",
+                    "--handoff-file",
+                    handoff["path"],
+                    "--direction",
+                    "parent-to-child",
+                    "--kind",
+                    "proposal-authority",
+                    "--payload-file",
+                    str(payload),
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+                env=environment,
+            ).stdout
+        )
+        handoff_id = Path(str(handoff["path"])).parent.name
+        cleanup_path = self.root / "proposal-cleanup.json"
+        cleanup_path.write_text(
+            json.dumps(
+                {
+                    "cleanup_version": 1,
+                    "handoff_file": {
+                        "complete": f"HANDOFF_COMPLETE:{handoff_id}",
+                        "file_bytes": handoff["file_bytes"],
+                        "file_sha256": handoff["file_sha256"],
+                        "path": handoff["path"],
+                    },
+                    "handoff_id": handoff_id,
+                    "manifest_file": supervision["manifest_file"],
+                    "supervision_file_count": supervision["supervision_file_count"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        facts = {
+            "base_branch": "main",
+            "checkout_path": str(self.repository),
+            "documentation_proposals": [str(target.relative_to(self.repository))],
+            "execution_lease": execution_lease,
+            "execution_mode": "isolated-worktree-v1",
+            "implementation_branch": "codex/proposal",
+            "implementation_commit": implementation_commit,
+            "managed_links": [],
+            "merge_commit": implementation_commit,
+            "remote_actions": [],
+            "repository": str(self.repository),
+            "source_host_id": "host",
+            "source_task_id": "task",
+            "spec_references": [],
+            "ticket_references": [],
+            "worktree_path": str(worktree),
+        }
+        closure_input = self.root / "proposal-closure-input.json"
+        closure_input.write_text(
+            json.dumps(
+                {"cleanup_checkpoint": str(cleanup_path), "facts": facts},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        closure = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "create-closure-checkpoint",
+                    "--input",
+                    str(closure_input),
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+                env=environment,
+            ).stdout
+        )
+        return proposal, closure, environment
+
     def test_archive_document_proposal_has_apply_noop_conflict_three_way_semantics(self) -> None:
         target = self.repository / "docs" / "result.md"
         target.parent.mkdir()
         base = b"base\n"
         proposed = b"proposed\n"
         target.write_bytes(base)
-        proposal = self.root / "proposal.md"
-        proposal.write_bytes(proposed)
+        proposal, closure, environment = self.prepare_proposal_authority(
+            target, proposed
+        )
         lease = self.acquire_archive_document_lease()
 
         code, applied = self.run_archive_cli(
             "converge-document-proposal",
-            self.proposal_input(target=target, proposal=proposal, base=base, lease=lease),
+            self.proposal_input(
+                closure=closure,
+                target=target,
+                proposal=proposal,
+                base=base,
+                lease=lease,
+            ),
+            environment=environment,
         )
         self.assertEqual(code, 0, applied)
         self.assertEqual(applied["outcome"], "applied")
@@ -1134,7 +1351,14 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
 
         code, noop = self.run_archive_cli(
             "converge-document-proposal",
-            self.proposal_input(target=target, proposal=proposal, base=base, lease=lease),
+            self.proposal_input(
+                closure=closure,
+                target=target,
+                proposal=proposal,
+                base=base,
+                lease=lease,
+            ),
+            environment=environment,
         )
         self.assertEqual(code, 0)
         self.assertEqual(noop["outcome"], "no-op")
@@ -1142,7 +1366,14 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
         target.write_bytes(b"independent-base-change\n")
         code, conflict = self.run_archive_cli(
             "converge-document-proposal",
-            self.proposal_input(target=target, proposal=proposal, base=base, lease=lease),
+            self.proposal_input(
+                closure=closure,
+                target=target,
+                proposal=proposal,
+                base=base,
+                lease=lease,
+            ),
+            environment=environment,
         )
         self.assertEqual(code, 2)
         self.assertEqual(conflict["error"]["code"], "document_proposal_conflict")
@@ -1152,18 +1383,84 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
         target = self.repository / "docs" / "result.md"
         target.parent.mkdir()
         target.write_bytes(b"base\n")
-        proposal = self.root / "proposal.md"
-        proposal.write_bytes(b"proposed\n")
+        proposal, closure, environment = self.prepare_proposal_authority(
+            target, b"proposed\n"
+        )
         lease = self.acquire_archive_document_lease()
         source = json.loads(
-            self.proposal_input(target=target, proposal=proposal, base=b"base\n", lease=lease).read_text()
+            self.proposal_input(
+                closure=closure,
+                target=target,
+                proposal=proposal,
+                base=b"base\n",
+                lease=lease,
+            ).read_text()
         )
         source["repository"] = str(self.root / "implementation-worktree")
         forged = self.root / "forged-proposal.json"
         forged.write_text(json.dumps(source, sort_keys=True, separators=(",", ":")) + "\n")
-        code, response = self.run_archive_cli("converge-document-proposal", forged)
+        code, response = self.run_archive_cli(
+            "converge-document-proposal", forged, environment=environment
+        )
         self.assertEqual(code, 2)
         self.assertEqual(response["error"]["code"], "document_lease_invalid")
+
+    def test_archive_document_proposal_rejects_unfrozen_source_and_duplicate_targets(self) -> None:
+        target = self.repository / "docs" / "result.md"
+        target.parent.mkdir()
+        target.write_bytes(b"base\n")
+        proposal, closure, environment = self.prepare_proposal_authority(
+            target, b"proposed\n"
+        )
+        lease = self.acquire_archive_document_lease()
+        source_path = self.proposal_input(
+            closure=closure,
+            target=target,
+            proposal=proposal,
+            base=b"base\n",
+            lease=lease,
+        )
+        source = json.loads(source_path.read_text())
+        outside = self.root / "outside-proposal.md"
+        outside.write_bytes(b"outside\n")
+        source["proposal_path"] = str(outside)
+        source["proposal_sha256"] = hashlib.sha256(outside.read_bytes()).hexdigest()
+        forged = self.root / "unfrozen-proposal.json"
+        forged.write_text(json.dumps(source, sort_keys=True, separators=(",", ":")) + "\n")
+        code, response = self.run_archive_cli(
+            "converge-document-proposal", forged, environment=environment
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(response["error"]["code"], "document_proposal_authority_invalid")
+
+        checkpoint_path = Path(str(closure["path"]))
+        checkpoint = json.loads(checkpoint_path.read_text())
+        checkpoint["facts"]["documentation_proposals"] = [
+            "docs/result.md",
+            "docs/result.md",
+        ]
+        duplicate_data = (
+            json.dumps(checkpoint, sort_keys=True, separators=(",", ":")).encode()
+            + b"\n"
+        )
+        checkpoint_path.chmod(0o600)
+        checkpoint_path.write_bytes(duplicate_data)
+        checkpoint_path.chmod(0o400)
+        source.pop("proposal_path")
+        source["proposal_sha256"] = hashlib.sha256(proposal.read_bytes()).hexdigest()
+        source["closure_checkpoint"]["file_bytes"] = len(duplicate_data)
+        source["closure_checkpoint"]["file_sha256"] = hashlib.sha256(
+            duplicate_data
+        ).hexdigest()
+        duplicate = self.root / "duplicate-proposal.json"
+        duplicate.write_text(
+            json.dumps(source, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        code, response = self.run_archive_cli(
+            "converge-document-proposal", duplicate, environment=environment
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(response["error"]["code"], "document_proposal_authority_invalid")
 
     def test_closure_protocol_dispatch_is_immutable_for_all_execution_modes(self) -> None:
         self.assertEqual(
@@ -1245,15 +1542,43 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
     def test_isolated_cleanup_faults_are_explicit_and_resume_from_first_missing_receipt(self) -> None:
         runtime = self.root / "cc-runtime"
         environment = {**os.environ, "CC_SWITCH_RUNTIME_ROOT": str(runtime)}
+        topic, base_commit = self.bootstrap_discussion_repository()
+        worktree = self.root / "isolated-worktree"
+        implementation_branch = "codex/isolated"
+        execution_lease = self.create_coordinated_worktree_lease(
+            topic,
+            base=base_commit,
+            implementation_id="implementation-archive-cleanup",
+            branch=implementation_branch,
+            worktree=worktree,
+            ledger_revision=1,
+        )
+        feature = worktree / "feature.txt"
+        feature.write_text("unmerged implementation\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(worktree), "add", "feature.txt"], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(worktree), "-c", "user.name=Test",
+                "-c", "user.email=test@example.com", "commit", "-qm", "feature",
+            ],
+            check=True,
+        )
+        implementation_commit = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
         source = {
             "checkpoint_id": "CP-implementation-source",
-            "commit_id": "1" * 40,
+            "commit_id": base_commit,
             "committed": True,
             "read_only": True,
             "sha256": "2" * 64,
         }
-        lease_id = "4" * 32
-        worktree = self.root / "isolated-worktree"
+        lease_holder = execution_lease["holder"]
+        assert isinstance(lease_holder, dict)
+        lease_id = str(lease_holder["lease_id"])
         handoff_input = self.root / "archive-handoff.json"
         handoff_input.write_text(
             json.dumps(
@@ -1263,12 +1588,12 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
                         "execution_mode": "isolated-worktree-v1",
                         "implementation_source_checkpoint": source,
                         "isolated_worktree": {
-                            "base_commit": "1" * 40,
-                            "branch": "codex/isolated",
+                            "base_commit": base_commit,
+                            "branch": implementation_branch,
                             "execution_lease": {
                                 "lease_id": lease_id,
-                                "path": str(self.repository / ".git" / PROTOCOL.WORKTREE_EXECUTION_LEASE_DIRECTORY / "implementation.json"),
-                                "version": 7,
+                                "path": execution_lease["path"],
+                                "version": execution_lease["version"],
                             },
                             "parallelism_receipt": "5" * 64,
                             "scope_sha256": "6" * 64,
@@ -1323,14 +1648,14 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
             "documentation_proposals": ["docs/result.md"],
             "execution_lease": {
                 "lease_id": lease_id,
-                "path": str(self.repository / ".git" / PROTOCOL.WORKTREE_EXECUTION_LEASE_DIRECTORY / "implementation.json"),
-                "version": 7,
+                "path": execution_lease["path"],
+                "version": execution_lease["version"],
             },
             "execution_mode": "isolated-worktree-v1",
-            "implementation_branch": "codex/isolated",
-            "implementation_commit": "a" * 40,
+            "implementation_branch": implementation_branch,
+            "implementation_commit": implementation_commit,
             "managed_links": [],
-            "merge_commit": "b" * 40,
+            "merge_commit": implementation_commit,
             "remote_actions": ["push:origin"],
             "repository": str(self.repository),
             "source_host_id": "host",
@@ -1348,6 +1673,14 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
             ).stdout
         )
 
+        converged_proposal = b"converged proposal\n"
+        proposal_source = worktree / "docs" / "result.md"
+        proposal_source.parent.mkdir(parents=True, exist_ok=True)
+        proposal_source.write_bytes(converged_proposal)
+        converged_target = self.repository / "docs" / "result.md"
+        converged_target.parent.mkdir(parents=True, exist_ok=True)
+        converged_target.write_bytes(converged_proposal)
+        proposal_sha256 = hashlib.sha256(converged_proposal).hexdigest()
         document_result = self.root / "documents.json"
         document_result.write_text(
             json.dumps(
@@ -1361,7 +1694,7 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
                     },
                     "documents_updated": ["docs/result.md"],
                     "preserved_documents": [],
-                    "proposal_outcomes": [{"base_sha256": "8" * 64, "outcome": "applied", "path": "docs/result.md", "proposal_sha256": "9" * 64}],
+                    "proposal_outcomes": [{"base_sha256": "8" * 64, "outcome": "applied", "path": "docs/result.md", "proposal_sha256": proposal_sha256}],
                     "verification": ["proposal applied"],
                 },
                 sort_keys=True,
@@ -1373,6 +1706,7 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
             [sys.executable, str(SCRIPT_PATH), "advance-closure-checkpoint", "--checkpoint", closure["path"], "--phase", "documents-committed", "--result", str(document_result)],
             check=True, stdout=subprocess.PIPE, text=True, env=environment,
         )
+        proposal_source.unlink()
 
         def advance_fault(phase: str, result: dict[str, object]) -> dict[str, object]:
             path = self.root / f"{phase}-{uuid.uuid4().hex}.json"
@@ -1383,16 +1717,97 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
             )
             return {"code": completed.returncode, "response": json.loads(completed.stdout), "path": path}
 
+        def advance_owned_side_effect(phase: str) -> dict[str, object]:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "advance-closure-checkpoint",
+                    "--checkpoint",
+                    closure["path"],
+                    "--phase",
+                    phase,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=environment,
+            )
+            return {"code": completed.returncode, "response": json.loads(completed.stdout)}
+
+        removed_worktree = subprocess.run(
+            ["git", "-C", str(self.repository), "worktree", "remove", str(worktree)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(removed_worktree.returncode, 0, removed_worktree.stderr)
+        missing_retry = subprocess.run(
+            ["git", "-C", str(self.repository), "worktree", "remove", str(worktree)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertNotEqual(missing_retry.returncode, 0)
         missing = advance_fault("worktree-removed", {"observed_before": "missing", "path": str(worktree), "verified_absent": True})
         self.assertEqual(missing["code"], 2)
         self.assertEqual(json.loads(subprocess.run([sys.executable, str(SCRIPT_PATH), "inspect-closure-checkpoint", "--checkpoint", closure["path"]], check=True, stdout=subprocess.PIPE, text=True, env=environment).stdout)["phase"], "documents-committed")
-        self.assertEqual(advance_fault("worktree-removed", {"observed_before": "present-clean", "path": str(worktree), "verified_absent": True})["code"], 0)
-        refusal = advance_fault("branch-removed", {"name": "codex/isolated", "observed_before": "present-unmerged", "verified_absent": False})
+        fabricated = advance_fault(
+            "worktree-removed",
+            {
+                "observed_before": "present-clean",
+                "path": str(worktree),
+                "verified_absent": True,
+            },
+        )
+        self.assertEqual(fabricated["code"], 2)
+        subprocess.run(
+            ["git", "-C", str(self.repository), "worktree", "add", str(worktree), implementation_branch],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(advance_owned_side_effect("worktree-removed")["code"], 0)
+        refusal = advance_fault("branch-removed", {"name": implementation_branch, "observed_before": "present-unmerged", "verified_absent": False})
         self.assertEqual(refusal["code"], 2)
-        self.assertEqual(advance_fault("branch-removed", {"name": "codex/isolated", "observed_before": "present-merged", "verified_absent": True})["code"], 0)
-        uncertain = advance_fault("execution-lease-released", {"lease_id": lease_id, "path": facts["execution_lease"]["path"], "state": "unknown", "version": 8})
+        owned_refusal = advance_owned_side_effect("branch-removed")
+        self.assertEqual(owned_refusal["code"], 2)
+        subprocess.run(
+            [
+                "git", "-C", str(self.repository), "-c", "user.name=Test",
+                "-c", "user.email=test@example.com", "merge", "--no-ff", "-qm",
+                "merge isolated", implementation_branch,
+            ],
+            check=True,
+        )
+        self.assertEqual(advance_owned_side_effect("branch-removed")["code"], 0)
+        uncertain_release = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "release-worktree-execution-lease",
+                "--file",
+                str(execution_lease["path"]),
+                "--id",
+                "0" * 32,
+                "--version",
+                str(execution_lease["version"]),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(uncertain_release.returncode, 2)
+        next_lease_version = int(execution_lease["version"]) + 1
+        uncertain = advance_fault("execution-lease-released", {"lease_id": lease_id, "path": facts["execution_lease"]["path"], "state": "unknown", "version": next_lease_version})
         self.assertEqual(uncertain["code"], 2)
-        self.assertEqual(advance_fault("execution-lease-released", {"lease_id": lease_id, "path": facts["execution_lease"]["path"], "state": "available", "version": 8})["code"], 0)
+        released = advance_owned_side_effect("execution-lease-released")
+        self.assertEqual(released["code"], 0)
+        self.assertEqual(
+            released["response"]["receipts"][-1]["result"]["version"],
+            next_lease_version,
+        )
         unbound_remote = advance_fault(
             "remote-verified",
             {"actions": ["push:origin"], "results": [], "verified": True},
@@ -1409,6 +1824,73 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
             )["code"],
             0,
         )
+        evidence_cleanup = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "advance-closure-checkpoint",
+                "--checkpoint",
+                str(closure["path"]),
+                "--phase",
+                "evidence-cleanup",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(json.loads(evidence_cleanup.stdout)["phase"], "evidence-cleanup")
+        first_cleanup = json.loads(
+            subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "advance-cleanup", "--checkpoint", str(cleanup)],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+                env=environment,
+            ).stdout
+        )
+        self.assertNotEqual(first_cleanup["state"], "complete")
+        inspected_partial = json.loads(
+            subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "inspect-cleanup", "--checkpoint", str(cleanup)],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+                env=environment,
+            ).stdout
+        )
+        self.assertEqual(inspected_partial["state"], first_cleanup["state"])
+        for _ in range(4):
+            resumed = json.loads(
+                subprocess.run(
+                    [sys.executable, str(SCRIPT_PATH), "advance-cleanup", "--checkpoint", str(cleanup)],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    text=True,
+                    env=environment,
+                ).stdout
+            )
+            if resumed["state"] == "complete":
+                break
+        self.assertEqual(resumed["state"], "complete")
+        completed_checkpoint = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "advance-closure-checkpoint",
+                    "--checkpoint",
+                    str(closure["path"]),
+                    "--phase",
+                    "complete",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+                env=environment,
+            ).stdout
+        )
+        self.assertEqual(completed_checkpoint["phase"], "complete")
 
 
 if __name__ == "__main__":

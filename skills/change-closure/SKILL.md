@@ -229,9 +229,13 @@ At `prepared`:
 
 1. Require the exact document lease remains verified.
 2. For isolated proposals call `converge-document-proposal` against the
-   ordinary checkout: current=base is `applied`, current=proposal is `no-op`,
-   and every third state is `document_proposal_conflict`. Preserve both sides
-   and stop on conflict. Exclusive runs apply approved format-preserving updates.
+   ordinary checkout with the exact prepared v3 checkpoint. Do not supply a
+   proposal source path: the protocol derives `<frozen-worktree>/<target>`,
+   verifies the immutable handoff plus current implementation branch/HEAD, and
+   requires each target exactly once. Current=base is `applied`,
+   current=proposal is `no-op`, and every third state is
+   `document_proposal_conflict`. Preserve both sides and stop on conflict.
+   Exclusive runs apply approved format-preserving updates.
 3. Verify the complete diff belongs to this closure. For a shared file whose
    full diff includes another requirement, stage nothing and reconcile.
 4. Stage only exact closure-owned document pathspecs and commit concisely;
@@ -243,7 +247,9 @@ At `prepared`:
 7. Release the exact document lease after the verified commit or no-op. Require
    `state: available` and the returned incremented version.
 8. Advance to `documents-committed` only after commit/no-op and document-lease
-   release are proven.
+   release are proven. For isolated outcomes the protocol re-reads the frozen
+   worktree proposal and ordinary-checkout target and requires both actual
+   digests to equal the recorded proposal digest.
 
 ## Clean local implementation state
 
@@ -264,13 +270,16 @@ closure incomplete but does not invalidate implementation or merge.
 For a legacy v1 checkpoint only, perform its recorded non-force worktree removal
 and branch deletion exactly as the embedded protocol requires.
 
-For isolated checkpoint v3, require the exact worktree is observed
-`present-clean` before non-force `git worktree remove`; missing or ambiguous
-state blocks. Require the exact branch is observed `present-merged` before
-`git branch -d`. Then release the exact worktree-execution lease by CAS and
-require the next version to report `state: available`. Record each verified
-postcondition before the next action; branch refusal or release uncertainty
-leaves later resources intact for resume.
+For isolated checkpoint v3, ask `advance-closure-checkpoint` for each local
+cleanup phase with no result file. The CLI observes the exact worktree as
+`present-clean`, performs non-force `git worktree remove`, and verifies
+absence; missing or ambiguous state blocks. It then verifies the exact branch
+identity, performs non-force `git branch -d`, and verifies absence. Finally it
+releases the exact worktree-execution lease by CAS and requires the next
+version to report `state: available`. Caller-authored side-effect receipts are
+rejected. Each verified postcondition is recorded before the next action;
+branch refusal or release uncertainty leaves later resources intact for
+resume.
 
 ## Perform separately authorized remote delivery
 
@@ -306,7 +315,9 @@ receipt. The protocol binds its repository, branch, worktree when applicable,
 lease cleanup receipts and Phase Run before recording completion. This leaves
 the topic open. Then call `close-archived-topic`: pending impacts, absorption, active or
 queued runs, blockers, non-archived implementations, or unverified coordination
-keep it open. Internal IDs are evidence, never user-selectable controls.
+owned by or related to this source topic keep it open. Unrelated sibling-topic
+activity is not a residual fact of the archived source topic. Internal IDs are
+evidence, never user-selectable controls.
 
 ## Report completion
 

@@ -257,6 +257,7 @@ def _error_response(error: ProtocolError, command: str) -> dict[str, Any]:
         "worktree_lease_release_cas_mismatch": "worktree execution lease 的释放 CAS 已变化。",
         "worktree_reconciliation_invalid_outcome": "worktree execution lease 对账结果不受支持。",
         "document_lease_invalid": "文档提案没有精确、有效的 4归档文档租约。",
+        "document_proposal_authority_invalid": "文档提案不属于冻结的 isolated worktree、handoff 或目标集合。",
         "document_proposal_conflict": "基础 checkout 中的文档已偏离提案基线，必须人工收敛。",
     }
     return {
@@ -294,12 +295,17 @@ def converge_document_proposal(input_path: Path) -> dict[str, Any]:
         ),
         "document proposal input",
     )
+    if "proposal_path" in source:
+        raise ProtocolError(
+            "document_proposal_authority_invalid",
+            "proposal_path is derived from the frozen closure worktree and cannot be caller supplied",
+        )
     _expect_keys(
         source,
         {
             "base_sha256",
+            "closure_checkpoint",
             "document_lease",
-            "proposal_path",
             "proposal_sha256",
             "repository",
             "target_path",
@@ -357,7 +363,12 @@ def converge_document_proposal(input_path: Path) -> dict[str, Any]:
     if resolved_parent != target.parent:
         raise ProtocolError("document_lease_invalid", "target_path contains a symbolic-link parent")
 
-    proposal_path = _expect_absolute_path(source["proposal_path"], "proposal_path")
+    authority = _load_document_proposal_authority(
+        source["closure_checkpoint"],
+        repository=repository,
+        target_path=target_text,
+    )
+    proposal_path = Path(authority["proposal_path"])
     proposal = _read_regular_file(
         proposal_path, max_bytes=MAX_INPUT_BYTES, label="document proposal"
     )
@@ -416,6 +427,7 @@ def converge_document_proposal(input_path: Path) -> dict[str, Any]:
         "target_path": target_text,
         "base_sha256": base_sha256,
         "proposal_sha256": proposal_sha256,
+        "proposal_authority": authority["proposal_authority"],
         "document_lease": {
             "lease_id": holder["lease_id"],
             "path": str(lease_path),
@@ -5571,10 +5583,21 @@ def _validate_closure_facts(
     value: Any, label: str, *, closure_version: int
 ) -> dict[str, Any]:
     facts = _expect_object(value, label)
+    discussion_binding_fields = {
+        "effective_phase_result_id",
+        "execution_sha256",
+        "implementation_id",
+        "implementation_record_revision",
+        "phase_run_id",
+        "project_id",
+        "scope_sha256",
+        "source_checkpoint_id",
+        "source_identity",
+        "topic_id",
+        "tree_id",
+    }
     if closure_version == LEGACY_CLOSURE_VERSION:
-        _expect_keys(
-            facts,
-            {
+        expected_fields = {
                 "base_branch",
                 "implementation_branch",
                 "implementation_commit",
@@ -5587,13 +5610,11 @@ def _validate_closure_facts(
                 "spec_references",
                 "ticket_references",
                 "worktree_path",
-            },
-            label,
-        )
+            }
+        if set(facts) not in {frozenset(expected_fields), frozenset(expected_fields | {"discussion_binding"})}:
+            _expect_keys(facts, expected_fields, label)
     elif closure_version == CLOSURE_VERSION:
-        _expect_keys(
-            facts,
-            {
+        expected_fields = {
                 "base_branch",
                 "checkout_path",
                 "execution_mode",
@@ -5608,13 +5629,11 @@ def _validate_closure_facts(
                 "source_task_id",
                 "spec_references",
                 "ticket_references",
-            },
-            label,
-        )
+            }
+        if set(facts) not in {frozenset(expected_fields), frozenset(expected_fields | {"discussion_binding"})}:
+            _expect_keys(facts, expected_fields, label)
     elif closure_version == ISOLATED_CLOSURE_VERSION:
-        _expect_keys(
-            facts,
-            {
+        expected_fields = {
                 "base_branch",
                 "checkout_path",
                 "documentation_proposals",
@@ -5631,9 +5650,9 @@ def _validate_closure_facts(
                 "spec_references",
                 "ticket_references",
                 "worktree_path",
-            },
-            label,
-        )
+            }
+        if set(facts) not in {frozenset(expected_fields), frozenset(expected_fields | {"discussion_binding"})}:
+            _expect_keys(facts, expected_fields, label)
     else:
         raise ProtocolError(f"unsupported closure_version: {closure_version!r}")
 
@@ -5677,6 +5696,32 @@ def _validate_closure_facts(
             facts["ticket_references"], f"{label}.ticket_references"
         ),
     }
+    if "discussion_binding" in facts:
+        binding = _expect_object(
+            facts["discussion_binding"], f"{label}.discussion_binding"
+        )
+        _expect_keys(binding, discussion_binding_fields, f"{label}.discussion_binding")
+        normalized["discussion_binding"] = {
+            field: (
+                _expect_int(
+                    binding[field],
+                    f"{label}.discussion_binding.{field}",
+                    1,
+                    2**63 - 2,
+                )
+                if field == "implementation_record_revision"
+                else _expect_sha256(
+                    binding[field], f"{label}.discussion_binding.{field}"
+                )
+                if field in {"execution_sha256", "scope_sha256"}
+                else _expect_nonempty_string(
+                    binding[field],
+                    f"{label}.discussion_binding.{field}",
+                    max_bytes=512,
+                )
+            )
+            for field in sorted(discussion_binding_fields)
+        }
     if closure_version == LEGACY_CLOSURE_VERSION:
         normalized["worktree_path"] = str(
             _expect_absolute_path(facts["worktree_path"], f"{label}.worktree_path")
@@ -5706,12 +5751,35 @@ def _validate_closure_facts(
             raise ProtocolError(
                 f"{label}.execution_lease.path must be directly inside {expected_lease_directory}"
             )
+        documentation_proposals = _expect_string_list(
+            facts["documentation_proposals"], f"{label}.documentation_proposals"
+        )
+        if len(documentation_proposals) != len(set(documentation_proposals)):
+            raise ProtocolError(
+                "document_proposal_authority_invalid",
+                f"{label}.documentation_proposals contains duplicate target paths",
+            )
+        for index, proposal_target in enumerate(documentation_proposals):
+            target_path = Path(
+                _expect_nonempty_string(
+                    proposal_target,
+                    f"{label}.documentation_proposals[{index}]",
+                    max_bytes=8_192,
+                )
+            )
+            if (
+                target_path.is_absolute()
+                or target_path == Path(".")
+                or ".." in target_path.parts
+            ):
+                raise ProtocolError(
+                    "document_proposal_authority_invalid",
+                    f"{label}.documentation_proposals[{index}] must be repository-relative",
+                )
         normalized.update(
             {
                 "checkout_path": checkout_path,
-                "documentation_proposals": _expect_string_list(
-                    facts["documentation_proposals"], f"{label}.documentation_proposals"
-                ),
+                "documentation_proposals": documentation_proposals,
                 "execution_lease": {
                     "lease_id": _expect_handoff_id(
                         lease["lease_id"], f"{label}.execution_lease.lease_id"
@@ -5909,6 +5977,177 @@ def _load_closure_checkpoint(
         },
         data,
     )
+
+
+def _verify_isolated_closure_handoff_binding(
+    document: dict[str, Any], *, runtime_root: Path
+) -> dict[str, Any]:
+    facts = document["facts"]
+    cleanup = _load_cleanup_checkpoint(
+        Path(document["cleanup_checkpoint"]), runtime_root=Path(runtime_root)
+    )
+    handoff_metadata = cleanup["handoff_file"]
+    handoff = verify_handoff(
+        Path(handoff_metadata["path"]),
+        expected_id=cleanup["handoff_id"],
+        expected_bytes=handoff_metadata["file_bytes"],
+        expected_sha256=handoff_metadata["file_sha256"],
+        runtime_root=Path(runtime_root),
+    )
+    envelope = handoff.get("envelope")
+    if not isinstance(envelope, dict) or envelope.get("execution_mode") != "isolated-worktree-v1":
+        raise ProtocolError(
+            "document_proposal_authority_invalid",
+            "closure handoff is not an immutable isolated-worktree-v1 authority",
+        )
+    isolated = envelope.get("isolated_worktree")
+    if not isinstance(isolated, dict):
+        raise ProtocolError(
+            "document_proposal_authority_invalid",
+            "closure handoff has no isolated worktree binding",
+        )
+    expected_lease = facts["execution_lease"]
+    if (
+        envelope.get("repository") != facts["repository"]
+        or isolated.get("worktree_path") != facts["worktree_path"]
+        or isolated.get("branch") != facts["implementation_branch"]
+        or isolated.get("execution_lease") != expected_lease
+    ):
+        raise ProtocolError(
+            "document_proposal_authority_invalid",
+            "closure facts do not match the immutable isolated handoff",
+            context={"repository": facts["repository"]},
+        )
+    return handoff
+
+
+def _load_document_proposal_authority(
+    value: Any, *, repository: Path, target_path: str
+) -> dict[str, Any]:
+    metadata = _expect_object(value, "closure_checkpoint")
+    _expect_keys(
+        metadata,
+        {"file_bytes", "file_sha256", "path", "version"},
+        "closure_checkpoint",
+    )
+    checkpoint_path = _expect_absolute_path(metadata["path"], "closure_checkpoint.path")
+    document, data = _load_closure_checkpoint(
+        checkpoint_path,
+        runtime_root=RUNTIME_ROOT,
+        closure_root=CLOSURE_ROOT,
+    )
+    if (
+        document["closure_version"] != ISOLATED_CLOSURE_VERSION
+        or document["phase"] != "prepared"
+        or metadata["version"] != ISOLATED_CLOSURE_VERSION
+        or len(data)
+        != _expect_int(
+            metadata["file_bytes"],
+            "closure_checkpoint.file_bytes",
+            1,
+            MAX_CLOSURE_CHECKPOINT_BYTES,
+        )
+        or _sha256(data)
+        != _expect_sha256(
+            metadata["file_sha256"], "closure_checkpoint.file_sha256"
+        )
+    ):
+        raise ProtocolError(
+            "document_proposal_authority_invalid",
+            "proposal convergence requires the exact prepared isolated closure checkpoint",
+        )
+    facts = document["facts"]
+    if facts["repository"] != str(repository):
+        raise ProtocolError(
+            "document_proposal_authority_invalid",
+            "closure checkpoint does not belong to the base checkout",
+            context={"repository": str(repository)},
+        )
+    if facts["documentation_proposals"].count(target_path) != 1:
+        raise ProtocolError(
+            "document_proposal_authority_invalid",
+            "target_path is not a unique frozen documentation proposal",
+            context={"repository": str(repository)},
+        )
+    handoff = _verify_isolated_closure_handoff_binding(
+        document, runtime_root=RUNTIME_ROOT
+    )
+    worktree = Path(facts["worktree_path"]).resolve(strict=False)
+    matching = [
+        item
+        for item in _active_git_worktrees(repository)
+        if Path(item["path"]) == worktree
+    ]
+    if len(matching) != 1 or (
+        matching[0].get("branch") != facts["implementation_branch"]
+        or matching[0].get("head") != facts["implementation_commit"]
+    ):
+        raise ProtocolError(
+            "document_proposal_authority_invalid",
+            "frozen implementation worktree identity is not currently exact",
+            context={"repository": str(repository)},
+        )
+    proposal_path = worktree / Path(target_path)
+    resolved_parent = proposal_path.parent.resolve(strict=True)
+    try:
+        resolved_parent.relative_to(worktree)
+    except ValueError as error:
+        raise ProtocolError(
+            "document_proposal_authority_invalid",
+            "proposal source escapes the frozen implementation worktree",
+        ) from error
+    if resolved_parent != proposal_path.parent:
+        raise ProtocolError(
+            "document_proposal_authority_invalid",
+            "proposal source contains a symbolic-link parent",
+        )
+    return {
+        "proposal_path": str(proposal_path),
+        "proposal_authority": {
+            "closure_checkpoint_sha256": _sha256(data),
+            "handoff_sha256": handoff["file_sha256"],
+            "implementation_branch": facts["implementation_branch"],
+            "implementation_commit": facts["implementation_commit"],
+            "worktree_path": str(worktree),
+        },
+    }
+
+
+def _verify_isolated_proposal_outcomes(
+    document: dict[str, Any], result: dict[str, Any], *, runtime_root: Path
+) -> None:
+    _verify_isolated_closure_handoff_binding(document, runtime_root=runtime_root)
+    facts = document["facts"]
+    repository = Path(facts["repository"])
+    worktree = Path(facts["worktree_path"]).resolve(strict=False)
+    for item in result["proposal_outcomes"]:
+        relative = Path(item["path"])
+        target = repository / relative
+        proposal = worktree / relative
+        proposal_sha256 = item["proposal_sha256"]
+        if (
+            _sha256(
+                _read_regular_file(
+                    proposal,
+                    max_bytes=MAX_INPUT_BYTES,
+                    label="frozen worktree document proposal",
+                )
+            )
+            != proposal_sha256
+            or _sha256(
+                _read_regular_file(
+                    target,
+                    max_bytes=MAX_INPUT_BYTES,
+                    label="converged target document",
+                )
+            )
+            != proposal_sha256
+        ):
+            raise ProtocolError(
+                "document_proposal_authority_invalid",
+                "proposal outcome does not match both the frozen worktree source and base-checkout target",
+                context={"repository": str(repository)},
+            )
 
 
 def create_closure_checkpoint(
@@ -6275,6 +6514,165 @@ def inspect_closure_checkpoint(
     }
 
 
+def _advance_isolated_cleanup_side_effect(
+    phase: str, facts: dict[str, Any]
+) -> dict[str, Any]:
+    """Observe and perform one v3 local cleanup action without caller receipts."""
+    repository = Path(facts["repository"])
+    context = {
+        "repository": str(repository),
+        "implementation_branch": facts["implementation_branch"],
+    }
+    if phase == "worktree-removed":
+        worktree_path = Path(facts["worktree_path"]).resolve(strict=False)
+        matching = [
+            item
+            for item in _active_git_worktrees(repository)
+            if Path(item["path"]) == worktree_path
+        ]
+        if not matching:
+            raise ProtocolError(
+                "closure_worktree_missing",
+                "isolated worktree was already missing before checkpoint-owned removal",
+                context={**context, "worktree_path": str(worktree_path)},
+            )
+        if len(matching) != 1:
+            raise ProtocolError(
+                "closure_worktree_ambiguous",
+                "isolated worktree identity is ambiguous",
+                context={**context, "worktree_path": str(worktree_path)},
+            )
+        observed = matching[0]
+        if (
+            observed.get("branch") != facts["implementation_branch"]
+            or observed.get("head") != facts["implementation_commit"]
+        ):
+            raise ProtocolError(
+                "closure_worktree_identity_changed",
+                "isolated worktree no longer matches the frozen branch and commit",
+                context={**context, "worktree_path": str(worktree_path)},
+            )
+        if _git_text(
+            worktree_path,
+            ["status", "--porcelain=v1", "--untracked-files=all"],
+        ):
+            raise ProtocolError(
+                "closure_worktree_dirty",
+                "isolated worktree is not clean; non-force removal refused",
+                context={**context, "worktree_path": str(worktree_path)},
+            )
+        completed = subprocess.run(
+            ["git", "-C", str(repository), "worktree", "remove", str(worktree_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise ProtocolError(
+                "closure_worktree_removal_refused",
+                "non-force isolated worktree removal failed",
+                retryable=True,
+                cause=completed.stderr.strip()[:1_024],
+                context={**context, "worktree_path": str(worktree_path)},
+            )
+        if any(
+            Path(item["path"]) == worktree_path
+            for item in _active_git_worktrees(repository)
+        ):
+            raise ProtocolError(
+                "closure_worktree_outcome_unknown",
+                "isolated worktree remains registered after removal",
+                retryable=True,
+                context={**context, "worktree_path": str(worktree_path)},
+            )
+        return {
+            "observed_before": "present-clean",
+            "path": str(worktree_path),
+            "verified_absent": True,
+        }
+    if phase == "branch-removed":
+        branch = facts["implementation_branch"]
+        branch_ref = f"refs/heads/{branch}"
+        observed = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "--verify", branch_ref],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if observed.returncode != 0:
+            raise ProtocolError(
+                "closure_branch_missing",
+                "implementation branch was already missing before checkpoint-owned deletion",
+                context=context,
+            )
+        branch_head = observed.stdout.strip()
+        if branch_head != facts["implementation_commit"]:
+            raise ProtocolError(
+                "closure_branch_identity_changed",
+                "implementation branch no longer points at the frozen implementation commit",
+                context={**context, "observed_head": branch_head},
+            )
+        completed = subprocess.run(
+            ["git", "-C", str(repository), "branch", "-d", branch],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise ProtocolError(
+                "closure_branch_deletion_refused",
+                "non-force implementation branch deletion failed",
+                cause=completed.stderr.strip()[:1_024],
+                context=context,
+            )
+        remaining = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "--verify", branch_ref],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if remaining.returncode == 0:
+            raise ProtocolError(
+                "closure_branch_outcome_unknown",
+                "implementation branch remains after non-force deletion",
+                retryable=True,
+                context=context,
+            )
+        return {
+            "name": branch,
+            "observed_before": "present-merged",
+            "verified_absent": True,
+        }
+    if phase == "execution-lease-released":
+        lease = facts["execution_lease"]
+        released = release_worktree_execution_lease(
+            Path(lease["path"]),
+            expected_id=lease["lease_id"],
+            expected_version=lease["version"],
+        )
+        if (
+            released["state"] != "available"
+            or released["version"] != lease["version"] + 1
+            or released["path"] != lease["path"]
+        ):
+            raise ProtocolError(
+                "closure_execution_lease_outcome_unknown",
+                "execution lease release postcondition is not exact",
+                retryable=True,
+                context={**context, "lease_path": lease["path"]},
+            )
+        return {
+            "lease_id": lease["lease_id"],
+            "path": lease["path"],
+            "state": "available",
+            "version": lease["version"] + 1,
+        }
+    raise ProtocolError(
+        "closure_side_effect_phase_invalid",
+        f"phase {phase!r} is not a checkpoint-owned isolated cleanup action",
+    )
+
+
 def advance_closure_checkpoint(
     checkpoint_path: Path,
     *,
@@ -6310,6 +6708,17 @@ def advance_closure_checkpoint(
                 f"phase {phase!r} requires cleanup state {required_state!r}; observed={cleanup_report['state']!r}"
             )
         result = {"cleanup_state": required_state}
+    elif (
+        document["closure_version"] == ISOLATED_CLOSURE_VERSION
+        and phase
+        in {"worktree-removed", "branch-removed", "execution-lease-released"}
+    ):
+        if result_path is not None:
+            raise ProtocolError(
+                "closure_side_effect_receipt_untrusted",
+                f"isolated phase {phase!r} is performed by the checkpoint CLI and rejects caller receipts",
+            )
+        result = _advance_isolated_cleanup_side_effect(phase, document["facts"])
     else:
         if result_path is None:
             raise ProtocolError(f"phase {phase!r} requires --result")
@@ -6327,6 +6736,13 @@ def advance_closure_checkpoint(
             document["facts"],
             closure_version=document["closure_version"],
         )
+        if (
+            document["closure_version"] == ISOLATED_CLOSURE_VERSION
+            and phase == "documents-committed"
+        ):
+            _verify_isolated_proposal_outcomes(
+                document, result, runtime_root=Path(runtime_root)
+            )
     updated = dict(document)
     updated["phase"] = phase
     updated["receipts"] = document["receipts"] + [
