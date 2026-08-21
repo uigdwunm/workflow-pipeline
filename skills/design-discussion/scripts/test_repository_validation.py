@@ -9,6 +9,9 @@ import sys
 import tempfile
 import unittest
 
+sys.path.insert(0, str(Path(__file__).parent))
+from matrix_proof import matrix_proof
+
 
 REPOSITORY = Path(__file__).parents[3]
 VALIDATOR = REPOSITORY / "scripts" / "validate_repository.py"
@@ -110,6 +113,10 @@ class RepositoryValidationTests(unittest.TestCase):
             [("user-specific-absolute-path", "skills/alpha/scripts/fixture.bin")],
         )
 
+    @matrix_proof(
+        "fault_boundaries:documentation-commit",
+        "invariants:no-documentation-in-implementation-commits",
+    )
     def test_implementation_range_rejects_documentation_paths(self) -> None:
         temporary_directory, repository = self.make_repository()
         self.addCleanup(temporary_directory.cleanup)

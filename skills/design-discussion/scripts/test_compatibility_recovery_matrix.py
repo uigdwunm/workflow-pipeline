@@ -12,6 +12,9 @@ import sys
 import tempfile
 import unittest
 
+sys.path.insert(0, str(Path(__file__).parent))
+from matrix_proof import matrix_proof
+
 
 REPOSITORY = Path(__file__).parents[3]
 MATRIX = Path(__file__).with_name("compatibility_recovery_matrix.json")
@@ -23,11 +26,20 @@ LEGACY_DISCOVERY_OUTPUTS = {
 
 
 class CompatibilityRecoveryMatrixTests(unittest.TestCase):
-    def available_tests(self, relative_path: str) -> set[str]:
+    def available_tests(self, relative_path: str) -> dict[str, set[str]]:
         source = REPOSITORY / relative_path
         tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
         return {
-            f"{node.name}.{child.name}"
+            f"{node.name}.{child.name}": {
+                argument.value
+                for decorator in child.decorator_list
+                if isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Name)
+                and decorator.func.id == "matrix_proof"
+                for argument in decorator.args
+                if isinstance(argument, ast.Constant)
+                and isinstance(argument.value, str)
+            }
             for node in tree.body
             if isinstance(node, ast.ClassDef)
             for child in node.body
@@ -91,7 +103,8 @@ class CompatibilityRecoveryMatrixTests(unittest.TestCase):
             },
             "legacy": {"handoff-v2", "handoff-v1", "older-worktree-checkpoint"},
         }
-        known_by_file: dict[str, set[str]] = {}
+        known_by_file: dict[str, dict[str, set[str]]] = {}
+        referenced_tests: set[tuple[str, str]] = set()
         for section, required_ids in required.items():
             rows = matrix[section]
             self.assertEqual({row["id"] for row in rows}, required_ids)
@@ -112,7 +125,32 @@ class CompatibilityRecoveryMatrixTests(unittest.TestCase):
                         relative_path, self.available_tests(relative_path)
                     )
                     self.assertIn(test_name, known, reference)
+                    self.assertIn(
+                        f"{section}:{row['id']}",
+                        known[test_name],
+                        f"{reference} is not explicitly marked as proof for {section}:{row['id']}",
+                    )
+                    referenced_tests.add((relative_path, test_name))
 
+        for relative_path, test_name in sorted(referenced_tests):
+            completed = subprocess.run(
+                [sys.executable, str(REPOSITORY / relative_path), test_name],
+                cwd=REPOSITORY,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                f"matrix proof failed: {relative_path}::{test_name}\n"
+                f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
+            )
+
+    @matrix_proof(
+        "compatibility:none-byte-equivalent-zero-state",
+        "compatibility:ambiguous-byte-equivalent-zero-state",
+    )
     def test_none_and_ambiguous_are_byte_stable_and_create_zero_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory).resolve()

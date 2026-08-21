@@ -26,6 +26,16 @@ SPEC = importlib.util.spec_from_file_location("supervision_protocol", SCRIPT_PAT
 assert SPEC is not None and SPEC.loader is not None
 PROTOCOL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PROTOCOL)
+MATRIX_PROOF_PATH = (
+    Path(__file__).parents[2] / "design-discussion" / "scripts" / "matrix_proof.py"
+)
+MATRIX_PROOF_SPEC = importlib.util.spec_from_file_location(
+    "matrix_proof", MATRIX_PROOF_PATH
+)
+assert MATRIX_PROOF_SPEC is not None and MATRIX_PROOF_SPEC.loader is not None
+MATRIX_PROOF = importlib.util.module_from_spec(MATRIX_PROOF_SPEC)
+MATRIX_PROOF_SPEC.loader.exec_module(MATRIX_PROOF)
+matrix_proof = MATRIX_PROOF.matrix_proof
 
 
 class DocumentLeaseTests(unittest.TestCase):
@@ -766,6 +776,7 @@ class DocumentLeaseTests(unittest.TestCase):
             sorted(result["state"] for result in results), ["held", "timeout"]
         )
 
+    @matrix_proof("fault_boundaries:lease")
     def test_lease_conflict_fault_recovers_only_after_exact_owner_release(self) -> None:
         first_input = self.write_input("lease-boundary-first.json", task_id="task-a")
         second_input = self.write_input("lease-boundary-second.json", task_id="task-b")
@@ -796,6 +807,7 @@ class DocumentLeaseTests(unittest.TestCase):
         self.assertTrue(recovered["acquired"])
         self.assertEqual(recovered["holder"]["owner_task_id"], "task-b")
 
+    @matrix_proof("fault_boundaries:git-worktree")
     def test_worktree_execution_lease_cli_binds_exact_worktree_and_v2_queues(self) -> None:
         topic, base = self.bootstrap_discussion_repository()
         worktree = self.root / "isolated-wi07"
@@ -906,6 +918,7 @@ class DocumentLeaseTests(unittest.TestCase):
         self.assertEqual(invalid_reconcile.returncode, 2)
         self.assertEqual(json.loads(invalid_reconcile.stdout)["error"]["code"], "worktree_reconciliation_invalid_outcome")
 
+    @matrix_proof("invariants:no-automatic-unconfirmed-worktree")
     def test_isolated_user_decision_requires_canonical_exact_payload(self) -> None:
         topic, base = self.bootstrap_discussion_repository()
         lease = self.create_coordinated_worktree_lease(
@@ -1020,6 +1033,11 @@ class DocumentLeaseTests(unittest.TestCase):
         self.assertEqual(wrong.returncode, 2)
         self.assertEqual(json.loads(wrong.stdout)["error"]["code"], "integration_lease_invalid")
 
+    @matrix_proof(
+        "scenarios:two-safe-isolated-implementations",
+        "scenarios:shared-base-serial-integration",
+        "invariants:no-automatic-unconfirmed-worktree",
+    )
     def test_two_confirmed_isolated_implementations_merge_serially_from_shared_base(self) -> None:
         topic, base = self.bootstrap_discussion_repository()
         cases = (
@@ -1210,6 +1228,11 @@ class DocumentLeaseTests(unittest.TestCase):
         )
         self.assertEqual(json.loads(verified_legacy.stdout)["handoff_version"], 3)
 
+    @matrix_proof(
+        "legacy:handoff-v2",
+        "legacy:handoff-v1",
+        "legacy:older-worktree-checkpoint",
+    )
     def test_legacy_v2_v1_and_older_worktree_checkpoint_keep_embedded_protocol(self) -> None:
         runtime_root = self.root / "legacy-runtime"
         runtime_root.mkdir(mode=0o700)
@@ -1604,6 +1627,7 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
         )
         return proposal, closure, environment
 
+    @matrix_proof("fault_boundaries:documentation-commit")
     def test_archive_document_proposal_has_apply_noop_conflict_three_way_semantics(self) -> None:
         target = self.repository / "docs" / "result.md"
         target.parent.mkdir()
@@ -1743,6 +1767,7 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
         self.assertEqual(code, 2)
         self.assertEqual(response["error"]["code"], "document_proposal_authority_invalid")
 
+    @matrix_proof("legacy:older-worktree-checkpoint")
     def test_closure_protocol_dispatch_is_immutable_for_all_execution_modes(self) -> None:
         self.assertEqual(
             PROTOCOL._closure_phases(PROTOCOL.LEGACY_CLOSURE_VERSION),
@@ -1820,6 +1845,10 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
         )
         self.assertEqual(released["state"], "available")
 
+    @matrix_proof(
+        "fault_boundaries:cleanup",
+        "invariants:no-force-cleanup-of-unknown-work",
+    )
     def test_isolated_cleanup_faults_are_explicit_and_resume_from_first_missing_receipt(self) -> None:
         runtime = self.root / "cc-runtime"
         environment = {**os.environ, "CC_SWITCH_RUNTIME_ROOT": str(runtime)}

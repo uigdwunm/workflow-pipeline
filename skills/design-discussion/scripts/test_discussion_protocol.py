@@ -15,6 +15,9 @@ import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
+sys.path.insert(0, str(Path(__file__).parent))
+from matrix_proof import matrix_proof
+
 
 SCRIPT_PATH = Path(__file__).with_name("discussion_protocol.py")
 SUPERVISION_SCRIPT_PATH = (
@@ -502,6 +505,12 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             revision += 1
         return result, revision, topic_revision + 1
 
+    @matrix_proof(
+        "scenarios:root-discussion-to-1",
+        "scenarios:root-discussion-to-2",
+        "scenarios:root-discussion-to-3",
+        "scenarios:root-discussion-to-4",
+    )
     def test_root_discussion_executes_full_zero_through_four_lifecycle(self) -> None:
         project = self.make_project("root-zero-through-four", git=False)
         topic = self.bootstrap_topic(project)
@@ -529,6 +538,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(validated["state"], "valid")
         self.assertEqual(validated["record_revision"], 5)
 
+    @matrix_proof("invariants:no-double-active-run-or-binding")
     def test_competing_phase_run_cannot_become_double_active(self) -> None:
         project = self.make_project("no-double-active-phase-run", git=False)
         topic = self.bootstrap_topic(project)
@@ -884,6 +894,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                     "topic.md",
                 )
 
+    @matrix_proof("scenarios:direct-0-to-2")
     def test_solution_wrapper_requires_claim_ready_activation_and_current_source(self) -> None:
         project = self.make_project("wrapper-solution", git=False)
         topic = self.bootstrap_topic(project)
@@ -961,6 +972,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 1)
         self.assertEqual(drifted["error"]["code"], "phase_source_drift")
 
+    @matrix_proof("scenarios:direct-1-to-3")
     def test_wrapper_pending_impacts_and_direct_to_three_completeness(self) -> None:
         impacted_project = self.make_project("wrapper-pending-impact", git=False)
         impacted = self.bootstrap_topic(impacted_project)
@@ -1393,6 +1405,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(ledger_text.count("event_id: "), 8)
         self.assertEqual(ledger_text.count("ledger_revision: 8"), 2)
 
+    @matrix_proof("fault_boundaries:terminal-claim")
     def test_phase_drift_and_late_terminal_are_rejected(self) -> None:
         project = self.make_project("phase-drift", git=False)
         topic = self.bootstrap_topic(project)
@@ -1596,6 +1609,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                     self.assertEqual(code, 1, (source, target, response))
                     self.assertEqual(response["error"]["code"], "invalid_phase_route")
 
+    @matrix_proof("fault_boundaries:terminal-claim")
     def test_failed_attempt_retries_monotonically_and_duplicate_terminal_is_rejected(self) -> None:
         project = self.make_project("phase-retry", git=False)
         topic = self.bootstrap_topic(project)
@@ -1757,6 +1771,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 1)
         self.assertEqual(rejected["error"]["code"], "invalid_request")
 
+    @matrix_proof("fault_boundaries:ready-activate")
     def test_each_authoritative_drift_dimension_rejects_activation(self) -> None:
         replacements = {
             "source": ("topic-document", ""),
@@ -1795,16 +1810,20 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                     evidence=evidence,
                 )
             )
+            ledger = Path(str(topic["ledger_path"]))
+            topic_path = Path(str(topic["topic_document_path"]))
+            ready_ledger = ledger.read_bytes()
+            ready_topic = topic_path.read_bytes()
             if dimension == "source":
-                topic_path = Path(str(topic["topic_document_path"]))
                 topic_path.write_text(topic_path.read_text(encoding="utf-8") + "\ndrift\n", encoding="utf-8")
             else:
-                ledger = Path(str(topic["ledger_path"]))
+                expanded_new = new.replace("TOPIC_ID", str(topic["topic_id"]))
                 self.rewrite_ledger_with_valid_digest(
                     ledger,
                     old,
-                    new.replace("TOPIC_ID", str(topic["topic_id"])),
+                    expanded_new,
                 )
+            faulted_ledger = ledger.read_bytes()
             code, rejected, _ = self.run_cli(
                 self.phase_request(
                     topic,
@@ -1817,6 +1836,65 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             )
             self.assertEqual(code, 1, dimension)
             self.assertEqual(rejected["error"]["code"], f"phase_{dimension}_drift")
+            self.assertEqual(ledger.read_bytes(), faulted_ledger, dimension)
+
+            if dimension == "source":
+                topic_path.write_bytes(ready_topic)
+            else:
+                self.rewrite_ledger_with_valid_digest(ledger, expanded_new, old)
+            self.assertEqual(ledger.read_bytes(), ready_ledger, dimension)
+            self.assertEqual(topic_path.read_bytes(), ready_topic, dimension)
+            validate = self.phase_request(topic, "validate", 0)
+            for key in (
+                "expected_ledger_revision",
+                "expected_topic_revision",
+                "idempotency_key",
+            ):
+                validate.pop(key)
+            code, valid, stderr = self.run_cli(validate)
+            self.assertEqual(code, 0, stderr)
+            self.assertEqual(valid["state"], "valid")
+            self.assertEqual(valid["ledger_revision"], 4)
+
+            code, _, stderr = self.run_cli(
+                self.phase_request(
+                    topic,
+                    "cancel-phase-run",
+                    4,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    reason="replace the drifted ready attempt",
+                )
+            )
+            self.assertEqual(code, 0, stderr)
+            replacement = self.prepare_phase_run(topic, revision=5)
+            replacement_evidence = replacement["evidence"]
+            for revision, (operation, parameters) in enumerate(
+                (
+                    ("authorize-phase-carrier", {"carrier_ref": "discussion-task"}),
+                    (
+                        "phase-ready",
+                        {
+                            "carrier_ref": "discussion-task",
+                            "evidence": replacement_evidence,
+                        },
+                    ),
+                    ("phase-activate", {"evidence": replacement_evidence}),
+                ),
+                start=6,
+            ):
+                code, recovered, stderr = self.run_cli(
+                    self.phase_request(
+                        topic,
+                        operation,
+                        revision,
+                        phase_run_id=replacement["phase_run_id"],
+                        attempt_id=replacement["attempt_id"],
+                        **parameters,
+                    )
+                )
+                self.assertEqual(code, 0, stderr)
+            self.assertEqual(recovered["state"], "active")
 
     def test_supersession_and_authorization_loss_reject_late_carrier_signals(self) -> None:
         for operation in ("supersede-phase-run", "revoke-phase-authorization"):
@@ -2855,6 +2933,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(returncode, 0, stderr)
         self.assertTrue(authorized["substantive_discussion_allowed"])
 
+    @matrix_proof("fault_boundaries:external-carrier-creation")
     def test_outcome_unknown_cancel_late_arrival_and_forced_retry_preserve_attempt_history(self) -> None:
         project = self.make_project("handoff-recovery", git=False)
         topic = self.bootstrap_topic(project)
@@ -2939,6 +3018,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual([item["state"] for item in read["attempts"]], ["cancelled", "setup-pending"])
 
+    @matrix_proof("invariants:no-double-active-run-or-binding")
     def test_continuation_atomically_supersedes_binding_and_parallel_claim_has_one_winner(self) -> None:
         project = self.make_project("continuation-binding", git=False)
         topic = self.bootstrap_topic(project)
@@ -3063,6 +3143,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(valid["state"], "valid")
         self.assertEqual(valid["handoff_count"], 2)
 
+    @matrix_proof("scenarios:parent-child-absorption-and-coverage")
     def test_child_result_absorbs_only_within_scope_and_records_cross_topic_impact(self) -> None:
         project = self.make_project("child-result", git=False)
         topic = self.bootstrap_topic(project)
@@ -3191,6 +3272,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(impact["state"], "pending-impact")
         self.assertRegex(str(impact["impact_id"]), r"^IMP-[0-9a-f]{32}$")
 
+    @matrix_proof("scenarios:no-code-integration")
     def test_fully_absorbed_child_implementation_records_no_code_integration_phase_three(self) -> None:
         project = self.make_project("no-code-integration", git=False)
         topic = self.bootstrap_topic(project)
@@ -3462,6 +3544,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(reconciled["state"], "failed")
         self.assertFalse(reconciled["binding_eligible"])
 
+    @matrix_proof("fault_boundaries:external-carrier-creation")
     def test_binding_failure_before_ledger_commit_leaves_no_partial_claim(self) -> None:
         project = self.make_project("handoff-binding-fault", git=False)
         topic = self.bootstrap_topic(project)
@@ -3924,6 +4007,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 )
                 self.assertEqual(response["error"]["code"], expected)
 
+    @matrix_proof("fault_boundaries:documentation-commit")
     def test_reconcile_adopts_uncertain_apply_and_completes_after_release(self) -> None:
         project = self.make_project("reconcile-uncertain", git=True)
         topic = self.bootstrap_topic(project)
@@ -4611,6 +4695,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                         "checkpoint_history_ambiguous",
                     )
 
+    @matrix_proof("fault_boundaries:ledger-transaction")
     def test_failure_injection_recovers_git_and_snapshot_result_recording(self) -> None:
         git_project = self.make_project("git-failure-injection", git=True)
         (git_project / "base.txt").write_text("base\n", encoding="utf-8")
@@ -5638,6 +5723,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(stale_source["error"]["code"], "implementation_source_invalid")
         self.assertEqual(Path(str(topic["ledger_path"])).read_bytes(), before_stale_source)
 
+    @matrix_proof(
+        "scenarios:shared-base-serial-integration",
+        "invariants:no-stale-source-integration",
+    )
     def test_integration_revalidation_uses_current_cross_cli_authority(self) -> None:
         project = self.make_project("integration-authority", git=True)
         topic = self.bootstrap_topic(project)
@@ -6731,6 +6820,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         read = self.run_cli(self.evolution_request(topic, operation="read-topic"))[1]
         self.assertEqual(read["state"], "read")
 
+    @matrix_proof("invariants:no-premature-topic-close")
     def test_topic_close_keeps_blocked_and_failed_phase_runs_open(self) -> None:
         for run_state in ("blocked", "failed"):
             with self.subTest(run_state=run_state):
