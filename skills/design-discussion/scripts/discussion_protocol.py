@@ -139,6 +139,9 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "implementation_source_invalid": "实现来源必须是已提交且完整验证的 implementation-source 检查点。",
         "isolated_worktree_confirmation_required": "isolated worktree 需要对精确安排的显式确认。",
         "source_refresh_state_conflict": "来源刷新当前状态不允许此操作。",
+        "archive_authority_invalid": "归档来源、实现、合并、提案或保留检查点未通过验证。",
+        "archive_checkpoint_invalid": "归档保留检查点缺失、未完成或与冻结执行模式不匹配。",
+        "topic_close_blocked": "归档已完成，但话题仍有协调事项，不能关闭。",
     }
     detail: dict[str, Any] = {
         "code": error.code,
@@ -7499,6 +7502,247 @@ def _validate_handoffs(records: dict[str, list[dict[str, Any]]]) -> int:
     return len(handoffs)
 
 
+def _inspect_archive_checkpoint(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ProtocolError("archive_checkpoint_invalid", "closure_checkpoint must be an object")
+    _expect_keys(
+        value,
+        {"file_bytes", "file_sha256", "path", "version"},
+        "closure_checkpoint",
+    )
+    path = Path(_expect_string(value["path"], "closure_checkpoint.path", max_bytes=4096))
+    if not path.is_absolute():
+        raise ProtocolError("archive_checkpoint_invalid", "closure checkpoint path must be absolute")
+    report = _run_supervision_cli(
+        ["inspect-closure-checkpoint", "--checkpoint", str(path)],
+        "archive_checkpoint_invalid",
+    )
+    if (
+        report.get("phase") != "complete"
+        or report.get("closure_version") != value["version"]
+        or report.get("file_bytes") != value["file_bytes"]
+        or report.get("file_sha256") != value["file_sha256"]
+    ):
+        raise ProtocolError(
+            "archive_checkpoint_invalid",
+            "closure checkpoint is not the exact completed retained receipt",
+        )
+    return report
+
+
+def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
+    project, ledger_path, _, lock_path, owner_ref = _evolution_paths(
+        request, allow_tree_topic=True
+    )
+    _expect_keys(
+        request,
+        {
+            "protocol_version", "operation", "project_path", "project_id", "tree_id",
+            "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision",
+            "expected_topic_revision", "idempotency_key", "implementation_id",
+            "effective_phase_result_id", "source_checkpoint_id", "source_identity",
+            "execution_mode", "implementation_record_revision", "merge_commit",
+            "documentation_proposals", "closure_checkpoint",
+        },
+        "record-archive-complete request",
+    )
+    _validate_uuid4(request["idempotency_key"], "idempotency_key")
+    execution_mode = _expect_string(request["execution_mode"], "execution_mode")
+    expected_closure_version = {
+        "exclusive-checkout-v2": 2,
+        "isolated-worktree-v1": 3,
+    }.get(execution_mode)
+    if expected_closure_version is None:
+        raise ProtocolError("archive_authority_invalid", "execution mode has no archive protocol")
+    proposals = request["documentation_proposals"]
+    if not isinstance(proposals, list):
+        raise ProtocolError("invalid_request", "documentation_proposals must be an array")
+    normalized_proposals = []
+    for index, proposal in enumerate(proposals):
+        if not isinstance(proposal, dict):
+            raise ProtocolError("invalid_request", f"documentation_proposals[{index}] must be an object")
+        _expect_keys(proposal, {"outcome", "path"}, f"documentation_proposals[{index}]")
+        outcome = _expect_string(proposal["outcome"], f"documentation_proposals[{index}].outcome")
+        if outcome not in {"applied", "no-op"}:
+            raise ProtocolError(
+                "archive_authority_invalid",
+                "conflicted or unverified documentation proposals block archive completion",
+            )
+        normalized_proposals.append(
+            {"outcome": outcome, "path": _expect_string(proposal["path"], f"documentation_proposals[{index}].path", max_bytes=4096)}
+        )
+
+    # Supervision and Git authority are read without the discussion lock.
+    closure = _inspect_archive_checkpoint(request["closure_checkpoint"])
+    if closure.get("closure_version") != expected_closure_version:
+        raise ProtocolError("archive_checkpoint_invalid", "closure protocol does not match execution mode")
+    merge_commit = _expect_string(request["merge_commit"], "merge_commit", max_bytes=128)
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", merge_commit, "HEAD"],
+        cwd=project,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if ancestry.returncode != 0:
+        raise ProtocolError(
+            "archive_authority_invalid",
+            "merge commit is not an ancestor of the verified base checkout",
+            cause=ancestry.stderr.strip() or None,
+        )
+
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        implementation_record, implementation = _implementation_authority(records, request)
+        execution = implementation.get("execution")
+        if (
+            not isinstance(execution, dict)
+            or execution.get("mode") != execution_mode
+            or execution.get("source_checkpoint_id") != request["source_checkpoint_id"]
+            or execution.get("source_identity") != request["source_identity"]
+            or implementation.get("record_revision") != request["implementation_record_revision"]
+        ):
+            raise ProtocolError("archive_authority_invalid", "implementation source chain or mode changed")
+        checkpoint = _verified_implementation_source(
+            records, request, request["source_checkpoint_id"], request["source_identity"]
+        )
+        phase_result_record = _record_by_id(
+            records["Phase Results"], "result_id", request["effective_phase_result_id"], "effective_phase_result_id"
+        )
+        phase_result = _json_field(phase_result_record, "data_json", "phase result")
+        if (
+            phase_result_record.get("state") != "completed"
+            or phase_result.get("topic_id") != request["actor_topic_id"]
+            or phase_result.get("to_phase") != 3
+        ):
+            raise ProtocolError("archive_authority_invalid", "effective phase-3 result is not completed for this source topic")
+        if closure.get("facts", {}).get("execution_mode") != execution_mode or closure.get("facts", {}).get("merge_commit") != merge_commit:
+            raise ProtocolError("archive_checkpoint_invalid", "retained checkpoint facts do not match the implementation")
+        implementation["state"] = "archived"
+        implementation["record_revision"] += 1
+        _store_implementation(implementation_record, implementation)
+        archive_result_id = "AR-" + uuid.UUID(request["idempotency_key"]).hex
+        archive_data = {
+            "archive_result_id": archive_result_id,
+            "closure_checkpoint": dict(request["closure_checkpoint"]),
+            "documentation_proposals": normalized_proposals,
+            "effective_phase_result_id": phase_result["result_id"],
+            "execution_mode": execution_mode,
+            "implementation_id": implementation["implementation_id"],
+            "merge_commit": merge_commit,
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_identity": checkpoint["published_identity"],
+            "topic_id": request["actor_topic_id"],
+        }
+        records["Phase Results"].append(
+            {
+                "result_id": archive_result_id,
+                "result_kind": "archive-result",
+                "state": "completed",
+                "record_revision": 1,
+                "data_json": _canonical_json(archive_data),
+            }
+        )
+        topic["current_phase"] = 4
+        topic["phase_state"] = "completed"
+        topic["record_revision"] = int(topic["record_revision"]) + 1
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True, "state": "archive-complete", "topic_state": "open",
+            "idempotent_replay": False, "project_id": request["project_id"],
+            "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision, "record_revision": topic["record_revision"],
+            "archive_result_id": archive_result_id, "effective_sources": {
+                "phase_result_id": phase_result["result_id"],
+                "source_checkpoint_id": checkpoint["checkpoint_id"],
+                "source_identity": checkpoint["published_identity"],
+            },
+            "phase_results": {"implementation": "completed", "archive": "completed"},
+            "cleanup_responsibility": execution_mode,
+            "conditional_close": "pending-topic-coordination-check",
+        }
+        _write_ledger_transaction(
+            ledger_path, frontmatter, records, request,
+            ledger_revision=next_revision, event_type="archive-completed", result=result,
+        )
+        return result
+
+
+def _close_archived_topic(request: dict[str, Any]) -> dict[str, Any]:
+    _, ledger_path, _, lock_path, owner_ref = _evolution_paths(request, allow_tree_topic=True)
+    _expect_keys(
+        request,
+        {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key"},
+        "close-archived-topic request",
+    )
+    _validate_uuid4(request["idempotency_key"], "idempotency_key")
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        ledger_revision, _ = _validate_revisions(request, frontmatter, topic)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        archive_results = [
+            item for item in records["Phase Results"]
+            if item.get("result_kind") == "archive-result"
+            and item.get("state") == "completed"
+            and _json_field(item, "data_json", "archive result").get("topic_id") == request["actor_topic_id"]
+        ]
+        if len(archive_results) != 1 or topic.get("phase_state") != "completed":
+            raise ProtocolError("archive_authority_invalid", "topic has no unique completed archive result")
+        blockers: list[str] = []
+        if any(item["state"] == "pending" for item in _topic_snapshot(records, request["actor_topic_id"])["impacts"]):
+            blockers.append("pending-impacts")
+        active_run_states = {"prepared", "setup-pending", "ready", "active", "completion-claimed", "completion-pending", "outcome-unknown"}
+        if any(item.get("state") in active_run_states for item in records["Phase Runs"]):
+            blockers.append("active-or-queued-runs")
+        implementations = [
+            _json_field(item, "data_json", "implementation")
+            for item in records["Dependencies and Active Implementations"]
+            if item.get("record_kind") == "implementation"
+        ]
+        if any(item.get("state") != "archived" for item in implementations):
+            blockers.append("active-implementations")
+        if any(item.get("state") not in {"completed", "cancelled", "superseded"} for item in records["Pending Document Writes"]):
+            blockers.append("unverified-coordination")
+        for relation in records["Relations and Coverage"]:
+            if relation.get("relation_type") in {"absorbs", "blocks", "affected"} and relation.get("state") != "resolved":
+                blockers.append("pending-absorption-or-blockers")
+                break
+        next_revision = ledger_revision + 1
+        if blockers:
+            result = {
+                "ok": True, "state": "archive-complete", "topic_state": "open",
+                "idempotent_replay": False, "project_id": request["project_id"],
+                "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
+                "ledger_revision": next_revision, "record_revision": topic["record_revision"],
+                "blockers": sorted(set(blockers)), "conditional_close": "topic-open",
+            }
+            _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="topic-close-deferred", result=result)
+            return result
+        topic["topic_state"] = "closed"
+        topic["record_revision"] = int(topic["record_revision"]) + 1
+        result = {
+            "ok": True, "state": "closed", "topic_state": "closed",
+            "idempotent_replay": False, "project_id": request["project_id"],
+            "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision, "record_revision": topic["record_revision"],
+            "blockers": [], "conditional_close": "topic-closed",
+        }
+        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="topic-closed", result=result)
+        return result
+
+
 def _read_topic(request: dict[str, Any], *, validate_only: bool = False) -> dict[str, Any]:
     project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, query=True)
     allowed = {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref"}
@@ -7632,6 +7876,10 @@ def handle(request: Any) -> dict[str, Any]:
         return _issue_integration_authority_receipt(request)
     if operation == "validate-integration-authority-receipt":
         return _validate_integration_authority_receipt(request)
+    if operation == "record-archive-complete":
+        return _record_archive_complete(request)
+    if operation == "close-archived-topic":
+        return _close_archived_topic(request)
     if operation == "repair-checkpoint":
         return _repair_checkpoint(request)
     if operation == "checkpoint-gc-dry-run":

@@ -1059,5 +1059,189 @@ class DocumentLeaseTests(unittest.TestCase):
         self.assertEqual(json.loads(verified_legacy.stdout)["handoff_version"], 3)
 
 
+class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
+    def run_archive_cli(self, command: str, input_path: Path) -> tuple[int, dict[str, object]]:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), command, "--input", str(input_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return completed.returncode, json.loads(completed.stdout)
+
+    def acquire_archive_document_lease(self) -> dict[str, object]:
+        lease_input = self.write_input(
+            "archive-document-lease.json",
+            task_id="archive-task",
+            stage="change-closure",
+        )
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "acquire-document-lease", "--input", str(lease_input)],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        return json.loads(completed.stdout)
+
+    def proposal_input(
+        self,
+        *,
+        target: Path,
+        proposal: Path,
+        base: bytes,
+        lease: dict[str, object],
+    ) -> Path:
+        input_path = self.root / f"proposal-{uuid.uuid4().hex}.json"
+        input_path.write_text(
+            json.dumps(
+                {
+                    "base_sha256": hashlib.sha256(base).hexdigest(),
+                    "document_lease": {
+                        "lease_id": lease["holder"]["lease_id"],
+                        "path": lease["path"],
+                        "version": lease["version"],
+                    },
+                    "proposal_path": str(proposal),
+                    "proposal_sha256": hashlib.sha256(proposal.read_bytes()).hexdigest(),
+                    "repository": str(self.repository),
+                    "target_path": str(target.relative_to(self.repository)),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return input_path
+
+    def test_archive_document_proposal_has_apply_noop_conflict_three_way_semantics(self) -> None:
+        target = self.repository / "docs" / "result.md"
+        target.parent.mkdir()
+        base = b"base\n"
+        proposed = b"proposed\n"
+        target.write_bytes(base)
+        proposal = self.root / "proposal.md"
+        proposal.write_bytes(proposed)
+        lease = self.acquire_archive_document_lease()
+
+        code, applied = self.run_archive_cli(
+            "converge-document-proposal",
+            self.proposal_input(target=target, proposal=proposal, base=base, lease=lease),
+        )
+        self.assertEqual(code, 0, applied)
+        self.assertEqual(applied["outcome"], "applied")
+        self.assertEqual(target.read_bytes(), proposed)
+
+        code, noop = self.run_archive_cli(
+            "converge-document-proposal",
+            self.proposal_input(target=target, proposal=proposal, base=base, lease=lease),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(noop["outcome"], "no-op")
+
+        target.write_bytes(b"independent-base-change\n")
+        code, conflict = self.run_archive_cli(
+            "converge-document-proposal",
+            self.proposal_input(target=target, proposal=proposal, base=base, lease=lease),
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(conflict["error"]["code"], "document_proposal_conflict")
+        self.assertEqual(target.read_bytes(), b"independent-base-change\n")
+
+    def test_archive_document_proposal_rejects_worktree_as_apply_checkout(self) -> None:
+        target = self.repository / "docs" / "result.md"
+        target.parent.mkdir()
+        target.write_bytes(b"base\n")
+        proposal = self.root / "proposal.md"
+        proposal.write_bytes(b"proposed\n")
+        lease = self.acquire_archive_document_lease()
+        source = json.loads(
+            self.proposal_input(target=target, proposal=proposal, base=b"base\n", lease=lease).read_text()
+        )
+        source["repository"] = str(self.root / "implementation-worktree")
+        forged = self.root / "forged-proposal.json"
+        forged.write_text(json.dumps(source, sort_keys=True, separators=(",", ":")) + "\n")
+        code, response = self.run_archive_cli("converge-document-proposal", forged)
+        self.assertEqual(code, 2)
+        self.assertEqual(response["error"]["code"], "document_lease_invalid")
+
+    def test_closure_protocol_dispatch_is_immutable_for_all_execution_modes(self) -> None:
+        self.assertEqual(
+            PROTOCOL._closure_phases(PROTOCOL.LEGACY_CLOSURE_VERSION),
+            PROTOCOL.LEGACY_CLOSURE_PHASES,
+        )
+        self.assertEqual(
+            PROTOCOL._closure_phases(PROTOCOL.CLOSURE_VERSION),
+            PROTOCOL.CLOSURE_PHASES,
+        )
+        self.assertEqual(
+            PROTOCOL._closure_phases(PROTOCOL.ISOLATED_CLOSURE_VERSION),
+            PROTOCOL.ISOLATED_CLOSURE_PHASES,
+        )
+        lease_id = "3" * 32
+        facts = PROTOCOL._validate_closure_facts(
+            {
+                "base_branch": "main",
+                "checkout_path": str(self.repository),
+                "documentation_proposals": ["docs/result.md"],
+                "execution_lease": {
+                    "lease_id": lease_id,
+                    "path": str(
+                        self.repository
+                        / ".git"
+                        / PROTOCOL.WORKTREE_EXECUTION_LEASE_DIRECTORY
+                        / f"{lease_id}.json"
+                    ),
+                    "version": 7,
+                },
+                "execution_mode": "isolated-worktree-v1",
+                "implementation_branch": "codex/isolated",
+                "implementation_commit": "a" * 40,
+                "managed_links": [],
+                "merge_commit": "b" * 40,
+                "remote_actions": [],
+                "repository": str(self.repository),
+                "source_host_id": "host",
+                "source_task_id": "task",
+                "spec_references": [],
+                "ticket_references": [],
+                "worktree_path": str(self.root / "isolated-worktree"),
+            },
+            "facts",
+            closure_version=PROTOCOL.ISOLATED_CLOSURE_VERSION,
+        )
+        self.assertEqual(facts["execution_mode"], "isolated-worktree-v1")
+        with self.assertRaises(PROTOCOL.ProtocolError):
+            PROTOCOL._validate_closure_phase_result(
+                "worktree-removed",
+                {"path": facts["worktree_path"], "verified_absent": True},
+                facts,
+                closure_version=PROTOCOL.ISOLATED_CLOSURE_VERSION,
+            )
+        removed = PROTOCOL._validate_closure_phase_result(
+            "worktree-removed",
+            {
+                "observed_before": "present-clean",
+                "path": facts["worktree_path"],
+                "verified_absent": True,
+            },
+            facts,
+            closure_version=PROTOCOL.ISOLATED_CLOSURE_VERSION,
+        )
+        self.assertEqual(removed["observed_before"], "present-clean")
+        released = PROTOCOL._validate_closure_phase_result(
+            "execution-lease-released",
+            {
+                "lease_id": lease_id,
+                "path": facts["execution_lease"]["path"],
+                "state": "available",
+                "version": 8,
+            },
+            facts,
+            closure_version=PROTOCOL.ISOLATED_CLOSURE_VERSION,
+        )
+        self.assertEqual(released["state"], "available")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,14 +1,15 @@
 # Closure Checkpoint Protocol
 
-Use this reference only inside `$change-closure`. New zero-worktree runs use
-closure checkpoint version 2. Legacy in-flight handoffs embedding the previous
-execution protocol retain closure checkpoint version 1 and its recorded
-worktree phase. Never convert one version to the other.
+Use this reference only inside `$change-closure`. New `exclusive-checkout-v2`
+runs use closure checkpoint version 2; new `isolated-worktree-v1` runs use
+version 3. Legacy in-flight handoffs retain closure checkpoint version 1 and
+their recorded worktree phase. Never convert one version to another.
 
 ## Contents
 
 - Resume a retained closure
 - Prepare a version-2 checkpoint
+- Prepare an isolated version-3 checkpoint
 - Record phase receipts
 - Release immutable stage-3 evidence
 - Legacy version-1 compatibility
@@ -32,7 +33,8 @@ legacy-worktree, remote, or evidence-cleanup action remains.
 
 On retry:
 
-1. Run `inspect-closure-checkpoint` first. Require its `closure_version`, facts,
+1. Run `inspect-closure-checkpoint` first. Require its immutable
+   `closure_version`, execution mode, facts,
    and receipts to match the stage-3 report and actual repository.
 2. Before `complete`, run `inspect-cleanup` and require its filesystem-derived
    state to match.
@@ -46,6 +48,10 @@ On retry:
    mode, or prepared facts changed.
 6. If actual state proves exactly one next action completed before interruption,
    verify its complete postcondition and record only that phase.
+
+Missing worktrees/branches and ambiguous lease release are not completed side
+effects. Preserve the checkpoint and report the exact observed state. Never
+advance from absence alone when the phase requires an `observed_before` fact.
 
 Use `恢复类型：需要决策` for force cleanup, ambiguous remote state, changed
 integration, document-format choices, or material judgment.
@@ -115,6 +121,35 @@ Version-2 order and receipts:
 - `evidence-cleanup` and `complete`: no result file; the tool derives cleanup
   state.
 
+## Prepare an isolated version-3 checkpoint
+
+Use the same `create-closure-checkpoint` command. When facts contain
+`execution_mode: isolated-worktree-v1`, the tool immutably dispatches version 3
+and requires the ordinary `checkout_path` equal `repository`, a distinct exact
+`worktree_path`, exact documentation-proposal paths and the exact worktree
+execution lease (`path`, `lease_id`, CAS `version`). Its phases are:
+
+`prepared -> documents-committed -> worktree-removed -> branch-removed -> execution-lease-released -> remote-verified -> evidence-cleanup -> complete`.
+
+At `prepared`, converge each proposal only in the ordinary checkout with
+`converge-document-proposal`. The implementation worktree supplies immutable
+proposal bytes/evidence only. `applied` and `no-op` may proceed; a
+`document_proposal_conflict` preserves both sides and blocks.
+
+Version-3 cleanup receipts are deliberately stronger than legacy receipts:
+
+- `worktree-removed` requires exact path, `observed_before: present-clean`, and
+  `verified_absent: true` after non-force removal;
+- `branch-removed` requires exact name, `observed_before: present-merged`, and
+  `verified_absent: true` after `git branch -d`;
+- `execution-lease-released` requires exact ID/path, `state: available`, and
+  exactly the next CAS version.
+
+Publish one receipt after each verified postcondition. A missing worktree,
+branch deletion refusal, or uncertain lease result stops before later cleanup.
+On resume, inspect the checkpoint and actual authoritative state, then perform
+only the first action without a receipt.
+
 After each mutation, verify its postcondition and record exactly one receipt
 before the next action. Stop when receipt publication fails.
 
@@ -156,6 +191,6 @@ and repository lease. Its receipts remain:
 - `remote-verified`;
 - derived evidence-cleanup and complete receipts.
 
-Do not create a new version-1 checkpoint, add a worktree to a version-2 run, or
-replace a legacy checkpoint with version 2. The protocol tool accepts version 1
-only to finish already published in-flight evidence.
+Do not create a new version-1 checkpoint, add a worktree to version 2, remove
+the worktree phase from version 3, or replace a retained checkpoint with another
+version. The tool accepts version 1 only to finish published in-flight evidence.

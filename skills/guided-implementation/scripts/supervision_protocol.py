@@ -97,6 +97,7 @@ ACK_VERSION = 1
 CLEANUP_VERSION = 1
 LEGACY_CLOSURE_VERSION = 1
 CLOSURE_VERSION = 2
+ISOLATED_CLOSURE_VERSION = 3
 MAX_HANDOFF_BYTES = 524_288
 MAX_SUPERVISION_FILE_BYTES = 524_288
 MAX_CONTROL_BYTES = 8_192
@@ -206,6 +207,16 @@ CLOSURE_PHASES = (
     "evidence-cleanup",
     "complete",
 )
+ISOLATED_CLOSURE_PHASES = (
+    "prepared",
+    "documents-committed",
+    "worktree-removed",
+    "branch-removed",
+    "execution-lease-released",
+    "remote-verified",
+    "evidence-cleanup",
+    "complete",
+)
 
 
 class ProtocolError(ValueError):
@@ -245,6 +256,8 @@ def _error_response(error: ProtocolError, command: str) -> dict[str, Any]:
         "worktree_exact_missing": "冻结绑定中的精确 worktree 不存在。",
         "worktree_lease_release_cas_mismatch": "worktree execution lease 的释放 CAS 已变化。",
         "worktree_reconciliation_invalid_outcome": "worktree execution lease 对账结果不受支持。",
+        "document_lease_invalid": "文档提案没有精确、有效的 4归档文档租约。",
+        "document_proposal_conflict": "基础 checkout 中的文档已偏离提案基线，必须人工收敛。",
     }
     return {
         "ok": False,
@@ -260,6 +273,153 @@ def _error_response(error: ProtocolError, command: str) -> dict[str, Any]:
             "message_zh": chinese.get(error.code, "监督协议操作失败。"),
             "retryable": error.retryable,
             "cause": error.cause,
+        },
+    }
+
+
+def converge_document_proposal(input_path: Path) -> dict[str, Any]:
+    """Converge one immutable proposal into the verified base checkout.
+
+    The proposal is input-only: the only writable path is the normalized target
+    below ``repository``.  Equality with the frozen base means apply, equality
+    with the proposal means no-op, and every other state is an explicit
+    three-way conflict.
+    """
+    source = _expect_object(
+        _load_json_bytes(
+            _read_regular_file(
+                Path(input_path), max_bytes=MAX_INPUT_BYTES, label="document proposal input"
+            ),
+            "document proposal input",
+        ),
+        "document proposal input",
+    )
+    _expect_keys(
+        source,
+        {
+            "base_sha256",
+            "document_lease",
+            "proposal_path",
+            "proposal_sha256",
+            "repository",
+            "target_path",
+        },
+        "document proposal input",
+    )
+    repository = _expect_absolute_path(source["repository"], "repository")
+    if not (repository / ".git").is_dir():
+        raise ProtocolError(
+            "document_lease_invalid",
+            "document proposal convergence requires the ordinary Git checkout",
+            context={"repository": str(repository)},
+        )
+    lease = _expect_object(source["document_lease"], "document_lease")
+    _expect_keys(lease, {"lease_id", "path", "version"}, "document_lease")
+    lease_path = _expect_absolute_path(lease["path"], "document_lease.path")
+    if lease_path != _document_lease_path(repository):
+        raise ProtocolError(
+            "document_lease_invalid",
+            "document lease does not belong to the base checkout",
+            context={"repository": str(repository)},
+        )
+    verified = verify_document_lease(
+        lease_path,
+        expected_id=_expect_handoff_id(lease["lease_id"], "document_lease.lease_id"),
+        expected_version=_expect_int(
+            lease["version"], "document_lease.version", 1, 2**63 - 2
+        ),
+    )
+    holder = verified.get("holder")
+    if (
+        verified.get("verified") is not True
+        or not isinstance(holder, dict)
+        or holder.get("stage") != "change-closure"
+        or holder.get("purpose") != "document-write"
+    ):
+        raise ProtocolError(
+            "document_lease_invalid",
+            "document lease is not a live change-closure document-write lease",
+            context={"repository": str(repository)},
+        )
+
+    target_text = _expect_nonempty_string(
+        source["target_path"], "target_path", max_bytes=8_192
+    )
+    target_relative = Path(target_text)
+    if target_relative.is_absolute() or target_relative == Path(".") or ".." in target_relative.parts:
+        raise ProtocolError("document_lease_invalid", "target_path must be repository-relative")
+    target = repository / target_relative
+    resolved_parent = target.parent.resolve(strict=True)
+    try:
+        resolved_parent.relative_to(repository)
+    except ValueError as error:
+        raise ProtocolError("document_lease_invalid", "target_path escapes repository") from error
+    if resolved_parent != target.parent:
+        raise ProtocolError("document_lease_invalid", "target_path contains a symbolic-link parent")
+
+    proposal_path = _expect_absolute_path(source["proposal_path"], "proposal_path")
+    proposal = _read_regular_file(
+        proposal_path, max_bytes=MAX_INPUT_BYTES, label="document proposal"
+    )
+    proposal_sha256 = _expect_sha256(source["proposal_sha256"], "proposal_sha256")
+    if _sha256(proposal) != proposal_sha256:
+        raise ProtocolError("receipt_cas_mismatch", "document proposal digest changed")
+    base_sha256 = _expect_sha256(source["base_sha256"], "base_sha256")
+    current = _read_regular_file(target, max_bytes=MAX_INPUT_BYTES, label="target document")
+    current_sha256 = _sha256(current)
+    if current_sha256 == proposal_sha256:
+        outcome = "no-op"
+    elif current_sha256 == base_sha256:
+        target_stat = os.lstat(target)
+        if not stat.S_ISREG(target_stat.st_mode) or target_stat.st_nlink != 1:
+            raise ProtocolError("outcome_unknown", "target identity is unsafe for replacement")
+        directory_fd = os.open(target.parent, os.O_RDONLY)
+        temp_name = f".codex-archive-{secrets.token_hex(16)}.tmp"
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            temp_fd = os.open(temp_name, flags, _mode_bits(target_stat), dir_fd=directory_fd)
+            try:
+                _write_all(temp_fd, proposal)
+                os.fsync(temp_fd)
+            finally:
+                os.close(temp_fd)
+            os.replace(temp_name, target.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        finally:
+            try:
+                os.unlink(temp_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+            os.close(directory_fd)
+        if _sha256(_read_regular_file(target, max_bytes=MAX_INPUT_BYTES, label="target document")) != proposal_sha256:
+            raise ProtocolError("outcome_unknown", "document proposal apply postcondition is unknown")
+        outcome = "applied"
+    else:
+        raise ProtocolError(
+            "document_proposal_conflict",
+            "target differs from both proposal base and proposed bytes",
+            context={
+                "repository": str(repository),
+                "current": {
+                    "base_sha256": base_sha256,
+                    "current_sha256": current_sha256,
+                    "proposal_sha256": proposal_sha256,
+                    "target_path": target_text,
+                },
+            },
+        )
+    return {
+        "ok": True,
+        "state": "converged",
+        "outcome": outcome,
+        "repository": str(repository),
+        "target_path": target_text,
+        "base_sha256": base_sha256,
+        "proposal_sha256": proposal_sha256,
+        "document_lease": {
+            "lease_id": holder["lease_id"],
+            "path": str(lease_path),
+            "version": verified["version"],
         },
     }
 
@@ -5402,6 +5562,8 @@ def _closure_phases(closure_version: int) -> tuple[str, ...]:
         return LEGACY_CLOSURE_PHASES
     if closure_version == CLOSURE_VERSION:
         return CLOSURE_PHASES
+    if closure_version == ISOLATED_CLOSURE_VERSION:
+        return ISOLATED_CLOSURE_PHASES
     raise ProtocolError(f"unsupported closure_version: {closure_version!r}")
 
 
@@ -5446,6 +5608,29 @@ def _validate_closure_facts(
                 "source_task_id",
                 "spec_references",
                 "ticket_references",
+            },
+            label,
+        )
+    elif closure_version == ISOLATED_CLOSURE_VERSION:
+        _expect_keys(
+            facts,
+            {
+                "base_branch",
+                "checkout_path",
+                "documentation_proposals",
+                "execution_lease",
+                "execution_mode",
+                "implementation_branch",
+                "implementation_commit",
+                "managed_links",
+                "merge_commit",
+                "remote_actions",
+                "repository",
+                "source_host_id",
+                "source_task_id",
+                "spec_references",
+                "ticket_references",
+                "worktree_path",
             },
             label,
         )
@@ -5495,6 +5680,50 @@ def _validate_closure_facts(
     if closure_version == LEGACY_CLOSURE_VERSION:
         normalized["worktree_path"] = str(
             _expect_absolute_path(facts["worktree_path"], f"{label}.worktree_path")
+        )
+        return normalized
+
+    if closure_version == ISOLATED_CLOSURE_VERSION:
+        if facts["execution_mode"] != "isolated-worktree-v1":
+            raise ProtocolError(f"{label}.execution_mode must be 'isolated-worktree-v1'")
+        checkout_path = str(
+            _expect_absolute_path(facts["checkout_path"], f"{label}.checkout_path")
+        )
+        if checkout_path != repository:
+            raise ProtocolError(f"{label}.checkout_path must equal repository")
+        worktree_path = str(
+            _expect_absolute_path(facts["worktree_path"], f"{label}.worktree_path")
+        )
+        if worktree_path == repository:
+            raise ProtocolError(f"{label}.worktree_path must differ from repository")
+        lease = _expect_object(facts["execution_lease"], f"{label}.execution_lease")
+        _expect_keys(lease, {"lease_id", "path", "version"}, f"{label}.execution_lease")
+        lease_path = str(
+            _expect_absolute_path(lease["path"], f"{label}.execution_lease.path")
+        )
+        expected_lease_directory = Path(repository) / ".git" / WORKTREE_EXECUTION_LEASE_DIRECTORY
+        if Path(lease_path).parent != expected_lease_directory:
+            raise ProtocolError(
+                f"{label}.execution_lease.path must be directly inside {expected_lease_directory}"
+            )
+        normalized.update(
+            {
+                "checkout_path": checkout_path,
+                "documentation_proposals": _expect_string_list(
+                    facts["documentation_proposals"], f"{label}.documentation_proposals"
+                ),
+                "execution_lease": {
+                    "lease_id": _expect_handoff_id(
+                        lease["lease_id"], f"{label}.execution_lease.lease_id"
+                    ),
+                    "path": lease_path,
+                    "version": _expect_int(
+                        lease["version"], f"{label}.execution_lease.version", 1, 2**63 - 2
+                    ),
+                },
+                "execution_mode": "isolated-worktree-v1",
+                "worktree_path": worktree_path,
+            }
         )
         return normalized
 
@@ -5592,7 +5821,7 @@ def _load_closure_checkpoint(
         source["closure_version"],
         "closure checkpoint.closure_version",
         LEGACY_CLOSURE_VERSION,
-        CLOSURE_VERSION,
+        ISOLATED_CLOSURE_VERSION,
     )
     phases = _closure_phases(closure_version)
     handoff_id = _expect_handoff_id(
@@ -5648,6 +5877,7 @@ def _load_closure_checkpoint(
             "worktree-removed",
             "branch-removed",
             "lease-released",
+            "execution-lease-released",
             "remote-verified",
         }:
             normalized_result = _validate_closure_phase_result(
@@ -5700,10 +5930,16 @@ def create_closure_checkpoint(
     cleanup_checkpoint = _expect_absolute_path(
         source["cleanup_checkpoint"], "closure checkpoint input.cleanup_checkpoint"
     )
+    raw_facts = _expect_object(source["facts"], "closure checkpoint input.facts")
+    closure_version = (
+        ISOLATED_CLOSURE_VERSION
+        if raw_facts.get("execution_mode") == "isolated-worktree-v1"
+        else CLOSURE_VERSION
+    )
     facts = _validate_closure_facts(
         source["facts"],
         "closure checkpoint input.facts",
-        closure_version=CLOSURE_VERSION,
+        closure_version=closure_version,
     )
     repository = Path(facts["repository"])
     if _path_is_within(cleanup_checkpoint, repository):
@@ -5727,7 +5963,7 @@ def create_closure_checkpoint(
     handoff_id = cleanup["handoff_id"]
     document = {
         "cleanup_checkpoint": str(cleanup_checkpoint),
-        "closure_version": CLOSURE_VERSION,
+        "closure_version": closure_version,
         "facts": facts,
         "handoff_id": handoff_id,
         "phase": "prepared",
@@ -5762,8 +5998,11 @@ def _validate_closure_phase_result(
     result = _expect_object(value, label)
     if phase == "documents-committed":
         uses_document_lease = (
-            closure_version == CLOSURE_VERSION
-            and facts.get("execution_mode") == LEASE_MODE
+            closure_version == ISOLATED_CLOSURE_VERSION
+            or (
+                closure_version == CLOSURE_VERSION
+                and facts.get("execution_mode") == LEASE_MODE
+            )
         )
         expected_keys = {"closure_commit", "documents_updated", "verification"}
         if uses_document_lease:
@@ -5837,9 +6076,12 @@ def _validate_closure_phase_result(
             )
         return normalized
     if phase == "worktree-removed":
-        if closure_version != LEGACY_CLOSURE_VERSION:
-            raise ProtocolError("worktree-removed is only valid for legacy closure v1")
-        _expect_keys(result, {"path", "verified_absent"}, label)
+        if closure_version not in {LEGACY_CLOSURE_VERSION, ISOLATED_CLOSURE_VERSION}:
+            raise ProtocolError("worktree-removed is not valid for this closure protocol")
+        expected_keys = {"path", "verified_absent"}
+        if closure_version == ISOLATED_CLOSURE_VERSION:
+            expected_keys.add("observed_before")
+        _expect_keys(result, expected_keys, label)
         path = _expect_absolute_path(result["path"], f"{label}.path")
         if str(path) != facts["worktree_path"]:
             raise ProtocolError(
@@ -5847,9 +6089,23 @@ def _validate_closure_phase_result(
             )
         if not _expect_bool(result["verified_absent"], f"{label}.verified_absent"):
             raise ProtocolError("worktree receipt requires verified_absent=true")
-        return {"path": str(path), "verified_absent": True}
+        normalized_worktree = {"path": str(path), "verified_absent": True}
+        if closure_version == ISOLATED_CLOSURE_VERSION:
+            observed_before = _expect_nonempty_string(
+                result["observed_before"], f"{label}.observed_before", max_bytes=64
+            )
+            if observed_before != "present-clean":
+                raise ProtocolError(
+                    "isolated worktree removal requires observed_before='present-clean'; "
+                    "missing or ambiguous worktrees must remain explicit"
+                )
+            normalized_worktree["observed_before"] = observed_before
+        return normalized_worktree
     if phase == "branch-removed":
-        _expect_keys(result, {"name", "verified_absent"}, label)
+        expected_keys = {"name", "verified_absent"}
+        if closure_version == ISOLATED_CLOSURE_VERSION:
+            expected_keys.add("observed_before")
+        _expect_keys(result, expected_keys, label)
         name = _expect_nonempty_string(
             result["name"], f"{label}.name", max_bytes=1_024
         )
@@ -5859,7 +6115,18 @@ def _validate_closure_phase_result(
             )
         if not _expect_bool(result["verified_absent"], f"{label}.verified_absent"):
             raise ProtocolError("branch receipt requires verified_absent=true")
-        return {"name": name, "verified_absent": True}
+        normalized_branch = {"name": name, "verified_absent": True}
+        if closure_version == ISOLATED_CLOSURE_VERSION:
+            observed_before = _expect_nonempty_string(
+                result["observed_before"], f"{label}.observed_before", max_bytes=64
+            )
+            if observed_before != "present-merged":
+                raise ProtocolError(
+                    "isolated branch removal requires observed_before='present-merged'; "
+                    "missing, unmerged or ambiguous branches must not be hidden"
+                )
+            normalized_branch["observed_before"] = observed_before
+        return normalized_branch
     if phase == "lease-released":
         if closure_version != CLOSURE_VERSION:
             raise ProtocolError("lease-released is only valid for zero-worktree closure v2")
@@ -5881,6 +6148,28 @@ def _validate_closure_phase_result(
             "lease_id": lease_id,
             "path": str(path),
             "verified_absent": True,
+        }
+    if phase == "execution-lease-released":
+        if closure_version != ISOLATED_CLOSURE_VERSION:
+            raise ProtocolError(
+                "execution-lease-released is only valid for isolated closure v3"
+            )
+        _expect_keys(result, {"lease_id", "path", "state", "version"}, label)
+        lease = facts["execution_lease"]
+        lease_id = _expect_handoff_id(result["lease_id"], f"{label}.lease_id")
+        path = str(_expect_absolute_path(result["path"], f"{label}.path"))
+        version = _expect_int(result["version"], f"{label}.version", 1, 2**63 - 2)
+        if lease_id != lease["lease_id"] or path != lease["path"]:
+            raise ProtocolError("execution lease release receipt identity mismatch")
+        if result["state"] != "available" or version != lease["version"] + 1:
+            raise ProtocolError(
+                "execution lease release must be exactly verified available at the next CAS version"
+            )
+        return {
+            "lease_id": lease_id,
+            "path": path,
+            "state": "available",
+            "version": version,
         }
     if phase == "remote-verified":
         _expect_keys(result, {"actions", "results", "verified"}, label)
@@ -6226,9 +6515,18 @@ def _build_parser() -> argparse.ArgumentParser:
     advance_closure_parser.add_argument(
         "--phase",
         required=True,
-        choices=sorted(set(CLOSURE_PHASES[1:] + LEGACY_CLOSURE_PHASES[1:])),
+        choices=sorted(
+            set(
+                CLOSURE_PHASES[1:]
+                + LEGACY_CLOSURE_PHASES[1:]
+                + ISOLATED_CLOSURE_PHASES[1:]
+            )
+        ),
     )
     advance_closure_parser.add_argument("--result", type=Path)
+
+    converge_proposal_parser = subparsers.add_parser("converge-document-proposal")
+    converge_proposal_parser.add_argument("--input", required=True, type=Path)
     return parser
 
 
@@ -6425,6 +6723,8 @@ def main(argv: list[str] | None = None) -> int:
                     result_path=arguments.result,
                 )
             )
+        elif arguments.command == "converge-document-proposal":
+            _emit_json(converge_document_proposal(arguments.input))
         else:
             parser.error(f"unknown command: {arguments.command}")
     except ProtocolError as error:

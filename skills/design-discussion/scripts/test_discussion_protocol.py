@@ -5854,6 +5854,52 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(refreshed["impact"], "no-impact")
         self.assertEqual(refreshed["state"], "refresh-candidate")
 
+    def test_archive_completion_requires_exact_retained_checkpoint_before_ledger_mutation(self) -> None:
+        project = self.make_project("archive-authority", git=True)
+        topic = self.bootstrap_topic(project)
+        before = Path(str(topic["ledger_path"])).read_bytes()
+        code, response, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="record-archive-complete",
+                expected_revision=1,
+                expected_topic_revision=1,
+                implementation_id="implementation-archive",
+                effective_phase_result_id="PH-missing",
+                source_checkpoint_id="CP-missing",
+                source_identity="a" * 40,
+                execution_mode="exclusive-checkout-v2",
+                implementation_record_revision=1,
+                merge_commit="b" * 40,
+                documentation_proposals=[],
+                closure_checkpoint={
+                    "file_bytes": 1,
+                    "file_sha256": "0" * 64,
+                    "path": str(self.root / "missing-closure.json"),
+                    "version": 2,
+                },
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(response["error"]["code"], "archive_checkpoint_invalid")
+        self.assertEqual(Path(str(topic["ledger_path"])).read_bytes(), before)
+
+    def test_topic_close_cannot_substitute_for_archive_completion(self) -> None:
+        project = self.make_project("archive-close-separation", git=True)
+        topic = self.bootstrap_topic(project)
+        code, response, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="close-archived-topic",
+                expected_revision=1,
+                expected_topic_revision=1,
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(response["error"]["code"], "archive_authority_invalid")
+        read = self.run_cli(self.evolution_request(topic, operation="read-topic"))[1]
+        self.assertEqual(read["state"], "read")
+
 
 if __name__ == "__main__":
     unittest.main()
