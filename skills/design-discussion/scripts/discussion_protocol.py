@@ -127,6 +127,7 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "phase_flow_mode_invalid": "连续模式只能来自成功的 1拷问 footer。",
         "phase_completion_not_claimed": "Phase Run 尚未提交可验收的完成声明。",
         "phase_reconciliation_required": "Phase Run 结果未知，必须先完成对账。",
+        "no_code_integration_invalid": "父级范围未被已完成且已吸收的子实现完整覆盖。",
         "context_not_initialized": "document_only 上下文尚未获得用户授权初始化本地协调状态。",
         "context_identity_conflict": "发现的讨论上下文身份存在强冲突。",
         "implementation_identity_conflict": "实现运行身份或冻结计划不匹配。",
@@ -5054,6 +5055,242 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         return result
 
 
+def _prepare_no_code_integration_run(request: dict[str, Any]) -> dict[str, Any]:
+    ledger_path, topic_path, lock_path, owner_ref = _phase_request_context(
+        request,
+        {
+            "source_checkpoint_id",
+            "scope",
+            "absorbed_relation_ids",
+            "child_phase_result_ids",
+        },
+    )[:4]
+    scope = _validated_string_list(request["scope"], "scope")
+    relation_ids = _validated_string_list(
+        request["absorbed_relation_ids"], "absorbed_relation_ids"
+    )
+    phase_result_ids = _validated_string_list(
+        request["child_phase_result_ids"], "child_phase_result_ids"
+    )
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None:
+            return replay
+        topic = _record_by_id(
+            records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id"
+        )
+        ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        from_phase = topic.get("current_phase")
+        if from_phase not in {1, 2}:
+            raise ProtocolError(
+                "phase_route_conflict",
+                "no-code integration may enter phase 3 only from phase 1 or 2",
+            )
+        if _pending_topic_impacts(records, request["actor_topic_id"]):
+            raise ProtocolError(
+                "phase_impact_drift",
+                "pending impacts must be resolved before no-code integration",
+            )
+        active_runs = [
+            item
+            for item in records["Phase Runs"]
+            if item.get("run_kind") == "phase-run"
+            and item.get("state")
+            in {
+                "prepared",
+                "setup-pending",
+                "ready",
+                "active",
+                "completion-claimed",
+                "completion-pending",
+                "outcome-unknown",
+            }
+            and _json_field(item, "data_json", "phase run").get("source_topic_id")
+            == request["actor_topic_id"]
+        ]
+        if active_runs:
+            raise ProtocolError(
+                "phase_coordination_drift",
+                "an active Phase Run already owns this source topic",
+            )
+        checkpoint = _completed_checkpoint(records, request["source_checkpoint_id"])
+        if checkpoint.get("topic_id") != request["actor_topic_id"]:
+            raise ProtocolError(
+                "phase_checkpoint_invalid", "checkpoint belongs to another topic"
+            )
+        checkpoint_data = {
+            "source_topic_id": request["actor_topic_id"],
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_checkpoint_identity": checkpoint["published_identity"],
+        }
+        _verify_wrapper_checkpoint_current(records, checkpoint_data, topic_path)
+
+        relations = [
+            _record_by_id(
+                records["Relations and Coverage"],
+                "relation_id",
+                relation_id,
+                "absorbed_relation_id",
+            )
+            for relation_id in relation_ids
+        ]
+        covered_scope: set[str] = set()
+        child_topic_ids: set[str] = set()
+        for relation in relations:
+            if (
+                relation.get("relation_type") != "absorbs"
+                or relation.get("source_topic_id") != request["actor_topic_id"]
+                or relation.get("state") != "active"
+            ):
+                raise ProtocolError(
+                    "no_code_integration_invalid",
+                    "coverage must come from active absorbed child results owned by the parent",
+                )
+            relation_scope = _json_field(relation, "scope_json", "absorbed relation")
+            if not isinstance(relation_scope, list) or any(
+                not isinstance(item, str) for item in relation_scope
+            ):
+                raise ProtocolError("state_corrupt", "absorbed relation scope is invalid")
+            covered_scope.update(relation_scope)
+            child_topic_ids.add(str(relation.get("target_topic_id")))
+        if covered_scope != set(scope):
+            raise ProtocolError(
+                "no_code_integration_invalid",
+                "absorbed child result scope does not exactly cover the parent integration scope",
+            )
+
+        result_topic_ids: set[str] = set()
+        for phase_result_id in phase_result_ids:
+            phase_result = _record_by_id(
+                records["Phase Results"],
+                "result_id",
+                phase_result_id,
+                "child_phase_result_id",
+            )
+            phase_result_data = _json_field(
+                phase_result, "data_json", "child phase result"
+            )
+            if (
+                phase_result.get("result_kind") != "phase-result"
+                or phase_result.get("state") != "completed"
+                or phase_result_data.get("to_phase") != 3
+                or phase_result_data.get("topic_id") not in child_topic_ids
+            ):
+                raise ProtocolError(
+                    "no_code_integration_invalid",
+                    "every absorbed child must provide a completed phase-3 result",
+                )
+            result_topic_ids.add(str(phase_result_data["topic_id"]))
+        if result_topic_ids != child_topic_ids:
+            raise ProtocolError(
+                "no_code_integration_invalid",
+                "absorbed child topics and completed phase-3 results do not match",
+            )
+        for child_topic_id in child_topic_ids:
+            child_topic = _record_by_id(
+                records["Current Topics"], "topic_id", child_topic_id, "child_topic_id"
+            )
+            if child_topic.get("current_phase") != 3:
+                raise ProtocolError(
+                    "no_code_integration_invalid",
+                    "an absorbed child topic is not currently at phase 3",
+                )
+        if any(
+            item.get("state") in {"prepared", "queued", "active", "paused", "refresh-pending"}
+            and item.get("topic_id") in child_topic_ids
+            for item in records["Dependencies and Active Implementations"]
+        ):
+            raise ProtocolError(
+                "phase_dependency_drift",
+                "an absorbed child still has an active or uncertain implementation",
+            )
+
+        evidence = _authoritative_phase_evidence(topic_path, records, topic)
+        run_id = f"PR-{ledger_revision + 1:08d}"
+        if any(item.get("run_id") == run_id for item in records["Phase Runs"]):
+            raise ProtocolError(
+                "idempotency_conflict", "Phase Run creation identity already exists"
+            )
+        attempt_id = f"PA-{run_id[3:]}-1"
+        data = {
+            "run_id": run_id,
+            "run_kind": "phase-run",
+            "record_revision": 1,
+            "state": "prepared",
+            "from_phase": from_phase,
+            "to_phase": 3,
+            "route": [from_phase, 3],
+            "carrier_kind": "integration-only",
+            "source_topic_id": request["actor_topic_id"],
+            "evidence": evidence,
+            "attempts": [
+                {
+                    "attempt_id": attempt_id,
+                    "attempt_number": 1,
+                    "state": "setup-pending",
+                    "authorization": False,
+                    "carrier_ref": None,
+                    "reason": None,
+                    "claimed": False,
+                }
+            ],
+            "creation_idempotency_key": request["idempotency_key"],
+            "wrapper_integration": True,
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_checkpoint_identity": checkpoint["published_identity"],
+            "flow_mode": "stepwise",
+            "flow_mode_source": "explicit-stage-confirmation",
+            "continuous_authorization_id": None,
+            "scope": scope,
+            "absorbed_relation_ids": relation_ids,
+            "child_phase_result_ids": phase_result_ids,
+            "implementation_mode": "no-code-integration",
+            "requirement_document_mode": "frozen-read-only",
+            "stage_ownership": ["integration-evidence"],
+            "may_modify_requirement_source": False,
+        }
+        record = {
+            "run_id": run_id,
+            "run_kind": "phase-run",
+            "state": "prepared",
+            "record_revision": 1,
+            "data_json": _canonical_json(data),
+        }
+        records["Phase Runs"].append(record)
+        next_revision = ledger_revision + 1
+        result = {
+            "ok": True,
+            "state": "prepared",
+            "idempotent_replay": False,
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "topic_id": request["actor_topic_id"],
+            "ledger_revision": next_revision,
+            "record_revision": topic_revision,
+            "phase_run_id": run_id,
+            "attempt_id": attempt_id,
+            "route": [from_phase, 3],
+            "evidence": evidence,
+            "source_checkpoint_id": checkpoint["checkpoint_id"],
+            "source_checkpoint_identity": checkpoint["published_identity"],
+            "implementation_mode": "no-code-integration",
+            "scope": scope,
+        }
+        _write_ledger_transaction(
+            ledger_path,
+            frontmatter,
+            records,
+            request,
+            ledger_revision=next_revision,
+            event_type="no-code-integration-prepared",
+            result=result,
+        )
+        return result
+
+
 def _claim_phase_carrier(request: dict[str, Any]) -> dict[str, Any]:
     ledger_path, _, lock_path, owner_ref = _phase_request_context(
         request,
@@ -5507,7 +5744,11 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                         "phase": 2,
                         "state": "not_applicable",
                         "scope": data["scope"],
-                        "reason": "stage-1 requirement completeness gate satisfied",
+                        "reason": (
+                            "absorbed child implementation fully covers the integration scope"
+                            if data.get("implementation_mode") == "no-code-integration"
+                            else "stage-1 requirement completeness gate satisfied"
+                        ),
                     }),
                 })
         else:
@@ -5791,23 +6032,31 @@ def _finalize_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             for item in _topic_snapshot(records, request["actor_topic_id"])["decisions"]
             if item.get("state") != "discarded"
         )
+        phase_result_data = {
+            "result_id": result_id,
+            "phase_run_id": data["run_id"],
+            "topic_id": request["actor_topic_id"],
+            "from_phase": data["from_phase"],
+            "to_phase": data["to_phase"],
+            "affected_decision_ids": affected_decision_ids,
+            "evidence": data["evidence"],
+        }
+        if data.get("implementation_mode") is not None:
+            phase_result_data.update(
+                {
+                    "implementation_mode": data["implementation_mode"],
+                    "scope": data["scope"],
+                    "absorbed_relation_ids": data["absorbed_relation_ids"],
+                    "child_phase_result_ids": data["child_phase_result_ids"],
+                }
+            )
         records["Phase Results"].append(
             {
                 "result_id": result_id,
                 "result_kind": "phase-result",
                 "state": "completed",
                 "record_revision": 1,
-                "data_json": _canonical_json(
-                    {
-                        "result_id": result_id,
-                        "phase_run_id": data["run_id"],
-                        "topic_id": request["actor_topic_id"],
-                        "from_phase": data["from_phase"],
-                        "to_phase": data["to_phase"],
-                        "affected_decision_ids": affected_decision_ids,
-                        "evidence": data["evidence"],
-                    }
-                ),
+                "data_json": _canonical_json(phase_result_data),
             }
         )
         _store_phase(record, data)
@@ -5826,6 +6075,8 @@ def _finalize_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             "phase_result_id": result_id,
             "current_phase": topic["current_phase"],
         }
+        if data.get("implementation_mode") is not None:
+            result["implementation_mode"] = data["implementation_mode"]
         _write_ledger_transaction(
             ledger_path,
             frontmatter,
@@ -7941,6 +8192,8 @@ def handle(request: Any) -> dict[str, Any]:
         return _prepare_phase_run(request)
     if operation == "prepare-wrapper-phase-run":
         return _prepare_wrapper_phase_run(request)
+    if operation == "prepare-no-code-integration-run":
+        return _prepare_no_code_integration_run(request)
     if operation == "authorize-continuous-flow":
         return _authorize_continuous_flow(request)
     if operation == "phase-ready":

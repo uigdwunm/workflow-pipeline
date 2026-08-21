@@ -3070,6 +3070,208 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(impact["state"], "pending-impact")
         self.assertRegex(str(impact["impact_id"]), r"^IMP-[0-9a-f]{32}$")
 
+    def test_fully_absorbed_child_implementation_records_no_code_integration_phase_three(self) -> None:
+        project = self.make_project("no-code-integration", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic, scope=["api"])
+        child_ref = "codex-thread:no-code-child"
+
+        code, _, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="bind-handoff",
+                ledger_revision=2,
+                handoff_id=prepared["handoff_id"],
+                attempt_id=prepared["attempt_id"],
+                conversation_ref=child_ref,
+                verified_identity={
+                    "project_id": topic["project_id"],
+                    "tree_id": topic["tree_id"],
+                    "topic_id": prepared["target_topic_id"],
+                    "handoff_id": prepared["handoff_id"],
+                    "attempt_id": prepared["attempt_id"],
+                    "payload_sha256": prepared["payload_sha256"],
+                },
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        accept = self.handoff_request(
+            topic,
+            operation="accept-handoff",
+            ledger_revision=3,
+            owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            payload_sha256=prepared["payload_sha256"],
+            source_reference_sha256=prepared["authoritative_references_sha256"],
+            turn_number=1,
+        )
+        accept["actor_topic_id"] = prepared["target_topic_id"]
+        self.assertEqual(self.run_cli(accept)[0], 0)
+        authorize = self.handoff_request(
+            topic,
+            operation="authorize-handoff-discussion",
+            ledger_revision=4,
+            owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            turn_number=2,
+        )
+        authorize["actor_topic_id"] = prepared["target_topic_id"]
+        self.assertEqual(self.run_cli(authorize)[0], 0)
+
+        def complete_phase(
+            *, actor_topic_id: str, owner_ref: str, ledger_revision: int,
+            topic_revision: int, from_phase: int, to_phase: int,
+        ) -> tuple[dict[str, object], int, int]:
+            request = self.phase_request(
+                topic,
+                "prepare-phase-run",
+                ledger_revision,
+                topic_revision=topic_revision,
+                from_phase=from_phase,
+                to_phase=to_phase,
+                route=f"{from_phase}->{to_phase}",
+                carrier_kind="current-topic",
+            )
+            request["actor_topic_id"] = actor_topic_id
+            request["actor_conversation_ref"] = owner_ref
+            code, run, stderr = self.run_cli(request)
+            self.assertEqual(code, 0, stderr)
+            evidence = run["evidence"]
+            current_revision = ledger_revision + 1
+            for operation, parameters in (
+                ("authorize-phase-carrier", {"carrier_ref": owner_ref}),
+                ("phase-ready", {"carrier_ref": owner_ref, "evidence": evidence}),
+                ("phase-activate", {"evidence": evidence}),
+                ("claim-phase-completion", {"carrier_ref": owner_ref, "evidence": evidence}),
+                ("complete-phase-run", {"evidence": evidence}),
+                ("finalize-phase-run", {"evidence": evidence}),
+            ):
+                phase_request = self.phase_request(
+                    topic,
+                    operation,
+                    current_revision,
+                    topic_revision=topic_revision,
+                    phase_run_id=run["phase_run_id"],
+                    attempt_id=run["attempt_id"],
+                    **parameters,
+                )
+                phase_request["actor_topic_id"] = actor_topic_id
+                phase_request["actor_conversation_ref"] = owner_ref
+                code, result, stderr = self.run_cli(phase_request)
+                self.assertEqual(code, 0, stderr)
+                current_revision += 1
+            return result, current_revision, topic_revision + 1
+
+        child_phase_two, revision, child_revision = complete_phase(
+            actor_topic_id=str(prepared["target_topic_id"]), owner_ref=child_ref,
+            ledger_revision=5, topic_revision=1, from_phase=0, to_phase=2,
+        )
+        self.assertEqual(child_phase_two["current_phase"], 2)
+        child_phase_three, revision, child_revision = complete_phase(
+            actor_topic_id=str(prepared["target_topic_id"]), owner_ref=child_ref,
+            ledger_revision=revision, topic_revision=child_revision, from_phase=2, to_phase=3,
+        )
+        self.assertEqual(child_phase_three["current_phase"], 3)
+
+        submit = self.handoff_request(
+            topic,
+            operation="submit-child-result",
+            ledger_revision=revision,
+            owner_ref=child_ref,
+            topic_revision=child_revision,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            result_scope=["api"],
+            summary="Child implementation covers the parent API scope.",
+        )
+        submit["actor_topic_id"] = prepared["target_topic_id"]
+        code, claim, stderr = self.run_cli(submit)
+        self.assertEqual(code, 0, stderr)
+        revision += 1
+        code, absorbed, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="record-child-result",
+                ledger_revision=revision,
+                handoff_id=prepared["handoff_id"],
+                child_result_id=claim["child_result_id"],
+                effect="absorb",
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        revision += 1
+
+        parent_phase_one, revision, parent_revision = complete_phase(
+            actor_topic_id=str(topic["topic_id"]), owner_ref="discussion-task",
+            ledger_revision=revision, topic_revision=1, from_phase=0, to_phase=1,
+        )
+        self.assertEqual(parent_phase_one["current_phase"], 1)
+        checkpoint = self.publish_non_git_stage_entry_checkpoint(
+            topic, ledger_revision=revision, topic_revision=parent_revision
+        )
+        revision += 2
+
+        code, run, stderr = self.run_cli(
+            self.phase_request(
+                topic,
+                "prepare-no-code-integration-run",
+                revision,
+                topic_revision=parent_revision,
+                source_checkpoint_id=checkpoint["checkpoint_id"],
+                scope=["api"],
+                absorbed_relation_ids=[absorbed["relation_id"]],
+                child_phase_result_ids=[child_phase_three["phase_result_id"]],
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(run["implementation_mode"], "no-code-integration")
+        evidence = run["evidence"]
+        revision += 1
+        for operation, parameters in (
+            ("authorize-phase-carrier", {"carrier_ref": "discussion-task"}),
+            (
+                "claim-phase-carrier",
+                {
+                    "carrier_ref": "discussion-task",
+                    "source_checkpoint_id": checkpoint["checkpoint_id"],
+                    "source_checkpoint_identity": checkpoint["snapshot_digest"],
+                },
+            ),
+            ("phase-ready", {"carrier_ref": "discussion-task", "evidence": evidence}),
+            ("phase-activate", {"evidence": evidence}),
+            ("claim-phase-completion", {"carrier_ref": "discussion-task", "evidence": evidence}),
+            ("complete-phase-run", {"evidence": evidence}),
+            ("finalize-phase-run", {"evidence": evidence}),
+        ):
+            code, result, stderr = self.run_cli(
+                self.phase_request(
+                    topic,
+                    operation,
+                    revision,
+                    topic_revision=parent_revision,
+                    phase_run_id=run["phase_run_id"],
+                    attempt_id=run["attempt_id"],
+                    **parameters,
+                )
+            )
+            self.assertEqual(code, 0, stderr)
+            revision += 1
+        self.assertEqual(result["current_phase"], 3)
+        self.assertEqual(result["implementation_mode"], "no-code-integration")
+        read = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="read-phase-run",
+                phase_run_id=run["phase_run_id"],
+            )
+        )[1]
+        self.assertEqual(
+            read["phase_run"]["implementation_mode"],
+            "no-code-integration",
+        )
+
     def test_handoff_allowlists_and_explicit_failure_reconciliation_are_recoverable(self) -> None:
         project = self.make_project("handoff-explicit-recovery", git=False)
         topic = self.bootstrap_topic(project)

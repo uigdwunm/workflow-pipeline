@@ -1,0 +1,42 @@
+{
+  "schema": "compatibility-recovery-matrix-v1",
+  "scenarios": [
+    {"id": "root-discussion-to-1", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_wrapper_current_and_dedicated_problem_framing_share_topic_document"]},
+    {"id": "root-discussion-to-2", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_solution_wrapper_requires_claim_ready_activation_and_current_source"]},
+    {"id": "root-discussion-to-3", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_wrapper_pending_impacts_and_direct_to_three_completeness"]},
+    {"id": "root-discussion-to-4", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_archive_completion_binds_checkpoint_and_leaves_pending_topic_open"]},
+    {"id": "direct-0-to-2", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_solution_wrapper_requires_claim_ready_activation_and_current_source"]},
+    {"id": "direct-1-to-3", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_wrapper_pending_impacts_and_direct_to_three_completeness"]},
+    {"id": "parent-child-absorption-and-coverage", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_child_result_absorbs_only_within_scope_and_records_cross_topic_impact"]},
+    {"id": "no-code-integration", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_fully_absorbed_child_implementation_records_no_code_integration_phase_three"]},
+    {"id": "two-safe-isolated-implementations", "tests": ["skills/guided-implementation/scripts/test_supervision_protocol.py::DocumentLeaseTests.test_worktree_execution_lease_cli_binds_exact_worktree_and_v2_queues"]},
+    {"id": "shared-base-serial-integration", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_integration_revalidation_uses_current_cross_cli_authority", "skills/guided-implementation/scripts/test_supervision_protocol.py::DocumentLeaseTests.test_serial_integration_revalidates_source_dependencies_and_active_runs"]}
+  ],
+  "fault_boundaries": [
+    {"id": "ledger-transaction", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_failure_injection_recovers_git_and_snapshot_result_recording"]},
+    {"id": "lease", "tests": ["skills/guided-implementation/scripts/test_supervision_protocol.py::DocumentLeaseTests.test_acquire_renew_verify_and_release"]},
+    {"id": "git-worktree", "tests": ["skills/guided-implementation/scripts/test_supervision_protocol.py::DocumentLeaseTests.test_worktree_execution_lease_cli_binds_exact_worktree_and_v2_queues"]},
+    {"id": "external-carrier-creation", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_outcome_unknown_cancel_late_arrival_and_forced_retry_preserve_attempt_history"]},
+    {"id": "ready-activate", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_each_authoritative_drift_dimension_rejects_activation"]},
+    {"id": "terminal-claim", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_failed_attempt_retries_monotonically_and_duplicate_terminal_is_rejected"]},
+    {"id": "documentation-commit", "tests": ["skills/design-discussion/scripts/test_repository_validation.py::RepositoryValidationTests.test_implementation_range_rejects_documentation_paths", "skills/guided-implementation/scripts/test_supervision_protocol.py::ArchiveIntegrationProtocolTests.test_archive_document_proposal_has_apply_noop_conflict_three_way_semantics"]},
+    {"id": "cleanup", "tests": ["skills/guided-implementation/scripts/test_supervision_protocol.py::ArchiveIntegrationProtocolTests.test_isolated_cleanup_faults_are_explicit_and_resume_from_first_missing_receipt"]}
+  ],
+  "invariants": [
+    {"id": "no-automatic-unconfirmed-worktree", "tests": ["skills/guided-implementation/scripts/test_supervision_protocol.py::DocumentLeaseTests.test_isolated_user_decision_requires_canonical_exact_payload"]},
+    {"id": "no-double-active-run-or-binding", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_phase_run_requires_owner_and_uses_single_revision_events", "skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_continuation_atomically_supersedes_binding_and_parallel_claim_has_one_winner"]},
+    {"id": "no-stale-source-integration", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_integration_revalidation_uses_current_cross_cli_authority"]},
+    {"id": "no-documentation-in-implementation-commits", "tests": ["skills/design-discussion/scripts/test_repository_validation.py::RepositoryValidationTests.test_implementation_range_rejects_documentation_paths"]},
+    {"id": "no-force-cleanup-of-unknown-work", "tests": ["skills/guided-implementation/scripts/test_supervision_protocol.py::ArchiveIntegrationProtocolTests.test_isolated_cleanup_faults_are_explicit_and_resume_from_first_missing_receipt"]},
+    {"id": "no-premature-topic-close", "tests": ["skills/design-discussion/scripts/test_discussion_protocol.py::DiscussionProtocolEvolutionTests.test_topic_close_keeps_blocked_and_failed_phase_runs_open"]}
+  ],
+  "compatibility": [
+    {"id": "none-byte-equivalent-zero-state", "tests": ["skills/design-discussion/scripts/test_compatibility_recovery_matrix.py::CompatibilityRecoveryMatrixTests.test_none_and_ambiguous_are_byte_stable_and_create_zero_state"]},
+    {"id": "ambiguous-byte-equivalent-zero-state", "tests": ["skills/design-discussion/scripts/test_compatibility_recovery_matrix.py::CompatibilityRecoveryMatrixTests.test_none_and_ambiguous_are_byte_stable_and_create_zero_state"]}
+  ],
+  "legacy": [
+    {"id": "handoff-v2", "tests": ["skills/guided-implementation/scripts/test_supervision_protocol.py::DocumentLeaseTests.test_legacy_v2_v1_and_older_worktree_checkpoint_keep_embedded_protocol"]},
+    {"id": "handoff-v1", "tests": ["skills/guided-implementation/scripts/test_supervision_protocol.py::DocumentLeaseTests.test_legacy_v2_v1_and_older_worktree_checkpoint_keep_embedded_protocol"]},
+    {"id": "older-worktree-checkpoint", "tests": ["skills/guided-implementation/scripts/test_supervision_protocol.py::DocumentLeaseTests.test_legacy_v2_v1_and_older_worktree_checkpoint_keep_embedded_protocol", "skills/guided-implementation/scripts/test_supervision_protocol.py::ArchiveIntegrationProtocolTests.test_closure_protocol_dispatch_is_immutable_for_all_execution_modes"]}
+  ]
+}

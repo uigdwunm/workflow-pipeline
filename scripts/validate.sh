@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 validator="${CODEX_SKILL_VALIDATOR:-$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py}"
+repository_validator="$repo_root/scripts/validate_repository.py"
 
 if [[ ! -f "$validator" ]]; then
   printf 'Skill validator not found: %s\n' "$validator" >&2
@@ -15,15 +16,11 @@ for skill_dir in "$repo_root"/skills/*; do
 done
 
 test_files=()
-while IFS= read -r -d '' test_file; do
+while IFS= read -r test_file; do
   test_files+=("$test_file")
-done < <(find "$repo_root/skills" -type f -path '*/scripts/test_*.py' -print0 | sort -z)
+done < <(python3 "$repository_validator" --repository "$repo_root" --list-tests)
 
 python3 -m unittest "${test_files[@]}"
-
-if rg -n '/Users/[^/]+/' "$repo_root/skills"; then
-  printf 'User-specific absolute paths remain under skills/.\n' >&2
-  exit 1
-fi
+python3 "$repository_validator" --repository "$repo_root"
 
 printf 'Validation complete.\n'

@@ -1058,6 +1058,93 @@ class DocumentLeaseTests(unittest.TestCase):
         )
         self.assertEqual(json.loads(verified_legacy.stdout)["handoff_version"], 3)
 
+    def test_legacy_v2_v1_and_older_worktree_checkpoint_keep_embedded_protocol(self) -> None:
+        runtime_root = self.root / "legacy-runtime"
+        runtime_root.mkdir(mode=0o700)
+        legacy_handoffs: dict[int, tuple[Path, dict[str, object], bytes]] = {}
+        for version in (1, 2):
+            handoff_id = uuid.uuid4().hex
+            handoff_directory = runtime_root / handoff_id
+            handoff_directory.mkdir(mode=0o700)
+            envelope = {
+                "base_branch": "main",
+                "base_commit": "1" * 40,
+                "embedded_execution_protocol": f"legacy-worktree-v{version}",
+                "implementation_branch": f"codex/legacy-v{version}",
+                "repository": str(self.repository),
+                "worktree_path": str(self.root / f"legacy-worktree-v{version}"),
+            }
+            protocol = f"legacy worktree execution protocol v{version}\n".encode("utf-8")
+            document = {
+                "artifact_count": 0,
+                "artifacts": [],
+                "complete": f"HANDOFF_COMPLETE:{handoff_id}",
+                "envelope": PROTOCOL._encode_json_record(envelope),
+                "execution_protocol": PROTOCOL._encode_text_record(protocol),
+                "handoff_id": handoff_id,
+                "handoff_version": version,
+                "work_item_count": 1,
+                "work_items": [PROTOCOL._encode_json_record({"id": f"legacy-v{version}"})],
+            }
+            data = PROTOCOL._canonical_json_bytes(document)
+            path = handoff_directory / PROTOCOL.HANDOFF_FILENAME
+            path.write_bytes(data)
+            path.chmod(0o400)
+            verified = PROTOCOL.verify_handoff(
+                path,
+                expected_id=handoff_id,
+                expected_bytes=len(data),
+                expected_sha256=hashlib.sha256(data).hexdigest(),
+                runtime_root=runtime_root,
+            )
+            self.assertEqual(verified["handoff_version"], version)
+            self.assertEqual(verified["envelope"], envelope)
+            self.assertEqual(verified["execution_protocol"].encode("utf-8"), protocol)
+            self.assertEqual(path.read_bytes(), data)
+            legacy_handoffs[version] = (path, envelope, data)
+
+        closure_root = self.root / "legacy-closures"
+        closure_root.mkdir(mode=0o700)
+        handoff_id = legacy_handoffs[1][0].parent.name
+        cleanup_checkpoint = self.root / "legacy-cleanup-checkpoint.json"
+        facts = {
+            "base_branch": "main",
+            "implementation_branch": "codex/legacy-v1",
+            "implementation_commit": "2" * 40,
+            "managed_links": [],
+            "merge_commit": "3" * 40,
+            "remote_actions": [],
+            "repository": str(self.repository),
+            "source_host_id": "legacy-host",
+            "source_task_id": "legacy-task",
+            "spec_references": [],
+            "ticket_references": [],
+            "worktree_path": str(self.root / "legacy-worktree-v1"),
+        }
+        checkpoint = {
+            "cleanup_checkpoint": str(cleanup_checkpoint),
+            "closure_version": PROTOCOL.LEGACY_CLOSURE_VERSION,
+            "facts": facts,
+            "handoff_id": handoff_id,
+            "phase": "prepared",
+            "receipts": [
+                {"phase": "prepared", "result": {"cleanup_state": "intact"}}
+            ],
+        }
+        checkpoint_data = PROTOCOL._canonical_json_bytes(checkpoint)
+        checkpoint_path = PROTOCOL._closure_checkpoint_path(handoff_id, closure_root)
+        checkpoint_path.write_bytes(checkpoint_data)
+        checkpoint_path.chmod(0o400)
+        decoded, observed = PROTOCOL._load_closure_checkpoint(
+            checkpoint_path,
+            runtime_root=runtime_root,
+            closure_root=closure_root,
+        )
+        self.assertEqual(decoded["closure_version"], PROTOCOL.LEGACY_CLOSURE_VERSION)
+        self.assertEqual(decoded["facts"]["worktree_path"], facts["worktree_path"])
+        self.assertEqual(observed, checkpoint_data)
+        self.assertEqual(checkpoint_path.read_bytes(), checkpoint_data)
+
 
 class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
     def run_archive_cli(
