@@ -274,11 +274,11 @@ leaves later resources intact for resume.
 
 ## Perform separately authorized remote delivery
 
-At `lease-released` for v2, or `branch-removed` for legacy v1, perform only
-current-turn authorized remote actions. Verify each action and advance to
-`remote-verified`. Record empty actions/results with `verified: true` when none
-were prepared. Resolve ambiguous remote outcomes from actual external state
-before retrying.
+At `lease-released` for v2, `execution-lease-released` for v3, or
+`branch-removed` for legacy v1, perform only current-turn authorized remote
+actions. Verify each action and advance to `remote-verified`. Record empty
+actions/results with `verified: true` when none were prepared. Resolve
+ambiguous remote outcomes from actual external state before retrying.
 
 ## Release immutable stage-3 evidence
 

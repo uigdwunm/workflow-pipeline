@@ -5870,6 +5870,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 source_identity="a" * 40,
                 execution_mode="exclusive-checkout-v2",
                 implementation_record_revision=1,
+                implementation_commit="c" * 40,
                 merge_commit="b" * 40,
                 documentation_proposals=[],
                 closure_checkpoint={

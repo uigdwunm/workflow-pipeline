@@ -7542,7 +7542,7 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
             "expected_topic_revision", "idempotency_key", "implementation_id",
             "effective_phase_result_id", "source_checkpoint_id", "source_identity",
             "execution_mode", "implementation_record_revision", "merge_commit",
-            "documentation_proposals", "closure_checkpoint",
+            "implementation_commit", "documentation_proposals", "closure_checkpoint",
         },
         "record-archive-complete request",
     )
@@ -7561,7 +7561,11 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
     for index, proposal in enumerate(proposals):
         if not isinstance(proposal, dict):
             raise ProtocolError("invalid_request", f"documentation_proposals[{index}] must be an object")
-        _expect_keys(proposal, {"outcome", "path"}, f"documentation_proposals[{index}]")
+        _expect_keys(
+            proposal,
+            {"base_sha256", "outcome", "path", "proposal_sha256"},
+            f"documentation_proposals[{index}]",
+        )
         outcome = _expect_string(proposal["outcome"], f"documentation_proposals[{index}].outcome")
         if outcome not in {"applied", "no-op"}:
             raise ProtocolError(
@@ -7569,8 +7573,19 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
                 "conflicted or unverified documentation proposals block archive completion",
             )
         normalized_proposals.append(
-            {"outcome": outcome, "path": _expect_string(proposal["path"], f"documentation_proposals[{index}].path", max_bytes=4096)}
+            {
+                "base_sha256": _expect_string(
+                    proposal["base_sha256"], f"documentation_proposals[{index}].base_sha256", max_bytes=64
+                ),
+                "outcome": outcome,
+                "path": _expect_string(proposal["path"], f"documentation_proposals[{index}].path", max_bytes=4096),
+                "proposal_sha256": _expect_string(
+                    proposal["proposal_sha256"], f"documentation_proposals[{index}].proposal_sha256", max_bytes=64
+                ),
+            }
         )
+        if not SHA256_RE.fullmatch(normalized_proposals[-1]["base_sha256"]) or not SHA256_RE.fullmatch(normalized_proposals[-1]["proposal_sha256"]):
+            raise ProtocolError("invalid_request", "documentation proposal digests must be SHA-256")
 
     # Supervision and Git authority are read without the discussion lock.
     closure = _inspect_archive_checkpoint(request["closure_checkpoint"])
@@ -7623,8 +7638,38 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
             or phase_result.get("to_phase") != 3
         ):
             raise ProtocolError("archive_authority_invalid", "effective phase-3 result is not completed for this source topic")
-        if closure.get("facts", {}).get("execution_mode") != execution_mode or closure.get("facts", {}).get("merge_commit") != merge_commit:
+        implementation_commit = _expect_string(
+            request["implementation_commit"], "implementation_commit", max_bytes=128
+        )
+        closure_facts = closure.get("facts", {})
+        if (
+            closure_facts.get("execution_mode") != execution_mode
+            or closure_facts.get("merge_commit") != merge_commit
+            or closure_facts.get("implementation_commit") != implementation_commit
+        ):
             raise ProtocolError("archive_checkpoint_invalid", "retained checkpoint facts do not match the implementation")
+        documents_receipts = [
+            receipt.get("result")
+            for receipt in closure.get("receipts", [])
+            if receipt.get("phase") == "documents-committed"
+        ]
+        if len(documents_receipts) != 1:
+            raise ProtocolError("archive_checkpoint_invalid", "closure lacks one document receipt")
+        if execution_mode == "isolated-worktree-v1":
+            if (
+                closure_facts.get("documentation_proposals")
+                != [item["path"] for item in normalized_proposals]
+                or documents_receipts[0].get("proposal_outcomes") != normalized_proposals
+            ):
+                raise ProtocolError(
+                    "archive_checkpoint_invalid",
+                    "proposal outcomes are not bound to the retained checkpoint",
+                )
+        elif normalized_proposals:
+            raise ProtocolError(
+                "archive_authority_invalid",
+                "exclusive checkout archives do not accept isolated document proposals",
+            )
         implementation["state"] = "archived"
         implementation["record_revision"] += 1
         _store_implementation(implementation_record, implementation)
@@ -7636,6 +7681,7 @@ def _record_archive_complete(request: dict[str, Any]) -> dict[str, Any]:
             "effective_phase_result_id": phase_result["result_id"],
             "execution_mode": execution_mode,
             "implementation_id": implementation["implementation_id"],
+            "implementation_commit": implementation_commit,
             "merge_commit": merge_commit,
             "source_checkpoint_id": checkpoint["checkpoint_id"],
             "source_identity": checkpoint["published_identity"],
@@ -7716,7 +7762,13 @@ def _close_archived_topic(request: dict[str, Any]) -> dict[str, Any]:
         if any(item.get("state") not in {"completed", "cancelled", "superseded"} for item in records["Pending Document Writes"]):
             blockers.append("unverified-coordination")
         for relation in records["Relations and Coverage"]:
-            if relation.get("relation_type") in {"absorbs", "blocks", "affected"} and relation.get("state") != "resolved":
+            relation_type = relation.get("relation_type")
+            relation_state = relation.get("state")
+            pending_absorption = relation_type == "absorbs" and relation_state in {
+                "pending", "outcome-unknown"
+            }
+            active_blocker = relation_type in {"blocks", "affected"} and relation_state != "resolved"
+            if pending_absorption or active_blocker:
                 blockers.append("pending-absorption-or-blockers")
                 break
         next_revision = ledger_revision + 1

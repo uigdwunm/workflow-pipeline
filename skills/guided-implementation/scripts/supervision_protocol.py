@@ -6007,6 +6007,8 @@ def _validate_closure_phase_result(
         expected_keys = {"closure_commit", "documents_updated", "verification"}
         if uses_document_lease:
             expected_keys.update({"document_lease", "preserved_documents"})
+        if closure_version == ISOLATED_CLOSURE_VERSION:
+            expected_keys.add("proposal_outcomes")
         _expect_keys(
             result,
             expected_keys,
@@ -6074,6 +6076,41 @@ def _validate_closure_phase_result(
                     ),
                 }
             )
+        if closure_version == ISOLATED_CLOSURE_VERSION:
+            outcomes = _expect_list(result["proposal_outcomes"], f"{label}.proposal_outcomes")
+            normalized_outcomes = []
+            for index, item in enumerate(outcomes):
+                item_label = f"{label}.proposal_outcomes[{index}]"
+                proposal = _expect_object(item, item_label)
+                _expect_keys(
+                    proposal,
+                    {"base_sha256", "outcome", "path", "proposal_sha256"},
+                    item_label,
+                )
+                outcome = _expect_nonempty_string(
+                    proposal["outcome"], f"{item_label}.outcome", max_bytes=32
+                )
+                if outcome not in {"applied", "no-op"}:
+                    raise ProtocolError(f"{item_label}.outcome is not converged")
+                normalized_outcomes.append(
+                    {
+                        "base_sha256": _expect_sha256(
+                            proposal["base_sha256"], f"{item_label}.base_sha256"
+                        ),
+                        "outcome": outcome,
+                        "path": _expect_nonempty_string(
+                            proposal["path"], f"{item_label}.path", max_bytes=8_192
+                        ),
+                        "proposal_sha256": _expect_sha256(
+                            proposal["proposal_sha256"], f"{item_label}.proposal_sha256"
+                        ),
+                    }
+                )
+            if [item["path"] for item in normalized_outcomes] != facts["documentation_proposals"]:
+                raise ProtocolError(
+                    "proposal outcome paths must exactly match frozen documentation_proposals"
+                )
+            normalized["proposal_outcomes"] = normalized_outcomes
         return normalized
     if phase == "worktree-removed":
         if closure_version not in {LEGACY_CLOSURE_VERSION, ISOLATED_CLOSURE_VERSION}:

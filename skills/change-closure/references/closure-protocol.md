@@ -26,7 +26,7 @@ legacy-worktree, remote, or evidence-cleanup action remains.
 阶段状态：受阻
 恢复类型：重试当前阶段
 恢复条件：<exact condition>
-恢复检查点：仓库=<path>; 执行模式=<exclusive-checkout-v2 | exclusive-checkout-v1 | legacy-worktree>; 基础分支=<branch>; 当前 HEAD=<sha>; 合并提交=<sha>; 归档提交=<sha or none>; Spec=<path or URL or none>; Tickets=<paths or URLs or none>; Worktree=<none or legacy path and state>; 实现分支=<branch and state>; 仓库租约=<path, id and state or legacy-not-applicable>; 文档租约=<path, id, version and state or none>; 保留文档=<exact unstaged paths>; 管理链接基线=<paths and targets>; 专用任务=<thread id>; 任务主机=<host id>; 归档检查点=<absolute JSON>; 归档版本=<1 | 2>; 归档阶段=<version-appropriate phase>; 归档检查点字节=<count>; 归档检查点SHA-256=<sha>; 清理检查点=<path or deleted-after-complete>; 交接文件=<path and state or deleted-after-validation>; 交接ID=<id>; 交接字节=<count>; 交接SHA-256=<sha>; 交接完成标记=<HANDOFF_COMPLETE:id>; 监督清单元数据=<manifest or deleted-after-validation>; 监督文件数=<count>; 监督清理状态=<state>; 远程操作=<results or none>
+恢复检查点：仓库=<path>; 执行模式=<exclusive-checkout-v2 | isolated-worktree-v1 | exclusive-checkout-v1 | legacy-worktree>; 基础分支=<branch>; 当前 HEAD=<sha>; 合并提交=<sha>; 归档提交=<sha or none>; Spec=<path or URL or none>; Tickets=<paths or URLs or none>; Worktree=<none or exact isolated/legacy path and observed state>; 实现分支=<branch and state>; 执行租约=<repository lease | worktree execution lease | legacy-not-applicable; exact path, id, version/state>; 文档租约=<path, id, version and state or none>; 保留文档=<exact unstaged paths>; 管理链接基线=<paths and targets>; 专用任务=<thread id>; 任务主机=<host id>; 归档检查点=<absolute JSON>; 归档版本=<1 | 2 | 3>; 归档阶段=<version-appropriate phase>; 归档检查点字节=<count>; 归档检查点SHA-256=<sha>; 清理检查点=<path or deleted-after-complete>; 交接文件=<path and state or deleted-after-validation>; 交接ID=<id>; 交接字节=<count>; 交接SHA-256=<sha>; 交接完成标记=<HANDOFF_COMPLETE:id>; 监督清单元数据=<manifest or deleted-after-validation>; 监督文件数=<count>; 监督清理状态=<state>; 远程操作=<results or none>
 下一阶段：none
 恢复方式：满足条件后回复 `重试`
 ```
@@ -135,6 +135,10 @@ At `prepared`, converge each proposal only in the ordinary checkout with
 `converge-document-proposal`. The implementation worktree supplies immutable
 proposal bytes/evidence only. `applied` and `no-op` may proceed; a
 `document_proposal_conflict` preserves both sides and blocks.
+The `documents-committed` receipt freezes, in proposal-path order, each exact
+`path`, `base_sha256`, `proposal_sha256` and `outcome`; the discussion archive
+transition requires that byte-for-byte normalized list from the completed
+checkpoint and rejects caller-supplied summaries that do not match it.
 
 Version-3 cleanup receipts are deliberately stronger than legacy receipts:
 
@@ -155,7 +159,8 @@ before the next action. Stop when receipt publication fails.
 
 ## Release immutable stage-3 evidence
 
-Perform only after documents, branch deletion, repository-lease release, and
+Perform only after documents, mode-specific non-force resource cleanup,
+repository-lease release (v2) or exact execution-lease release (v3), and
 authorized remote actions succeeded and phase is `remote-verified`:
 
 1. Advance to `evidence-cleanup`; require cleanup state `intact`.

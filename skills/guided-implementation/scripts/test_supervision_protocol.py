@@ -1242,6 +1242,158 @@ class ArchiveIntegrationProtocolTests(DocumentLeaseTests):
         )
         self.assertEqual(released["state"], "available")
 
+    def test_isolated_cleanup_faults_are_explicit_and_resume_from_first_missing_receipt(self) -> None:
+        runtime = self.root / "cc-runtime"
+        environment = {**os.environ, "CC_SWITCH_RUNTIME_ROOT": str(runtime)}
+        source = {
+            "checkpoint_id": "CP-implementation-source",
+            "commit_id": "1" * 40,
+            "committed": True,
+            "read_only": True,
+            "sha256": "2" * 64,
+        }
+        lease_id = "4" * 32
+        worktree = self.root / "isolated-worktree"
+        handoff_input = self.root / "archive-handoff.json"
+        handoff_input.write_text(
+            json.dumps(
+                {
+                    "artifacts": [],
+                    "envelope": {
+                        "execution_mode": "isolated-worktree-v1",
+                        "implementation_source_checkpoint": source,
+                        "isolated_worktree": {
+                            "base_commit": "1" * 40,
+                            "branch": "codex/isolated",
+                            "execution_lease": {
+                                "lease_id": lease_id,
+                                "path": str(self.repository / ".git" / PROTOCOL.WORKTREE_EXECUTION_LEASE_DIRECTORY / "implementation.json"),
+                                "version": 7,
+                            },
+                            "parallelism_receipt": "5" * 64,
+                            "scope_sha256": "6" * 64,
+                            "sensitive_shared_surfaces": ["git-common-dir"],
+                            "worktree_path": str(worktree),
+                        },
+                        "repository": str(self.repository),
+                    },
+                    "work_items": [{"id": "WI08"}],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        created = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "create-handoff", "--input", str(handoff_input)],
+            check=True, stdout=subprocess.PIPE, text=True, env=environment,
+        )
+        handoff = json.loads(created.stdout)
+        handoff_id = Path(handoff["path"]).parent.name
+        payload = self.root / "payload.txt"
+        payload.write_text("archive evidence\n")
+        published = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "publish-supervision", "--handoff-file", handoff["path"], "--direction", "parent-to-child", "--kind", "archive-evidence", "--payload-file", str(payload)],
+            check=True, stdout=subprocess.PIPE, text=True, env=environment,
+        )
+        supervision = json.loads(published.stdout)
+        cleanup = self.root / "cleanup.json"
+        cleanup.write_text(
+            json.dumps(
+                {
+                    "cleanup_version": 1,
+                    "handoff_file": {
+                        "complete": f"HANDOFF_COMPLETE:{handoff_id}",
+                        "file_bytes": handoff["file_bytes"],
+                        "file_sha256": handoff["file_sha256"],
+                        "path": handoff["path"],
+                    },
+                    "handoff_id": handoff_id,
+                    "manifest_file": supervision["manifest_file"],
+                    "supervision_file_count": supervision["supervision_file_count"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        facts = {
+            "base_branch": "main",
+            "checkout_path": str(self.repository),
+            "documentation_proposals": ["docs/result.md"],
+            "execution_lease": {
+                "lease_id": lease_id,
+                "path": str(self.repository / ".git" / PROTOCOL.WORKTREE_EXECUTION_LEASE_DIRECTORY / "implementation.json"),
+                "version": 7,
+            },
+            "execution_mode": "isolated-worktree-v1",
+            "implementation_branch": "codex/isolated",
+            "implementation_commit": "a" * 40,
+            "managed_links": [],
+            "merge_commit": "b" * 40,
+            "remote_actions": [],
+            "repository": str(self.repository),
+            "source_host_id": "host",
+            "source_task_id": "task",
+            "spec_references": [],
+            "ticket_references": [],
+            "worktree_path": str(worktree),
+        }
+        closure_input = self.root / "closure-input.json"
+        closure_input.write_text(json.dumps({"cleanup_checkpoint": str(cleanup), "facts": facts}, sort_keys=True, separators=(",", ":")) + "\n")
+        closure = json.loads(
+            subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "create-closure-checkpoint", "--input", str(closure_input)],
+                check=True, stdout=subprocess.PIPE, text=True, env=environment,
+            ).stdout
+        )
+
+        document_result = self.root / "documents.json"
+        document_result.write_text(
+            json.dumps(
+                {
+                    "closure_commit": "c" * 40,
+                    "document_lease": {
+                        "lease_id": "7" * 32,
+                        "path": str(self.repository / ".git" / PROTOCOL.DOCUMENT_LEASE_FILENAME),
+                        "state": "available",
+                        "version": 2,
+                    },
+                    "documents_updated": ["docs/result.md"],
+                    "preserved_documents": [],
+                    "proposal_outcomes": [{"base_sha256": "8" * 64, "outcome": "applied", "path": "docs/result.md", "proposal_sha256": "9" * 64}],
+                    "verification": ["proposal applied"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "advance-closure-checkpoint", "--checkpoint", closure["path"], "--phase", "documents-committed", "--result", str(document_result)],
+            check=True, stdout=subprocess.PIPE, text=True, env=environment,
+        )
+
+        def advance_fault(phase: str, result: dict[str, object]) -> dict[str, object]:
+            path = self.root / f"{phase}-{uuid.uuid4().hex}.json"
+            path.write_text(json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "advance-closure-checkpoint", "--checkpoint", closure["path"], "--phase", phase, "--result", str(path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment,
+            )
+            return {"code": completed.returncode, "response": json.loads(completed.stdout), "path": path}
+
+        missing = advance_fault("worktree-removed", {"observed_before": "missing", "path": str(worktree), "verified_absent": True})
+        self.assertEqual(missing["code"], 2)
+        self.assertEqual(json.loads(subprocess.run([sys.executable, str(SCRIPT_PATH), "inspect-closure-checkpoint", "--checkpoint", closure["path"]], check=True, stdout=subprocess.PIPE, text=True, env=environment).stdout)["phase"], "documents-committed")
+        self.assertEqual(advance_fault("worktree-removed", {"observed_before": "present-clean", "path": str(worktree), "verified_absent": True})["code"], 0)
+        refusal = advance_fault("branch-removed", {"name": "codex/isolated", "observed_before": "present-unmerged", "verified_absent": False})
+        self.assertEqual(refusal["code"], 2)
+        self.assertEqual(advance_fault("branch-removed", {"name": "codex/isolated", "observed_before": "present-merged", "verified_absent": True})["code"], 0)
+        uncertain = advance_fault("execution-lease-released", {"lease_id": lease_id, "path": facts["execution_lease"]["path"], "state": "unknown", "version": 8})
+        self.assertEqual(uncertain["code"], 2)
+        self.assertEqual(advance_fault("execution-lease-released", {"lease_id": lease_id, "path": facts["execution_lease"]["path"], "state": "available", "version": 8})["code"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
