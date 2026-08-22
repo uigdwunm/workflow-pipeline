@@ -1,6 +1,7 @@
 # Bootstrap persistent 0讨论 topics
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## What to build
 

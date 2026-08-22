@@ -1,6 +1,7 @@
 # Coordinate phase runs and lifecycle routing
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## What to build
 

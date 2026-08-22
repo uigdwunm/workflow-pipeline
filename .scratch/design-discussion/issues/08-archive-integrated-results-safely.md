@@ -1,6 +1,7 @@
 # Archive integrated results safely
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## What to build
 

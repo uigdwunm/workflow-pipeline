@@ -60,6 +60,7 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
     chinese_messages = {
         "discussion_already_initialized": "项目已绑定其他持久化根话题，不能猜测或替换。",
         "git_identity_invalid": "Git 协调目录身份无效。",
+        "git_probe_failed": "无法可靠探测 Git worktree，已停止且不会创建备用协调状态。",
         "idempotency_conflict": "同一幂等键已用于不同的初始化参数。",
         "initialization_conflict": "初始化目标已存在，已停止且未覆盖原内容。",
         "initialization_failed": "持久化讨论初始化失败，已停止并回滚本次新增状态。",
@@ -73,6 +74,7 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "document_ownership_conflict": "调用者不是当前话题文档写入所有者。",
         "document_write_before_conflict": "话题文档已偏离待写入载荷的准备基线。",
         "document_write_payload_damaged": "待写入载荷缺失或摘要损坏。",
+        "document_write_orphan_conflict": "孤立载荷与精确重放请求的类型或摘要不匹配。",
         "document_write_reconciliation_required": "存在已确认但未完成的文档写入，必须先恢复协调。",
         "document_write_state_conflict": "待写入记录当前状态不允许此操作。",
         "document_write_verification_failed": "文档写入后的字节校验失败。",
@@ -106,6 +108,7 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "invalid_json": "标准输入必须只包含一个有效 JSON 值。",
         "invalid_project_path": "项目路径必须是已存在且规范化的绝对目录。",
         "invalid_request": "请求不符合 bootstrap 类型化接口。",
+        "internal_error": "讨论协议遇到内部错误，已停止并保留最后的权威状态。",
         "invalid_root_slug": "根话题 slug 格式无效。",
         "invalid_storage_path": "持久化路径包含不安全或无效的组件。",
         "state_corrupt": "持久化讨论权威状态损坏或不完整。",
@@ -226,16 +229,55 @@ def _new_identity(kind: str) -> str:
 
 
 def _git_common_dir(project: Path) -> Path | None:
-    completed = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        cwd=project,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if completed.returncode != 0:
+    environment = dict(os.environ)
+    environment["LC_ALL"] = "C"
+    try:
+        membership = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=project,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+    except OSError as error:
+        raise ProtocolError(
+            "git_probe_failed", "Git worktree membership could not be probed"
+        ) from error
+    if membership.returncode != 0:
+        if "not a git repository" in membership.stderr.casefold():
+            return None
+        raise ProtocolError(
+            "git_probe_failed", "Git worktree membership probe failed closed"
+        )
+    membership_value = membership.stdout.strip().casefold()
+    if membership_value == "false":
         return None
-    path = Path(completed.stdout.strip())
+    if membership_value != "true":
+        raise ProtocolError(
+            "git_probe_failed", "Git worktree membership probe returned an invalid result"
+        )
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=project,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+    except OSError as error:
+        raise ProtocolError(
+            "git_probe_failed", "Git common directory could not be probed"
+        ) from error
+    if completed.returncode != 0:
+        raise ProtocolError("git_probe_failed", "Git common directory probe failed closed")
+    common_dir_text = completed.stdout.strip()
+    path = Path(common_dir_text)
+    if not common_dir_text or not path.is_absolute():
+        raise ProtocolError(
+            "git_identity_invalid", "Git common directory is empty or not absolute"
+        )
     try:
         resolved = path.resolve(strict=True)
     except OSError as error:
@@ -850,12 +892,16 @@ def _bootstrap(request: dict[str, Any]) -> dict[str, Any]:
     try:
         _mkdirs(lock_root, created_directories)
         lock_path = lock_root / _project_lock_name(project)
-        lock_existed = lock_path.exists()
         lock_stream = lock_path.open("a+b")
-        if not lock_existed:
-            created_files.append(lock_path)
         try:
-            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            timeout_text = os.environ.get("CODEX_DISCUSSION_TEST_LOCK_TIMEOUT_SECONDS")
+            timeout_seconds = 5.0
+            if timeout_text is not None:
+                try:
+                    timeout_seconds = min(5.0, max(0.05, float(timeout_text)))
+                except ValueError:
+                    timeout_seconds = 5.0
+            _flock_with_timeout(lock_stream, timeout_seconds)
             existing = _existing_response(
                 project=project,
                 coordination_root=coordination_root,
@@ -1630,8 +1676,32 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
         )
         write_id = f"DW-{uuid.UUID(request['idempotency_key']).hex}"
         payload_path = ledger_path.parent / "pending-writes" / f"{write_id}.payload"
-        payload_path.parent.mkdir(exist_ok=True)
-        _write_new_file(payload_path, after_bytes, [])
+        _mkdirs(payload_path.parent, [])
+        owned_payload_paths = {
+            Path(item["payload_path"]) for item in records["Pending Document Writes"]
+        }
+        observed_payload_paths = {
+            item for item in payload_path.parent.iterdir() if item.is_file()
+        }
+        orphan_payload_paths = observed_payload_paths - owned_payload_paths
+        recovered_orphan = False
+        if orphan_payload_paths:
+            if orphan_payload_paths != {payload_path}:
+                raise ProtocolError(
+                    "orphaned_document_write",
+                    "an unrelated orphan payload must be recovered by its exact request",
+                )
+            orphan_bytes = _require_regular_nosymlink(
+                payload_path, "orphan pending document payload"
+            )
+            if orphan_bytes != after_bytes or _sha256(orphan_bytes) != _sha256(after_bytes):
+                raise ProtocolError(
+                    "document_write_orphan_conflict",
+                    "the deterministic orphan payload does not match this typed request",
+                )
+            recovered_orphan = True
+        else:
+            _write_new_file(payload_path, after_bytes, [])
         payload_path.chmod(0o400)
         write_record = {
             "document_write_id": write_id,
@@ -1654,11 +1724,14 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             "ledger_revision": next_revision, "record_revision": next_topic_revision,
             "document_write_id": write_id, "payload_path": str(payload_path),
             "before_sha256": write_record["before_sha256"], "after_sha256": write_record["after_sha256"],
+            "recovered_orphan": recovered_orphan,
             **mutation_result,
         }
         _append_event(next_records, request, revision=next_revision, event_type="topic-update-prepared", result=result)
         frontmatter["ledger_revision"] = str(next_revision)
         frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
+        if os.environ.get("CODEX_DISCUSSION_TEST_FAILPOINT") == "topic-update-ledger-replace":
+            raise OSError("injected topic update ledger replace failure")
         _atomic_replace(ledger_path, _render_records_ledger(frontmatter, next_records))
         return result
 
@@ -8295,18 +8368,16 @@ def handle(request: Any) -> dict[str, Any]:
 
 
 def main() -> int:
-    raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
-    if len(raw) > MAX_REQUEST_BYTES:
-        response = _response_error(
-            ProtocolError("invalid_request", f"request exceeds {MAX_REQUEST_BYTES} bytes")
-        )
-        sys.stdout.write(_canonical_json(response) + "\n")
-        return 1
     try:
+        raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
+        if len(raw) > MAX_REQUEST_BYTES:
+            raise ProtocolError(
+                "invalid_request", f"request exceeds {MAX_REQUEST_BYTES} bytes"
+            )
         request = json.loads(raw)
         response = handle(request)
         returncode = 0
-    except json.JSONDecodeError as error:
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
         protocol_error = ProtocolError("invalid_json", "stdin must contain one JSON value", cause=str(error))
         response = _response_error(protocol_error)
         print(protocol_error.message, file=sys.stderr)
@@ -8314,6 +8385,13 @@ def main() -> int:
     except ProtocolError as error:
         response = _response_error(error)
         print(error.message, file=sys.stderr)
+        returncode = 1
+    except Exception:
+        protocol_error = ProtocolError(
+            "internal_error", "discussion protocol encountered an internal error"
+        )
+        response = _response_error(protocol_error)
+        print(protocol_error.message, file=sys.stderr)
         returncode = 1
     sys.stdout.write(_canonical_json(response) + "\n")
     return returncode

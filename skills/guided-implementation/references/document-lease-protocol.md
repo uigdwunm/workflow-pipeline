@@ -165,6 +165,15 @@ runtime configuration, and dependency lockfiles. Documentation includes
 README files, `docs/**`, `CONTEXT.md`, ADRs, Specs, Tickets, requirement drafts,
 completion records, and project-specific equivalents.
 
+The repository's mechanical classifier implements this conservatively:
+common documentation basenames, Markdown/AsciiDoc/reStructuredText extensions,
+`docs`, design, architecture, ADR, Spec, Ticket, requirement-draft and tracker
+directories, plus GitHub issue/pull-request templates are documentation.
+Source, tests, migrations, schemas, fixtures, build/runtime configuration and
+dependency lockfiles remain implementation artifacts unless the path itself
+matches that explicit documentation scope. Extend the classifier and its
+positive/negative matrix together when a project adds an equivalent directory.
+
 Stage 3 must use exact implementation pathspecs. It must never use an unbounded
 `git add .` or `git add -A`. Immediately before every implementation or merge
 commit, inspect the NUL-delimited staged path list and require zero

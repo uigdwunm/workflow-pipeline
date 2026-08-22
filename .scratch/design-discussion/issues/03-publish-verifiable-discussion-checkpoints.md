@@ -1,6 +1,7 @@
 # Publish verifiable discussion checkpoints
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## What to build
 

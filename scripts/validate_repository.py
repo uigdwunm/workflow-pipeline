@@ -16,7 +16,60 @@ MARKDOWN_REFERENCE_PATTERN = re.compile(
     r"(?:\]\(|`)(?P<path>(?:\.\./)?(?:[a-z0-9-]+/)*references/[a-z0-9-]+\.md)(?:\)|`)"
 )
 SKILL_NAME_PATTERN = re.compile(r"^name:\s*([a-z][a-z0-9-]*)\s*$", re.MULTILINE)
-USER_PATH_BYTES_PATTERN = re.compile(rb"/Users/[^/\s]+/")
+USER_PATH_BYTES_PATTERN = re.compile(
+    rb"(?:(?:/Users|/home)/[^/\s]+/|[A-Za-z]:[\\/]Users[\\/][^\\/\s]+[\\/])",
+    re.IGNORECASE,
+)
+DOCUMENTATION_EXTENSIONS = {".adoc", ".asciidoc", ".md", ".mdx", ".org", ".rst"}
+DOCUMENTATION_DIRECTORIES = {
+    ".scratch",
+    "adr",
+    "adrs",
+    "architecture",
+    "design",
+    "design-docs",
+    "doc",
+    "docs",
+    "documentation",
+    "requirement-drafts",
+    "requirements",
+    "spec",
+    "specs",
+    "ticket",
+    "tickets",
+}
+DOCUMENTATION_NAMES = {
+    "agents.md",
+    "authors",
+    "changelog",
+    "changes",
+    "code_of_conduct.md",
+    "context.md",
+    "contributing.md",
+    "governance.md",
+    "history",
+    "maintainers",
+    "security.md",
+    "support.md",
+    "third_party_notices.md",
+}
+IMPLEMENTATION_DIRECTORIES = {
+    "app",
+    "build",
+    "config",
+    "configs",
+    "fixture",
+    "fixtures",
+    "lib",
+    "migration",
+    "migrations",
+    "schema",
+    "schemas",
+    "source",
+    "src",
+    "test",
+    "tests",
+}
 
 
 def relative(path: Path, repository: Path) -> str:
@@ -32,16 +85,24 @@ def discover_tests(repository: Path) -> list[Path]:
 
 
 def is_documentation_path(path: str) -> bool:
-    parts = Path(path).parts
-    name = Path(path).name
-    return bool(
-        parts
-        and (
-            parts[0] in {"docs", ".scratch"}
-            or name in {"AGENTS.md", "CONTEXT.md", "THIRD_PARTY_NOTICES.md"}
-            or name.casefold().startswith("readme")
-        )
-    )
+    normalized = path.replace("\\", "/")
+    parts = tuple(part.casefold() for part in normalized.split("/") if part)
+    if not parts:
+        return False
+    name = parts[-1]
+    if ".github" in parts and any(
+        part in {"issue_template", "pull_request_template"} for part in parts
+    ):
+        return True
+    if any(part in DOCUMENTATION_DIRECTORIES for part in parts[:-1]):
+        return True
+    if any(part in IMPLEMENTATION_DIRECTORIES for part in parts[:-1]):
+        return False
+    if name in DOCUMENTATION_NAMES or name.startswith("readme"):
+        return True
+    if Path(name).suffix.casefold() in DOCUMENTATION_EXTENSIONS:
+        return True
+    return False
 
 
 def validate_implementation_range(repository: Path, revision_range: str) -> dict[str, object]:
@@ -120,6 +181,27 @@ def validate(repository: Path) -> dict[str, object]:
         if USER_PATH_BYTES_PATTERN.search(skill_path.read_bytes()):
             issues.append(
                 {"code": "user-specific-absolute-path", "path": relative(skill_path, repository)}
+            )
+    tracker_paths = sorted(
+        path
+        for path in (repository / ".scratch").glob("*/**/*.md")
+        if path.is_file() and (path.name == "PRD.md" or "issues" in path.parts)
+    )
+    for tracker_path in tracker_paths:
+        tracker_text = tracker_path.read_text(encoding="utf-8")
+        checkboxes = re.findall(r"^- \[([ xX])\] ", tracker_text, re.MULTILINE)
+        ready = re.search(
+            r"^Status:\s*`?ready-for-agent`?\s*$", tracker_text, re.MULTILINE
+        )
+        completed = re.search(
+            r"^Lifecycle:\s*`?completed`?\s*$", tracker_text, re.MULTILINE
+        )
+        if ready and checkboxes and all(value.casefold() == "x" for value in checkboxes) and not completed:
+            issues.append(
+                {
+                    "code": "completed-tracker-missing-closure",
+                    "path": relative(tracker_path, repository),
+                }
             )
     for dependency in sorted(invoked_names | local_names):
         if dependency not in registered_names:

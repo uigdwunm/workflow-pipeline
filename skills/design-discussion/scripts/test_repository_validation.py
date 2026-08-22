@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -15,6 +16,9 @@ from matrix_proof import matrix_proof
 
 REPOSITORY = Path(__file__).parents[3]
 VALIDATOR = REPOSITORY / "scripts" / "validate_repository.py"
+DEPENDENCY_CHECK = REPOSITORY / "scripts" / "check-dependencies.sh"
+sys.path.insert(0, str(REPOSITORY / "scripts"))
+import validate_repository as REPOSITORY_VALIDATION
 
 
 class RepositoryValidationTests(unittest.TestCase):
@@ -144,6 +148,95 @@ class RepositoryValidationTests(unittest.TestCase):
             [("user-specific-absolute-path", "skills/alpha/scripts/fixture.bin")],
         )
 
+    def test_user_specific_paths_cover_macos_linux_and_windows(self) -> None:
+        for label, value in (
+            ("macos", "/" + "Users/alice/private/output.md"),
+            ("linux", "/" + "home/alice/private/output.md"),
+            ("windows-slash", "C:/" + "Users/Alice/private/output.md"),
+            ("windows-backslash", "D:\\" + "Users\\Alice\\private\\output.md"),
+        ):
+            with self.subTest(label=label):
+                temporary_directory, repository = self.make_repository()
+                self.addCleanup(temporary_directory.cleanup)
+                fixture = repository / "skills" / "alpha" / "scripts" / f"{label}.bin"
+                fixture.write_bytes(value.encode("utf-8"))
+                completed = self.run_validator(repository)
+                self.assertEqual(completed.returncode, 1)
+                self.assertIn(
+                    ("user-specific-absolute-path", fixture.relative_to(repository).as_posix()),
+                    [(issue["code"], issue["path"]) for issue in json.loads(completed.stdout)["issues"]],
+                )
+
+    def test_documentation_classifier_matches_protocol_scope_without_absorbing_code(self) -> None:
+        documentation = {
+            "CONTRIBUTING.md", "CHANGELOG.md", "SECURITY.md", "architecture.md",
+            "design/spec.md", ".github/ISSUE_TEMPLATE/bug.md", "Specs/authentication.yaml",
+            "Tickets/42-login.md", "ADRs/0001-cache.md", "requirements/payment-draft.rst",
+        }
+        implementation = {
+            "src/main.py", "tests/test_main.py", "migrations/0001.sql",
+            "schemas/api.json", "fixtures/request.json", "pyproject.toml",
+            "package-lock.json", "Dockerfile", ".github/workflows/ci.yml",
+            "fixtures/golden.md", "tests/snapshots/result.mdx", "migrations/notes.rst",
+        }
+        self.assertEqual(
+            {path for path in documentation if not REPOSITORY_VALIDATION.is_documentation_path(path)},
+            set(),
+        )
+        self.assertEqual(
+            {path for path in implementation if REPOSITORY_VALIDATION.is_documentation_path(path)},
+            set(),
+        )
+
+    def test_completed_ready_tracker_requires_orthogonal_lifecycle_closure(self) -> None:
+        temporary_directory, repository = self.make_repository()
+        self.addCleanup(temporary_directory.cleanup)
+        tracker = repository / ".scratch" / "design" / "issues" / "01-done.md"
+        tracker.parent.mkdir(parents=True)
+        tracker.write_text(
+            "# Done\n\nStatus: `ready-for-agent`\n\n## Acceptance criteria\n\n- [x] Verified.\n",
+            encoding="utf-8",
+        )
+        missing = json.loads(self.run_validator(repository).stdout)
+        self.assertIn("completed-tracker-missing-closure", {item["code"] for item in missing["issues"]})
+
+        tracker.write_text(
+            tracker.read_text(encoding="utf-8").replace(
+                "Status: `ready-for-agent`", "Status: `ready-for-agent`\nLifecycle: `completed`"
+            ),
+            encoding="utf-8",
+        )
+        completed = self.run_validator(repository)
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+
+    def test_dependency_check_rejects_duplicate_filesystem_skill_sources(self) -> None:
+        temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        root = Path(temporary_directory.name)
+        codex_home = root / "codex"
+        agents_home = root / "home" / ".agents" / "skills"
+        required_external = {
+            "setup-matt-pocock-skills", "ask-matt", "grill-with-docs", "grilling",
+            "domain-modeling", "to-spec", "to-tickets", "implement", "tdd", "code-review",
+        }
+        for name in required_external:
+            path = agents_home / name / "SKILL.md"
+            path.parent.mkdir(parents=True)
+            path.write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+        duplicate = codex_home / "skills" / "ask-matt" / "SKILL.md"
+        duplicate.parent.mkdir(parents=True)
+        duplicate.write_text("---\nname: ask-matt\n---\n", encoding="utf-8")
+        completed = subprocess.run(
+            [str(DEPENDENCY_CHECK)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "HOME": str(root / "home"), "CODEX_HOME": str(codex_home)},
+        )
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("duplicate", completed.stdout)
+        self.assertIn(str(duplicate), completed.stdout)
+
     @matrix_proof(
         "fault_boundaries:documentation-commit",
         "invariants:no-documentation-in-implementation-commits",
@@ -164,10 +257,20 @@ class RepositoryValidationTests(unittest.TestCase):
             ["git", "-C", str(repository), "rev-parse", "HEAD"],
             check=True, stdout=subprocess.PIPE, text=True,
         ).stdout.strip()
-        source = repository / "src" / "feature.py"
-        source.parent.mkdir()
-        source.write_text("enabled = True\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(repository), "add", "src/feature.py"], check=True)
+        implementation_paths = {
+            "src/feature.py": "enabled = True\n",
+            "tests/test_feature.py": "def test_feature(): pass\n",
+            "migrations/0001.sql": "select 1;\n",
+            "schemas/api.json": "{}\n",
+            "fixtures/input.json": "{}\n",
+            "pyproject.toml": "[tool.test]\n",
+            "package-lock.json": "{}\n",
+        }
+        for relative_path, content in implementation_paths.items():
+            path = repository / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "add", *implementation_paths], check=True)
         subprocess.run(
             [
                 "git", "-C", str(repository), "-c", "user.name=Test",
@@ -185,8 +288,16 @@ class RepositoryValidationTests(unittest.TestCase):
         self.assertEqual(clean.returncode, 0, clean.stderr)
         self.assertEqual(json.loads(clean.stdout)["documentation_paths"], [])
 
-        (repository / "README.md").write_text("changed documentation\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+        documentation_paths = {
+            "CONTRIBUTING.md", "CHANGELOG.md", "SECURITY.md", "architecture.md",
+            "design/spec.md", ".github/ISSUE_TEMPLATE/bug.md", "Specs/api.yaml",
+            "Tickets/42.md", "ADRs/0002.md", "requirements/draft.rst",
+        }
+        for relative_path in documentation_paths:
+            path = repository / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("documentation\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "add", *documentation_paths], check=True)
         subprocess.run(
             [
                 "git", "-C", str(repository), "-c", "user.name=Test",
@@ -199,7 +310,7 @@ class RepositoryValidationTests(unittest.TestCase):
         )
         self.assertEqual(leaked.returncode, 1)
         self.assertEqual(
-            json.loads(leaked.stdout)["documentation_paths"], ["README.md"]
+            json.loads(leaked.stdout)["documentation_paths"], sorted(documentation_paths)
         )
 
 

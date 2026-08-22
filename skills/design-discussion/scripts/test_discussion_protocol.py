@@ -11,9 +11,11 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 import discussion_protocol as PROTOCOL
@@ -255,6 +257,61 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
             )
         )
 
+    def test_linked_worktree_uses_the_shared_git_coordination_storage(self) -> None:
+        repository = self.make_project("linked-source", git=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "base"],
+            check=True,
+        )
+        linked = self.root / "linked-checkout"
+        subprocess.run(
+            ["git", "-C", str(repository), "worktree", "add", "-q", "-b", "linked-test", str(linked)],
+            check=True,
+        )
+
+        returncode, response, stderr = self.run_cli(self.request(linked))
+
+        self.assertEqual(returncode, 0, stderr)
+        self.assertTrue(
+            Path(str(response["ledger_path"])).is_relative_to(
+                self.git_common_dir(repository) / "cc-switch" / "design-discussion" / "v1"
+            )
+        )
+
+    def test_git_runtime_failure_fails_closed_without_project_local_state(self) -> None:
+        project = self.make_project("git-probe-failure", git=False)
+        fake_bin = self.root / "fake-bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        fake_git.write_text("#!/bin/sh\necho 'simulated git permission failure' >&2\nexit 2\n", encoding="utf-8")
+        fake_git.chmod(0o755)
+
+        returncode, response, _ = self.run_cli(
+            self.request(project), environment_overrides={"PATH": str(fake_bin)}
+        )
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(response["error"]["code"], "git_probe_failed")
+        self.assertFalse((project / ".codex").exists())
+
+    def test_git_probe_exceptions_are_typed_fail_closed_errors(self) -> None:
+        project = self.make_project("missing-git", git=False)
+        with mock.patch.object(PROTOCOL.subprocess, "run", side_effect=FileNotFoundError("private path")):
+            with self.assertRaises(PROTOCOL.ProtocolError) as raised:
+                PROTOCOL._git_common_dir(project)
+        self.assertEqual(raised.exception.code, "git_probe_failed")
+
+    def test_git_probe_rejects_an_empty_or_relative_common_directory(self) -> None:
+        project = self.make_project("invalid-common-dir", git=False)
+        membership = subprocess.CompletedProcess([], 0, "true\n", "")
+        for common_output in ("", "relative-git-dir\n"):
+            with self.subTest(common_output=common_output):
+                common = subprocess.CompletedProcess([], 0, common_output, "")
+                with mock.patch.object(PROTOCOL.subprocess, "run", side_effect=[membership, common]):
+                    with self.assertRaises(PROTOCOL.ProtocolError) as raised:
+                        PROTOCOL._git_common_dir(project)
+                self.assertEqual(raised.exception.code, "git_identity_invalid")
+
     def test_duplicate_invocation_is_an_exact_idempotent_replay(self) -> None:
         project = self.make_project("duplicate", git=True)
         invocation_id = str(uuid.uuid4())
@@ -395,6 +452,55 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
         )
         self.assertFalse(any(coordination_root.rglob("ledger.md")) if coordination_root.exists() else False)
         self.assertFalse((project / "docs" / "discussions" / ".codex-project.md").exists())
+        lock_path = coordination_root / "locks" / PROTOCOL._project_lock_name(project)
+        self.assertTrue(lock_path.is_file())
+
+    def test_bootstrap_lock_wait_is_bounded_and_returns_coordination_busy(self) -> None:
+        project = self.make_project("bootstrap-lock-timeout", git=True)
+        coordination_root = self.git_common_dir(project) / "cc-switch" / "design-discussion" / "v1"
+        lock_path = coordination_root / "locks" / PROTOCOL._project_lock_name(project)
+        lock_path.parent.mkdir(parents=True)
+        with lock_path.open("a+b") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            started = time.monotonic()
+            returncode, response, _ = self.run_cli(
+                self.request(project),
+                environment_overrides={"CODEX_DISCUSSION_TEST_LOCK_TIMEOUT_SECONDS": "0.2"},
+            )
+            elapsed = time.monotonic() - started
+        self.assertEqual(returncode, 1)
+        self.assertEqual(response["error"]["code"], "coordination_busy")
+        self.assertLess(elapsed, 2.0)
+        self.assertTrue(lock_path.is_file())
+
+    def test_failed_bootstrap_never_replaces_the_lock_inode_seen_by_waiters(self) -> None:
+        project = self.make_project("stable-bootstrap-lock", git=True)
+        blocker = project / "docs" / "discussions" / "checkout-redesign" / "topic.md"
+        blocker.parent.mkdir(parents=True)
+        blocker.write_text("block bootstrap\n", encoding="utf-8")
+        coordination_root = self.git_common_dir(project) / "cc-switch" / "design-discussion" / "v1"
+        lock_path = coordination_root / "locks" / PROTOCOL._project_lock_name(project)
+
+        first_code, _, _ = self.run_cli(self.request(project))
+        self.assertEqual(first_code, 1)
+        first_inode = lock_path.stat().st_ino
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(lambda _: self.run_cli(self.request(project))[0], range(2)))
+        self.assertEqual(outcomes, [1, 1])
+        self.assertEqual(lock_path.stat().st_ino, first_inode)
+
+    def test_cli_returns_one_structured_json_for_non_utf8_input(self) -> None:
+        invalid = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH)],
+            input=b"\xff",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(invalid.returncode, 1)
+        invalid_lines = invalid.stdout.splitlines()
+        self.assertEqual(len(invalid_lines), 1)
+        self.assertEqual(json.loads(invalid_lines[0])["error"]["code"], "invalid_json")
+
 
     def test_invalid_paths_fail_without_creating_project_state(self) -> None:
         regular_file = self.root / "not-a-project"
@@ -3949,6 +4055,85 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(reconciled["state"], "confirmed-but-pending")
         self.assertFalse(reconciled["document_verified"])
+
+    @matrix_proof("fault_boundaries:documentation-commit")
+    def test_orphan_payload_is_digest_bound_and_adopted_by_exact_prepare_replay(self) -> None:
+        project = self.make_project("orphan-prepare-replay", git=True)
+        topic = self.bootstrap_topic(project)
+        request = self.evolution_request(
+            topic,
+            operation="prepare-topic-update",
+            expected_revision=1,
+            expected_topic_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Recover the published payload.",
+                "rationale": "The ledger remains the only authority.",
+            },
+        )
+
+        failed_code, failed, _ = self.run_cli(
+            request, failpoint="topic-update-ledger-replace"
+        )
+        self.assertEqual(failed_code, 1)
+        self.assertEqual(failed["error"]["code"], "internal_error")
+        self.assertIsNone(failed["error"]["cause"])
+        payload_dir = Path(str(topic["ledger_path"])).parent / "pending-writes"
+        payloads = list(payload_dir.glob("*.payload"))
+        self.assertEqual(len(payloads), 1)
+        orphan_bytes = payloads[0].read_bytes()
+
+        validate_code, invalid, _ = self.run_cli(
+            self.evolution_request(topic, operation="validate")
+        )
+        self.assertEqual(validate_code, 1)
+        self.assertEqual(invalid["error"]["code"], "orphaned_document_write")
+
+        conflicting = dict(request)
+        conflicting["mutation"] = {
+            "type": "confirm-decision",
+            "summary": "Different bytes under the same key.",
+            "rationale": "This must not take over the orphan.",
+        }
+        conflict_code, conflict, _ = self.run_cli(conflicting)
+        self.assertEqual(conflict_code, 1)
+        self.assertEqual(conflict["error"]["code"], "document_write_orphan_conflict")
+        self.assertEqual(payloads[0].read_bytes(), orphan_bytes)
+
+        recovered_code, recovered, recovered_stderr = self.run_cli(request)
+        self.assertEqual(recovered_code, 0, recovered_stderr)
+        self.assertTrue(recovered["recovered_orphan"])
+        self.assertEqual(Path(str(recovered["payload_path"])).read_bytes(), orphan_bytes)
+        replay_code, replay, replay_stderr = self.run_cli(request)
+        self.assertEqual(replay_code, 0, replay_stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(replay["document_write_id"], recovered["document_write_id"])
+
+    def test_unrelated_orphan_blocks_a_new_prepare_without_publishing_another_payload(self) -> None:
+        project = self.make_project("unrelated-orphan", git=True)
+        topic = self.bootstrap_topic(project)
+        payload_dir = Path(str(topic["ledger_path"])).parent / "pending-writes"
+        payload_dir.mkdir()
+        orphan = payload_dir / "DW-00000000000000000000000000000000.payload"
+        orphan.write_bytes(b"unowned\n")
+
+        code, response, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-topic-update",
+                expected_revision=1,
+                expected_topic_revision=1,
+                mutation={
+                    "type": "confirm-decision",
+                    "summary": "Do not multiply orphans.",
+                    "rationale": "Recovery must be explicit.",
+                },
+            )
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(response["error"]["code"], "orphaned_document_write")
+        self.assertEqual(list(payload_dir.iterdir()), [orphan])
 
     def test_ownership_conflict_and_stale_lease_cannot_apply_pending_write(self) -> None:
         project = self.make_project("write-authority", git=True)

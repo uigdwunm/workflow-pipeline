@@ -1,6 +1,7 @@
 # Run implementation in two controlled modes
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## What to build
 

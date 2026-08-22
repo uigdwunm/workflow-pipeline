@@ -1,6 +1,7 @@
 # Split and continue discussion topics
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## What to build
 

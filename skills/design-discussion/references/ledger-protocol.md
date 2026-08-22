@@ -12,6 +12,12 @@ Each discussion tree has one authoritative `ledger.md`:
 - Non-Git projects store it below the project at
   `.codex/design-discussion/v1/`.
 
+The protocol asks Git whether the project is a worktree before choosing a
+root. Only Git's explicit “not a repository” result permits non-Git storage.
+Missing or incompatible Git, damaged metadata, permission or ownership
+failures, and an invalid common directory fail closed; they must never create
+a second project-local coordination authority.
+
 Project identity is located by `docs/discussions/.codex-project.md`. The root
 topic document remains in `docs/discussions/<root-slug>/topic.md` for both
 storage modes.
@@ -28,6 +34,13 @@ An exact retry with the same UUIDv4 and parameters returns the existing state
 without increasing revision or event count. Reusing a key with different
 parameters is a conflict. A project that already has a different root must not
 be guessed or replaced.
+
+Bootstrap serializes on one stable per-project lock file. That coordination
+file may remain after a failed bootstrap and is not business state. It is never
+unlinked during rollback because existing waiters may already hold its inode.
+Lock acquisition uses the same bounded wait as ledger mutations and reports
+the retryable `coordination_busy` code on timeout. Rollback still removes every
+new ledger, manifest, topic document and other partial business artifact.
 
 ## Errors
 

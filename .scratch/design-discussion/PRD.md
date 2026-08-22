@@ -1,6 +1,7 @@
 # Spec: `design-discussion`（0讨论）与 0—4 生命周期集成
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## Problem Statement
 
@@ -229,5 +230,5 @@ Git 实现支持 `exclusive-checkout-v2` 与用户逐次明确授权的 `isolate
 - 2026-08-21 后续加固：子话题/continuation 已接到真实 Codex task seam；fallback 验收改为可机械观察的 legacy contract invariants；discussion 使用 66 个 canonical operation 加 2 个兼容 alias 的单一 registry 和懒解析 `RequestContext`；supervision 使用 40 个 `CommandSpec` 的单一 registry 与参数化 holder policy；旧 Skill 改为 action-specific 渐进加载。`bash scripts/validate.sh` 最终 153 项通过，仓库验证为 5 个 Skill、17 个 reference、5 组自动发现测试且无问题。
 - 权威需求来源：`/Users/zhaolaiyuan/Documents/Codex/2026-08-06/wo/outputs/design-discussion-overall-design.md`，SHA-256 `9578fa64ba31461b4ada1d3245b5271bf732185286d0cfa21a56ba775fd86d1f`。
 - 迁移承接：`/Users/zhaolaiyuan/Documents/Codex/2026-08-06/wo/outputs/design-discussion-workflow-pipeline-continuation.md`，SHA-256 `e88a1ee1736ecce271d52bf719ef9323579c2eab60e79acda15ed640c32c051c`。
-- 本地 tracker 目标为 `.scratch/design-discussion/PRD.md` 与 `.scratch/design-discussion/issues/`；triage 状态使用 `ready-for-agent`。
+- 本地 tracker 目标为 `.scratch/design-discussion/PRD.md` 与 `.scratch/design-discussion/issues/`；`Status` 继续使用 Matt triage vocabulary，独立的 `Lifecycle` 表示工作闭环。自动领取必须同时要求 `Lifecycle` 不是 `completed`；验收项全部完成后必须写入 `Lifecycle: completed`，不能伪造一个 `completed` triage label。
 - `CONTEXT.md` 当前不存在；本 Spec 沿用权威总体设计中的 canonical terms。实施时如新增真正的领域术语缺口，另走 domain-modeling，不在方案阶段创建占位 glossary。

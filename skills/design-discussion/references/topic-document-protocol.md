@@ -43,6 +43,14 @@ Every update carries expected ledger and topic revisions plus a UUIDv4
 idempotency key. Exact replay returns the original result; a reused key with
 different parameters is a conflict.
 
+Publishing the immutable payload and committing its ledger record are two
+durability boundaries. If the process stops between them, the payload is not
+authoritative by itself. Retry the exact original `prepare-topic-update`
+request: the deterministic `DW-*` identity, typed mutation and rendered digest
+must all match before the protocol adopts that payload and commits the single
+ledger event. A changed request cannot take over it, and an unrelated orphan
+blocks new payload publication. This recovery never requires manual deletion.
+
 When the caller cannot prove whether apply or release persisted, use
 `reconcile-document-write`. Reconciliation rereads the immutable payload,
 current document digest and the supervision-protocol lease state; it never
@@ -51,6 +59,8 @@ projects and in `.codex` for non-Git projects.
 
 Treat any non-completed `DW-*` as a discussion freeze. Do not ask or persist a
 new substantive question until `read-topic` and `validate` can verify the
-payload, document digest, single active question and release state. Missing,
-orphaned or damaged payloads require reconciliation; they are never silently
-recreated from the current Markdown.
+payload, document digest, single active question and release state. An orphan
+from the prepare/ledger crash window requires the exact prepare replay above.
+Missing or damaged payloads belonging to a ledger record require
+reconciliation and stop on conflicting facts; no payload is silently recreated
+from the current Markdown.

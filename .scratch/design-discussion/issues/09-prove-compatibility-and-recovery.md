@@ -1,6 +1,7 @@
 # Prove compatibility and end-to-end recovery
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## What to build
 

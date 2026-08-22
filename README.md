@@ -13,7 +13,8 @@
 ## 环境要求
 
 - Codex Desktop / Codex CLI，且运行时支持原生子 Agent 协作工具。
-- Python 3.10+ 与 Git。
+- Python 3.10+、Git 与 Bash，运行在支持 POSIX 文件语义的 macOS 或 Linux。
+- 协议依赖 `flock` advisory locks、同文件系统原子 rename、`fsync`、hard link、`dir_fd` 与 `O_NOFOLLOW`。协调目录和项目文档必须位于可靠实现这些原语的本地或等价文件系统；原生 Windows 当前不受支持。
 - [Matt Pocock's Skills](https://github.com/mattpocock/skills)，至少安装：
   `setup-matt-pocock-skills`、`ask-matt`、`grill-with-docs`、`grilling`、
   `domain-modeling`、`to-spec`、`to-tickets`、`implement`、`tdd`、`code-review`。
@@ -78,6 +79,8 @@ $problem-framing 帮我明确这次需求
 ```
 
 该命令自动发现并验证全部 Skill、渐进引用和内外部依赖注册，自动运行 `skills/**/scripts/test_*.py`，并检查 Skill 文件中是否残留个人绝对路径。
+
+`check-dependencies.sh` 只能检查文档列出的文件系统搜索根：它会发现其中同一外部注册名的重复来源，但不能读取 Codex 当前 active registry，也不能证明安装版本与兼容基线一致。运行时仍以 active registry 为准；版本边界需按依赖文档人工核对。
 
 ## 许可证
 

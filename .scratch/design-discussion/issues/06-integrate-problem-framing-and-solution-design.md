@@ -1,6 +1,7 @@
 # Integrate 1拷问 and 2方案 with discussion sources
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## What to build
 

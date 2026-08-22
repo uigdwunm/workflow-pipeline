@@ -1,6 +1,7 @@
 # Evolve topic documents safely
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## What to build
 
