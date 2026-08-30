@@ -12,7 +12,7 @@ The optional discussion stage and the four established stages invoke other Skill
 | `guided-implementation` | `design-discussion`, `problem-framing`, `solution-design`, `change-closure` |
 | `change-closure` | `design-discussion`, `guided-implementation` |
 
-Install all five Skills together so optional discovery, cross-stage transitions and shared lease verification remain available.
+Install all five Skills together so optional discovery and cross-stage transitions remain available.
 
 `guided-implementation` also owns the shared `thread-settings-v2` runtime and
 protocol used by `design-discussion`, `problem-framing`, `solution-design` and

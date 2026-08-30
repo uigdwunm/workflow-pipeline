@@ -1,6 +1,6 @@
 ---
 name: solution-design
-description: Use when the user explicitly invokes $solution-design; confirms a stable current-task $problem-framing handoff; $problem-framing explicitly enters this stage after accepting and archiving a dedicated grilling task; replies to this Skill's launch, review, document-lease, pending-planning-commit, or anomaly block; or selects 执行后续全部流程 from a verified success footer. Orchestrate one context-isolated solution-designer subagent using the primary thread's disclosed model and reasoning effort, accept either an immutable problem-framing draft or an exact current-task handoff, let the child own native $to-spec, ADR, $to-tickets and publication work, coordinate local document writes through the shared CAS document lease while stage 3 owns Git and implementation paths, preserve exact stepwise confirmations, and hand completion to $guided-implementation without implementing code here.
+description: Use when the user explicitly invokes $solution-design; confirms a stable current-task $problem-framing handoff; $problem-framing explicitly enters this stage after accepting and archiving a dedicated grilling task; replies to this Skill's launch, review, or anomaly block; or selects 执行后续全部流程 from a verified success footer. Orchestrate one context-isolated solution-designer subagent using the primary thread's disclosed model and reasoning effort, accept either an immutable problem-framing draft or an exact current-task handoff, let the child own native $to-spec, ADR, $to-tickets and publication work, commit only stage-owned planning documents, preserve exact stepwise confirmations, and hand completion to $guided-implementation without implementing code here.
 ---
 
 # 2方案
@@ -12,8 +12,7 @@ trusted child identity, anomaly routing, completion intake, and stage entry.
 
 Read
 [references/subagent-protocol.md](references/subagent-protocol.md) and
-[references/templates.md](references/templates.md), plus the shared
-[../guided-implementation/references/document-lease-protocol.md](../guided-implementation/references/document-lease-protocol.md),
+[references/templates.md](references/templates.md),
 completely before launching, resuming, or accepting a solution-design
 subagent.
 
@@ -130,6 +129,6 @@ with the preserved mode. Do not ask or end the turn for a stage confirmation.
 Continuous mode may later enter `4归档` only through the existing verified
 stage-3 transition.
 
-Use the anomaly protocol for execution failures, lease conflicts, unexpected
+Use the anomaly protocol for execution failures, unexpected
 workspace state, and recovery decisions. Never repeat completed design, review,
 or publication work.

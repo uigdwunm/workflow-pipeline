@@ -11,9 +11,6 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from matrix_proof import matrix_proof
-
-
 REPOSITORY = Path(__file__).parents[3]
 VALIDATOR = REPOSITORY / "scripts" / "validate_repository.py"
 DEPENDENCY_CHECK = REPOSITORY / "scripts" / "check-dependencies.sh"
@@ -141,14 +138,16 @@ class RepositoryValidationTests(unittest.TestCase):
         self.addCleanup(temporary_directory.cleanup)
         first = repository / "skills" / "alpha" / "scripts" / "test_zeta.py"
         second = repository / "skills" / "alpha" / "scripts" / "test_alpha.py"
+        nested = repository / "skills" / "alpha" / "nested" / "scripts" / "test_nested.py"
         ignored = repository / "skills" / "alpha" / "scripts" / "alpha_test.py"
-        for path in (first, second, ignored):
+        nested.parent.mkdir(parents=True)
+        for path in (first, second, nested, ignored):
             path.write_text("# fixture\n", encoding="utf-8")
         completed = self.run_validator(repository, "--list-tests")
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             completed.stdout.splitlines(),
-            [str(second.resolve()), str(first.resolve())],
+            sorted(str(path.resolve()) for path in (second, nested, first)),
         )
 
     def test_non_utf8_skill_files_are_scanned_without_being_silently_skipped(self) -> None:
@@ -283,10 +282,6 @@ class RepositoryValidationTests(unittest.TestCase):
         self.assertIn("duplicate", completed.stdout)
         self.assertIn(str(duplicate), completed.stdout)
 
-    @matrix_proof(
-        "fault_boundaries:documentation-commit",
-        "invariants:no-documentation-in-implementation-commits",
-    )
     def test_implementation_range_rejects_documentation_paths(self) -> None:
         temporary_directory, repository = self.make_repository()
         self.addCleanup(temporary_directory.cleanup)

@@ -85,34 +85,24 @@ affected decisions into one resolution.
 ## Coordinate writes and later actions
 
 All durable discussion state belongs to `discussion_protocol.py`; do not patch
-the authoritative ledger directly. Topic-document writes use the shared
-document lease with stage `design-discussion` and purpose `document-write`.
-The update sequence is:
+the authoritative ledger directly. The update sequence is:
 
 1. `prepare-topic-update` creates one immutable `DW-*` payload with before and
    after SHA-256 digests and enters `confirmed-but-pending`.
-2. Acquire the document lease from `supervision_protocol.py`. Pass its exact
-   path, lease ID and version to `apply-document-write`; continue only when the
-   protocol reports byte verification and `release_allowed: true`.
-3. Release that exact lease through `supervision_protocol.py`, then pass its
-   release path, lease ID and new version to `complete-document-write`.
-4. Call `validate` or `read-topic` before continuing substantive discussion.
+2. `apply-document-write` compares the current bytes with the immutable
+   payload, atomically writes the document, verifies it, and marks the `DW-*`
+   completed while holding the discussion lock.
+3. Call `validate` or `read-topic` before continuing substantive discussion.
 
-If an apply or release result is uncertain, call `reconcile-document-write`
-with the same `DW-*` and current revisions. It compares the immutable payload,
-the current document bytes and the authoritative supervision lease state. It
-may keep the checkpoint pending, adopt verified applied bytes, or complete a
-verified release; conflicting facts stop reconciliation.
-
-Git projects store the shared document lease under `.git`; non-Git projects
-use the supervision-owned lease under the project's `.codex` coordination
-directory. Callers always use the exact path returned by the supervision CLI.
+If an apply result is uncertain, retry the exact `apply-document-write`
+request. It accepts either the recorded before digest or the exact payload
+digest, so it can finish the ledger record without rewriting already-applied
+bytes. Any third digest is a conflict.
 
 While any `DW-*` is not `completed`, do not prepare another substantive
-update. Lease timeout, stale credentials, outcome uncertainty, missing or
-damaged payloads, or release verification failure leave a recoverable
-confirmed-but-pending checkpoint; reconcile it before asking the next design
-question. Never edit or delete the payload to force recovery.
+update. Outcome uncertainty or a missing or damaged payload leaves a
+confirmed-but-pending checkpoint; retry the exact apply before asking the next
+design question. Never edit or delete the payload to force recovery.
 
 ## Publish a verifiable checkpoint
 
@@ -123,19 +113,16 @@ topic-document bytes and SHA-256, decision digest, sorted path set, base ref,
 resolved base commit for Git, and a new immutable identity. Do not reuse a
 cancelled or superseded identity.
 
-For Git projects, acquire the supervision-owned short repository coordination
-lease with stage `design-discussion` and purpose `checkpoint-publish`, pass its
-exact credential to `publish-git-checkpoint`, verify the returned commit, then
-release the lease. This lease is separate from the document lease and grants
-only the bounded checkpoint publication. For non-Git projects,
+For Git projects, call `publish-git-checkpoint`; it performs its private-index
+and dedicated-ref update while holding the discussion lock, without changing
+the ordinary checkout. Verify the returned commit. For non-Git projects,
 `publish-non-git-checkpoint` creates or reuses an immutable content-addressed
 snapshot.
 
 An uncertain Git result must become `outcome-unknown` and be reconciled before
 any new checkpoint is prepared. A changed draft requires `cancel-checkpoint`
 and a fresh `CP-*`. Repair records the broken identity permanently and maps it
-only to one fully verified replacement; an active implementation source also
-requires a fresh acknowledgement. Snapshot GC always begins with
+only to one fully verified replacement. Snapshot GC always begins with
 `checkpoint-gc-dry-run`; confirmation must bind the exact candidate array and
 ledger revision returned by that dry run.
 

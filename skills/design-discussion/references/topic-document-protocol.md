@@ -32,14 +32,13 @@ decision individually.
 ## Write boundary
 
 Do not edit the ledger or topic document ad hoc. Create the immutable pending
-document-write payload through `discussion_protocol.py`, acquire and verify the
-shared document lease with stage `design-discussion`, apply exactly the
-authorized bytes, reread them, release the lease, and complete the payload.
+document-write payload through `discussion_protocol.py`, then let the protocol
+compare, atomically apply, reread, and complete the exact authorized bytes
+while holding its own lock.
 
 Use `prepare-topic-update` for one confirmed mutation, then
-`apply-document-write` with the current supervision-protocol lease receipt,
-then `complete-document-write` only after that exact lease has been released.
-Every update carries expected ledger and topic revisions plus a UUIDv4
+`apply-document-write` with the returned `document_write_id`. Every update
+carries expected ledger and topic revisions plus a UUIDv4
 idempotency key. Exact replay returns the original result; a reused key with
 different parameters is a conflict.
 
@@ -51,16 +50,16 @@ must all match before the protocol adopts that payload and commits the single
 ledger event. A changed request cannot take over it, and an unrelated orphan
 blocks new payload publication. This recovery never requires manual deletion.
 
-When the caller cannot prove whether apply or release persisted, use
-`reconcile-document-write`. Reconciliation rereads the immutable payload,
-current document digest and the supervision-protocol lease state; it never
-reconstructs intent from Markdown. The shared lease lives in `.git` for Git
-projects and in `.codex` for non-Git projects.
+When the caller cannot prove whether apply persisted, retry the exact
+`apply-document-write` request. The protocol rereads the immutable payload and
+current document digest; exact already-applied bytes are adopted, the recorded
+before bytes are atomically replaced, and any third state is rejected. It never
+reconstructs intent from Markdown.
 
 Treat any non-completed `DW-*` as a discussion freeze. Do not ask or persist a
 new substantive question until `read-topic` and `validate` can verify the
-payload, document digest, single active question and release state. An orphan
+payload, document digest, and single active question. An orphan
 from the prepare/ledger crash window requires the exact prepare replay above.
-Missing or damaged payloads belonging to a ledger record require
-reconciliation and stop on conflicting facts; no payload is silently recreated
+Missing or damaged payloads belonging to a ledger record stop on conflicting
+facts; no payload is silently recreated
 from the current Markdown.

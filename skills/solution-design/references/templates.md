@@ -22,7 +22,7 @@ confirmation.
 上下文方式：fork_turns=none；不继承历史；仅读取需求来源和明确交接材料
 执行环境：当前项目 local checkout
 Worktree：不创建
-允许动作：执行标准 $to-spec、ADR、$ask-matt、$to-tickets、原生发布；本地文档写入使用 document lease，规划提交使用短期 checkpoint-publish 协调
+允许动作：执行标准 $to-spec、ADR、$ask-matt、$to-tickets、原生发布；只写入并提交本阶段拥有的本地规划文档
 禁止动作：修改实现代码、创建 PR、部署、发布版本、进入 3实现或处理无关任务
 异常规则：执行失败、结果或副作用不确定、意外情况、与原计划不符或需要调整计划时停止并报告
 流程模式：逐阶段确认
@@ -51,7 +51,7 @@ This must be the final user-visible commentary immediately before
 上下文方式：fork_turns=none；不继承历史；仅读取需求来源和明确交接材料
 执行环境：当前项目 local checkout
 Worktree：不创建
-允许动作：执行标准 $to-spec、ADR、$ask-matt、$to-tickets、原生发布；本地文档写入使用 document lease，规划提交使用短期 checkpoint-publish 协调
+允许动作：执行标准 $to-spec、ADR、$ask-matt、$to-tickets、原生发布；只写入并提交本阶段拥有的本地规划文档
 禁止动作：修改实现代码、创建 PR、部署、发布版本、进入 3实现或处理无关任务
 异常规则：执行失败、结果或副作用不确定、意外情况、与原计划不符或需要调整计划时停止并报告
 流程模式：连续执行后续全部流程
@@ -76,7 +76,7 @@ $solution-design
 规划载体：<exact target>
 任务设置：model=<exact model>; reasoning_effort=<exact effort>; source=<resolution receipt source and turn id | user-requested-override>; fork_turns=none; worktree=none
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
-允许动作：完整执行 $to-spec、必要 ADR、$ask-matt、$to-tickets、精确目标原生发布；本地文档写入使用 document lease，规划提交使用短期 checkpoint-publish 协调。
+允许动作：完整执行 $to-spec、必要 ADR、$ask-matt、$to-tickets、精确目标原生发布；只写入并提交本阶段拥有的本地规划文档。
 禁止动作：修改实现代码、创建 PR、部署、发布版本、改变规划目标、进入 3实现、修改 1拷问草案或处理无关任务。
 文档权威：1拷问草案拥有需求；CONTEXT.md 拥有术语；ADR 拥有难逆决策；Spec 拥有实施方案与测试决策；Tickets 拥有实施切片和阻塞关系。不要创建单独的 2方案草案。
 逐阶段模式：在方案审阅和 Tickets 审阅点返回固定 review 消息并停止，收到匹配 ID 的 PARENT_DECISION 后继续。

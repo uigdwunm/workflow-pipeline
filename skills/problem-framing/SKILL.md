@@ -1,6 +1,6 @@
 ---
 name: problem-framing
-description: Use only when the user explicitly invokes $problem-framing to sharpen an idea, requirement change, or cautious small change; explicitly invokes $problem-framing 重试 after this Skill's stable recovery, document-lease, source-protection, or pending-planning-commit footer; replies to this Skill's immediately preceding confirmation or workspace-decision block; or sends a verified $problem-framing 接收拷问交付 payload from a dedicated grilling task. Coordinate repository documentation writes through exact-path CAS leases, refuse active implementation sources, preserve CONTEXT.md and ADR responsibilities, and commit only exact stage-owned documentation through the short checkpoint-publication barrier.
+description: Use only when the user explicitly invokes $problem-framing to sharpen an idea, requirement change, or cautious small change; explicitly invokes $problem-framing 重试 after this Skill's stable recovery or pending-planning-commit footer; replies to this Skill's immediately preceding confirmation or workspace-decision block; or sends a verified $problem-framing 接收拷问交付 payload from a dedicated grilling task. Preserve CONTEXT.md and ADR responsibilities, write only stage-owned planning documents, and commit them before handing work to implementation.
 ---
 
 # 1拷问
@@ -30,9 +30,8 @@ must first publish the latest effective `stage-entry` checkpoint and prepare a
 must verify that exact checkpoint identity, claim its authorized `PA-*`, report
 ready, and wait. It may ask questions or prepare a shared-topic write only
 after the source topic rechecks evidence and activates the run. While active,
-all durable requirement updates still use the topic's immutable `DW-*` payload
-and `design-discussion` document-lease path; the dedicated carrier never owns a
-second draft.
+all durable requirement updates still use the topic's immutable `DW-*` payload;
+the dedicated carrier never owns a second draft.
 
 Before routing from 0 or 1, resolve every pending impact and publish the latest
 effective 0/1 checkpoint. Use `prepare-wrapper-phase-run`, not the generic
@@ -47,7 +46,7 @@ stage-0 route is always stepwise.
 
 - Start only from an explicit `$problem-framing` invocation.
 - Accept `$problem-framing 重试` only after this Skill's immediately preceding
-  stable recovery, document-lease timeout, or pending-planning-commit footer.
+  stable recovery or pending-planning-commit footer.
 - Accept `$problem-framing 接收拷问交付` only as the first line of a dedicated
   delivery payload defined in
   [references/dedicated-grilling-protocol.md](references/dedicated-grilling-protocol.md).
@@ -112,7 +111,7 @@ the later task-creation confirmation.
   [references/dedicated-grilling-protocol.md](references/dedicated-grilling-protocol.md)
   completely and follow its source-task protocol.
 
-## Load repository coordination only when needed
+## Load repository rules only when needed
 
 Before repository inspection, the first documentation write or commit, any
 workspace decision, or a mechanical retry, read
@@ -129,10 +128,10 @@ Do not preload it for a current-task question that needs no repository action.
 4. Preserve every selected Skill's native behavior and documentation rules.
 
 While stage 3 is active, inspect implementation work only through committed
-objects. Never enter another implementation worktree or edit a protected source
-document. Unprotected documentation writes remain available through the exact
-document lease. If a material behavior question cannot be resolved from safe
-evidence, stage 1 cannot complete until evidence becomes available.
+objects and never enter its worktree. A newly committed planning-source change
+causes that implementation's completion check to stop; do not present it as an
+in-place update to the running task. If a material behavior question cannot be
+resolved from safe evidence, stage 1 cannot complete until evidence is available.
 
 Do not duplicate Matt's questioning, investigation, ADR, research, prototype,
 or domain-modeling behavior. Do not invoke `$to-spec`, `$to-tickets`, or

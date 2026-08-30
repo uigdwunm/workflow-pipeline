@@ -1,6 +1,6 @@
 interface:
   display_name: "3实现"
-  short_description: "Implement in one claimed worktree and publish by exact CAS"
-  default_prompt: "Use $guided-implementation to supervise one Terra/high task in a dedicated claimed worktree, keep the committed implementation source protected, bind review and acceptance to one exact candidate, publish through the short target-HEAD CAS, and enter 4归档 only after verified integration while retaining the worktree, branch, source protection and execution claim for checkpoint-owned cleanup."
+  short_description: "Implement, review, integrate, and clean one worktree"
+  default_prompt: "Use $guided-implementation to create one worktree from committed sources, supervise and review one committed candidate there, integrate it through the current target HEAD, and remove its worktree and merged branch before entering 4归档."
 policy:
   allow_implicit_invocation: true

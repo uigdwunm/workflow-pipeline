@@ -75,7 +75,15 @@ REMOVED_EXECUTION_MARKERS = (
     "exclusive-checkout-v2",
     "isolated-worktree-v1",
     "execution_mode",
+    "document_lease",
+    "document-lease-protocol",
+    "repository_coordination_lease",
+    "repository-coordination-lease",
     "repository_lease",
+    "execution_claim",
+    "worktree-execution-claim",
+    "source_protection",
+    "source-protection",
     "WORKTREE_EXECUTION_LEASE_",
     "acquire_repository_lease",
     "release_repository_lease",
@@ -88,6 +96,11 @@ REMOVED_EXECUTION_MARKERS = (
     "record-isolated-worktree-confirmation",
     "create-isolated-worktree",
     "acquire-worktree-execution-lease",
+    "complete-document-write",
+    "reconcile-document-write",
+    "register-active-checkpoint-source",
+    "locate-context",
+    "route-phase",
     "create-ack",
     "verify-ack",
     "core.hooksPath",
@@ -101,7 +114,7 @@ def relative(path: Path, repository: Path) -> str:
 def discover_tests(repository: Path) -> list[Path]:
     return sorted(
         path.resolve()
-        for path in (repository / "skills").glob("*/scripts/test_*.py")
+        for path in (repository / "skills").rglob("test_*.py")
         if path.is_file()
     )
 

@@ -32,5 +32,5 @@ protocol, or imply that the consultation will persist.
 ## Decision Evolution
 ```
 
-The headings are stable; content changes only through authorized protocol and
-document-lease operations.
+The headings are stable; content changes only through the authorized protocol
+operations.

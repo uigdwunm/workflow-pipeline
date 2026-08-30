@@ -1,32 +1,36 @@
 # Worktree Execution
 
-All Stage-3 runs use the same worktree protocol.
+`supervision_protocol.py` has exactly three public operations.
 
-## Freeze
+## `start-worktree`
 
-Prepare normalized scope, one branch, one canonical worktree path and one
-committed source checkpoint. Protect every source artifact before activation.
+Input fields are `repository`, `worktree`, `branch`, `target_branch`, sorted
+`source_paths`, and sorted non-empty `allowed_paths`.
 
-## Queue or provision
+The primary checkout must be on `target_branch` with no tracked changes. The
+command resolves the exact target HEAD, checks every source path at that commit,
+and runs `git worktree add -b` from the resolved object ID. Git is the only
+worktree registry; no separate ownership state is created.
 
-A conflicting run remains `QUEUED`. A safe run enters `PROVISIONING` and calls:
+## `verify-worktree`
 
-```text
-supervision_protocol.py reserve-worktree-execution-claim --input <binding>
-supervision_protocol.py provision-claimed-worktree --input <claim-receipt>
-supervision_protocol.py reconcile-worktree-provisioning --input <claim-receipt>
-```
+Input fields are the returned `binding` and the task's actual `platform_cwd`.
+The command verifies canonical paths, Git common directory, registered
+worktree, branch, HEAD ancestry, source files, and target branch.
 
-Reservation precedes branch and filesystem effects. The claim is non-expiring
-cooperative CAS state, not task authentication. Reconciliation yields only
-`exact-adoption`, `safe-retry`, or `worktree_provisioning_ambiguous`.
+## `complete-worktree`
 
-## Verify and run
+Input fields are `binding`, `candidate_commit`, and `expected_target_head`.
+The candidate must be the clean worktree HEAD, contain the expected target, and
+change at least one allowed path without changing a source path. The target
+must still equal `expected_target_head`.
 
-Verify claim bytes and revision, exact platform cwd, Git common directory,
-worktree registration, branch and base ancestry. Independent runs use different
-worktrees concurrently. Serial work uses the same protocol after waiting in
-`QUEUED`. Routine commits need no repository-wide coordination.
+The command holds one process-local publication file lock only while checking
+and updating the shared checkout. It creates a two-parent merge commit, removes
+the worktree without force, deletes the merged branch with `git branch -d`, and
+returns the candidate, merge commit, and changed paths.
 
-Normal claim release is unavailable to implementation tasks. Stage 4 or the
-explicit administrative abandoned-claim operation releases it.
+When two candidates race from one base, one completes and the other receives
+`target_changed`. The retained candidate incorporates the new target in its own
+worktree, reruns verification and review, then retries with the new expected
+HEAD. There is no scheduler or queue.

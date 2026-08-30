@@ -276,12 +276,6 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
                 for operation in operations:
                     self.assertIn(operation, protocol)
 
-    def test_problem_framing_no_longer_invokes_legacy_helper(self):
-        protocol = self.read(
-            "skills/problem-framing/references/dedicated-grilling-protocol.md"
-        )
-        self.assertNotIn("read_thread_settings.py", protocol)
-
     def test_dedicated_task_launch_and_self_check_use_fixed_pair(self):
         launch = self.read(
             "skills/guided-implementation/references/originating-task-protocol.md"

@@ -1,23 +1,17 @@
-# Worktree Closure Checkpoint Protocol
+# Closure Protocol
 
-The checkpoint is private immutable-CAS state under the fixed worktree-closure
-runtime root. It has one protocol and one phase sequence:
+Closure uses ordinary committed Git history. It has no proposal store,
+auxiliary workflow state or a separate archival lifecycle.
 
-```text
-documents-committed -> worktree-removed -> branch-removed
--> execution-claim-released -> archived
-```
+The implementation merge is authoritative when the reported merge commit is on
+the target branch and contains the accepted candidate. Stage 3 has already
+removed the implementation worktree and branch.
 
-Each side-effecting advance first persists `pending_phase`. If the process
-stops after the effect and before phase persistence, the next invocation may
-adopt only the uniquely proven expected absence or released claim. Absence
-before intent, a changed path/ref/commit/claim, dirty worktree, unproven branch
-ancestry or any ambiguous observation stops without force.
+Closure-document changes are a second, short-lived worktree change. Their
+candidate must be clean, contain the expected target, and change only declared
+closure paths. `complete-worktree` integrates and cleans that worktree in one
+operation. A later target change yields `target_changed`; update the retained
+closure worktree from the new target, review the document result, and retry.
 
-The final resource phase first verifies that no other implementation protects
-the source, releases this implementation's source protection, and then releases
-the exact claim by ID/version/bytes/digest. A retry may adopt exactly the next
-released claim revision with terminal state `archived`.
-
-An archived checkpoint is idempotent. Old checkpoint shapes are unsupported
-and are never migrated or normalized.
+No historical workflow artifact is migrated or interpreted. Git commits and
+the current worktree binding are the complete evidence needed by this stage.

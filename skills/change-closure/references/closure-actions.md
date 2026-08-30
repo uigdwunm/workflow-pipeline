@@ -1,26 +1,15 @@
 # Closure Actions
 
-## Verify
+1. Verify the reported implementation merge and candidate ancestry from Git.
+2. Read closure-owned documents at the current target HEAD.
+3. Decide exact document bytes and paths; stop on a new requirement or semantic
+   conflict.
+4. When bytes change, call `start-worktree` for a new closure branch/worktree,
+   edit and commit only those paths, then call `complete-worktree` with the
+   current target HEAD.
+5. When bytes do not change, create no worktree and no commit.
+6. Verify final target and cleanup, then report local and remote outcomes.
 
-Require an exact integrated publication, current target branch, committed
-documentation convergence, active claim and clean implementation worktree.
-Never merge or repair code in Stage 4.
-
-## Converge
-
-Create immutable outcome proposals outside the worktree. Acquire an exact-path
-document lease for the final dependent implementation, call
-`converge-implementation-outcomes`, and review every apply/no-op result. A
-conflict preserves current bytes and all proposal evidence.
-
-Call `commit-converged-documents` with the exact current target HEAD and target
-branch. Stage only the convergence paths. Release the document lease after the
-verified commit or no-op.
-
-## Cleanup
-
-Create `create-worktree-closure-checkpoint` from integrated publication,
-committed convergence and active claim receipts. Repeatedly call
-`advance-worktree-closure-checkpoint`. The command owns non-force worktree and
-branch removal, source-protection release and final claim release. Do not supply
-success receipts or manually complete an absent resource.
+An integration failure before merge preserves the documentation worktree for
+correction. A `cleanup_failed` result already contains a merge commit and must
+be handled as cleanup, not retried as another merge.

@@ -20,27 +20,15 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parent))
 import discussion_protocol as PROTOCOL
 from discussion_core import RequestContext
-from matrix_proof import matrix_proof
 
 
 SCRIPT_PATH = Path(__file__).with_name("discussion_protocol.py")
-SUPERVISION_SCRIPT_PATH = (
-    Path(__file__).parents[2]
-    / "guided-implementation"
-    / "scripts"
-    / "supervision_protocol.py"
-)
-
-
 class DiscussionProtocolBootstrapTests(unittest.TestCase):
-    def test_operation_registry_preserves_64_canonical_operations_and_aliases(self) -> None:
+    def test_operation_registry_contains_only_current_operation_names(self) -> None:
         names = PROTOCOL.OPERATION_REGISTRY.names
         self.assertEqual(len(names), len(set(names)))
-        self.assertEqual(len(names) - len(PROTOCOL.OPERATION_ALIASES), 64)
-        self.assertEqual(
-            set(PROTOCOL.OPERATION_ALIASES), {"locate-context", "route-phase"}
-        )
-        self.assertTrue(set(PROTOCOL.OPERATION_ALIASES).issubset(names))
+        self.assertEqual(len(names), 52)
+        self.assertNotIn("prepare-implementation-run", names)
 
     def test_request_context_lazily_parses_each_common_field_once(self) -> None:
         calls = {"project": 0, "string": 0}
@@ -649,7 +637,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             revision += 1
         return result, revision, topic_revision + 1
 
-    @matrix_proof("scenarios:root-lifecycle")
     def test_root_discussion_executes_full_zero_through_four_lifecycle(self) -> None:
         project = self.make_project("root-zero-through-four", git=False)
         topic = self.bootstrap_topic(project)
@@ -677,7 +664,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(validated["state"], "valid")
         self.assertEqual(validated["record_revision"], 5)
 
-    @matrix_proof("invariants:no-double-active-run-or-binding")
     def test_competing_phase_run_cannot_become_double_active(self) -> None:
         project = self.make_project("no-double-active-phase-run", git=False)
         topic = self.bootstrap_topic(project)
@@ -1033,7 +1019,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                     "topic.md",
                 )
 
-    @matrix_proof("scenarios:direct-0-to-2")
     def test_solution_wrapper_requires_claim_ready_activation_and_current_source(self) -> None:
         project = self.make_project("wrapper-solution", git=False)
         topic = self.bootstrap_topic(project)
@@ -1111,7 +1096,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 1)
         self.assertEqual(drifted["error"]["code"], "phase_source_drift")
 
-    @matrix_proof("scenarios:direct-1-to-3")
     def test_wrapper_pending_impacts_and_direct_to_three_completeness(self) -> None:
         impacted_project = self.make_project("wrapper-pending-impact", git=False)
         impacted = self.bootstrap_topic(impacted_project)
@@ -1327,20 +1311,20 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 1)
         self.assertEqual(rejected["error"]["code"], "phase_flow_mode_invalid")
 
-        legacy = self.make_project("wrapper-no-context", git=False)
-        before = sorted(legacy.rglob("*"))
+        standalone = self.make_project("wrapper-no-context", git=False)
+        before = sorted(standalone.rglob("*"))
         code, located, stderr = self.run_cli(
             {
                 "protocol_version": 1,
                 "operation": "discover-context",
-                "project_path": str(legacy),
+                "project_path": str(standalone),
             }
         )
         self.assertEqual(code, 0, stderr)
         self.assertEqual(located["context"], "none")
-        self.assertEqual(before, sorted(legacy.rglob("*")))
+        self.assertEqual(before, sorted(standalone.rglob("*")))
 
-        ambiguous_root = legacy / "docs" / "discussions"
+        ambiguous_root = standalone / "docs" / "discussions"
         for number in (1, 2):
             document = ambiguous_root / f"candidate-{number}" / "topic.md"
             document.parent.mkdir(parents=True, exist_ok=True)
@@ -1353,20 +1337,20 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 encoding="utf-8",
             )
         ambiguous_before = {
-            path: path.read_bytes() for path in legacy.rglob("*") if path.is_file()
+            path: path.read_bytes() for path in standalone.rglob("*") if path.is_file()
         }
         code, ambiguous, stderr = self.run_cli(
             {
                 "protocol_version": 1,
                 "operation": "discover-context",
-                "project_path": str(legacy),
+                "project_path": str(standalone),
             }
         )
         self.assertEqual(code, 0, stderr)
         self.assertEqual(ambiguous["context"], "ambiguous")
         self.assertEqual(
             ambiguous_before,
-            {path: path.read_bytes() for path in legacy.rglob("*") if path.is_file()},
+            {path: path.read_bytes() for path in standalone.rglob("*") if path.is_file()},
         )
 
     def test_wrapper_rejects_superseded_checkpoint_and_wrong_carrier_route(self) -> None:
@@ -1544,7 +1528,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(ledger_text.count("event_id: "), 8)
         self.assertEqual(ledger_text.count("ledger_revision: 8"), 2)
 
-    @matrix_proof("fault_boundaries:terminal-claim")
     def test_phase_drift_and_late_terminal_are_rejected(self) -> None:
         project = self.make_project("phase-drift", git=False)
         topic = self.bootstrap_topic(project)
@@ -1748,7 +1731,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                     self.assertEqual(code, 1, (source, target, response))
                     self.assertEqual(response["error"]["code"], "invalid_phase_route")
 
-    @matrix_proof("fault_boundaries:terminal-claim")
     def test_failed_attempt_retries_monotonically_and_duplicate_terminal_is_rejected(self) -> None:
         project = self.make_project("phase-retry", git=False)
         topic = self.bootstrap_topic(project)
@@ -1910,7 +1892,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 1)
         self.assertEqual(rejected["error"]["code"], "invalid_request")
 
-    @matrix_proof("fault_boundaries:ready-activate")
     def test_each_authoritative_drift_dimension_rejects_activation(self) -> None:
         replacements = {
             "source": ("topic-document", ""),
@@ -2633,89 +2614,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         request.update(parameters)
         return request
 
-    def supervision_cli(self, *arguments: str) -> dict[str, object]:
-        completed = subprocess.run(
-            [sys.executable, str(SUPERVISION_SCRIPT_PATH), *arguments],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        return json.loads(completed.stdout)
-
-    def acquire_document_lease(
-        self, project: Path, *, owner_ref: str = "discussion-task"
-    ) -> dict[str, object]:
-        input_path = self.root / f"lease-{uuid.uuid4().hex}.json"
-        document_paths = sorted(
-            path.relative_to(project).as_posix()
-            for path in (project / "docs" / "discussions").rglob("*.md")
-        )
-        input_path.write_text(
-            json.dumps(
-                {
-                    "implementation_id": None,
-                    "owner_host_id": "test-host",
-                    "owner_task_id": owner_ref,
-                    "paths": document_paths,
-                    "purpose": "document-write",
-                    "repository": str(project),
-                    "stage": "design-discussion",
-                    "ttl_seconds": 300,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        return self.supervision_cli(
-            "acquire-document-lease",
-            "--wait-seconds",
-            "0",
-            "--max-retries",
-            "0",
-            "--input",
-            str(input_path),
-        )
-
-    def release_document_lease(self, lease: dict[str, object]) -> dict[str, object]:
-        holder = lease["holder"]
-        assert isinstance(holder, dict)
-        return self.supervision_cli(
-            "release-document-lease",
-            "--file",
-            str(lease["path"]),
-            "--id",
-            str(holder["lease_id"]),
-            "--version",
-            str(lease["version"]),
-        )
-
-    def acquire_repository_coordination_lease(
-        self, project: Path, *, owner_ref: str = "discussion-task"
-    ) -> dict[str, object]:
-        input_path = self.root / f"repository-coordination-{uuid.uuid4().hex}.json"
-        input_path.write_text(
-            json.dumps(
-                {
-                    "owner_host_id": "test-host",
-                    "owner_task_id": owner_ref,
-                    "purpose": "checkpoint-publish",
-                    "repository": str(project),
-                    "stage": "design-discussion",
-                    "ttl_seconds": 300,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        return self.supervision_cli(
-            "acquire-repository-coordination-lease", "--input", str(input_path)
-        )
-
     def checkpoint_request(
         self,
         topic: dict[str, object],
@@ -2891,7 +2789,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(returncode, 0, stderr)
         self.assertTrue(authorized["substantive_discussion_allowed"])
 
-    @matrix_proof("fault_boundaries:external-carrier-creation")
     def test_outcome_unknown_cancel_late_arrival_and_forced_retry_preserve_attempt_history(self) -> None:
         project = self.make_project("handoff-recovery", git=False)
         topic = self.bootstrap_topic(project)
@@ -2976,7 +2873,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual([item["state"] for item in read["attempts"]], ["cancelled", "setup-pending"])
 
-    @matrix_proof("invariants:no-double-active-run-or-binding")
     def test_continuation_atomically_supersedes_binding_and_parallel_claim_has_one_winner(self) -> None:
         project = self.make_project("continuation-binding", git=False)
         topic = self.bootstrap_topic(project)
@@ -3101,7 +2997,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(valid["state"], "valid")
         self.assertEqual(valid["handoff_count"], 2)
 
-    @matrix_proof("scenarios:parent-child-absorption")
     def test_child_result_absorbs_only_within_scope_and_records_cross_topic_impact(self) -> None:
         project = self.make_project("child-result", git=False)
         topic = self.bootstrap_topic(project)
@@ -3230,7 +3125,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(impact["state"], "pending-impact")
         self.assertRegex(str(impact["impact_id"]), r"^IMP-[0-9a-f]{32}$")
 
-    @matrix_proof("scenarios:no-code-integration")
     def test_fully_absorbed_child_implementation_records_no_code_integration_phase_three(self) -> None:
         project = self.make_project("no-code-integration", git=False)
         topic = self.bootstrap_topic(project)
@@ -3502,7 +3396,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(reconciled["state"], "failed")
         self.assertFalse(reconciled["binding_eligible"])
 
-    @matrix_proof("fault_boundaries:external-carrier-creation")
     def test_binding_failure_before_ledger_commit_leaves_no_partial_claim(self) -> None:
         project = self.make_project("handoff-binding-fault", git=False)
         topic = self.bootstrap_topic(project)
@@ -3582,9 +3475,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         ledger_revision: int,
         topic_revision: int = 1,
     ) -> dict[str, object]:
-        lease = self.acquire_repository_coordination_lease(project)
-        holder = lease["holder"]
-        assert isinstance(holder, dict)
         returncode, published, stderr = self.run_cli(
             self.checkpoint_request(
                 topic,
@@ -3593,23 +3483,9 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 topic_revision=topic_revision,
                 checkpoint_id=prepared["checkpoint_id"],
                 expected_checkpoint_revision=prepared["checkpoint_record_revision"],
-                repository_coordination_lease={
-                    "path": lease["path"],
-                    "lease_id": holder["lease_id"],
-                    "version": lease["version"],
-                },
             )
         )
         self.assertEqual(returncode, 0, stderr)
-        self.supervision_cli(
-            "release-repository-coordination-lease",
-            "--file",
-            str(lease["path"]),
-            "--id",
-            str(holder["lease_id"]),
-            "--version",
-            str(lease["version"]),
-        )
         return published
 
     def create_matching_checkpoint_commit(
@@ -3699,9 +3575,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             )
         )
         self.assertEqual(returncode, 0, stderr)
-        lease = self.acquire_document_lease(project, owner_ref=owner_ref)
-        holder = lease["holder"]
-        assert isinstance(holder, dict)
         returncode, applied, stderr = self.run_cli(
             self.evolution_request(
                 topic,
@@ -3710,38 +3583,14 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 expected_topic_revision=topic_revision + 1,
                 owner_ref=owner_ref,
                 document_write_id=prepared["document_write_id"],
-                document_lease={
-                    "path": lease["path"],
-                    "lease_id": holder["lease_id"],
-                    "version": lease["version"],
-                },
             )
         )
         self.assertEqual(returncode, 0, stderr)
         self.assertTrue(applied["document_verified"])
-        released = self.release_document_lease(lease)
-        returncode, completed, stderr = self.run_cli(
-            self.evolution_request(
-                topic,
-                operation="complete-document-write",
-                expected_revision=ledger_revision + 2,
-                expected_topic_revision=topic_revision + 1,
-                owner_ref=owner_ref,
-                document_write_id=prepared["document_write_id"],
-                document_lease_release={
-                    "path": released["path"],
-                    "lease_id": released["released_lease_id"],
-                    "version": released["version"],
-                },
-            )
-        )
-        self.assertEqual(returncode, 0, stderr)
-        self.assertTrue(completed["release_verified"])
-        return prepared, ledger_revision + 3, topic_revision + 1
+        self.assertEqual(applied["state"], "completed")
+        return prepared, ledger_revision + 2, topic_revision + 1
 
-    def test_confirmed_decision_is_applied_with_immutable_dw_and_verified_lease(
-        self,
-    ) -> None:
+    def test_confirmed_decision_is_applied_with_one_atomic_document_write(self) -> None:
         project = self.make_project("decision-write", git=True)
         topic = self.bootstrap_topic(project)
         prepare_request = self.evolution_request(
@@ -3763,47 +3612,21 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         payload_path = Path(str(prepared["payload_path"]))
         payload_before = payload_path.read_bytes()
 
-        lease = self.acquire_document_lease(project)
-        holder = lease["holder"]
-        assert isinstance(holder, dict)
         apply_request = self.evolution_request(
             topic,
             operation="apply-document-write",
             expected_revision=2,
             expected_topic_revision=2,
             document_write_id=prepared["document_write_id"],
-            document_lease={
-                "path": lease["path"],
-                "lease_id": holder["lease_id"],
-                "version": lease["version"],
-            },
         )
         returncode, applied, stderr = self.run_cli(apply_request)
         self.assertEqual(returncode, 0, stderr)
-        self.assertEqual(applied["state"], "applied-pending-release")
+        self.assertEqual(applied["state"], "completed")
         self.assertTrue(applied["document_verified"])
         self.assertEqual(payload_path.read_bytes(), payload_before)
         topic_text = Path(str(topic["topic_document_path"])).read_text(encoding="utf-8")
         self.assertIn(str(prepared["decision_id"]), topic_text)
         self.assertIn("Use a single durable ledger.", topic_text)
-
-        released = self.release_document_lease(lease)
-        complete_request = self.evolution_request(
-            topic,
-            operation="complete-document-write",
-            expected_revision=3,
-            expected_topic_revision=2,
-            document_write_id=prepared["document_write_id"],
-            document_lease_release={
-                "path": released["path"],
-                "lease_id": released["released_lease_id"],
-                "version": released["version"],
-            },
-        )
-        returncode, completed, stderr = self.run_cli(complete_request)
-        self.assertEqual(returncode, 0, stderr)
-        self.assertEqual(completed["state"], "completed")
-        self.assertTrue(completed["release_verified"])
 
         returncode, inspected, stderr = self.run_cli(
             self.evolution_request(
@@ -3860,17 +3683,16 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         returncode, reconciled, stderr = self.run_cli(
             self.evolution_request(
                 topic,
-                operation="reconcile-document-write",
+                operation="apply-document-write",
                 expected_revision=2,
                 expected_topic_revision=2,
                 document_write_id=first["document_write_id"],
             )
         )
         self.assertEqual(returncode, 0, stderr)
-        self.assertEqual(reconciled["state"], "confirmed-but-pending")
-        self.assertFalse(reconciled["document_verified"])
+        self.assertEqual(reconciled["state"], "completed")
+        self.assertTrue(reconciled["document_verified"])
 
-    @matrix_proof("fault_boundaries:documentation-commit")
     def test_orphan_payload_is_digest_bound_and_adopted_by_exact_prepare_replay(self) -> None:
         project = self.make_project("orphan-prepare-replay", git=True)
         topic = self.bootstrap_topic(project)
@@ -3952,7 +3774,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(response["error"]["code"], "orphaned_document_write")
         self.assertEqual(list(payload_dir.iterdir()), [orphan])
 
-    def test_ownership_conflict_and_stale_lease_cannot_apply_pending_write(self) -> None:
+    def test_only_the_topic_owner_can_apply_a_pending_write(self) -> None:
         project = self.make_project("write-authority", git=True)
         topic = self.bootstrap_topic(project)
         returncode, prepared, stderr = self.run_cli(
@@ -3969,9 +3791,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(returncode, 0, stderr)
 
-        foreign_lease = self.acquire_document_lease(project, owner_ref="foreign-task")
-        foreign_holder = foreign_lease["holder"]
-        assert isinstance(foreign_holder, dict)
         returncode, conflict, _ = self.run_cli(
             self.evolution_request(
                 topic,
@@ -3980,37 +3799,21 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 expected_topic_revision=2,
                 owner_ref="foreign-task",
                 document_write_id=prepared["document_write_id"],
-                document_lease={
-                    "path": foreign_lease["path"],
-                    "lease_id": foreign_holder["lease_id"],
-                    "version": foreign_lease["version"],
-                },
             )
         )
         self.assertEqual(returncode, 1)
         self.assertEqual(conflict["error"]["code"], "document_ownership_conflict")
-        self.release_document_lease(foreign_lease)
-
-        stale_lease = self.acquire_document_lease(project)
-        stale_holder = stale_lease["holder"]
-        assert isinstance(stale_holder, dict)
-        self.release_document_lease(stale_lease)
-        returncode, stale, _ = self.run_cli(
+        returncode, applied, stderr = self.run_cli(
             self.evolution_request(
                 topic,
                 operation="apply-document-write",
                 expected_revision=2,
                 expected_topic_revision=2,
                 document_write_id=prepared["document_write_id"],
-                document_lease={
-                    "path": stale_lease["path"],
-                    "lease_id": stale_holder["lease_id"],
-                    "version": stale_lease["version"],
-                },
             )
         )
-        self.assertEqual(returncode, 1)
-        self.assertEqual(stale["error"]["code"], "document_lease_invalid")
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(applied["state"], "completed")
 
     def test_validate_rejects_damaged_and_orphaned_pending_write_payloads(self) -> None:
         for damage_kind in ("damaged", "orphaned"):
@@ -4047,8 +3850,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 )
                 self.assertEqual(response["error"]["code"], expected)
 
-    @matrix_proof("fault_boundaries:documentation-commit")
-    def test_reconcile_adopts_uncertain_apply_and_completes_after_release(self) -> None:
+    def test_apply_adopts_payload_bytes_written_before_the_result_was_recorded(self) -> None:
         project = self.make_project("reconcile-uncertain", git=True)
         topic = self.bootstrap_topic(project)
         returncode, prepared, stderr = self.run_cli(
@@ -4064,41 +3866,24 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             )
         )
         self.assertEqual(returncode, 0, stderr)
-        lease = self.acquire_document_lease(project)
-        holder = lease["holder"]
-        assert isinstance(holder, dict)
         Path(str(topic["topic_document_path"])).write_bytes(
             Path(str(prepared["payload_path"])).read_bytes()
         )
 
-        returncode, adopted, stderr = self.run_cli(
+        returncode, completed, stderr = self.run_cli(
             self.evolution_request(
                 topic,
-                operation="reconcile-document-write",
+                operation="apply-document-write",
                 expected_revision=2,
                 expected_topic_revision=2,
                 document_write_id=prepared["document_write_id"],
             )
         )
         self.assertEqual(returncode, 0, stderr)
-        self.assertEqual(adopted["state"], "applied-pending-release")
-        self.assertTrue(adopted["document_verified"])
-
-        self.release_document_lease(lease)
-        returncode, completed, stderr = self.run_cli(
-            self.evolution_request(
-                topic,
-                operation="reconcile-document-write",
-                expected_revision=3,
-                expected_topic_revision=2,
-                document_write_id=prepared["document_write_id"],
-            )
-        )
-        self.assertEqual(returncode, 0, stderr)
         self.assertEqual(completed["state"], "completed")
-        self.assertTrue(completed["release_verified"])
+        self.assertTrue(completed["document_verified"])
 
-    def test_non_git_topic_update_uses_shared_codex_document_lease(self) -> None:
+    def test_non_git_topic_update_uses_the_same_atomic_write(self) -> None:
         project = self.make_project("non-git-update", git=False)
         topic = self.bootstrap_topic(project)
         prepared, ledger_revision, topic_revision = self.complete_update(
@@ -4113,7 +3898,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             },
         )
         self.assertRegex(str(prepared["decision_id"]), r"^D-[0-9a-f]{32}$")
-        self.assertEqual((project / ".codex" / "cc-switch-document-lease.json").is_file(), True)
         returncode, response, stderr = self.run_cli(
             self.evolution_request(topic, operation="read-topic")
         )
@@ -4355,17 +4139,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                     prepared["document_digests"][prepared["paths"][0]],
                 )
 
-                publish_parameters: dict[str, object] = {}
-                lease: dict[str, object] | None = None
-                if git:
-                    lease = self.acquire_repository_coordination_lease(project)
-                    holder = lease["holder"]
-                    assert isinstance(holder, dict)
-                    publish_parameters["repository_coordination_lease"] = {
-                        "path": lease["path"],
-                        "lease_id": holder["lease_id"],
-                        "version": lease["version"],
-                    }
                 returncode, rejected, publish_stderr = self.run_cli(
                     self.checkpoint_request(
                         topic,
@@ -4378,18 +4151,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                         topic_revision=2,
                         checkpoint_id=prepared["checkpoint_id"],
                         expected_checkpoint_revision=1,
-                        **publish_parameters,
                     )
                 )
-                if lease is not None:
-                    holder = lease["holder"]
-                    assert isinstance(holder, dict)
-                    self.supervision_cli(
-                        "release-repository-coordination-lease",
-                        "--file", str(lease["path"]),
-                        "--id", str(holder["lease_id"]),
-                        "--version", str(lease["version"]),
-                    )
                 self.assertEqual(returncode, 1, publish_stderr)
                 self.assertEqual(
                     rejected["error"]["code"], "checkpoint_changed_draft"
@@ -4417,17 +4180,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                     ledger_revision=1,
                     base_ref="HEAD" if git else "project-root",
                 )
-                publish_parameters: dict[str, object] = {}
-                lease: dict[str, object] | None = None
-                if git:
-                    lease = self.acquire_repository_coordination_lease(project)
-                    holder = lease["holder"]
-                    assert isinstance(holder, dict)
-                    publish_parameters["repository_coordination_lease"] = {
-                        "path": lease["path"],
-                        "lease_id": holder["lease_id"],
-                        "version": lease["version"],
-                    }
                 returncode, conflict, stderr = self.run_cli(
                     self.checkpoint_request(
                         topic,
@@ -4439,18 +4191,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                         ledger_revision=2,
                         checkpoint_id=prepared["checkpoint_id"],
                         expected_checkpoint_revision=999,
-                        **publish_parameters,
                     )
                 )
-                if lease is not None:
-                    holder = lease["holder"]
-                    assert isinstance(holder, dict)
-                    self.supervision_cli(
-                        "release-repository-coordination-lease",
-                        "--file", str(lease["path"]),
-                        "--id", str(holder["lease_id"]),
-                        "--version", str(lease["version"]),
-                    )
                 self.assertEqual(returncode, 1, stderr)
                 self.assertEqual(
                     conflict["error"]["code"], "checkpoint_identity_conflict"
@@ -4549,18 +4291,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             project, topic, prepared, ledger_revision=2
         )
         commit_id = str(published["commit_id"])
-        returncode, active, stderr = self.run_cli(
-            self.checkpoint_request(
-                topic,
-                operation="register-active-checkpoint-source",
-                ledger_revision=3,
-                checkpoint_id=prepared["checkpoint_id"],
-                expected_checkpoint_revision=2,
-                implementation_id="implementation-1",
-            )
-        )
-        self.assertEqual(returncode, 0, stderr)
-        self.assertEqual(active["state"], "active")
         rewritten_parent_tree = subprocess.run(
             ["git", "-C", str(project), "show", "-s", "--format=%T", "HEAD"],
             check=True,
@@ -4591,7 +4321,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             self.checkpoint_request(
                 topic,
                 operation="mark-checkpoint-broken",
-                ledger_revision=4,
+                ledger_revision=3,
                 checkpoint_id=prepared["checkpoint_id"],
                 expected_checkpoint_revision=2,
                 broken_identity=commit_id,
@@ -4600,37 +4330,15 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(returncode, 0, stderr)
         self.assertTrue(broken["original_fact_preserved"])
-        returncode, ack_required, _ = self.run_cli(
-            self.checkpoint_request(
-                topic,
-                operation="repair-checkpoint",
-                ledger_revision=5,
-                checkpoint_id=prepared["checkpoint_id"],
-                expected_checkpoint_revision=3,
-                replacement_commit=replacement_commit,
-                replacement_base_ref=rewritten_parent,
-                active_source_ack=None,
-            )
-        )
-        self.assertEqual(returncode, 1)
-        self.assertEqual(
-            ack_required["error"]["code"],
-            "checkpoint_active_source_ack_required",
-        )
         returncode, injected, _ = self.run_cli(
             self.checkpoint_request(
                 topic,
                 operation="repair-checkpoint",
-                ledger_revision=5,
+                ledger_revision=4,
                 checkpoint_id=prepared["checkpoint_id"],
                 expected_checkpoint_revision=3,
                 replacement_commit=replacement_commit,
                 replacement_base_ref=rewritten_parent,
-                active_source_ack={
-                    "acknowledged": True,
-                    "checkpoint_id": prepared["checkpoint_id"],
-                    "broken_identity": commit_id,
-                },
             ),
             failpoint="repair-before-result-record",
         )
@@ -4640,16 +4348,11 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             self.checkpoint_request(
                 topic,
                 operation="repair-checkpoint",
-                ledger_revision=5,
+                ledger_revision=4,
                 checkpoint_id=prepared["checkpoint_id"],
                 expected_checkpoint_revision=3,
                 replacement_commit=replacement_commit,
                 replacement_base_ref=rewritten_parent,
-                active_source_ack={
-                    "acknowledged": True,
-                    "checkpoint_id": prepared["checkpoint_id"],
-                    "broken_identity": commit_id,
-                },
             )
         )
         self.assertEqual(returncode, 0, stderr)
@@ -4735,7 +4438,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                         "checkpoint_history_ambiguous",
                     )
 
-    @matrix_proof("fault_boundaries:ledger-transaction")
     def test_failure_injection_recovers_git_and_snapshot_result_recording(self) -> None:
         git_project = self.make_project("git-failure-injection", git=True)
         (git_project / "base.txt").write_text("base\n", encoding="utf-8")
@@ -4790,20 +4492,12 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(returncode, 0, stderr)
 
         prepared = self.prepare_checkpoint(topic, ledger_revision=3)
-        lease = self.acquire_repository_coordination_lease(git_project)
-        holder = lease["holder"]
-        assert isinstance(holder, dict)
         publish_request = self.checkpoint_request(
             topic,
             operation="publish-git-checkpoint",
             ledger_revision=4,
             checkpoint_id=prepared["checkpoint_id"],
             expected_checkpoint_revision=1,
-            repository_coordination_lease={
-                "path": lease["path"],
-                "lease_id": holder["lease_id"],
-                "version": lease["version"],
-            },
         )
         returncode, injected, _ = self.run_cli(
             publish_request, failpoint="git-before-commit-create"
@@ -5202,584 +4896,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertTrue(snapshot_path.exists())
 
 
-    def test_implementation_lifecycle_uses_state_and_revision_cas(self) -> None:
-        project = self.make_project("implementation-lifecycle", git=True)
-        topic = self.bootstrap_topic(project)
-        subprocess.run(["git", "-C", str(project), "add", "docs"], check=True)
-        subprocess.run(
-            [
-                "git", "-C", str(project), "-c", "user.name=Test",
-                "-c", "user.email=test@example.com", "commit", "-qm", "base",
-            ],
-            check=True,
-        )
-        base_commit = subprocess.run(
-            ["git", "-C", str(project), "rev-parse", "HEAD"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.strip()
-        scope = {
-            "paths": ["src/lifecycle.py"],
-            "modules": ["lifecycle"],
-            "interfaces": [],
-            "database_objects": [],
-            "dependencies": [],
-            "base_commit": base_commit,
-            "branch": "codex/lifecycle",
-            "worktree_path": str(project / ".worktrees" / "lifecycle"),
-        }
-        code, prepared, stderr = self.run_cli(
-            self.evolution_request(
-                topic,
-                operation="prepare-implementation-run",
-                expected_revision=1,
-                expected_topic_revision=1,
-                implementation_id="implementation-lifecycle",
-                scope=scope,
-            )
-        )
-        self.assertEqual(code, 0, stderr)
-        self.assertEqual(prepared["state"], "PREPARED")
-
-        def transition(
-            *,
-            ledger_revision: int,
-            record_revision: int,
-            expected_state: str,
-            next_state: str,
-            pause_reason: str | None = None,
-        ) -> tuple[int, dict[str, object], str]:
-            return self.run_cli(
-                self.evolution_request(
-                    topic,
-                    operation="transition-implementation-run",
-                    expected_revision=ledger_revision,
-                    expected_topic_revision=1,
-                    implementation_id="implementation-lifecycle",
-                    expected_implementation_revision=record_revision,
-                    expected_state=expected_state,
-                    next_state=next_state,
-                    pause_reason=pause_reason,
-                    evidence={"test": f"{expected_state}->{next_state}"},
-                )
-            )
-
-        code, invalid, _ = transition(
-            ledger_revision=2,
-            record_revision=1,
-            expected_state="PREPARED",
-            next_state="ACTIVE",
-        )
-        self.assertEqual(code, 1)
-        self.assertEqual(invalid["error"]["code"], "implementation_identity_conflict")
-
-        revisions = [(2, 1, "PREPARED", "QUEUED"), (3, 2, "QUEUED", "PROVISIONING")]
-        for ledger_revision, record_revision, expected_state, next_state in revisions:
-            code, result, stderr = transition(
-                ledger_revision=ledger_revision,
-                record_revision=record_revision,
-                expected_state=expected_state,
-                next_state=next_state,
-            )
-            self.assertEqual(code, 0, stderr)
-            self.assertEqual(result["state"], next_state)
-
-        code, paused, stderr = transition(
-            ledger_revision=4,
-            record_revision=3,
-            expected_state="PROVISIONING",
-            next_state="PAUSED",
-            pause_reason="recovery-ambiguous",
-        )
-        self.assertEqual(code, 0, stderr)
-        self.assertEqual(paused["pause"]["resume_state"], "PROVISIONING")
-
-        code, wrong_resume, _ = transition(
-            ledger_revision=5,
-            record_revision=4,
-            expected_state="PAUSED",
-            next_state="CANDIDATE",
-        )
-        self.assertEqual(code, 1)
-        self.assertEqual(wrong_resume["error"]["code"], "implementation_identity_conflict")
-
-        code, resumed, stderr = transition(
-            ledger_revision=5,
-            record_revision=4,
-            expected_state="PAUSED",
-            next_state="PROVISIONING",
-        )
-        self.assertEqual(code, 0, stderr)
-        self.assertIsNone(resumed["pause"])
-
-        code, stale, _ = transition(
-            ledger_revision=6,
-            record_revision=4,
-            expected_state="PAUSED",
-            next_state="PROVISIONING",
-        )
-        self.assertEqual(code, 1)
-        self.assertEqual(stale["error"]["code"], "implementation_identity_conflict")
-
-    def test_parallelism_blocks_active_worktree_branch_or_path_conflicts(self) -> None:
-        project = self.make_project("implementation-worktree-conflicts", git=True)
-        topic = self.bootstrap_topic(project)
-        subprocess.run(["git", "-C", str(project), "add", "docs"], check=True)
-        subprocess.run(
-            [
-                "git", "-C", str(project),
-                "-c", "user.name=Test", "-c", "user.email=test@example.com",
-                "commit", "-qm", "base",
-            ],
-            check=True,
-        )
-        base_commit = subprocess.run(
-            ["git", "-C", str(project), "rev-parse", "HEAD"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.strip()
-        checkout_branch = subprocess.run(
-            ["git", "-C", str(project), "branch", "--show-current"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.strip()
-
-        receipt_input = self.root / "worktree-conflict-receipt.json"
-        receipt_input.write_text(
-            json.dumps(
-                {
-                    "project_id": topic["project_id"],
-                    "repository": str(project),
-                    "topic_id": topic["topic_id"],
-                    "tree_id": topic["tree_id"],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ) + "\n",
-            encoding="utf-8",
-        )
-
-        def check_scope(
-            *,
-            implementation_id: str,
-            expected_revision: int,
-            branch: str,
-            worktree_path: Path,
-        ) -> dict[str, object]:
-            scope = {
-                "paths": [f"src/{implementation_id}.py"],
-                "modules": [implementation_id],
-                "interfaces": [implementation_id],
-                "database_objects": [],
-                "dependencies": [],
-                "base_commit": base_commit,
-                "branch": branch,
-                "worktree_path": str(worktree_path),
-            }
-            code, _, stderr = self.run_cli(
-                self.evolution_request(
-                    topic,
-                    operation="prepare-implementation-run",
-                    expected_revision=expected_revision,
-                    expected_topic_revision=1,
-                    implementation_id=implementation_id,
-                    scope=scope,
-                )
-            )
-            self.assertEqual(code, 0, stderr)
-            issued = self.supervision_cli(
-                "create-worktree-state-receipt", "--input", str(receipt_input)
-            )
-            receipt = {
-                key: issued[key]
-                for key in ("file_bytes", "file_sha256", "path", "version")
-            }
-            code, checked, stderr = self.run_cli(
-                self.evolution_request(
-                    topic,
-                    operation="check-implementation-parallelism",
-                    expected_revision=expected_revision + 1,
-                    expected_topic_revision=1,
-                    implementation_id=implementation_id,
-                    worktree_receipt=receipt,
-                )
-            )
-            self.assertEqual(code, 0, stderr)
-            return checked
-
-        safe = check_scope(
-            implementation_id="implementation-safe",
-            expected_revision=1,
-            branch="codex/safe",
-            worktree_path=project / ".worktrees" / "safe",
-        )
-        self.assertEqual(safe["verdict"], "safe")
-        self.assertEqual(safe["conflicts"], [])
-
-        branch_conflict = check_scope(
-            implementation_id="implementation-branch-conflict",
-            expected_revision=3,
-            branch=checkout_branch,
-            worktree_path=project / ".worktrees" / "branch-conflict",
-        )
-        self.assertEqual(branch_conflict["verdict"], "blocked")
-        self.assertEqual(
-            branch_conflict["conflicts"],
-            [{"dimension": "branch", "reason": "primary-checkout"}],
-        )
-
-        path_conflict = check_scope(
-            implementation_id="implementation-path-conflict",
-            expected_revision=5,
-            branch="codex/path-conflict",
-            worktree_path=project,
-        )
-        self.assertEqual(path_conflict["verdict"], "blocked")
-        self.assertEqual(
-            path_conflict["conflicts"],
-            [{"dimension": "active_worktrees", "reason": "primary-checkout"}],
-        )
-
-    def test_archive_completion_requires_exact_retained_checkpoint_before_ledger_mutation(self) -> None:
-        project = self.make_project("archive-authority", git=True)
-        topic = self.bootstrap_topic(project)
-        before = Path(str(topic["ledger_path"])).read_bytes()
-        code, response, _ = self.run_cli(
-            self.evolution_request(
-                topic,
-                operation="record-archive-complete",
-                expected_revision=1,
-                expected_topic_revision=1,
-                implementation_id="implementation-archive",
-                effective_phase_result_id="PH-missing",
-                source_checkpoint_id="CP-missing",
-                source_identity="a" * 40,
-                implementation_record_revision=1,
-                closure_checkpoint={
-                    "file_bytes": 1,
-                    "file_sha256": "0" * 64,
-                    "id": "0" * 32,
-                    "path": str(self.root / "missing-closure.json"),
-                    "version": 1,
-                },
-            )
-        )
-        self.assertEqual(code, 1)
-        self.assertEqual(response["error"]["code"], "archive_checkpoint_invalid")
-        self.assertEqual(Path(str(topic["ledger_path"])).read_bytes(), before)
-
-    def test_archive_completion_requires_archiving_state_and_exact_worktree_closure(self) -> None:
-        project = self.make_project("archive-complete", git=True)
-        topic = self.bootstrap_topic(project)
-        subprocess.run(["git", "-C", str(project), "add", "docs"], check=True)
-        subprocess.run(
-            [
-                "git", "-C", str(project), "-c", "user.name=Test",
-                "-c", "user.email=test@example.com", "commit", "-qm", "base",
-            ],
-            check=True,
-        )
-        source = self.prepare_checkpoint(
-            topic, ledger_revision=1, purpose="implementation-source"
-        )
-        source = self.publish_git_checkpoint(
-            project, topic, source, ledger_revision=2
-        )
-        implementation_id = "implementation-archive-complete"
-        phase_run_id = "PR-archive-complete"
-        phase_result_id = "PH-archive-complete"
-        branch = "codex/archive-complete"
-        worktree_path = str(project / ".worktrees" / "archive-complete")
-        ledger = Path(str(topic["ledger_path"]))
-        self.replace_empty_ledger_section(
-            ledger,
-            "Phase Results",
-            [
-                {
-                    "result_id": phase_result_id,
-                    "result_kind": "phase-result",
-                    "state": "completed",
-                    "record_revision": 1,
-                    "data_json": json.dumps(
-                        {
-                            "phase_run_id": phase_run_id,
-                            "result_id": phase_result_id,
-                            "to_phase": 3,
-                            "topic_id": topic["topic_id"],
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                }
-            ],
-        )
-        implementation = {
-            "execution": {
-                "phase_run_id": phase_run_id,
-                "source_checkpoint_id": source["checkpoint_id"],
-                "source_identity": source["commit_id"],
-            },
-            "implementation_id": implementation_id,
-            "pause": None,
-            "project_id": topic["project_id"],
-            "record_revision": 4,
-            "scope": {
-                "branch": branch,
-                "worktree_path": worktree_path,
-            },
-            "state": "ARCHIVING",
-            "topic_id": topic["topic_id"],
-            "transitions": [],
-            "tree_id": topic["tree_id"],
-        }
-        self.replace_empty_ledger_section(
-            ledger,
-            "Dependencies and Active Implementations",
-            [
-                {
-                    "implementation_id": implementation_id,
-                    "topic_id": topic["topic_id"],
-                    "state": "ARCHIVING",
-                    "record_revision": 4,
-                    "data_json": json.dumps(
-                        implementation, sort_keys=True, separators=(",", ":")
-                    ),
-                }
-            ],
-        )
-        request = self.evolution_request(
-            topic,
-            operation="record-archive-complete",
-            expected_revision=3,
-            expected_topic_revision=1,
-            implementation_id=implementation_id,
-            implementation_record_revision=4,
-            effective_phase_result_id=phase_result_id,
-            source_checkpoint_id=source["checkpoint_id"],
-            source_identity=source["commit_id"],
-            closure_checkpoint={
-                "file_bytes": 100,
-                "file_sha256": "a" * 64,
-                "id": "b" * 32,
-                "path": str(self.root / "worktree-closure.json"),
-                "version": 9,
-            },
-        )
-        exact_closure = {
-            "closure_id": "b" * 32,
-            "facts": {
-                "documentation_commit": "d" * 40,
-                "implementation_branch": branch,
-                "implementation_id": implementation_id,
-                "merge_commit": "e" * 40,
-                "worktree_path": worktree_path,
-            },
-            "version": 9,
-        }
-        mismatched = {
-            **exact_closure,
-            "facts": {
-                **exact_closure["facts"],
-                "implementation_branch": "codex/different",
-            },
-        }
-        before = ledger.read_bytes()
-        with mock.patch.object(PROTOCOL, "_call_supervision", return_value=mismatched):
-            with self.assertRaises(PROTOCOL.ProtocolError) as rejected:
-                PROTOCOL._record_archive_complete(request)
-        self.assertEqual(rejected.exception.code, "archive_checkpoint_invalid")
-        self.assertEqual(ledger.read_bytes(), before)
-
-        with mock.patch.object(PROTOCOL, "_call_supervision", return_value=exact_closure):
-            archived = PROTOCOL._record_archive_complete(request)
-        self.assertEqual(archived["state"], "archive-complete")
-        self.assertEqual(archived["implementation_record_revision"], 5)
-
-
-
-    def test_topic_close_cannot_substitute_for_archive_completion(self) -> None:
-        project = self.make_project("archive-close-separation", git=True)
-        topic = self.bootstrap_topic(project)
-        code, response, _ = self.run_cli(
-            self.evolution_request(
-                topic,
-                operation="close-archived-topic",
-                expected_revision=1,
-                expected_topic_revision=1,
-            )
-        )
-        self.assertEqual(code, 1)
-        self.assertEqual(response["error"]["code"], "archive_authority_invalid")
-        read = self.run_cli(self.evolution_request(topic, operation="read-topic"))[1]
-        self.assertEqual(read["state"], "read")
-
-    @matrix_proof("invariants:no-premature-topic-close")
-    def test_topic_close_keeps_blocked_and_failed_phase_runs_open(self) -> None:
-        for run_state in ("blocked", "failed"):
-            with self.subTest(run_state=run_state):
-                project = self.make_project(f"archive-{run_state}-run", git=True)
-                topic = self.bootstrap_topic(project)
-                ledger = Path(str(topic["ledger_path"]))
-                self.rewrite_ledger_with_valid_digest(
-                    ledger, 'phase_state: "active"', 'phase_state: "completed"'
-                )
-                self.replace_empty_ledger_section(
-                    ledger,
-                    "Phase Results",
-                    [
-                        {
-                            "result_id": "AR-" + "a" * 32,
-                            "result_kind": "archive-result",
-                            "state": "completed",
-                            "record_revision": 1,
-                            "data_json": json.dumps(
-                                {"topic_id": topic["topic_id"]},
-                                sort_keys=True,
-                                separators=(",", ":"),
-                            ),
-                        }
-                    ],
-                )
-                self.replace_empty_ledger_section(
-                    ledger,
-                    "Phase Runs",
-                    [
-                        {
-                            "run_id": f"PR-{run_state}",
-                            "run_kind": "phase-run",
-                            "state": run_state,
-                            "record_revision": 1,
-                            "data_json": json.dumps(
-                                {"source_topic_id": topic["topic_id"]},
-                                sort_keys=True,
-                                separators=(",", ":"),
-                            ),
-                        }
-                    ],
-                )
-                code, response, stderr = self.run_cli(
-                    self.evolution_request(
-                        topic,
-                        operation="close-archived-topic",
-                        expected_revision=1,
-                        expected_topic_revision=1,
-                    )
-                )
-                self.assertEqual(code, 0, stderr)
-                self.assertEqual(response["state"], "archive-complete")
-                self.assertEqual(response["topic_state"], "open")
-                self.assertEqual(response["blockers"], ["active-or-queued-runs"])
-
-    def test_topic_close_is_scoped_and_active_absorption_allows_final_close(self) -> None:
-        project = self.make_project("archive-final-close", git=True)
-        topic = self.bootstrap_topic(project)
-        ledger = Path(str(topic["ledger_path"]))
-        sibling_topic_id = "topic-" + "f" * 32
-        self.rewrite_ledger_with_valid_digest(
-            ledger, 'phase_state: "active"', 'phase_state: "completed"'
-        )
-        self.replace_empty_ledger_section(
-            ledger,
-            "Phase Results",
-            [
-                {
-                    "result_id": "AR-" + "a" * 32,
-                    "result_kind": "archive-result",
-                    "state": "completed",
-                    "record_revision": 1,
-                    "data_json": json.dumps(
-                        {"topic_id": topic["topic_id"]},
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                }
-            ],
-        )
-        self.replace_empty_ledger_section(
-            ledger,
-            "Phase Runs",
-            [
-                {
-                    "run_id": "PR-sibling",
-                    "run_kind": "phase-run",
-                    "state": "active",
-                    "record_revision": 1,
-                    "data_json": json.dumps(
-                        {"source_topic_id": sibling_topic_id},
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                }
-            ],
-        )
-        self.replace_empty_ledger_section(
-            ledger,
-            "Dependencies and Active Implementations",
-            [
-                {
-                    "implementation_id": "implementation-sibling",
-                    "topic_id": sibling_topic_id,
-                    "state": "active",
-                    "record_revision": 1,
-                    "data_json": json.dumps(
-                        {
-                            "implementation_id": "implementation-sibling",
-                            "record_revision": 1,
-                            "state": "active",
-                            "topic_id": sibling_topic_id,
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                }
-            ],
-        )
-        self.replace_empty_ledger_section(
-            ledger,
-            "Pending Document Writes",
-            [
-                {
-                    "document_write_id": "DW-sibling",
-                    "topic_id": sibling_topic_id,
-                    "state": "confirmed-but-pending",
-                }
-            ],
-        )
-        self.replace_empty_ledger_section(
-            ledger,
-            "Relations and Coverage",
-            [
-                {
-                    "relation_id": "REL-absorbed",
-                    "relation_type": "absorbs",
-                    "source_topic_id": topic["topic_id"],
-                    "target_topic_id": sibling_topic_id,
-                    "state": "active",
-                },
-                {
-                    "relation_id": "REL-sibling-blocker",
-                    "relation_type": "blocks",
-                    "source_topic_id": sibling_topic_id,
-                    "target_topic_id": "topic-" + "e" * 32,
-                    "state": "active",
-                },
-            ],
-        )
-        code, response, stderr = self.run_cli(
-            self.evolution_request(
-                topic,
-                operation="close-archived-topic",
-                expected_revision=1,
-                expected_topic_revision=1,
-            )
-        )
-        self.assertEqual(code, 0, stderr)
-        self.assertEqual(response["state"], "closed")
-        self.assertEqual(response["topic_state"], "closed")
-        self.assertEqual(response["blockers"], [])
 
 
 if __name__ == "__main__":

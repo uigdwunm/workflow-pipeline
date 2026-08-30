@@ -18,11 +18,9 @@ cancelled, and prepare a new identity. If the older state is
 
 ## Publish Git checkpoints
 
-Acquire `acquire-repository-coordination-lease` from
-`supervision_protocol.py` using stage `design-discussion`, purpose
-`checkpoint-publish`, the authenticated conversation/task owner, and a short
-TTL. Pass the exact path, lease ID, and version to `publish-git-checkpoint`.
-The protocol creates a documentation-only commit through a private temporary
+Call `publish-git-checkpoint` with the prepared checkpoint identity and
+expected revisions. While holding the discussion lock, the protocol creates a
+documentation-only commit through a private temporary
 index, without changing the caller's index, working tree, `HEAD`, or ordinary
 branch refs. It creates or updates only the dedicated checkpoint ref below
 `refs/codex/design-discussion/checkpoints/`; reconcile and repair may update
@@ -63,10 +61,7 @@ the object is absent.
 Use `mark-checkpoint-broken` to preserve the original missing or invalid
 identity and reason. `repair-checkpoint` accepts only a unique fully verified
 replacement under an independently resolved `replacement_base_ref`; the
-candidate cannot choose its own verification lineage. If
-`register-active-checkpoint-source` shows an active
-implementation, the repair request must include a fresh acknowledgement bound
-to the checkpoint and original broken identity.
+candidate cannot choose its own verification lineage.
 
 For non-Git snapshot cleanup, call `checkpoint-gc-dry-run` first. Pass its
 exact candidate objects, candidate digest, and ledger revision to

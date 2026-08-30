@@ -1,34 +1,32 @@
 # Originating Task Protocol
 
-The originating task owns source freezing, lifecycle CAS, independent
-acceptance, target publication and closure routing. It never implements code.
+The originating task creates the worktree, launches one dedicated task,
+independently reviews its committed candidate, and completes integration. It
+does not implement code.
 
 ## Launch
 
-Verify committed planning artifacts and clean implementation paths. Create and
-protect the source checkpoint, prepare the lifecycle, queue or provision one
-claim, verify the exact worktree, activate, and publish one version-5 handoff.
-The handoff contains repository, source checkpoint and worktree
-branch/path/base/scope/claim. It contains no selector or primary-checkout
-implementation path.
+Confirm that every planning source is committed and list the exact allowed
+implementation paths. Choose a new branch and canonical worktree path, call
+`start-worktree`, and launch one task in that worktree with the returned
+binding. Launch the implementation task with the fixed pair
+`model: gpt-5.6-terra` and `thinking: high`; pass `model` and `thinking`
+explicitly after verifying the current runtime supports that pair.
 
-Launch the dedicated implementation task with the fixed `gpt-5.6-terra` / `high`
-pair and pass both `model` and `thinking` explicitly. The task still has to
-verify those settings and its exact claim before substantive work.
+## Accept
 
-## Accept and publish
+Require a clean committed candidate plus focused/full checks and both review
+axes. Independently inspect the candidate diff against the expected target.
+If the target advanced without changing a source path, have the same task merge
+that target in its worktree and repeat checks and review.
 
-Require one exact implementation-only candidate, passing verification and two
-review axes. Freeze and accept that identity. Only the originating supervisor
-calls `publish-accepted-candidate` with the exact current target HEAD.
+## Integrate and clean
 
-Repairable conflicts return to the same worktree. Material changes to scope,
-business behaviour or acceptance pause for the user; the plan is never silently
-replaced.
+Call `complete-worktree` only after accepting the exact candidate. Success
+means the merge commit is on the target and the implementation worktree and
+branch are gone. Before-merge failure retains both for correction. If the
+command reports `cleanup_failed`, inspect its merge commit and remaining
+resource; do not merge the candidate again.
 
-## Close
-
-An integrated publication plus committed document convergence may create one
-worktree closure checkpoint. Keep worktree, branch, claim and evidence until its
-exact cleanup phase. Old active artifacts are not migrated: `cutover-preflight`
-returns `unsupported_stale_execution_state` without changing their bytes.
+Pass the verified merge commit to Stage 4. No execution state, claim, lease,
+proposal receipt, or closure checkpoint is carried forward.

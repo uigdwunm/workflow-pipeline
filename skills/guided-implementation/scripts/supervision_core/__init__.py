@@ -1,6 +1,5 @@
-"""Internal deep modules for the stable supervision CLI."""
+"""Internal command registry for the worktree CLI."""
 
 from .commands import ArgumentSpec, CommandRegistry, CommandSpec
-from .leases import LeaseHolderPolicy
 
-__all__ = ["ArgumentSpec", "CommandRegistry", "CommandSpec", "LeaseHolderPolicy"]
+__all__ = ["ArgumentSpec", "CommandRegistry", "CommandSpec"]

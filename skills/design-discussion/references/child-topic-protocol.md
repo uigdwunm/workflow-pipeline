@@ -85,7 +85,7 @@ parent reads the claim and asks the user to confirm how it affects the parent:
 
 The parent never copies a child conclusion directly into its document. Any
 confirmed parent document change still uses a new immutable `DW-*` and the
-shared document lease.
+normal atomic apply operation.
 
 ## Continue an unavailable conversation
 

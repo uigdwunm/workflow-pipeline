@@ -3,10 +3,6 @@
 Read this file completely before launching, resuming, or accepting the stage-2
 subagent.
 
-Also read
-`<guided-implementation-skill-root>/references/document-lease-protocol.md`
-completely before the first local documentation write or document-lease retry.
-
 ## Contents
 
 1. Trusted source and stage identity
@@ -90,9 +86,8 @@ The child is the complete stage owner. It must:
 
 1. Start with `SOLUTION_DESIGN_STARTED`.
 2. Read the complete requirement source and relevant project context.
-3. Acquire, verify, renew, and release the shared document lease around every
-   local planning-document write. Reject protected implementation sources and
-   use the short checkpoint-publication barrier for the final planning commit.
+3. Write only stage-owned local planning documents whose baseline is known,
+   then commit only those exact paths.
 4. Use the project's terminology and existing ADRs.
 5. Invoke the complete `$to-spec` behavior and publish the Spec to the exact
    configured carrier.
@@ -212,21 +207,11 @@ implementation-path work as an anomaly. Recognized documentation paths may
 remain unstaged but must never enter this stage's commit.
 
 Do not enter an active implementation worktree or inspect mutable in-progress
-state. Continue design from committed objects. Acquire the document lease with
-`stage: solution-design` and `purpose: document-write` before every exact Spec,
-ADR, or Ticket write; protected source paths are immutable. Verify before
-writing, renew when needed, and release before review or another wait.
-
-Use the default immediate acquisition plus ten 10-second retries. On
-`state: timeout`, stop at the durable planning checkpoint and return
-`SOLUTION_DESIGN_ANOMALY` containing the fixed Chinese document-lock timeout
-block, current artifacts, holder, version, expiry, and recovery point. Never
-choose another path or ask the user to clean the repository.
-
-When design and review are complete, revalidate exact document bytes and source
-protection, acquire the short checkpoint-publication barrier, compare HEAD and
-perform only the stage-owned planning commit. Remote carrier publication uses
-its separately disclosed authority.
+state. Continue design from committed objects. Before each Spec, ADR, or Ticket
+write, verify the path is stage-owned and its baseline has not changed. When
+design and review are complete, compare branch, HEAD, workspace state, and exact
+document bytes, then perform only the stage-owned planning commit. Remote
+carrier publication uses its separately disclosed authority.
 
 Stage only exact clean-baseline Spec, ADR, and Ticket files. Verify the staged
 path list contains nothing else, then create one concise planning commit when
