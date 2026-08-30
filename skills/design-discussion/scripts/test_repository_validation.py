@@ -209,6 +209,32 @@ class RepositoryValidationTests(unittest.TestCase):
         completed = self.run_validator(repository)
         self.assertEqual(completed.returncode, 0, completed.stdout)
 
+    def test_frontier_listing_excludes_completed_ready_issues(self) -> None:
+        temporary_directory, repository = self.make_repository()
+        self.addCleanup(temporary_directory.cleanup)
+        issues = repository / ".scratch" / "design" / "issues"
+        issues.mkdir(parents=True)
+        open_issue = issues / "01-open.md"
+        completed_issue = issues / "02-completed.md"
+        open_issue.write_text(
+            "# Open\n\nStatus: `ready-for-agent`\nLifecycle: `open`\n"
+            "\n## Acceptance criteria\n\n- [ ] Implemented.\n",
+            encoding="utf-8",
+        )
+        completed_issue.write_text(
+            "# Completed\n\nStatus: `ready-for-agent`\nLifecycle: `completed`\n"
+            "\n## Acceptance criteria\n\n- [x] Implemented.\n",
+            encoding="utf-8",
+        )
+
+        frontier = self.run_validator(repository, "--list-frontier")
+
+        self.assertEqual(frontier.returncode, 0, frontier.stderr)
+        self.assertEqual(
+            frontier.stdout.splitlines(),
+            [open_issue.relative_to(repository).as_posix()],
+        )
+
     def test_dependency_check_rejects_duplicate_filesystem_skill_sources(self) -> None:
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)

@@ -170,6 +170,28 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
     }
 
 
+def _unexpected_error_context(request: Any) -> dict[str, Any]:
+    if not isinstance(request, dict):
+        return {}
+    context: dict[str, Any] = {}
+    for request_key, response_key in (
+        ("project_id", "project_id"),
+        ("tree_id", "tree_id"),
+        ("actor_topic_id", "topic_id"),
+        ("topic_id", "topic_id"),
+        ("checkpoint_id", "checkpoint_id"),
+    ):
+        value = request.get(request_key)
+        if (
+            response_key not in context
+            and isinstance(value, str)
+            and value
+            and len(value.encode("utf-8")) <= 512
+        ):
+            context[response_key] = value
+    return context
+
+
 def _expect_keys(source: dict[str, Any], expected: set[str], label: str) -> None:
     observed = set(source)
     if observed != expected:
@@ -8368,6 +8390,7 @@ def handle(request: Any) -> dict[str, Any]:
 
 
 def main() -> int:
+    request: Any = None
     try:
         raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
         if len(raw) > MAX_REQUEST_BYTES:
@@ -8386,9 +8409,12 @@ def main() -> int:
         response = _response_error(error)
         print(error.message, file=sys.stderr)
         returncode = 1
-    except Exception:
+    except Exception as error:
         protocol_error = ProtocolError(
-            "internal_error", "discussion protocol encountered an internal error"
+            "internal_error",
+            "discussion protocol encountered an internal error",
+            cause=type(error).__name__,
+            context=_unexpected_error_context(request),
         )
         response = _response_error(protocol_error)
         print(protocol_error.message, file=sys.stderr)

@@ -4077,7 +4077,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(failed_code, 1)
         self.assertEqual(failed["error"]["code"], "internal_error")
-        self.assertIsNone(failed["error"]["cause"])
+        self.assertEqual(failed["error"]["cause"], "OSError")
+        self.assertEqual(failed["project_id"], topic["project_id"])
+        self.assertEqual(failed["tree_id"], topic["tree_id"])
+        self.assertEqual(failed["topic_id"], topic["topic_id"])
         payload_dir = Path(str(topic["ledger_path"])).parent / "pending-writes"
         payloads = list(payload_dir.glob("*.payload"))
         self.assertEqual(len(payloads), 1)

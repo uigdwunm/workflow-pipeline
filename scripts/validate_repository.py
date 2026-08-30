@@ -84,6 +84,23 @@ def discover_tests(repository: Path) -> list[Path]:
     )
 
 
+def discover_frontier_issues(repository: Path) -> list[Path]:
+    frontier: list[Path] = []
+    for issue_path in sorted((repository / ".scratch").glob("*/issues/*.md")):
+        if not issue_path.is_file():
+            continue
+        text = issue_path.read_text(encoding="utf-8")
+        ready = re.search(
+            r"^Status:\s*`?ready-for-agent`?\s*$", text, re.MULTILINE
+        )
+        completed = re.search(
+            r"^Lifecycle:\s*`?completed`?\s*$", text, re.MULTILINE
+        )
+        if ready and not completed:
+            frontier.append(issue_path.resolve())
+    return frontier
+
+
 def is_documentation_path(path: str) -> bool:
     normalized = path.replace("\\", "/")
     parts = tuple(part.casefold() for part in normalized.split("/") if part)
@@ -246,9 +263,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", type=Path, required=True)
     parser.add_argument("--list-tests", action="store_true")
+    parser.add_argument("--list-frontier", action="store_true")
     parser.add_argument("--implementation-range")
     arguments = parser.parse_args()
     repository = arguments.repository.resolve()
+    if arguments.list_frontier:
+        for issue_path in discover_frontier_issues(repository):
+            print(relative(issue_path, repository))
+        return 0
     if arguments.list_tests:
         for test_file in discover_tests(repository):
             print(test_file)
