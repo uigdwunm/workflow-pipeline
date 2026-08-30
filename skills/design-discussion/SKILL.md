@@ -92,7 +92,7 @@ the authoritative ledger directly. The update sequence is:
 2. `apply-document-write` compares the current bytes with the immutable
    payload, atomically writes the document, verifies it, and marks the `DW-*`
    completed while holding the discussion lock.
-3. Call `validate` or `read-topic` before continuing substantive discussion.
+3. Call `read-topic` before continuing substantive discussion.
 
 If an apply result is uncertain, retry the exact `apply-document-write`
 request. It accepts either the recorded before digest or the exact payload

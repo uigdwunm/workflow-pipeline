@@ -26,9 +26,70 @@ SCRIPT_PATH = Path(__file__).with_name("discussion_protocol.py")
 class DiscussionProtocolBootstrapTests(unittest.TestCase):
     def test_operation_registry_contains_only_current_operation_names(self) -> None:
         names = PROTOCOL.OPERATION_REGISTRY.names
-        self.assertEqual(len(names), len(set(names)))
-        self.assertEqual(len(names), 52)
-        self.assertNotIn("prepare-implementation-run", names)
+        self.assertEqual(
+            names,
+            (
+                "bootstrap",
+                "discover-context",
+                "initialize-document-context",
+                "prepare-phase-run",
+                "prepare-wrapper-phase-run",
+                "prepare-no-code-integration-run",
+                "authorize-continuous-flow",
+                "phase-ready",
+                "authorize-phase-carrier",
+                "claim-phase-carrier",
+                "phase-activate",
+                "revoke-phase-authorization",
+                "supersede-phase-run",
+                "claim-phase-completion",
+                "complete-phase-run",
+                "finalize-phase-run",
+                "cancel-phase-run",
+                "fail-phase-run",
+                "phase-outcome-unknown",
+                "retry-phase-run",
+                "reconcile-phase-run",
+                "read-phase-run",
+                "reopen-phase",
+                "prepare-topic-update",
+                "apply-document-write",
+                "prepare-checkpoint",
+                "cancel-checkpoint",
+                "publish-git-checkpoint",
+                "publish-non-git-checkpoint",
+                "record-checkpoint-outcome-unknown",
+                "reconcile-git-checkpoint",
+                "reconcile-non-git-checkpoint",
+                "mark-checkpoint-broken",
+                "repair-checkpoint",
+                "checkpoint-gc-dry-run",
+                "checkpoint-gc-confirm",
+                "reconcile-checkpoint-gc",
+                "prepare-handoff",
+                "bind-handoff",
+                "accept-handoff",
+                "authorize-handoff-discussion",
+                "record-handoff-outcome-unknown",
+                "record-handoff-failure",
+                "cancel-handoff-attempt",
+                "retry-handoff",
+                "reconcile-handoff-attempt",
+                "submit-child-result",
+                "record-child-result",
+                "read-handoff",
+                "read-topic",
+            ),
+        )
+
+    def test_removed_operation_names_are_rejected(self) -> None:
+        for operation in ("block-phase-run", "validate"):
+            with self.subTest(operation=operation):
+                code, response, _ = self.run_cli(
+                    {"protocol_version": 1, "operation": operation}
+                )
+                self.assertEqual(code, 1)
+                self.assertEqual(response["error"]["code"], "unsupported_operation")
 
     def test_request_context_lazily_parses_each_common_field_once(self) -> None:
         calls = {"project": 0, "string": 0}
@@ -656,12 +717,12 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             phase_result_ids.append(str(completed["phase_result_id"]))
 
         self.assertEqual(len(set(phase_result_ids)), 4)
-        read_request = self.phase_request(topic, "validate", 0)
+        read_request = self.phase_request(topic, "read-topic", 0)
         for key in ("expected_ledger_revision", "expected_topic_revision", "idempotency_key"):
             read_request.pop(key)
         code, validated, stderr = self.run_cli(read_request)
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(validated["state"], "valid")
+        self.assertEqual(validated["state"], "read")
         self.assertEqual(validated["record_revision"], 5)
 
     def test_competing_phase_run_cannot_become_double_active(self) -> None:
@@ -1964,7 +2025,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 self.rewrite_ledger_with_valid_digest(ledger, expanded_new, old)
             self.assertEqual(ledger.read_bytes(), ready_ledger, dimension)
             self.assertEqual(topic_path.read_bytes(), ready_topic, dimension)
-            validate = self.phase_request(topic, "validate", 0)
+            validate = self.phase_request(topic, "read-topic", 0)
             for key in (
                 "expected_ledger_revision",
                 "expected_topic_revision",
@@ -1973,7 +2034,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 validate.pop(key)
             code, valid, stderr = self.run_cli(validate)
             self.assertEqual(code, 0, stderr)
-            self.assertEqual(valid["state"], "valid")
+            self.assertEqual(valid["state"], "read")
             self.assertEqual(valid["ledger_revision"], 4)
 
             code, _, stderr = self.run_cli(
@@ -2989,12 +3050,12 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         validate = self.handoff_request(
             topic,
-            operation="validate",
+            operation="read-topic",
             owner_ref=second_bound["conversation_ref"],
         )
         returncode, valid, stderr = self.run_cli(validate)
         self.assertEqual(returncode, 0, stderr)
-        self.assertEqual(valid["state"], "valid")
+        self.assertEqual(valid["state"], "read")
         self.assertEqual(valid["handoff_count"], 2)
 
     def test_child_result_absorbs_only_within_scope_and_records_cross_topic_impact(self) -> None:
@@ -3723,7 +3784,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         orphan_bytes = payloads[0].read_bytes()
 
         validate_code, invalid, _ = self.run_cli(
-            self.evolution_request(topic, operation="validate")
+            self.evolution_request(topic, operation="read-topic")
         )
         self.assertEqual(validate_code, 1)
         self.assertEqual(invalid["error"]["code"], "orphaned_document_write")
@@ -3840,7 +3901,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
                 else:
                     (payload_path.parent / "DW-orphan.payload").write_bytes(b"orphan\n")
                 returncode, response, _ = self.run_cli(
-                    self.evolution_request(topic, operation="validate")
+                    self.evolution_request(topic, operation="read-topic")
                 )
                 self.assertEqual(returncode, 1)
                 expected = (
@@ -4090,7 +4151,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
             (project / "unrelated.txt").read_text(encoding="utf-8"), "keep me\n"
         )
         returncode, validated, stderr = self.run_cli(
-            self.checkpoint_request(topic, operation="validate")
+            self.checkpoint_request(topic, operation="read-topic")
         )
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(validated["checkpoint_count"], 1)
@@ -4361,7 +4422,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertNotEqual(repaired["replacement_identity"], commit_id)
         self.assertTrue(repaired["original_fact_preserved"])
         returncode, validated, stderr = self.run_cli(
-            self.checkpoint_request(topic, operation="validate")
+            self.checkpoint_request(topic, operation="read-topic")
         )
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(validated["checkpoint_count"], 1)
@@ -4463,7 +4524,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(returncode, 1)
         self.assertEqual(injected["error"]["code"], "injected_failure")
         returncode, validated, stderr = self.run_cli(
-            self.checkpoint_request(topic, operation="validate")
+            self.checkpoint_request(topic, operation="read-topic")
         )
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(validated["ledger_revision"], 1)

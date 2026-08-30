@@ -57,8 +57,8 @@ before bytes are atomically replaced, and any third state is rejected. It never
 reconstructs intent from Markdown.
 
 Treat any non-completed `DW-*` as a discussion freeze. Do not ask or persist a
-new substantive question until `read-topic` and `validate` can verify the
-payload, document digest, and single active question. An orphan
+new substantive question until `read-topic` can verify the payload, document
+digest, and single active question. An orphan
 from the prepare/ledger crash window requires the exact prepare replay above.
 Missing or damaged payloads belonging to a ledger record stop on conflicting
 facts; no payload is silently recreated

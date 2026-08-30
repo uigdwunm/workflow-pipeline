@@ -22,6 +22,21 @@ fixed: `current-problem-framing` or `dedicated-grilling` for `0→1`,
 exact checkpoint identity, calls `claim-phase-carrier`, reports ready and waits
 for source-topic activation before substantive work.
 
+Use `prepare-phase-run` only for an existing topic-local, non-wrapper lifecycle
+route. A prepared run follows one explicit sequence: the source topic calls
+`authorize-phase-carrier`; a wrapper carrier calls `claim-phase-carrier`; the
+carrier calls `phase-ready`; the source calls `phase-activate`; the carrier
+calls `claim-phase-completion`; and the source calls `complete-phase-run` then
+`finalize-phase-run`. Keep those actor boundaries separate.
+
+Use `cancel-phase-run`, `fail-phase-run`, or
+`revoke-phase-authorization` for known source-side outcomes. Use
+`phase-outcome-unknown` followed by `reconcile-phase-run` when an external
+carrier result is uncertain; retry only through `retry-phase-run` after the
+prior attempt is eligible. Use `read-phase-run` to inspect one run and
+`reopen-phase` only for the explicit affected-decision review required to
+return a topic to phase 0.
+
 Phase 1 always updates the existing topic document through its `DW-*` protocol.
 Phase 2 treats that checkpoint as read-only and owns
 only Spec, ADR, Tickets and its planning commit. A `1→3` wrapper run requires
