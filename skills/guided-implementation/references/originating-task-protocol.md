@@ -13,12 +13,18 @@ binding. Launch the implementation task with the fixed pair
 `model: gpt-5.6-terra` and `thinking: high`; pass `model` and `thinking`
 explicitly after verifying the current runtime supports that pair. Include the
 complete planning sources, dependency-ordered Tickets, testing basis, flow mode,
-documentation boundary and remote-authority boundary in the launch prompt.
+confirmed implementation scope, existing-behavior changes, required collateral
+changes, explicit out-of-scope items, documentation boundary and
+remote-authority boundary in the launch prompt. Do not launch while a material
+product, scope, behavior, architecture, compatibility, data, or testing-seam
+decision remains unresolved.
 
 ## Accept
 
 Require a clean committed candidate plus focused/full checks and both review
 axes. Independently inspect the candidate diff against the expected target.
+Reject an unplanned feature, behavior change, deletion, replacement, side
+effect, or optional adjacent improvement even when its tests pass.
 Return every actionable test or review finding to the same task; the
 originating task does not edit the implementation or create a replacement for
 ordinary remediation. Route only a material unresolved decision to the user.

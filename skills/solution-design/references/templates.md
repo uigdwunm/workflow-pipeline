@@ -109,7 +109,10 @@ Spec 草稿：<path or URL>
 方案摘要：<summary>
 关键决策：<decisions>
 ADR：<paths or none>
-实现范围：<scope>
+实现范围：<included scope>
+既有行为变化：<additions, removals, replacements, compatibility, data, API or user-visible effects | none>
+必要关联改动：<changes required to implement the accepted solution | none>
+明确不纳入：<valuable but currently unnecessary improvements | none>
 规划载体：<exact target>
 已完成：<work that will not repeat>
 恢复位置：<checkpoint>
@@ -188,6 +191,10 @@ Tickets：<paths or URLs | none>
 发布结果：<completed results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
+实现范围：<included scope>
+既有行为变化：<confirmed additions, removals, replacements and effects | none>
+必要关联改动：<confirmed required collateral changes | none>
+明确不纳入：<deferred optional improvements | none>
 Matt 原生发布：Spec=<result>; Tickets=<result or none>; 原生标签与阻塞关系=<results or not applicable>
 阶段授权：2方案标准原生动作已完成；授权不延续至 3实现或 4归档
 扩展远程操作：<未授权且未执行 | exact separately authorized actions and results>
@@ -207,6 +214,10 @@ Tickets：<clickable paths or URLs | 不需要，完整 Spec 可在一个实现�
 发布结果：<results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
+实现范围：<included scope>
+既有行为变化：<confirmed additions, removals, replacements and effects | none>
+必要关联改动：<confirmed required collateral changes | none>
+明确不纳入：<deferred optional improvements | none>
 规划载体：<exact local convention, GitHub owner/repository, or tracker target>
 Matt 原生发布：Spec=<verified path or URL>; Tickets=<verified paths or URLs, or none after native decision>; 原生标签与阻塞关系=<results or not applicable>
 阶段授权：已用于 2方案标准原生动作；不延续至 3实现或 4归档
@@ -238,6 +249,10 @@ Tickets：<clickable paths or URLs | 不需要，完整 Spec 可在一个实现�
 发布结果：<child-reported results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<child-reported Testing Decisions or exact Spec section>
+实现范围：<child-reported included scope>
+既有行为变化：<child-reported confirmed additions, removals, replacements and effects | none>
+必要关联改动：<child-reported confirmed required collateral changes | none>
+明确不纳入：<child-reported deferred optional improvements | none>
 规划载体：<exact local convention, GitHub owner/repository, or tracker target>
 Matt 原生发布：Spec=<child-reported path or URL>; Tickets=<child-reported paths or URLs, or none>; 原生标签与阻塞关系=<child-reported results or not applicable>
 阶段授权：已用于 2方案标准原生动作；不延续至 3实现或 4归档

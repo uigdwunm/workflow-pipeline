@@ -34,6 +34,30 @@ immediately before resolving task settings.
 - The originating task supervises and reviews. It never edits implementation
   files.
 
+## Enforce the confirmed implementation boundary
+
+Treat the committed requirement, Spec, ADR, Tickets, and exact stage handoff as
+the complete implementation boundary. Implement a robust, coherent result
+inside that boundary; the goal is not merely the smallest diff. Do not infer
+authority from nearby code, an attractive refactor, or a possible future need.
+
+Stage 3 should start with no unresolved material product, scope, behavior,
+architecture, compatibility, data, or testing-seam decision. Ordinary technical
+choices may be resolved from the accepted sources and repository conventions
+when they do not change the confirmed behavior or scope.
+
+Do not add an unplanned feature, business rule, configuration surface,
+user-visible behavior, or side effect. Do not remove, replace, or change
+existing behavior unless the confirmed plan makes that effect explicit. Leave
+optional adjacent improvements untouched and report them as out of scope
+instead of implementing them or turning them into blocking questions.
+
+If an unexpected implementation fact makes a material expansion or unconfirmed
+behavior change unavoidable, stop before the affected edit and return the exact
+gap to the originating task. Treat the question as a planning omission, obtain
+an explicit user decision through the originating task, and resume only with
+updated authority. Never make the change first and disclose it at completion.
+
 ## Attach a discussion Phase Run when present
 
 When entry carries one exact discussion topic and Phase Run, read
@@ -71,9 +95,12 @@ work.
   tests and required implementation artifacts. Report exact documentation paths
   and required updates as `待归档文档`; Stage 4 owns those edits and commits.
 - Do not modify the committed planning-source paths.
-- The dedicated task never asks the user directly. It returns material decisions
-  to the originating task, which asks the user when needed. Review or test
-  remediation returns to the same dedicated task and worktree.
+- The dedicated task never asks the user directly. It resolves ordinary
+  technical details from the confirmed sources and repository conventions. An
+  unexpected material decision is a planning gap: return it to the originating
+  task before the affected edit, and let that task obtain the user's explicit
+  decision. Review or test remediation returns to the same dedicated task and
+  worktree.
 - Local stage entry grants no push, pull request, deployment, release, tracker or
   other remote write. Each such action requires separate explicit authority.
 - Return the exact candidate commit, changed paths, checks, review findings, and

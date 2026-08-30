@@ -77,6 +77,33 @@ authority; do not create or modify another requirement draft. Carrier
 completion is only a claim until the source topic accepts and finalizes the
 Phase Run.
 
+## Keep the solution inside the visible scope
+
+Treat the accepted requirement source as the boundary the user already knows.
+Design the strongest coherent solution inside that boundary; the goal is not
+the smallest diff. Repository discoveries and attractive future improvements
+do not expand the assignment.
+
+Before review or publication, make all material effects visible:
+
+- the included implementation scope;
+- additions, removals, replacements, or changes to existing behavior;
+- required collateral changes and their compatibility, data, API, or
+  user-visible side effects; and
+- valuable improvements intentionally left outside the current scope.
+
+An effect outside the accepted boundary must be proposed before it enters the
+solution. In stepwise mode, obtain the user's explicit decision at the solution
+review or anomaly checkpoint. In continuous mode, prior authorization covers
+only choices inside the accepted requirement source; a scope expansion still
+stops as an anomaly. Never publish the expansion first and disclose it later.
+
+Resolve every material product, scope, behavior, architecture, compatibility,
+data, and testing-seam decision in stage 2. Leave stage 3 only ordinary
+technical choices that repository evidence can resolve without changing the
+confirmed boundary. If implementation would still need the user to choose a
+material outcome, the solution is not complete.
+
 ## Track the flow mode
 
 Use `逐阶段确认` for an explicit invocation, a phase-0 discussion route or exact
