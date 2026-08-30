@@ -1,7 +1,17 @@
 # Problem: Repository lease caller authorization and terminal freeze
 
-Status: `needs-triage`
-Lifecycle: `open`
+Status: `wontfix`
+Lifecycle: `completed`
+
+## Resolution
+
+Superseded by ADR-0002 and
+`.scratch/unified-worktree-execution/PRD.md`. The replacement architecture
+removes `exclusive-checkout-v2` and the long-lived repository lease, uses a
+durable CAS worktree execution claim, and does not treat caller identity as a
+security boundary. Trusted caller context, one-time release authorization,
+repository-lease v3, legacy compatibility and a managed identity Hook will not
+be implemented.
 
 ## Problem
 
@@ -35,7 +45,7 @@ handoff is safely delivered.
 - This tracker entry contains no private session identifiers, user-specific
   filesystem paths, or incident transcript locations.
 
-## Next gate
+## Former next gate
 
 Complete security solution design and confirm that the chosen enforcement seam
 receives authenticated caller context before implementation begins.

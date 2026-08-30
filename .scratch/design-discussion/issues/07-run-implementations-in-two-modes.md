@@ -23,3 +23,6 @@ Blocked by: 05 — Coordinate phase runs and lifecycle routing; 06 — Integrate
 ## Comments
 
 - 已在候选 `07f80210be6dd2b7d3c7a35662ef5d5085851e81` 中验收，并由合并提交 `3624df56bca2d3884074c3a4e55506e4374aec9e` 集成；最终 145 项验证通过。
+- Historical completion only: ADR-0002 and
+  `.scratch/unified-worktree-execution/PRD.md` supersede the dual-mode execution
+  decision for future implementation.

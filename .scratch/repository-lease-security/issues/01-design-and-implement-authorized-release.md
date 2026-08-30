@@ -1,7 +1,7 @@
 # Design and implement authorized repository-lease release
 
-Status: `needs-triage`
-Lifecycle: `open`
+Status: `wontfix`
+Lifecycle: `completed`
 
 ## What to resolve
 
@@ -19,8 +19,12 @@ feature PRD.
 - [ ] Missing legacy leases remain explicitly unreceipted instead of being normalized as successful releases.
 - [ ] Protocol failure injection and isolated real-platform smoke cover release, replay, late delivery, and unavailable enforcement.
 
-Blocked by: trusted caller-context capability decision.
+Superseded by: `docs/adr/0002-unify-implementation-execution-on-isolated-worktrees.md`
+and `.scratch/unified-worktree-execution/PRD.md`.
 
 ## Comments
 
 - Split from the design-discussion closeout so the completed original feature and the open release-safety work remain distinct facts.
+- Closed without implementation on 2026-08-30 because the accepted replacement
+  architecture deletes the long-lived repository lease and its caller-identity
+  authorization problem. No compatibility or migration path is required.
