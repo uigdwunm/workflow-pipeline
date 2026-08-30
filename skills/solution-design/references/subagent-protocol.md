@@ -49,9 +49,15 @@ not invent missing decisions or create another persistent draft.
 
 ## Launch and model inheritance
 
-Resolve the exact model and reasoning effort running the primary thread. If
-either value is unavailable, emit the fixed anomaly block and stop. Never offer
-an unresolved “inherit current settings” value.
+Read
+`<guided-implementation-skill-root>/references/thread-settings-protocol.md`
+completely. For current-task inheritance, require
+`thread-settings-v2` and use `resolve --current`. Require the returned pair to
+be advertised by the current `spawn_agent` capability. A user-requested
+explicit supported pair uses source `user-requested-override` and never claims
+current-task inheritance. An unavailable current Adapter, settings receipt,
+unsupported pair, or runtime-version mismatch emits the fixed pre-launch
+anomaly block and stops.
 
 To inherit deterministically, call `spawn_agent` with the resolved values as
 explicit `model` and `reasoning_effort` arguments and `fork_turns: "none"`.
@@ -62,10 +68,17 @@ Use task name `solution_designer`. Pass only the fixed bootstrap prompt, the
 requirement source, project/repository facts, planning target, permissions, and
 flow mode. Do not fork conversation history.
 
-The stepwise launch confirmation binds to every displayed value. After exact
-`确认`, require the spawn call to match the block. In continuous mode, display
-the automatic-launch disclosure immediately before the call and perform the
-same exact spawn without pausing.
+The stepwise launch confirmation binds to every displayed value and the
+resolution receipt. After exact `确认`, use `verify --current` with the confirmed
+pair. `status: match` authorizes the exact spawn and its observed revalidation
+receipt. `status: changed` invalidates the block and supplies the settings for a
+fresh complete confirmation. An unavailable verification emits the pre-launch
+anomaly. A user-requested override is revalidated from the unchanged confirmed
+block rather than represented as current-task inheritance.
+
+In continuous mode, use `resolve --current` immediately before the automatic
+launch disclosure and perform the exact spawn in the same turn. Never omit
+either routing argument.
 
 Save the returned agent ID as the only trusted child. The child may include its
 identity in status messages for diagnosis, but text identity never replaces the

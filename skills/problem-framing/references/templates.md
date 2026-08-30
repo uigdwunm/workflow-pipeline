@@ -55,9 +55,9 @@ any other suffix is a modification or non-confirming reply.
 目标项目：projectId=<id>; path=<absolute path>; repository=<identity>
 执行环境：`local`（不创建 worktree，不 fork 原任务）
 目标模型：<exact model id>
-模型来源：<original-task-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
+模型来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 推理强度：<exact reasoning effort>
-强度来源：<original-task-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
+强度来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 新任务标题：<title>
 初始提示词：
 ---
@@ -153,9 +153,9 @@ dedicated_task:
   host_id: null
   title: <confirmed title>
 model: <model id>
-model_source: <original-task-latest-turn-context | user-requested-override>
+model_source: <codex-rollout-latest-turn-context | user-requested-override>
 reasoning_effort: <effort>
-reasoning_effort_source: <original-task-latest-turn-context | user-requested-override>
+reasoning_effort_source: <codex-rollout-latest-turn-context | user-requested-override>
 settings_source_thread_id: <original task id>
 settings_source_turn_id: <turn id | null>
 context_disclosure:

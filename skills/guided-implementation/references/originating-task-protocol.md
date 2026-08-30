@@ -226,6 +226,14 @@ conversation or implicit inheritance.
 
 Do not copy the envelope or protocol into the bootstrap.
 
+Create the dedicated Codex project task exactly once with the saved project,
+environment `local`, model `gpt-5.6-terra`, reasoning effort `high`, and the
+bootstrap above. Pass those values explicitly as `model` and `thinking`; never
+omit them, inherit the originating task's settings, or substitute another
+pair. Record the returned task and host identities as the only trusted
+dedicated task. If the current `create_thread` capability does not advertise
+that exact pair, use the launch-blocked recovery without a creation attempt.
+
 ## Exchange supervision controls
 
 Before sending or accepting a supervision message, read the complete exchange

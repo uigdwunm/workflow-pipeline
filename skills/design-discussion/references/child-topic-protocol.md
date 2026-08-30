@@ -13,7 +13,14 @@ Do not treat a suggestion to split as authorization to create a task.
 
 Complete every pending `DW-*`, publish the latest verified `CP-*` with purpose
 `split` for a child or `handoff` for a continuation, and include that checkpoint
-in `authoritative_references`. Then call `prepare-handoff` exactly once:
+in `authoritative_references`. Read
+`<guided-implementation-skill-root>/references/thread-settings-protocol.md`
+completely and use `thread-settings-v2` `resolve --current` to inherit the
+current task's model and reasoning effort. A user-requested supported pair may
+replace inheritance with source `user-requested-override`. Resolve settings
+before calling `prepare-handoff` so an unavailable current Adapter or
+`workflow_runtime_version_mismatch` creates no external task attempt. Then call
+`prepare-handoff` exactly once:
 
 - `handoff_kind: child` creates the child topic and parent relation before any
   external effect;
@@ -25,12 +32,19 @@ in `authoritative_references`. Then call `prepare-handoff` exactly once:
   bootstrap authority. Never reconstruct or edit them in prose.
 
 Show a fixed creation confirmation naming the saved Codex project, child versus
-continuation, goal, scope, checkpoint, exact task count (`1`), and the absence
-of remote writes. Only an exact `确认` in reply authorizes `create_thread`.
+continuation, goal, scope, checkpoint, exact task count (`1`), model, reasoning
+effort, settings source, and the absence of remote writes. Only an exact `确认`
+in reply authorizes `create_thread`.
 
 ## Create and bind one Codex task
 
-After confirmation, call `create_thread` once in the same saved project. The
+After confirmation, use `verify --current` with the confirmed pair when the
+settings were inherited. `status: changed` invalidates the block and supplies
+the receipt for a fresh complete confirmation; unavailable verification stops
+at the prepared handoff without task creation. A confirmed user-requested
+override is instead revalidated from the unchanged block.
+Then call `create_thread` once in the same saved project with the exact confirmed
+`model` and `thinking` values. The
 bootstrap prompt contains only the target role, exact project/tree/topic,
 `handoff_id`, `attempt_id`, payload and reference digests, protocol path, and
 these rules: locate identity, wait for the active binding if publication races

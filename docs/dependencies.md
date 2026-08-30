@@ -14,6 +14,14 @@ The optional discussion stage and the four established stages invoke other Skill
 
 Install all five Skills together so optional discovery, cross-stage transitions and shared lease verification remain available.
 
+`guided-implementation` also owns the shared `thread-settings-v2` runtime and
+protocol used by `design-discussion`, `problem-framing`, `solution-design` and
+`guided-implementation`. Install or update all five Skills from the same
+workflow-pipeline version. A missing resolver or a protocol version other than
+`thread-settings-v2` is a fail-closed `workflow_runtime_version_mismatch`; a
+caller must stop at its stable recovery point instead of guessing settings or
+using a different installed copy.
+
 ## Matt Pocock runtime dependencies
 
 | Skill | Used by | Purpose |
@@ -47,3 +55,7 @@ Do not install duplicate copies of the same dependency under different Skill pro
 `./scripts/validate.sh` discovers every `skills/**/scripts/test_*.py` test and mechanically verifies registered internal/external Skill names, reachable progressive references and the absence of macOS, Linux and Windows user-specific absolute paths under `skills/`. Optional 0讨论 routes and recovery behavior are exercised without granting any new external-write authority.
 
 `./scripts/check-dependencies.sh` is a bounded filesystem approximation, not a registry query. It treats this checkout's five internal Skill directories as source under validation, then searches `CODEX_HOME/skills` when configured plus the conventional `~/.codex/skills`, `~/.agents/skills` and `~/.cc-switch/skills` roots. Canonically identical roots are deduplicated. More than one external file for the same required registered name is an error; one installed copy of an internal Skill may coexist with this source checkout. The script cannot see plugin/provider registrations that are not represented in those roots and cannot verify version metadata. Inspect the active Codex registry and compare the documented compatibility baseline when installation identity or version matters.
+
+The thread-settings protocol performs its own exact runtime-version check at
+the point of use. The filesystem approximation does not replace that check and
+does not authorize mixing internal Skills from different releases.

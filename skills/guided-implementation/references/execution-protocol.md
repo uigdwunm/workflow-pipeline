@@ -293,9 +293,12 @@ Tickets, create one Work Item from the complete accepted authority.
 ## Classify Work Items and route internal subagents
 
 The dedicated execution task is created with `gpt-5.6-terra` and reasoning
-effort `high`. Require that exact task model and effort before dispatching an
-internal subagent. If either value is different or cannot be established, send
-`PARENT_BLOCKED` without dispatching.
+effort `high`. Before dispatching each top-level implementation worker, read
+`<guided-implementation-skill-root>/references/thread-settings-protocol.md`
+completely and require `thread-settings-v2` `verify --current` to return
+`status: match` for that exact pair. A changed pair, unavailable current-task
+Adapter, or `workflow_runtime_version_mismatch` sends `PARENT_BLOCKED` without
+dispatching.
 
 Before dispatch, classify the current Work Item from its complete Requirement
 Source, accepted design, repository evidence, testing seams, and expected

@@ -85,6 +85,8 @@ action:
   [references/originating-task-protocol.md](references/originating-task-protocol.md);
 - before any documentation write or Git-stability barrier, read
   [references/document-lease-protocol.md](references/document-lease-protocol.md);
+- before inheriting or verifying any task's model and reasoning effort, read
+  [references/thread-settings-protocol.md](references/thread-settings-protocol.md);
 - for either execution mode, carrier bootstrap, exact workspace binding,
   supervision controls and merge mechanics, read
   [references/execution-protocol.md](references/execution-protocol.md); and

@@ -55,47 +55,32 @@ current task to a unique target-specific title, perform only that rename after
 `确认`, and retry identity resolution. Never guess a task ID or search again by
 title after the original identity has been frozen.
 
-After freezing the exact original `threadId`, run the bundled read-only helper:
-
-```text
-python3 <problem-framing-skill-root>/scripts/read_thread_settings.py --thread-id <exact-thread-id>
-```
-
-The helper must succeed unchanged. It validates the canonical lowercase UUID,
-opens every path component without following symbolic links, searches only the
-canonical dated tree below `${CODEX_SESSIONS_ROOT:-${CODEX_HOME:-$HOME/.codex}/sessions}`, requires one
-regular `rollout-<timestamp>-<threadId>.jsonl`, binds its checked and opened
-inode, and requires its `session_meta.id` to equal the frozen `threadId`. It
-never searches archived tasks, titles, summaries, working directories,
-projects, or user-message contents.
-
-The helper parses that single bound file read-only and returns only the latest
-valid persisted `turn_context` values for `model`, `effort`, and `turn_id` plus
-the frozen `thread_id` and fixed source label. Never replace the helper with a
-broader search, and never emit, copy, summarize, or store any message payload or
-other rollout field.
+After freezing the exact original `threadId`, read
+`<guided-implementation-skill-root>/references/thread-settings-protocol.md`
+completely and use its `thread-settings-v2` `resolve --thread-id` Interface.
+The returned receipt is the only settings evidence; never replace it with a
+broader search or the frozen task metadata above.
 
 Then:
 
-1. Require non-empty exact values and a model/effort pair supported by the
-   current `create_thread` capability. Record the source as
-   `original-task-latest-turn-context` with the frozen original `threadId` and
-   the selected source `turn_id`.
-2. Immediately before acting on the later creation `确认`, run the same helper
-   again against the same frozen task identity. If the latest model or effort
-   differs from the confirmed block, invalidate the block and show a fresh
-   complete confirmation. A newer source `turn_id` with the same settings is
-   expected because the confirmation itself starts a new turn; retain the
-   confirmed source `turn_id` and record the newer revalidation `turn_id` only
-   in the trusted post-creation checkpoint. Never silently follow a model picker
-   change made after the block was shown.
+1. Require a model/reasoning-effort pair supported by the current
+   `create_thread` capability. Record the receipt source, frozen original
+   `thread_id`, and source `turn_id`.
+2. For inherited settings, immediately before acting on the later creation
+   `确认`, use the shared Interface's `verify --thread-id` operation with the
+   confirmed pair. A newer `turn_id` with `status: match` is expected because
+   confirmation starts a new turn; retain the confirmed source `turn_id` and
+   record the observed revalidation `turn_id` only in the trusted post-creation
+   checkpoint. `status: changed` invalidates the block and supplies the receipt
+   for a fresh complete confirmation. A user-requested override is instead
+   revalidated from the unchanged confirmation block and never represented as
+   inherited settings.
 
-If the unique rollout or either setting cannot be resolved safely, disclose the
-exact failure and ask the user for the exact value. Do not inspect broader
-session history, infer the value from defaults, or present “inherit current
-settings” as a resolved value. A user-requested model or effort override must be
-shown with source `user-requested-override`. Require a supported model/effort
-pair in every case.
+If the shared Interface reports unavailable identity, settings, or runtime
+version, disclose the exact failure and ask the user for the exact value or a
+consistent five-Skill installation as applicable. A user-requested model or
+effort override uses source `user-requested-override`. Require a supported pair
+in every case.
 
 Store the frozen original identity, settings, and setting-source evidence in
 the draft metadata. Compute the draft SHA-256 and show the exact creation

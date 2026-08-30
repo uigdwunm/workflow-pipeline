@@ -16,9 +16,9 @@ confirmation.
 规划载体：<exact target>
 方案子 agent：solution_designer
 目标模型：<primary thread exact model>
-模型来源：主线程
+模型来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 推理强度：<primary thread exact reasoning effort>
-强度来源：主线程
+强度来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 上下文方式：fork_turns=none；不继承历史；仅读取需求来源和明确交接材料
 执行环境：当前项目 local checkout
 Worktree：不创建
@@ -45,9 +45,9 @@ This must be the final user-visible commentary immediately before
 规划载体：<exact target>
 方案子 agent：solution_designer
 目标模型：<primary thread exact model>
-模型来源：主线程
+模型来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 推理强度：<primary thread exact reasoning effort>
-强度来源：主线程
+强度来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 上下文方式：fork_turns=none；不继承历史；仅读取需求来源和明确交接材料
 执行环境：当前项目 local checkout
 Worktree：不创建
@@ -74,7 +74,7 @@ $solution-design
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
 规划载体：<exact target>
-任务设置：model=<exact model>; reasoning_effort=<exact effort>; fork_turns=none; worktree=none
+任务设置：model=<exact model>; reasoning_effort=<exact effort>; source=<resolution receipt source and turn id | user-requested-override>; fork_turns=none; worktree=none
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
 允许动作：完整执行 $to-spec、必要 ADR、$ask-matt、$to-tickets、精确目标原生发布；本地文档写入使用 document lease，repository lease 可用后仅提交阶段自有文档。
 禁止动作：修改实现代码、创建 PR、部署、发布版本、改变规划目标、进入 3实现、修改 1拷问草案或处理无关任务。
@@ -262,7 +262,7 @@ Matt 原生发布：Spec=<child-reported path or URL>; Tickets=<child-reported p
 目标仓库：<repository>
 规划载体：<target>
 待解析设置：model=<value or unavailable>; reasoning_effort=<value or unavailable>
-实际情况：<missing, ambiguous, unavailable, or mismatched fact>
+实际情况：<missing, ambiguous, unavailable, changed, unsupported, or workflow_runtime_version_mismatch fact>
 影响：无法生成完整启动披露或精确启动 solution_designer
 建议：<recommended correction or recovery>
 确认事项：按上述建议修正启动信息
