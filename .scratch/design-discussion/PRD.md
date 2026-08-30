@@ -3,11 +3,11 @@
 Status: `ready-for-agent`
 Lifecycle: `completed`
 
-Architecture notice: ADR-0002 and
-`.scratch/unified-worktree-execution/PRD.md` supersede this completed feature's
-Stage-3/Stage-4 dual execution modes, source-refresh path, long repository lease
-and legacy compatibility decisions. The completion record below remains
-historical evidence, not the current implementation target.
+Architecture notice: `docs/adr/0002-unify-implementation-execution-on-isolated-worktrees.md`
+supersedes this completed feature's Stage-3/Stage-4 dual execution modes,
+source-refresh path, long repository lease and legacy compatibility decisions.
+The completion record below remains historical evidence, not the current
+implementation target.
 
 ## Problem Statement
 
@@ -233,9 +233,10 @@ Git 实现支持 `exclusive-checkout-v2` 与用户逐次明确授权的 `isolate
 
 ## Further Notes
 
-- 2026-08-30 架构替代：ADR-0002 接受统一独立 worktree、不可变活动来源、
-  非过期 CAS execution claim、阶段3短期目标分支发布、阶段4文档收敛与幂等清理；
-  `.scratch/unified-worktree-execution/` 承接后续实现，原双模式完成记录不作迁移。
+- 2026-08-30 架构替代：ADR-0002 接受所有实现使用独立 worktree，并以 Git
+  已有事实和三个公开命令管理创建、验证与完成；只有目标分支发布使用短期锁，
+  不保留 execution claim、lease、queue、handoff 状态机或旧协议兼容入口。
+  原双模式完成记录仅作为历史证据保留，不作迁移。
 - 2026-08-21 后续加固：子话题/continuation 已接到真实 Codex task seam；fallback 验收改为可机械观察的 legacy contract invariants；discussion 使用 66 个 canonical operation 加 2 个兼容 alias 的单一 registry 和懒解析 `RequestContext`；supervision 使用 40 个 `CommandSpec` 的单一 registry 与参数化 holder policy；旧 Skill 改为 action-specific 渐进加载。`bash scripts/validate.sh` 最终 153 项通过，仓库验证为 5 个 Skill、17 个 reference、5 组自动发现测试且无问题。
 - 权威需求来源：`/Users/zhaolaiyuan/Documents/Codex/2026-08-06/wo/outputs/design-discussion-overall-design.md`，SHA-256 `9578fa64ba31461b4ada1d3245b5271bf732185286d0cfa21a56ba775fd86d1f`。
 - 迁移承接：`/Users/zhaolaiyuan/Documents/Codex/2026-08-06/wo/outputs/design-discussion-workflow-pipeline-continuation.md`，SHA-256 `e88a1ee1736ecce271d52bf719ef9323579c2eab60e79acda15ed640c32c051c`。

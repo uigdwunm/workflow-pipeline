@@ -3,6 +3,10 @@
 Status: `wontfix`
 Lifecycle: `completed`
 
+Historical record: this ticket was closed without implementation after the
+long-lived repository lease was removed. The current implementation architecture
+is defined by `docs/adr/0002-unify-implementation-execution-on-isolated-worktrees.md`.
+
 ## What to resolve
 
 Design the trusted caller seam, repository lease v3 state, one-time release
@@ -19,8 +23,7 @@ feature PRD.
 - [ ] Missing legacy leases remain explicitly unreceipted instead of being normalized as successful releases.
 - [ ] Protocol failure injection and isolated real-platform smoke cover release, replay, late delivery, and unavailable enforcement.
 
-Superseded by: `docs/adr/0002-unify-implementation-execution-on-isolated-worktrees.md`
-and `.scratch/unified-worktree-execution/PRD.md`.
+Superseded by: `docs/adr/0002-unify-implementation-execution-on-isolated-worktrees.md`.
 
 ## Comments
 

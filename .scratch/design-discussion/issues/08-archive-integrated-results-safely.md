@@ -3,6 +3,10 @@
 Status: `ready-for-agent`
 Lifecycle: `completed`
 
+Historical record: this ticket records the closure behavior implemented for the
+former dual-mode architecture. The current implementation architecture is
+defined by `docs/adr/0002-unify-implementation-execution-on-isolated-worktrees.md`.
+
 ## What to build
 
 Make `4归档` close out either implementation mode from the source topic: converge documentation against the latest base, preserve recoverable evidence, clean resources non-destructively and close the topic only when all coordination work is finished.
@@ -22,6 +26,6 @@ Blocked by: 07 — Run implementation in two controlled modes.
 ## Comments
 
 - 已在候选 `07f80210be6dd2b7d3c7a35662ef5d5085851e81` 中验收，并由合并提交 `3624df56bca2d3884074c3a4e55506e4374aec9e` 集成；最终 145 项验证通过。
-- Historical completion only: ADR-0002 and
-  `.scratch/unified-worktree-execution/PRD.md` replace mode-specific closure with
-  one worktree-only, idempotent archive protocol.
+- Historical completion only: ADR-0002 removes mode-specific closure and makes
+  Stage 4 use the same three-command worktree flow for documentation changes;
+  Stage 4 no longer cleans Stage-3 resources.

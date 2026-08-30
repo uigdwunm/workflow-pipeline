@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 from typing import Any
 
 from supervision_core import ArgumentSpec, CommandRegistry, CommandSpec
@@ -20,6 +21,7 @@ from supervision_core import ArgumentSpec, CommandRegistry, CommandSpec
 MAX_INPUT_BYTES = 1_048_576
 OID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 PUBLICATION_LOCK_FILENAME = "cc-switch-worktree-publication.lock"
+PUBLICATION_LOCK_TIMEOUT_SECONDS = 5.0
 
 
 class ProtocolError(ValueError):
@@ -243,6 +245,24 @@ def _is_ancestor(repository: Path, ancestor: str, descendant: str) -> bool:
     return completed.returncode == 0
 
 
+def _flock_with_timeout(
+    stream: Any,
+    timeout_seconds: float = PUBLICATION_LOCK_TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError as error:
+            if time.monotonic() >= deadline:
+                raise ProtocolError(
+                    "publication_busy",
+                    "target publication lock did not become available within five seconds",
+                ) from error
+            time.sleep(0.05)
+
+
 def _path_matches(path: str, scopes: list[str]) -> bool:
     return any(path == scope or path.startswith(scope + "/") for scope in scopes)
 
@@ -387,8 +407,6 @@ def start_worktree(input_path: Path) -> dict[str, Any]:
     if not allowed_paths:
         raise ProtocolError("invalid_input", "allowed_paths must not be empty")
     source_paths = _normalize_relative_paths(request["source_paths"], "source_paths")
-    if not source_paths:
-        raise ProtocolError("invalid_input", "source_paths must not be empty")
     binding = {
         "allowed_paths": allowed_paths,
         "base_commit": base_commit,
@@ -510,104 +528,104 @@ def complete_worktree(input_path: Path) -> dict[str, Any]:
     common = Path(binding["git_common_dir"])
     worktree = Path(binding["worktree"])
     lock_path = common / PUBLICATION_LOCK_FILENAME
-    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-    try:
-        with os.fdopen(lock_fd, "r+b", closefd=True) as lock_stream:
-            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
-            if _current_branch(repository) != binding["target_branch"]:
-                raise ProtocolError("wrong_target_branch", "primary checkout changed branches")
-            if _tracked_status(repository):
-                raise ProtocolError(
-                    "checkout_not_clean",
-                    "primary checkout has uncommitted tracked changes",
-                )
-            current_target = _branch_oid(repository, binding["target_branch"])
-            if current_target != expected_target_head:
-                raise ProtocolError(
-                    "target_changed",
-                    "target branch changed before publication",
-                    context={"expected": expected_target_head, "observed": current_target},
-                )
-            if _expect_oid(_git_text(repository, ["rev-parse", "HEAD"]), "target HEAD") != expected_target_head:
-                raise ProtocolError("target_changed", "primary checkout HEAD changed before publication")
-            changed = _validate_completion(binding, candidate, expected_target_head)
-            merged = _run_git(
-                repository,
-                ["merge", "--no-ff", "--no-edit", candidate],
-                check=False,
+    with os.fdopen(
+        os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600),
+        "r+b",
+        closefd=True,
+    ) as lock_stream:
+        _flock_with_timeout(lock_stream)
+        if _current_branch(repository) != binding["target_branch"]:
+            raise ProtocolError("wrong_target_branch", "primary checkout changed branches")
+        if _tracked_status(repository):
+            raise ProtocolError(
+                "checkout_not_clean",
+                "primary checkout has uncommitted tracked changes",
             )
-            if merged.returncode != 0:
-                if (common / "MERGE_HEAD").exists():
-                    _run_git(repository, ["merge", "--abort"], check=False)
-                restored = _git_text(repository, ["rev-parse", "HEAD"])
-                if (
-                    restored != expected_target_head
-                    or (common / "MERGE_HEAD").exists()
-                    or bool(_tracked_status(repository))
-                ):
-                    raise ProtocolError(
-                        "integration_restore_failed",
-                        "failed merge did not restore the primary checkout",
-                        context={"observed_target_head": restored},
-                    )
-                raise ProtocolError(
-                    "integration_failed",
-                    merged.stderr.strip() or merged.stdout.strip() or "git merge failed",
-                    context={"restored_target_head": restored},
-                )
-            merge_commit = _expect_oid(
-                _git_text(repository, ["rev-parse", "HEAD"]), "merge commit"
+        current_target = _branch_oid(repository, binding["target_branch"])
+        if current_target != expected_target_head:
+            raise ProtocolError(
+                "target_changed",
+                "target branch changed before publication",
+                context={"expected": expected_target_head, "observed": current_target},
             )
-            parents = _git_text(
-                repository, ["show", "-s", "--format=%P", merge_commit]
-            ).split()
-            if parents != [expected_target_head, candidate]:
+        if _expect_oid(_git_text(repository, ["rev-parse", "HEAD"]), "target HEAD") != expected_target_head:
+            raise ProtocolError("target_changed", "primary checkout HEAD changed before publication")
+        changed = _validate_completion(binding, candidate, expected_target_head)
+        merged = _run_git(
+            repository,
+            ["merge", "--no-ff", "--no-edit", candidate],
+            check=False,
+        )
+        if merged.returncode != 0:
+            if (common / "MERGE_HEAD").exists():
+                _run_git(repository, ["merge", "--abort"], check=False)
+            restored = _git_text(repository, ["rev-parse", "HEAD"])
+            if (
+                restored != expected_target_head
+                or (common / "MERGE_HEAD").exists()
+                or bool(_tracked_status(repository))
+            ):
                 raise ProtocolError(
-                    "integration_unverified",
-                    "merge commit parents do not match the accepted target and candidate",
-                    context={"merge_commit": merge_commit, "parents": parents},
+                    "integration_restore_failed",
+                    "failed merge did not restore the primary checkout",
+                    context={"observed_target_head": restored},
                 )
-            merge_tree = _expect_oid(
-                _git_text(repository, ["rev-parse", f"{merge_commit}^{{tree}}"]),
-                "merge tree",
+            raise ProtocolError(
+                "integration_failed",
+                merged.stderr.strip() or merged.stdout.strip() or "git merge failed",
+                context={"restored_target_head": restored},
             )
-            candidate_tree = _expect_oid(
-                _git_text(repository, ["rev-parse", f"{candidate}^{{tree}}"]),
-                "candidate tree",
+        merge_commit = _expect_oid(
+            _git_text(repository, ["rev-parse", "HEAD"]), "merge commit"
+        )
+        parents = _git_text(
+            repository, ["show", "-s", "--format=%P", merge_commit]
+        ).split()
+        if parents != [expected_target_head, candidate]:
+            raise ProtocolError(
+                "integration_unverified",
+                "merge commit parents do not match the accepted target and candidate",
+                context={"merge_commit": merge_commit, "parents": parents},
             )
-            if merge_tree != candidate_tree:
-                raise ProtocolError(
-                    "integration_unverified",
-                    "merge tree does not match the accepted candidate",
-                    context={"merge_commit": merge_commit},
-                )
-            removed = _run_git(
-                repository, ["worktree", "remove", str(worktree)], check=False
+        merge_tree = _expect_oid(
+            _git_text(repository, ["rev-parse", f"{merge_commit}^{{tree}}"]),
+            "merge tree",
+        )
+        candidate_tree = _expect_oid(
+            _git_text(repository, ["rev-parse", f"{candidate}^{{tree}}"]),
+            "candidate tree",
+        )
+        if merge_tree != candidate_tree:
+            raise ProtocolError(
+                "integration_unverified",
+                "merge tree does not match the accepted candidate",
+                context={"merge_commit": merge_commit},
             )
-            if removed.returncode != 0:
-                raise ProtocolError(
-                    "cleanup_failed",
-                    removed.stderr.strip() or "integrated worktree could not be removed",
-                    context={"merge_commit": merge_commit, "worktree": str(worktree)},
-                )
-            deleted = _run_git(repository, ["branch", "-d", binding["branch"]], check=False)
-            if deleted.returncode != 0:
-                raise ProtocolError(
-                    "cleanup_failed",
-                    deleted.stderr.strip() or "integrated branch could not be removed",
-                    context={"branch": binding["branch"], "merge_commit": merge_commit},
-                )
-            return {
-                "candidate_commit": candidate,
-                "changed_paths": changed,
-                "merge_commit": merge_commit,
-                "ok": True,
-                "state": "completed",
-                "target_branch": binding["target_branch"],
-            }
-    except Exception:
-        # os.fdopen owns lock_fd after successful construction.
-        raise
+
+    removed = _run_git(
+        repository, ["worktree", "remove", str(worktree)], check=False
+    )
+    if removed.returncode != 0:
+        raise ProtocolError(
+            "cleanup_failed",
+            removed.stderr.strip() or "integrated worktree could not be removed",
+            context={"merge_commit": merge_commit, "worktree": str(worktree)},
+        )
+    deleted = _run_git(repository, ["branch", "-d", binding["branch"]], check=False)
+    if deleted.returncode != 0:
+        raise ProtocolError(
+            "cleanup_failed",
+            deleted.stderr.strip() or "integrated branch could not be removed",
+            context={"branch": binding["branch"], "merge_commit": merge_commit},
+        )
+    return {
+        "candidate_commit": candidate,
+        "changed_paths": changed,
+        "merge_commit": merge_commit,
+        "ok": True,
+        "state": "completed",
+        "target_branch": binding["target_branch"],
+    }
 
 
 def _emit_json(value: Any) -> None:

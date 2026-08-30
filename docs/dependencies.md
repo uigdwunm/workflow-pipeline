@@ -35,7 +35,7 @@ using a different installed copy.
 | `to-tickets` | stage 2 | Produce dependency-aware Tickets when useful |
 | `implement` | stage 3 | Execute the accepted implementation work |
 | `tdd` | stage 3 | Apply a red-green-refactor implementation loop |
-| `code-review` | stages 3 and 4 | Independently review the implementation |
+| `code-review` | stage 3 | Independently review the implementation |
 
 Install them from https://github.com/mattpocock/skills. The baseline used for this release is commit `84fdeffd12f2ee307994d1eb6feb48173b6e0502` (`1.2.3`, MIT).
 
@@ -53,6 +53,9 @@ Do not install duplicate copies of the same dependency under different Skill pro
 ## Validation contract
 
 `./scripts/validate.sh` discovers every `skills/**/scripts/test_*.py` test and mechanically verifies registered internal/external Skill names, reachable progressive references and the absence of macOS, Linux and Windows user-specific absolute paths under `skills/`. Optional 0讨论 routes and recovery behavior are exercised without granting any new external-write authority.
+Regression tests also bind the direct Stage-3 Matt execution chain and the
+Stage-4 representation route to the owning Skill documents so a protocol
+simplification cannot silently leave a declared dependency unused.
 
 `./scripts/check-dependencies.sh` is a bounded filesystem approximation, not a registry query. It treats this checkout's five internal Skill directories as source under validation, then searches `CODEX_HOME/skills` when configured plus the conventional `~/.codex/skills`, `~/.agents/skills` and `~/.cc-switch/skills` roots. Canonically identical roots are deduplicated. More than one external file for the same required registered name is an error; one installed copy of an internal Skill may coexist with this source checkout. The script cannot see plugin/provider registrations that are not represented in those roots and cannot verify version metadata. Inspect the active Codex registry and compare the documented compatibility baseline when installation identity or version matters.
 

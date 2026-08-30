@@ -38,7 +38,8 @@ effective 0/1 checkpoint. Use `prepare-wrapper-phase-run`, not the generic
 Phase Run operation. Route `1->3` only when scope, behavior, failure semantics,
 acceptance conditions and an adequate test seam are all complete. Its source
 activation records phase 2 as `not_applicable` for the exact implementation
-scope and creates no Spec, ADR, Ticket or planning commit. Continuous mode can
+scope and uses the committed topic checkpoint as its minimal requirement source;
+it creates no Spec, ADR, Ticket or stage-2 planning commit. Continuous mode can
 be selected only by the exact response to the successful stage-1 footer; a
 stage-0 route is always stepwise.
 
@@ -197,6 +198,14 @@ is sufficient:
   behavior, constraints, affected area, acceptance conditions, and an adequate
   testing seam are already clear.
 
+Direct implementation skips solution design, not committed authority. Before
+selecting `$guided-implementation`, require one committed minimal requirement source
+containing the target, behavior, scope, failure semantics, acceptance conditions
+and test seam. Use the attached topic document when present; otherwise update or
+create the project's ordinary requirement artifact and commit it through this
+stage's existing repository rules. Do not enter Stage 3 from a documentless
+conversation handoff.
+
 When choosing `$solution-design`, resolve and disclose the exact configured
 planning carrier and target. Explain that entering `2方案` authorizes Matt's
 standard native `$to-spec` and approved `$to-tickets` actions only on that
@@ -211,14 +220,14 @@ short conclusion and this stable footer:
 ```text
 阶段结果：拷问完成
 共同理解：<concise understanding>
-规划提交：<sha | none>
+规划提交：<sha required for 3实现 | sha or none for 2方案>
 工作区状态：实现区与暂存区干净；本阶段文档已提交；其它文档改动未纳入
-规划载体：<exact local convention, GitHub owner/repository, or tracker target | none for direct implementation>
+规划载体：<exact committed requirement source for 3实现 | planning target for 2方案>
 Matt 原生动作：<publish Spec; review and publish Tickets when needed; apply native labels and blocking links | none for direct implementation>
 阶段授权：<entering 2方案 authorizes only those standard actions on that exact target | not applicable>
 下一阶段：`$solution-design`（2方案） | `$guided-implementation`（3实现）
 进入条件：已满足
-交接来源：当前任务中已确认的需求、约束、范围和验收条件
+交接来源：<3实现 uses the committed source above | 2方案 uses the accepted current-task understanding>
 确认事项：进入上述推荐阶段
 确认方式：回复 `确认`
 流程模式：回复 `执行后续全部流程` 进入推荐阶段，并在无需用户决策时自动顺序执行剩余阶段

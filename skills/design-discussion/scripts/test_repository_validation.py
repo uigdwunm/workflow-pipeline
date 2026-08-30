@@ -19,6 +19,118 @@ import validate_repository as REPOSITORY_VALIDATION
 
 
 class RepositoryValidationTests(unittest.TestCase):
+    def test_stage_three_keeps_native_matt_execution_and_ticket_order(self) -> None:
+        guided = (
+            REPOSITORY / "skills/guided-implementation/SKILL.md"
+        ).read_text(encoding="utf-8")
+        execution = (
+            REPOSITORY
+            / "skills/guided-implementation/references/execution-protocol.md"
+        ).read_text(encoding="utf-8")
+
+        for marker in ("$implement", "$tdd", "$code-review"):
+            self.assertIn(marker, guided)
+            self.assertIn(marker, execution)
+        self.assertIn("`Blocked by`", execution)
+        self.assertIn("topologically", execution.casefold())
+
+    def test_stage_three_uses_executable_thread_settings_verification(self) -> None:
+        execution = (
+            REPOSITORY
+            / "skills/guided-implementation/references/execution-protocol.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("thread_settings.py verify", execution)
+        self.assertIn("--current", execution)
+        self.assertIn("--model gpt-5.6-terra", execution)
+        self.assertIn("--reasoning-effort high", execution)
+
+    def test_stage_three_preserves_flow_and_emits_complete_closure_handoff(self) -> None:
+        guided = (
+            REPOSITORY / "skills/guided-implementation/SKILL.md"
+        ).read_text(encoding="utf-8")
+
+        for marker in (
+            "流程模式：<逐阶段确认 | 连续执行后续全部流程>",
+            "目标仓库：<absolute repository path>",
+            "目标分支：<target branch>",
+            "验证：<focused and full checks>",
+            "审查：<Standards and Spec review result>",
+            "待归档文档：<exact paths and required updates | none>",
+            "连续执行后续全部流程",
+        ):
+            self.assertIn(marker, guided)
+
+    def test_closure_verifies_worktree_and_routes_unclear_representation(self) -> None:
+        closure = (
+            REPOSITORY / "skills/change-closure/SKILL.md"
+        ).read_text(encoding="utf-8")
+        actions = (
+            REPOSITORY / "skills/change-closure/references/closure-actions.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("`verify-worktree`", closure)
+        self.assertIn("`verify-worktree`", actions)
+        self.assertIn("$ask-matt", closure)
+        self.assertIn("representation", closure)
+
+    def test_direct_implementation_has_committed_source_and_phase_run_seam(self) -> None:
+        framing = (
+            REPOSITORY / "skills/problem-framing/SKILL.md"
+        ).read_text(encoding="utf-8")
+        guided = (
+            REPOSITORY / "skills/guided-implementation/SKILL.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("committed minimal requirement source", framing)
+        self.assertIn("lifecycle-integration.md", guided)
+        for marker in (
+            "`claim-phase-carrier`",
+            "`phase-ready`",
+            "`claim-phase-completion`",
+            "`complete-phase-run`",
+            "`finalize-phase-run`",
+        ):
+            self.assertIn(marker, guided)
+
+    def test_stage_boundaries_and_dependency_contract_match_execution(self) -> None:
+        guided = (
+            REPOSITORY / "skills/guided-implementation/SKILL.md"
+        ).read_text(encoding="utf-8")
+        dependencies = (REPOSITORY / "docs/dependencies.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("Implementation commits contain no documentation", guided)
+        self.assertIn("never asks the user directly", guided)
+        self.assertIn("separate explicit authority", guided)
+        self.assertIn(
+            "| `code-review` | stage 3 | Independently review the implementation |",
+            dependencies,
+        )
+
+    def test_retained_worktree_recovery_has_explicit_stage_entry_tokens(self) -> None:
+        execution = (
+            REPOSITORY
+            / "skills/guided-implementation/references/worktree-execution.md"
+        ).read_text(encoding="utf-8")
+        guided = (
+            REPOSITORY / "skills/guided-implementation/SKILL.md"
+        ).read_text(encoding="utf-8")
+        closure = (
+            REPOSITORY / "skills/change-closure/SKILL.md"
+        ).read_text(encoding="utf-8")
+
+        for marker in (
+            "执行结果：未完成",
+            "保留工作区：<canonical worktree path>",
+            "no merge was published",
+            "It never creates a replacement worktree.",
+        ):
+            self.assertIn(marker, execution)
+        self.assertIn("$guided-implementation 重试", guided)
+        self.assertIn("$change-closure 重试", closure)
+
     def test_child_topic_reference_reaches_the_real_codex_task_seam_in_order(self) -> None:
         reference = (
             REPOSITORY

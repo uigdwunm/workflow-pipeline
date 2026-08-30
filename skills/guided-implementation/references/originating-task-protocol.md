@@ -11,12 +11,17 @@ implementation paths. Choose a new branch and canonical worktree path, call
 `start-worktree`, and launch one task in that worktree with the returned
 binding. Launch the implementation task with the fixed pair
 `model: gpt-5.6-terra` and `thinking: high`; pass `model` and `thinking`
-explicitly after verifying the current runtime supports that pair.
+explicitly after verifying the current runtime supports that pair. Include the
+complete planning sources, dependency-ordered Tickets, testing basis, flow mode,
+documentation boundary and remote-authority boundary in the launch prompt.
 
 ## Accept
 
 Require a clean committed candidate plus focused/full checks and both review
 axes. Independently inspect the candidate diff against the expected target.
+Return every actionable test or review finding to the same task; the
+originating task does not edit the implementation or create a replacement for
+ordinary remediation. Route only a material unresolved decision to the user.
 If the target advanced without changing a source path, have the same task merge
 that target in its worktree and repeat checks and review.
 
@@ -29,4 +34,7 @@ command reports `cleanup_failed`, inspect its merge commit and remaining
 resource; do not merge the candidate again.
 
 Pass the verified merge commit to Stage 4. No execution state, claim, lease,
-proposal receipt, or closure checkpoint is carried forward.
+proposal receipt, or closure checkpoint is carried forward. Pass ordinary Git
+facts, verification/review evidence, exact closure-document paths and flow mode
+in the visible Stage-4 handoff. Local completion grants no remote-write
+authority.

@@ -287,7 +287,10 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
             self.assertIn("gpt-5.6-terra", protocol)
             self.assertIn("high", protocol)
         self.assertIn("`model` and `thinking`", launch)
-        self.assertIn("verify --current", execution)
+        self.assertIn("thread_settings.py verify", execution)
+        self.assertIn("--current", execution)
+        self.assertIn("--model gpt-5.6-terra", execution)
+        self.assertIn("--reasoning-effort high", execution)
 
     def test_dependency_contract_requires_one_workflow_version(self):
         contract = self.read("docs/dependencies.md")

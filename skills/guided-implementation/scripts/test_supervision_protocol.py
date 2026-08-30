@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 import supervision_protocol as PROTOCOL
@@ -60,10 +61,14 @@ class WorktreeProtocolTests(unittest.TestCase):
         request = self.write_input(
             f"start-{name}.json",
             {
-                "allowed_paths": allowed_paths or ["a.txt", "b.txt"],
+                "allowed_paths": (
+                    ["a.txt", "b.txt"]
+                    if allowed_paths is None
+                    else allowed_paths
+                ),
                 "branch": f"codex/{name}",
                 "repository": str(self.repository),
-                "source_paths": source_paths or ["spec.md"],
+                "source_paths": ["spec.md"] if source_paths is None else source_paths,
                 "target_branch": "main",
                 "worktree": str(self.root / name),
             },
@@ -104,6 +109,25 @@ class WorktreeProtocolTests(unittest.TestCase):
             set(PROTOCOL._build_parser()._subparsers._group_actions[0].choices),
         )
 
+    def test_publication_lock_timeout_reports_busy(self) -> None:
+        with tempfile.TemporaryFile() as lock_stream:
+            with (
+                mock.patch.object(
+                    PROTOCOL.fcntl,
+                    "flock",
+                    side_effect=BlockingIOError,
+                ),
+                mock.patch.object(
+                    PROTOCOL.time,
+                    "monotonic",
+                    side_effect=[10.0, 15.0],
+                ),
+            ):
+                with self.assertRaises(PROTOCOL.ProtocolError) as raised:
+                    PROTOCOL._flock_with_timeout(lock_stream)
+
+        self.assertEqual(raised.exception.code, "publication_busy")
+
     def test_start_creates_one_worktree_from_the_committed_target(self) -> None:
         (self.repository / "untracked-notes.md").write_text(
             "not part of the run\n", encoding="utf-8"
@@ -128,23 +152,36 @@ class WorktreeProtocolTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "checkout_not_clean")
         self.assertFalse((self.root / "dirty").exists())
 
-    def test_start_requires_at_least_one_committed_source_path(self) -> None:
-        request = self.write_input(
-            "start-no-source.json",
-            {
-                "allowed_paths": ["a.txt"],
-                "branch": "codex/no-source",
-                "repository": str(self.repository),
-                "source_paths": [],
-                "target_branch": "main",
-                "worktree": str(self.root / "no-source"),
-            },
+    def test_empty_source_paths_support_a_documentation_worktree(self) -> None:
+        binding = self.start(
+            "closure-docs",
+            allowed_paths=["spec.md"],
+            source_paths=[],
+        )
+        worktree = Path(str(binding["worktree"]))
+        candidate = self.commit(
+            worktree,
+            "spec.md",
+            "requirement archived\n",
+            "archive requirement",
         )
 
-        with self.assertRaises(PROTOCOL.ProtocolError) as raised:
-            PROTOCOL.start_worktree(request)
+        result = PROTOCOL.complete_worktree(
+            self.complete_input(
+                "closure-docs",
+                binding,
+                candidate,
+                str(binding["base_commit"]),
+            )
+        )
 
-        self.assertEqual(raised.exception.code, "invalid_input")
+        self.assertEqual(binding["source_paths"], [])
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(
+            (self.repository / "spec.md").read_text(encoding="utf-8"),
+            "requirement archived\n",
+        )
+        self.assertFalse(worktree.exists())
 
     def test_verify_uses_git_as_the_only_worktree_authority(self) -> None:
         binding = self.start("verify")
@@ -190,6 +227,51 @@ class WorktreeProtocolTests(unittest.TestCase):
             self.git("rev-parse", f"{result['merge_commit']}^{{tree}}"),
             self.git("rev-parse", f"{candidate}^{{tree}}"),
         )
+
+    def test_complete_releases_publication_lock_before_cleanup(self) -> None:
+        binding = self.start("lock-scope", allowed_paths=["a.txt"])
+        worktree = Path(str(binding["worktree"]))
+        candidate = self.commit(worktree, "a.txt", "a1\n", "change a")
+        complete_input = self.complete_input(
+            "lock-scope", binding, candidate, str(binding["base_commit"])
+        )
+        original_run_git = PROTOCOL._run_git
+        cleanup_lock_probes: list[subprocess.CompletedProcess[str]] = []
+
+        def observe_cleanup(
+            repository: Path,
+            arguments: list[str],
+            *,
+            check: bool = True,
+        ) -> subprocess.CompletedProcess[str]:
+            if arguments[:2] == ["worktree", "remove"]:
+                lock_path = repository / ".git" / PROTOCOL.PUBLICATION_LOCK_FILENAME
+                cleanup_lock_probes.append(
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import fcntl, os, sys; "
+                                "fd = os.open(sys.argv[1], os.O_RDWR); "
+                                "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); "
+                                "os.close(fd)"
+                            ),
+                            str(lock_path),
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                )
+            return original_run_git(repository, arguments, check=check)
+
+        with mock.patch.object(PROTOCOL, "_run_git", side_effect=observe_cleanup):
+            result = PROTOCOL.complete_worktree(complete_input)
+
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(len(cleanup_lock_probes), 1)
+        self.assertEqual(cleanup_lock_probes[0].returncode, 0, cleanup_lock_probes[0].stderr)
 
     def test_complete_rejects_changes_outside_the_declared_paths(self) -> None:
         binding = self.start("scope", allowed_paths=["a.txt"])

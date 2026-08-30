@@ -5,13 +5,15 @@ Lifecycle: `completed`
 
 ## Resolution
 
-Superseded by ADR-0002 and
-`.scratch/unified-worktree-execution/PRD.md`. The replacement architecture
-removes `exclusive-checkout-v2` and the long-lived repository lease, uses a
-durable CAS worktree execution claim, and does not treat caller identity as a
-security boundary. Trusted caller context, one-time release authorization,
-repository-lease v3, legacy compatibility and a managed identity Hook will not
-be implemented.
+Superseded by
+`docs/adr/0002-unify-implementation-execution-on-isolated-worktrees.md`. The
+replacement architecture removes `exclusive-checkout-v2` and the long-lived
+repository lease. It uses Git's repository, commit, branch and worktree facts
+through three public operations, with a short-lived internal lock only while
+publishing to the target branch. It has no durable execution claim, lease,
+queue, handoff schema, lifecycle state machine or compatibility dispatcher.
+Trusted caller context, one-time release authorization, repository-lease v3,
+legacy compatibility and a managed identity Hook will not be implemented.
 
 ## Problem
 

@@ -3,11 +3,26 @@
 The dedicated task accepts only the binding returned by `start-worktree` and
 must run `verify-worktree` against its actual working directory before editing.
 
-Before editing, use `thread-settings-v2` `verify --current` to confirm this task
-is running as `gpt-5.6-terra` with reasoning effort `high`. Then read the
-complete planning sources and Tickets and work only in the verified worktree.
-Commit all task-owned code, tests, and implementation documentation. Planning
-sources are read-only for this run.
+Before editing, run the executable `thread-settings-v2` verification:
+
+```text
+python3 <guided-implementation-skill-root>/scripts/thread_settings.py verify \
+  --current \
+  --model gpt-5.6-terra \
+  --reasoning-effort high
+```
+
+Require exit `0` and `status: match`. Then read every planning source and Ticket
+completely. Topologically sort Ticket `Blocked by` edges and preserve source
+document order among simultaneously ready Tickets. A missing dependency or
+cycle stops for correction.
+
+Work only in the verified worktree and invoke the complete native `$implement`
+workflow for the accepted work, including `$tdd`, typechecking, focused tests,
+the final full suite and `$code-review`. Keep planning sources read-only.
+Implementation commits contain only code, tests and required implementation
+artifacts; report documentation paths and intended updates to the originating
+task for Stage 4 instead of editing or committing them here.
 
 Before reporting a candidate:
 
@@ -16,6 +31,11 @@ Before reporting a candidate:
 3. report the exact HEAD and changed paths;
 4. complete Standards and Spec review; and
 5. disclose findings and remaining risks.
+
+Return review or test remediation to the same implementation task and worktree.
+The dedicated task reports material decisions to the originating task and never
+asks the user directly. It performs no push, pull request, deployment, release,
+tracker write or other remote mutation without separate explicit authority.
 
 If the originating task reports a newer unrelated target HEAD, merge that
 target in this worktree, resolve conflicts here, rerun affected checks and

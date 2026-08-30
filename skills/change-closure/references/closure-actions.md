@@ -5,8 +5,8 @@
 3. Decide exact document bytes and paths; stop on a new requirement or semantic
    conflict.
 4. When bytes change, call `start-worktree` for a new closure branch/worktree,
-   edit and commit only those paths, then call `complete-worktree` with the
-   current target HEAD.
+   call `verify-worktree` against that exact working directory, edit and commit
+   only those paths, then call `complete-worktree` with the current target HEAD.
 5. When bytes do not change, create no worktree and no commit.
 6. Verify final target and cleanup, then report local and remote outcomes.
 
