@@ -223,7 +223,7 @@ Git 实现支持 `exclusive-checkout-v2` 与用户逐次明确授权的 `isolate
 - 实现结果：九项 Tickets 均由3实现逐项验收，候选提交为 `07f80210be6dd2b7d3c7a35662ef5d5085851e81`，并通过合并提交 `3624df56bca2d3884074c3a4e55506e4374aec9e` 集成到 `main`。
 - 最终决策与偏差：实现保持可选0讨论、无安全上下文时1—4兼容、单问题讨论、可递归子话题、共享文档锁、双实现模式和逐次 worktree 授权等既定边界；没有需要回写 Spec 的实质偏差。
 - 验证：主任务在合并后独立运行 `bash scripts/validate.sh`，145 项测试通过；仓库验证报告 5 个 Skill、15 个渐进引用、5 组测试且无问题。
-- 剩余风险：未发现阻塞性风险；本次未请求也未执行 push、PR、部署或其它远程写入。
+- 剩余风险：九项原始 Tickets 已闭环；repository lease 调用者授权与终态冻结作为独立安全工作记录在 `.scratch/repository-lease-security/`，完成前不得把整个项目表述为发布安全。此次未执行 push、PR、部署或其它远程写入。
 
 ## Further Notes
 
