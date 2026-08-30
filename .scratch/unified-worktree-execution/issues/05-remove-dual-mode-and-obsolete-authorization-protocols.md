@@ -1,6 +1,7 @@
 # Remove dual-mode and obsolete repository-lease authorization protocols
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## What to build
 
@@ -10,27 +11,27 @@ surfaces instead of leaving dead dispatch branches.
 
 ## Acceptance criteria
 
-- [ ] `exclusive-checkout-v2` and ordinary-checkout implementation code are
+- [x] `exclusive-checkout-v2` and ordinary-checkout implementation code are
       removed from Skills, references, deterministic protocol CLIs, schemas,
       handoffs, supervision messages, footers, closure checkpoints and tests.
-- [ ] Long repository lease acquire/inspect/verify/release, renewal, queueing,
+- [x] Long repository lease acquire/inspect/verify/release, renewal, queueing,
       state files and repository/document lease priority rules are removed.
-- [ ] Worktree execution lease vocabulary and expiring holder state are replaced
+- [x] Worktree execution lease vocabulary and expiring holder state are replaced
       by the durable execution-claim contract everywhere.
-- [ ] Execution-mode fields and branches are removed from new discussion phase
+- [x] Execution-mode fields and branches are removed from new discussion phase
       runs and implementation records; callers do not select a constant mode.
-- [ ] Old handoff, repository-lease, control and closure versions have no runtime
+- [x] Old handoff, repository-lease, control and closure versions have no runtime
       compatibility dispatcher or migration path.
-- [ ] Cutover preflight returns stable `unsupported_stale_execution_state` for
+- [x] Cutover preflight returns stable `unsupported_stale_execution_state` for
       an old active artifact and performs zero mutation. It never normalizes the
       artifact as released or completed.
-- [ ] Trusted caller context, one-time repository-lease release authorization,
+- [x] Trusted caller context, one-time repository-lease release authorization,
       repository-lease v3 and managed identity-Hook code or documentation are
       absent from the active architecture.
-- [ ] ADR-0001 and user-facing documentation are updated where necessary to
+- [x] ADR-0001 and user-facing documentation are updated where necessary to
       describe the remaining authority boundary and single worktree lifecycle
       without rewriting historical completion records.
-- [ ] Repository-wide static checks find removed vocabulary only in explicitly
+- [x] Repository-wide static checks find removed vocabulary only in explicitly
       retained historical planning records that point readers to ADR-0002.
 
 Blocked by: 02, 03, 04

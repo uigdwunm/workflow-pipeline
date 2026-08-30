@@ -17,11 +17,10 @@ delivery.
    Use an existing convention or
    `<repository-root>/docs/problem-framing/<yyyy-mm-dd>-<short-target>.md`.
    Never overwrite an existing path and reject symbolic-link path components.
-4. Inspect the repository lease before reading mutable implementation state.
-   Always keep the draft at the intended repository documentation path. When
-   the repository lease is held, pin its base branch and `HEAD`, read
-   implementation evidence only from committed objects, and perform every
-   draft write through the shared document lease.
+4. Inspect implementation source protection before any document edit. Always
+   keep the draft at the intended repository documentation path. Read active
+   implementation evidence only from committed objects, never edit a protected
+   source, and perform every draft write through the shared document lease.
 5. Read
    `<guided-implementation-skill-root>/references/document-lease-protocol.md`
    completely and follow the main
@@ -197,11 +196,9 @@ Propose completion only when:
 - the draft is internally consistent and sufficient for `$solution-design`.
 
 Keep the draft at its confirmed repository documentation path throughout
-questioning. At the completion gate, recheck the repository lease and select
-exactly one fixed confirmation from `templates.md`: use the
-repository-lease-held confirmation when another stage owns Git mutation, or
-the repository-lease-available confirmation after the documentation-aware
-baseline and native-authority comparisons pass.
+questioning. At the completion gate, recheck source protection and use the
+single fixed completion confirmation from `templates.md` after the
+documentation-aware baseline and native-authority comparisons pass.
 
 If the user requests changes, continue questioning and update the draft through
 the document lease. Only an exact `确认` to an unchanged block authorizes
@@ -213,19 +210,16 @@ After completion confirmation:
 
 1. Record `阶段结果：拷问完成`, the confirmation timestamp, and final
    native-document links through the document lease. Freeze the exact bytes and
-   SHA-256. Use `status: complete_waiting_planning_commit` while the repository
-   lease is held.
-2. Recheck the repository lease immediately before staging. If it is held or
-   was reacquired after an available-lease confirmation, emit the pending
-   planning commit footer and stop without staging, committing, delivering, or
-   entering stage 2. The completed questioning and unchanged confirmation
-   remain valid.
-3. If the lease is available, require the branch, `HEAD`, documentation-aware
+   SHA-256.
+2. Recheck source protection immediately before staging. A protected target
+   stops without mutation and requires a successor document or stopped
+   dependent implementations.
+3. Acquire the short checkpoint-publication barrier and require branch, `HEAD`, documentation-aware
    status, target path, and compared native-document blobs to equal the
    confirmation. If any differs, stage nothing and reconcile from the frozen
    draft. Preserve the completion confirmation only when the change cannot
    alter draft bytes, path, understanding, or authority.
-4. Recheck baseline ownership, repository-lease availability, and
+4. Recheck baseline ownership, source protection, and
    documentation-aware status.
 5. Stage only exact stage-owned documentation pathspecs, verify the staged diff, and
    create one concise final documentation commit. Never include pre-existing or
@@ -325,7 +319,7 @@ completed questioning.
 - Avoid duplicate task creation and duplicate delivery.
 - Never deliver before final commit and hash validation.
 - Never archive or enter stage 2 after failed intake checks.
-- Preserve repository lease, document-lease identity, frozen-draft identity,
+- Preserve source-protection state, document-lease identity, frozen-draft identity,
   documentation-aware workspace, stage-owned path, and exact commit protections
   from the main Skill.
 

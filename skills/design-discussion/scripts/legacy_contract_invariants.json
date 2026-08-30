@@ -17,7 +17,7 @@
       "entry_marker": "Start only from an explicit `$problem-framing` invocation.",
       "role_marker": "Do not choose\nthe engineering implementation or write implementation code in this stage.",
       "draft_marker": "the draft is the complete target-specific narrative and cross-task handoff;",
-      "commit_marker": "stage only exact stage-owned documentation paths",
+      "commit_marker": "stage exact pathspecs",
       "footer_fields": ["阶段结果：拷问完成", "规划提交：", "下一阶段：", "确认方式：回复 `确认`"]
     },
     {
@@ -34,20 +34,20 @@
       "stage": 3,
       "skill": "skills/guided-implementation/SKILL.md",
       "references": ["skills/guided-implementation/references/originating-task-protocol.md", "skills/guided-implementation/references/execution-protocol.md"],
-      "entry_marker": "Run only after an explicit `$guided-implementation` invocation",
-      "role_marker": "It never writes implementation code or polls routine progress.",
-      "draft_marker": "preserve recognized unstaged documentation",
-      "commit_marker": "one implementation branch",
+      "entry_marker": "Accept only explicit invocation",
+      "role_marker": "The originating task owns source freezing",
+      "draft_marker": "Keep source documents unchanged.",
+      "commit_marker": "implementation-only candidate",
       "footer_fields": ["实现结果：成功", "合并结果：成功", "实现提交：", "下一阶段：`$change-closure`（4归档）"]
     },
     {
       "stage": 4,
       "skill": "skills/change-closure/SKILL.md",
       "references": ["skills/change-closure/references/closure-actions.md", "skills/change-closure/references/closure-protocol.md"],
-      "entry_marker": "Run only after explicit invocation",
-      "role_marker": "Do not implement code",
-      "draft_marker": "Update existing documents in place",
-      "commit_marker": "stage only exact closure-owned document pathspecs",
+      "entry_marker": "user explicitly invokes $change-closure",
+      "role_marker": "never implements code",
+      "draft_marker": "Apply/no-op/conflict uses exact before/after bytes",
+      "commit_marker": "Commit only those paths",
       "footer_fields": ["归档结果：成功", "变更生命周期：已归档；话题=", "归档提交：", "远程操作："]
     }
   ],

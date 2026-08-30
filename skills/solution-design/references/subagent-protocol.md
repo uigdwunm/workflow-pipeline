@@ -91,8 +91,8 @@ The child is the complete stage owner. It must:
 1. Start with `SOLUTION_DESIGN_STARTED`.
 2. Read the complete requirement source and relevant project context.
 3. Acquire, verify, renew, and release the shared document lease around every
-   local planning-document write. Inspect the active repository lease
-   immediately before staging and the final planning commit.
+   local planning-document write. Reject protected implementation sources and
+   use the short checkpoint-publication barrier for the final planning commit.
 4. Use the project's terminology and existing ADRs.
 5. Invoke the complete `$to-spec` behavior and publish the Spec to the exact
    configured carrier.
@@ -211,13 +211,11 @@ verified cc-switch Skill-link exclusion. Treat unrelated staged or
 implementation-path work as an anomaly. Recognized documentation paths may
 remain unstaged but must never enter this stage's commit.
 
-If the registered stage-3 repository lease is held, do not inspect mutable
-implementation paths, run project commands against the leased implementation
-state, stage, commit, switch branches, stash, clean, or reset. Continue design
-from committed objects pinned to the lease base `HEAD`. Acquire the document
-lease with `stage: solution-design` and `purpose: document-write` before every
-exact Spec, ADR, or Ticket write; verify before writing, renew when needed, and
-release before review or another wait.
+Do not enter an active implementation worktree or inspect mutable in-progress
+state. Continue design from committed objects. Acquire the document lease with
+`stage: solution-design` and `purpose: document-write` before every exact Spec,
+ADR, or Ticket write; protected source paths are immutable. Verify before
+writing, renew when needed, and release before review or another wait.
 
 Use the default immediate acquisition plus ten 10-second retries. On
 `state: timeout`, stop at the durable planning checkpoint and return
@@ -225,13 +223,10 @@ Use the default immediate acquisition plus ten 10-second retries. On
 block, current artifacts, holder, version, expiry, and recovery point. Never
 choose another path or ask the user to clean the repository.
 
-When design and review are complete but the repository lease remains held,
-leave local planning documents unstaged and return a pending-planning-commit
-anomaly. On parent-routed retry, do not repeat design or review; revalidate exact
-document bytes and perform only the stage-owned planning commit after the
-repository lease becomes available. Remote carrier publication may proceed
-under its separately disclosed authority when it does not depend on local Git
-mutation.
+When design and review are complete, revalidate exact document bytes and source
+protection, acquire the short checkpoint-publication barrier, compare HEAD and
+perform only the stage-owned planning commit. Remote carrier publication uses
+its separately disclosed authority.
 
 Stage only exact clean-baseline Spec, ADR, and Ticket files. Verify the staged
 path list contains nothing else, then create one concise planning commit when

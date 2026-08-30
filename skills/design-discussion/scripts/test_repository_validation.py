@@ -116,6 +116,26 @@ class RepositoryValidationTests(unittest.TestCase):
             },
         )
 
+    def test_removed_execution_contract_is_rejected_from_active_skill_files(self) -> None:
+        temporary_directory, repository = self.make_repository()
+        self.addCleanup(temporary_directory.cleanup)
+        fixture = repository / "skills" / "alpha" / "scripts" / "protocol.py"
+        fixture.write_text(
+            'MODE = "exclusive-' + 'checkout-v2"\n',
+            encoding="utf-8",
+        )
+        completed = self.run_validator(repository)
+        self.assertEqual(completed.returncode, 1)
+        issues = json.loads(completed.stdout)["issues"]
+        self.assertIn(
+            {
+                "code": "removed-execution-contract",
+                "marker": "exclusive-" + "checkout-v2",
+                "path": "skills/alpha/scripts/protocol.py",
+            },
+            issues,
+        )
+
     def test_test_discovery_is_dynamic_and_sorted(self) -> None:
         temporary_directory, repository = self.make_repository()
         self.addCleanup(temporary_directory.cleanup)

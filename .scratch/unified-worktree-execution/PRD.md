@@ -1,6 +1,7 @@
 # Spec: Unified worktree implementation execution
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## Problem Statement
 

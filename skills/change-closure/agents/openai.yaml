@@ -1,6 +1,6 @@
 interface:
   display_name: "4归档"
   short_description: "Commit closure documents and safely finish implementation"
-  default_prompt: "Use $change-closure to consume a verified implementation footer, acquire the repository lease then the shared document lease, reconcile and commit only closure-owned documents while preserving unrelated unstaged documentation, clean the merged implementation state, and retain legacy in-flight compatibility."
+  default_prompt: "Use $change-closure to consume one verified INTEGRATED footer, converge immutable outcome proposals under exact-path document lease and target-HEAD CAS, commit only closure-owned documents, then advance the retained checkpoint through non-force worktree removal, branch removal, source-protection release, execution-claim release and ARCHIVED."
 policy:
   allow_implicit_invocation: true

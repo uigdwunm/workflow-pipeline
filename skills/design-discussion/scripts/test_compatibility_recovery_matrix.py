@@ -82,28 +82,29 @@ class CompatibilityRecoveryMatrixTests(unittest.TestCase):
 
     def test_matrix_is_complete_and_every_cell_names_an_executable_test(self) -> None:
         matrix = json.loads(MATRIX.read_text(encoding="utf-8"))
-        self.assertEqual(matrix["schema"], "compatibility-recovery-matrix-v1")
+        self.assertEqual(matrix["schema"], "worktree-recovery-matrix-v2")
         required = {
             "scenarios": {
-                "root-discussion-to-1", "root-discussion-to-2", "root-discussion-to-3",
-                "root-discussion-to-4", "direct-0-to-2", "direct-1-to-3",
-                "parent-child-absorption-and-coverage", "no-code-integration",
-                "two-safe-isolated-implementations", "shared-base-serial-integration",
+                "root-lifecycle", "direct-0-to-2", "direct-1-to-3",
+                "parent-child-absorption", "no-code-integration",
+                "serial-worktree-claim", "parallel-worktrees-serial-publication",
+                "advanced-target-publication", "typed-conflict-repair", "archive-cleanup",
             },
             "fault_boundaries": {
-                "ledger-transaction", "lease", "git-worktree", "external-carrier-creation",
-                "ready-activate", "terminal-claim", "documentation-commit", "cleanup",
+                "ledger-transaction", "lease", "worktree-provisioning", "publication",
+                "closure", "external-carrier-creation", "ready-activate",
+                "terminal-claim", "documentation-commit",
             },
             "invariants": {
-                "no-automatic-unconfirmed-worktree", "no-double-active-run-or-binding",
-                "no-stale-source-integration", "no-documentation-in-implementation-commits",
-                "no-force-cleanup-of-unknown-work", "no-premature-topic-close",
+                "nonexpiring-cas-ownership", "protected-active-source",
+                "no-force-cleanup", "no-double-active-run-or-binding",
+                "no-documentation-in-implementation-commits", "no-premature-topic-close",
             },
             "compatibility": {
-                "none-protocol-zero-write", "ambiguous-protocol-zero-write",
-                "none-legacy-contract-invariants", "ambiguous-legacy-contract-invariants",
+                "none-context-zero-write", "ambiguous-context-zero-write",
+                "none-context-contract", "ambiguous-context-contract",
             },
-            "legacy": {"handoff-v2", "handoff-v1", "older-worktree-checkpoint"},
+            "cutover": {"stale-state-fails-closed"},
         }
         known_by_file: dict[str, dict[str, set[str]]] = {}
         referenced_tests: set[tuple[str, str]] = set()
@@ -150,8 +151,8 @@ class CompatibilityRecoveryMatrixTests(unittest.TestCase):
             )
 
     @matrix_proof(
-        "compatibility:none-protocol-zero-write",
-        "compatibility:ambiguous-protocol-zero-write",
+        "compatibility:none-context-zero-write",
+        "compatibility:ambiguous-context-zero-write",
     )
     def test_none_and_ambiguous_are_byte_stable_and_create_zero_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -196,8 +197,8 @@ class CompatibilityRecoveryMatrixTests(unittest.TestCase):
             self.assertFalse((project / ".codex").exists())
 
     @matrix_proof(
-        "compatibility:none-legacy-contract-invariants",
-        "compatibility:ambiguous-legacy-contract-invariants",
+        "compatibility:none-context-contract",
+        "compatibility:ambiguous-context-contract",
     )
     def test_none_and_ambiguous_preserve_mechanical_legacy_contract_invariants(self) -> None:
         contract = json.loads(LEGACY_CONTRACT.read_text(encoding="utf-8"))

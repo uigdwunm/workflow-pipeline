@@ -1,6 +1,6 @@
 interface:
   display_name: "3实现"
-  short_description: "Commit implementation only while documents use a separate lease"
-  default_prompt: "Use $guided-implementation to supervise one Terra/high task in the existing checkout under an exclusive-checkout-v2 repository lease, coordinate any documentation edit through the shared document lease, keep documentation unstaged for 4归档, commit and merge only implementation artifacts, preserve the routed worker/reviewer and canonical Chinese supervision protocols, and enter 4归档 only after verified merge and lease release."
+  short_description: "Implement in one claimed worktree and publish by exact CAS"
+  default_prompt: "Use $guided-implementation to supervise one Terra/high task in a dedicated claimed worktree, keep the committed implementation source protected, bind review and acceptance to one exact candidate, publish through the short target-HEAD CAS, and enter 4归档 only after verified integration while retaining the worktree, branch, source protection and execution claim for checkpoint-owned cleanup."
 policy:
   allow_implicit_invocation: true

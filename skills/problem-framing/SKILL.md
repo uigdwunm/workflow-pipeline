@@ -1,6 +1,6 @@
 ---
 name: problem-framing
-description: Use only when the user explicitly invokes $problem-framing to sharpen an idea, requirement change, or cautious small change; explicitly invokes $problem-framing 重试 after this Skill's stable recovery, repository-lease, document-lease, or pending-planning-commit footer; replies to this Skill's immediately preceding confirmation or workspace-decision block; or sends a verified $problem-framing 接收拷问交付 payload from a dedicated grilling task. Assess whether target-relevant context should remain in the current task or be consolidated into a user-confirmed draft and a separate same-project local grilling task, coordinate every repository documentation write through the shared CAS document lease while stage 3 owns Git and implementation paths, preserve grill-with-docs CONTEXT.md and ADR responsibilities, commit only exact stage-owned documentation after the repository lease is available, and offer the manual 执行后续全部流程 mode only in a successful final footer.
+description: Use only when the user explicitly invokes $problem-framing to sharpen an idea, requirement change, or cautious small change; explicitly invokes $problem-framing 重试 after this Skill's stable recovery, document-lease, source-protection, or pending-planning-commit footer; replies to this Skill's immediately preceding confirmation or workspace-decision block; or sends a verified $problem-framing 接收拷问交付 payload from a dedicated grilling task. Coordinate repository documentation writes through exact-path CAS leases, refuse active implementation sources, preserve CONTEXT.md and ADR responsibilities, and commit only exact stage-owned documentation through the short checkpoint-publication barrier.
 ---
 
 # 1拷问
@@ -128,13 +128,11 @@ Do not preload it for a current-task question that needs no repository action.
    for difficult bugs, broad work, research, prototypes, or domain work.
 4. Preserve every selected Skill's native behavior and documentation rules.
 
-While stage 3 holds the repository lease, do not enter a Matt workflow that
-requires mutable implementation-path inspection, project commands, prototype
-code, or Git mutation. Repository documentation writes remain available only
-through the document lease. Record unavailable implementation activity, use
-pinned committed objects for safe investigation, and continue questioning. If
-a material behavior question cannot be resolved safely, stage 1 cannot complete
-until evidence becomes available.
+While stage 3 is active, inspect implementation work only through committed
+objects. Never enter another implementation worktree or edit a protected source
+document. Unprotected documentation writes remain available through the exact
+document lease. If a material behavior question cannot be resolved from safe
+evidence, stage 1 cannot complete until evidence becomes available.
 
 Do not duplicate Matt's questioning, investigation, ADR, research, prototype,
 or domain-modeling behavior. Do not invoke `$to-spec`, `$to-tickets`, or

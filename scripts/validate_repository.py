@@ -70,6 +70,28 @@ IMPLEMENTATION_DIRECTORIES = {
     "test",
     "tests",
 }
+ACTIVE_CONTRACT_EXTENSIONS = {".json", ".md", ".py", ".yaml", ".yml"}
+REMOVED_EXECUTION_MARKERS = (
+    "exclusive-checkout-v2",
+    "isolated-worktree-v1",
+    "execution_mode",
+    "repository_lease",
+    "WORKTREE_EXECUTION_LEASE_",
+    "acquire_repository_lease",
+    "release_repository_lease",
+    "renew_repository_lease",
+    "inspect_repository_lease",
+    "create_closure_checkpoint",
+    "advance_closure_checkpoint",
+    "inspect_closure_checkpoint",
+    "source-refresh",
+    "record-isolated-worktree-confirmation",
+    "create-isolated-worktree",
+    "acquire-worktree-execution-lease",
+    "create-ack",
+    "verify-ack",
+    "core.hooksPath",
+)
 
 
 def relative(path: Path, repository: Path) -> str:
@@ -199,6 +221,17 @@ def validate(repository: Path) -> dict[str, object]:
             issues.append(
                 {"code": "user-specific-absolute-path", "path": relative(skill_path, repository)}
             )
+        if skill_path.suffix.casefold() in ACTIVE_CONTRACT_EXTENSIONS:
+            text = skill_path.read_text(encoding="utf-8")
+            for marker in REMOVED_EXECUTION_MARKERS:
+                if marker in text:
+                    issues.append(
+                        {
+                            "code": "removed-execution-contract",
+                            "marker": marker,
+                            "path": relative(skill_path, repository),
+                        }
+                    )
     tracker_paths = sorted(
         path
         for path in (repository / ".scratch").glob("*/**/*.md")
