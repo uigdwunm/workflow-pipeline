@@ -21,12 +21,14 @@ decision remains unresolved.
 
 ## Accept
 
-Require a clean committed candidate plus focused/full checks. The Originating
-Task pins the exact candidate commit and independently inspects its diff
-against the expected target. It dispatches the Standards and Spec review axes
-independently against that exact candidate commit and records their results
+This review contract is authoritative. Require a clean committed candidate plus
+focused/full checks. The Originating Task pins the exact candidate commit and
+the expected target-branch commit as one review fixed point, independently
+inspects the candidate diff against that fixed point, and passes that same fixed
+point and candidate to both Standards and Spec review axes. It dispatches the
+Standards and Spec review axes independently and records their results
 separately. Do not accept a candidate until both axes correspond to that exact
-commit and have no unresolved actionable findings.
+fixed point and candidate commit and have no unresolved actionable findings.
 Reject an unplanned feature, behavior change, deletion, replacement, side
 effect, or optional adjacent improvement even when its tests pass.
 Return every actionable test or review finding to the same Dedicated
@@ -36,8 +38,9 @@ replacement candidate invalidates both review results. The Originating Task
 reruns both axes against that replacement candidate before accepting it. Only
 the Originating Task accepts and integrates the candidate. Route only a material
 unresolved decision to the user. If the target advanced without changing a
-source path, have the same task merge that target in its worktree and repeat
-checks and review.
+source path, the same Dedicated Implementation Task merges that target, runs
+affected and full checks, and commits a replacement candidate. The Originating
+Task then establishes its exact replacement fixed point and reruns both axes.
 
 ## Integrate and clean
 

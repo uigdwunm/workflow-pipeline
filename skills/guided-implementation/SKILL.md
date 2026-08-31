@@ -111,19 +111,15 @@ work.
   worktree.
 - Local stage entry grants no push, pull request, deployment, release, tracker or
   other remote write. Each such action requires separate explicit authority.
-- The Originating Task pins the exact candidate commit, independently verifies
-  its diff boundary, and invokes `$code-review` to dispatch the Standards and
-  Spec axes independently against that same candidate. It returns every
-  actionable finding to the same Dedicated Implementation Task and verified
-  worktree. Any replacement candidate invalidates both review results, so the
-  Originating Task reruns both axes against that replacement candidate before it
-  accepts or integrates.
+- The Originating Task owns `$code-review`, candidate acceptance, and
+  integration. Its candidate, review, and remediation contract is authoritative
+  in [references/originating-task-protocol.md](references/originating-task-protocol.md).
 
 If the target branch advances, inspect the committed changes since the binding
 base. A changed source path stops for user direction. Otherwise merge the new
 target HEAD into the implementation worktree, repair ordinary conflicts there,
-rerun affected checks, commit the replacement candidate, and have the
-Originating Task rerun both review axes against its exact commit.
+rerun affected checks, and commit the replacement candidate. The Originating
+Task handles its review under the authoritative role contract.
 
 ## Complete
 

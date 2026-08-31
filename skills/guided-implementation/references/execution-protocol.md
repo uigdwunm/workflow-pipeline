@@ -53,13 +53,9 @@ Before reporting a candidate:
 The Dedicated Implementation Task must not dispatch Standards or Spec review
 agents or receive the parent Session or CLI. It owns Ticket-ordered
 implementation, TDD, focused/full validation, candidate commits, risk
-reporting, and remediation only. The Originating Task pins the exact candidate
-commit, independently verifies the candidate boundary, and invokes
-`$code-review` to dispatch Standards and Spec review axes independently against
-that exact commit. It returns every actionable test or review finding to the
-same Dedicated Implementation Task and verified worktree. A replacement
-candidate invalidates both review results, so the Originating Task reruns both
-axes against that replacement candidate before it accepts or integrates.
+reporting, and remediation only. The Originating Task owns `$code-review`,
+candidate acceptance, and integration; its authoritative review contract is in
+[originating-task-protocol.md](originating-task-protocol.md).
 
 Return review or test remediation to the same implementation task and worktree.
 The dedicated task reports an unexpected material planning gap to the
@@ -69,9 +65,9 @@ remote mutation without separate explicit authority.
 
 If the originating task reports a newer unrelated target HEAD, merge that
 target in this worktree, resolve conflicts here, rerun affected checks and
-report the replacement candidate. The Originating Task reruns both review axes
-against that exact new commit. A changed planning source, material semantic
-conflict, or changed requirement stops for user direction.
+report the replacement candidate. The authoritative role contract determines
+the Originating Task's review action. A changed planning source, material
+semantic conflict, or changed requirement stops for user direction.
 
 The dedicated task never updates the target branch and never removes the
 worktree or branch.

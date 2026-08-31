@@ -49,13 +49,20 @@ class RepositoryValidationTests(unittest.TestCase):
             )
             self.assertIn("candidate commits", source)
             self.assertIn("remediation", source)
+            self.assertIn("originating-task-protocol.md", source)
+            self.assertNotIn("pins the exact candidate commit", source)
+            self.assertNotIn("reruns both axes against that replacement candidate", source)
         for marker in (
+            "review contract is authoritative",
             "pins the exact candidate commit",
+            "expected target-branch commit as one review fixed point",
+            "passes that same fixed point and candidate to both Standards and Spec review axes",
             "dispatches the Standards and Spec review axes independently",
             "same Dedicated Implementation Task and verified worktree",
             "Any replacement candidate invalidates both review results",
             "reruns both axes against that replacement candidate",
             "Only the Originating Task accepts and integrates",
+            "merges that target, runs affected and full checks, and commits a replacement candidate",
         ):
             self.assertIn(marker, normalized_originating)
 
