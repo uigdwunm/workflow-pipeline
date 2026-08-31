@@ -22,13 +22,18 @@ SPEC.loader.exec_module(MODULE)
 
 class ThreadSettingsTests(unittest.TestCase):
     thread_id = "019fd6ea-2afb-73e0-810c-0bb2636aeaae"
+    parent_thread_id = "019fd6ea-2afb-73e0-810c-0bb2636aeab0"
 
     def make_rollout(
         self,
         root: Path,
         *,
         thread_id: str | None = None,
-        session_id: str | None = None,
+        session_meta_id: str | None = None,
+        session_lineage_id: str | None = None,
+        source: object = "vscode",
+        include_session_lineage: bool = True,
+        include_source: bool = True,
         contexts: list[tuple[str, str, str]] | None = None,
         trailing_fragment: str | None = None,
     ) -> Path:
@@ -36,10 +41,25 @@ class ThreadSettingsTests(unittest.TestCase):
         folder = root / "2026" / "08" / "06"
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"rollout-2026-08-06T19-51-38-{resolved_thread_id}.jsonl"
+        session_meta = {
+            "id": (
+                resolved_thread_id
+                if session_meta_id is None
+                else session_meta_id
+            ),
+        }
+        if include_session_lineage:
+            session_meta["session_id"] = (
+                resolved_thread_id
+                if session_lineage_id is None
+                else session_lineage_id
+            )
+        if include_source:
+            session_meta["source"] = source
         records = [
             {
                 "type": "session_meta",
-                "payload": {"id": session_id or resolved_thread_id},
+                "payload": session_meta,
             },
             {
                 "type": "response_item",
@@ -68,7 +88,7 @@ class ThreadSettingsTests(unittest.TestCase):
         path.write_text(contents)
         return path
 
-    def test_resolve_returns_latest_v2_receipt_without_messages(self):
+    def test_resolve_returns_latest_v3_receipt_without_private_fields(self):
         with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             self.make_rollout(
@@ -82,7 +102,7 @@ class ThreadSettingsTests(unittest.TestCase):
         self.assertEqual(
             result,
             {
-                "protocol": "thread-settings-v2",
+                "protocol": "thread-settings-v3",
                 "source": "codex-rollout-latest-turn-context",
                 "thread_id": self.thread_id,
                 "model": "gpt-5.6-sol",
@@ -91,6 +111,8 @@ class ThreadSettingsTests(unittest.TestCase):
             },
         )
         self.assertNotIn("message", result)
+        self.assertNotIn("session_lineage_id", result)
+        self.assertNotIn("parent_thread_id", result)
 
     def test_current_uses_matching_runtime_thread_and_session_ids(self):
         with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
@@ -105,20 +127,179 @@ class ThreadSettingsTests(unittest.TestCase):
             )
         self.assertEqual(result["thread_id"], self.thread_id)
 
-    def test_current_rejects_missing_or_mismatched_runtime_identity(self):
+    def test_current_accepts_native_subagent_lineage_identity(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory)
+            self.make_rollout(
+                root,
+                session_lineage_id=self.parent_thread_id,
+                source={
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": self.parent_thread_id,
+                            "depth": 1,
+                        }
+                    }
+                },
+            )
+            result = MODULE.resolve_current_thread_settings(
+                root,
+                environ={
+                    "CODEX_THREAD_ID": self.thread_id,
+                    "CODEX_SESSION_ID": self.parent_thread_id,
+                },
+            )
+            verification = MODULE.verify_current_thread_settings(
+                expected_model="gpt-5.6-sol",
+                expected_reasoning_effort="high",
+                root=root,
+                environ={
+                    "CODEX_THREAD_ID": self.thread_id,
+                    "CODEX_SESSION_ID": self.parent_thread_id,
+                },
+            )
+        self.assertEqual(result["thread_id"], self.thread_id)
+        self.assertEqual(verification["status"], "match")
+
+    def test_current_accepts_missing_runtime_session_id(self):
         with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             self.make_rollout(root)
-            with self.assertRaisesRegex(MODULE.SettingsError, "CODEX_THREAD_ID"):
+            result = MODULE.resolve_current_thread_settings(
+                root,
+                environ={"CODEX_THREAD_ID": self.thread_id},
+            )
+        self.assertEqual(result["thread_id"], self.thread_id)
+
+    def test_current_rejects_missing_thread_or_conflicting_lineage(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory)
+            self.make_rollout(root)
+            with self.assertRaisesRegex(MODULE.SettingsError, "current thread"):
                 MODULE.resolve_current_thread_settings(root, environ={})
-            with self.assertRaisesRegex(MODULE.SettingsError, "runtime task identity"):
+            with self.assertRaisesRegex(MODULE.SettingsError, "session lineage"):
                 MODULE.resolve_current_thread_settings(
                     root,
                     environ={
                         "CODEX_THREAD_ID": self.thread_id,
-                        "CODEX_SESSION_ID": "019fd6ea-2afb-73e0-810c-0bb2636aeab0",
+                        "CODEX_SESSION_ID": self.parent_thread_id,
                     },
                 )
+
+    def test_current_rejects_invalid_subagent_identity_shapes(self):
+        invalid_shapes = [
+            (
+                self.parent_thread_id,
+                {"subagent": {"thread_spawn": {}}},
+            ),
+            (
+                self.parent_thread_id,
+                {
+                    "subagent": {
+                        "thread_spawn": {"parent_thread_id": self.thread_id}
+                    }
+                },
+            ),
+            (
+                self.parent_thread_id,
+                {
+                    "subagent": {
+                        "thread_spawn": {"parent_thread_id": "not-a-thread-id"}
+                    }
+                },
+            ),
+            (
+                self.thread_id,
+                {
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": self.parent_thread_id
+                        }
+                    }
+                },
+            ),
+        ]
+        for session_lineage_id, source in invalid_shapes:
+            with self.subTest(
+                session_lineage_id=session_lineage_id,
+                source=source,
+            ), tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+                root = Path(directory)
+                self.make_rollout(
+                    root,
+                    session_lineage_id=session_lineage_id,
+                    source=source,
+                )
+                with self.assertRaisesRegex(
+                    MODULE.SettingsError, "subagent task identity"
+                ):
+                    MODULE.resolve_current_thread_settings(
+                        root,
+                        environ={
+                            "CODEX_THREAD_ID": self.thread_id,
+                            "CODEX_SESSION_ID": session_lineage_id,
+                        },
+                    )
+
+    def test_current_rejects_unsupported_or_incomplete_identity_shapes(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory)
+            self.make_rollout(root, source={"fork": {}})
+            with self.assertRaisesRegex(MODULE.SettingsError, "unsupported"):
+                MODULE.resolve_current_thread_settings(
+                    root,
+                    environ={"CODEX_THREAD_ID": self.thread_id},
+                )
+
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory)
+            self.make_rollout(root, include_session_lineage=False)
+            with self.assertRaisesRegex(MODULE.SettingsError, "root task identity"):
+                MODULE.resolve_current_thread_settings(
+                    root,
+                    environ={"CODEX_THREAD_ID": self.thread_id},
+                )
+
+    def test_explicit_thread_id_accepts_legacy_identity_fields(self):
+        legacy_shapes = [
+            {
+                "include_session_lineage": False,
+                "include_source": False,
+            },
+            {
+                "session_lineage_id": "legacy-lineage",
+                "source": {"subagent": "legacy-subagent-source"},
+            },
+        ]
+        for shape in legacy_shapes:
+            with self.subTest(shape=shape), tempfile.TemporaryDirectory(
+                dir=TEMPORARY_ROOT
+            ) as directory:
+                root = Path(directory)
+                self.make_rollout(root, **shape)
+                result = MODULE.resolve_thread_settings(self.thread_id, root)
+                self.assertEqual(result["thread_id"], self.thread_id)
+
+    def test_rejects_conflicting_session_meta_identity_fields(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory)
+            path = self.make_rollout(root)
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    json.dumps(
+                        {
+                            "type": "session_meta",
+                            "payload": {
+                                "id": self.thread_id,
+                                "session_id": self.parent_thread_id,
+                                "source": "vscode",
+                            },
+                        }
+                    )
+                    + "\n"
+                )
+            with self.assertRaisesRegex(MODULE.SettingsError, "identity fields"):
+                MODULE.resolve_thread_settings(self.thread_id, root)
 
     def test_verify_accepts_new_turn_with_same_settings(self):
         with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
@@ -170,7 +351,7 @@ class ThreadSettingsTests(unittest.TestCase):
             root = Path(directory)
             self.make_rollout(
                 root,
-                session_id="019fd6ea-2afb-73e0-810c-0bb2636aeab0",
+                session_meta_id="019fd6ea-2afb-73e0-810c-0bb2636aeab0",
             )
             with self.assertRaisesRegex(MODULE.SettingsError, "session_meta"):
                 MODULE.resolve_thread_settings(self.thread_id, root)
@@ -241,7 +422,7 @@ class ThreadSettingsTests(unittest.TestCase):
                 env=environment,
             )
         self.assertEqual(version.returncode, 0)
-        self.assertEqual(version.stdout.strip(), "thread-settings-v2")
+        self.assertEqual(version.stdout.strip(), "thread-settings-v3")
         self.assertEqual(changed.returncode, 2)
         self.assertEqual(json.loads(changed.stdout)["status"], "changed")
 
@@ -254,7 +435,7 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
         owner = self.read("skills/guided-implementation/SKILL.md")
         self.assertIn("[references/thread-settings-protocol.md]", owner)
 
-    def test_dynamic_consumers_use_shared_v2_interface(self):
+    def test_dynamic_consumers_use_shared_v3_interface(self):
         consumers = {
             "skills/design-discussion/references/child-topic-protocol.md": (
                 "resolve --current",
@@ -272,7 +453,7 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
         for path, operations in consumers.items():
             with self.subTest(path=path):
                 protocol = self.read(path)
-                self.assertIn("thread-settings-v2", protocol)
+                self.assertIn("thread-settings-v3", protocol)
                 self.assertIn("thread-settings-protocol.md", protocol)
                 for operation in operations:
                     self.assertIn(operation, protocol)
@@ -295,7 +476,7 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
 
     def test_dependency_contract_requires_one_workflow_version(self):
         contract = self.read("docs/dependencies.md")
-        self.assertIn("thread-settings-v2", contract)
+        self.assertIn("thread-settings-v3", contract)
         self.assertIn("workflow_runtime_version_mismatch", contract)
         self.assertRegex(contract, r"same\s+workflow-pipeline version")
 

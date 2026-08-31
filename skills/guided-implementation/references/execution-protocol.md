@@ -3,7 +3,7 @@
 The dedicated task accepts only the binding returned by `start-worktree` and
 must run `verify-worktree` against its actual working directory before editing.
 
-Before editing, run the executable `thread-settings-v2` verification:
+Before editing, run the executable `thread-settings-v3` verification:
 
 ```text
 python3 <guided-implementation-skill-root>/scripts/thread_settings.py verify \

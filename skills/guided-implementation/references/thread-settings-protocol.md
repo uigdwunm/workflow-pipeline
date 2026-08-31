@@ -7,7 +7,7 @@ Codex task's model and reasoning effort. The canonical implementation is:
 <guided-implementation-skill-root>/scripts/thread_settings.py
 ```
 
-Require `protocol-version` to return exactly `thread-settings-v2`. A missing
+Require `protocol-version` to return exactly `thread-settings-v3`. A missing
 script or different version is `workflow_runtime_version_mismatch`: stop and
 ask the user to install the same workflow-pipeline version for all five Skills.
 Never fall back to defaults, task titles, summaries, ordering, or an unresolved
@@ -30,12 +30,17 @@ python3 <guided-implementation-skill-root>/scripts/thread_settings.py resolve \
   --current
 ```
 
-Run the command unchanged. `--current` reads the existing `CODEX_THREAD_ID`,
-requires canonical task identity, requires `CODEX_SESSION_ID` to match when it
-is present, and then binds the rollout through `session_meta.id`. Never set or
-override either environment variable for the command. On any missing,
-conflicting, ambiguous, or unsupported runtime fact, stop at the caller's
-stable recovery point.
+Run the command unchanged. `--current` reads the existing `CODEX_THREAD_ID`
+as the current thread identity and binds the rollout filename plus
+`session_meta.id` to it. It separately treats `CODEX_SESSION_ID`, when present,
+as the session-lineage identity and requires it to match
+`session_meta.session_id`. A root task requires its lineage ID to equal its
+current thread ID. A native subagent instead requires a distinct lineage ID
+and a canonical, distinct
+`source.subagent.thread_spawn.parent_thread_id`. Never set or override either
+environment variable for the command. On any missing, conflicting, ambiguous,
+or unsupported runtime fact, stop at the caller's stable recovery point. Do
+not assume that a child task's lineage ID and current thread ID are equal.
 
 A successful resolution returns only `protocol`, `source`, `thread_id`,
 `model`, `reasoning_effort`, and `turn_id`. The implementation safely opens one

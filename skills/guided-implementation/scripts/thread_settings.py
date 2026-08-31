@@ -10,10 +10,10 @@ import re
 import stat
 import sys
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, NamedTuple
 
 
-PROTOCOL_VERSION = "thread-settings-v2"
+PROTOCOL_VERSION = "thread-settings-v3"
 _CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 SESSIONS_ROOT = Path(
     os.environ.get("CODEX_SESSIONS_ROOT", _CODEX_HOME / "sessions")
@@ -28,6 +28,16 @@ DAY_RE = re.compile(r"^(?:0[1-9]|[12][0-9]|3[01])$")
 
 class SettingsError(RuntimeError):
     pass
+
+
+class RolloutFacts(NamedTuple):
+    thread_id: str
+    session_lineage_id: str | None
+    source_kind: str | None
+    parent_thread_id: str | None
+    model: str
+    reasoning_effort: str
+    turn_id: str
 
 
 def _open_bound_directory(parent_fd: int, name: str) -> int:
@@ -129,20 +139,36 @@ def _matching_rollout(thread_id: str, root: Path) -> int:
 def _runtime_thread_id(environ: Mapping[str, str]) -> str:
     thread_id = environ.get("CODEX_THREAD_ID")
     if not thread_id:
-        raise SettingsError("CODEX_THREAD_ID is unavailable")
-    session_id = environ.get("CODEX_SESSION_ID")
-    if session_id is not None and session_id != thread_id:
-        raise SettingsError("runtime task identity is inconsistent")
+        raise SettingsError("current thread identity is unavailable")
     return thread_id
 
 
-def resolve_thread_settings(
-    thread_id: str, root: Path = SESSIONS_ROOT
-) -> dict[str, str]:
+def _source_identity(source: object) -> tuple[str, str | None]:
+    if isinstance(source, str) and source:
+        return "root", None
+    if not isinstance(source, dict):
+        return "unsupported", None
+    subagent = source.get("subagent")
+    if subagent is None:
+        return "unsupported", None
+    if not isinstance(subagent, dict):
+        return "invalid-subagent", None
+    thread_spawn = subagent.get("thread_spawn")
+    if not isinstance(thread_spawn, dict):
+        return "invalid-subagent", None
+    parent_thread_id = thread_spawn.get("parent_thread_id")
+    if not isinstance(parent_thread_id, str):
+        return "invalid-subagent", None
+    return "subagent", parent_thread_id
+
+
+def _read_rollout_facts(thread_id: str, root: Path) -> RolloutFacts:
     if not THREAD_ID_RE.fullmatch(thread_id):
         raise SettingsError("thread id is not a canonical lowercase UUID")
     file_fd = _matching_rollout(thread_id, root)
     session_ids: set[str] = set()
+    lineage_states: set[tuple[str, str | None]] = set()
+    source_states: set[tuple[str | None, str | None]] = set()
     latest: dict[str, str] | None = None
     try:
         with os.fdopen(os.dup(file_fd), "r", encoding="utf-8") as stream:
@@ -161,8 +187,21 @@ def resolve_thread_settings(
                     continue
                 if record_type == "session_meta":
                     session_id = payload.get("id")
-                    if isinstance(session_id, str):
-                        session_ids.add(session_id)
+                    if not isinstance(session_id, str):
+                        raise SettingsError("rollout session_meta has invalid thread id")
+                    session_ids.add(session_id)
+                    if "session_id" not in payload:
+                        lineage_states.add(("missing", None))
+                    else:
+                        session_lineage_id = payload.get("session_id")
+                        if not isinstance(session_lineage_id, str):
+                            lineage_states.add(("invalid", None))
+                        else:
+                            lineage_states.add(("value", session_lineage_id))
+                    if "source" not in payload:
+                        source_states.add((None, None))
+                    else:
+                        source_states.add(_source_identity(payload.get("source")))
                 elif record_type == "turn_context":
                     model = payload.get("model")
                     effort = payload.get("effort")
@@ -180,14 +219,70 @@ def resolve_thread_settings(
         os.close(file_fd)
     if session_ids != {thread_id}:
         raise SettingsError("rollout session_meta does not match the frozen thread id")
+    if len(lineage_states) != 1 or len(source_states) != 1:
+        raise SettingsError("rollout session_meta identity fields conflict")
     if latest is None:
         raise SettingsError("rollout has no complete turn_context settings")
+    lineage_state, session_lineage_id = next(iter(lineage_states))
+    if lineage_state == "missing":
+        session_lineage_id = None
+    source_kind, parent_thread_id = next(iter(source_states))
+    return RolloutFacts(
+        thread_id=thread_id,
+        session_lineage_id=session_lineage_id,
+        source_kind=source_kind,
+        parent_thread_id=parent_thread_id,
+        **latest,
+    )
+
+
+def _validate_current_identity(
+    facts: RolloutFacts, environ: Mapping[str, str]
+) -> None:
+    session_lineage_id = facts.session_lineage_id
+    if facts.source_kind == "root":
+        if (
+            session_lineage_id is None
+            or not THREAD_ID_RE.fullmatch(session_lineage_id)
+            or session_lineage_id != facts.thread_id
+            or facts.parent_thread_id is not None
+        ):
+            raise SettingsError("invalid root task identity shape")
+    elif facts.source_kind == "subagent":
+        parent_thread_id = facts.parent_thread_id
+        if (
+            session_lineage_id is None
+            or not THREAD_ID_RE.fullmatch(session_lineage_id)
+            or parent_thread_id is None
+            or not THREAD_ID_RE.fullmatch(parent_thread_id)
+            or parent_thread_id == facts.thread_id
+            or session_lineage_id == facts.thread_id
+        ):
+            raise SettingsError("invalid subagent task identity shape")
+    elif facts.source_kind == "invalid-subagent":
+        raise SettingsError("invalid subagent task identity shape")
+    else:
+        raise SettingsError("unsupported runtime task identity shape")
+    runtime_session_id = environ.get("CODEX_SESSION_ID")
+    if runtime_session_id is not None and runtime_session_id != session_lineage_id:
+        raise SettingsError("runtime session lineage conflict")
+
+
+def _public_receipt(facts: RolloutFacts) -> dict[str, str]:
     return {
         "protocol": PROTOCOL_VERSION,
         "source": "codex-rollout-latest-turn-context",
-        "thread_id": thread_id,
-        **latest,
+        "thread_id": facts.thread_id,
+        "model": facts.model,
+        "reasoning_effort": facts.reasoning_effort,
+        "turn_id": facts.turn_id,
     }
+
+
+def resolve_thread_settings(
+    thread_id: str, root: Path = SESSIONS_ROOT
+) -> dict[str, str]:
+    return _public_receipt(_read_rollout_facts(thread_id, root))
 
 
 def resolve_current_thread_settings(
@@ -196,7 +291,32 @@ def resolve_current_thread_settings(
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     runtime_environment = os.environ if environ is None else environ
-    return resolve_thread_settings(_runtime_thread_id(runtime_environment), root)
+    facts = _read_rollout_facts(_runtime_thread_id(runtime_environment), root)
+    _validate_current_identity(facts, runtime_environment)
+    return _public_receipt(facts)
+
+
+def _verification_receipt(
+    observed: dict[str, str],
+    *,
+    expected_model: str,
+    expected_reasoning_effort: str,
+) -> dict[str, object]:
+    matches = (
+        observed["model"] == expected_model
+        and observed["reasoning_effort"] == expected_reasoning_effort
+    )
+    return {
+        "protocol": PROTOCOL_VERSION,
+        "operation": "verify",
+        "status": "match" if matches else "changed",
+        "thread_id": observed["thread_id"],
+        "expected": {
+            "model": expected_model,
+            "reasoning_effort": expected_reasoning_effort,
+        },
+        "observed": observed,
+    }
 
 
 def verify_thread_settings(
@@ -209,21 +329,11 @@ def verify_thread_settings(
     if not expected_model or not expected_reasoning_effort:
         raise SettingsError("expected model and reasoning effort must be non-empty")
     observed = resolve_thread_settings(thread_id, root)
-    matches = (
-        observed["model"] == expected_model
-        and observed["reasoning_effort"] == expected_reasoning_effort
+    return _verification_receipt(
+        observed,
+        expected_model=expected_model,
+        expected_reasoning_effort=expected_reasoning_effort,
     )
-    return {
-        "protocol": PROTOCOL_VERSION,
-        "operation": "verify",
-        "status": "match" if matches else "changed",
-        "thread_id": thread_id,
-        "expected": {
-            "model": expected_model,
-            "reasoning_effort": expected_reasoning_effort,
-        },
-        "observed": observed,
-    }
 
 
 def verify_current_thread_settings(
@@ -233,12 +343,14 @@ def verify_current_thread_settings(
     root: Path = SESSIONS_ROOT,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
+    if not expected_model or not expected_reasoning_effort:
+        raise SettingsError("expected model and reasoning effort must be non-empty")
     runtime_environment = os.environ if environ is None else environ
-    return verify_thread_settings(
-        _runtime_thread_id(runtime_environment),
+    observed = resolve_current_thread_settings(root, environ=runtime_environment)
+    return _verification_receipt(
+        observed,
         expected_model=expected_model,
         expected_reasoning_effort=expected_reasoning_effort,
-        root=root,
     )
 
 
