@@ -13,6 +13,7 @@ from pathlib import Path
 SCRIPT = Path(__file__).with_name("thread_settings.py")
 SKILL_ROOT = SCRIPT.parent.parent
 REPOSITORY_ROOT = SKILL_ROOT.parent.parent
+TEMPORARY_ROOT = Path(tempfile.gettempdir()).resolve()
 SPEC = importlib.util.spec_from_file_location("thread_settings", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -68,7 +69,7 @@ class ThreadSettingsTests(unittest.TestCase):
         return path
 
     def test_resolve_returns_latest_v2_receipt_without_messages(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             self.make_rollout(
                 root,
@@ -92,7 +93,7 @@ class ThreadSettingsTests(unittest.TestCase):
         self.assertNotIn("message", result)
 
     def test_current_uses_matching_runtime_thread_and_session_ids(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             self.make_rollout(root)
             result = MODULE.resolve_current_thread_settings(
@@ -105,7 +106,7 @@ class ThreadSettingsTests(unittest.TestCase):
         self.assertEqual(result["thread_id"], self.thread_id)
 
     def test_current_rejects_missing_or_mismatched_runtime_identity(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             self.make_rollout(root)
             with self.assertRaisesRegex(MODULE.SettingsError, "CODEX_THREAD_ID"):
@@ -120,7 +121,7 @@ class ThreadSettingsTests(unittest.TestCase):
                 )
 
     def test_verify_accepts_new_turn_with_same_settings(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             self.make_rollout(
                 root,
@@ -139,7 +140,7 @@ class ThreadSettingsTests(unittest.TestCase):
         self.assertEqual(result["observed"]["turn_id"], "turn-2")
 
     def test_verify_reports_changed_settings_with_current_receipt(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             self.make_rollout(
                 root,
@@ -156,7 +157,7 @@ class ThreadSettingsTests(unittest.TestCase):
         self.assertEqual(result["observed"]["reasoning_effort"], "medium")
 
     def test_ignores_non_object_records_and_requires_complete_settings(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             path = self.make_rollout(root, contexts=[])
             with path.open("a", encoding="utf-8") as stream:
@@ -165,7 +166,7 @@ class ThreadSettingsTests(unittest.TestCase):
                 MODULE.resolve_thread_settings(self.thread_id, root)
 
     def test_rejects_session_meta_mismatch_and_symlinked_date_component(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             self.make_rollout(
                 root,
@@ -175,15 +176,15 @@ class ThreadSettingsTests(unittest.TestCase):
                 MODULE.resolve_thread_settings(self.thread_id, root)
 
         with tempfile.TemporaryDirectory(
-            dir="/private/tmp"
-        ) as directory, tempfile.TemporaryDirectory(dir="/private/tmp") as other:
+            dir=TEMPORARY_ROOT
+        ) as directory, tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as other:
             root = Path(directory)
             (root / "2026").symlink_to(Path(other), target_is_directory=True)
             with self.assertRaisesRegex(MODULE.SettingsError, "unsafe directory"):
                 MODULE.resolve_thread_settings(self.thread_id, root)
 
     def test_rejects_multiple_rollouts_and_ignores_partial_trailing_record(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             self.make_rollout(root, trailing_fragment='{"type":"turn_context"')
             result = MODULE.resolve_thread_settings(self.thread_id, root)
@@ -208,7 +209,7 @@ class ThreadSettingsTests(unittest.TestCase):
                 MODULE.resolve_thread_settings(self.thread_id, root)
 
     def test_cli_protocol_version_and_changed_exit_code(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             self.make_rollout(root, contexts=[("gpt-5.6-terra", "medium", "turn-2")])
             environment = {

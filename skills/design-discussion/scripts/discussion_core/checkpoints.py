@@ -230,7 +230,11 @@ def _create_checkpoint_tree(
     project: Path, parent_commit: str, path_blobs: dict[str, str]
 ) -> str:
     parent_tree = _git(project, ["show", "-s", "--format=%T", parent_commit]).decode("ascii").strip()
-    index_file = Path(tempfile.mkstemp(prefix="discussion-checkpoint-index-")[1])
+    index_descriptor, index_name = tempfile.mkstemp(
+        prefix="discussion-checkpoint-index-"
+    )
+    os.close(index_descriptor)
+    index_file = Path(index_name)
     try:
         environment = dict(os.environ)
         environment["GIT_INDEX_FILE"] = str(index_file)
@@ -1480,4 +1484,3 @@ def _validate_checkpoints(
                     raise ProtocolError("checkpoint_snapshot_corrupt", "completed snapshot digest no longer verifies")
         checkpoints.append(dict(checkpoint))
     return sorted(checkpoints, key=lambda item: item["checkpoint_id"])
-
