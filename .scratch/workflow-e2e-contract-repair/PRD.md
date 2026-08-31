@@ -1,6 +1,7 @@
 # Spec: Repair the workflow E2E contracts
 
-Status: `ready-for-agent`
+Status: `completed`
+Lifecycle: completed
 
 ## Problem Statement
 
@@ -130,3 +131,14 @@ The implementation is accepted only after two fresh end-to-end exercises: a real
 
 - No new ADR is required. The Question transition deepens an existing domain operation, and the review-role change follows the existing `Originating Task` responsibility for supervision, acceptance, and integration. Neither changes the accepted protocol-authority or isolated-worktree decisions in ADR-0001 and ADR-0002.
 - `CONTEXT.md` already defines `Originating Task`, `Dedicated Implementation Task`, and `Worktree Binding`; this Spec uses those terms without introducing a competing vocabulary.
+
+## Closure
+
+- Planning commit: `c7a7bcd4ed9dfb0a5edc9594afd2c3a5cc9cf2e7`.
+- Accepted implementation candidate: `9bb676aa47bd3d6b3dd0715e7f850dfcc3c3294d`.
+- Independent Standards and Spec reviews both used fixed point `c7a7bcd4ed9dfb0a5edc9594afd2c3a5cc9cf2e7` and exact candidate `9bb676aa47bd3d6b3dd0715e7f850dfcc3c3294d`; both reported no actionable findings.
+- Focused tests reported 4 passing cases, the protocol/repository suites reported 115 passing tests, and post-integration `./scripts/validate.sh` passed all 148 tests with repository state `valid`.
+- Implementation merge `afbc1a42392f00fc50e4d2ade72b5b6028cb03b7` contains the accepted candidate; the implementation worktree and branches were removed.
+- A fresh persistent `0讨论` subject (`topic-f2b6f73fb5834837a45ebc8fe55ace63`) completed ask → confirm → answered readback → next Question. Question `Q-6e16b3fcd5ab4620aa4243049a922bfc` became `answered`, linked to Decision `D-6644f132e37843a18ee777a5350a4e38`, disappeared from Pending Questions, and active count reached zero before next Question `Q-f52687b46f6848d9bb4224350514198d` was set.
+- A separate standalone Stage 1→2→3→4 effort completed locally. Its first candidate `179c610461bd2be159670cecf3ac5a6d7595077d` was rejected by both review axes for a real actionable `README.md` mode drift; the same Dedicated Implementation Task remediated it and produced `ad6d89e654890a8b0da4afc52adafaa064157efd`. Both axes reran against that replacement with no actionable findings, then implementation merge `9784aaa70cb15963e85da294f36c8db3b9878dbb` and closure merge `098ea2b7611e4644aea3c88edecadb5af9e05473` completed with 148 tests passing at both gates.
+- No existing `docs/discussions/` subject was migrated, edited, or deleted. No push, pull request, deployment, release, tracker write, or other remote mutation was performed.
