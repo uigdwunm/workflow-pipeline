@@ -9,7 +9,7 @@
 4. **4归档 — `$change-closure`**：必要时用同样的短期 worktree 对齐并提交归档文档。
 
 五个 Skill 必须以同一版本安装。跨阶段继承模型与推理强度时统一使用
-`guided-implementation` 提供的 `thread-settings-v2` 只读协议；协议缺失或
+`guided-implementation` 提供的 `thread-settings-v3` 只读协议；协议缺失或
 版本不一致会停止流程，不会猜测默认值。
 
 这些 Skill 来自一个真实使用中的工作流，重点是阶段边界、Git worktree 隔离、并发合并校验，以及让文档与实现各自拥有明确的写入权限。
