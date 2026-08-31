@@ -790,7 +790,7 @@ def _render_evolved_topic(
     question_lines = [
         f"- `{item['question_id']}` [{item['state']}] {item['prompt']}"
         for item in snapshot["questions"]
-        if item["state"] != "invalidated"
+        if item["state"] in {"active", "suspended"}
     ] or ["- None."]
     evolution_lines = []
     for item in decisions:
@@ -850,6 +850,14 @@ def _apply_mutation_to_records(
     result: dict[str, Any] = {}
     if mutation_type == "confirm-decision":
         _expect_keys(mutation, {"type", "summary", "rationale"}, "confirm-decision mutation")
+        active_question_records = []
+        for record in records["Pending Items"]:
+            if record.get("topic_id") == topic_id and record.get("item_kind") == "question":
+                question = _json_field(record, "data_json", "question")
+                if question["state"] == "active":
+                    active_question_records.append((record, question))
+        if len(active_question_records) > 1:
+            raise ProtocolError("state_corrupt", "topic has more than one active question")
         decision_id = f"D-{seed}"
         data = {
             "decision_id": decision_id,
@@ -861,6 +869,11 @@ def _apply_mutation_to_records(
         records["Pending Items"].append(
             {"item_id": decision_id, "item_kind": "decision", "topic_id": topic_id, "data_json": _canonical_json(data)}
         )
+        if active_question_records:
+            question_record, question = active_question_records[0]
+            question["state"] = "answered"
+            question["answered_by_decision_id"] = decision_id
+            question_record["data_json"] = _canonical_json(question)
         result["decision_id"] = decision_id
     elif mutation_type == "set-active-question":
         _expect_keys(mutation, {"type", "prompt", "recommendation", "reason"}, "set-active-question mutation")
@@ -1009,7 +1022,7 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
         suspended_questions = [
             question for question in snapshot["questions"] if question["state"] == "suspended"
         ]
-        if suspended_questions and mutation["type"] != "resolve-inserted-idea":
+        if suspended_questions and mutation["type"] not in {"confirm-decision", "resolve-inserted-idea"}:
             raise ProtocolError(
                 "question_state_conflict",
                 "the suspended question must be resumed, adjusted or invalidated first",

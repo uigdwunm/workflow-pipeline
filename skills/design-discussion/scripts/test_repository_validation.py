@@ -19,7 +19,7 @@ import validate_repository as REPOSITORY_VALIDATION
 
 
 class RepositoryValidationTests(unittest.TestCase):
-    def test_stage_three_keeps_native_matt_execution_and_ticket_order(self) -> None:
+    def test_stage_three_assigns_candidate_review_to_the_originating_task(self) -> None:
         guided = (
             REPOSITORY / "skills/guided-implementation/SKILL.md"
         ).read_text(encoding="utf-8")
@@ -27,12 +27,37 @@ class RepositoryValidationTests(unittest.TestCase):
             REPOSITORY
             / "skills/guided-implementation/references/execution-protocol.md"
         ).read_text(encoding="utf-8")
+        originating = (
+            REPOSITORY
+            / "skills/guided-implementation/references/originating-task-protocol.md"
+        ).read_text(encoding="utf-8")
+        normalized_guided = " ".join(guided.split())
+        normalized_execution = " ".join(execution.split())
+        normalized_originating = " ".join(originating.split())
 
-        for marker in ("$implement", "$tdd", "$code-review"):
+        for marker in ("$implement", "$tdd"):
             self.assertIn(marker, guided)
             self.assertIn(marker, execution)
+        self.assertIn("$code-review", guided)
+        self.assertIn("$code-review", execution)
         self.assertIn("`Blocked by`", execution)
         self.assertIn("topologically", execution.casefold())
+        for source in (normalized_guided, normalized_execution):
+            self.assertIn(
+                "Dedicated Implementation Task must not dispatch Standards or Spec review agents",
+                source,
+            )
+            self.assertIn("candidate commits", source)
+            self.assertIn("remediation", source)
+        for marker in (
+            "pins the exact candidate commit",
+            "dispatches the Standards and Spec review axes independently",
+            "same Dedicated Implementation Task and verified worktree",
+            "Any replacement candidate invalidates both review results",
+            "reruns both axes against that replacement candidate",
+            "Only the Originating Task accepts and integrates",
+        ):
+            self.assertIn(marker, normalized_originating)
 
     def test_stage_three_uses_executable_thread_settings_verification(self) -> None:
         execution = (
