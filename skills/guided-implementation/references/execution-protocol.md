@@ -37,7 +37,7 @@ incomplete plan, not permission to guess.
 
 Work only in the verified worktree and invoke the complete native `$implement`
 workflow for the accepted work, including `$tdd`, typechecking, focused tests,
-the final full suite and `$code-review`. Keep planning sources read-only.
+and the final full suite. Keep planning sources read-only.
 Implementation commits contain only code, tests and required implementation
 artifacts; report documentation paths and intended updates to the originating
 task for Stage 4 instead of editing or committing them here.
@@ -47,8 +47,15 @@ Before reporting a candidate:
 1. require a clean worktree;
 2. run focused and full checks;
 3. report the exact HEAD and changed paths;
-4. complete Standards and Spec review; and
-5. disclose findings and remaining risks.
+4. disclose remaining risks; and
+5. retain the verified worktree for remediation.
+
+The Dedicated Implementation Task must not dispatch Standards or Spec review
+agents or receive the parent Session or CLI. It owns Ticket-ordered
+implementation, TDD, focused/full validation, candidate commits, risk
+reporting, and remediation only. The Originating Task owns `$code-review`,
+candidate acceptance, and integration; its authoritative review contract is in
+[originating-task-protocol.md](originating-task-protocol.md).
 
 Return review or test remediation to the same implementation task and worktree.
 The dedicated task reports an unexpected material planning gap to the
@@ -58,8 +65,9 @@ remote mutation without separate explicit authority.
 
 If the originating task reports a newer unrelated target HEAD, merge that
 target in this worktree, resolve conflicts here, rerun affected checks and
-review, and report the new HEAD. A changed planning source, material semantic
-conflict, or changed requirement stops for user direction.
+report the replacement candidate. The authoritative role contract determines
+the Originating Task's review action. A changed planning source, material
+semantic conflict, or changed requirement stops for user direction.
 
 The dedicated task never updates the target branch and never removes the
 worktree or branch.

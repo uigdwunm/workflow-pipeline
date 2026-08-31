@@ -1,6 +1,6 @@
 ---
 name: guided-implementation
-description: Use when the user explicitly invokes $guided-implementation (3实现), gives an exact stage-entry confirmation to a valid upstream footer, continues from its verified continuous-flow handoff, invokes $guided-implementation 重试 in the same task after this Skill's retained-worktree footer, or the originating task receives the dedicated implementation task's terminal result. Create one dedicated Git worktree from committed planning sources, run the native $implement, $tdd and $code-review workflow there, independently accept one committed candidate, then integrate and clean it through the minimal worktree protocol. Never implement in the originating task or in the primary checkout.
+description: Use when the user explicitly invokes $guided-implementation (3实现), gives an exact stage-entry confirmation to a valid upstream footer, continues from its verified continuous-flow handoff, invokes $guided-implementation 重试 in the same task after this Skill's retained-worktree footer, or the originating task receives the dedicated implementation task's terminal result. Create one dedicated Git worktree from committed planning sources, run native $implement and $tdd there, have the Originating Task run $code-review against the committed candidate, then integrate and clean it through the minimal worktree protocol. Never implement in the originating task or in the primary checkout.
 ---
 
 # 3实现
@@ -94,7 +94,11 @@ work.
   order.
 - Work only inside the verified worktree. Invoke the complete native
   `$implement` workflow, including `$tdd`, focused and full checks, typecheck,
-  lint or build where applicable, and `$code-review` on the committed candidate.
+  lint or build where applicable, and commit a clean candidate.
+- The Dedicated Implementation Task must not dispatch Standards or Spec review
+  agents or receive the parent Session or CLI. It reports the exact candidate
+  commit, changed paths, focused and full checks, remaining risks, and any
+  remediation candidate commits from the same verified worktree.
 - Implementation commits contain no documentation. Commit only task-owned code,
   tests and required implementation artifacts. Report exact documentation paths
   and required updates as `待归档文档`; Stage 4 owns those edits and commits.
@@ -107,14 +111,15 @@ work.
   worktree.
 - Local stage entry grants no push, pull request, deployment, release, tracker or
   other remote write. Each such action requires separate explicit authority.
-- Return the exact candidate commit, changed paths, checks, review findings, and
-  remaining risks. Text claims never replace the originating task's Git checks.
+- The Originating Task owns `$code-review`, candidate acceptance, and
+  integration. Its candidate, review, and remediation contract is authoritative
+  in [references/originating-task-protocol.md](references/originating-task-protocol.md).
 
 If the target branch advances, inspect the committed changes since the binding
 base. A changed source path stops for user direction. Otherwise merge the new
 target HEAD into the implementation worktree, repair ordinary conflicts there,
-rerun affected checks and both review axes, and use the resulting new HEAD as
-the candidate.
+rerun affected checks, and commit the replacement candidate. The Originating
+Task handles its review under the authoritative role contract.
 
 ## Complete
 

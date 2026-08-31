@@ -35,9 +35,12 @@ the merged branch with `git branch -d`, and returns the candidate, merge commit,
 and changed paths.
 
 When two candidates race from one base, one completes and the other receives
-`target_changed`. The retained candidate incorporates the new target in its own
-worktree, reruns verification and review, then retries with the new expected
-HEAD. There is no scheduler or queue.
+`target_changed`. The Dedicated Implementation Task merges the new target into
+the retained worktree, runs affected and full checks, and commits a replacement
+candidate. The Originating Task establishes the new review fixed point from that
+target and exact replacement candidate, reruns both Standards and Spec axes,
+and only then retries with the new expected HEAD. There is no scheduler or
+queue.
 
 ## Retained-worktree recovery
 

@@ -4033,6 +4033,251 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(inspected["decisions"][0]["decision_id"], prepared["decision_id"])
         self.assertEqual(inspected["pending_document_writes"][0]["state"], "completed")
 
+    def test_confirming_decision_answers_active_question_and_allows_the_next_question(self) -> None:
+        project = self.make_project("decision-answers-question", git=True)
+        topic = self.bootstrap_topic(project)
+        question, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=1,
+            topic_revision=1,
+            mutation={
+                "type": "set-active-question",
+                "prompt": "Which durable write boundary should we use?",
+                "recommendation": "Reuse the prepared topic update.",
+                "reason": "It keeps the ledger and document update atomic.",
+            },
+        )
+        decision, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Reuse the prepared topic update.",
+                "rationale": "It preserves one durable transaction.",
+            },
+        )
+
+        returncode, readback, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(readback["active_question_count"], 0)
+        self.assertIsNone(readback["active_question"])
+        self.assertEqual(readback["questions"], [{
+            "question_id": question["question_id"],
+            "prompt": "Which durable write boundary should we use?",
+            "recommendation": "Reuse the prepared topic update.",
+            "reason": "It keeps the ledger and document update atomic.",
+            "state": "answered",
+            "answered_by_decision_id": decision["decision_id"],
+        }])
+        topic_text = Path(str(topic["topic_document_path"])).read_text(encoding="utf-8")
+        pending_questions = topic_text.split("## Pending Questions\n\n", 1)[1].split(
+            "\n\n## Decision Evolution", 1
+        )[0]
+        self.assertNotIn(str(question["question_id"]), pending_questions)
+
+        next_question, _, _ = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "set-active-question",
+                "prompt": "Which review actor owns candidate acceptance?",
+                "recommendation": "The Originating Task.",
+                "reason": "It owns supervision and integration.",
+            },
+        )
+        self.assertRegex(str(next_question["question_id"]), r"^Q-[0-9a-f]{32}$")
+
+    def test_independent_decisions_preserve_zero_and_suspended_questions(self) -> None:
+        project = self.make_project("independent-decisions", git=False)
+        topic = self.bootstrap_topic(project)
+        independent, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=1,
+            topic_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Record an independent choice.",
+                "rationale": "No question is currently active.",
+            },
+        )
+        question, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "set-active-question",
+                "prompt": "Should this question remain visible while suspended?",
+                "recommendation": "Yes.",
+                "reason": "It remains unfinished work.",
+            },
+        )
+        _, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={"type": "insert-idea", "summary": "Consider a separate option."},
+        )
+        suspended_decision, _, _ = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Keep the inserted idea separate.",
+                "rationale": "It does not resolve the suspended question.",
+            },
+        )
+
+        returncode, readback, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertEqual(
+            {item["decision_id"] for item in readback["decisions"]},
+            {independent["decision_id"], suspended_decision["decision_id"]},
+        )
+        self.assertEqual(readback["questions"][0]["state"], "suspended")
+        self.assertNotIn("answered_by_decision_id", readback["questions"][0])
+        topic_text = Path(str(topic["topic_document_path"])).read_text(encoding="utf-8")
+        pending_questions = topic_text.split("## Pending Questions\n\n", 1)[1].split(
+            "\n\n## Decision Evolution", 1
+        )[0]
+        self.assertIn(str(question["question_id"]), pending_questions)
+        self.assertIn("[suspended]", pending_questions)
+
+    def test_confirm_decision_replay_does_not_consume_a_later_question(self) -> None:
+        project = self.make_project("decision-replay", git=True)
+        topic = self.bootstrap_topic(project)
+        first_question, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=1,
+            topic_revision=1,
+            mutation={
+                "type": "set-active-question",
+                "prompt": "Which first question should the decision answer?",
+                "recommendation": "Answer this one.",
+                "reason": "It is active when the decision is confirmed.",
+            },
+        )
+        decision_request = self.evolution_request(
+            topic,
+            operation="prepare-topic-update",
+            expected_revision=ledger_revision,
+            expected_topic_revision=topic_revision,
+            idempotency_key=str(uuid.uuid4()),
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Answer only the current question.",
+                "rationale": "Idempotent replay preserves the original transition.",
+            },
+        )
+        code, decision, stderr = self.run_cli(decision_request)
+        self.assertEqual(code, 0, stderr)
+        code, _, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="apply-document-write",
+                expected_revision=ledger_revision + 1,
+                expected_topic_revision=topic_revision + 1,
+                document_write_id=decision["document_write_id"],
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        second_question, _, _ = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision + 2,
+            topic_revision=topic_revision + 1,
+            mutation={
+                "type": "set-active-question",
+                "prompt": "Which later question must remain active?",
+                "recommendation": "Leave it active.",
+                "reason": "The earlier decision cannot answer it on replay.",
+            },
+        )
+
+        code, replay, stderr = self.run_cli(decision_request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(replay["decision_id"], decision["decision_id"])
+        code, readback, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(code, 0, stderr)
+        questions = {item["question_id"]: item for item in readback["questions"]}
+        self.assertEqual(questions[first_question["question_id"]]["state"], "answered")
+        self.assertEqual(
+            questions[first_question["question_id"]]["answered_by_decision_id"],
+            decision["decision_id"],
+        )
+        self.assertEqual(questions[second_question["question_id"]]["state"], "active")
+
+    def test_multi_active_questions_reject_decision_without_side_effects(self) -> None:
+        project = self.make_project("corrupt-multiple-active", git=True)
+        topic = self.bootstrap_topic(project)
+        _, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=1,
+            topic_revision=1,
+            mutation={
+                "type": "set-active-question",
+                "prompt": "Which question is authoritative?",
+                "recommendation": "There must be one.",
+                "reason": "The protocol has a single-question loop.",
+            },
+        )
+        ledger_path = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger_path)
+        original = next(record for record in records["Pending Items"] if record["item_kind"] == "question")
+        duplicate_data = json.loads(original["data_json"])
+        duplicate_data["question_id"] = "Q-corrupt-second-active"
+        records["Pending Items"].append(
+            {
+                "item_id": duplicate_data["question_id"],
+                "item_kind": "question",
+                "topic_id": topic["topic_id"],
+                "data_json": json.dumps(duplicate_data, sort_keys=True, separators=(",", ":")),
+            }
+        )
+        ledger_path.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before_ledger = ledger_path.read_bytes()
+        before_document = Path(str(topic["topic_document_path"])).read_bytes()
+        before_pending_writes = list(records["Pending Document Writes"])
+
+        code, rejected, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-topic-update",
+                expected_revision=ledger_revision,
+                expected_topic_revision=topic_revision,
+                mutation={
+                    "type": "confirm-decision",
+                    "summary": "Do not mutate corrupt state.",
+                    "rationale": "Multiple active questions are invalid authority state.",
+                },
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "state_corrupt")
+        self.assertEqual(ledger_path.read_bytes(), before_ledger)
+        self.assertEqual(Path(str(topic["topic_document_path"])).read_bytes(), before_document)
+        _, after_records = PROTOCOL._load_records(ledger_path)
+        self.assertFalse(any(item["item_kind"] == "decision" for item in after_records["Pending Items"]))
+        self.assertEqual(after_records["Pending Document Writes"], before_pending_writes)
+
     def test_pending_update_replay_is_idempotent_and_blocks_new_substantive_update(
         self,
     ) -> None:
