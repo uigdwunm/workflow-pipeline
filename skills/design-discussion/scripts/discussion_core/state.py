@@ -406,14 +406,41 @@ def _render_records_ledger(
     for name in LEDGER_SECTION_NAMES:
         body_lines.extend([f"## {name}", "", _yaml_record_block(records[name]), ""])
     body = "\n".join(body_lines)
-    frontmatter_without_digest = (
-        f"schema_version: {frontmatter['schema_version']}\n"
-        f"project_id: {frontmatter['project_id']}\n"
-        f"tree_id: {frontmatter['tree_id']}\n"
-        f"ledger_revision: {frontmatter['ledger_revision']}\n"
-        f"event_count: {frontmatter['event_count']}\n"
-        f"project_manifest_path: {json.dumps(frontmatter['project_manifest_path'])}\n"
+    schema_version = frontmatter["schema_version"]
+    frontmatter_lines = [
+        f"schema_version: {schema_version}",
+        f"project_id: {frontmatter['project_id']}",
+        f"tree_id: {frontmatter['tree_id']}",
+    ]
+    if schema_version == "2":
+        _validate_creation_receipt(frontmatter)
+        frontmatter_lines.extend(
+            [
+                "creation_idempotency_key: "
+                f"{json.dumps(frontmatter['creation_idempotency_key'])}",
+                "creation_fingerprint: "
+                f"{json.dumps(frontmatter['creation_fingerprint'])}",
+            ]
+        )
+    elif schema_version == "1":
+        if (
+            "creation_idempotency_key" in frontmatter
+            or "creation_fingerprint" in frontmatter
+        ):
+            raise ProtocolError(
+                "state_corrupt", "v1 ledger has unsupported creation receipt"
+            )
+    else:
+        raise ProtocolError("state_corrupt", "ledger schema_version is unsupported")
+    frontmatter_lines.extend(
+        [
+            f"ledger_revision: {frontmatter['ledger_revision']}",
+            f"event_count: {frontmatter['event_count']}",
+            "project_manifest_path: "
+            f"{json.dumps(frontmatter['project_manifest_path'])}",
+        ]
     )
+    frontmatter_without_digest = "\n".join(frontmatter_lines) + "\n"
     digest = _sha256((frontmatter_without_digest + body).encode("utf-8"))
     return (
         "---\n"
@@ -424,14 +451,95 @@ def _render_records_ledger(
     ).encode("utf-8")
 
 
+def _validate_creation_receipt(frontmatter: dict[str, str]) -> tuple[str, str]:
+    key = frontmatter.get("creation_idempotency_key")
+    fingerprint = frontmatter.get("creation_fingerprint")
+    if not isinstance(key, str) or not isinstance(fingerprint, str):
+        raise ProtocolError("state_corrupt", "ledger creation receipt is incomplete")
+    try:
+        parsed = uuid.UUID(key)
+    except ValueError as error:
+        raise ProtocolError(
+            "state_corrupt", "ledger creation idempotency key is invalid"
+        ) from error
+    if parsed.version != 4 or str(parsed) != key:
+        raise ProtocolError("state_corrupt", "ledger creation idempotency key is invalid")
+    if not SHA256_RE.fullmatch(fingerprint):
+        raise ProtocolError("state_corrupt", "ledger creation fingerprint is invalid")
+    return key, fingerprint
+
+
+def _hydrate_legacy_creation_receipt(
+    frontmatter: dict[str, str], records: dict[str, list[dict[str, Any]]]
+) -> None:
+    schema_version = frontmatter.get("schema_version")
+    has_key = "creation_idempotency_key" in frontmatter
+    has_fingerprint = "creation_fingerprint" in frontmatter
+    if schema_version == "2":
+        _validate_creation_receipt(frontmatter)
+        return
+    if schema_version != "1":
+        raise ProtocolError("state_corrupt", "ledger schema_version is unsupported")
+    if has_key or has_fingerprint:
+        raise ProtocolError("state_corrupt", "v1 ledger has unsupported creation receipt")
+    genesis_events = [
+        event
+        for event in records["Recent Events"]
+        if event.get("event_type") == "root-topic-bootstrapped"
+    ]
+    if not genesis_events:
+        return
+    if len(genesis_events) != 1:
+        raise ProtocolError("state_corrupt", "ledger creation event is duplicated")
+    event = genesis_events[0]
+    topic_id = event.get("topic_id")
+    matching_topics = [
+        topic for topic in records["Current Topics"] if topic.get("topic_id") == topic_id
+    ]
+    if len(matching_topics) != 1:
+        raise ProtocolError(
+            "state_corrupt", "ledger creation event does not identify one topic"
+        )
+    receipt = {
+        "creation_idempotency_key": event.get("idempotency_key"),
+        "creation_fingerprint": event.get("request_fingerprint"),
+    }
+    key, fingerprint = _validate_creation_receipt(receipt)
+    frontmatter.update(
+        {
+            "schema_version": "2",
+            "creation_idempotency_key": key,
+            "creation_fingerprint": fingerprint,
+        }
+    )
+
+
+def _is_exact_creation_replay(
+    frontmatter: dict[str, str], *, idempotency_key: str, request_fingerprint: str
+) -> bool:
+    if frontmatter.get("schema_version") == "1":
+        return False
+    stored_key, stored_fingerprint = _validate_creation_receipt(frontmatter)
+    if stored_key != idempotency_key:
+        return False
+    if stored_fingerprint != request_fingerprint:
+        raise ProtocolError(
+            "idempotency_conflict",
+            "ledger creation idempotency key was reused with different parameters",
+        )
+    return True
+
+
 def _load_records(ledger_path: Path) -> tuple[dict[str, str], dict[str, list[dict[str, Any]]]]:
     frontmatter, text = _verify_ledger_digest(
         _require_regular_nosymlink(ledger_path, "ledger")
     )
     sections = _ledger_sections(text)
-    return frontmatter, {
+    records = {
         name: _parse_record_section(sections[name], name) for name in LEDGER_SECTION_NAMES
     }
+    _hydrate_legacy_creation_receipt(frontmatter, records)
+    return frontmatter, records
 
 
 def _evolution_paths(

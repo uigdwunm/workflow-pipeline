@@ -22,10 +22,16 @@ from Stage 3 requires its complete handoff and either exact `确认` in
 `逐阶段确认` or the verified field `流程模式：连续执行后续全部流程` for same-turn
 entry. Punctuation, added conditions, `继续`, and `可以` do not enter closure.
 
+If that handoff carries `讨论上下文：attached`, require its exact discussion
+identity, actor binding, phase-3 result id and ledger/topic revisions. Read
+[`../design-discussion/references/lifecycle-integration.md`](../design-discussion/references/lifecycle-integration.md)
+and execute its topic-local Stage-4 route around the ordinary closure work.
+Standalone Stage-4 entry performs no discussion discovery or protocol calls.
+
 Accept exact `$change-closure 重试` only in the same task after this Skill's
 immediately preceding retained-worktree footer. Verify the recorded binding and
-current Git state, then continue that documentation worktree without creating a
-replacement.
+current Git state, then continue that documentation worktree and the same active
+Phase Run attempt without creating a replacement.
 
 ## Update documents
 
@@ -57,14 +63,17 @@ failure.
 
 Verify the final target HEAD, clean tracked primary checkout, absence of the
 closure worktree and branch, and the implementation result already cleaned by
-Stage 3. Local closure grants no push, tracker update or other remote write;
-each requires separate explicit authority. Report remote operations exactly;
-local completion never implies a push.
+Stage 3. For an attached discussion, finish and verify the `3→4` run only after
+those Git checks succeed, including the no-document-change path. Local closure
+grants no push, tracker update or other remote write; each requires separate
+explicit authority. Report remote operations exactly; local completion never
+implies a push.
 
 ```text
 归档结果：成功
 归档提交：<documentation merge commit | none>
 实现清理：Stage 3 已验证
 归档清理：documentation worktree and branch removed | not created
+讨论阶段：<current_phase 4 | standalone>
 远程操作：<performed actions | none>
 ```

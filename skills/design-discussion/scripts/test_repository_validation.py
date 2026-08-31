@@ -57,9 +57,64 @@ class RepositoryValidationTests(unittest.TestCase):
             "验证：<focused and full checks>",
             "审查：<Standards and Spec review result>",
             "待归档文档：<exact paths and required updates | none>",
+            "讨论上下文：<standalone | attached>",
+            "讨论身份：<project path, project id, tree id and topic id | none>",
+            "讨论绑定：<actor conversation ref | none>",
+            "阶段 3 结果：<phase result id | none>",
+            "讨论版本：<ledger revision and topic revision at current_phase 3 | none>",
             "连续执行后续全部流程",
         ):
             self.assertIn(marker, guided)
+
+    def test_stage_four_uses_the_existing_topic_local_three_to_four_run(self) -> None:
+        closure = (
+            REPOSITORY / "skills/change-closure/SKILL.md"
+        ).read_text(encoding="utf-8")
+        lifecycle = (
+            REPOSITORY
+            / "skills/design-discussion/references/lifecycle-integration.md"
+        ).read_text(encoding="utf-8")
+        combined = closure + "\n" + lifecycle
+
+        ordered = (
+            "`read-topic`",
+            "`prepare-phase-run` for `3→4` with carrier kind `change-closure`",
+            "`authorize-phase-carrier`",
+            "`phase-ready`",
+            "`phase-activate`",
+            "perform the ordinary Stage-4 Git and document closure",
+            "`claim-phase-completion`",
+            "`complete-phase-run`",
+            "`finalize-phase-run`",
+            "confirm `current_phase: 4`",
+        )
+        cursor = 0
+        for marker in ordered:
+            cursor = combined.index(marker, cursor) + len(marker)
+
+        self.assertNotIn("`claim-phase-carrier`", closure)
+        self.assertIn(
+            "Standalone Stage-4 entry performs no discussion discovery or protocol calls.",
+            closure,
+        )
+
+    def test_stage_four_recovery_keeps_git_and_phase_run_authority_separate(self) -> None:
+        protocol = (
+            REPOSITORY
+            / "skills/change-closure/references/closure-protocol.md"
+        ).read_text(encoding="utf-8")
+        normalized = " ".join(protocol.split())
+
+        for marker in (
+            "Git remains authoritative",
+            "Phase Run remains authoritative",
+            "same Phase Run attempt active",
+            "`retry-phase-run`",
+            "`phase-outcome-unknown`",
+            "`reconcile-phase-run`",
+            "never repeat the Git closure",
+        ):
+            self.assertIn(marker, normalized)
 
     def test_closure_verifies_worktree_and_routes_unclear_representation(self) -> None:
         closure = (

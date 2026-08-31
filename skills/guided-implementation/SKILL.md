@@ -66,8 +66,12 @@ and preserve its actor boundary. The Stage-3 carrier verifies the checkpoint,
 calls `claim-phase-carrier` and `phase-ready`, and waits for source-side
 `phase-activate` before substantive work. After a verified merge it calls
 `claim-phase-completion`; the source task calls `complete-phase-run` and
-`finalize-phase-run` before Stage 4 begins. Standalone entry creates no Phase
-Run and performs none of these calls.
+`finalize-phase-run`, then calls `read-topic` before Stage 4 begins. The read
+must prove the same active, open topic is owned by the current task, has no
+pending document write and is at `current_phase: 3`. Carry that exact discussion
+identity, binding, Phase Result and the returned ledger/topic revisions in the
+Stage-4 handoff. Standalone entry creates no Phase Run, performs none of these
+calls and carries `none` for every discussion field.
 
 ## Start
 
@@ -146,6 +150,11 @@ After success, emit a complete Stage-4 handoff:
 待归档文档：<exact paths and required updates | none>
 清理结果：implementation worktree and branch removed
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
+讨论上下文：<standalone | attached>
+讨论身份：<project path, project id, tree id and topic id | none>
+讨论绑定：<actor conversation ref | none>
+阶段 3 结果：<phase result id | none>
+讨论版本：<ledger revision and topic revision at current_phase 3 | none>
 远程操作：<separately authorized results | none>
 下一阶段：`$change-closure`（4归档）
 进入条件：已满足

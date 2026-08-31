@@ -42,5 +42,8 @@ resource; do not merge the candidate again.
 Pass the verified merge commit to Stage 4. No execution state, claim, lease,
 proposal receipt, or closure checkpoint is carried forward. Pass ordinary Git
 facts, verification/review evidence, exact closure-document paths and flow mode
-in the visible Stage-4 handoff. Local completion grants no remote-write
-authority.
+in the visible Stage-4 handoff. When Stage 3 is attached to a discussion topic,
+also pass the exact project/tree/topic identity, actor binding, completed
+phase-3 result id and the ledger/topic revisions returned by the required final
+`read-topic`; standalone Stage 3 passes `none` for that entire group. Local
+completion grants no remote-write authority.

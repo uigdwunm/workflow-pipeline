@@ -31,9 +31,25 @@ rereads every artifact, verifies identical committed bytes, and verifies the
 same project, tree and topic identities across all three authorities.
 
 An exact retry with the same UUIDv4 and parameters returns the existing state
-without increasing revision or event count. Reusing a key with different
-parameters is a conflict. A project that already has a different root must not
-be guessed or replaced.
+at its current ledger and topic revisions without increasing revision or event
+count. It does not restore the original binding or lifecycle state. Reusing a
+key with different parameters is a conflict. A project that already has a
+different root must not be guessed or replaced.
+
+Ledger schema v2 stores the permanent creation receipt in frontmatter as
+`creation_idempotency_key` and `creation_fingerprint`. The receipt belongs to
+the ledger itself: it is not topic state, and it remains authoritative after
+the bounded `Recent Events` window drops the original
+`root-topic-bootstrapped` event. `bootstrap` and
+`initialize-document-context` use this same receipt rule.
+
+For an existing schema-v1 ledger, the protocol may derive the receipt in memory
+only from exactly one valid `root-topic-bootstrapped` event that identifies a
+current topic. An exact creation replay remains read-only. The next ordinary
+ledger mutation writes schema v2 as part of that mutation, without adding a
+separate revision or event. A v1 ledger whose creation event is no longer
+present remains readable and mutable as v1, but it cannot prove a creation
+replay.
 
 Bootstrap serializes on one stable per-project lock file. That coordination
 file may remain after a failed bootstrap and is not business state. It is never

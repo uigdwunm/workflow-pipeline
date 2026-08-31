@@ -29,6 +29,19 @@ carrier calls `phase-ready`; the source calls `phase-activate`; the carrier
 calls `claim-phase-completion`; and the source calls `complete-phase-run` then
 `finalize-phase-run`. Keep those actor boundaries separate.
 
+For Stage 4 attached by the exact successful Stage-3 handoff, the source and
+carrier are the same current task. After the Stage-4 entry confirmation and
+before closure work, call `read-topic` with the handed-off identity and binding.
+Require the exact active, open topic at `current_phase: 3`, no pending document
+write, the handed-off phase-3 result and the current ledger/topic revisions.
+Then call `prepare-phase-run` for `3→4` with carrier kind `change-closure`,
+followed by `authorize-phase-carrier`, `phase-ready` and `phase-activate` from
+that current task. Once active, perform the ordinary Stage-4 Git and document closure.
+After Git verifies the final target and cleanup, call `claim-phase-completion`,
+`complete-phase-run` and `finalize-phase-run`, then call `read-topic` again to
+confirm `current_phase: 4`. The no-document-change path follows the same
+completion sequence. Standalone Stage 4 performs none of these operations.
+
 Use `cancel-phase-run`, `fail-phase-run`, or
 `revoke-phase-authorization` for known source-side outcomes. Use
 `phase-outcome-unknown` followed by `reconcile-phase-run` when an external
@@ -50,3 +63,7 @@ footer. Phase 0 never propagates continuous mode. Existing confirmations,
 external authority boundaries remain unchanged.
 When discovery returns `none` or `ambiguous`, do not initialize, bind, prepare
 a checkpoint or create a Phase Run; continue the wrapper's standalone flow.
+When an explicitly authorized `document_only` context is initialized, its
+creation authorization follows the permanent ledger-receipt and exact-replay
+rules in [ledger-protocol.md](ledger-protocol.md); replay reads the current
+state and never reinitializes or rewinds it.

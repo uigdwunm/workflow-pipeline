@@ -42,9 +42,16 @@ stable root slug. Invoke
 Read exactly one JSON response from stdout. Continue only when it reports
 `ok: true`, `state: started`, and `reread_verified: true`, with non-empty
 project, tree, topic, ledger, binding and topic-document identities. Exact
-idempotent replay is safe. Any error, conflict, incomplete response, invalid
-path or failed reread stops persistent discussion; do not claim that 0讨论 has
-started and do not ask a substantive design question.
+idempotent replay proves only that this invocation created the same discussion
+tree; it does not prove that the topic is still open in phase 0. When the
+response has `idempotent_replay: true`, call `read-topic` with the returned
+identities and current authenticated conversation before substantive
+discussion. Continue the phase-0 loop only when that read reports
+`current_phase: 0`, `phase_state: active`, and `topic_state: open`. Replay must
+not rebind, reopen or otherwise mutate the topic. Any error, conflict,
+incomplete response, invalid path or failed reread stops persistent discussion;
+do not claim that 0讨论 has started and do not ask a substantive design
+question.
 
 Read [references/ledger-protocol.md](references/ledger-protocol.md) when
 validating bootstrap state or interpreting protocol errors. Read

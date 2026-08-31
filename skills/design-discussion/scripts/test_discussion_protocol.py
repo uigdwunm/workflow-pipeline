@@ -23,7 +23,229 @@ from discussion_core import RequestContext
 
 
 SCRIPT_PATH = Path(__file__).with_name("discussion_protocol.py")
-class DiscussionProtocolBootstrapTests(unittest.TestCase):
+
+
+class DiscussionProtocolTestSupport(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name).resolve()
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def make_project(self, name: str, *, git: bool) -> Path:
+        project = self.root / name
+        project.mkdir()
+        if git:
+            subprocess.run(
+                ["git", "init", "-q", str(project)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        return project
+
+    def request(
+        self,
+        project: Path,
+        *,
+        entry_mode: str = "explicit-skill",
+        invocation_id: str | None = None,
+        conversation_ref: str = "codex-thread:bootstrap-test",
+    ) -> dict[str, object]:
+        request: dict[str, object] = {
+            "protocol_version": 1,
+            "operation": "bootstrap",
+            "project_path": str(project),
+            "entry_mode": entry_mode,
+        }
+        if entry_mode != "ordinary-consultation":
+            request.update(
+                {
+                    "conversation_ref": conversation_ref,
+                    "idempotency_key": invocation_id or str(uuid.uuid4()),
+                    "root_slug": "checkout-redesign",
+                }
+            )
+        return request
+
+    def run_cli(
+        self,
+        request: dict[str, object],
+        *,
+        failpoint: str | None = None,
+        environment_overrides: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, object], str]:
+        environment = dict(os.environ)
+        if environment_overrides is not None:
+            environment.update(environment_overrides)
+        if failpoint is not None:
+            environment["CODEX_DISCUSSION_TEST_FAILPOINT"] = failpoint
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH)],
+            input=json.dumps(request),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        self.assertTrue(completed.stdout, completed.stderr)
+        return completed.returncode, json.loads(completed.stdout), completed.stderr
+
+    def run_raw_cli(self, request: bytes) -> tuple[int, dict[str, object], str]:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH)],
+            input=request,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertTrue(completed.stdout, completed.stderr.decode())
+        return (
+            completed.returncode,
+            json.loads(completed.stdout),
+            completed.stderr.decode(),
+        )
+
+    def git_common_dir(self, project: Path) -> Path:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=project,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return Path(completed.stdout.strip())
+
+    def rewrite_ledger_with_valid_digest(self, ledger_path: Path, old: str, new: str) -> None:
+        text = ledger_path.read_text(encoding="utf-8").replace(old, new)
+        frontmatter, body = text[4:].split("\n---\n", 1)
+        without_digest = "\n".join(
+            line for line in frontmatter.splitlines() if not line.startswith("content_digest: ")
+        ) + "\n"
+        digest = hashlib.sha256((without_digest + body).encode("utf-8")).hexdigest()
+        text = re.sub(r"content_digest: [0-9a-f]{64}", f"content_digest: {digest}", text)
+        ledger_path.write_text(text, encoding="utf-8")
+
+    def replace_recent_events_with_retained_window(
+        self, ledger_path: Path, topic_id: str
+    ) -> None:
+        frontmatter, records = PROTOCOL._load_records(ledger_path)
+        records["Recent Events"] = [
+            {
+                "event_id": f"event-{revision:08d}",
+                "event_type": "retained-test-event",
+                "ledger_revision": revision,
+                "topic_id": topic_id,
+                "idempotency_key": str(uuid.UUID(int=revision, version=4)),
+                "request_fingerprint": hashlib.sha256(
+                    f"retained-test-event:{revision}".encode("utf-8")
+                ).hexdigest(),
+                "result_json": "{}",
+            }
+            for revision in range(2, 202)
+        ]
+        frontmatter["ledger_revision"] = "201"
+        frontmatter["event_count"] = "201"
+        ledger_path.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+
+    def downgrade_ledger_to_v1(
+        self, ledger_path: Path, *, keep_creation_event: bool
+    ) -> None:
+        frontmatter, records = PROTOCOL._load_records(ledger_path)
+        frontmatter["schema_version"] = "1"
+        frontmatter.pop("creation_idempotency_key", None)
+        frontmatter.pop("creation_fingerprint", None)
+        if not keep_creation_event:
+            records["Recent Events"] = [
+                event
+                for event in records["Recent Events"]
+                if event.get("event_type") != "root-topic-bootstrapped"
+            ]
+        ledger_path.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+
+    def replace_empty_ledger_section(
+        self, ledger_path: Path, section: str, records: list[dict[str, object]]
+    ) -> None:
+        lines = ["```yaml", "records:"]
+        for record in records:
+            for index, (key, value) in enumerate(record.items()):
+                prefix = "  - " if index == 0 else "    "
+                scalar = (
+                    "true" if value is True else
+                    "false" if value is False else
+                    "null" if value is None else
+                    str(value) if isinstance(value, int) else
+                    json.dumps(value, ensure_ascii=False)
+                )
+                lines.append(f"{prefix}{key}: {scalar}")
+        lines.append("```")
+        old = f"## {section}\n\n```yaml\nrecords:\n  []\n```"
+        new = f"## {section}\n\n" + "\n".join(lines)
+        self.rewrite_ledger_with_valid_digest(ledger_path, old, new)
+
+    def assert_initialized(self, project: Path, response: dict[str, object]) -> None:
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["state"], "started")
+        self.assertTrue(response["reread_verified"])
+        self.assertEqual(response["ledger_revision"], 1)
+        self.assertEqual(response["topic_revision"], 1)
+
+        manifest = Path(str(response["project_manifest_path"]))
+        topic = Path(str(response["topic_document_path"]))
+        ledger = Path(str(response["ledger_path"]))
+        self.assertTrue(manifest.is_file())
+        self.assertTrue(topic.is_file())
+        self.assertTrue(ledger.is_file())
+        self.assertEqual(manifest.parent, project / "docs" / "discussions")
+        self.assertEqual(topic.parent, project / "docs" / "discussions" / "checkout-redesign")
+
+        manifest_text = manifest.read_text(encoding="utf-8")
+        topic_text = topic.read_text(encoding="utf-8")
+        ledger_text = ledger.read_text(encoding="utf-8")
+        self.assertIn("schema_version: 2", ledger_text)
+        self.assertRegex(
+            ledger_text,
+            r"creation_idempotency_key: \"[0-9a-f-]{36}\"",
+        )
+        self.assertRegex(
+            ledger_text,
+            r"creation_fingerprint: \"[0-9a-f]{64}\"",
+        )
+        for identity in ("project_id", "tree_id", "topic_id"):
+            value = str(response[identity])
+            self.assertIn(value, manifest_text)
+            self.assertIn(value, topic_text)
+            self.assertIn(value, ledger_text)
+        self.assertIn("codex-thread:bootstrap-test", ledger_text)
+        self.assertIn("active", ledger_text)
+        for heading in (
+            "## Current Topics",
+            "## Pending Items",
+            "## Phase Results",
+            "## Checkpoints",
+            "## Phase Runs",
+            "## Pending Document Writes",
+            "## Impacts",
+            "## Relations and Coverage",
+            "## Dependencies and Active Implementations",
+            "## Conversation Bindings",
+            "## Recent Events",
+        ):
+            self.assertIn(heading, ledger_text)
+        for section in (
+            "## Confirmed Decisions",
+            "## Candidate Solution",
+            "## Tentative Assumptions",
+            "## Facts",
+            "## Pending Questions",
+            "## Decision Evolution",
+        ):
+            self.assertIn(section, topic_text)
+
+
+class DiscussionProtocolBootstrapTests(DiscussionProtocolTestSupport):
     def test_operation_registry_contains_only_current_operation_names(self) -> None:
         names = PROTOCOL.OPERATION_REGISTRY.names
         self.assertEqual(
@@ -118,163 +340,6 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
         self.assertEqual(context.project_path, context.project_path)
         self.assertEqual(context.project_id, context.project_id)
         self.assertEqual(calls, {"project": 1, "string": 1})
-    def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary_directory.name).resolve()
-
-    def tearDown(self) -> None:
-        self.temporary_directory.cleanup()
-
-    def make_project(self, name: str, *, git: bool) -> Path:
-        project = self.root / name
-        project.mkdir()
-        if git:
-            subprocess.run(
-                ["git", "init", "-q", str(project)],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-        return project
-
-    def request(
-        self,
-        project: Path,
-        *,
-        entry_mode: str = "explicit-skill",
-        invocation_id: str | None = None,
-        conversation_ref: str = "codex-thread:bootstrap-test",
-    ) -> dict[str, object]:
-        request: dict[str, object] = {
-            "protocol_version": 1,
-            "operation": "bootstrap",
-            "project_path": str(project),
-            "entry_mode": entry_mode,
-        }
-        if entry_mode != "ordinary-consultation":
-            request.update(
-                {
-                    "conversation_ref": conversation_ref,
-                    "idempotency_key": invocation_id or str(uuid.uuid4()),
-                    "root_slug": "checkout-redesign",
-                }
-            )
-        return request
-
-    def run_cli(
-        self,
-        request: dict[str, object],
-        *,
-        failpoint: str | None = None,
-        environment_overrides: dict[str, str] | None = None,
-    ) -> tuple[int, dict[str, object], str]:
-        environment = dict(os.environ)
-        if environment_overrides is not None:
-            environment.update(environment_overrides)
-        if failpoint is not None:
-            environment["CODEX_DISCUSSION_TEST_FAILPOINT"] = failpoint
-        completed = subprocess.run(
-            [sys.executable, str(SCRIPT_PATH)],
-            input=json.dumps(request),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=environment,
-        )
-        self.assertTrue(completed.stdout, completed.stderr)
-        return completed.returncode, json.loads(completed.stdout), completed.stderr
-
-    def git_common_dir(self, project: Path) -> Path:
-        completed = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            cwd=project,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        return Path(completed.stdout.strip())
-
-    def rewrite_ledger_with_valid_digest(self, ledger_path: Path, old: str, new: str) -> None:
-        text = ledger_path.read_text(encoding="utf-8").replace(old, new)
-        frontmatter, body = text[4:].split("\n---\n", 1)
-        without_digest = "\n".join(
-            line for line in frontmatter.splitlines() if not line.startswith("content_digest: ")
-        ) + "\n"
-        digest = hashlib.sha256((without_digest + body).encode("utf-8")).hexdigest()
-        text = re.sub(r"content_digest: [0-9a-f]{64}", f"content_digest: {digest}", text)
-        ledger_path.write_text(text, encoding="utf-8")
-
-    def replace_empty_ledger_section(
-        self, ledger_path: Path, section: str, records: list[dict[str, object]]
-    ) -> None:
-        lines = ["```yaml", "records:"]
-        for record in records:
-            for index, (key, value) in enumerate(record.items()):
-                prefix = "  - " if index == 0 else "    "
-                scalar = (
-                    "true" if value is True else
-                    "false" if value is False else
-                    "null" if value is None else
-                    str(value) if isinstance(value, int) else
-                    json.dumps(value, ensure_ascii=False)
-                )
-                lines.append(f"{prefix}{key}: {scalar}")
-        lines.append("```")
-        old = f"## {section}\n\n```yaml\nrecords:\n  []\n```"
-        new = f"## {section}\n\n" + "\n".join(lines)
-        self.rewrite_ledger_with_valid_digest(ledger_path, old, new)
-
-    def assert_initialized(self, project: Path, response: dict[str, object]) -> None:
-        self.assertTrue(response["ok"])
-        self.assertEqual(response["state"], "started")
-        self.assertTrue(response["reread_verified"])
-        self.assertEqual(response["ledger_revision"], 1)
-        self.assertEqual(response["topic_revision"], 1)
-
-        manifest = Path(str(response["project_manifest_path"]))
-        topic = Path(str(response["topic_document_path"]))
-        ledger = Path(str(response["ledger_path"]))
-        self.assertTrue(manifest.is_file())
-        self.assertTrue(topic.is_file())
-        self.assertTrue(ledger.is_file())
-        self.assertEqual(manifest.parent, project / "docs" / "discussions")
-        self.assertEqual(topic.parent, project / "docs" / "discussions" / "checkout-redesign")
-
-        manifest_text = manifest.read_text(encoding="utf-8")
-        topic_text = topic.read_text(encoding="utf-8")
-        ledger_text = ledger.read_text(encoding="utf-8")
-        for identity in ("project_id", "tree_id", "topic_id"):
-            value = str(response[identity])
-            self.assertIn(value, manifest_text)
-            self.assertIn(value, topic_text)
-            self.assertIn(value, ledger_text)
-        self.assertIn("codex-thread:bootstrap-test", ledger_text)
-        self.assertIn("active", ledger_text)
-        for heading in (
-            "## Current Topics",
-            "## Pending Items",
-            "## Phase Results",
-            "## Checkpoints",
-            "## Phase Runs",
-            "## Pending Document Writes",
-            "## Impacts",
-            "## Relations and Coverage",
-            "## Dependencies and Active Implementations",
-            "## Conversation Bindings",
-            "## Recent Events",
-        ):
-            self.assertIn(heading, ledger_text)
-        for section in (
-            "## Confirmed Decisions",
-            "## Candidate Solution",
-            "## Tentative Assumptions",
-            "## Facts",
-            "## Pending Questions",
-            "## Decision Evolution",
-        ):
-            self.assertIn(section, topic_text)
 
     def test_all_explicit_entry_modes_bootstrap_a_git_root(self) -> None:
         for entry_mode in (
@@ -550,6 +615,48 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
         self.assertEqual(len(invalid_lines), 1)
         self.assertEqual(json.loads(invalid_lines[0])["error"]["code"], "invalid_json")
 
+    def test_cli_rejects_duplicate_json_keys_without_writing_project_state(self) -> None:
+        project = self.make_project("duplicate-request-key", git=False)
+        request = json.dumps(
+            self.request(project),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        request = request.replace(
+            '"root_slug":"checkout-redesign"',
+            '"root_slug":"ignored-topic","root_slug":"checkout-redesign"',
+        )
+        self.assertEqual(request.count('"root_slug"'), 2)
+
+        code, response, _ = self.run_raw_cli(request.encode("utf-8"))
+
+        self.assertEqual(code, 1)
+        self.assertEqual(response["error"]["code"], "invalid_json")
+        self.assertEqual(list(project.iterdir()), [])
+
+    def test_cli_rejects_duplicate_keys_in_nested_json_objects(self) -> None:
+        request = (
+            b'{"protocol_version":1,"operation":"unsupported",'
+            b'"nested":{"key":"first","key":"second"}}'
+        )
+
+        code, response, _ = self.run_raw_cli(request)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(response["error"]["code"], "invalid_json")
+
+    def test_cli_rejects_non_integer_json_numbers(self) -> None:
+        for number in ("1.0", "NaN", "Infinity", "-Infinity"):
+            with self.subTest(number=number):
+                request = (
+                    f'{{"protocol_version":{number},'
+                    '"operation":"unsupported"}'
+                ).encode("utf-8")
+
+                code, response, _ = self.run_raw_cli(request)
+
+                self.assertEqual(code, 1)
+                self.assertEqual(response["error"]["code"], "invalid_json")
 
     def test_invalid_paths_fail_without_creating_project_state(self) -> None:
         regular_file = self.root / "not-a-project"
@@ -598,7 +705,7 @@ class DiscussionProtocolBootstrapTests(unittest.TestCase):
         )
 
 
-class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
+class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
     def bootstrap_topic(
         self, project: Path, *, owner_ref: str = "discussion-task"
     ) -> tuple[dict[str, object], dict[str, str]]:
@@ -607,6 +714,141 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         )
         self.assertEqual(returncode, 0, stderr)
         return response
+
+    def test_bootstrap_replay_reads_evolved_ledger_without_rewriting_it(self) -> None:
+        project = self.make_project("bootstrap-replay-after-evolution", git=False)
+        invocation_id = str(uuid.uuid4())
+        request = self.request(
+            project,
+            invocation_id=invocation_id,
+            conversation_ref="discussion-task",
+        )
+        code, topic, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        prepared = self.prepare_phase_run(topic)
+        ledger_path = Path(str(topic["ledger_path"]))
+        evolved_bytes = ledger_path.read_bytes()
+
+        code, replayed, stderr = self.run_cli(request)
+
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(replayed["ledger_revision"], prepared["ledger_revision"])
+        self.assertEqual(ledger_path.read_bytes(), evolved_bytes)
+
+    def test_bootstrap_replay_survives_recent_event_retention(self) -> None:
+        project = self.make_project("bootstrap-replay-after-retention", git=False)
+        invocation_id = str(uuid.uuid4())
+        request = self.request(
+            project,
+            invocation_id=invocation_id,
+            conversation_ref="discussion-task",
+        )
+        code, topic, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        ledger_path = Path(str(topic["ledger_path"]))
+        self.replace_recent_events_with_retained_window(
+            ledger_path, str(topic["topic_id"])
+        )
+        retained_bytes = ledger_path.read_bytes()
+
+        code, replayed, stderr = self.run_cli(request)
+
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(replayed["ledger_revision"], 201)
+        self.assertEqual(ledger_path.read_bytes(), retained_bytes)
+
+    def test_v1_creation_event_supports_read_only_replay_and_next_write_upgrade(self) -> None:
+        project = self.make_project("v1-bootstrap-replay", git=False)
+        invocation_id = str(uuid.uuid4())
+        request = self.request(
+            project,
+            invocation_id=invocation_id,
+            conversation_ref="discussion-task",
+        )
+        code, topic, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        ledger_path = Path(str(topic["ledger_path"]))
+        self.downgrade_ledger_to_v1(ledger_path, keep_creation_event=True)
+        v1_bytes = ledger_path.read_bytes()
+
+        code, replayed, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(ledger_path.read_bytes(), v1_bytes)
+
+        prepared = self.prepare_phase_run(topic)
+        upgraded = ledger_path.read_text(encoding="utf-8")
+        self.assertEqual(prepared["ledger_revision"], 2)
+        self.assertIn("schema_version: 2", upgraded)
+        self.assertIn("creation_idempotency_key:", upgraded)
+        self.assertIn("creation_fingerprint:", upgraded)
+
+    def test_v1_without_creation_event_keeps_working_but_cannot_prove_replay(self) -> None:
+        project = self.make_project("v1-bootstrap-without-receipt", git=False)
+        invocation_id = str(uuid.uuid4())
+        request = self.request(
+            project,
+            invocation_id=invocation_id,
+            conversation_ref="discussion-task",
+        )
+        code, topic, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        ledger_path = Path(str(topic["ledger_path"]))
+        self.downgrade_ledger_to_v1(ledger_path, keep_creation_event=False)
+
+        code, replayed, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            replayed["error"]["code"], "discussion_already_initialized"
+        )
+
+        code, current, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(current["current_phase"], 0)
+        prepared = self.prepare_phase_run(topic)
+        self.assertEqual(prepared["ledger_revision"], 2)
+        self.assertIn(
+            "schema_version: 1", ledger_path.read_text(encoding="utf-8")
+        )
+
+    def test_read_topic_returns_current_lifecycle_state(self) -> None:
+        project = self.make_project("read-topic-lifecycle", git=False)
+        topic = self.bootstrap_topic(project)
+
+        code, current, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(current["current_phase"], 0)
+        self.assertEqual(current["phase_state"], "active")
+        self.assertEqual(current["review_state"], "unreviewed")
+        self.assertEqual(current["topic_state"], "open")
+
+    def test_v2_ledger_requires_a_complete_creation_receipt(self) -> None:
+        project = self.make_project("v2-creation-receipt", git=False)
+        topic = self.bootstrap_topic(project)
+        ledger_path = Path(str(topic["ledger_path"]))
+        fingerprint_line = re.search(
+            r'^creation_fingerprint: "[0-9a-f]{64}"\n',
+            ledger_path.read_text(encoding="utf-8"),
+            flags=re.MULTILINE,
+        )
+        self.assertIsNotNone(fingerprint_line)
+        self.rewrite_ledger_with_valid_digest(
+            ledger_path, fingerprint_line.group(0), ""
+        )
+
+        code, response, _ = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(response["error"]["code"], "state_corrupt")
 
     def phase_request(self, topic, operation, revision, **parameters):
         return {
@@ -724,6 +966,81 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(validated["state"], "read")
         self.assertEqual(validated["record_revision"], 5)
+
+    def test_change_closure_advances_three_to_four_only_after_finalization(self) -> None:
+        project = self.make_project("change-closure-three-to-four", git=False)
+        topic = self.bootstrap_topic(project)
+        ledger_revision = 1
+        topic_revision = 1
+
+        for from_phase, to_phase in ((0, 1), (1, 2), (2, 3)):
+            _, ledger_revision, topic_revision = self.complete_current_topic_phase(
+                topic,
+                ledger_revision=ledger_revision,
+                topic_revision=topic_revision,
+                from_phase=from_phase,
+                to_phase=to_phase,
+            )
+
+        prepared = self.prepare_phase_run(
+            topic,
+            revision=ledger_revision,
+            topic_revision=topic_revision,
+            from_phase=3,
+            to_phase=4,
+            carrier_kind="change-closure",
+        )
+        evidence = prepared["evidence"]
+        revision = ledger_revision + 1
+
+        for operation, parameters in (
+            ("authorize-phase-carrier", {"carrier_ref": "discussion-task"}),
+            ("phase-ready", {"carrier_ref": "discussion-task", "evidence": evidence}),
+            ("phase-activate", {"evidence": evidence}),
+            (
+                "claim-phase-completion",
+                {"carrier_ref": "discussion-task", "evidence": evidence},
+            ),
+            ("complete-phase-run", {"evidence": evidence}),
+        ):
+            code, _, stderr = self.run_cli(
+                self.phase_request(
+                    topic,
+                    operation,
+                    revision,
+                    topic_revision=topic_revision,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    **parameters,
+                )
+            )
+            self.assertEqual(code, 0, stderr)
+            revision += 1
+
+            read_request = self.phase_request(topic, "read-topic", 0)
+            for key in (
+                "expected_ledger_revision",
+                "expected_topic_revision",
+                "idempotency_key",
+            ):
+                read_request.pop(key)
+            code, current, stderr = self.run_cli(read_request)
+            self.assertEqual(code, 0, stderr)
+            self.assertEqual(current["current_phase"], 3)
+
+        code, finalized, stderr = self.run_cli(
+            self.phase_request(
+                topic,
+                "finalize-phase-run",
+                revision,
+                topic_revision=topic_revision,
+                phase_run_id=prepared["phase_run_id"],
+                attempt_id=prepared["attempt_id"],
+                evidence=evidence,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(finalized["current_phase"], 4)
 
     def test_competing_phase_run_cannot_become_double_active(self) -> None:
         project = self.make_project("no-double-active-phase-run", git=False)
@@ -2644,6 +2961,23 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolBootstrapTests):
         self.assertTrue(replayed["idempotent_replay"])
         self.assertEqual(replayed["imported_result_count"], 1)
         self.assertEqual(replayed["ledger_revision"], initialized["ledger_revision"])
+
+        self.downgrade_ledger_to_v1(ledger, keep_creation_event=True)
+        v1_bytes = ledger.read_bytes()
+        code, v1_replay, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(v1_replay["idempotent_replay"])
+        self.assertEqual(ledger.read_bytes(), v1_bytes)
+
+        self.replace_recent_events_with_retained_window(
+            ledger, str(initialized["topic_id"])
+        )
+        retained_bytes = ledger.read_bytes()
+        code, retained_replay, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(retained_replay["idempotent_replay"])
+        self.assertEqual(retained_replay["ledger_revision"], 201)
+        self.assertEqual(ledger.read_bytes(), retained_bytes)
 
     def evolution_request(
         self,

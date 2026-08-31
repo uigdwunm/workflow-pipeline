@@ -35,6 +35,7 @@ from discussion_core.state import (
     _git_common_dir,
     _idempotent_result,
     _inject_failure,
+    _is_exact_creation_replay,
     _json_field,
     _ledger_sections,
     _load_records,
@@ -44,7 +45,6 @@ from discussion_core.state import (
     _project_lock_name,
     _record_by_id,
     _render_records_ledger,
-    _require_exact_record,
     _require_regular_nosymlink,
     _sha256,
     _topic_snapshot,
@@ -53,7 +53,6 @@ from discussion_core.state import (
     _validate_uuid4,
     _verify_ledger_digest,
     _verify_topic_owner,
-    _yaml_record_block,
 )
 from discussion_core.checkpoints import (
     _cancel_checkpoint,
@@ -325,26 +324,19 @@ def _render_ledger(
             "request_fingerprint": request_fingerprint,
         }
     ]
-    body_lines = ["# Design Discussion Ledger", ""]
-    for name in LEDGER_SECTION_NAMES:
-        body_lines.extend([f"## {name}", "", _yaml_record_block(records[name]), ""])
-    body = "\n".join(body_lines)
-    frontmatter_without_digest = (
-        "schema_version: 1\n"
-        f"project_id: {project_id}\n"
-        f"tree_id: {tree_id}\n"
-        "ledger_revision: 1\n"
-        "event_count: 1\n"
-        f"project_manifest_path: {json.dumps(str(project_manifest_path))}\n"
+    return _render_records_ledger(
+        {
+            "schema_version": "2",
+            "project_id": project_id,
+            "tree_id": tree_id,
+            "creation_idempotency_key": idempotency_key,
+            "creation_fingerprint": request_fingerprint,
+            "ledger_revision": "1",
+            "event_count": "1",
+            "project_manifest_path": str(project_manifest_path),
+        },
+        records,
     )
-    digest = hashlib.sha256((frontmatter_without_digest + body).encode("utf-8")).hexdigest()
-    return (
-        "---\n"
-        + frontmatter_without_digest
-        + f"content_digest: {digest}\n"
-        + "---\n"
-        + body
-    ).encode("utf-8")
 
 
 def _mkdirs(path: Path, created_directories: list[Path]) -> None:
@@ -478,104 +470,103 @@ def _existing_response(
     topic_path = project / "docs" / "discussions" / root_slug / "topic.md"
     context = {
         "state": "stopped",
-        "ledger_revision": 1,
-        "record_revision": 1,
         "project_id": manifest["project_id"],
         "tree_id": manifest["tree_id"],
         "topic_id": manifest["topic_id"],
     }
     try:
         ledger_data = _require_regular_nosymlink(ledger_path, "ledger")
+        observed_ledger_frontmatter = _parse_frontmatter(ledger_data, "ledger")
+        try:
+            observed_ledger_revision = int(
+                observed_ledger_frontmatter["ledger_revision"]
+            )
+        except (KeyError, TypeError, ValueError):
+            observed_ledger_revision = None
+        if observed_ledger_revision is not None and observed_ledger_revision > 0:
+            context["ledger_revision"] = observed_ledger_revision
         topic_data = _require_regular_nosymlink(topic_path, "topic document")
-        ledger_frontmatter, ledger_text = _verify_ledger_digest(ledger_data)
+        ledger_frontmatter, records = _load_records(ledger_path)
         topic_frontmatter = _parse_frontmatter(topic_data, "topic document")
-        expected_ledger_frontmatter = {
-            "schema_version": "1",
+        expected_ledger_identity = {
             "project_id": manifest["project_id"],
             "tree_id": manifest["tree_id"],
-            "ledger_revision": "1",
-            "event_count": "1",
             "project_manifest_path": str(manifest_path),
         }
-        for field, expected_value in expected_ledger_frontmatter.items():
+        for field, expected_value in expected_ledger_identity.items():
             if ledger_frontmatter.get(field) != expected_value:
                 raise ProtocolError("state_corrupt", f"ledger has invalid {field}")
+        try:
+            ledger_revision = int(ledger_frontmatter["ledger_revision"])
+            event_count = int(ledger_frontmatter["event_count"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ProtocolError(
+                "state_corrupt", "ledger revisions are invalid"
+            ) from error
+        if ledger_revision < 1 or event_count < 1:
+            raise ProtocolError("state_corrupt", "ledger revisions are invalid")
+        context.update({"ledger_revision": ledger_revision})
+        if not _is_exact_creation_replay(
+            ledger_frontmatter,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
+        ):
+            raise ProtocolError(
+                "discussion_already_initialized",
+                "the project already has a different persistent discussion root",
+                context=context,
+            )
+        topic_records = [
+            record
+            for record in records["Current Topics"]
+            if record.get("topic_id") == manifest["topic_id"]
+        ]
+        if len(topic_records) != 1:
+            raise ProtocolError(
+                "state_corrupt", "project root does not identify one ledger topic"
+            )
+        topic_record = topic_records[0]
+        expected_topic_record = {
+            "topic_id": manifest["topic_id"],
+            "root_slug": root_slug,
+            "topic_document_path": str(topic_path),
+        }
+        if any(
+            topic_record.get(field) != expected
+            for field, expected in expected_topic_record.items()
+        ):
+            raise ProtocolError("state_corrupt", "project root topic identity is invalid")
+        record_revision = topic_record.get("record_revision")
+        if (
+            not isinstance(record_revision, int)
+            or isinstance(record_revision, bool)
+            or record_revision < 1
+            or record_revision > ledger_revision
+        ):
+            raise ProtocolError("state_corrupt", "project root topic revision is invalid")
+        context["record_revision"] = record_revision
         expected_topic_frontmatter = {
             "schema_version": "1",
             "project_id": manifest["project_id"],
             "tree_id": manifest["tree_id"],
             "topic_id": manifest["topic_id"],
             "parent_topic_id": "null",
-            "topic_revision": "1",
         }
         for field, expected_value in expected_topic_frontmatter.items():
             if topic_frontmatter.get(field) != expected_value:
                 raise ProtocolError("state_corrupt", f"topic document has invalid {field}")
-        sections = _ledger_sections(ledger_text)
-        event_records = _parse_record_section(sections["Recent Events"], "Recent Events")
-        if len(event_records) != 1:
-            raise ProtocolError("state_corrupt", "bootstrap must have exactly one recent event")
-        event_record = event_records[0]
-        if event_record.get("idempotency_key") != idempotency_key:
+        try:
+            document_revision = int(topic_frontmatter["topic_revision"])
+        except (KeyError, TypeError, ValueError) as error:
             raise ProtocolError(
-                "discussion_already_initialized",
-                "the project already has a different persistent discussion root",
-                context=context,
-            )
-        if event_record.get("request_fingerprint") != request_fingerprint:
-            raise ProtocolError(
-                "idempotency_conflict",
-                "idempotency key was already used with different bootstrap parameters",
-                context=context,
-            )
-        _require_exact_record(
-            sections,
-            "Current Topics",
-            {
-                "topic_id": manifest["topic_id"],
-                "record_revision": 1,
-                "root_slug": root_slug,
-                "current_phase": 0,
-                "phase_state": "active",
-                "review_state": "unreviewed",
-                "topic_state": "open",
-                "topic_document_path": str(topic_path),
-            },
-        )
-        _require_exact_record(
-            sections,
-            "Conversation Bindings",
-            {
-                "topic_id": manifest["topic_id"],
-                "conversation_ref": conversation_ref,
-                "binding_state": "active",
-                "record_revision": 1,
-            },
-        )
-        expected_event = {
-            "event_id": "event-00000001",
-            "event_type": "root-topic-bootstrapped",
-            "ledger_revision": 1,
-            "topic_id": manifest["topic_id"],
-            "idempotency_key": idempotency_key,
-            "request_fingerprint": request_fingerprint,
-        }
-        if event_record != expected_event:
-            raise ProtocolError("state_corrupt", "bootstrap recent event is invalid")
-        for empty_name in LEDGER_SECTION_NAMES:
-            if empty_name in {"Current Topics", "Conversation Bindings", "Recent Events"}:
-                continue
-            if _parse_record_section(sections[empty_name], empty_name) != []:
-                raise ProtocolError("state_corrupt", f"bootstrap section {empty_name!r} must be empty")
+                "state_corrupt", "topic document revision is invalid"
+            ) from error
+        if document_revision < 1 or document_revision > record_revision:
+            raise ProtocolError("state_corrupt", "topic document revision is invalid")
+        _validate_pending_writes(ledger_path, records)
     except ProtocolError as error:
         error.context = {**context, **error.context}
         raise
-    for identity in required - {"root_slug"}:
-        value = manifest[identity]
-        if value.encode("utf-8") not in ledger_data or value.encode("utf-8") not in topic_data:
-            raise ProtocolError(
-                "state_corrupt", "bootstrap identity reread verification failed", context=context
-            )
     return {
         "ok": True,
         "state": "started",
@@ -587,9 +578,9 @@ def _existing_response(
         "tree_id": manifest["tree_id"],
         "topic_id": manifest["topic_id"],
         "root_slug": manifest["root_slug"],
-        "ledger_revision": 1,
-        "topic_revision": 1,
-        "event_count": 1,
+        "ledger_revision": ledger_revision,
+        "topic_revision": record_revision,
+        "event_count": event_count,
         "project_manifest_path": str(manifest_path),
         "topic_document_path": str(topic_path),
         "ledger_path": str(ledger_path),
@@ -1440,6 +1431,87 @@ def _discover_context(request: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "state": "none", "context": "none", "created": False}
 
 
+def _document_context_replay_response(
+    *,
+    ledger_path: Path,
+    manifest_path: Path,
+    manifest: dict[str, str],
+    selected_identity: dict[str, str],
+    topic_path: Path,
+    storage_mode: str,
+    idempotency_key: str,
+    request_fingerprint: str,
+    imported_result_count: int,
+) -> dict[str, Any]:
+    frontmatter, records = _load_records(ledger_path)
+    expected_identity = {
+        "project_id": manifest["project_id"],
+        "tree_id": manifest["tree_id"],
+        "project_manifest_path": str(manifest_path),
+    }
+    if any(
+        frontmatter.get(field) != expected
+        for field, expected in expected_identity.items()
+    ):
+        raise ProtocolError(
+            "state_corrupt", "document-only ledger identity is invalid"
+        )
+    if not _is_exact_creation_replay(
+        frontmatter,
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
+    ):
+        raise ProtocolError(
+            "context_not_initialized",
+            "document-only context is already initialized with a different authorization",
+        )
+    topic_records = [
+        record
+        for record in records["Current Topics"]
+        if record.get("topic_id") == selected_identity["topic_id"]
+    ]
+    if len(topic_records) != 1:
+        raise ProtocolError(
+            "state_corrupt", "document-only initialization topic is not unique"
+        )
+    topic_record = topic_records[0]
+    if topic_record.get("topic_document_path") != str(topic_path):
+        raise ProtocolError(
+            "state_corrupt", "document-only initialization topic path is invalid"
+        )
+    topic_revision = topic_record.get("record_revision")
+    try:
+        ledger_revision = int(frontmatter["ledger_revision"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ProtocolError("state_corrupt", "ledger revision is invalid") from error
+    if (
+        not isinstance(topic_revision, int)
+        or isinstance(topic_revision, bool)
+        or topic_revision < 1
+        or topic_revision > ledger_revision
+    ):
+        raise ProtocolError(
+            "state_corrupt", "document-only topic revision is invalid"
+        )
+    return {
+        "ok": True,
+        "state": "initialized",
+        "context": "ledger",
+        "created": False,
+        "storage_mode": storage_mode,
+        "project_id": manifest["project_id"],
+        "tree_id": manifest["tree_id"],
+        "topic_id": selected_identity["topic_id"],
+        "ledger_revision": ledger_revision,
+        "topic_revision": topic_revision,
+        "ledger_path": str(ledger_path),
+        "topic_document_path": str(topic_path),
+        "imported_result_count": imported_result_count,
+        "coordination_state": "unknown",
+        "idempotent_replay": True,
+    }
+
+
 def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
     base_fields = {
         "protocol_version", "operation", "project_path", "conversation_ref",
@@ -1635,35 +1707,17 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
         ).encode("utf-8")
     )
     if ledger_path.exists():
-        frontmatter, records = _load_records(ledger_path)
-        events = [event for event in records["Recent Events"] if event.get("idempotency_key") == key]
-        if not events:
-            raise ProtocolError(
-                "context_not_initialized",
-                "document-only context is already initialized with a different authorization",
-            )
-        if events[-1].get("request_fingerprint") != fingerprint:
-            raise ProtocolError(
-                "idempotency_conflict",
-                "document-only initialization key was reused with different parameters",
-            )
-        return {
-            "ok": True,
-            "state": "initialized",
-            "context": "ledger",
-            "created": False,
-            "storage_mode": storage_mode,
-            "project_id": manifest["project_id"],
-            "tree_id": manifest["tree_id"],
-            "topic_id": selected_identity["topic_id"],
-            "ledger_revision": int(frontmatter["ledger_revision"]),
-            "topic_revision": 1,
-            "ledger_path": str(ledger_path),
-            "topic_document_path": str(topic_path),
-            "imported_result_count": len(imported_results),
-            "coordination_state": "unknown",
-            "idempotent_replay": True,
-        }
+        return _document_context_replay_response(
+            ledger_path=ledger_path,
+            manifest_path=manifest_path,
+            manifest=manifest,
+            selected_identity=selected_identity,
+            topic_path=topic_path,
+            storage_mode=storage_mode,
+            idempotency_key=key,
+            request_fingerprint=fingerprint,
+            imported_result_count=len(imported_results),
+        )
     lock_path = coordination_root / "locks" / _project_lock_name(project)
     created_directories: list[Path] = []
     created_files: list[Path] = []
@@ -1674,39 +1728,17 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
         try:
             fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
             if ledger_path.exists():
-                frontmatter, records = _load_records(ledger_path)
-                events = [
-                    event
-                    for event in records["Recent Events"]
-                    if event.get("idempotency_key") == key
-                ]
-                if not events:
-                    raise ProtocolError(
-                        "context_not_initialized",
-                        "document-only context was concurrently initialized by another authorization",
-                    )
-                if events[-1].get("request_fingerprint") != fingerprint:
-                    raise ProtocolError(
-                        "idempotency_conflict",
-                        "document-only initialization key was reused with different parameters",
-                    )
-                return {
-                    "ok": True,
-                    "state": "initialized",
-                    "context": "ledger",
-                    "created": False,
-                    "storage_mode": storage_mode,
-                    "project_id": manifest["project_id"],
-                    "tree_id": manifest["tree_id"],
-                    "topic_id": selected_identity["topic_id"],
-                    "ledger_revision": int(frontmatter["ledger_revision"]),
-                    "topic_revision": 1,
-                    "ledger_path": str(ledger_path),
-                    "topic_document_path": str(topic_path),
-                    "imported_result_count": len(imported_results),
-                    "coordination_state": "unknown",
-                    "idempotent_replay": True,
-                }
+                return _document_context_replay_response(
+                    ledger_path=ledger_path,
+                    manifest_path=manifest_path,
+                    manifest=manifest,
+                    selected_identity=selected_identity,
+                    topic_path=topic_path,
+                    storage_mode=storage_mode,
+                    idempotency_key=key,
+                    request_fingerprint=fingerprint,
+                    imported_result_count=len(imported_results),
+                )
             data = _render_ledger(
                 project_id=manifest["project_id"],
                 tree_id=manifest["tree_id"],
@@ -1796,6 +1828,10 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
         return {
             "ok": True, "state": "read", "ledger_revision": int(frontmatter["ledger_revision"]),
             "record_revision": topic_record["record_revision"], "topic_document_sha256": current_digest,
+            "current_phase": topic_record["current_phase"],
+            "phase_state": topic_record["phase_state"],
+            "review_state": topic_record["review_state"],
+            "topic_state": topic_record["topic_state"],
             "active_question_count": len(active_questions),
             "pending_document_write_count": len(
                 [item for item in pending if item["state"] != "completed"]
@@ -1885,6 +1921,27 @@ def handle(request: Any) -> dict[str, Any]:
     )
 
 
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ProtocolError("invalid_json", f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_floating_point_json_number(_: str) -> Any:
+    raise ProtocolError(
+        "invalid_json", "floating-point JSON values are unsupported"
+    )
+
+
+def _reject_non_finite_json_number(_: str) -> Any:
+    raise ProtocolError("invalid_json", "non-finite JSON values are unsupported")
+
+
 def main() -> int:
     request: Any = None
     try:
@@ -1893,7 +1950,12 @@ def main() -> int:
             raise ProtocolError(
                 "invalid_request", f"request exceeds {MAX_REQUEST_BYTES} bytes"
             )
-        request = json.loads(raw)
+        request = json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_float=_reject_floating_point_json_number,
+            parse_constant=_reject_non_finite_json_number,
+        )
         response = handle(request)
         returncode = 0
     except (json.JSONDecodeError, UnicodeDecodeError) as error:

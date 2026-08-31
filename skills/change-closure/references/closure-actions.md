@@ -1,14 +1,18 @@
 # Closure Actions
 
-1. Verify the reported implementation merge and candidate ancestry from Git.
-2. Read closure-owned documents at the current target HEAD.
-3. Decide exact document bytes and paths; stop on a new requirement or semantic
+1. For an attached discussion, enter the topic-local Stage-4 route in
+   [`lifecycle-integration.md`](../../design-discussion/references/lifecycle-integration.md)
+   before closure work. Standalone closure skips this step.
+2. Verify the reported implementation merge and candidate ancestry from Git.
+3. Read closure-owned documents at the current target HEAD.
+4. Decide exact document bytes and paths; stop on a new requirement or semantic
    conflict.
-4. When bytes change, call `start-worktree` for a new closure branch/worktree,
+5. When bytes change, call `start-worktree` for a new closure branch/worktree,
    call `verify-worktree` against that exact working directory, edit and commit
    only those paths, then call `complete-worktree` with the current target HEAD.
-5. When bytes do not change, create no worktree and no commit.
-6. Verify final target and cleanup, then report local and remote outcomes.
+6. When bytes do not change, create no worktree and no commit.
+7. Verify final target and cleanup. For an attached discussion, finish the
+   topic-local Stage-4 route; then report local and remote outcomes.
 
 An integration failure before merge preserves the documentation worktree for
 correction. A `cleanup_failed` result already contains a merge commit and must
