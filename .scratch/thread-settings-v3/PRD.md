@@ -1,6 +1,7 @@
 # Thread settings v3：支持原生子任务身份
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 日期：2026-08-31
 
@@ -49,7 +50,8 @@ Codex 官方文档只保证每个 subagent 有独立的 agent thread，并继承
 - 不修改 subagent governance、派发协议、worktree 协议或 Stage 3 权限边界。
 - 不允许通过删除身份校验、忽略 `CODEX_SESSION_ID` 或回退到默认模型来绕过故障。
 - 不把父线程 ID、会话谱系 ID、消息内容或 rollout 路径加入公开回执。
-- 不顺带支持尚未观测到的未知 `source` 对象形态；新形态应失败关闭并显式升级协议。
+- 不顺带让 `--current` 支持尚未观测到的未知 `source` 对象形态；新形态应失败
+  关闭并显式升级协议。显式 `--thread-id` 仍可读取不参与当前身份验证的历史字段。
 
 ## 术语和身份模型
 
@@ -96,8 +98,9 @@ rollout 的子任务形态，不用于读取父任务设置，也不进入公开
 
 - 继续信任调用方已经获得的 exact authenticated/tool-returned thread ID。
 - 继续验证 rollout 文件名和 `session_meta.id`，但不依赖当前进程的环境变量。
-- 历史 rollout 若没有 v3 当前任务适配器所需的谱系字段，仍可按既有绑定读取；
-  这条兼容只适用于显式 `--thread-id`，不能降级 `--current`。
+- 历史 rollout 若没有 v3 当前任务适配器所需的谱系字段，或使用旧式 `source`
+  结构，仍可按既有线程绑定读取；这条兼容只适用于显式 `--thread-id`，不能降级
+  `--current`。
 
 ### `--current` 根任务形态
 
@@ -308,3 +311,13 @@ Implementation Task 能通过 thread-settings gate 并进入 `verify-worktree`�
 
 - 2026-08-31：根据原始故障、当前源码、现有测试、根任务与原生子任务的脱敏
   `session_meta` 形态完成修复设计；尚未修改运行代码或安装副本。
+- 2026-08-31：实现 commit `ff9ff090cc7ccc7d853a1233035a1d18d89da63e` 已快进
+  集成到 `main`。thread-settings 聚焦测试 19 项通过；仓库全量验证 144 项通过，
+  repository state 为 `valid`。
+- 2026-08-31：项目内与 cc-switch 两组安装副本的五个 Workflow Skills 已同步，
+  每个 Skill 的内容 manifest 均与 `main` 来源一致；两组 owner 均报告
+  `thread-settings-v3`。
+- 2026-08-31：只读原生子任务 smoke 返回 `status: match`；隔离 fixture 的
+  Dedicated Implementation Task 依次通过 thread-settings gate 与
+  `verify-worktree`（`verified: true`），前后工作区均干净。fixture worktree 和
+  分支已清理，临时目录已移入废纸篓；未执行回滚。
