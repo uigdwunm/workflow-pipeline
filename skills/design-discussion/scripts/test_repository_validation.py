@@ -31,6 +31,10 @@ class RepositoryValidationTests(unittest.TestCase):
             REPOSITORY
             / "skills/guided-implementation/references/originating-task-protocol.md"
         ).read_text(encoding="utf-8")
+        worktree_execution = (
+            REPOSITORY
+            / "skills/guided-implementation/references/worktree-execution.md"
+        ).read_text(encoding="utf-8")
         normalized_guided = " ".join(guided.split())
         normalized_execution = " ".join(execution.split())
         normalized_originating = " ".join(originating.split())
@@ -65,6 +69,16 @@ class RepositoryValidationTests(unittest.TestCase):
             "merges that target, runs affected and full checks, and commits a replacement candidate",
         ):
             self.assertIn(marker, normalized_originating)
+        normalized_worktree_execution = " ".join(worktree_execution.split())
+        self.assertNotIn("reruns verification and review", normalized_worktree_execution)
+        for marker in (
+            "Dedicated Implementation Task merges the new target",
+            "runs affected and full checks",
+            "commits a replacement candidate",
+            "Originating Task establishes the new review fixed point",
+            "reruns both Standards and Spec axes",
+        ):
+            self.assertIn(marker, normalized_worktree_execution)
 
     def test_stage_three_uses_executable_thread_settings_verification(self) -> None:
         execution = (

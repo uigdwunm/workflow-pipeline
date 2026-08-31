@@ -838,6 +838,23 @@ def _validate_mutation(value: Any, key: str) -> dict[str, Any]:
     return value
 
 
+def _single_active_question_record(
+    records: dict[str, list[dict[str, Any]]],
+    *,
+    topic_id: str,
+    multiple_active_message: str,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    active_question_record = None
+    for record in records["Pending Items"]:
+        if record.get("topic_id") == topic_id and record.get("item_kind") == "question":
+            question = _json_field(record, "data_json", "question")
+            if question["state"] == "active":
+                if active_question_record is not None:
+                    raise ProtocolError("state_corrupt", multiple_active_message)
+                active_question_record = (record, question)
+    return active_question_record
+
+
 def _apply_mutation_to_records(
     records: dict[str, list[dict[str, Any]]],
     *,
@@ -850,14 +867,11 @@ def _apply_mutation_to_records(
     result: dict[str, Any] = {}
     if mutation_type == "confirm-decision":
         _expect_keys(mutation, {"type", "summary", "rationale"}, "confirm-decision mutation")
-        active_question_records = []
-        for record in records["Pending Items"]:
-            if record.get("topic_id") == topic_id and record.get("item_kind") == "question":
-                question = _json_field(record, "data_json", "question")
-                if question["state"] == "active":
-                    active_question_records.append((record, question))
-        if len(active_question_records) > 1:
-            raise ProtocolError("state_corrupt", "topic has more than one active question")
+        active_question_record = _single_active_question_record(
+            records,
+            topic_id=topic_id,
+            multiple_active_message="topic has more than one active question",
+        )
         decision_id = f"D-{seed}"
         data = {
             "decision_id": decision_id,
@@ -869,8 +883,8 @@ def _apply_mutation_to_records(
         records["Pending Items"].append(
             {"item_id": decision_id, "item_kind": "decision", "topic_id": topic_id, "data_json": _canonical_json(data)}
         )
-        if active_question_records:
-            question_record, question = active_question_records[0]
+        if active_question_record is not None:
+            question_record, question = active_question_record
             question["state"] = "answered"
             question["answered_by_decision_id"] = decision_id
             question_record["data_json"] = _canonical_json(question)
@@ -894,21 +908,22 @@ def _apply_mutation_to_records(
         result["question_id"] = question_id
     elif mutation_type == "insert-idea":
         _expect_keys(mutation, {"type", "summary"}, "insert-idea mutation")
-        active_records = []
-        for record in records["Pending Items"]:
-            if record.get("topic_id") == topic_id and record.get("item_kind") == "question":
-                data = _json_field(record, "data_json", "question")
-                if data["state"] == "active":
-                    data["state"] = "suspended"
-                    record["data_json"] = _canonical_json(data)
-                    active_records.append(data)
-        if len(active_records) > 1:
-            raise ProtocolError("state_corrupt", "topic has multiple active questions")
+        active_question_record = _single_active_question_record(
+            records,
+            topic_id=topic_id,
+            multiple_active_message="topic has multiple active questions",
+        )
+        suspended_question_id = None
+        if active_question_record is not None:
+            question_record, question = active_question_record
+            question["state"] = "suspended"
+            question_record["data_json"] = _canonical_json(question)
+            suspended_question_id = question["question_id"]
         idea_id = f"I-{seed}"
         idea = {
             "idea_id": idea_id,
             "summary": _expect_string(mutation["summary"], "mutation.summary", max_bytes=4096),
-            "suspended_question_id": active_records[0]["question_id"] if active_records else None,
+            "suspended_question_id": suspended_question_id,
         }
         records["Pending Items"].append(
             {"item_id": idea_id, "item_kind": "idea", "topic_id": topic_id, "data_json": _canonical_json(idea)}
@@ -1833,9 +1848,11 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
         handoff_count = _validate_handoffs(records)
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         snapshot = _topic_snapshot(records, request["actor_topic_id"])
-        active_questions = [question for question in snapshot["questions"] if question["state"] == "active"]
-        if len(active_questions) > 1:
-            raise ProtocolError("state_corrupt", "topic has more than one active question")
+        active_question_record = _single_active_question_record(
+            records,
+            topic_id=request["actor_topic_id"],
+            multiple_active_message="topic has more than one active question",
+        )
         current_digest = _sha256(_require_regular_nosymlink(topic_path, "topic document"))
         pending = [dict(record) for record in records["Pending Document Writes"]]
         return {
@@ -1845,12 +1862,12 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
             "phase_state": topic_record["phase_state"],
             "review_state": topic_record["review_state"],
             "topic_state": topic_record["topic_state"],
-            "active_question_count": len(active_questions),
+            "active_question_count": 1 if active_question_record is not None else 0,
             "pending_document_write_count": len(
                 [item for item in pending if item["state"] != "completed"]
             ),
             "checkpoint_count": len(checkpoints), "handoff_count": handoff_count,
-            "active_question": active_questions[0] if active_questions else None,
+            "active_question": active_question_record[1] if active_question_record else None,
             "pending_document_writes": pending, "checkpoints": checkpoints, **snapshot,
         }
 
