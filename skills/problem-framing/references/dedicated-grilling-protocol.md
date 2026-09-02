@@ -48,7 +48,7 @@ title after the original identity has been frozen.
 
 After freezing the exact original `threadId`, read
 `<guided-implementation-skill-root>/references/thread-settings-protocol.md`
-completely and use its `thread-settings-v3` `resolve --thread-id` Interface.
+completely and use its `thread-settings-v4` `resolve --thread-id` Interface.
 The returned receipt is the only settings evidence; never replace it with a
 broader search or the frozen task metadata above.
 

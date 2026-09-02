@@ -23,6 +23,8 @@ SPEC.loader.exec_module(MODULE)
 class ThreadSettingsTests(unittest.TestCase):
     thread_id = "019fd6ea-2afb-73e0-810c-0bb2636aeaae"
     parent_thread_id = "019fd6ea-2afb-73e0-810c-0bb2636aeab0"
+    first_segment_id = "019fd6ea-2afb-73e0-810c-0bb2636aeab1"
+    second_segment_id = "019fd6ea-2afb-73e0-810c-0bb2636aeab2"
 
     def make_rollout(
         self,
@@ -36,11 +38,16 @@ class ThreadSettingsTests(unittest.TestCase):
         include_source: bool = True,
         contexts: list[tuple[str, str, str]] | None = None,
         trailing_fragment: str | None = None,
+        segment_id: str | None = None,
+        history_base_id: str | None = None,
+        paginated: bool = False,
+        timestamp: str = "2026-08-06T19-51-38",
     ) -> Path:
         resolved_thread_id = thread_id or self.thread_id
         folder = root / "2026" / "08" / "06"
         folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"rollout-2026-08-06T19-51-38-{resolved_thread_id}.jsonl"
+        segment_suffix = f"_{segment_id}" if segment_id else ""
+        path = folder / f"rollout-{timestamp}-{resolved_thread_id}{segment_suffix}.jsonl"
         session_meta = {
             "id": (
                 resolved_thread_id
@@ -56,6 +63,17 @@ class ThreadSettingsTests(unittest.TestCase):
             )
         if include_source:
             session_meta["source"] = source
+        if paginated:
+            session_meta["history_mode"] = "paginated"
+            session_meta["history_base"] = (
+                None
+                if history_base_id is None
+                else {
+                    "thread_id": history_base_id,
+                    "end_ordinal_exclusive": 1,
+                    "end_byte_offset": 1,
+                }
+            )
         records = [
             {
                 "type": "session_meta",
@@ -88,7 +106,68 @@ class ThreadSettingsTests(unittest.TestCase):
         path.write_text(contents)
         return path
 
-    def test_resolve_returns_latest_v3_receipt_without_private_fields(self):
+    def test_resolve_uses_latest_paginated_rollout_context(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory)
+            self.make_rollout(root, contexts=[])
+            self.make_rollout(
+                root,
+                segment_id=self.first_segment_id,
+                paginated=True,
+                contexts=[("gpt-5.6-terra", "medium", "turn-1")],
+                timestamp="2026-08-06T19-52-38",
+            )
+            self.make_rollout(
+                root,
+                segment_id=self.second_segment_id,
+                history_base_id=self.first_segment_id,
+                paginated=True,
+                contexts=[("gpt-5.6-sol", "high", "turn-2")],
+                timestamp="2026-08-06T19-53-38",
+            )
+
+            result = MODULE.resolve_thread_settings(self.thread_id, root)
+
+        self.assertEqual(result["model"], "gpt-5.6-sol")
+        self.assertEqual(result["reasoning_effort"], "high")
+        self.assertEqual(result["turn_id"], "turn-2")
+
+    def test_paginated_rollout_uses_latest_complete_context_in_chain(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory)
+            self.make_rollout(
+                root,
+                segment_id=self.first_segment_id,
+                paginated=True,
+                contexts=[("gpt-5.6-sol", "high", "turn-1")],
+            )
+            self.make_rollout(
+                root,
+                segment_id=self.second_segment_id,
+                history_base_id=self.first_segment_id,
+                paginated=True,
+                contexts=[],
+                timestamp="2026-08-06T19-52-38",
+            )
+
+            result = MODULE.resolve_thread_settings(self.thread_id, root)
+
+        self.assertEqual(result["turn_id"], "turn-1")
+
+    def test_paginated_rollout_rejects_unproven_history(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory)
+            self.make_rollout(
+                root,
+                segment_id=self.second_segment_id,
+                history_base_id=self.first_segment_id,
+                paginated=True,
+            )
+
+            with self.assertRaisesRegex(MODULE.SettingsError, "incomplete"):
+                MODULE.resolve_thread_settings(self.thread_id, root)
+
+    def test_resolve_returns_latest_v4_receipt_without_private_fields(self):
         with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
             self.make_rollout(
@@ -102,7 +181,7 @@ class ThreadSettingsTests(unittest.TestCase):
         self.assertEqual(
             result,
             {
-                "protocol": "thread-settings-v3",
+                "protocol": "thread-settings-v4",
                 "source": "codex-rollout-latest-turn-context",
                 "thread_id": self.thread_id,
                 "model": "gpt-5.6-sol",
@@ -422,7 +501,7 @@ class ThreadSettingsTests(unittest.TestCase):
                 env=environment,
             )
         self.assertEqual(version.returncode, 0)
-        self.assertEqual(version.stdout.strip(), "thread-settings-v3")
+        self.assertEqual(version.stdout.strip(), "thread-settings-v4")
         self.assertEqual(changed.returncode, 2)
         self.assertEqual(json.loads(changed.stdout)["status"], "changed")
 
@@ -435,7 +514,7 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
         owner = self.read("skills/guided-implementation/SKILL.md")
         self.assertIn("[references/thread-settings-protocol.md]", owner)
 
-    def test_dynamic_consumers_use_shared_v3_interface(self):
+    def test_dynamic_consumers_use_shared_v4_interface(self):
         consumers = {
             "skills/design-discussion/references/child-topic-protocol.md": (
                 "resolve --current",
@@ -453,7 +532,7 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
         for path, operations in consumers.items():
             with self.subTest(path=path):
                 protocol = self.read(path)
-                self.assertIn("thread-settings-v3", protocol)
+                self.assertIn("thread-settings-v4", protocol)
                 self.assertIn("thread-settings-protocol.md", protocol)
                 for operation in operations:
                     self.assertIn(operation, protocol)
@@ -476,7 +555,7 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
 
     def test_dependency_contract_requires_one_workflow_version(self):
         contract = self.read("docs/dependencies.md")
-        self.assertIn("thread-settings-v3", contract)
+        self.assertIn("thread-settings-v4", contract)
         self.assertIn("workflow_runtime_version_mismatch", contract)
         self.assertRegex(contract, r"same\s+workflow-pipeline version")
 

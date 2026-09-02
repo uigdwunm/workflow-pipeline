@@ -15,7 +15,7 @@ Complete every pending `DW-*`, publish the latest verified `CP-*` with purpose
 `split` for a child or `handoff` for a continuation, and include that checkpoint
 in `authoritative_references`. Read
 `<guided-implementation-skill-root>/references/thread-settings-protocol.md`
-completely and use `thread-settings-v3` `resolve --current` to inherit the
+completely and use `thread-settings-v4` `resolve --current` to inherit the
 current task's model and reasoning effort. A user-requested supported pair may
 replace inheritance with source `user-requested-override`. Resolve settings
 before calling `prepare-handoff` so an unavailable current Adapter or

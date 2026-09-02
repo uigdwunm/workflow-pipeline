@@ -48,7 +48,7 @@ not invent missing decisions or create another persistent draft.
 Read
 `<guided-implementation-skill-root>/references/thread-settings-protocol.md`
 completely. For current-task inheritance, require
-`thread-settings-v3` and use `resolve --current`. Require the returned pair to
+`thread-settings-v4` and use `resolve --current`. Require the returned pair to
 be advertised by the current `spawn_agent` capability. A user-requested
 explicit supported pair uses source `user-requested-override` and never claims
 current-task inheritance. An unavailable current Adapter, settings receipt,
