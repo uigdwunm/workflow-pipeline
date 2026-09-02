@@ -207,6 +207,29 @@ class RepositoryValidationTests(unittest.TestCase):
         self.assertIn("$ask-matt", closure)
         self.assertIn("representation", closure)
 
+    def test_stage_four_rechecks_overall_completion_in_every_flow_mode(self) -> None:
+        closure = (
+            REPOSITORY / "skills/change-closure/SKILL.md"
+        ).read_text(encoding="utf-8")
+
+        review_start = closure.index(
+            "Before the originating task reports the overall request complete"
+        )
+        footer_start = closure.index("归档结果：成功", review_start)
+        review = closure[review_start:footer_start]
+
+        for marker in (
+            "in every flow mode",
+            "the user's request",
+            "the work promised by the primary flow",
+            "every requested or promised item has an explicit completed outcome",
+            "nothing remains in progress, pending, identified as a next step",
+            "A successful stage result proves only that stage",
+            "Emit the success footer only after the recheck passes",
+        ):
+            self.assertIn(marker, review)
+        self.assertIn("整体复检：通过", closure[footer_start:])
+
     def test_direct_implementation_has_committed_source_and_phase_run_seam(self) -> None:
         framing = (
             REPOSITORY / "skills/problem-framing/SKILL.md"

@@ -86,8 +86,19 @@ grants no push, tracker update or other remote write; each requires separate
 explicit authority. Report remote operations exactly; local completion never
 implies a push.
 
+Before the originating task reports the overall request complete, perform one
+brief overall completion recheck in every flow mode. Review the user's request,
+the work promised by the primary flow, and this task's execution record. Confirm
+that every requested or promised item has an explicit completed outcome and that
+nothing remains in progress, pending, identified as a next step, or otherwise
+unhandled. A successful stage result proves only that stage; it never proves the
+overall request complete by itself. If this recheck finds remaining work,
+continue it within the existing authority or report the actual incomplete item
+or blocker. Emit the success footer only after the recheck passes.
+
 ```text
 归档结果：成功
+整体复检：通过（用户要求和主流程承诺的工作均已完成，无待处理事项）
 实现提交：<accepted candidate>
 归档提交：<closure candidate commit | none>
 最终合并：<merge commit | none when standalone and unchanged>
