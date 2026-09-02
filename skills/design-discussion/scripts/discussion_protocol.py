@@ -52,6 +52,7 @@ from discussion_core.state import (
     _validate_revisions,
     _validate_uuid4,
     _verify_ledger_digest,
+    _verify_topic_path_authority,
     _verify_topic_owner,
 )
 from discussion_core.checkpoints import (
@@ -1019,6 +1020,7 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
         if replay is not None:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        _verify_topic_path_authority(topic_record, topic_path)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(
             records,
@@ -1145,6 +1147,7 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
         if replay is not None:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        _verify_topic_path_authority(topic_record, topic_path)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(
             records,
@@ -1155,6 +1158,11 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
         write = _record_by_id(records["Pending Document Writes"], "document_write_id", request["document_write_id"], "document_write_id")
         if write["owner_ref"] != owner_ref or write["state"] != "confirmed-but-pending":
             raise ProtocolError("document_write_state_conflict", "document write is not pending for this owner")
+        if write.get("topic_path") != str(topic_path):
+            raise ProtocolError(
+                "state_corrupt",
+                "pending document write path does not match the authoritative topic path",
+            )
         payload_path = Path(write["payload_path"])
         payload = _require_regular_nosymlink(payload_path, "pending document payload")
         if _sha256(payload) != write["after_sha256"]:
@@ -1571,6 +1579,22 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
                 "context_identity_conflict",
                 "document-only manifest is incomplete",
             )
+    for field, kind in (
+        ("project_id", "project"),
+        ("tree_id", "tree"),
+        ("topic_id", "topic"),
+    ):
+        value = manifest[field]
+        if not value.startswith(f"{kind}-") or not IDENTITY_RE.fullmatch(value):
+            raise ProtocolError(
+                "context_identity_conflict",
+                f"document-only manifest has invalid {field}",
+            )
+    if not ROOT_SLUG_RE.fullmatch(manifest["root_slug"]):
+        raise ProtocolError(
+            "context_identity_conflict",
+            "document-only manifest has invalid root_slug",
+        )
     explicit_topic = "topic_identity" in request
     if explicit_topic:
         topic_identity = request["topic_identity"]
@@ -1847,6 +1871,7 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
         checkpoints = _validate_checkpoints(project, records)
         handoff_count = _validate_handoffs(records)
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        _verify_topic_path_authority(topic_record, topic_path)
         snapshot = _topic_snapshot(records, request["actor_topic_id"])
         active_question_record = _single_active_question_record(
             records,

@@ -593,6 +593,27 @@ def _evolution_paths(
         _require_regular_nosymlink(manifest_path, "project identity manifest"),
         "project identity manifest",
     )
+    for field, kind in (
+        ("project_id", "project"),
+        ("tree_id", "tree"),
+        ("topic_id", "topic"),
+    ):
+        value = manifest.get(field)
+        if (
+            not isinstance(value, str)
+            or not value.startswith(f"{kind}-")
+            or not IDENTITY_RE.fullmatch(value)
+        ):
+            raise ProtocolError(
+                "state_corrupt",
+                f"project identity manifest has invalid {field}",
+            )
+    root_slug = manifest.get("root_slug")
+    if not isinstance(root_slug, str) or not ROOT_SLUG_RE.fullmatch(root_slug):
+        raise ProtocolError(
+            "state_corrupt",
+            "project identity manifest has invalid root_slug",
+        )
     observed = (manifest.get("project_id"), manifest.get("tree_id"))
     if observed != (project_id, tree_id) or (
         not allow_tree_topic and manifest.get("topic_id") != topic_id
@@ -603,7 +624,7 @@ def _evolution_paths(
         )
     coordination_root, _ = _coordination_root(project)
     ledger_path = coordination_root / "projects" / project_id / "trees" / tree_id / "ledger.md"
-    topic_path = project / "docs" / "discussions" / manifest["root_slug"] / "topic.md"
+    topic_path = project / "docs" / "discussions" / root_slug / "topic.md"
     lock_path = coordination_root / "locks" / _project_lock_name(project)
     return project, ledger_path, topic_path, lock_path, owner_ref
 
@@ -615,6 +636,88 @@ def _record_by_id(
     if len(matches) != 1:
         raise ProtocolError("record_not_found", f"{label} does not identify one record")
     return matches[0]
+
+
+def _record_topic_document_path(
+    project: Path,
+    topic_record: dict[str, Any],
+) -> Path:
+    root_slug = topic_record.get("root_slug")
+    topic_document_path = topic_record.get("topic_document_path")
+    if (
+        not isinstance(root_slug, str)
+        or not ROOT_SLUG_RE.fullmatch(root_slug)
+        or not isinstance(topic_document_path, str)
+    ):
+        raise ProtocolError(
+            "state_corrupt",
+            "topic ledger record has an invalid document path authority",
+        )
+    expected = project / "docs" / "discussions" / root_slug / "topic.md"
+    if topic_document_path != str(expected):
+        raise ProtocolError(
+            "state_corrupt",
+            "topic document path does not match the authoritative ledger topic",
+        )
+    return expected
+
+
+def _verify_topic_path_authority(
+    topic_record: dict[str, Any],
+    topic_path: Path,
+    *,
+    records: dict[str, list[dict[str, Any]]] | None = None,
+) -> Path:
+    project = topic_path.parents[3]
+    if records is None:
+        authorized_path = _record_topic_document_path(project, topic_record)
+        if authorized_path != topic_path:
+            raise ProtocolError(
+                "state_corrupt",
+                "topic document path does not match the authoritative ledger topic",
+            )
+        return authorized_path
+
+    current = topic_record
+    document_record = (
+        current if isinstance(current.get("topic_document_path"), str) else None
+    )
+    visited: set[str] = set()
+    while True:
+        current_topic_id = current.get("topic_id")
+        if not isinstance(current_topic_id, str) or current_topic_id in visited:
+            raise ProtocolError("state_corrupt", "topic ancestry is invalid")
+        visited.add(current_topic_id)
+        parent_topic_id = current.get("parent_topic_id")
+        if parent_topic_id is None:
+            break
+        if not isinstance(parent_topic_id, str):
+            raise ProtocolError("state_corrupt", "topic ancestry is invalid")
+        matches = [
+            record
+            for record in records["Current Topics"]
+            if record.get("topic_id") == parent_topic_id
+        ]
+        if len(matches) != 1:
+            raise ProtocolError("state_corrupt", "topic ancestry is invalid")
+        current = matches[0]
+        if document_record is None and isinstance(
+            current.get("topic_document_path"), str
+        ):
+            document_record = current
+
+    root_path = _record_topic_document_path(project, current)
+    if root_path != topic_path:
+        raise ProtocolError(
+            "state_corrupt",
+            "project manifest does not match the authoritative root topic",
+        )
+    if document_record is None:
+        raise ProtocolError(
+            "state_corrupt",
+            "topic ancestry has no authoritative document path",
+        )
+    return _record_topic_document_path(project, document_record)
 
 
 def _verify_topic_owner(

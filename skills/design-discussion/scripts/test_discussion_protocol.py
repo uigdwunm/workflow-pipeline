@@ -829,6 +829,113 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(current["review_state"], "unreviewed")
         self.assertEqual(current["topic_state"], "open")
 
+    def test_read_topic_rejects_absolute_manifest_slug(self) -> None:
+        project = self.make_project("read-topic-absolute-slug", git=False)
+        topic = self.bootstrap_topic(project)
+        topic_path = Path(str(topic["topic_document_path"]))
+        external_root = self.root / "external-topic-root"
+        external_root.mkdir()
+        (external_root / "topic.md").write_bytes(topic_path.read_bytes())
+        manifest_path = project / "docs" / "discussions" / ".codex-project.md"
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(
+                "root_slug: checkout-redesign",
+                f"root_slug: {external_root}",
+            ),
+            encoding="utf-8",
+        )
+
+        returncode, rejected, _ = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "state_corrupt")
+
+    def test_valid_manifest_slug_retarget_is_rejected_by_topic_consumers(self) -> None:
+        for operation in ("read-topic", "prepare-checkpoint", "prepare-phase-run"):
+            with self.subTest(operation=operation):
+                project = self.make_project(f"valid-slug-retarget-{operation}", git=False)
+                topic = self.bootstrap_topic(project)
+                topic_path = Path(str(topic["topic_document_path"]))
+                sibling_path = (
+                    project / "docs" / "discussions" / "sibling-topic" / "topic.md"
+                )
+                sibling_path.parent.mkdir(parents=True)
+                sibling_path.write_bytes(topic_path.read_bytes())
+                manifest_path = project / "docs" / "discussions" / ".codex-project.md"
+                manifest_path.write_text(
+                    manifest_path.read_text(encoding="utf-8").replace(
+                        "root_slug: checkout-redesign",
+                        "root_slug: sibling-topic",
+                    ),
+                    encoding="utf-8",
+                )
+                if operation == "read-topic":
+                    request = self.evolution_request(topic, operation=operation)
+                elif operation == "prepare-checkpoint":
+                    request = self.checkpoint_request(
+                        topic,
+                        operation=operation,
+                        ledger_revision=1,
+                        purpose="pause",
+                        base_ref="project-root",
+                    )
+                else:
+                    request = self.phase_request(
+                        topic,
+                        operation,
+                        1,
+                        from_phase=0,
+                        to_phase=1,
+                        route="0->1",
+                        carrier_kind="worker",
+                    )
+
+                returncode, rejected, _ = self.run_cli(request)
+
+                self.assertEqual(returncode, 1)
+                self.assertEqual(rejected["error"]["code"], "state_corrupt")
+
+    def test_cancel_checkpoint_rejects_manifest_slug_retarget_without_mutating_ledger(
+        self,
+    ) -> None:
+        project = self.make_project("cancel-checkpoint-slug-retarget", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_checkpoint(
+            topic,
+            ledger_revision=1,
+            base_ref="project-root",
+        )
+        topic_path = Path(str(topic["topic_document_path"]))
+        sibling_path = project / "docs" / "discussions" / "sibling-topic" / "topic.md"
+        sibling_path.parent.mkdir(parents=True)
+        sibling_path.write_bytes(topic_path.read_bytes())
+        manifest_path = project / "docs" / "discussions" / ".codex-project.md"
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(
+                "root_slug: checkout-redesign",
+                "root_slug: sibling-topic",
+            ),
+            encoding="utf-8",
+        )
+        ledger_path = Path(str(topic["ledger_path"]))
+        ledger_before = ledger_path.read_bytes()
+
+        returncode, rejected, _ = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="cancel-checkpoint",
+                ledger_revision=2,
+                checkpoint_id=prepared["checkpoint_id"],
+                reason="manifest path drift",
+            )
+        )
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "state_corrupt")
+        self.assertEqual(ledger_path.read_bytes(), ledger_before)
+
     def test_v2_ledger_requires_a_complete_creation_receipt(self) -> None:
         project = self.make_project("v2-creation-receipt", git=False)
         topic = self.bootstrap_topic(project)
@@ -2750,6 +2857,58 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(initialized["imported_result_count"], 1)
         self.assertEqual(initialized["coordination_state"], "unknown")
 
+    def test_document_only_implicit_initialization_rejects_path_bearing_manifest_identities(
+        self,
+    ) -> None:
+        for field in ("project_id", "tree_id"):
+            with self.subTest(field=field):
+                project = self.make_project(f"document-only-invalid-{field}", git=False)
+                seed = self.bootstrap_topic(project)
+                Path(str(seed["ledger_path"])).unlink()
+                coordination_root = project / ".codex" / "design-discussion" / "v1"
+                escaped_root = self.root / f"escaped-ledger-{field}"
+                if field == "project_id":
+                    malicious_value = str(escaped_root)
+                else:
+                    tree_parent = (
+                        coordination_root
+                        / "projects"
+                        / str(seed["project_id"])
+                        / "trees"
+                    )
+                    malicious_value = os.path.relpath(escaped_root, tree_parent)
+
+                manifest_path = project / "docs" / "discussions" / ".codex-project.md"
+                topic_path = Path(str(seed["topic_document_path"]))
+                original_value = str(seed[field])
+                for path in (manifest_path, topic_path):
+                    path.write_text(
+                        path.read_text(encoding="utf-8").replace(
+                            f"{field}: {original_value}",
+                            f"{field}: {malicious_value}",
+                        ),
+                        encoding="utf-8",
+                    )
+
+                returncode, rejected, _ = self.run_cli(
+                    {
+                        "protocol_version": 1,
+                        "operation": "initialize-document-context",
+                        "project_path": str(project),
+                        "conversation_ref": "discussion-task",
+                        "idempotency_key": str(uuid.uuid4()),
+                        "user_authorization": True,
+                        "verified_results": [],
+                    }
+                )
+
+                self.assertEqual(returncode, 1)
+                self.assertEqual(
+                    rejected["error"]["code"],
+                    "context_identity_conflict",
+                )
+                self.assertFalse(escaped_root.exists())
+
     def test_discovered_child_document_can_initialize_exact_authorized_context(self) -> None:
         project = self.make_project("document-only-child-initialize", git=False)
         root = self.bootstrap_topic(project)
@@ -3121,6 +3280,85 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         returncode, rejected, _ = self.run_cli(oversized)
         self.assertEqual(returncode, 1)
         self.assertEqual(rejected["error"]["code"], "handoff_payload_too_large")
+
+    def test_child_phase_rejects_root_manifest_slug_retarget(self) -> None:
+        project = self.make_project("child-phase-slug-retarget", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic)
+        child_ref = "codex-thread:retargeted-child"
+
+        returncode, _, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="bind-handoff",
+                ledger_revision=2,
+                handoff_id=prepared["handoff_id"],
+                attempt_id=prepared["attempt_id"],
+                conversation_ref=child_ref,
+                verified_identity={
+                    "project_id": topic["project_id"],
+                    "tree_id": topic["tree_id"],
+                    "topic_id": prepared["target_topic_id"],
+                    "handoff_id": prepared["handoff_id"],
+                    "attempt_id": prepared["attempt_id"],
+                    "payload_sha256": prepared["payload_sha256"],
+                },
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        accept = self.handoff_request(
+            topic,
+            operation="accept-handoff",
+            ledger_revision=3,
+            owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            payload_sha256=prepared["payload_sha256"],
+            source_reference_sha256=prepared["authoritative_references_sha256"],
+            turn_number=1,
+        )
+        accept["actor_topic_id"] = prepared["target_topic_id"]
+        self.assertEqual(self.run_cli(accept)[0], 0)
+        authorize = self.handoff_request(
+            topic,
+            operation="authorize-handoff-discussion",
+            ledger_revision=4,
+            owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"],
+            turn_number=2,
+        )
+        authorize["actor_topic_id"] = prepared["target_topic_id"]
+        self.assertEqual(self.run_cli(authorize)[0], 0)
+
+        topic_path = Path(str(topic["topic_document_path"]))
+        sibling_path = project / "docs" / "discussions" / "sibling-topic" / "topic.md"
+        sibling_path.parent.mkdir(parents=True)
+        sibling_path.write_bytes(topic_path.read_bytes())
+        manifest_path = project / "docs" / "discussions" / ".codex-project.md"
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(
+                "root_slug: checkout-redesign",
+                "root_slug: sibling-topic",
+            ),
+            encoding="utf-8",
+        )
+        request = self.phase_request(
+            topic,
+            "prepare-phase-run",
+            5,
+            from_phase=0,
+            to_phase=2,
+            route="0->2",
+            carrier_kind="current-topic",
+        )
+        request["actor_topic_id"] = prepared["target_topic_id"]
+        request["actor_conversation_ref"] = child_ref
+
+        returncode, rejected, _ = self.run_cli(request)
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "state_corrupt")
 
     def test_handoff_requires_verified_binding_then_first_turn_acceptance_and_later_turn(self) -> None:
         project = self.make_project("handoff-gate", git=False)
@@ -4032,6 +4270,95 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(inspected["decisions"][0]["decision_id"], prepared["decision_id"])
         self.assertEqual(inspected["pending_document_writes"][0]["state"], "completed")
+
+    def test_apply_document_write_rejects_manifest_slug_retarget_without_mutating_either_topic(
+        self,
+    ) -> None:
+        project = self.make_project("document-write-slug-retarget", git=False)
+        topic = self.bootstrap_topic(project)
+        topic_path = Path(str(topic["topic_document_path"]))
+        original_bytes = topic_path.read_bytes()
+        sibling_path = project / "docs" / "discussions" / "sibling-topic" / "topic.md"
+        sibling_path.parent.mkdir(parents=True)
+        sibling_path.write_bytes(original_bytes)
+
+        returncode, prepared, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-topic-update",
+                expected_revision=1,
+                mutation={
+                    "type": "confirm-decision",
+                    "summary": "Keep one authoritative topic path.",
+                    "rationale": "A mutable manifest must not retarget a pending write.",
+                },
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+
+        manifest_path = project / "docs" / "discussions" / ".codex-project.md"
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(
+                "root_slug: checkout-redesign",
+                "root_slug: sibling-topic",
+            ),
+            encoding="utf-8",
+        )
+
+        returncode, rejected, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="apply-document-write",
+                expected_revision=2,
+                expected_topic_revision=2,
+                document_write_id=prepared["document_write_id"],
+            )
+        )
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "state_corrupt")
+        self.assertEqual(topic_path.read_bytes(), original_bytes)
+        self.assertEqual(sibling_path.read_bytes(), original_bytes)
+
+    def test_apply_document_write_rejects_ledger_topic_path_drift(self) -> None:
+        project = self.make_project("document-write-ledger-path-drift", git=False)
+        topic = self.bootstrap_topic(project)
+        topic_path = Path(str(topic["topic_document_path"]))
+        original_bytes = topic_path.read_bytes()
+        returncode, prepared, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-topic-update",
+                expected_revision=1,
+                mutation={
+                    "type": "confirm-decision",
+                    "summary": "Bind writes to ledger authority.",
+                    "rationale": "The apply step must reject a changed topic path.",
+                },
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        ledger_path = Path(str(topic["ledger_path"]))
+        sibling_path = topic_path.parent.parent / "sibling-topic" / "topic.md"
+        self.rewrite_ledger_with_valid_digest(
+            ledger_path,
+            f'topic_document_path: "{topic_path}"',
+            f'topic_document_path: "{sibling_path}"',
+        )
+
+        returncode, rejected, _ = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="apply-document-write",
+                expected_revision=2,
+                expected_topic_revision=2,
+                document_write_id=prepared["document_write_id"],
+            )
+        )
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "state_corrupt")
+        self.assertEqual(topic_path.read_bytes(), original_bytes)
 
     def test_confirming_decision_answers_active_question_and_allows_the_next_question(self) -> None:
         project = self.make_project("decision-answers-question", git=True)
@@ -5471,6 +5798,11 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             published["snapshot_digest"],
         )
         self.assertEqual(snapshot_path.stat().st_mode & 0o777, 0o400)
+        self.assertEqual(snapshot_path.stat().st_nlink, 1)
+        self.assertEqual(
+            [path.name for path in snapshot_path.parent.iterdir() if path.name.startswith(".")],
+            [],
+        )
         second = self.prepare_checkpoint(topic, ledger_revision=3, base_ref="project-root")
         returncode, reused, stderr = self.run_cli(
             self.checkpoint_request(
@@ -5534,6 +5866,83 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(deleted["deleted"], dry_run["candidates"])
         self.assertFalse(orphan_path.exists())
         self.assertTrue(snapshot_path.exists())
+
+    def test_non_git_snapshot_publication_rejects_symlinked_object_parent(self) -> None:
+        project = self.make_project("snapshot-symlinked-parent", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_checkpoint(
+            topic,
+            ledger_revision=1,
+            base_ref="project-root",
+        )
+        ledger_path = Path(str(topic["ledger_path"]))
+        ledger_before = ledger_path.read_bytes()
+        external_root = self.root / "external-snapshots"
+        external_root.mkdir()
+        snapshot_root = project / ".codex" / "design-discussion" / "v1" / "checkpoints"
+        snapshot_root.symlink_to(external_root, target_is_directory=True)
+
+        returncode, rejected, _ = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="publish-non-git-checkpoint",
+                ledger_revision=2,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=1,
+            )
+        )
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(rejected["error"]["code"], "invalid_storage_path")
+        self.assertEqual(ledger_path.read_bytes(), ledger_before)
+        self.assertEqual(list(external_root.iterdir()), [])
+
+    def test_non_git_snapshot_publication_rejects_ancestor_swap_before_create(
+        self,
+    ) -> None:
+        project = self.make_project("snapshot-ancestor-swap", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_checkpoint(
+            topic,
+            ledger_revision=1,
+            base_ref="project-root",
+        )
+        request = self.checkpoint_request(
+            topic,
+            operation="publish-non-git-checkpoint",
+            ledger_revision=2,
+            checkpoint_id=prepared["checkpoint_id"],
+            expected_checkpoint_revision=1,
+        )
+        ledger_path = Path(str(topic["ledger_path"]))
+        ledger_before = ledger_path.read_bytes()
+        coordination_parent = project / ".codex"
+        retained_parent = project / ".codex-retained"
+        external_root = self.root / "external-ancestor-swap"
+        external_root.mkdir()
+
+        def swap_coordination_parent(name: str) -> None:
+            if name != "snapshot-before-create":
+                return
+            coordination_parent.rename(retained_parent)
+            coordination_parent.symlink_to(external_root, target_is_directory=True)
+
+        try:
+            with mock.patch(
+                "discussion_core.checkpoints._inject_failure",
+                side_effect=swap_coordination_parent,
+            ):
+                with self.assertRaises(PROTOCOL.ProtocolError) as raised:
+                    PROTOCOL._publish_non_git_checkpoint(request)
+        finally:
+            if coordination_parent.is_symlink():
+                coordination_parent.unlink()
+            if retained_parent.exists():
+                retained_parent.rename(coordination_parent)
+
+        self.assertEqual(raised.exception.code, "invalid_storage_path")
+        self.assertEqual(ledger_path.read_bytes(), ledger_before)
+        self.assertEqual(list(external_root.iterdir()), [])
 
 
 

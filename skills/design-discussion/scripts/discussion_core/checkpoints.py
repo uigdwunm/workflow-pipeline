@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import tempfile
 import uuid
-from typing import Any
+from typing import Any, Iterator
 
 from .state import (
     ProtocolError,
     _active_pending_write,
-    _atomic_replace,
     _canonical_json,
     _coordination_root,
     _evolution_paths,
@@ -33,6 +34,7 @@ from .state import (
     _topic_snapshot,
     _validate_revisions,
     _validate_uuid4,
+    _verify_topic_path_authority,
     _verify_topic_owner,
     _write_ledger_transaction,
 )
@@ -41,6 +43,209 @@ from .state import (
 CHECKPOINT_PURPOSES = {"pause", "handoff", "split", "stage-entry", "implementation-source"}
 CHECKPOINT_ACTIVE_STATES = {"prepared", "outcome-unknown"}
 CHECKPOINT_GC_ACTIVE_STATES = {"outcome-unknown"}
+
+
+def _snapshot_path(project: Path, digest: str) -> Path:
+    return (
+        project
+        / ".codex"
+        / "design-discussion"
+        / "v1"
+        / "checkpoints"
+        / "sha256"
+        / digest[:2]
+        / digest
+    )
+
+
+@contextmanager
+def _snapshot_parent_directory(
+    project: Path,
+    digest: str,
+    *,
+    create: bool,
+) -> Iterator[int | None]:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptors: list[int] = []
+    try:
+        try:
+            current = os.open(project, flags)
+        except OSError as error:
+            raise ProtocolError(
+                "invalid_storage_path",
+                "checkpoint project root is not a safe directory",
+                cause=str(error),
+            ) from error
+        descriptors.append(current)
+        for component, may_create in (
+            (".codex", False),
+            ("design-discussion", False),
+            ("v1", False),
+            ("checkpoints", create),
+            ("sha256", create),
+            (digest[:2], create),
+        ):
+            if may_create:
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=current)
+                except FileExistsError:
+                    pass
+                except OSError as error:
+                    raise ProtocolError(
+                        "invalid_storage_path",
+                        "cannot create the checkpoint snapshot directory",
+                        cause=str(error),
+                    ) from error
+            try:
+                child = os.open(component, flags, dir_fd=current)
+            except FileNotFoundError:
+                if not may_create:
+                    if component in {"checkpoints", "sha256", digest[:2]}:
+                        yield None
+                        return
+                    raise ProtocolError(
+                        "invalid_storage_path",
+                        "checkpoint coordination root is incomplete",
+                    )
+                raise ProtocolError(
+                    "invalid_storage_path",
+                    "checkpoint snapshot directory disappeared during creation",
+                )
+            except OSError as error:
+                raise ProtocolError(
+                    "invalid_storage_path",
+                    "checkpoint snapshot path contains an unsafe directory",
+                    cause=str(error),
+                ) from error
+            descriptors.append(child)
+            current = child
+        yield current
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _read_snapshot_object(parent_fd: int, digest: str) -> bytes | None:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        descriptor = os.open(digest, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ProtocolError(
+            "checkpoint_snapshot_corrupt",
+            "checkpoint snapshot is not a safe immutable object",
+            cause=str(error),
+        ) from error
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+            raise ProtocolError(
+                "checkpoint_snapshot_corrupt",
+                "checkpoint snapshot must be a single-link regular file",
+            )
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            return stream.read()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _publish_snapshot_object(
+    project: Path,
+    digest: str,
+    snapshot_bytes: bytes,
+) -> tuple[Path, bool]:
+    snapshot_path = _snapshot_path(project, digest)
+    with _snapshot_parent_directory(
+        project,
+        digest,
+        create=True,
+    ) as parent_fd:
+        if parent_fd is None:
+            raise ProtocolError(
+                "invalid_storage_path",
+                "checkpoint snapshot directory could not be created",
+            )
+        existing = _read_snapshot_object(parent_fd, digest)
+        if existing is not None:
+            if existing != snapshot_bytes or _sha256(existing) != digest:
+                raise ProtocolError(
+                    "checkpoint_snapshot_corrupt",
+                    "existing content-addressed snapshot does not match its digest",
+                )
+            return snapshot_path, True
+
+        temporary = f".{digest}.{uuid.uuid4().hex}.tmp"
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_NOFOLLOW
+                | os.O_CLOEXEC,
+                0o400,
+                dir_fd=parent_fd,
+            )
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(snapshot_bytes)
+                stream.flush()
+                os.fchmod(stream.fileno(), 0o400)
+                os.fsync(stream.fileno())
+            try:
+                os.link(
+                    temporary,
+                    digest,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+                reused = False
+            except FileExistsError:
+                raced = _read_snapshot_object(parent_fd, digest)
+                if raced != snapshot_bytes or _sha256(raced or b"") != digest:
+                    raise ProtocolError(
+                        "checkpoint_snapshot_corrupt",
+                        "racing checkpoint snapshot does not match its digest",
+                    )
+                reused = True
+            return snapshot_path, reused
+        except ProtocolError:
+            raise
+        except OSError as error:
+            raise ProtocolError(
+                "checkpoint_snapshot_corrupt",
+                "cannot publish the checkpoint snapshot safely",
+                cause=str(error),
+            ) from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            cleanup_error: OSError | None = None
+            try:
+                os.unlink(temporary, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                cleanup_error = error
+            try:
+                os.fsync(parent_fd)
+            except OSError as error:
+                raise ProtocolError(
+                    "checkpoint_snapshot_corrupt",
+                    "cannot durably publish the checkpoint snapshot",
+                    cause=str(error),
+                ) from error
+            if cleanup_error is not None:
+                raise ProtocolError(
+                    "checkpoint_snapshot_corrupt",
+                    "cannot remove the checkpoint snapshot staging file",
+                    cause=str(cleanup_error),
+                ) from cleanup_error
 
 
 def _checkpoint_id(idempotency_key: str) -> str:
@@ -465,6 +670,7 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         if replay is not None:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        _verify_topic_path_authority(topic_record, topic_path)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         if _active_pending_write(records) is not None:
@@ -657,6 +863,7 @@ def _cancel_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         if replay is not None:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        _verify_topic_path_authority(topic_record, topic_path)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         record = _checkpoint_record(records, _expect_string(request["checkpoint_id"], "checkpoint_id"))
@@ -704,6 +911,7 @@ def _publish_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         if replay is not None:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        _verify_topic_path_authority(topic_record, topic_path)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         record = _checkpoint_record(records, _expect_string(request["checkpoint_id"], "checkpoint_id"))
@@ -883,6 +1091,7 @@ def _publish_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         if replay is not None:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        _verify_topic_path_authority(topic_record, topic_path)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         active_gc = _active_checkpoint_gc(records)
@@ -911,27 +1120,12 @@ def _publish_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         snapshot_digest = checkpoint["snapshot_digest"]
         if _sha256(snapshot_bytes) != snapshot_digest:
             raise ProtocolError("state_corrupt", "frozen snapshot bytes do not match their prepared digest")
-        snapshot_path = ledger_path.parents[4] / "checkpoints" / "sha256" / snapshot_digest[:2] / snapshot_digest
-        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
         _inject_failure("snapshot-before-create")
-        if snapshot_path.exists():
-            try:
-                existing = _require_regular_nosymlink(
-                    snapshot_path, "checkpoint snapshot"
-                )
-            except ProtocolError as error:
-                raise ProtocolError(
-                    "checkpoint_snapshot_corrupt",
-                    "existing content-addressed snapshot is not a safe immutable object",
-                    cause=error.message,
-                ) from error
-            if _sha256(existing) != snapshot_digest or existing != snapshot_bytes:
-                raise ProtocolError("checkpoint_snapshot_corrupt", "existing content-addressed snapshot does not match its digest")
-            reused = True
-        else:
-            _atomic_replace(snapshot_path, snapshot_bytes, mode=0o400)
-            snapshot_path.chmod(0o400)
-            reused = False
+        snapshot_path, reused = _publish_snapshot_object(
+            project,
+            snapshot_digest,
+            snapshot_bytes,
+        )
         _inject_failure("snapshot-after-create-before-result-record")
         checkpoint["state"] = "completed"
         checkpoint["record_revision"] += 1
@@ -984,9 +1178,18 @@ def _reconcile_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         snapshot_digest = checkpoint["snapshot_digest"]
         if _sha256(snapshot_bytes) != snapshot_digest:
             raise ProtocolError("state_corrupt", "frozen snapshot bytes do not match their prepared digest")
-        snapshot_path = ledger_path.parents[4] / "checkpoints" / "sha256" / snapshot_digest[:2] / snapshot_digest
-        if snapshot_path.exists():
-            existing = _require_regular_nosymlink(snapshot_path, "checkpoint snapshot")
+        snapshot_path = _snapshot_path(project, snapshot_digest)
+        with _snapshot_parent_directory(
+            project,
+            snapshot_digest,
+            create=False,
+        ) as parent_fd:
+            existing = (
+                None
+                if parent_fd is None
+                else _read_snapshot_object(parent_fd, snapshot_digest)
+            )
+        if existing is not None:
             if existing != snapshot_bytes:
                 raise ProtocolError("checkpoint_snapshot_corrupt", "uncertain snapshot object does not match frozen bytes")
             next_state = "completed"

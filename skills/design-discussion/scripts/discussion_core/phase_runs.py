@@ -26,6 +26,7 @@ from .state import (
     _validate_revisions,
     _validate_uuid4,
     _validated_string_list,
+    _verify_topic_path_authority,
     _verify_topic_owner,
     _write_ledger_transaction,
 )
@@ -174,6 +175,17 @@ def _verify_wrapper_checkpoint_current(
     data: dict[str, Any],
     topic_path: Path,
 ) -> None:
+    topic_record = _record_by_id(
+        records["Current Topics"],
+        "topic_id",
+        data["source_topic_id"],
+        "topic_id",
+    )
+    topic_path = _verify_topic_path_authority(
+        topic_record,
+        topic_path,
+        records=records,
+    )
     checkpoint = _completed_checkpoint(records, data["source_checkpoint_id"])
     if (
         checkpoint.get("topic_id") != data.get("source_topic_id")
@@ -880,6 +892,11 @@ def _claim_phase_carrier(request: dict[str, Any]) -> dict[str, Any]:
 def _authoritative_phase_evidence(
     topic_path: Path, records: dict[str, list[dict[str, Any]]], topic: dict[str, Any]
 ) -> dict[str, str]:
+    topic_path = _verify_topic_path_authority(
+        topic,
+        topic_path,
+        records=records,
+    )
     topic_id = topic["topic_id"]
     dimensions = {
         "source": _sha256(_require_regular_nosymlink(topic_path, "topic document")),
@@ -1823,4 +1840,3 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
             result=result,
         )
         return result
-
