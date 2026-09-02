@@ -248,6 +248,42 @@ def _staged_paths(repository: Path) -> list[str]:
         raise ProtocolError("git_failed", "staged path is not valid UTF-8") from error
 
 
+def _ignored_paths(repository: Path, candidate_paths: list[str]) -> list[str]:
+    pathspecs: set[str] = set()
+    for path in candidate_paths:
+        parts = path.split("/")
+        pathspecs.update(
+            "/".join(parts[:index]) for index in range(1, len(parts) + 1)
+        )
+    completed = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+            "--",
+            *sorted(pathspecs),
+        ],
+        cwd=repository,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        raise ProtocolError(
+            "git_failed",
+            completed.stderr.decode("utf-8", errors="replace").strip()
+            or "cannot inspect ignored paths",
+        )
+    try:
+        return sorted(
+            item.decode("utf-8") for item in completed.stdout.split(b"\0") if item
+        )
+    except UnicodeDecodeError as error:
+        raise ProtocolError("git_failed", "ignored path is not valid UTF-8") from error
+
+
 def _is_ancestor(repository: Path, ancestor: str, descendant: str) -> bool:
     completed = _run_git(
         repository,
@@ -279,6 +315,14 @@ def _flock_with_timeout(
 
 def _path_matches(path: str, scopes: list[str]) -> bool:
     return any(path == scope or path.startswith(scope + "/") for scope in scopes)
+
+
+def _paths_overlap(first: str, second: str) -> bool:
+    return (
+        first == second
+        or first.startswith(second + "/")
+        or second.startswith(first + "/")
+    )
 
 
 def _changed_paths(repository: Path, older: str, newer: str) -> list[str]:
@@ -533,6 +577,18 @@ def _merge_candidate_into_target(
             "primary checkout has staged changes that could enter the merge",
             context={"paths": staged_paths},
         )
+    candidate_paths = _changed_paths(repository, expected_target_head, candidate)
+    ignored_collisions = [
+        ignored
+        for ignored in _ignored_paths(repository, candidate_paths)
+        if any(_paths_overlap(ignored, changed) for changed in candidate_paths)
+    ]
+    if ignored_collisions:
+        raise ProtocolError(
+            "checkout_not_clean",
+            "primary checkout has ignored files that the candidate could overwrite",
+            context={"paths": ignored_collisions},
+        )
     original_status = _full_status(repository)
     merged = _run_git(
         repository,
@@ -586,6 +642,114 @@ def _merge_candidate_into_target(
     return merge_commit
 
 
+def _restore_planning_commit(
+    worktree: Path,
+    planning_commit: str,
+    original_error: ProtocolError,
+) -> None:
+    restored = _run_git(
+        worktree,
+        ["reset", "--hard", planning_commit],
+        check=False,
+    )
+    observed_head = _git_text(worktree, ["rev-parse", "HEAD"])
+    if (
+        restored.returncode != 0
+        or observed_head != planning_commit
+        or _full_status(worktree)
+    ):
+        raise ProtocolError(
+            "integration_restore_failed",
+            "failed publication did not restore the accepted planning commit",
+            context={
+                "observed_head": observed_head,
+                "original_error": original_error.code,
+            },
+        ) from original_error
+
+
+def _prepare_planning_candidate(
+    binding: dict[str, Any],
+    planning_commit: str,
+    allowed_paths: list[str],
+    protected_paths: list[str],
+) -> tuple[str, str, list[str]]:
+    repository = Path(binding["repository"])
+    worktree = Path(binding["worktree"])
+    target_head = _branch_oid(repository, binding["target_branch"])
+    if target_head is None:
+        raise ProtocolError("target_changed", "target branch no longer exists")
+    if not _is_ancestor(repository, binding["base_commit"], target_head):
+        raise ProtocolError(
+            "target_changed",
+            "target no longer descends from the flow base",
+        )
+    for path in protected_paths:
+        if _run_git(
+            repository,
+            ["cat-file", "-e", f"{binding['base_commit']}:{path}"],
+            check=False,
+        ).returncode != 0:
+            raise ProtocolError(
+                "source_missing",
+                f"protected path is not committed at the flow base: {path}",
+            )
+    source_changes = [
+        path
+        for path in _changed_paths(repository, binding["base_commit"], target_head)
+        if _path_matches(path, protected_paths)
+    ]
+    if source_changes:
+        raise ProtocolError(
+            "source_changed",
+            "committed planning sources changed after flow creation",
+            context={"paths": source_changes},
+        )
+    if not _is_ancestor(repository, target_head, planning_commit):
+        refreshed = _run_git(
+            worktree,
+            ["merge", "--no-edit", target_head],
+            check=False,
+        )
+        if refreshed.returncode != 0:
+            conflicts = _changed_paths(repository, planning_commit, target_head)
+            unresolved = _run_git(
+                worktree,
+                ["diff", "--name-only", "--diff-filter=U"],
+                check=False,
+            ).stdout.splitlines()
+            _run_git(worktree, ["merge", "--abort"], check=False)
+            restored = _git_text(worktree, ["rev-parse", "HEAD"])
+            if restored != planning_commit or _full_status(worktree):
+                raise ProtocolError(
+                    "integration_restore_failed",
+                    "failed planning refresh did not restore the Flow Worktree",
+                )
+            if unresolved:
+                raise ProtocolError(
+                    "planning_conflict",
+                    "planning publication conflicts with the latest target",
+                    context={"paths": sorted(unresolved)},
+                )
+            raise ProtocolError(
+                "integration_failed",
+                refreshed.stderr.strip()
+                or refreshed.stdout.strip()
+                or "cannot refresh planning from target",
+                context={"paths": conflicts},
+            )
+    candidate = _expect_oid(_git_text(worktree, ["rev-parse", "HEAD"]), "candidate")
+    changed = _validate_candidate(
+        binding,
+        candidate,
+        target_head,
+        binding["base_commit"],
+        allowed_paths,
+        protected_paths,
+    )
+    return target_head, candidate, changed
+
+
 def publish_planning(input_path: Path) -> dict[str, Any]:
     request = _load_input(input_path)
     _expect_keys(
@@ -616,75 +780,29 @@ def publish_planning(input_path: Path) -> dict[str, Any]:
         closefd=True,
     ) as lock_stream:
         _flock_with_timeout(lock_stream)
-        target_head = _branch_oid(repository, binding["target_branch"])
-        if target_head is None:
-            raise ProtocolError("target_changed", "target branch no longer exists")
-        if not _is_ancestor(repository, binding["base_commit"], target_head):
-            raise ProtocolError("target_changed", "target no longer descends from the flow base")
-        for path in protected_paths:
-            if _run_git(
-                repository,
-                ["cat-file", "-e", f"{binding['base_commit']}:{path}"],
-                check=False,
-            ).returncode != 0:
-                raise ProtocolError(
-                    "source_missing",
-                    f"protected path is not committed at the flow base: {path}",
+        for attempt in range(2):
+            try:
+                target_head, candidate, changed = _prepare_planning_candidate(
+                    binding,
+                    planning_commit,
+                    allowed_paths,
+                    protected_paths,
                 )
-        source_changes = [
-            path
-            for path in _changed_paths(repository, binding["base_commit"], target_head)
-            if _path_matches(path, protected_paths)
-        ]
-        if source_changes:
-            raise ProtocolError(
-                "source_changed",
-                "committed planning sources changed after flow creation",
-                context={"paths": source_changes},
-            )
-        if not _is_ancestor(repository, target_head, planning_commit):
-            refreshed = _run_git(
-                worktree,
-                ["merge", "--no-edit", target_head],
-                check=False,
-            )
-            if refreshed.returncode != 0:
-                conflicts = _changed_paths(repository, planning_commit, target_head)
-                unresolved = _run_git(
-                    worktree,
-                    ["diff", "--name-only", "--diff-filter=U"],
-                    check=False,
-                ).stdout.splitlines()
-                _run_git(worktree, ["merge", "--abort"], check=False)
-                restored = _git_text(worktree, ["rev-parse", "HEAD"])
-                if restored != planning_commit or _full_status(worktree):
-                    raise ProtocolError(
-                        "integration_restore_failed",
-                        "failed planning refresh did not restore the Flow Worktree",
-                    )
-                if unresolved:
-                    raise ProtocolError(
-                        "planning_conflict",
-                        "planning publication conflicts with the latest target",
-                        context={"paths": sorted(unresolved)},
-                    )
-                raise ProtocolError(
-                    "integration_failed",
-                    refreshed.stderr.strip()
-                    or refreshed.stdout.strip()
-                    or "cannot refresh planning from target",
-                    context={"paths": conflicts},
+                merge_commit = _merge_candidate_into_target(
+                    binding,
+                    candidate,
+                    target_head,
                 )
-        candidate = _expect_oid(_git_text(worktree, ["rev-parse", "HEAD"]), "candidate")
-        changed = _validate_candidate(
-            binding,
-            candidate,
-            target_head,
-            binding["base_commit"],
-            allowed_paths,
-            protected_paths,
-        )
-        merge_commit = _merge_candidate_into_target(binding, candidate, target_head)
+            except ProtocolError as error:
+                if error.code == "integration_unverified" and error.context.get(
+                    "merge_commit"
+                ):
+                    raise
+                _restore_planning_commit(worktree, planning_commit, error)
+                if error.code == "target_changed" and attempt == 0:
+                    continue
+                raise
+            break
         advanced = _run_git(
             worktree,
             ["merge", "--ff-only", merge_commit],

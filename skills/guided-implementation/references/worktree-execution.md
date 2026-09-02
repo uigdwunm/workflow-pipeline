@@ -45,10 +45,15 @@ operation does not check whether planning files previously existed or resemble
 other files; it validates only the declared path boundary.
 
 Unrelated unstaged changes in the primary checkout are preserved. Staged
-primary-checkout changes, a changed protected source, or another Git failure
-stop publication with the exact error and retained state. If the target merge
-was published but advancing the Flow Worktree fails, the result is a
-post-publication recovery problem; do not publish the planning candidate again.
+primary-checkout changes and ignored paths that overlap candidate paths stop
+before the target merge; unrelated ignored paths remain untouched. If any
+pre-publication check or merge fails, the Flow Worktree returns to the exact
+accepted `planning_commit`, so the same request remains retryable. A target
+race is refreshed and retried once while the lock is held; a second race or
+another Git failure returns the exact error with that retained state. If the
+target merge was published but advancing the Flow Worktree fails, the result
+is a post-publication recovery problem; do not publish the planning candidate
+again.
 
 ## `complete-worktree`
 
@@ -68,7 +73,8 @@ The command holds one process-local publication file lock only while checking
 and updating the shared checkout. If the lock is unavailable for five seconds,
 it returns `publication_busy` without changing or removing the worktree.
 Unrelated unstaged primary-checkout changes are preserved; staged changes stop
-publication.
+publication. Ignored paths that overlap candidate paths also stop publication
+before Git can overwrite them; unrelated ignored paths do not block it.
 
 When two candidates race from one base, one completes and the other receives
 `target_changed`. The Dedicated Implementation Task merges the new target into

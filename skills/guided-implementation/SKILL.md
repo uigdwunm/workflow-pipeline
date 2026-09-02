@@ -130,7 +130,7 @@ work.
 
 If the target branch advances, inspect the committed changes since the binding
 base. A changed source path stops for user direction. Otherwise merge the new
-target HEAD into the implementation worktree, repair ordinary conflicts there,
+target HEAD into the Flow Worktree, repair ordinary conflicts there,
 rerun affected checks, and commit the replacement candidate. The Originating
 Task handles its review under the authoritative role contract.
 

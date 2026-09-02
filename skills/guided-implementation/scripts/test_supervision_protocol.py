@@ -501,6 +501,9 @@ class WorktreeProtocolTests(unittest.TestCase):
         self.assertEqual(parents, [target_before_publish, result["candidate_commit"]])
 
     def test_publish_planning_preserves_unrelated_primary_checkout_changes(self) -> None:
+        (self.repository / ".gitignore").write_text("local.cache\n", encoding="utf-8")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "ignore local cache")
         binding = self.start("planning-dirty")
         worktree = Path(str(binding["worktree"]))
         planning_commit = self.commit(
@@ -510,6 +513,7 @@ class WorktreeProtocolTests(unittest.TestCase):
             "add plan",
         )
         (self.repository / "b.txt").write_text("user change\n", encoding="utf-8")
+        (self.repository / "local.cache").write_text("local bytes\n", encoding="utf-8")
 
         result = PROTOCOL.publish_planning(
             self.publish_input(
@@ -522,6 +526,7 @@ class WorktreeProtocolTests(unittest.TestCase):
 
         self.assertEqual(result["state"], "planning_published")
         self.assertEqual((self.repository / "b.txt").read_text(), "user change\n")
+        self.assertEqual((self.repository / "local.cache").read_text(), "local bytes\n")
         self.assertEqual(self.git("status", "--short"), "M b.txt")
         self.assertTrue(worktree.is_dir())
 
@@ -554,6 +559,125 @@ class WorktreeProtocolTests(unittest.TestCase):
         self.assertEqual(self.git("status", "--short"), "M  b.txt")
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=worktree), planning_commit)
         self.assertTrue(worktree.is_dir())
+
+    def test_publish_planning_rejects_ignored_checkout_collision_without_touching_it(self) -> None:
+        (self.repository / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "ignore local file")
+        binding = self.start("planning-ignored")
+        worktree = Path(str(binding["worktree"]))
+        (worktree / "ignored.txt").write_text("accepted plan\n", encoding="utf-8")
+        self.git("add", "-f", "ignored.txt", cwd=worktree)
+        self.git("commit", "-q", "-m", "add ignored plan", cwd=worktree)
+        planning_commit = self.git("rev-parse", "HEAD", cwd=worktree)
+        target_head = self.git("rev-parse", "main")
+        (self.repository / "ignored.txt").write_text("user secret\n", encoding="utf-8")
+
+        with self.assertRaises(PROTOCOL.ProtocolError) as raised:
+            PROTOCOL.publish_planning(
+                self.publish_input(
+                    "planning-ignored",
+                    binding,
+                    planning_commit,
+                    allowed_paths=["ignored.txt"],
+                )
+            )
+
+        self.assertEqual(raised.exception.code, "checkout_not_clean")
+        self.assertEqual(raised.exception.context["paths"], ["ignored.txt"])
+        self.assertEqual(self.git("rev-parse", "main"), target_head)
+        self.assertEqual(
+            (self.repository / "ignored.txt").read_text(encoding="utf-8"),
+            "user secret\n",
+        )
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=worktree), planning_commit)
+        self.assertTrue(worktree.is_dir())
+
+    def test_failed_planning_publication_restores_the_exact_retry_commit(self) -> None:
+        binding = self.start("planning-retry")
+        worktree = Path(str(binding["worktree"]))
+        planning_commit = self.commit(
+            worktree,
+            "plan.md",
+            "accepted plan\n",
+            "add plan",
+        )
+        (self.repository / "unrelated.txt").write_text("main change\n", encoding="utf-8")
+        self.git("add", "unrelated.txt")
+        self.git("commit", "-q", "-m", "advance main")
+        target_head = self.git("rev-parse", "main")
+        (self.repository / "b.txt").write_text("staged user change\n", encoding="utf-8")
+        self.git("add", "b.txt")
+        publish_input = self.publish_input(
+            "planning-retry",
+            binding,
+            planning_commit,
+            allowed_paths=["plan.md"],
+        )
+
+        with self.assertRaises(PROTOCOL.ProtocolError) as raised:
+            PROTOCOL.publish_planning(publish_input)
+
+        self.assertEqual(raised.exception.code, "checkout_not_clean")
+        self.assertEqual(self.git("rev-parse", "main"), target_head)
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=worktree), planning_commit)
+        self.assertEqual(self.git("status", "--short", cwd=worktree), "")
+
+        self.git("restore", "--staged", "b.txt")
+        result = PROTOCOL.publish_planning(publish_input)
+
+        self.assertEqual(result["state"], "planning_published")
+        self.assertEqual((self.repository / "b.txt").read_text(), "staged user change\n")
+        self.assertEqual(self.git("status", "--short"), "M b.txt")
+
+    def test_target_race_during_planning_publication_retries_once(self) -> None:
+        binding = self.start("planning-race")
+        worktree = Path(str(binding["worktree"]))
+        planning_commit = self.commit(
+            worktree,
+            "plan.md",
+            "accepted plan\n",
+            "add plan",
+        )
+        (self.repository / "first.txt").write_text("first\n", encoding="utf-8")
+        self.git("add", "first.txt")
+        self.git("commit", "-q", "-m", "first target advance")
+        original_merge = PROTOCOL._merge_candidate_into_target
+        merge_attempts = 0
+
+        def advance_target_once(
+            candidate_binding: dict[str, object],
+            candidate: str,
+            expected_target_head: str,
+        ) -> str:
+            nonlocal merge_attempts
+            merge_attempts += 1
+            if merge_attempts == 1:
+                (self.repository / "second.txt").write_text("second\n", encoding="utf-8")
+                self.git("add", "second.txt")
+                self.git("commit", "-q", "-m", "second target advance")
+            return original_merge(candidate_binding, candidate, expected_target_head)
+
+        with mock.patch.object(
+            PROTOCOL,
+            "_merge_candidate_into_target",
+            side_effect=advance_target_once,
+        ):
+            result = PROTOCOL.publish_planning(
+                self.publish_input(
+                    "planning-race",
+                    binding,
+                    planning_commit,
+                    allowed_paths=["plan.md"],
+                )
+            )
+
+        self.assertEqual(result["state"], "planning_published")
+        self.assertEqual(merge_attempts, 2)
+        self.assertEqual((self.repository / "first.txt").read_text(), "first\n")
+        self.assertEqual((self.repository / "second.txt").read_text(), "second\n")
+        self.assertEqual((self.repository / "plan.md").read_text(), "accepted plan\n")
+        self.assertEqual(self.git("status", "--short", cwd=worktree), "")
 
     def test_publish_planning_conflict_preserves_the_original_candidate(self) -> None:
         binding = self.start("planning-conflict")
