@@ -52,7 +52,7 @@ entry without an upstream Flow Worktree keeps its existing behavior.
 6. As a standalone Stage-3 caller, I want Stage 3 to create its own Flow Worktree, so that implementation remains usable without Stage 2.
 7. As a recovery caller, I want retries to continue the exact retained worktree, so that completed work and Git identity are preserved.
 8. As a workflow user, I want an invalid claimed upstream binding to stop instead of creating a second worktree, so that one logical flow cannot split silently.
-9. As a Stage-4 caller, I want closure to reuse the implementation worktree and own the final merge and cleanup, so that implementation and closure remain one isolated delivery.
+9. As a Stage-4 caller, I want closure to reuse the Flow Worktree and own the final merge and cleanup, so that implementation and closure remain one isolated delivery.
 10. As a repository maintainer, I want Git commits, refs, and registered worktrees to remain the execution authority, so that the change introduces no parallel lifecycle store.
 
 ## Implementation Decisions
@@ -76,8 +76,12 @@ entry without an upstream Flow Worktree keeps its existing behavior.
   Worktree when necessary, attempts the planning merge, and returns the exact
   planning and target merge commits.
 - A successful merge is automatic and silent. A target advance is refreshed
-  and retried. A real content conflict preserves the Flow Worktree and routes
-  the exact conflict to the user through the existing anomaly decision flow.
+  and retried once. Any failure before the target merge restores the exact
+  accepted planning commit. A real content conflict preserves the Flow
+  Worktree and routes the exact conflict to the user through the existing
+  anomaly decision flow.
+- Before merging into the primary checkout, reject only ignored paths that
+  overlap candidate paths. Preserve unrelated ignored paths without blocking.
 - After publication, fast-forward the Flow Worktree branch to the planning
   merge commit. Stage 3 therefore starts from the same commit now visible on
   the target branch.
@@ -148,6 +152,9 @@ lease, queue, proposal store, or compatibility dispatcher is added.
 - Verify concurrent target advancement is retried through the existing short
   publication lock and compare-and-swap checks rather than treated as a
   terminal conflict.
+- Place ignored primary-checkout bytes at a candidate path; verify publication
+  stops before merge, preserves those bytes, and retains the exact planning
+  commit for retry. Verify unrelated ignored bytes do not block publication.
 - Complete a final Stage-4 candidate and verify the target merge parents and
   tree, non-force worktree removal, and merged branch deletion.
 

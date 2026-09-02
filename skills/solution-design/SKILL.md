@@ -157,10 +157,11 @@ After accepting the trusted child's clean planning commit, call
 requirement-source paths. A successful publication needs no user confirmation:
 it retains the Flow Worktree for Stage 3; record the planning merge commit and
 verify the Flow Worktree at that commit, then carry its exact binding into
-Stage 3. A `planning_conflict` or other
-publication anomaly stops through the existing anomaly protocol with the same
-child, worktree, branch, and planning commit preserved. Do not create a
-replacement. Do not add checks for pre-existing or duplicate planning files.
+Stage 3. The protocol retries one target race itself. A `planning_conflict` or
+other publication anomaly stops through the existing anomaly protocol with the
+same child, worktree, branch, and exact planning commit preserved. Do not
+create a replacement. Do not add checks for pre-existing or duplicate planning
+files.
 
 In stepwise mode, show the fixed success footer from `references/templates.md`.
 Exact `确认` enters `$guided-implementation`. Exact
