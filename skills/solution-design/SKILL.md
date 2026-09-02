@@ -158,10 +158,11 @@ requirement-source paths. A successful publication needs no user confirmation:
 it retains the Flow Worktree for Stage 3; record the planning merge commit and
 verify the Flow Worktree at that commit, then carry its exact binding into
 Stage 3. The protocol retries one target race itself. A `planning_conflict` or
-other publication anomaly stops through the existing anomaly protocol with the
-same child, worktree, branch, and exact planning commit preserved. Do not
-create a replacement. Do not add checks for pre-existing or duplicate planning
-files.
+other pre-publication anomaly stops through the existing anomaly protocol with
+the same child, worktree, branch, and exact planning commit preserved. A
+post-publication `integration_unverified` result preserves the published Git
+state and must not call `publish-planning` again. Do not create a replacement.
+Do not add checks for pre-existing or duplicate planning files.
 
 In stepwise mode, show the fixed success footer from `references/templates.md`.
 Exact `确认` enters `$guided-implementation`. Exact

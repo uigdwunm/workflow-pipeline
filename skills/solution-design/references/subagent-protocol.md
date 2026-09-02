@@ -230,7 +230,9 @@ target merge restores the exact accepted planning commit. A real content
 conflict returns through
 `SOLUTION_DESIGN_ANOMALY` for user direction; the same child and Flow Worktree
 resume afterward. Do not infer conflict from file existence or similarity, and
-do not validate planning files for duplication.
+do not validate planning files for duplication. Once the planning commit is on
+the target, preserve that Git state and route `integration_unverified` as
+post-publication recovery without calling `publish-planning` again.
 
 ## Waiting, decisions, and recovery
 

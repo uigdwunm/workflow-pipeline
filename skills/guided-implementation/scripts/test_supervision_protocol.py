@@ -116,6 +116,45 @@ class WorktreeProtocolTests(unittest.TestCase):
             },
         )
 
+    def publish_with_failed_flow_advance(
+        self,
+        worktree: Path,
+        publish_input: Path,
+    ) -> PROTOCOL.ProtocolError:
+        original_run_git = PROTOCOL._run_git
+        failed_advance = False
+
+        def fail_first_flow_advance(
+            repository: Path,
+            arguments: list[str],
+            *,
+            check: bool = True,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal failed_advance
+            if (
+                repository == worktree
+                and arguments[:2] == ["merge", "--ff-only"]
+                and not failed_advance
+            ):
+                failed_advance = True
+                return subprocess.CompletedProcess(
+                    ["git", *arguments],
+                    1,
+                    "",
+                    "forced Flow Worktree advance failure",
+                )
+            return original_run_git(repository, arguments, check=check)
+
+        with mock.patch.object(
+            PROTOCOL,
+            "_run_git",
+            side_effect=fail_first_flow_advance,
+        ):
+            with self.assertRaises(PROTOCOL.ProtocolError) as raised:
+                PROTOCOL.publish_planning(publish_input)
+        self.assertTrue(failed_advance)
+        return raised.exception
+
     def test_public_interface_contains_only_the_four_worktree_operations(self) -> None:
         self.assertEqual(
             PROTOCOL.COMMAND_REGISTRY.names,
@@ -593,6 +632,86 @@ class WorktreeProtocolTests(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=worktree), planning_commit)
         self.assertTrue(worktree.is_dir())
 
+    def test_publish_planning_rejects_ignored_flow_collision_without_touching_it(self) -> None:
+        (self.repository / ".gitignore").write_text("flow-secret.txt\n", encoding="utf-8")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "ignore flow secret")
+        binding = self.start("planning-flow-ignored")
+        worktree = Path(str(binding["worktree"]))
+        planning_commit = self.commit(
+            worktree,
+            "plan.md",
+            "accepted plan\n",
+            "add plan",
+        )
+        (worktree / "flow-secret.txt").write_text("flow secret\n", encoding="utf-8")
+        (self.repository / "flow-secret.txt").write_text(
+            "target bytes\n",
+            encoding="utf-8",
+        )
+        self.git("add", "-f", "flow-secret.txt")
+        self.git("commit", "-q", "-m", "target adds ignored path")
+        target_head = self.git("rev-parse", "main")
+        publish_input = self.publish_input(
+            "planning-flow-ignored",
+            binding,
+            planning_commit,
+            allowed_paths=["plan.md"],
+        )
+
+        with self.assertRaises(PROTOCOL.ProtocolError) as raised:
+            PROTOCOL.publish_planning(publish_input)
+
+        self.assertEqual(raised.exception.code, "worktree_not_clean")
+        self.assertEqual(raised.exception.context["paths"], ["flow-secret.txt"])
+        self.assertEqual(self.git("rev-parse", "main"), target_head)
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=worktree), planning_commit)
+        self.assertEqual(
+            (worktree / "flow-secret.txt").read_text(encoding="utf-8"),
+            "flow secret\n",
+        )
+
+        (worktree / "flow-secret.txt").unlink()
+        result = PROTOCOL.publish_planning(publish_input)
+
+        self.assertEqual(result["state"], "planning_published")
+        self.assertEqual(
+            (worktree / "flow-secret.txt").read_text(encoding="utf-8"),
+            "target bytes\n",
+        )
+
+    def test_publish_planning_preserves_unrelated_ignored_flow_file(self) -> None:
+        (self.repository / ".gitignore").write_text("local.cache\n", encoding="utf-8")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "ignore local cache")
+        binding = self.start("planning-flow-unrelated-ignored")
+        worktree = Path(str(binding["worktree"]))
+        planning_commit = self.commit(
+            worktree,
+            "plan.md",
+            "accepted plan\n",
+            "add plan",
+        )
+        (worktree / "local.cache").write_text("local bytes\n", encoding="utf-8")
+        (self.repository / "target.txt").write_text("target change\n", encoding="utf-8")
+        self.git("add", "target.txt")
+        self.git("commit", "-q", "-m", "advance target")
+
+        result = PROTOCOL.publish_planning(
+            self.publish_input(
+                "planning-flow-unrelated-ignored",
+                binding,
+                planning_commit,
+                allowed_paths=["plan.md"],
+            )
+        )
+
+        self.assertEqual(result["state"], "planning_published")
+        self.assertEqual(
+            (worktree / "local.cache").read_text(encoding="utf-8"),
+            "local bytes\n",
+        )
+
     def test_failed_planning_publication_restores_the_exact_retry_commit(self) -> None:
         binding = self.start("planning-retry")
         worktree = Path(str(binding["worktree"]))
@@ -677,6 +796,142 @@ class WorktreeProtocolTests(unittest.TestCase):
         self.assertEqual((self.repository / "first.txt").read_text(), "first\n")
         self.assertEqual((self.repository / "second.txt").read_text(), "second\n")
         self.assertEqual((self.repository / "plan.md").read_text(), "accepted plan\n")
+        self.assertEqual(self.git("status", "--short", cwd=worktree), "")
+
+    def test_target_race_preserves_new_flow_worktree_changes(self) -> None:
+        binding = self.start("planning-race-dirty-flow")
+        worktree = Path(str(binding["worktree"]))
+        planning_commit = self.commit(
+            worktree,
+            "plan.md",
+            "accepted plan\n",
+            "add plan",
+        )
+        target_before_race = self.git("rev-parse", "main")
+        original_run_git = PROTOCOL._run_git
+        raced = False
+
+        def advance_target_after_validation(
+            repository: Path,
+            arguments: list[str],
+            *,
+            check: bool = True,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal raced
+            if (
+                repository == self.repository
+                and arguments[:3] == ["symbolic-ref", "--quiet", "--short"]
+                and not raced
+            ):
+                raced = True
+                (worktree / "plan.md").write_text(
+                    "concurrent user edit\n",
+                    encoding="utf-8",
+                )
+                (self.repository / "target.txt").write_text(
+                    "target change\n",
+                    encoding="utf-8",
+                )
+                self.git("add", "target.txt")
+                self.git("commit", "-q", "-m", "advance target during publication")
+            return original_run_git(repository, arguments, check=check)
+
+        with mock.patch.object(
+            PROTOCOL,
+            "_run_git",
+            side_effect=advance_target_after_validation,
+        ):
+            with self.assertRaises(PROTOCOL.ProtocolError) as raised:
+                PROTOCOL.publish_planning(
+                    self.publish_input(
+                        "planning-race-dirty-flow",
+                        binding,
+                        planning_commit,
+                        allowed_paths=["plan.md"],
+                    )
+                )
+
+        self.assertTrue(raced)
+        self.assertEqual(raised.exception.code, "integration_restore_failed")
+        self.assertNotEqual(self.git("rev-parse", "main"), target_before_race)
+        self.assertEqual(
+            (worktree / "plan.md").read_text(encoding="utf-8"),
+            "concurrent user edit\n",
+        )
+        self.assertEqual(self.git("status", "--short", cwd=worktree), "M plan.md")
+
+    def test_retry_after_published_planning_never_rolls_back_or_republishes(self) -> None:
+        binding = self.start("planning-published-retry")
+        worktree = Path(str(binding["worktree"]))
+        planning_commit = self.commit(
+            worktree,
+            "plan.md",
+            "accepted plan\n",
+            "add plan",
+        )
+        publish_input = self.publish_input(
+            "planning-published-retry",
+            binding,
+            planning_commit,
+            allowed_paths=["plan.md"],
+        )
+        first_error = self.publish_with_failed_flow_advance(worktree, publish_input)
+
+        self.assertEqual(first_error.code, "flow_advance_failed")
+        published_merge = str(first_error.context["merge_commit"])
+        self.assertEqual(self.git("rev-parse", "main"), published_merge)
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=worktree), planning_commit)
+
+        with self.assertRaises(PROTOCOL.ProtocolError) as retry_raised:
+            PROTOCOL.publish_planning(publish_input)
+
+        self.assertEqual(retry_raised.exception.code, "integration_unverified")
+        self.assertEqual(
+            retry_raised.exception.context["published_target_head"],
+            published_merge,
+        )
+        self.assertEqual(self.git("rev-parse", "main"), published_merge)
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=worktree), planning_commit)
+        self.assertEqual(self.git("status", "--short", cwd=worktree), "")
+
+    def test_retry_after_published_refreshed_planning_preserves_the_candidate(self) -> None:
+        binding = self.start("planning-published-refreshed-retry")
+        worktree = Path(str(binding["worktree"]))
+        planning_commit = self.commit(
+            worktree,
+            "plan.md",
+            "accepted plan\n",
+            "add plan",
+        )
+        (self.repository / "target.txt").write_text("target change\n", encoding="utf-8")
+        self.git("add", "target.txt")
+        self.git("commit", "-q", "-m", "advance target before publication")
+        publish_input = self.publish_input(
+            "planning-published-refreshed-retry",
+            binding,
+            planning_commit,
+            allowed_paths=["plan.md"],
+        )
+        first_error = self.publish_with_failed_flow_advance(worktree, publish_input)
+
+        self.assertEqual(first_error.code, "flow_advance_failed")
+        published_merge = str(first_error.context["merge_commit"])
+        refreshed_candidate = self.git("rev-parse", "HEAD", cwd=worktree)
+        self.assertNotEqual(refreshed_candidate, planning_commit)
+
+        with self.assertRaises(PROTOCOL.ProtocolError) as retry_raised:
+            PROTOCOL.publish_planning(publish_input)
+
+        self.assertEqual(retry_raised.exception.code, "integration_unverified")
+        self.assertEqual(
+            retry_raised.exception.context["published_target_head"],
+            published_merge,
+        )
+        self.assertEqual(self.git("rev-parse", "main"), published_merge)
+        self.assertEqual(
+            self.git("rev-parse", "HEAD", cwd=worktree),
+            refreshed_candidate,
+        )
         self.assertEqual(self.git("status", "--short", cwd=worktree), "")
 
     def test_publish_planning_conflict_preserves_the_original_candidate(self) -> None:

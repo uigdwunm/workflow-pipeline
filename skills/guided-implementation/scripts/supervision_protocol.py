@@ -213,6 +213,21 @@ def _branch_oid(repository: Path, branch: str) -> str | None:
     return _expect_oid(completed.stdout.strip(), f"branch {branch}")
 
 
+def _published_target_head(
+    repository: Path,
+    target_branch: str,
+    planning_commit: str,
+) -> str | None:
+    target_head = _branch_oid(repository, target_branch)
+    if target_head is not None and _is_ancestor(
+        repository,
+        planning_commit,
+        target_head,
+    ):
+        return target_head
+    return None
+
+
 def _validate_branch(repository: Path, value: Any, label: str) -> str:
     branch = _expect_string(value, label, max_bytes=1024)
     if _run_git(repository, ["check-ref-format", "--branch", branch], check=False).returncode != 0:
@@ -323,6 +338,14 @@ def _paths_overlap(first: str, second: str) -> bool:
         or first.startswith(second + "/")
         or second.startswith(first + "/")
     )
+
+
+def _ignored_collisions(repository: Path, changed_paths: list[str]) -> list[str]:
+    return [
+        ignored
+        for ignored in _ignored_paths(repository, changed_paths)
+        if any(_paths_overlap(ignored, changed) for changed in changed_paths)
+    ]
 
 
 def _changed_paths(repository: Path, older: str, newer: str) -> list[str]:
@@ -578,11 +601,7 @@ def _merge_candidate_into_target(
             context={"paths": staged_paths},
         )
     candidate_paths = _changed_paths(repository, expected_target_head, candidate)
-    ignored_collisions = [
-        ignored
-        for ignored in _ignored_paths(repository, candidate_paths)
-        if any(_paths_overlap(ignored, changed) for changed in candidate_paths)
-    ]
+    ignored_collisions = _ignored_collisions(repository, candidate_paths)
     if ignored_collisions:
         raise ProtocolError(
             "checkout_not_clean",
@@ -649,7 +668,7 @@ def _restore_planning_commit(
 ) -> None:
     restored = _run_git(
         worktree,
-        ["reset", "--hard", planning_commit],
+        ["reset", "--keep", planning_commit],
         check=False,
     )
     observed_head = _git_text(worktree, ["rev-parse", "HEAD"])
@@ -694,9 +713,14 @@ def _prepare_planning_candidate(
                 "source_missing",
                 f"protected path is not committed at the flow base: {path}",
             )
+    target_changes = _changed_paths(
+        repository,
+        binding["base_commit"],
+        target_head,
+    )
     source_changes = [
         path
-        for path in _changed_paths(repository, binding["base_commit"], target_head)
+        for path in target_changes
         if _path_matches(path, protected_paths)
     ]
     if source_changes:
@@ -706,6 +730,13 @@ def _prepare_planning_candidate(
             context={"paths": source_changes},
         )
     if not _is_ancestor(repository, target_head, planning_commit):
+        ignored_collisions = _ignored_collisions(worktree, target_changes)
+        if ignored_collisions:
+            raise ProtocolError(
+                "worktree_not_clean",
+                "Flow Worktree has ignored files that the target could overwrite",
+                context={"paths": ignored_collisions},
+            )
         refreshed = _run_git(
             worktree,
             ["merge", "--no-edit", target_head],
@@ -768,11 +799,6 @@ def publish_planning(input_path: Path) -> dict[str, Any]:
     repository = Path(binding["repository"])
     common = Path(binding["git_common_dir"])
     worktree = Path(binding["worktree"])
-    report = _verify_binding(binding, platform_cwd=worktree)
-    if report["current_commit"] != planning_commit:
-        raise ProtocolError("candidate_changed", "planning commit is not the worktree HEAD")
-    if _full_status(worktree):
-        raise ProtocolError("worktree_not_clean", "commit every planning change before publication")
     lock_path = common / PUBLICATION_LOCK_FILENAME
     with os.fdopen(
         os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600),
@@ -780,6 +806,28 @@ def publish_planning(input_path: Path) -> dict[str, Any]:
         closefd=True,
     ) as lock_stream:
         _flock_with_timeout(lock_stream)
+        report = _verify_binding(binding, platform_cwd=worktree)
+        published_target_head = _published_target_head(
+            repository,
+            binding["target_branch"],
+            planning_commit,
+        )
+        if published_target_head is not None:
+            raise ProtocolError(
+                "integration_unverified",
+                "planning is already published; publication state was retained",
+                context={"published_target_head": published_target_head},
+            )
+        if report["current_commit"] != planning_commit:
+            raise ProtocolError(
+                "candidate_changed",
+                "planning commit is not the worktree HEAD",
+            )
+        if _full_status(worktree):
+            raise ProtocolError(
+                "worktree_not_clean",
+                "commit every planning change before publication",
+            )
         for attempt in range(2):
             try:
                 target_head, candidate, changed = _prepare_planning_candidate(
@@ -794,9 +842,21 @@ def publish_planning(input_path: Path) -> dict[str, Any]:
                     target_head,
                 )
             except ProtocolError as error:
-                if error.code == "integration_unverified" and error.context.get(
-                    "merge_commit"
-                ):
+                published_target_head = _published_target_head(
+                    repository,
+                    binding["target_branch"],
+                    planning_commit,
+                )
+                if published_target_head is not None:
+                    raise ProtocolError(
+                        "integration_unverified",
+                        "planning is already published; publication state was retained",
+                        context={
+                            "original_error": error.code,
+                            "published_target_head": published_target_head,
+                        },
+                    ) from error
+                if error.code == "integration_unverified":
                     raise
                 _restore_planning_commit(worktree, planning_commit, error)
                 if error.code == "target_changed" and attempt == 0:
