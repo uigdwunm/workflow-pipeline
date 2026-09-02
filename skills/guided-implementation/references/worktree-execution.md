@@ -33,7 +33,9 @@ Input fields are `binding`, `planning_commit`, sorted non-empty
 clean Flow Worktree `HEAD`. The command reads the latest target while holding
 the short publication lock. If the target advanced without changing a
 protected source, it merges that target into the Flow Worktree and validates
-the resulting candidate against the declared planning paths.
+the resulting candidate against the declared planning paths. Ignored Flow
+Worktree paths that overlap incoming target paths stop before this refresh;
+unrelated ignored paths remain untouched.
 
 An ordinary successful merge publishes the planning candidate to the target
 with one no-fast-forward merge commit, fast-forwards the Flow Worktree to that
@@ -48,12 +50,13 @@ Unrelated unstaged changes in the primary checkout are preserved. Staged
 primary-checkout changes and ignored paths that overlap candidate paths stop
 before the target merge; unrelated ignored paths remain untouched. If any
 pre-publication check or merge fails, the Flow Worktree returns to the exact
-accepted `planning_commit`, so the same request remains retryable. A target
-race is refreshed and retried once while the lock is held; a second race or
-another Git failure returns the exact error with that retained state. If the
-target merge was published but advancing the Flow Worktree fails, the result
-is a post-publication recovery problem; do not publish the planning candidate
-again.
+accepted `planning_commit`, so the same request remains retryable. A Flow
+Worktree edit that appears during publication is preserved and returns
+`integration_restore_failed` instead of being reset. A target race is refreshed
+and retried once while the lock is held; a second race or another Git failure
+returns the exact error with that retained state. Once `planning_commit` is an
+ancestor of the target, any later error is `integration_unverified`: preserve
+the Git state and do not publish or roll back the planning candidate again.
 
 ## `complete-worktree`
 

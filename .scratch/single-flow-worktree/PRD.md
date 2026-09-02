@@ -1,7 +1,6 @@
 # Spec: Carry one Flow Worktree from solution design through closure
 
 Status: `ready-for-agent`
-Lifecycle: `completed`
 
 ## Problem Statement
 
@@ -76,12 +75,16 @@ entry without an upstream Flow Worktree keeps its existing behavior.
   Worktree when necessary, attempts the planning merge, and returns the exact
   planning and target merge commits.
 - A successful merge is automatic and silent. A target advance is refreshed
-  and retried once. Any failure before the target merge restores the exact
-  accepted planning commit. A real content conflict preserves the Flow
-  Worktree and routes the exact conflict to the user through the existing
-  anomaly decision flow.
-- Before merging into the primary checkout, reject only ignored paths that
-  overlap candidate paths. Preserve unrelated ignored paths without blocking.
+  and retried once. A failure before the target merge restores the exact
+  accepted planning commit while the Flow Worktree remains unchanged; a new
+  Flow Worktree edit is preserved and reported as a restore failure. A real
+  content conflict preserves the Flow Worktree and routes the exact conflict
+  to the user through the existing anomaly decision flow.
+- Before either target refresh or target publication, reject only ignored
+  paths that overlap incoming paths. Preserve unrelated ignored paths without
+  blocking.
+- Once the planning commit is present on the target branch, preserve that Git
+  state and report a post-publication anomaly without rollback or republication.
 - After publication, fast-forward the Flow Worktree branch to the planning
   merge commit. Stage 3 therefore starts from the same commit now visible on
   the target branch.
