@@ -1,15 +1,17 @@
 # Originating Task Protocol
 
-The originating task creates the worktree, launches one dedicated task,
-independently reviews its committed candidate, and completes integration. It
-does not implement code.
+The originating task binds the Flow Worktree, launches one dedicated task,
+independently reviews its committed candidate, and passes the retained flow to
+Stage 4. It does not implement code.
 
 ## Launch
 
 Confirm that every planning source is committed and list the exact allowed
-implementation paths. Choose a new branch and canonical worktree path, call
-`start-worktree`, and launch one task in that worktree with the returned
-binding. Launch the implementation task with the fixed pair
+implementation paths. A valid Stage-2 handoff must be verified and reused.
+Standalone Stage 3 chooses a new branch and canonical worktree path and calls
+`start-worktree`; a claimed but invalid upstream binding is an anomaly, not a
+standalone fallback. Launch one task in the resulting Flow Worktree with the
+verified binding. Launch the implementation task with the fixed pair
 `model: gpt-5.6-terra` and `thinking: high`; pass `model` and `thinking`
 explicitly after verifying the current runtime supports that pair. Include the
 complete planning sources, dependency-ordered Tickets, testing basis, flow mode,
@@ -36,25 +38,24 @@ Implementation Task and verified worktree; the originating task does not edit
 the implementation or create a replacement for ordinary remediation. Any
 replacement candidate invalidates both review results. The Originating Task
 reruns both axes against that replacement candidate before accepting it. Only
-the Originating Task accepts and integrates the candidate. Route only a material
+the Originating Task accepts the candidate; Stage 4 integrates it. Route only a material
 unresolved decision to the user. If the target advanced without changing a
 source path, the same Dedicated Implementation Task merges that target, runs
 affected and full checks, and commits a replacement candidate. The Originating
 Task then establishes its exact replacement fixed point and reruns both axes.
 
-## Integrate and clean
+## Retain and hand off
 
-Call `complete-worktree` only after accepting the exact candidate. Success
-means the merge commit is on the target and the implementation worktree and
-branch are gone. Before-merge failure retains both for correction. If the
-command reports `cleanup_failed`, inspect its merge commit and remaining
-resource; do not merge the candidate again.
+After accepting the exact candidate, verify that it is still the clean Flow
+Worktree `HEAD`. Do not update the target branch and do not remove the worktree
+or branch. Pass its exact binding, candidate commit, planning merge or
+standalone base commit, implementation and closure path scopes, protected
+requirement-source paths, verification/review evidence, exact closure-document
+updates, and flow mode to Stage 4. No claim, lease, proposal receipt, or closure
+checkpoint is carried forward.
 
-Pass the verified merge commit to Stage 4. No execution state, claim, lease,
-proposal receipt, or closure checkpoint is carried forward. Pass ordinary Git
-facts, verification/review evidence, exact closure-document paths and flow mode
-in the visible Stage-4 handoff. When Stage 3 is attached to a discussion topic,
-also pass the exact project/tree/topic identity, actor binding, completed
-phase-3 result id and the ledger/topic revisions returned by the required final
-`read-topic`; standalone Stage 3 passes `none` for that entire group. Local
-completion grants no remote-write authority.
+When Stage 3 is attached to a discussion topic, also pass the exact
+project/tree/topic identity, actor binding, completed phase-3 result id and the
+ledger/topic revisions returned by the required final `read-topic`; standalone
+Stage 3 passes `none` for that entire group. Local completion grants no
+remote-write authority.

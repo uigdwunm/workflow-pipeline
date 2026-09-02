@@ -6,28 +6,31 @@ an attached discussion topic, closure participates in that topic's existing
 Phase Run only to record the `3→4` lifecycle transition; it does not copy Git or
 document-closure facts into the discussion ledger.
 
-The implementation merge is authoritative when the reported merge commit is on
-the target branch and contains the accepted candidate. Stage 3 has already
-removed the implementation worktree and branch.
+For an inherited flow, Stage 3 has accepted the implementation candidate but
+has not published or cleaned it. Its clean Flow Worktree and Git binding are the
+authoritative execution state. Closure-document changes are additional commits
+in that same worktree. `complete-worktree` integrates the final combined
+candidate and cleans the Flow Worktree in one operation. A later target change
+yields `target_changed`; the same Dedicated Implementation Task integrates the
+new target and reruns affected/full checks, the Originating Task reruns both
+review axes, and Stage 4 rechecks closure-owned documents before retrying.
 
-Closure-document changes are a second, short-lived worktree change. Their
-candidate must be clean, contain the expected target, and change only declared
-closure paths. `complete-worktree` integrates and cleans that worktree in one
-operation. A later target change yields `target_changed`; update the retained
-closure worktree from the new target, review the document result, and retry.
+Standalone closure retains its previous narrow behavior: create one short-lived
+documentation worktree only when document bytes change, integrate it with the
+same operation, and otherwise create nothing.
 
 Git remains authoritative for implementation ancestry, closure commits,
 worktrees and cleanup. The Phase Run remains authoritative only for route
 authorization, the active attempt and `current_phase`.
 
-If a pre-merge failure retains the documentation worktree, keep the same Phase
+If a pre-merge failure retains the Flow Worktree, keep the same Phase
 Run attempt active; `$change-closure 重试` continues both. If a known failure
 has no external side effect and retains no worktree, call `fail-phase-run`; a
 later authorized retry uses `retry-phase-run`. If the Git outcome is uncertain,
 call `phase-outcome-unknown`, reconcile from Git, then call
 `reconcile-phase-run` with the proven result.
 
-Once Git closure is proven complete, including the no-document-change path,
+Once Git closure is proven complete, including the inherited no-document-change path,
 recover only the remaining Phase Run calls after a discussion-ledger failure
 and never repeat the Git closure. A verified documentation merge with cleanup
 remaining is likewise cleaned rather than merged again. Explicit user

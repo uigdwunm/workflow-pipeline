@@ -36,8 +36,9 @@ Require the exact active, open topic at `current_phase: 3`, no pending document
 write, the handed-off phase-3 result and the current ledger/topic revisions.
 Then call `prepare-phase-run` for `3→4` with carrier kind `change-closure`,
 followed by `authorize-phase-carrier`, `phase-ready` and `phase-activate` from
-that current task. Once active, perform the ordinary Stage-4 Git and document closure.
-After Git verifies the final target and cleanup, call `claim-phase-completion`,
+that current task. Once active, perform the ordinary Stage-4 Git and document closure
+in the inherited Flow Worktree. After Git verifies the final target and cleanup,
+call `claim-phase-completion`,
 `complete-phase-run` and `finalize-phase-run`, then call `read-topic` again to
 confirm `current_phase: 4`. The no-document-change path follows the same
 completion sequence. Standalone Stage 4 performs none of these operations.

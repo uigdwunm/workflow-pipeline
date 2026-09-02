@@ -1,6 +1,6 @@
 ---
 name: change-closure
-description: Use when the user explicitly invokes $change-closure (4归档), confirms entry from a successful $guided-implementation footer, automatically continues from a verified continuous-flow footer, or invokes $change-closure 重试 in the same task after this Skill's retained-worktree footer. Verify the integrated commit, update only closure-owned planning documents in a short-lived worktree, commit and integrate them through the same minimal worktree protocol, then report final local and remote state.
+description: Use when the user explicitly invokes $change-closure (4归档), confirms entry from a successful $guided-implementation footer, automatically continues from a verified continuous-flow footer, or invokes $change-closure 重试 in the same task after this Skill's retained-worktree footer. Reuse the inherited Flow Worktree, commit closure-owned planning updates there, then publish implementation and closure together and clean the flow; standalone closure creates a short-lived documentation worktree only when needed.
 ---
 
 # 4归档
@@ -8,14 +8,18 @@ description: Use when the user explicitly invokes $change-closure (4归档), con
 Stage 4 never repairs implementation code. Read
 [references/closure-actions.md](references/closure-actions.md) and
 [references/closure-protocol.md](references/closure-protocol.md) before acting.
-Before creating, completing, or recovering a documentation worktree, also read
+Before verifying, creating, completing, or recovering a Flow Worktree, also read
 [the shared worktree execution contract](../guided-implementation/references/worktree-execution.md).
 
 ## Enter
 
-Require the exact repository, target branch, accepted candidate, merge commit,
-verification summary, review result, and closure-owned document paths. Verify
-from Git that the target contains the candidate through the reported merge.
+For a Stage-3 transition, require the exact repository, target branch, accepted
+candidate, planning merge or standalone base commit, inherited Flow Worktree
+binding, verification summary, review result, implementation path scope,
+protected requirement-source paths, and closure-owned document paths. Verify
+from Git that the clean inherited Flow Worktree `HEAD` is the accepted candidate
+and record the target's current `HEAD`; the target-advance path below applies
+when it differs from the handed-off publication base.
 
 An explicit `$change-closure` invocation starts stepwise closure. A transition
 from Stage 3 requires its complete handoff and either exact `确认` in
@@ -27,53 +31,67 @@ identity, actor binding, phase-3 result id and ledger/topic revisions. Read
 [`../design-discussion/references/lifecycle-integration.md`](../design-discussion/references/lifecycle-integration.md)
 and execute its topic-local Stage-4 route around the ordinary closure work.
 Standalone Stage-4 entry performs no discussion discovery or protocol calls.
+It claims no inherited implementation candidate or Flow Worktree.
 
 Accept exact `$change-closure 重试` only in the same task after this Skill's
 immediately preceding retained-worktree footer. Verify the recorded binding and
-current Git state, then continue that documentation worktree and the same active
+current Git state, then continue that Flow Worktree and the same active
 Phase Run attempt without creating a replacement.
 
 ## Update documents
 
-Read current target-branch documents after implementation integration. Update
-only closure-owned Spec/Ticket/ADR/CONTEXT or tracker paths. A new requirement
-is not a closure update and requires a separate planning decision.
+For an inherited flow, read closure-owned documents in the verified Flow
+Worktree after the accepted implementation candidate. Update only
+closure-owned Spec/Ticket/ADR/CONTEXT or tracker paths. A new requirement is not
+a closure update and requires a separate planning decision.
 
 Preserve each document's established representation. Invoke `$ask-matt` only
 when the representation inside an existing closure-owned document is genuinely
 unclear. Use its answer only to choose that representation; the accepted Stage-3
 review remains authoritative and closure creates no new workflow artifact.
 
-If document bytes must change, create a short-lived documentation worktree with
-the same `start-worktree` operation, using the closure paths as `allowed_paths`
-and no implementation `source_paths`. Before editing, call `verify-worktree`
-with the returned binding and that worktree as the actual working directory.
-Commit every document change in that verified worktree and call
-`complete-worktree`. This uses the same expected-target check, short publication
-lock, merge, and cleanup as Stage 3.
+For an inherited flow, never create a second worktree. If document bytes change,
+commit every closure-owned update in the inherited Flow Worktree. If no bytes
+change, create no closure commit. In both cases call `complete-worktree` with
+the clean final candidate, handed-off scope base, current expected target,
+combined implementation and closure allowed paths, and protected requirement
+sources. This publishes the accepted implementation plus closure updates and
+removes the Flow Worktree and branch.
 
-If no document change is needed, do not create a worktree or empty commit.
+If the target advanced, inspect the committed delta. A changed protected source
+or material semantic conflict requires user direction. Otherwise return the
+same Flow Worktree to the existing implementation task to merge the target and
+rerun affected/full checks, then have the Originating Task rerun both review
+axes for the replacement candidate. Recheck any closure-document result and
+retry final completion. Stage 4 never repairs implementation code itself.
 
-For a failure that published no merge and retained the documentation worktree,
+For explicit standalone Stage 4, read documents from the current target. If
+bytes change, call `start-worktree` for one short-lived documentation worktree,
+call `verify-worktree`, edit and commit only the declared closure paths, then
+call `complete-worktree`. If no bytes change, create no worktree or empty
+commit.
+
+For a failure that published no merge and retained the Flow Worktree,
 emit the shared contract's retained-worktree footer with recovery command
 `$change-closure 重试`. Do not emit it after a verified merge or for a cleanup-only
 failure.
 
 ## Finish
 
-Verify the final target HEAD, clean tracked primary checkout, absence of the
-closure worktree and branch, and the implementation result already cleaned by
-Stage 3. For an attached discussion, finish and verify the `3→4` run only after
-those Git checks succeed, including the no-document-change path. Local closure
+Verify the final target HEAD, preserved primary-checkout state, and absence of
+the completed Flow Worktree and branch. For an attached discussion, finish and
+verify the `3→4` run only after those Git checks succeed, including the
+no-document-change path. Local closure
 grants no push, tracker update or other remote write; each requires separate
 explicit authority. Report remote operations exactly; local completion never
 implies a push.
 
 ```text
 归档结果：成功
-归档提交：<documentation merge commit | none>
-实现清理：Stage 3 已验证
-归档清理：documentation worktree and branch removed | not created
+实现提交：<accepted candidate>
+归档提交：<closure candidate commit | none>
+最终合并：<merge commit | none when standalone and unchanged>
+流程清理：Flow Worktree and branch removed | standalone worktree removed | not created
 讨论阶段：<current_phase 4 | standalone>
 远程操作：<performed actions | none>
 ```

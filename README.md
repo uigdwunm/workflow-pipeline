@@ -4,9 +4,9 @@
 
 0. **0讨论 — `$design-discussion`（可选）**：为需要跨对话延续的设计讨论维护可验证话题、文档与检查点。
 1. **1拷问 — `$problem-framing`**：通过追问冻结目标、范围、行为契约与验收条件。
-2. **2方案 — `$solution-design`**：把已确认需求转成 Spec、ADR 和必要的 Tickets。
-3. **3实现 — `$guided-implementation`**：从已提交的规划文档创建独立 worktree，完成实现、验收、合并和清理。
-4. **4归档 — `$change-closure`**：必要时用同样的短期 worktree 对齐并提交归档文档。
+2. **2方案 — `$solution-design`**：创建 Flow Worktree，把已确认需求转成 Spec、ADR 和必要的 Tickets，并把方案合并到目标分支。
+3. **3实现 — `$guided-implementation`**：复用 Flow Worktree（单独进入时自行创建），完成实现与验收并保留候选。
+4. **4归档 — `$change-closure`**：继续复用 Flow Worktree，对齐归档文档，统一合并实现与归档并清理。
 
 五个 Skill 必须以同一版本安装。跨阶段继承模型与推理强度时统一使用
 `guided-implementation` 提供的 `thread-settings-v4` 只读协议；协议缺失或

@@ -1,6 +1,7 @@
 # Spec: Carry one Flow Worktree from solution design through closure
 
 Status: `ready-for-agent`
+Lifecycle: `completed`
 
 ## Problem Statement
 
@@ -194,4 +195,3 @@ lease, queue, proposal store, or compatibility dispatcher is added.
    route and to defer final publication and cleanup to Stage 4.
 3. Align attached discussion transitions, stage templates, documentation, and
    end-to-end contract coverage.
-

@@ -20,8 +20,8 @@ confirmation.
 推理强度：<primary thread exact reasoning effort>
 强度来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 上下文方式：fork_turns=none；不继承历史；仅读取需求来源和明确交接材料
-执行环境：当前项目 local checkout
-Worktree：不创建
+执行环境：新建 Flow Worktree
+Worktree：确认后调用 `start-worktree` 创建；路径=<canonical path>; 分支=<branch>
 允许动作：执行标准 $to-spec、ADR、$ask-matt、$to-tickets、原生发布；只写入并提交本阶段拥有的本地规划文档
 禁止动作：修改实现代码、创建 PR、部署、发布版本、进入 3实现或处理无关任务
 异常规则：执行失败、结果或副作用不确定、意外情况、与原计划不符或需要调整计划时停止并报告
@@ -49,8 +49,8 @@ This must be the final user-visible commentary immediately before
 推理强度：<primary thread exact reasoning effort>
 强度来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 上下文方式：fork_turns=none；不继承历史；仅读取需求来源和明确交接材料
-执行环境：当前项目 local checkout
-Worktree：不创建
+执行环境：新建 Flow Worktree
+Worktree：本条披露后调用 `start-worktree` 创建；路径=<canonical path>; 分支=<branch>
 允许动作：执行标准 $to-spec、ADR、$ask-matt、$to-tickets、原生发布；只写入并提交本阶段拥有的本地规划文档
 禁止动作：修改实现代码、创建 PR、部署、发布版本、进入 3实现或处理无关任务
 异常规则：执行失败、结果或副作用不确定、意外情况、与原计划不符或需要调整计划时停止并报告
@@ -74,8 +74,10 @@ $solution-design
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
 规划载体：<exact target>
-任务设置：model=<exact model>; reasoning_effort=<exact effort>; source=<resolution receipt source and turn id | user-requested-override>; fork_turns=none; worktree=none
+任务设置：model=<exact model>; reasoning_effort=<exact effort>; source=<resolution receipt source and turn id | user-requested-override>; fork_turns=none
+Flow Worktree：<exact binding returned by start-worktree>
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
+工作区要求：在首次写入前以实际工作目录调用 `verify-worktree`；所有本地规划写入和提交只在该 Flow Worktree 内完成。
 允许动作：完整执行 $to-spec、必要 ADR、$ask-matt、$to-tickets、精确目标原生发布；只写入并提交本阶段拥有的本地规划文档。
 禁止动作：修改实现代码、创建 PR、部署、发布版本、改变规划目标、进入 3实现、修改 1拷问草案或处理无关任务。
 文档权威：1拷问草案拥有需求；CONTEXT.md 拥有术语；ADR 拥有难逆决策；Spec 拥有实施方案与测试决策；Tickets 拥有实施切片和阻塞关系。不要创建单独的 2方案草案。
@@ -83,7 +85,7 @@ $solution-design
 连续模式：此前的 执行后续全部流程 是标准方案选择和原生审阅问题的预授权；不要发 review 消息，不运行额外质量门，直接选择、发布并交付。
 异常：执行失败、结果不确定、意外情况、与需求或已发布计划不符、或者需要调整计划时，返回 SOLUTION_DESIGN_ANOMALY 并停止；不要擅自调整。
 启动：第一条状态必须使用 SOLUTION_DESIGN_STARTED。
-完成：只在阶段工作完成后返回一次 SOLUTION_DESIGN_COMPLETE；不要自行进入 3实现。
+完成：只在规划提交已完成且 Flow Worktree 干净后返回一次 SOLUTION_DESIGN_COMPLETE；不要自行进入 3实现。
 协议文件：完整遵循 $solution-design 的 references/subagent-protocol.md 和 references/templates.md。
 ```
 
@@ -187,7 +189,8 @@ SOLUTION_DESIGN_COMPLETE
 Spec：<path or URL>
 ADR：<paths or none>
 Tickets：<paths or URLs | none>
-规划提交：<commit | none>
+规划提交：<commit>
+Flow Worktree：<exact binding>
 发布结果：<completed results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
@@ -199,7 +202,7 @@ Matt 原生发布：Spec=<result>; Tickets=<result or none>; 原生标签与阻�
 阶段授权：2方案标准原生动作已完成；授权不延续至 3实现或 4归档
 扩展远程操作：<未授权且未执行 | exact separately authorized actions and results>
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
-工作区状态：implementation paths and index clean; stage-owned planning paths committed; unrelated documentation paths listed and unstaged
+工作区状态：Flow Worktree clean; stage-owned planning paths committed
 ```
 
 ## Stepwise success footer
@@ -210,7 +213,9 @@ Spec：<clickable path or URL>
 ADR：<clickable paths or none>
 Tickets：<clickable paths or URLs | 不需要，完整 Spec 可在一个实现上下文中完成>
 目标仓库：<verified absolute path>
-规划提交：<commit | none>
+规划提交：<commit>
+方案合并提交：<planning merge commit>
+Flow Worktree：<exact retained binding at planning merge commit>
 发布结果：<results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
@@ -222,7 +227,7 @@ Tickets：<clickable paths or URLs | 不需要，完整 Spec 可在一个实现�
 Matt 原生发布：Spec=<verified path or URL>; Tickets=<verified paths or URLs, or none after native decision>; 原生标签与阻塞关系=<results or not applicable>
 阶段授权：已用于 2方案标准原生动作；不延续至 3实现或 4归档
 扩展远程操作：<未授权且未执行 | exact separately authorized actions and results>
-工作区状态：实现区与暂存区干净；本阶段规划文档已提交；其它文档改动已列出且未暂存
+工作区状态：Flow Worktree 干净并停留在方案合并提交；主检出区原有改动保持不变
 流程模式：逐阶段确认
 下一阶段：`$guided-implementation`（3实现）
 进入条件：已满足
@@ -245,7 +250,9 @@ ADR：<clickable paths or none>
 Tickets：<clickable paths or URLs | 不需要，完整 Spec 可在一个实现上下文中完成>
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<absolute repository path>
-规划提交：<commit | none>
+规划提交：<commit>
+方案合并提交：<planning merge commit>
+Flow Worktree：<exact retained binding at planning merge commit>
 发布结果：<child-reported results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<child-reported Testing Decisions or exact Spec section>
@@ -257,7 +264,7 @@ Tickets：<clickable paths or URLs | 不需要，完整 Spec 可在一个实现�
 Matt 原生发布：Spec=<child-reported path or URL>; Tickets=<child-reported paths or URLs, or none>; 原生标签与阻塞关系=<child-reported results or not applicable>
 阶段授权：已用于 2方案标准原生动作；不延续至 3实现或 4归档
 扩展远程操作：<未授权且未执行 | exact separately authorized actions and child-reported results>
-工作区状态：实现区与暂存区干净；本阶段规划文档已提交；其它文档改动已列出且未暂存
+工作区状态：Flow Worktree 干净并停留在方案合并提交；主检出区原有改动保持不变
 完成依据：可信 solution_designer 的结构完整终态消息；连续模式未独立复查实际状态
 流程模式：连续执行后续全部流程
 下一阶段：`$guided-implementation`（3实现）

@@ -65,7 +65,7 @@ class RepositoryValidationTests(unittest.TestCase):
             "same Dedicated Implementation Task and verified worktree",
             "Any replacement candidate invalidates both review results",
             "reruns both axes against that replacement candidate",
-            "Only the Originating Task accepts and integrates",
+            "Only the Originating Task accepts the candidate; Stage 4 integrates it",
             "merges that target, runs affected and full checks, and commits a replacement candidate",
         ):
             self.assertIn(marker, normalized_originating)
@@ -111,6 +111,38 @@ class RepositoryValidationTests(unittest.TestCase):
             "连续执行后续全部流程",
         ):
             self.assertIn(marker, guided)
+
+    def test_stages_two_through_four_share_one_flow_worktree(self) -> None:
+        solution = (
+            REPOSITORY / "skills/solution-design/SKILL.md"
+        ).read_text(encoding="utf-8")
+        solution_templates = (
+            REPOSITORY / "skills/solution-design/references/templates.md"
+        ).read_text(encoding="utf-8")
+        guided = (
+            REPOSITORY / "skills/guided-implementation/SKILL.md"
+        ).read_text(encoding="utf-8")
+        closure = (
+            REPOSITORY / "skills/change-closure/SKILL.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("`start-worktree`", solution)
+        self.assertIn("`publish-planning`", solution)
+        self.assertIn("retains the Flow Worktree", solution)
+        self.assertIn("方案合并提交：<planning merge commit>", solution_templates)
+        self.assertIn(
+            "Flow Worktree：<exact retained binding at planning merge commit>",
+            solution_templates,
+        )
+        self.assertIn("reuse the inherited Flow Worktree", guided)
+        self.assertIn("Standalone Stage 3 creates", guided)
+        self.assertIn("must not silently create a replacement", guided)
+        self.assertNotIn("calls `complete-worktree`", guided)
+        self.assertIn("passes the retained Flow Worktree", guided)
+        self.assertIn("Flow Worktree：<exact retained binding>", guided)
+        self.assertIn("inherited Flow Worktree", closure)
+        self.assertIn("`complete-worktree`", closure)
+        self.assertIn("removes the Flow Worktree and branch", closure)
 
     def test_stage_four_uses_the_existing_topic_local_three_to_four_run(self) -> None:
         closure = (
