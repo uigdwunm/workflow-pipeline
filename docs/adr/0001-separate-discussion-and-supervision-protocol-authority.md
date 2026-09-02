@@ -19,9 +19,9 @@ already owns.
   checkpoints, Phase Runs, and lifecycle transitions.
 - Topic document updates and discussion checkpoint refs are serialized by the
   discussion protocol's own short lock.
-- `supervision_protocol.py` exposes only `start-worktree`, `verify-worktree`, and
-  `complete-worktree`. It derives authority from the repository, branch,
-  worktree, commits, and caller-supplied committed source paths.
+- `supervision_protocol.py` exposes only the Git worktree operations accepted by
+  the current worktree-lifecycle ADR. It derives authority from the repository,
+  branch, worktree, commits, and caller-supplied committed paths.
 - Supervision persists no execution lifecycle, claim, lease, queue, handoff, or
   closure record. Its only shared coordination is a short file lock held while
   publishing to the target branch.

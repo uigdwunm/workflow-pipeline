@@ -1,6 +1,6 @@
 # ADR-0002: Run every implementation in an isolated worktree
 
-Status: Accepted
+Status: Superseded by ADR-0003
 
 ## Context
 

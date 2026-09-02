@@ -35,10 +35,16 @@ and outcome, not Git worktree execution.
 _Avoid_: Implementation run, worktree run
 
 **Change Closure**:
-The Stage 4 responsibility of reconciling and, when necessary, committing
-closure-owned documentation after a verified implementation result. It is not
-Stage 3 worktree cleanup or implementation repair.
-_Avoid_: Implementation cleanup, repair
+The Stage 4 responsibility of reconciling closure-owned documentation and
+publishing and cleaning a handed-off Flow Worktree after a verified
+implementation result. It never repairs implementation code.
+_Avoid_: Implementation repair
+
+**Flow Worktree**:
+The one isolated Git worktree created at Stage 2, or by a standalone Stage 3,
+and retained through Stage 4 for one delivery. Stage 2 may publish its planning
+checkpoint without ending the Flow Worktree.
+_Avoid_: Stage-2 worktree, implementation worktree, closure worktree
 
 ## Discussion continuity
 
@@ -77,16 +83,17 @@ _Avoid_: Carrier without a Phase Run context, Phase Source Task
 
 **Originating Task**:
 The Stage 3 Codex task that owns user decisions, supervises isolated execution,
-accepts the candidate, and integrates it. It does not implement the change.
+and accepts the implementation candidate for handoff to Stage 4. It does not
+implement the change or perform final publication.
 _Avoid_: Dedicated Implementation Task
 
 **Dedicated Implementation Task**:
-The Stage 3 Codex task that implements, tests, and reviews the change in its
-isolated worktree and produces the candidate. It does not integrate the
+The Stage 3 Codex task that implements and tests the change in its verified Flow
+Worktree and produces the candidate. It does not accept or publish the
 candidate.
 _Avoid_: Originating Task
 
 **Worktree Binding**:
-The verified Git identity that confines a Dedicated Implementation Task to one
-isolated worktree and target.
+The verified Git identity that ties one Flow Worktree to its repository, branch,
+target, and committed ancestry across Stage handoffs and retries.
 _Avoid_: Conversation Binding
