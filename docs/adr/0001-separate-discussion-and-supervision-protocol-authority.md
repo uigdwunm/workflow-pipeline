@@ -5,8 +5,8 @@ Status: Accepted
 ## Context
 
 `design-discussion` maintains durable topics, decisions, relations, checkpoints,
-handoffs, Phase Runs, and lifecycle state. Stage 3 only needs to create, verify,
-integrate, and remove an isolated implementation worktree.
+handoffs, Phase Runs, and lifecycle state. The delivery stages only need to
+create, verify, publish, and finally remove one isolated Flow Worktree.
 
 Combining these concerns would couple frequent discussion-ledger changes to Git
 worktree operations and would create workflow state that duplicates facts Git
@@ -31,7 +31,7 @@ already owns.
 ## Consequences
 
 - Discussion recovery remains independent of implementation execution.
-- Git is the single authority for active implementation branches and worktrees.
+- Git is the single authority for active flow branches and worktrees.
 - Cross-domain lease and state-version compatibility code is unnecessary.
 - Existing stages 1–4 can run without a discussion context when discovery does
   not identify one exact topic.

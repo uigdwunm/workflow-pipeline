@@ -1,6 +1,6 @@
 ---
 name: solution-design
-description: Use when the user explicitly invokes $solution-design; confirms a stable current-task $problem-framing handoff; $problem-framing explicitly enters this stage after accepting and archiving a dedicated grilling task; replies to this Skill's launch, review, or anomaly block; or selects 执行后续全部流程 from a verified success footer. Orchestrate one context-isolated solution-designer subagent using the primary thread's disclosed model and reasoning effort, accept either an immutable problem-framing draft or an exact current-task handoff, let the child own native $to-spec, ADR, $to-tickets and publication work, commit only stage-owned planning documents, preserve exact stepwise confirmations, and hand completion to $guided-implementation without implementing code here.
+description: Use when the user explicitly invokes $solution-design; confirms a stable current-task $problem-framing handoff; $problem-framing explicitly enters this stage after accepting and archiving a dedicated grilling task; replies to this Skill's launch, review, or anomaly block; or selects 执行后续全部流程 from a verified success footer. Create one Flow Worktree, orchestrate one context-isolated solution-designer subagent there, publish its committed planning files to the target, retain the same worktree for stages 3 and 4, and preserve exact confirmation and anomaly boundaries.
 ---
 
 # 2方案
@@ -14,7 +14,8 @@ Read
 [references/subagent-protocol.md](references/subagent-protocol.md) and
 [references/templates.md](references/templates.md),
 completely before launching, resuming, or accepting a solution-design
-subagent.
+subagent. Before creating or publishing the Flow Worktree, also read
+[the shared worktree execution contract](../guided-implementation/references/worktree-execution.md).
 
 ## Select the runtime role
 
@@ -137,6 +138,12 @@ publication; the primary owns identity, user decisions, anomaly routing and
 mechanical intake. Neither role implements code or changes the accepted
 requirement source.
 
+Before the child launch, the primary calls `start-worktree` once and discloses
+the returned Flow Worktree binding. The child runs in that worktree, verifies
+the binding before its first write, and commits only stage-owned planning
+documents there. Unrelated changes in the primary checkout remain untouched and
+do not block Flow Worktree creation.
+
 Use the protocol's notification wait, review/anomaly and resume messages with
 the same child. Stepwise mode preserves launch, solution, optional Tickets and
 final confirmations. Continuous mode skips only the documented reviews and
@@ -144,6 +151,16 @@ quality gates; it does not widen target, permissions or side effects. Process
 one trusted completion once and route any inconsistency through the anomaly
 checkpoint instead of improvising or spawning a replacement.
 ## Complete the stage
+
+After accepting the trusted child's clean planning commit, call
+`publish-planning` with the exact stage-owned planning paths and read-only
+requirement-source paths. A successful publication needs no user confirmation:
+it retains the Flow Worktree for Stage 3; record the planning merge commit and
+verify the Flow Worktree at that commit, then carry its exact binding into
+Stage 3. A `planning_conflict` or other
+publication anomaly stops through the existing anomaly protocol with the same
+child, worktree, branch, and planning commit preserved. Do not create a
+replacement. Do not add checks for pre-existing or duplicate planning files.
 
 In stepwise mode, show the fixed success footer from `references/templates.md`.
 Exact `确认` enters `$guided-implementation`. Exact

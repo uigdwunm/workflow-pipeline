@@ -1,11 +1,11 @@
 ---
 name: guided-implementation
-description: Use when the user explicitly invokes $guided-implementation (3实现), gives an exact stage-entry confirmation to a valid upstream footer, continues from its verified continuous-flow handoff, invokes $guided-implementation 重试 in the same task after this Skill's retained-worktree footer, or the originating task receives the dedicated implementation task's terminal result. Create one dedicated Git worktree from committed planning sources, run native $implement and $tdd there, have the Originating Task run $code-review against the committed candidate, then integrate and clean it through the minimal worktree protocol. Never implement in the originating task or in the primary checkout.
+description: Use when the user explicitly invokes $guided-implementation (3实现), gives an exact stage-entry confirmation to a valid upstream footer, continues from its verified continuous-flow handoff, invokes $guided-implementation 重试 in the same task after this Skill's retained-worktree footer, or the originating task receives the dedicated implementation task's terminal result. Reuse a valid Flow Worktree from stage 2 or create one for standalone entry, run native $implement and $tdd there, have the Originating Task review the committed candidate, and retain the same worktree for stage 4.
 ---
 
 # 3实现
 
-Every implementation uses one dedicated Git worktree and branch. Read
+Every implementation uses one Flow Worktree and branch. Read
 [references/worktree-execution.md](references/worktree-execution.md),
 [references/originating-task-protocol.md](references/originating-task-protocol.md), and
 [references/execution-protocol.md](references/execution-protocol.md) before the
@@ -27,10 +27,15 @@ immediately before resolving task settings.
   `流程模式：连续执行后续全部流程` uses `连续执行后续全部流程`. Preserve it through
   launch, remediation, retry, completion and the Stage-4 handoff.
 - Resolve the target branch, committed requirement/Spec/ADR/Ticket paths, and
-  allowed implementation paths. Stage 3 must pass at least one source path, and
-  every source path must exist at the target HEAD.
-- Commit tracked primary-checkout changes before starting. Untracked files stay
-  outside the new worktree and are never copied, staged, stashed, or removed.
+  allowed implementation paths. Every protected source path must exist at the
+  implementation scope base.
+- When Stage 2 supplies a Flow Worktree binding, verify and reuse the inherited
+  Flow Worktree. Standalone Stage 3 creates one Flow Worktree when no upstream
+  binding is claimed. If an upstream handoff claims a binding but it is missing,
+  invalid, or points elsewhere, stop as an anomaly and must not silently create
+  a replacement. Exact retry always reuses the retained binding.
+- Uncommitted primary-checkout files stay outside the Flow Worktree and are
+  never copied, staged, stashed, or removed.
 - The originating task supervises and reviews. It never edits implementation
   files.
 
@@ -64,7 +69,8 @@ When entry carries one exact discussion topic and Phase Run, read
 [`../design-discussion/references/lifecycle-integration.md`](../design-discussion/references/lifecycle-integration.md)
 and preserve its actor boundary. The Stage-3 carrier verifies the checkpoint,
 calls `claim-phase-carrier` and `phase-ready`, and waits for source-side
-`phase-activate` before substantive work. After a verified merge it calls
+`phase-activate` before substantive work. After an accepted candidate in the
+verified retained Flow Worktree it calls
 `claim-phase-completion`; the source task calls `complete-phase-run` and
 `finalize-phase-run`, then calls `read-topic` before Stage 4 begins. The read
 must prove the same active, open topic is owned by the current task, has no
@@ -73,13 +79,19 @@ identity, binding, Phase Result and the returned ledger/topic revisions in the
 Stage-4 handoff. Standalone entry creates no Phase Run, performs none of these
 calls and carries `none` for every discussion field.
 
-## Start
+## Bind the Flow Worktree
 
-Call `start-worktree` once with the canonical primary checkout, new worktree
-path, new branch, target branch, sorted non-empty source paths, and sorted
-allowed paths. The command creates the branch and worktree from the exact target
-HEAD and returns their plain Git binding. It creates no lease, claim, queue
-entry, or mutable run record.
+For a valid Stage-2 handoff, call `verify-worktree` with its exact binding and
+use that Flow Worktree without creating another one. The worktree must be clean
+at the reported planning merge commit. For an explicit standalone Stage-3 entry
+that claims no upstream binding, call `start-worktree` once with the canonical
+primary checkout, new worktree path, new branch, and target branch. The command
+creates the branch and worktree from the exact target `HEAD` and returns its
+plain Git binding. Neither route creates a lease, claim, queue entry, or mutable
+run record.
+
+Valid upstream entry must reuse the inherited Flow Worktree.
+An invalid claimed binding must not silently create a replacement.
 
 Create one dedicated implementation task in that returned worktree. Pass the
 binding, planning sources, ordered Tickets, testing basis, flow mode and exact
@@ -111,9 +123,10 @@ work.
   worktree.
 - Local stage entry grants no push, pull request, deployment, release, tracker or
   other remote write. Each such action requires separate explicit authority.
-- The Originating Task owns `$code-review`, candidate acceptance, and
-  integration. Its candidate, review, and remediation contract is authoritative
-  in [references/originating-task-protocol.md](references/originating-task-protocol.md).
+- The Originating Task owns `$code-review` and candidate acceptance. Stage 4
+  owns final integration and cleanup. The candidate, review, and remediation
+  contract is authoritative in
+  [references/originating-task-protocol.md](references/originating-task-protocol.md).
 
 If the target branch advances, inspect the committed changes since the binding
 base. A changed source path stops for user direction. Otherwise merge the new
@@ -121,39 +134,35 @@ target HEAD into the implementation worktree, repair ordinary conflicts there,
 rerun affected checks, and commit the replacement candidate. The Originating
 Task handles its review under the authoritative role contract.
 
-## Complete
+## Hand off the retained Flow Worktree
 
-The originating task calls `complete-worktree` with the exact binding,
-candidate, and current expected target HEAD. The command takes one internal
-short publication lock, rechecks target and source commits, verifies that the
-candidate contains the expected target and changes only allowed paths, creates
-one no-fast-forward merge commit, and removes the clean worktree and merged
-branch before returning success.
+After both review axes accept the exact clean candidate, Stage 3 does not merge
+the implementation into the target and does not remove the worktree or branch.
+It passes the retained Flow Worktree, candidate, planning merge commit,
+implementation and closure path scopes, protected requirement-source paths,
+and review evidence to Stage 4. Stage 4 owns the final publication and cleanup.
 
-A pre-merge failure leaves the worktree and branch intact. A cleanup failure
-reports the verified merge commit and the exact remaining resource; do not call
-the implementation unsuccessful after its merge is already present.
-
-For a failure that published no merge and retained the worktree, emit the
-retained-worktree footer from `worktree-execution.md` with recovery command
-`$guided-implementation 重试`. Do not emit it after a verified merge or for a
-cleanup-only failure.
+For a Stage-3 failure with the worktree retained, emit the retained-worktree
+footer from `worktree-execution.md` with recovery command
+`$guided-implementation 重试`. A successful Stage-3 handoff is not a failure and
+uses the success footer below.
 
 After success, emit a complete Stage-4 handoff:
 
 ```text
 实现结果：成功
-合并结果：成功
+合并结果：待 4归档统一完成
 专用任务：<thread id and host id>
 目标仓库：<absolute repository path>
 目标分支：<target branch>
 实现依据：<committed source paths and commit>
 实现提交：<candidate commit>
-合并提交：<merge commit>
+方案合并提交：<planning merge commit | standalone base commit>
+Flow Worktree：<exact retained binding>
 验证：<focused and full checks>
 审查：<Standards and Spec review result>
 待归档文档：<exact paths and required updates | none>
-清理结果：implementation worktree and branch removed
+清理结果：Flow Worktree and branch retained for Stage 4
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
 讨论上下文：<standalone | attached>
 讨论身份：<project path, project id, tree id and topic id | none>

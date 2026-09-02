@@ -1,6 +1,7 @@
 # 02 — Reuse or create the Flow Worktree through closure
 
 Status: ready-for-agent
+Lifecycle: `completed`
 
 ## What to build
 
@@ -12,16 +13,15 @@ contracts.
 
 ## Acceptance criteria
 
-- [ ] Stage 3 reuses a valid upstream Worktree Binding and does not create a second worktree.
-- [ ] An explicit standalone Stage 3 or direct Stage-1-to-Stage-3 route with committed sources creates exactly one Flow Worktree.
-- [ ] A handoff that claims an upstream worktree but supplies a missing or invalid binding stops as an anomaly without creating a replacement.
-- [ ] `$guided-implementation 重试` and ordinary remediation continue the exact retained task, branch, and worktree.
-- [ ] Stage 3 preserves planning sources, Ticket order, TDD, focused/full checks, Originating Task review ownership, exact-candidate evidence, and same-task remediation.
-- [ ] Stage 3 completion reports the accepted candidate and retained binding without claiming target integration or cleanup.
-- [ ] Stage 4 reuses the upstream Flow Worktree, writes only closure-owned documents when needed, creates no empty closure commit, and owns final publication and cleanup.
-- [ ] `$change-closure 重试` reuses the same retained Flow Worktree after a pre-merge failure, while a verified merge with cleanup remaining is not republished.
-- [ ] Standalone Stage 4 without an upstream Flow Worktree preserves its current behavior.
-- [ ] Contract and protocol tests cover inherited, standalone, invalid-binding, retry, no-document-change, final-merge, and cleanup-failure paths.
+- [x] Stage 3 reuses a valid upstream Worktree Binding and does not create a second worktree.
+- [x] An explicit standalone Stage 3 or direct Stage-1-to-Stage-3 route with committed sources creates exactly one Flow Worktree.
+- [x] A handoff that claims an upstream worktree but supplies a missing or invalid binding stops as an anomaly without creating a replacement.
+- [x] `$guided-implementation 重试` and ordinary remediation continue the exact retained task, branch, and worktree.
+- [x] Stage 3 preserves planning sources, Ticket order, TDD, focused/full checks, Originating Task review ownership, exact-candidate evidence, and same-task remediation.
+- [x] Stage 3 completion reports the accepted candidate and retained binding without claiming target integration or cleanup.
+- [x] Stage 4 reuses the upstream Flow Worktree, writes only closure-owned documents when needed, creates no empty closure commit, and owns final publication and cleanup.
+- [x] `$change-closure 重试` reuses the same retained Flow Worktree after a pre-merge failure, while a verified merge with cleanup remaining is not republished.
+- [x] Standalone Stage 4 without an upstream Flow Worktree preserves its current behavior.
+- [x] Contract and protocol tests cover inherited, standalone, invalid-binding, retry, no-document-change, final-merge, and cleanup-failure paths.
 
 Blocked by: 01 — Create and publish the Stage-2 Flow Worktree.
-

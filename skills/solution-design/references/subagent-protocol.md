@@ -196,26 +196,22 @@ On anomaly:
 
 ## Repository and publication boundaries
 
-Use the existing local checkout and zero worktrees. The primary agent performs
-no concurrent stage-2 writes.
+The primary creates one Flow Worktree with `start-worktree` before launching the
+child. The child receives the exact binding, runs in that worktree, and calls
+`verify-worktree` against its actual working directory before its first local
+write. The primary agent performs no concurrent stage-2 writes. Unrelated
+primary-checkout changes remain outside the Flow Worktree and are never copied,
+staged, stashed, removed, or included in the planning commit.
 
-Before the child's first local write, record repository root, attached branch,
-`HEAD`, staged diff, and
-`git status --porcelain=v1 -z --untracked-files=all`. Apply the suite's existing
-verified cc-switch Skill-link exclusion. Treat unrelated staged or
-implementation-path work as an anomaly. Recognized documentation paths may
-remain unstaged but must never enter this stage's commit.
-
-Do not enter an active implementation worktree or inspect mutable in-progress
-state. Continue design from committed objects. Before each Spec, ADR, or Ticket
-write, verify the path is stage-owned and its baseline has not changed. When
-design and review are complete, compare branch, HEAD, workspace state, and exact
-document bytes, then perform only the stage-owned planning commit. Remote
-carrier publication uses its separately disclosed authority.
+Continue design from committed objects. Before each Spec, ADR, or Ticket write,
+verify the path is stage-owned and its baseline has not changed. When design and
+review are complete, compare branch, HEAD, workspace state, and exact document
+bytes, then perform only the stage-owned planning commit in the Flow Worktree.
+Remote carrier publication uses its separately disclosed authority.
 
 Stage only exact clean-baseline Spec, ADR, and Ticket files. Verify the staged
-path list contains nothing else, then create one concise planning commit when
-local artifacts changed. Do not create an empty commit.
+path list contains nothing else and at least one stage-owned planning path, then
+create one concise planning commit. Do not create an empty commit.
 
 Unrelated recognized documentation paths may remain unstaged. A shared file
 whose complete diff cannot be attributed to this stage is an anomaly requiring
@@ -225,6 +221,14 @@ Remote authority covers only the exact carrier and the standard native Spec,
 Ticket, label, and blocking-link actions disclosed at launch. A changed target,
 non-native label, parent-issue modification, PR, deployment, release, or code
 write is an anomaly requiring new authority.
+
+After the child reports its clean planning commit, the primary calls
+`publish-planning`. The operation incorporates a newer non-conflicting target,
+publishes the planning commit without a separate confirmation, and retains the
+Flow Worktree for Stage 3. A real content conflict returns through
+`SOLUTION_DESIGN_ANOMALY` for user direction; the same child and Flow Worktree
+resume afterward. Do not infer conflict from file existence or similarity, and
+do not validate planning files for duplication.
 
 ## Waiting, decisions, and recovery
 
@@ -266,16 +270,15 @@ uncertainty instead of retrying blindly.
 The child may emit `SOLUTION_DESIGN_COMPLETE` only after it has finished its
 selected native publication and required local stage-owned commit work. The message must
 name requirement source, Spec, ADRs, Tickets, planning commit, publication
-result, implementation basis, flow mode, and workspace state. Completion always
-requires the child to report `implementation paths and index clean;
-stage-owned planning paths committed`; other recognized documentation paths may
-remain unstaged and must be listed. Any different implementation or index state
-is an anomaly, including in continuous mode.
+result, implementation basis, flow mode, Flow Worktree binding, and workspace
+state. Completion requires the child to report a clean Flow Worktree with
+stage-owned planning paths committed. Any different state is an anomaly,
+including in continuous mode.
 
 Accept completion only from the trusted child returned by `spawn_agent`.
 
 - **Stepwise:** mechanically require referenced files or URLs, publication
-  results, planning commit when applicable, and documentation-aware workspace state.
+  results, the planning commit, and Flow Worktree state.
   Do not re-review content or repeat publication.
 - **Continuous:** require the saved child identity, exact message type, protocol
   version, flow mode, all fixed completion fields, and child-reported
@@ -283,6 +286,8 @@ Accept completion only from the trusted child returned by `spawn_agent`.
   commit, workspace, semantic, or quality claims. Missing or inconsistent schema
   is an orchestration anomaly; reported facts are otherwise trusted.
 
-Process each trusted child completion once. In stepwise mode show the fixed
-success footer. In continuous mode use the fixed continuous completion handoff
-and immediately invoke `$guided-implementation` with the preserved mode.
+Process each trusted child completion once. Publish the accepted planning
+commit once, then pass the retained Flow Worktree at the verified planning merge
+commit. In stepwise mode show the fixed success footer. In continuous mode use
+the fixed continuous completion handoff and immediately invoke
+`$guided-implementation` with the preserved mode.

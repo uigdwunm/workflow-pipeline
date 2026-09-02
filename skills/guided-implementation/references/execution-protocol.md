@@ -1,7 +1,8 @@
 # Dedicated Worktree Execution Protocol
 
-The dedicated task accepts only the binding returned by `start-worktree` and
-must run `verify-worktree` against its actual working directory before editing.
+The dedicated task accepts only the verified Flow Worktree binding inherited
+from Stage 2 or returned by standalone Stage 3's `start-worktree`. It must run
+`verify-worktree` against its actual working directory before editing.
 
 Before editing, run the executable `thread-settings-v4` verification:
 
@@ -54,7 +55,7 @@ The Dedicated Implementation Task must not dispatch Standards or Spec review
 agents or receive the parent Session or CLI. It owns Ticket-ordered
 implementation, TDD, focused/full validation, candidate commits, risk
 reporting, and remediation only. The Originating Task owns `$code-review`,
-candidate acceptance, and integration; its authoritative review contract is in
+and candidate acceptance; Stage 4 owns integration. The authoritative review contract is in
 [originating-task-protocol.md](originating-task-protocol.md).
 
 Return review or test remediation to the same implementation task and worktree.
@@ -69,5 +70,6 @@ report the replacement candidate. The authoritative role contract determines
 the Originating Task's review action. A changed planning source, material
 semantic conflict, or changed requirement stops for user direction.
 
-The dedicated task never updates the target branch and never removes the
-worktree or branch.
+The dedicated task never updates the target branch and never removes the Flow
+Worktree or branch. It returns the clean accepted candidate in that retained
+worktree for Stage 4.

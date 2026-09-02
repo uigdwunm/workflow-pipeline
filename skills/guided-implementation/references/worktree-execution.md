@@ -1,46 +1,81 @@
 # Worktree Execution
 
-`supervision_protocol.py` has exactly three public operations.
+`supervision_protocol.py` has exactly four public operations. One Flow
+Worktree may carry stages 2, 3, and 4. Git is the only worktree registry; no
+separate ownership state is created.
 
 ## `start-worktree`
 
-Input fields are `repository`, `worktree`, `branch`, `target_branch`, sorted
-`source_paths`, and sorted non-empty `allowed_paths`. `source_paths` may be empty
-when the caller has no protected read-only source, as in a Stage-4 documentation
-worktree; Stage 3 requires at least one committed planning source.
+Input fields are `repository`, `worktree`, `branch`, and `target_branch`. The
+primary checkout must be on `target_branch`, and its `HEAD` must equal that
+branch. Uncommitted primary-checkout changes do not block creation and are not
+copied, staged, stashed, or removed. The command resolves the exact target
+`HEAD` and runs `git worktree add -b` from that object ID.
 
-The primary checkout must be on `target_branch` with no tracked changes. The
-command resolves the exact target HEAD, checks every source path at that commit,
-and runs `git worktree add -b` from the resolved object ID. Git is the only
-worktree registry; no separate ownership state is created.
+Stage 2 calls this operation before its first planning write. Stage 3 reuses a
+valid inherited binding; a standalone Stage 3 with no claimed binding calls it
+for itself. A claimed inherited binding that is absent or invalid is an anomaly
+and must not silently fall back to a new worktree. Retry always reuses the
+retained binding.
 
 ## `verify-worktree`
 
 Input fields are the returned `binding` and the task's actual `platform_cwd`.
 The command verifies canonical paths, Git common directory, registered
-worktree, branch, HEAD ancestry, source files, and target branch.
+worktree, branch, base ancestry, and target branch. Allowed and protected path
+scopes belong to a publication or completion attempt, not to the stable
+binding.
+
+## `publish-planning`
+
+Input fields are `binding`, `planning_commit`, sorted non-empty
+`allowed_paths`, and sorted `protected_paths`. The planning commit must be the
+clean Flow Worktree `HEAD`. The command reads the latest target while holding
+the short publication lock. If the target advanced without changing a
+protected source, it merges that target into the Flow Worktree and validates
+the resulting candidate against the declared planning paths.
+
+An ordinary successful merge publishes the planning candidate to the target
+with one no-fast-forward merge commit, fast-forwards the Flow Worktree to that
+merge commit, and retains the Flow Worktree and branch for Stage 3. It does not
+ask for confirmation. A real content conflict returns `planning_conflict`,
+restores the original clean planning commit, retains the same worktree and
+branch, and requires a user decision through the stage anomaly flow. The
+operation does not check whether planning files previously existed or resemble
+other files; it validates only the declared path boundary.
+
+Unrelated unstaged changes in the primary checkout are preserved. Staged
+primary-checkout changes, a changed protected source, or another Git failure
+stop publication with the exact error and retained state. If the target merge
+was published but advancing the Flow Worktree fails, the result is a
+post-publication recovery problem; do not publish the planning candidate again.
 
 ## `complete-worktree`
 
-Input fields are `binding`, `candidate_commit`, and `expected_target_head`.
-The candidate must be the clean worktree HEAD, contain the expected target, and
-change at least one allowed path without changing a source path. The target
-must still equal `expected_target_head`.
+Input fields are `binding`, `candidate_commit`, `expected_target_head`,
+`scope_base_commit`, sorted non-empty `allowed_paths`, and sorted
+`protected_paths`. The candidate must be the clean Flow Worktree `HEAD`, contain
+the expected target, descend from the scoped base, change at least one allowed
+path, and leave protected paths unchanged. The target must still equal
+`expected_target_head`.
+
+Stage 4 is the normal owner of this operation. It creates one no-fast-forward
+merge commit containing the accepted implementation and any closure-document
+updates, removes the worktree without force, deletes the merged branch with
+`git branch -d`, and returns the candidate, merge commit, and changed paths.
 
 The command holds one process-local publication file lock only while checking
 and updating the shared checkout. If the lock is unavailable for five seconds,
-it returns `publication_busy` without changing or removing the worktree. It
-creates a two-parent merge commit, removes the worktree without force, deletes
-the merged branch with `git branch -d`, and returns the candidate, merge commit,
-and changed paths.
+it returns `publication_busy` without changing or removing the worktree.
+Unrelated unstaged primary-checkout changes are preserved; staged changes stop
+publication.
 
 When two candidates race from one base, one completes and the other receives
 `target_changed`. The Dedicated Implementation Task merges the new target into
-the retained worktree, runs affected and full checks, and commits a replacement
-candidate. The Originating Task establishes the new review fixed point from that
-target and exact replacement candidate, reruns both Standards and Spec axes,
-and only then retries with the new expected HEAD. There is no scheduler or
-queue.
+the retained Flow Worktree, runs affected and full checks, and commits a
+replacement candidate. The Originating Task establishes the new review fixed
+point and reruns both Standards and Spec axes before retrying. There is no
+scheduler or queue.
 
 ## Retained-worktree recovery
 
@@ -58,8 +93,9 @@ and the exact worktree and branch remain registered:
 ```
 
 The retry command is `$guided-implementation 重试` for Stage 3 and
-`$change-closure 重试` for Stage 4. Recovery first verifies the recorded binding
-and current Git state, then either corrects and retries in that worktree or asks
-for a source decision. It never creates a replacement worktree. A verified
-merge or `cleanup_failed` result uses its merge commit and remaining-resource
-report instead of this footer.
+`$change-closure 重试` for Stage 4. Stage-2 failures use its existing anomaly
+and same-child resume flow. Recovery first verifies the recorded binding and
+current Git state, then either corrects and retries in that worktree or asks for
+a source decision. It never creates a replacement worktree. A verified merge,
+`flow_advance_failed`, or `cleanup_failed` result uses its merge commit and
+remaining-resource report instead of this footer.
