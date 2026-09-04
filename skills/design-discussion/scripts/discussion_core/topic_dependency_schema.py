@@ -84,6 +84,34 @@ def _identity(value: Any, prefix: str) -> bool:
     return bool(re.fullmatch(pattern, value))
 
 
+def _canonical_strings(value: Any, *, maximum: int = 64) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) <= maximum
+        and all(isinstance(item, str) and item for item in value)
+        and value == sorted(value)
+        and len(set(value)) == len(value)
+    )
+
+
+def _decision_pairs(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) <= 64
+        and all(
+            isinstance(entry, dict)
+            and set(entry) == {"decision_id", "sha256"}
+            and isinstance(entry["decision_id"], str)
+            and entry["decision_id"]
+            and isinstance(entry["sha256"], str)
+            and SHA256_RE.fullmatch(entry["sha256"])
+            for entry in value
+        )
+        and value == sorted(value, key=lambda entry: entry["decision_id"])
+        and len({entry["decision_id"] for entry in value}) == len(value)
+    )
+
+
 def _gate_reason(value: Any, error: Callable[[str, str], None]) -> None:
     reason = _object(value, "topic dependency gate_reason_json", error)
     kind = reason.get("kind")
@@ -135,15 +163,12 @@ def _gate_reason(value: Any, error: Callable[[str, str], None]) -> None:
     if "checkpoint_id" in reason and not _identity(reason["checkpoint_id"], "CP"):
         error("state_corrupt", "topic dependency checkpoint identity is invalid")
     if "invalidated_result_ids" in reason and (
-        not isinstance(reason["invalidated_result_ids"], list)
-        or reason["invalidated_result_ids"] != sorted(set(reason["invalidated_result_ids"]))
+        not _canonical_strings(reason["invalidated_result_ids"])
         or any(not _identity(item, "PH") for item in reason["invalidated_result_ids"])
     ):
         error("state_corrupt", "topic dependency invalidated result identities are invalid")
     if "affected_decision_ids" in reason and (
-        not isinstance(reason["affected_decision_ids"], list)
-        or reason["affected_decision_ids"] != sorted(set(reason["affected_decision_ids"]))
-        or any(not isinstance(item, str) or not item for item in reason["affected_decision_ids"])
+        not _canonical_strings(reason["affected_decision_ids"])
     ):
         error("state_corrupt", "topic dependency affected decisions are invalid")
 
@@ -186,10 +211,7 @@ def validate_dependency_records(
                 or basis.get("dependency_id") != dep_id
                 or basis.get("prerequisite_topic_id") != prerequisite
                 or basis.get("requirement_kind") != item["requirement_kind"]
-                or not isinstance(decisions, list)
-                or decisions != sorted(decisions, key=lambda entry: entry.get("decision_id", ""))
-                or len({entry.get("decision_id") for entry in decisions}) != len(decisions)
-                or any(not isinstance(entry, dict) or set(entry) != {"decision_id", "sha256"} or not isinstance(entry["decision_id"], str) or not isinstance(entry["sha256"], str) or not SHA256_RE.fullmatch(entry["sha256"]) for entry in decisions)
+                or not _decision_pairs(decisions)
                 or set(basis) != ({"basis_version", "dependency_id", "prerequisite_topic_id", "requirement_kind", "decision_authority", "authority"} | ({"child_result_id"} if "child_result_id" in basis else set()))
             ):
                 error("state_corrupt", "topic dependency accepted basis is incoherent")
@@ -199,7 +221,7 @@ def validate_dependency_records(
             elif item["requirement_kind"] == "phase-0-checkpoint":
                 valid = isinstance(authority, dict) and set(authority) == {"checkpoint_id", "record_revision", "published_identity", "decision_digest"} and _identity(authority["checkpoint_id"], "CP") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and isinstance(authority["published_identity"], str) and isinstance(authority["decision_digest"], str) and SHA256_RE.fullmatch(authority["decision_digest"])
             else:
-                valid = isinstance(authority, dict) and set(authority) == {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"} and _identity(authority["result_id"], "PH") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and authority["state"] == "completed" and isinstance(authority["phase_run_id"], str) and isinstance(authority["affected_decision_ids"], list) and authority["affected_decision_ids"] == sorted(set(authority["affected_decision_ids"])) and all(isinstance(entry, str) and entry for entry in authority["affected_decision_ids"])
+                valid = isinstance(authority, dict) and set(authority) == {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"} and _identity(authority["result_id"], "PH") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and authority["state"] == "completed" and isinstance(authority["phase_run_id"], str) and _canonical_strings(authority["affected_decision_ids"])
             if not valid:
                 error("state_corrupt", "topic dependency authority is incoherent")
             child_result_id = basis.get("child_result_id")

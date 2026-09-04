@@ -334,7 +334,7 @@ def _normalize_authority_selection(
     decision_ids: Any,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Select one current candidate and its exact frozen decision subset."""
-    if not isinstance(decision_ids, list) or len(decision_ids) > 64 or sorted(set(decision_ids)) != decision_ids:
+    if not _canonical_string_array(decision_ids):
         raise ProtocolError("invalid_request", "basis selection decision_ids must be sorted")
     if _authority_handler(requirement_kind)["requires_decisions"] and not decision_ids:
         raise ProtocolError("topic_dependency_evidence_unavailable", "confirmed-decision requires one or more current decisions")
@@ -363,7 +363,7 @@ def freeze_authority_selection(
     kind = selection["authority_kind"]
     identity = selection["authority_identity"]
     decision_ids = selection["decision_ids"]
-    if kind not in KINDS or not isinstance(decision_ids, list) or len(decision_ids) > 64 or sorted(set(decision_ids)) != decision_ids:
+    if kind not in KINDS or not _canonical_string_array(decision_ids):
         raise ProtocolError("invalid_request", "authority_selection is invalid")
     if _authority_handler(kind)["identity_field"] is None:
         if identity is not None:
@@ -436,7 +436,7 @@ def release_child_result_dependencies(
             or dependency["dependent_topic_id"] != dependent_topic_id
             or dependency["prerequisite_topic_id"] != prerequisite_topic_id
             or dependency["relation_state"] != "active" or dependency["gate_state"] != "closed"
-            or not isinstance(ids, list) or sorted(set(ids)) != ids
+            or not _canonical_string_array(ids)
             or any(item not in pairs for item in ids)
             or (_authority_handler(dependency["requirement_kind"])["requires_decisions"] and not ids)
         ):
@@ -457,16 +457,39 @@ def _closed(records: dict[str, list[dict[str, Any]]], topic_id: str) -> list[dic
     return sorted((item for item in records["Topic Dependencies"] if item["dependent_topic_id"] == topic_id and item["relation_state"] == "active" and item["gate_state"] == "closed"), key=lambda item: item["dependency_id"])
 
 
+def _canonical_string_array(value: Any, *, maximum: int = 64) -> bool:
+    """Whether an untrusted nested array is bounded canonical string data."""
+    return (
+        isinstance(value, list)
+        and len(value) <= maximum
+        and all(isinstance(item, str) and item for item in value)
+        and value == sorted(value)
+        and len(set(value)) == len(value)
+    )
+
+
 def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selection: list[dict[str, Any]] | None) -> dict[str, Any]:
     closed = _closed(records, topic_id)
     if not closed:
         return {"state": "open", "derived_gate_state": "open", "dependencies": []}
-    choices = {item.get("dependency_id"): item for item in selection or []}
     if selection is not None:
-        selected_ids = [item.get("dependency_id") for item in selection if isinstance(item, dict)]
+        if (
+            not isinstance(selection, list)
+            or len(selection) > 64
+            or any(
+                not isinstance(item, dict)
+                or not set(item).issubset({"dependency_id", "decision_ids", "authority_id"})
+                or not isinstance(item.get("dependency_id"), str)
+                or not _canonical_string_array(item.get("decision_ids"))
+                for item in selection
+            )
+        ):
+            raise ProtocolError("invalid_request", "basis_selection is invalid")
+        selected_ids = [item["dependency_id"] for item in selection]
         closed_ids = [item["dependency_id"] for item in closed]
-        if len(selected_ids) != len(selection) or selected_ids != closed_ids:
+        if selected_ids != closed_ids:
             raise ProtocolError("invalid_request", "basis_selection must name active closed dependencies exactly once in canonical order")
+    choices = {item["dependency_id"]: item for item in selection or []}
     details = []
     proposed = []
     for dependency in closed:
@@ -619,15 +642,39 @@ def evaluate_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         selection = request.get("basis_selection")
-        if selection is not None and (not isinstance(selection, list) or len(selection) > 64): raise ProtocolError("invalid_request", "basis_selection is invalid")
+        if "basis_selection" in request and (
+            not isinstance(selection, list) or len(selection) > 64
+        ):
+            raise ProtocolError("invalid_request", "basis_selection is invalid")
         result = _evaluation(records, request["actor_topic_id"], selection)
         result.update({"ok": True, "ledger_revision": int(frontmatter["ledger_revision"]), "record_revision": topic["record_revision"], "topic_id": request["actor_topic_id"]})
         if "release_set" in result:
-            result["release_set_sha256"] = _sha256(_canonical_json({"ledger_revision": result["ledger_revision"], "topic_revision": topic["record_revision"], "release_set": result["release_set"]}).encode("utf-8"))
+            result["release_set_sha256"] = _release_set_digest(
+                result["ledger_revision"], topic["record_revision"], result["release_set"]
+            )
         return result
 
 
+def _release_set_digest(
+    ledger_revision: int, topic_revision: int, release_set: list[dict[str, Any]]
+) -> str:
+    """Hash one canonical gate-release proposal at its observed revisions."""
+    return _sha256(_canonical_json({
+        "ledger_revision": ledger_revision,
+        "topic_revision": topic_revision,
+        "release_set": release_set,
+    }).encode("utf-8"))
+
+
 def _release_selection_from_basis(item: dict[str, Any]) -> dict[str, Any]:
+    if (
+        not isinstance(item, dict)
+        or set(item) != {"dependency_id", "record_revision", "basis"}
+        or not isinstance(item["dependency_id"], str)
+        or not isinstance(item["record_revision"], int)
+        or not isinstance(item["basis"], dict)
+    ):
+        raise ProtocolError("invalid_request", "release_set is invalid")
     basis = item.get("basis")
     if not isinstance(basis, dict):
         return {"dependency_id": item.get("dependency_id"), "decision_ids": []}
@@ -663,11 +710,9 @@ def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         if topic["current_phase"] not in {0, 1}:
             raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are immutable after Phase 1")
-        selection = (
-            [_release_selection_from_basis(item) for item in request["release_set"]]
-            if isinstance(request["release_set"], list)
-            else None
-        )
+        if not isinstance(request["release_set"], list) or len(request["release_set"]) > 64:
+            raise ProtocolError("invalid_request", "release_set is invalid")
+        selection = [_release_selection_from_basis(item) for item in request["release_set"]]
         try:
             evaluation = _evaluation(records, request["actor_topic_id"], selection)
         except ProtocolError as error:
@@ -676,7 +721,9 @@ def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
                     "topic_gate_evaluation_stale", "topic gate evaluation is stale"
                 ) from error
             raise
-        expected = _sha256(_canonical_json({"ledger_revision": revision, "topic_revision": topic_revision, "release_set": evaluation.get("release_set")}).encode("utf-8"))
+        expected = _release_set_digest(
+            revision, topic_revision, evaluation.get("release_set", [])
+        )
         if evaluation.get("state") != "releasable" or request["release_set"] != evaluation.get("release_set") or request["release_set_sha256"] != expected:
             raise ProtocolError("topic_gate_evaluation_stale", "topic gate evaluation is stale")
         for item in _closed(records, request["actor_topic_id"]):

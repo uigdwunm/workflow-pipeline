@@ -7836,6 +7836,40 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "topic_gate_closed", rejected)
         self.assertEqual(ledger.read_bytes(), before)
 
+    def test_ticket07_nested_gate_payload_shapes_fail_stably_via_cli(self) -> None:
+        project = self.make_project("ticket07-nested-gate-payloads", git=False)
+        parent = self.bootstrap_topic(project)
+        handoff, child_ref = self.activate_child_handoff(parent)
+        child = {**parent, "topic_id": handoff["target_topic_id"]}
+        ledger = Path(str(parent["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        dependency_id = "DEP-" + uuid.uuid4().hex
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": child["topic_id"], "prerequisite_topic_id": parent["topic_id"], "requirement_kind": "confirmed-decision", "requirement_summary": "A selection is required.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        malformed = [
+            {}, None, "selection", [[dependency_id]],
+            [{"dependency_id": dependency_id, "decision_ids": [], "extra": True}],
+        ]
+        for payload in malformed:
+            with self.subTest(payload=repr(payload)):
+                request = self.evolution_request(
+                    child, operation="evaluate-topic-gate", owner_ref=child_ref,
+                    basis_selection=payload,
+                )
+                code, rejected, _ = self.run_cli(request)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "invalid_request")
+        for payload in ({}, None, "release", [[dependency_id]]):
+            with self.subTest(release_payload=repr(payload)):
+                request = self.evolution_request(
+                    child, operation="release-topic-gate", expected_revision=5,
+                    expected_topic_revision=1, owner_ref=child_ref,
+                    release_set=payload, release_set_sha256="0" * 64,
+                )
+                code, rejected, _ = self.run_cli(request)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "invalid_request")
+
 
 if __name__ == "__main__":
     unittest.main()
