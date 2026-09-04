@@ -312,7 +312,6 @@ def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        require_open_gate(records, request["actor_topic_id"])
         if topic.get("current_phase") != 1:
             raise ProtocolError(
                 "phase_flow_mode_invalid",

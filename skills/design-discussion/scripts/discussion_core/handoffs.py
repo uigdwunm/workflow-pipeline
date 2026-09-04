@@ -196,6 +196,8 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
     kind = _expect_string(request["handoff_kind"], "handoff_kind", max_bytes=32)
     if kind not in HANDOFF_KINDS:
         raise ProtocolError("invalid_request", "handoff_kind is unsupported")
+    if kind != "child" and "initial_dependencies" in request:
+        raise ProtocolError("invalid_request", "initial_dependencies is valid only for a child handoff")
     target_slug = _expect_string(request["target_slug"], "target_slug", max_bytes=128)
     if not ROOT_SLUG_RE.fullmatch(target_slug):
         raise ProtocolError("invalid_root_slug", "target_slug is invalid")

@@ -27,6 +27,18 @@ RECORD_FIELDS = {
 }
 
 
+def retained_checkpoint_identities(records: dict[str, list[dict[str, Any]]]) -> set[str]:
+    """Return snapshot identities retained by active accepted dependency bases."""
+    retained: set[str] = set()
+    for dependency in records["Topic Dependencies"]:
+        if dependency["relation_state"] != "active" or not dependency["accepted_basis_json"]:
+            continue
+        basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json")
+        identity = basis.get("authority", {}).get("published_identity")
+        if isinstance(identity, str): retained.add(identity)
+    return retained
+
+
 def _canonical_object(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, str):
         raise ProtocolError("state_corrupt", f"{label} must be canonical JSON")
@@ -175,13 +187,14 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
     details = []
     proposed = []
     for dependency in closed:
+        prerequisite_topic = _record_by_id(records["Current Topics"], "topic_id", dependency["prerequisite_topic_id"], "prerequisite_topic_id")
         candidates = _candidates(records, dependency)
         selected = choices.get(dependency["dependency_id"])
-        detail: dict[str, Any] = {"dependency_id": dependency["dependency_id"], "record_revision": dependency["record_revision"], "requirement_kind": dependency["requirement_kind"], "requirement_summary": dependency["requirement_summary"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "candidates": candidates}
+        detail: dict[str, Any] = {"dependency_id": dependency["dependency_id"], "record_revision": dependency["record_revision"], "requirement_kind": dependency["requirement_kind"], "requirement_summary": dependency["requirement_summary"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "prerequisite_phase": prerequisite_topic["current_phase"], "prerequisite_state": prerequisite_topic["topic_state"], "candidates": candidates}
         if selected is not None:
             decision_ids = selected.get("decision_ids")
-            if not isinstance(decision_ids, list) or not decision_ids or sorted(set(decision_ids)) != decision_ids:
-                raise ProtocolError("invalid_request", "basis selection decision_ids must be sorted and non-empty")
+            if not isinstance(decision_ids, list) or sorted(set(decision_ids)) != decision_ids:
+                raise ProtocolError("invalid_request", "basis selection decision_ids must be sorted")
             authority_id = selected.get("authority_id")
             if set(selected) != ({"dependency_id", "decision_ids"} if dependency["requirement_kind"] == "confirmed-decision" else {"dependency_id", "authority_id", "decision_ids"}):
                 raise ProtocolError("topic_dependency_evidence_unavailable", "selected dependency evidence is not current")
