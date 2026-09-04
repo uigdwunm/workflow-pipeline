@@ -376,3 +376,27 @@ class TopicDependencyCliTests(unittest.TestCase):
         dependency = next(item for item in read["topic_dependencies"] if item["dependency_id"] == dependency_id)
         self.assertEqual(dependency["gate_state"], "closed")
         self.assertEqual(dependency["accepted_basis_json"], historical_basis)
+
+    def test_ticket07_phase2_absorb_without_releases_skips_authority_checks_via_cli(self) -> None:
+        project = self.fixture.make_project("ticket07-phase2-empty-absorb", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        prepared, child_ref = self.fixture.activate_child_handoff(topic)
+        submit = self.fixture.handoff_request(
+            topic, operation="submit-child-result", ledger_revision=5,
+            owner_ref=child_ref, handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"], result_scope=["api"], summary="No release needed.",
+        )
+        submit["actor_topic_id"] = prepared["target_topic_id"]
+        code, claimed, stderr = self.fixture.run_cli(submit)
+        self.assertEqual(code, 0, stderr)
+        ledger = Path(str(topic["ledger_path"]))
+        self.fixture.rewrite_ledger_with_valid_digest(ledger, "current_phase: 0", "current_phase: 2")
+        absorb = self.fixture.handoff_request(
+            topic, operation="record-child-result", ledger_revision=6,
+            handoff_id=prepared["handoff_id"], child_result_id=claimed["child_result_id"],
+            effect="absorb",
+        )
+        code, absorbed, stderr = self.fixture.run_cli(absorb)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(absorbed["state"], "absorbed")
+        self.assertEqual(absorbed["released_dependency_ids"], [])
