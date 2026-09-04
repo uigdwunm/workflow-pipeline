@@ -7,14 +7,16 @@ gate from parenthood, result absorption, or delivery coordination.
 
 from __future__ import annotations
 
+import base64
 import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 from .state import (
     ProtocolError, _canonical_json, _evolution_paths, _expect_keys,
     _expect_string, _flock_with_timeout, _idempotent_result, _inject_failure, _json_field,
-    _load_records, _record_by_id, _sha256, _topic_snapshot, _validate_revisions,
+    _load_records, _record_by_id, _require_regular_nosymlink, _sha256, _topic_snapshot, _validate_revisions,
     _validate_uuid4, _validated_string_list, _verify_topic_owner,
     _write_ledger_transaction,
 )
@@ -157,6 +159,102 @@ def _confirmed_decision_candidates(
     return [{"authority_id": None, "authority": {"decision_set_digest": _sha256(_canonical_json(decisions).encode("utf-8"))}, "decision_authority": decisions}] if decisions else []
 
 
+def _decision_authority(records: dict[str, list[dict[str, Any]]], topic_id: str) -> tuple[list[dict[str, Any]], dict[str, str], str]:
+    """Return the one canonical decision descriptor used by every authority kind."""
+    decisions = sorted(_topic_snapshot(records, topic_id)["decisions"], key=lambda item: item["decision_id"])
+    digests = {
+        item["decision_id"]: _sha256(_canonical_json(item).encode("utf-8"))
+        for item in decisions
+    }
+    descriptor = [
+        {"decision_id": item["decision_id"], "sha256": digests[item["decision_id"]], "summary": item.get("summary", "")}
+        for item in decisions if item.get("state") == "confirmed"
+    ]
+    digest_input = [
+        {
+            "decision_id": item["decision_id"],
+            "evolution": item.get("evolution"),
+            "rationale": item.get("rationale"),
+            "state": item.get("state"),
+            "summary": item["summary"],
+        }
+        for item in decisions
+    ]
+    return descriptor, digests, _sha256(_canonical_json(digest_input).encode("utf-8"))
+
+
+def _current_checkpoint(record: dict[str, Any], checkpoint: dict[str, Any], records: dict[str, list[dict[str, Any]]], prerequisite: str) -> bool:
+    """Verify a completed Phase-0 artifact before exposing it as authority."""
+    try:
+        if (
+            record.get("checkpoint_id") != checkpoint.get("checkpoint_id")
+            or record.get("state") != "completed"
+            or record.get("record_revision") != checkpoint.get("record_revision")
+            or checkpoint.get("topic_id") != prerequisite
+            or checkpoint.get("purpose") != "stage-entry"
+            or checkpoint.get("stage_entry_phase") != 0
+            or checkpoint.get("state") != "completed"
+            or checkpoint.get("replacement_identity") is not None
+            or not isinstance(checkpoint.get("published_identity"), str)
+            or checkpoint.get("storage_kind") != "non-git"
+            or not isinstance(checkpoint.get("snapshot_path"), str)
+            or checkpoint.get("snapshot_digest") != checkpoint.get("published_identity")
+            or not isinstance(checkpoint.get("snapshot_bytes_b64"), str)
+        ):
+            return False
+        snapshot_bytes = _require_regular_nosymlink(
+            Path(checkpoint["snapshot_path"]), "checkpoint snapshot"
+        )
+        if _sha256(snapshot_bytes) != checkpoint["published_identity"]:
+            return False
+        if base64.b64decode(checkpoint["snapshot_bytes_b64"], validate=True) != snapshot_bytes:
+            return False
+        snapshot = json.loads(snapshot_bytes.decode("utf-8"))
+        if (
+            not isinstance(snapshot, dict)
+            or (_canonical_json(snapshot) + "\n").encode("utf-8") != snapshot_bytes
+            or snapshot.get("purpose") != "stage-entry"
+            or snapshot.get("decision_digest") != checkpoint.get("decision_digest")
+            or snapshot.get("document_digests")
+            != json.loads(checkpoint["document_digests_json"])
+            or snapshot.get("paths") != json.loads(checkpoint["paths_json"])
+            or snapshot.get("path_set_digest") != checkpoint.get("path_set_digest")
+            or not isinstance(snapshot.get("documents"), dict)
+        ):
+            return False
+        documents = {
+            path: base64.b64decode(value, validate=True)
+            for path, value in snapshot["documents"].items()
+            if isinstance(path, str) and isinstance(value, str)
+        }
+        if set(documents) != set(snapshot["paths"]):
+            return False
+        if {
+            path: _sha256(value) for path, value in documents.items()
+        } != snapshot["document_digests"]:
+            return False
+        topic = _record_by_id(records["Current Topics"], "topic_id", prerequisite, "topic_id")
+        topic_path = topic.get("topic_document_path")
+        if (
+            not isinstance(topic_path, str)
+            or _sha256(_require_regular_nosymlink(Path(topic_path), "topic document"))
+            not in snapshot["document_digests"].values()
+        ):
+            return False
+        _, current_digests, current_digest = _decision_authority(records, prerequisite)
+        return (
+            current_digests == json.loads(checkpoint["decision_digests_json"])
+            and current_digest == checkpoint.get("decision_digest")
+            and sorted(
+                item["decision_id"]
+                for item in _topic_snapshot(records, prerequisite)["decisions"]
+                if item.get("state") == "confirmed"
+            ) == json.loads(checkpoint["confirmed_decision_ids_json"])
+        )
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError, ProtocolError):
+        return False
+
+
 def _checkpoint_candidates(
     records: dict[str, list[dict[str, Any]]], prerequisite: str,
 ) -> list[dict[str, Any]]:
@@ -164,12 +262,13 @@ def _checkpoint_candidates(
     for record in records["Checkpoints"]:
         if record.get("topic_id") != prerequisite or record.get("state") != "completed":
             continue
-        checkpoint = _json_field(record, "data_json", "checkpoint")
-        if checkpoint.get("purpose") != "stage-entry" or checkpoint.get("stage_entry_phase") != 0 or not checkpoint.get("published_identity"):
+        try:
+            checkpoint = _json_field(record, "data_json", "checkpoint")
+        except ProtocolError:
             continue
-        digests = json.loads(checkpoint.get("decision_digests_json", "{}"))
-        if not isinstance(digests, dict):
+        if not _current_checkpoint(record, checkpoint, records, prerequisite):
             continue
+        digests = json.loads(checkpoint["decision_digests_json"])
         result.append({"authority_id": checkpoint["checkpoint_id"], "authority": {"checkpoint_id": checkpoint["checkpoint_id"], "record_revision": checkpoint["record_revision"], "published_identity": checkpoint["published_identity"], "decision_digest": checkpoint["decision_digest"]}, "decision_authority": [{"decision_id": key, "sha256": value} for key, value in sorted(digests.items())]})
     # A later completed Phase-0 entry checkpoint supersedes earlier draft
     # identities for release purposes.
@@ -183,16 +282,46 @@ def _phase_result_candidates(
     for record in records["Phase Results"]:
         if record.get("result_kind") != "phase-result" or record.get("state") != "completed":
             continue
-        phase_result = _json_field(record, "data_json", "phase result")
-        if phase_result.get("topic_id") != prerequisite or phase_result.get("from_phase") != 0 or phase_result.get("to_phase") != 1:
+        try:
+            phase_result = _json_field(record, "data_json", "phase result")
+            ids = phase_result["affected_decision_ids"]
+            frozen = phase_result["decision_authority"]
+            if (
+                record.get("result_id") != phase_result.get("result_id")
+                or phase_result.get("topic_id") != prerequisite
+                or phase_result.get("from_phase") != 0
+                or phase_result.get("to_phase") != 1
+                or not isinstance(phase_result.get("phase_run_id"), str)
+                or not isinstance(ids, list)
+                or ids != sorted(set(ids))
+                or not isinstance(frozen, list)
+                or frozen != sorted(frozen, key=lambda item: item.get("decision_id", ""))
+                or any(not isinstance(item, dict) or set(item) != {"decision_id", "sha256"} for item in frozen)
+                or [item["decision_id"] for item in frozen] != ids
+            ):
+                continue
+            current, _, _ = _decision_authority(records, prerequisite)
+            current_by_id = {
+                item["decision_id"]: {
+                    "decision_id": item["decision_id"], "sha256": item["sha256"]
+                }
+                for item in current
+            }
+            if any(current_by_id.get(item["decision_id"]) != item for item in frozen):
+                continue
+            phase_run = _record_by_id(records["Phase Runs"], "run_id", phase_result["phase_run_id"], "phase_run_id")
+            phase_data = _json_field(phase_run, "data_json", "phase run")
+            if (
+                phase_run.get("run_kind") != "phase-run"
+                or phase_run.get("state") != "completed"
+                or phase_data.get("source_topic_id") != prerequisite
+                or phase_data.get("from_phase") != 0
+                or phase_data.get("to_phase") != 1
+            ):
+                continue
+        except (KeyError, TypeError, ProtocolError):
             continue
-        ids = phase_result.get("affected_decision_ids")
-        if not isinstance(ids, list): continue
-        snapshot = {item["decision_id"]: item for item in _topic_snapshot(records, prerequisite)["decisions"]}
-        if any(item not in snapshot or snapshot[item].get("state") != "confirmed" for item in ids):
-            continue
-        decisions = {item: _sha256(_canonical_json(snapshot[item]).encode("utf-8")) for item in ids}
-        result.append({"authority_id": phase_result["result_id"], "authority": {"result_id": phase_result["result_id"], "record_revision": record["record_revision"], "state": "completed", "phase_run_id": phase_result["phase_run_id"], "affected_decision_ids": sorted(ids)}, "decision_authority": [{"decision_id": item, "sha256": decisions.get(item, "") } for item in sorted(ids)]})
+        result.append({"authority_id": phase_result["result_id"], "authority": {"result_id": phase_result["result_id"], "record_revision": record["record_revision"], "state": "completed", "phase_run_id": phase_result["phase_run_id"], "affected_decision_ids": ids}, "decision_authority": frozen})
     return sorted(result, key=lambda item: str(item["authority_id"]))
 
 

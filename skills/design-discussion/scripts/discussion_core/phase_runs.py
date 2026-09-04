@@ -1547,6 +1547,10 @@ def _finalize_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             for item in _topic_snapshot(records, request["actor_topic_id"])["decisions"]
             if item.get("state") != "discarded"
         )
+        decision_by_id = {
+            item["decision_id"]: item
+            for item in _topic_snapshot(records, request["actor_topic_id"])["decisions"]
+        }
         phase_result_data = {
             "result_id": result_id,
             "phase_run_id": data["run_id"],
@@ -1554,6 +1558,15 @@ def _finalize_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             "from_phase": data["from_phase"],
             "to_phase": data["to_phase"],
             "affected_decision_ids": affected_decision_ids,
+            "decision_authority": [
+                {
+                    "decision_id": decision_id,
+                    "sha256": _sha256(
+                        _canonical_json(decision_by_id[decision_id]).encode("utf-8")
+                    ),
+                }
+                for decision_id in affected_decision_ids
+            ],
             "evidence": data["evidence"],
         }
         if data.get("implementation_mode") is not None:
