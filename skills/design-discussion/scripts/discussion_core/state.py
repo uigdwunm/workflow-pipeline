@@ -29,9 +29,13 @@ LEDGER_SECTION_NAMES = (
     "Pending Document Writes",
     "Impacts",
     "Relations and Coverage",
+    "Topic Dependencies",
     "Dependencies and Active Implementations",
     "Conversation Bindings",
     "Recent Events",
+)
+LEGACY_LEDGER_SECTION_NAMES = tuple(
+    name for name in LEDGER_SECTION_NAMES if name != "Topic Dependencies"
 )
 
 
@@ -279,15 +283,15 @@ def _verify_ledger_digest(data: bytes) -> tuple[dict[str, str], str]:
     return frontmatter, text
 
 
-def _ledger_sections(text: str) -> dict[str, str]:
+def _ledger_sections(text: str, section_names: tuple[str, ...] = LEDGER_SECTION_NAMES) -> dict[str, str]:
     sections: dict[str, str] = {}
-    for index, name in enumerate(LEDGER_SECTION_NAMES):
+    for index, name in enumerate(section_names):
         marker = f"## {name}\n\n"
         if text.count(marker) != 1:
             raise ProtocolError("state_corrupt", f"ledger section {name!r} is missing or duplicated")
         start = text.index(marker) + len(marker)
-        if index + 1 < len(LEDGER_SECTION_NAMES):
-            next_marker = f"\n## {LEDGER_SECTION_NAMES[index + 1]}\n\n"
+        if index + 1 < len(section_names):
+            next_marker = f"\n## {section_names[index + 1]}\n\n"
             try:
                 end = text.index(next_marker, start)
             except ValueError as error:
@@ -403,7 +407,8 @@ def _render_records_ledger(
     frontmatter: dict[str, str], records: dict[str, list[dict[str, Any]]]
 ) -> bytes:
     body_lines = ["# Design Discussion Ledger", ""]
-    for name in LEDGER_SECTION_NAMES:
+    section_names = LEDGER_SECTION_NAMES if frontmatter.get("schema_version") == "3" else LEGACY_LEDGER_SECTION_NAMES
+    for name in section_names:
         body_lines.extend([f"## {name}", "", _yaml_record_block(records[name]), ""])
     body = "\n".join(body_lines)
     schema_version = frontmatter["schema_version"]
@@ -412,7 +417,7 @@ def _render_records_ledger(
         f"project_id: {frontmatter['project_id']}",
         f"tree_id: {frontmatter['tree_id']}",
     ]
-    if schema_version == "2":
+    if schema_version in {"2", "3"}:
         _validate_creation_receipt(frontmatter)
         frontmatter_lines.extend(
             [
@@ -475,7 +480,7 @@ def _hydrate_legacy_creation_receipt(
     schema_version = frontmatter.get("schema_version")
     has_key = "creation_idempotency_key" in frontmatter
     has_fingerprint = "creation_fingerprint" in frontmatter
-    if schema_version == "2":
+    if schema_version in {"2", "3"}:
         _validate_creation_receipt(frontmatter)
         return
     if schema_version != "1":
@@ -534,11 +539,18 @@ def _load_records(ledger_path: Path) -> tuple[dict[str, str], dict[str, list[dic
     frontmatter, text = _verify_ledger_digest(
         _require_regular_nosymlink(ledger_path, "ledger")
     )
-    sections = _ledger_sections(text)
-    records = {
-        name: _parse_record_section(sections[name], name) for name in LEDGER_SECTION_NAMES
-    }
+    schema_version = frontmatter.get("schema_version")
+    if schema_version not in {"1", "2", "3"}:
+        raise ProtocolError("state_corrupt", "ledger schema_version is unsupported")
+    section_names = LEDGER_SECTION_NAMES if schema_version == "3" else LEGACY_LEDGER_SECTION_NAMES
+    sections = _ledger_sections(text, section_names)
+    records = {name: _parse_record_section(sections[name], name) for name in section_names}
+    if schema_version != "3":
+        records["Topic Dependencies"] = []
     _hydrate_legacy_creation_receipt(frontmatter, records)
+    # Keep corruption fail-closed before any operation can observe ledger state.
+    from .topic_dependencies import _validate_dependency_records
+    _validate_dependency_records(records)
     return frontmatter, records
 
 
@@ -885,6 +897,9 @@ def _write_ledger_transaction(
         event_type=event_type,
         result=result,
     )
+    # Any successful mutation writes the current schema; loading a legacy ledger
+    # is deliberately read-only until this point.
+    frontmatter["schema_version"] = "3"
     frontmatter["ledger_revision"] = str(ledger_revision)
     frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
     _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))

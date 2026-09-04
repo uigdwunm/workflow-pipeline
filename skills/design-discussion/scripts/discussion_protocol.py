@@ -101,6 +101,14 @@ from discussion_core.phase_runs import (
     _supersede_phase_run,
     _transition_phase_attempt,
 )
+from discussion_core.topic_dependencies import (
+    derived_gate,
+    evaluate_topic_gate,
+    release_topic_gate,
+    reclose_directly_affected,
+    require_open_gate,
+    update_topic_dependency,
+)
 
 
 PROTOCOL_VERSION = 1
@@ -188,6 +196,14 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "no_code_integration_invalid": "父级范围未被已完成且已吸收的子实现完整覆盖。",
         "context_not_initialized": "document_only 上下文尚未获得用户授权初始化本地协调状态。",
         "context_identity_conflict": "发现的讨论上下文身份存在强冲突。",
+        "topic_gate_closed": "当前话题存在未放行的需求依赖门禁。",
+        "topic_dependency_cycle": "话题依赖会形成循环，未写入任何状态。",
+        "topic_dependency_duplicate": "活动话题依赖边重复。",
+        "topic_dependency_state_conflict": "话题依赖状态冲突。",
+        "topic_dependency_phase_conflict": "话题依赖只能在讨论 Phase 0 或 1 中修改。",
+        "topic_dependency_ownership_conflict": "只有依赖方话题可变更或放行依赖。",
+        "topic_dependency_evidence_unavailable": "所需的当前权威证据不可用。",
+        "topic_gate_evaluation_stale": "门禁评估已过期，请重新评估并确认。",
     }
     detail: dict[str, Any] = {
         "code": error.code,
@@ -334,7 +350,7 @@ def _render_ledger(
     ]
     return _render_records_ledger(
         {
-            "schema_version": "2",
+            "schema_version": "3",
             "project_id": project_id,
             "tree_id": tree_id,
             "creation_idempotency_key": idempotency_key,
@@ -1096,6 +1112,7 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             owner_ref,
             allow_active_grilling=True,
         )
+        require_open_gate(records, request["actor_topic_id"])
         active_write = _active_pending_write(records)
         if active_write is not None:
             raise ProtocolError(
@@ -1129,6 +1146,14 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             idempotency_key=request["idempotency_key"],
         )
         next_revision = ledger_revision + 1
+        invalidated_dependencies: list[str] = []
+        if mutation.get("type") == "resolve-impact" and mutation.get("action") in {"adjust", "replace", "discard"}:
+            invalidated_dependencies = reclose_directly_affected(
+                next_records, prerequisite_topic_id=request["actor_topic_id"],
+                changed_decision_ids={mutation["decision_id"]},
+                cause={"decision_id": mutation["decision_id"], "action": mutation["action"]},
+                ledger_revision=next_revision,
+            )
         next_topic_revision = topic_revision + 1
         next_snapshot = _topic_snapshot(next_records, request["actor_topic_id"])
         manifest = _parse_frontmatter(
@@ -1190,8 +1215,10 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             "before_sha256": write_record["before_sha256"], "after_sha256": write_record["after_sha256"],
             "recovered_orphan": recovered_orphan,
             **mutation_result,
+            "invalidated_dependency_ids": invalidated_dependencies,
         }
         _append_event(next_records, request, revision=next_revision, event_type="topic-update-prepared", result=result)
+        frontmatter["schema_version"] = "3"
         frontmatter["ledger_revision"] = str(next_revision)
         frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
         if os.environ.get("CODEX_DISCUSSION_TEST_FAILPOINT") == "topic-update-ledger-replace":
@@ -1255,6 +1282,7 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
             "after_sha256": write["after_sha256"],
         }
         _append_event(records, request, revision=next_revision, event_type="document-write-completed", result=result)
+        frontmatter["schema_version"] = "3"
         frontmatter["ledger_revision"] = str(next_revision)
         frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
         _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
@@ -1887,6 +1915,7 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
                             "data_json": _canonical_json(item),
                         }
                     )
+                frontmatter["schema_version"] = "3"
                 data = _render_records_ledger(frontmatter, records)
             _inject_failure("document-context-before-ledger-create")
             _write_new_file(ledger_path, data, created_files)
@@ -1941,6 +1970,7 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         _verify_topic_path_authority(topic_record, topic_path)
         snapshot = _topic_snapshot(records, request["actor_topic_id"])
+        gate_state = derived_gate(records, request["actor_topic_id"])
         active_question_record = _single_active_question_record(
             records,
             topic_id=request["actor_topic_id"],
@@ -1961,7 +1991,9 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
             ),
             "checkpoint_count": len(checkpoints), "handoff_count": handoff_count,
             "active_question": active_question_record[1] if active_question_record else None,
-            "pending_document_writes": pending, "checkpoints": checkpoints, **snapshot,
+            "pending_document_writes": pending, "checkpoints": checkpoints,
+            "derived_gate_state": gate_state,
+            "topic_dependencies": [dict(item) for item in records["Topic Dependencies"] if item["dependent_topic_id"] == request["actor_topic_id"]], **snapshot,
         }
 
 
@@ -2008,6 +2040,9 @@ def _build_operation_registry() -> OperationRegistry:
             ("checkpoint-gc-confirm", _checkpoint_gc_confirm),
             ("reconcile-checkpoint-gc", _reconcile_checkpoint_gc),
             ("prepare-handoff", _prepare_handoff),
+            ("update-topic-dependency", update_topic_dependency),
+            ("evaluate-topic-gate", evaluate_topic_gate),
+            ("release-topic-gate", release_topic_gate),
             ("bind-handoff", _bind_handoff),
             ("accept-handoff", _accept_handoff),
             ("authorize-handoff-discussion", _authorize_handoff_discussion),

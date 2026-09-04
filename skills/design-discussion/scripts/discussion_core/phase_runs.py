@@ -30,6 +30,7 @@ from .state import (
     _verify_topic_owner,
     _write_ledger_transaction,
 )
+from .topic_dependencies import require_open_gate
 
 
 PHASE_ROUTES = {(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)}
@@ -450,6 +451,7 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        require_open_gate(records, request["actor_topic_id"])
         if topic.get("current_phase") != from_phase:
             raise ProtocolError("phase_route_conflict", "route source phase does not match current topic phase")
         if _pending_topic_impacts(records, request["actor_topic_id"]):
@@ -958,6 +960,8 @@ def _prepare_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        if route[0] in {0, 1}:
+            require_open_gate(records, request["actor_topic_id"])
         if topic.get("current_phase") != request["from_phase"]:
             raise ProtocolError("phase_route_conflict", "route source phase does not match current topic phase")
         active_runs = [
@@ -1063,6 +1067,7 @@ def _retry_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             topic,
         )
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        require_open_gate(records, request["actor_topic_id"])
         record = _phase_record(records, request["phase_run_id"])
         data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])

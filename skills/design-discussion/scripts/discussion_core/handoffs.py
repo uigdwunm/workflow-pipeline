@@ -29,6 +29,7 @@ from .state import (
     _verify_topic_owner,
     _write_ledger_transaction,
 )
+from .topic_dependencies import prepare_initial_dependencies, require_open_gate
 
 
 HANDOFF_KINDS = {"child", "continuation"}
@@ -145,6 +146,7 @@ def _handoff_payload(
         "identity_envelope": envelope,
         "work_snapshot": handoff["work_snapshot"],
         "authoritative_references": handoff["authoritative_references"],
+        "initial_dependencies": handoff.get("initial_dependencies", []),
     }
     payload_bytes = len(_canonical_json(payload).encode("utf-8"))
     if payload_bytes > HANDOFF_PAYLOAD_MAX_BYTES:
@@ -180,16 +182,15 @@ def _handoff_result(
 
 def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
     project, ledger_path, _, lock_path, owner_ref = _evolution_paths(request)
-    _expect_keys(
-        request,
-        {
+    allowed = {
             "protocol_version", "operation", "project_path", "project_id", "tree_id",
             "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision",
             "expected_topic_revision", "idempotency_key", "handoff_kind", "target_slug",
             "scope", "work_snapshot", "authoritative_references",
-        },
-        "prepare-handoff request",
-    )
+        }
+    if "initial_dependencies" in request:
+        allowed.add("initial_dependencies")
+    _expect_keys(request, allowed, "prepare-handoff request")
     _validate_uuid4(request["idempotency_key"], "idempotency_key")
     kind = _expect_string(request["handoff_kind"], "handoff_kind", max_bytes=32)
     if kind not in HANDOFF_KINDS:
@@ -234,6 +235,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, source_topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        require_open_gate(records, request["actor_topic_id"])
         target_topic_id = (
             request["actor_topic_id"] if kind == "continuation" else f"topic-{uuid.UUID(request['idempotency_key']).hex}"
         )
@@ -257,6 +259,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             "creation_idempotency_key": request["idempotency_key"],
             "creation_fingerprint": _mutation_fingerprint(request),
             "creation_result_json": "",
+            "initial_dependencies": request.get("initial_dependencies", []),
         }
         identity_envelope, payload_digest, payload_bytes = _handoff_payload(handoff, attempt_id)
         attempt = {
@@ -305,6 +308,10 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
                     "handoff_id": handoff_id,
                 }
             )
+            initial_dependencies = prepare_initial_dependencies(
+                records, request=request, target_topic_id=target_topic_id,
+                handoff_id=handoff_id, ledger_revision=ledger_revision + 1,
+            )
         else:
             records["Relations and Coverage"].append(
                 {
@@ -316,6 +323,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
                     "handoff_id": handoff_id,
                 }
             )
+            initial_dependencies = []
         next_revision = ledger_revision + 1
         result = {
             **_handoff_result(
@@ -324,6 +332,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             "identity_envelope": identity_envelope,
             "work_snapshot_bytes": snapshot_bytes,
             "handoff_payload_bytes": payload_bytes,
+            "initial_dependencies": initial_dependencies,
         }
         handoff["creation_result_json"] = _canonical_json(result)
         _store_handoff(
@@ -533,6 +542,7 @@ def _authorize_handoff_discussion(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        require_open_gate(records, request["actor_topic_id"])
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         attempt = _handoff_attempt(handoff, request["attempt_id"])
@@ -997,4 +1007,3 @@ def _validate_handoffs(records: dict[str, list[dict[str, Any]]]) -> int:
             if len(current_bindings) != 1:
                 raise ProtocolError("state_corrupt", "current handoff does not own its active binding")
     return len(handoffs)
-

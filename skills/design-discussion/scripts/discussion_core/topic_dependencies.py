@@ -1,0 +1,310 @@
+"""Topic-owned Phase-0/1 requirement gates.
+
+This module is deliberately the only place that understands dependency records.
+Callers supply an already authenticated discussion request; they never infer a
+gate from parenthood, result absorption, or delivery coordination.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from typing import Any
+
+from .state import (
+    ProtocolError, SHA256_RE, _canonical_json, _evolution_paths, _expect_keys,
+    _expect_string, _flock_with_timeout, _idempotent_result, _json_field,
+    _load_records, _record_by_id, _sha256, _topic_snapshot, _validate_revisions,
+    _validate_uuid4, _validated_string_list, _verify_topic_owner,
+    _write_ledger_transaction,
+)
+
+KINDS = {"phase-0-checkpoint", "phase-1-result", "confirmed-decision"}
+RECORD_FIELDS = {
+    "dependency_id", "record_revision", "dependent_topic_id", "prerequisite_topic_id",
+    "requirement_kind", "requirement_summary", "relation_state", "gate_state",
+    "accepted_basis_json", "gate_reason_json",
+}
+
+
+def _canonical_object(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, str):
+        raise ProtocolError("state_corrupt", f"{label} must be canonical JSON")
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ProtocolError("state_corrupt", f"{label} is invalid JSON") from error
+    if not isinstance(decoded, dict) or _canonical_json(decoded) != value:
+        raise ProtocolError("state_corrupt", f"{label} must be a canonical JSON object")
+    return decoded
+
+
+def _validate_dependency_records(records: dict[str, list[dict[str, Any]]]) -> None:
+    topics = {item.get("topic_id") for item in records["Current Topics"]}
+    seen_ids: set[str] = set()
+    edges: dict[str, set[str]] = {}
+    pairs: set[tuple[str, str]] = set()
+    for item in records["Topic Dependencies"]:
+        if set(item) != RECORD_FIELDS:
+            raise ProtocolError("state_corrupt", "topic dependency record fields are invalid")
+        dep_id = item["dependency_id"]
+        if not isinstance(dep_id, str) or not dep_id.startswith("DEP-") or dep_id in seen_ids:
+            raise ProtocolError("state_corrupt", "topic dependency identity is invalid or duplicated")
+        seen_ids.add(dep_id)
+        if not isinstance(item["record_revision"], int) or item["record_revision"] < 1:
+            raise ProtocolError("state_corrupt", "topic dependency revision is invalid")
+        dependent, prerequisite = item["dependent_topic_id"], item["prerequisite_topic_id"]
+        if dependent not in topics or prerequisite not in topics or dependent == prerequisite:
+            raise ProtocolError("state_corrupt", "topic dependency endpoints are invalid")
+        if item["requirement_kind"] not in KINDS or not isinstance(item["requirement_summary"], str) or not item["requirement_summary"]:
+            raise ProtocolError("state_corrupt", "topic dependency requirement is invalid")
+        if item["relation_state"] not in {"active", "cancelled"} or item["gate_state"] not in {"closed", "open"}:
+            raise ProtocolError("state_corrupt", "topic dependency state is invalid")
+        _canonical_object(item["gate_reason_json"], "topic dependency gate_reason_json")
+        if item["accepted_basis_json"] is not None:
+            basis = _canonical_object(item["accepted_basis_json"], "topic dependency accepted_basis_json")
+            if basis.get("dependency_id") != dep_id or basis.get("prerequisite_topic_id") != prerequisite:
+                raise ProtocolError("state_corrupt", "topic dependency accepted basis is incoherent")
+        if item["relation_state"] == "active":
+            pair = (dependent, prerequisite)
+            if pair in pairs:
+                raise ProtocolError("state_corrupt", "active topic dependency endpoint pair is duplicated")
+            pairs.add(pair)
+            edges.setdefault(dependent, set()).add(prerequisite)
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    def visit(node: str) -> None:
+        if node in visiting:
+            raise ProtocolError("state_corrupt", "active topic dependency graph contains a cycle")
+        if node in visited:
+            return
+        visiting.add(node)
+        for target in edges.get(node, set()):
+            visit(target)
+        visiting.remove(node)
+        visited.add(node)
+    for node in edges:
+        visit(node)
+
+
+def derived_gate(records: dict[str, list[dict[str, Any]]], topic_id: str) -> str:
+    _validate_dependency_records(records)
+    return "closed" if any(
+        item["dependent_topic_id"] == topic_id and item["relation_state"] == "active"
+        and item["gate_state"] == "closed" for item in records["Topic Dependencies"]
+    ) else "open"
+
+
+def require_open_gate(records: dict[str, list[dict[str, Any]]], topic_id: str) -> None:
+    topic = _record_by_id(records["Current Topics"], "topic_id", topic_id, "topic_id")
+    if topic.get("current_phase") in {0, 1} and derived_gate(records, topic_id) == "closed":
+        raise ProtocolError("topic_gate_closed", "topic has an active closed requirements dependency", context={"topic_id": topic_id})
+
+
+def reclose_directly_affected(
+    records: dict[str, list[dict[str, Any]]], *, prerequisite_topic_id: str,
+    changed_decision_ids: set[str] | None, cause: dict[str, Any], ledger_revision: int,
+) -> list[str]:
+    """Fail closed for direct bases with unknown or intersecting provenance only."""
+    closed: list[str] = []
+    for dependency in records["Topic Dependencies"]:
+        if dependency["relation_state"] != "active" or dependency["gate_state"] != "open" or dependency["prerequisite_topic_id"] != prerequisite_topic_id:
+            continue
+        basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json") if dependency["accepted_basis_json"] else None
+        authorities = basis.get("decision_authority") if basis else None
+        known = isinstance(authorities, list) and all(isinstance(item, dict) and isinstance(item.get("decision_id"), str) for item in authorities)
+        basis_ids = {item["decision_id"] for item in authorities} if known else set()
+        if changed_decision_ids is None or not known or basis_ids & changed_decision_ids:
+            dependency["gate_state"] = "closed"
+            dependency["record_revision"] += 1
+            dependency["gate_reason_json"] = _canonical_json({"kind": "direct-upstream-invalidation", "ledger_revision": ledger_revision, **cause})
+            closed.append(dependency["dependency_id"])
+    return sorted(closed)
+
+
+def _candidate_decisions(records: dict[str, list[dict[str, Any]]], prerequisite: str) -> list[dict[str, Any]]:
+    result = []
+    for decision in _topic_snapshot(records, prerequisite)["decisions"]:
+        if decision.get("state") == "confirmed":
+            digest = _sha256(_canonical_json(decision).encode("utf-8"))
+            result.append({"decision_id": decision["decision_id"], "sha256": digest, "summary": decision.get("summary", "")})
+    return sorted(result, key=lambda item: item["decision_id"])
+
+
+def _closed(records: dict[str, list[dict[str, Any]]], topic_id: str) -> list[dict[str, Any]]:
+    return sorted((item for item in records["Topic Dependencies"] if item["dependent_topic_id"] == topic_id and item["relation_state"] == "active" and item["gate_state"] == "closed"), key=lambda item: item["dependency_id"])
+
+
+def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selection: list[dict[str, Any]] | None) -> dict[str, Any]:
+    closed = _closed(records, topic_id)
+    if not closed:
+        return {"state": "open", "derived_gate_state": "open", "dependencies": []}
+    choices = {item.get("dependency_id"): item for item in selection or []}
+    details = []
+    proposed = []
+    for dependency in closed:
+        candidates = _candidate_decisions(records, dependency["prerequisite_topic_id"])
+        selected = choices.get(dependency["dependency_id"])
+        if dependency["requirement_kind"] != "confirmed-decision":
+            # Other authority kinds are intentionally not guessed from prose;
+            # callers receive a stable unavailable reason until a matching
+            # checkpoint/result authority is published.
+            candidates = []
+        detail: dict[str, Any] = {"dependency_id": dependency["dependency_id"], "record_revision": dependency["record_revision"], "requirement_kind": dependency["requirement_kind"], "requirement_summary": dependency["requirement_summary"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "candidates": candidates}
+        if selected is not None:
+            decision_ids = selected.get("decision_ids")
+            if not isinstance(decision_ids, list) or not decision_ids or sorted(set(decision_ids)) != decision_ids:
+                raise ProtocolError("invalid_request", "basis selection decision_ids must be sorted and non-empty")
+            chosen = [item for item in candidates if item["decision_id"] in decision_ids]
+            if len(chosen) != len(decision_ids) or set(selected) != {"dependency_id", "decision_ids"}:
+                raise ProtocolError("topic_dependency_evidence_unavailable", "selected dependency evidence is not current")
+            basis = {"basis_version": 1, "dependency_id": dependency["dependency_id"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "requirement_kind": dependency["requirement_kind"], "decision_authority": [{"decision_id": item["decision_id"], "sha256": item["sha256"]} for item in chosen]}
+            detail["proposed_basis"] = basis
+            proposed.append({"dependency_id": dependency["dependency_id"], "record_revision": dependency["record_revision"], "basis": basis})
+        elif not candidates:
+            detail["waiting_reason"] = "current required authority is unavailable"
+        details.append(detail)
+    if selection is not None and len(choices) != len(closed):
+        raise ProtocolError("invalid_request", "basis_selection must name every active closed dependency")
+    releasable = all(item["candidates"] for item in details)
+    result: dict[str, Any] = {"state": "releasable" if releasable else "blocked", "derived_gate_state": "closed", "dependencies": details}
+    if releasable and selection is not None:
+        release_set = sorted(proposed, key=lambda item: item["dependency_id"])
+        result["release_set"] = release_set
+        result["release_set_sha256"] = _sha256(_canonical_json({"ledger_revision": 0, "topic_id": topic_id, "release_set": release_set}).encode("utf-8"))
+    return result
+
+
+def _request_context(request: dict[str, Any], extra: set[str], *, query: bool = False):
+    required = {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref"} | extra
+    if not query:
+        required |= {"expected_ledger_revision", "expected_topic_revision", "idempotency_key"}
+    _expect_keys(request, required, f"{request['operation']} request")
+    if not query:
+        _validate_uuid4(request["idempotency_key"], "idempotency_key")
+    return _evolution_paths(request, query=query, allow_tree_topic=True)
+
+
+def _dependency_id(key: str) -> str:
+    return f"DEP-{uuid.UUID(key).hex}"
+
+
+def _validate_new_edge(records: dict[str, list[dict[str, Any]]], dependent: str, prerequisite: str, kind: Any, summary: Any, *, replacing: str | None = None) -> None:
+    if dependent == prerequisite:
+        raise ProtocolError("topic_dependency_state_conflict", "a topic cannot depend on itself")
+    _record_by_id(records["Current Topics"], "topic_id", prerequisite, "prerequisite_topic_id")
+    topic = _record_by_id(records["Current Topics"], "topic_id", dependent, "dependent_topic_id")
+    if topic.get("current_phase") not in {0, 1}:
+        raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are mutable only in Phase 0 or 1")
+    if kind not in KINDS or not isinstance(summary, str) or not summary or len(summary.encode("utf-8")) > 4096:
+        raise ProtocolError("invalid_request", "topic dependency requirement is invalid")
+    copied = [dict(item) for item in records["Topic Dependencies"] if item["dependency_id"] != replacing]
+    copied.append({"dependency_id": "DEP-probe", "record_revision": 1, "dependent_topic_id": dependent, "prerequisite_topic_id": prerequisite, "requirement_kind": kind, "requirement_summary": summary, "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": _canonical_json({"kind": "probe"})})
+    try:
+        _validate_dependency_records({**records, "Topic Dependencies": copied})
+    except ProtocolError as error:
+        if "cycle" in error.message:
+            raise ProtocolError("topic_dependency_cycle", "active dependency graph would contain a cycle") from error
+        if "duplicated" in error.message:
+            raise ProtocolError("topic_dependency_duplicate", "active dependency endpoint pair is duplicated") from error
+        raise
+
+
+def prepare_initial_dependencies(
+    records: dict[str, list[dict[str, Any]]], *, request: dict[str, Any], target_topic_id: str,
+    handoff_id: str, ledger_revision: int,
+) -> list[dict[str, Any]]:
+    """Resolve a bounded handoff dependency declaration after child identity exists."""
+    raw = request.get("initial_dependencies", [])
+    if not isinstance(raw, list) or len(raw) > 64:
+        raise ProtocolError("invalid_request", "initial_dependencies must be a bounded array")
+    created: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ProtocolError("invalid_request", f"initial_dependencies[{index}] must be an object")
+        _expect_keys(item, {"dependent_endpoint", "prerequisite_topic_ref", "requirement_kind", "requirement_summary"}, "initial dependency")
+        endpoints = {"source": request["actor_topic_id"], "target": target_topic_id}
+        dependent = endpoints.get(item["dependent_endpoint"])
+        prerequisite = endpoints.get(item["prerequisite_topic_ref"], item["prerequisite_topic_ref"])
+        if dependent is None or not isinstance(prerequisite, str):
+            raise ProtocolError("invalid_request", "initial dependency endpoint is invalid")
+        _validate_new_edge(records, dependent, prerequisite, item["requirement_kind"], item["requirement_summary"])
+        seed = _sha256(_canonical_json({"handoff_id": handoff_id, "index": index}).encode("utf-8"))[:32]
+        record = {"dependency_id": f"DEP-{seed}", "record_revision": 1, "dependent_topic_id": dependent, "prerequisite_topic_id": prerequisite, "requirement_kind": item["requirement_kind"], "requirement_summary": item["requirement_summary"], "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": _canonical_json({"kind": "initial-handoff", "handoff_id": handoff_id, "ledger_revision": ledger_revision})}
+        records["Topic Dependencies"].append(record)
+        created.append({key: record[key] for key in ("dependency_id", "record_revision", "dependent_topic_id", "prerequisite_topic_id", "requirement_kind", "requirement_summary", "gate_state")})
+    return sorted(created, key=lambda item: item["dependency_id"])
+
+
+def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
+    _, ledger_path, _, lock_path, owner_ref = _request_context(request, {"action", "dependency_id", "expected_dependency_revision", "prerequisite_topic_id", "requirement_kind", "requirement_summary"})
+    action = request["action"]
+    if action not in {"create", "replace", "cancel"}:
+        raise ProtocolError("invalid_request", "dependency action is unsupported")
+    with lock_path.open("a+b") as stream:
+        _flock_with_timeout(stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None: return replay
+        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        revision, topic_revision = _validate_revisions(request, frontmatter, topic)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        if topic["current_phase"] not in {0, 1}: raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are immutable after Phase 1")
+        if action == "create":
+            if any(request[key] is not None for key in {"dependency_id", "expected_dependency_revision"}): raise ProtocolError("invalid_request", "create must not name a dependency revision")
+            _validate_new_edge(records, request["actor_topic_id"], request["prerequisite_topic_id"], request["requirement_kind"], request["requirement_summary"])
+            dep = {"dependency_id": _dependency_id(request["idempotency_key"]), "record_revision": 1, "dependent_topic_id": request["actor_topic_id"], "prerequisite_topic_id": request["prerequisite_topic_id"], "requirement_kind": request["requirement_kind"], "requirement_summary": request["requirement_summary"], "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": _canonical_json({"kind": "explicit-create", "ledger_revision": revision + 1})}
+            records["Topic Dependencies"].append(dep)
+        else:
+            dep = _record_by_id(records["Topic Dependencies"], "dependency_id", request["dependency_id"], "dependency_id")
+            if dep["dependent_topic_id"] != request["actor_topic_id"]: raise ProtocolError("topic_dependency_ownership_conflict", "only the dependent topic may mutate a dependency")
+            if request["expected_dependency_revision"] != dep["record_revision"]: raise ProtocolError("record_revision_conflict", "dependency revision is stale", context={"record_revision": dep["record_revision"]})
+            if action == "replace":
+                _validate_new_edge(records, request["actor_topic_id"], request["prerequisite_topic_id"], request["requirement_kind"], request["requirement_summary"], replacing=dep["dependency_id"])
+                dep.update({"prerequisite_topic_id": request["prerequisite_topic_id"], "requirement_kind": request["requirement_kind"], "requirement_summary": request["requirement_summary"], "relation_state": "active", "gate_state": "closed"})
+            else:
+                dep["relation_state"] = "cancelled"
+            dep["record_revision"] += 1
+            dep["gate_reason_json"] = _canonical_json({"kind": f"explicit-{action}", "ledger_revision": revision + 1})
+        result = {"ok": True, "state": action, "idempotent_replay": False, "dependency_id": dep["dependency_id"], "dependency_revision": dep["record_revision"], "ledger_revision": revision + 1, "record_revision": topic_revision, "derived_gate_state": derived_gate(records, request["actor_topic_id"])}
+        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=revision + 1, event_type=f"topic-dependency-{action}", result=result)
+        return result
+
+
+def evaluate_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
+    _, ledger_path, _, lock_path, owner_ref = _request_context(request, {"basis_selection"} if "basis_selection" in request else set(), query=True)
+    with lock_path.open("a+b") as stream:
+        _flock_with_timeout(stream)
+        frontmatter, records = _load_records(ledger_path)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        selection = request.get("basis_selection")
+        if selection is not None and (not isinstance(selection, list) or len(selection) > 64): raise ProtocolError("invalid_request", "basis_selection is invalid")
+        result = _evaluation(records, request["actor_topic_id"], selection)
+        result.update({"ok": True, "ledger_revision": int(frontmatter["ledger_revision"]), "record_revision": topic["record_revision"], "topic_id": request["actor_topic_id"]})
+        if "release_set" in result:
+            result["release_set_sha256"] = _sha256(_canonical_json({"ledger_revision": result["ledger_revision"], "topic_revision": topic["record_revision"], "release_set": result["release_set"]}).encode("utf-8"))
+        return result
+
+
+def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
+    _, ledger_path, _, lock_path, owner_ref = _request_context(request, {"release_set", "release_set_sha256"})
+    with lock_path.open("a+b") as stream:
+        _flock_with_timeout(stream)
+        frontmatter, records = _load_records(ledger_path)
+        replay = _idempotent_result(records, request)
+        if replay is not None: return replay
+        topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
+        revision, topic_revision = _validate_revisions(request, frontmatter, topic)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        selection = [{"dependency_id": item.get("dependency_id"), "decision_ids": [entry["decision_id"] for entry in item.get("basis", {}).get("decision_authority", [])]} for item in request["release_set"]] if isinstance(request["release_set"], list) else None
+        evaluation = _evaluation(records, request["actor_topic_id"], selection)
+        expected = _sha256(_canonical_json({"ledger_revision": revision, "topic_revision": topic_revision, "release_set": evaluation.get("release_set")}).encode("utf-8"))
+        if evaluation.get("state") != "releasable" or request["release_set"] != evaluation.get("release_set") or request["release_set_sha256"] != expected:
+            raise ProtocolError("topic_gate_evaluation_stale", "topic gate evaluation is stale")
+        for item in _closed(records, request["actor_topic_id"]):
+            match = next(entry for entry in evaluation["release_set"] if entry["dependency_id"] == item["dependency_id"])
+            item["gate_state"] = "open"; item["record_revision"] += 1; item["accepted_basis_json"] = _canonical_json(match["basis"]); item["gate_reason_json"] = _canonical_json({"kind": "atomic-release", "ledger_revision": revision + 1})
+        result = {"ok": True, "state": "open", "idempotent_replay": False, "ledger_revision": revision + 1, "record_revision": topic_revision, "derived_gate_state": "open", "accepted_bases": evaluation["release_set"]}
+        _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=revision + 1, event_type="topic-gate-released", result=result)
+        return result

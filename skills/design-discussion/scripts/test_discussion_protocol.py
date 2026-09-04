@@ -204,7 +204,7 @@ class DiscussionProtocolTestSupport(unittest.TestCase):
         manifest_text = manifest.read_text(encoding="utf-8")
         topic_text = topic.read_text(encoding="utf-8")
         ledger_text = ledger.read_text(encoding="utf-8")
-        self.assertIn("schema_version: 2", ledger_text)
+        self.assertIn("schema_version: 3", ledger_text)
         self.assertRegex(
             ledger_text,
             r"creation_idempotency_key: \"[0-9a-f-]{36}\"",
@@ -289,6 +289,9 @@ class DiscussionProtocolBootstrapTests(DiscussionProtocolTestSupport):
                 "checkpoint-gc-confirm",
                 "reconcile-checkpoint-gc",
                 "prepare-handoff",
+                "update-topic-dependency",
+                "evaluate-topic-gate",
+                "release-topic-gate",
                 "bind-handoff",
                 "accept-handoff",
                 "authorize-handoff-discussion",
@@ -781,7 +784,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         prepared = self.prepare_phase_run(topic)
         upgraded = ledger_path.read_text(encoding="utf-8")
         self.assertEqual(prepared["ledger_revision"], 2)
-        self.assertIn("schema_version: 2", upgraded)
+        self.assertIn("schema_version: 3", upgraded)
         self.assertIn("creation_idempotency_key:", upgraded)
         self.assertIn("creation_fingerprint:", upgraded)
 
@@ -3166,6 +3169,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         ledger_revision: int = 1,
         scope: list[str] | None = None,
         work_snapshot: dict[str, object] | None = None,
+        initial_dependencies: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
         returncode, prepared, stderr = self.run_cli(
             self.handoff_request(
@@ -3188,10 +3192,63 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                         "sha256": "1" * 64,
                     }
                 ],
+                **({"initial_dependencies": initial_dependencies} if initial_dependencies is not None else {}),
             )
         )
         self.assertEqual(returncode, 0, stderr)
         return prepared
+
+    def test_initial_dependency_is_atomic_and_exposes_a_closed_derived_gate(self) -> None:
+        project = self.make_project("gated-child-handoff", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(
+            topic,
+            initial_dependencies=[
+                {
+                    "dependent_endpoint": "source",
+                    "prerequisite_topic_ref": "target",
+                    "requirement_kind": "confirmed-decision",
+                    "requirement_summary": "The child has selected the API shape.",
+                }
+            ],
+        )
+        self.assertEqual(len(prepared["initial_dependencies"]), 1)
+        code, read, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(read["derived_gate_state"], "closed")
+        self.assertEqual(read["topic_dependencies"][0]["prerequisite_topic_id"], prepared["target_topic_id"])
+        code, evaluation, _ = self.run_cli(
+            self.evolution_request(topic, operation="evaluate-topic-gate")
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(evaluation["state"], "blocked")
+
+    def test_dependent_owner_can_create_and_cancel_a_dependency(self) -> None:
+        project = self.make_project("dependency-update", git=False)
+        topic = self.bootstrap_topic(project)
+        child = self.prepare_child_handoff(topic)
+        code, created, stderr = self.run_cli(
+            self.evolution_request(
+                topic, operation="update-topic-dependency", expected_revision=2, expected_topic_revision=1,
+                action="create", dependency_id=None, expected_dependency_revision=None,
+                prerequisite_topic_id=child["target_topic_id"],
+                requirement_kind="confirmed-decision", requirement_summary="API shape is chosen.",
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(created["derived_gate_state"], "closed")
+        code, cancelled, stderr = self.run_cli(
+            self.evolution_request(
+                topic, operation="update-topic-dependency", expected_revision=3, expected_topic_revision=1,
+                action="cancel", dependency_id=created["dependency_id"],
+                expected_dependency_revision=1, prerequisite_topic_id=None,
+                requirement_kind=None, requirement_summary=None,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(cancelled["derived_gate_state"], "open")
 
     def test_child_handoff_persists_topic_attempt_and_bounded_identity_payload(self) -> None:
         project = self.make_project("child-handoff", git=False)
