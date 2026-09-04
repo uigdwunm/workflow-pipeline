@@ -14,7 +14,12 @@ import tempfile
 import uuid
 from typing import Any, Iterator
 
-from .checkpoint_authority import CheckpointAuthorityCorrupt, current_checkpoint_artifact
+from .checkpoint_authority import (
+    CheckpointAuthorityCorrupt,
+    checkpoint_artifact_fields,
+    checkpoint_trailers,
+    current_checkpoint_artifact,
+)
 from .state import (
     ProtocolError,
     _active_pending_write,
@@ -475,8 +480,7 @@ def _create_checkpoint_tree(
 
 
 def _checkpoint_commit_message(checkpoint: dict[str, Any]) -> str:
-    paths = json.loads(checkpoint["paths_json"])
-    document_digests = json.loads(checkpoint["document_digests_json"])
+    paths, _, document_digests = checkpoint_artifact_fields(checkpoint)
     return (
         f"discussion checkpoint: {checkpoint['purpose']}\n\n"
         f"Codex-Discussion-Checkpoint: {checkpoint['checkpoint_id']}\n"
@@ -515,15 +519,8 @@ def _commit_matches_checkpoint(
     parent_commit = expected_parent or checkpoint["base_commit"]
     if metadata["parents"] != [parent_commit]:
         return None
-    paths = json.loads(checkpoint["paths_json"])
-    blobs = json.loads(checkpoint["blob_ids_json"])
-    digests = json.loads(checkpoint["document_digests_json"])
-    expected_trailers = {
-        "Codex-Discussion-Checkpoint": checkpoint["checkpoint_id"],
-        "Codex-Document-SHA256": digests[paths[0]],
-        "Codex-Discussion-Decision-SHA256": checkpoint["decision_digest"],
-        "Codex-Discussion-Paths-SHA256": checkpoint["path_set_digest"],
-    }
+    paths, blobs, digests = checkpoint_artifact_fields(checkpoint)
+    expected_trailers = checkpoint_trailers(checkpoint, digests, paths)
     if metadata["trailers"] != expected_trailers:
         return None
     parent_tree = _git(project, ["show", "-s", "--format=%T", parent_commit]).decode("ascii").strip()
@@ -910,8 +907,10 @@ def _publish_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
                 "checkpoint is not the expected prepared intent",
                 context=_checkpoint_authority_context(request, ledger_revision, checkpoint),
             )
-        paths = json.loads(checkpoint["paths_json"])
-        digests = json.loads(checkpoint["document_digests_json"])
+        try:
+            paths, _, digests = checkpoint_artifact_fields(checkpoint)
+        except CheckpointAuthorityCorrupt as error:
+            raise ProtocolError("state_corrupt", "checkpoint artifact fields are corrupt") from error
         current = _require_regular_nosymlink(topic_path, "topic document")
         if _sha256(current) != digests[paths[0]]:
             raise ProtocolError("checkpoint_changed_draft", "topic document bytes differ from the frozen checkpoint intent")
