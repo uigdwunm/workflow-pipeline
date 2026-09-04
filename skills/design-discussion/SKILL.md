@@ -148,6 +148,8 @@ Read the applicable reference only when the action is requested:
 
 - [references/child-topic-protocol.md](references/child-topic-protocol.md) for
   child topics or continuation;
+- [references/split-gate-contract.md](references/split-gate-contract.md) for
+  a Phase-0/1 split proposal or a requirements gate;
 - [references/lifecycle-integration.md](references/lifecycle-integration.md)
   for routing into stages 1–4;
 - [references/templates.md](references/templates.md) for stable topic and
@@ -164,6 +166,10 @@ scoped result or impacts back to the parent. Do not replace this sequence with
 bootstrap or an informal prompt-only handoff.
 
 ## Proactive topic split and requirements gates
+
+For the shared split and gate sequence, read
+[references/split-gate-contract.md](references/split-gate-contract.md). Keep
+the stage-specific direction below when acting in `0讨论`.
 
 Recommend a separate topic only when the new content has an independent,
 nameable goal, its own scope or acceptance outcome, would materially interrupt

@@ -24,10 +24,15 @@ class RepositoryValidationTests(unittest.TestCase):
         framing = (REPOSITORY / "skills/problem-framing/SKILL.md").read_text(encoding="utf-8")
         handoff = (REPOSITORY / "skills/design-discussion/references/child-topic-protocol.md").read_text(encoding="utf-8")
         templates = (REPOSITORY / "skills/design-discussion/references/templates.md").read_text(encoding="utf-8")
+        split_gate = (REPOSITORY / "skills/design-discussion/references/split-gate-contract.md").read_text(encoding="utf-8")
         for marker in ("independent,", "nameable goal", "evaluate-topic-gate", "release-topic-gate", "Do not poll", "Phase 2"):
             self.assertIn(marker, discussion)
         for marker in ("proactive split rule", "dedicated grilling carrier", "Topic Dependencies", "Do not add polling"):
             self.assertIn(marker, framing)
+        self.assertIn("split-gate-contract.md", discussion)
+        self.assertIn("split-gate-contract.md", framing)
+        for marker in ("independent, nameable goal", "evaluate-topic-gate", "release-topic-gate", "First-turn handoff acceptance"):
+            self.assertIn(marker, split_gate)
         for marker in ("initial_dependencies", "first-turn acceptance remains allowed", "atomically release the complete closed"):
             self.assertIn(marker, handoff)
         for marker in ("新话题建议", "确认后结果", "本次尚不创建任务"):

@@ -30,7 +30,10 @@ from .state import (
     _verify_topic_owner,
     _write_ledger_transaction,
 )
-from .topic_dependencies import reclose_directly_affected, require_open_gate
+from .topic_dependencies import (
+    reclose_directly_affected,
+    require_open_gate_for_phase_transition,
+)
 
 
 PHASE_ROUTES = {(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)}
@@ -451,7 +454,9 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        require_open_gate(records, request["actor_topic_id"])
+        require_open_gate_for_phase_transition(
+            records, request["actor_topic_id"], from_phase
+        )
         if topic.get("current_phase") != from_phase:
             raise ProtocolError("phase_route_conflict", "route source phase does not match current topic phase")
         if _pending_topic_impacts(records, request["actor_topic_id"]):
@@ -824,8 +829,9 @@ def _claim_phase_carrier(request: dict[str, Any]) -> dict[str, Any]:
         record = _phase_record(records, request["phase_run_id"])
         data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
-        if data.get("from_phase") in {0, 1}:
-            require_open_gate(records, request["actor_topic_id"])
+        require_open_gate_for_phase_transition(
+            records, request["actor_topic_id"], data.get("from_phase")
+        )
         attempt = _phase_attempt(data, request["attempt_id"])
         if data.get("wrapper_integration") is not True:
             raise ProtocolError("phase_identity_conflict", "carrier claims apply only to wrapper Phase Runs")
@@ -962,8 +968,9 @@ def _prepare_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        if route[0] in {0, 1}:
-            require_open_gate(records, request["actor_topic_id"])
+        require_open_gate_for_phase_transition(
+            records, request["actor_topic_id"], route[0]
+        )
         if topic.get("current_phase") != request["from_phase"]:
             raise ProtocolError("phase_route_conflict", "route source phase does not match current topic phase")
         active_runs = [
@@ -1069,10 +1076,12 @@ def _retry_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             topic,
         )
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        require_open_gate(records, request["actor_topic_id"])
         record = _phase_record(records, request["phase_run_id"])
         data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
+        require_open_gate_for_phase_transition(
+            records, request["actor_topic_id"], data.get("from_phase")
+        )
         prior = _phase_attempt(data, request["prior_attempt_id"])
         if data.get("state") != "failed" or prior["state"] != "failed" or prior is not data["attempts"][-1]:
             raise ProtocolError("phase_reconciliation_required", "only an explicitly failed attempt can be retried")
@@ -1220,8 +1229,10 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
         record = _phase_record(records, request["phase_run_id"])
         data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
-        if target in {"ready", "active"} and data.get("from_phase") in {0, 1}:
-            require_open_gate(records, request["actor_topic_id"])
+        if target in {"ready", "active"}:
+            require_open_gate_for_phase_transition(
+                records, request["actor_topic_id"], data.get("from_phase")
+            )
         attempt = _phase_attempt(data, request["attempt_id"])
         if target == "ready":
             if data["state"] != "setup-pending" or attempt["state"] != "setup-pending":

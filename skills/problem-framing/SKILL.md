@@ -15,6 +15,10 @@ Read the shared
 before resolving or updating the requirement document. Phase 1 always has
 exactly one such document and always hands it to Phase 2.
 
+For a split proposal or a requirements gate, also read the shared
+[`split-gate-contract.md`](../design-discussion/references/split-gate-contract.md).
+Keep the Phase-1-specific direction below when applying it.
+
 ## Attach a verified discussion source
 
 At entry, apply the discovery order in

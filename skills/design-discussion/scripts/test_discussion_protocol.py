@@ -3198,6 +3198,46 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(returncode, 0, stderr)
         return prepared
 
+    def activate_child_handoff(
+        self, topic: dict[str, object], *, initial_dependencies: list[dict[str, object]] | None = None,
+    ) -> tuple[dict[str, object], str]:
+        """Cross the public handoff seam through later-turn authorization."""
+        prepared = self.prepare_child_handoff(
+            topic, initial_dependencies=initial_dependencies
+        )
+        child_ref = "codex-thread:dependency-child"
+        code, _, stderr = self.run_cli(
+            self.handoff_request(
+                topic, operation="bind-handoff", ledger_revision=2,
+                handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+                conversation_ref=child_ref,
+                verified_identity={
+                    "project_id": topic["project_id"], "tree_id": topic["tree_id"],
+                    "topic_id": prepared["target_topic_id"], "handoff_id": prepared["handoff_id"],
+                    "attempt_id": prepared["attempt_id"], "payload_sha256": prepared["payload_sha256"],
+                },
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        accept = self.handoff_request(
+            topic, operation="accept-handoff", ledger_revision=3, owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+            payload_sha256=prepared["payload_sha256"],
+            source_reference_sha256=prepared["authoritative_references_sha256"], turn_number=1,
+        )
+        accept["actor_topic_id"] = prepared["target_topic_id"]
+        code, _, stderr = self.run_cli(accept)
+        self.assertEqual(code, 0, stderr)
+        authorize = self.handoff_request(
+            topic, operation="authorize-handoff-discussion", ledger_revision=4,
+            owner_ref=child_ref, handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"], turn_number=2,
+        )
+        authorize["actor_topic_id"] = prepared["target_topic_id"]
+        code, _, stderr = self.run_cli(authorize)
+        self.assertEqual(code, 0, stderr)
+        return prepared, child_ref
+
     def test_initial_dependency_is_atomic_and_exposes_a_closed_derived_gate(self) -> None:
         project = self.make_project("gated-child-handoff", git=False)
         topic = self.bootstrap_topic(project)
@@ -3249,6 +3289,40 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         )
         self.assertEqual(code, 0, stderr)
         self.assertEqual(cancelled["derived_gate_state"], "open")
+
+    def test_child_result_freezes_only_current_selected_authority_and_replays(self) -> None:
+        project = self.make_project("frozen-child-authority", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared, child_ref = self.activate_child_handoff(topic)
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        invalid = self.handoff_request(
+            topic, operation="submit-child-result", ledger_revision=5,
+            owner_ref=child_ref, handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"], result_scope=["api"], summary="Use typed requests.",
+            authority_selection={
+                "authority_kind": "confirmed-decision", "authority_identity": None,
+                "decision_ids": ["D-not-current"],
+            },
+        )
+        invalid["actor_topic_id"] = prepared["target_topic_id"]
+        code, rejected, _ = self.run_cli(invalid)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "topic_dependency_evidence_unavailable")
+        self.assertEqual(ledger.read_bytes(), before)
+
+        valid = dict(invalid)
+        valid["idempotency_key"] = str(uuid.uuid4())
+        valid["authority_selection"] = {
+            "authority_kind": "confirmed-decision", "authority_identity": None,
+            "decision_ids": [],
+        }
+        code, claimed, stderr = self.run_cli(valid)
+        self.assertEqual(code, 0, stderr)
+        code, replayed, stderr = self.run_cli(valid)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(replayed["child_result_id"], claimed["child_result_id"])
 
     def test_child_handoff_persists_topic_attempt_and_bounded_identity_payload(self) -> None:
         project = self.make_project("child-handoff", git=False)

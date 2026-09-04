@@ -117,6 +117,19 @@ def require_open_gate(records: dict[str, list[dict[str, Any]]], topic_id: str) -
         raise ProtocolError("topic_gate_closed", "topic has an active closed requirements dependency", context={"topic_id": topic_id})
 
 
+def require_open_gate_for_phase_transition(
+    records: dict[str, list[dict[str, Any]]], topic_id: str, from_phase: Any,
+) -> None:
+    """Apply the requirements-gate boundary to a Phase-0/1 transition point.
+
+    Phase Run owners call this instead of deciding locally which transitions are
+    gate-bound.  Phase 2+ deliberately remains outside this requirements-only
+    domain, including recovery for an already active run.
+    """
+    if from_phase in {0, 1}:
+        require_open_gate(records, topic_id)
+
+
 def reclose_directly_affected(
     records: dict[str, list[dict[str, Any]]], *, prerequisite_topic_id: str,
     changed_decision_ids: set[str] | None, cause: dict[str, Any], ledger_revision: int,
@@ -180,6 +193,71 @@ def _candidates(records: dict[str, list[dict[str, Any]]], dependency: dict[str, 
         decisions = {item["decision_id"]: _sha256(_canonical_json(item).encode("utf-8")) for item in _topic_snapshot(records, prerequisite)["decisions"]}
         result.append({"authority_id": phase_result["result_id"], "authority": {"result_id": phase_result["result_id"], "record_revision": record["record_revision"], "state": "completed", "phase_run_id": phase_result["phase_run_id"], "affected_decision_ids": sorted(ids)}, "decision_authority": [{"decision_id": item, "sha256": decisions.get(item, "") } for item in sorted(ids)]})
     return sorted(result, key=lambda item: str(item["authority_id"]))
+
+
+def freeze_authority_selection(
+    records: dict[str, list[dict[str, Any]]], topic_id: str, selection: Any,
+) -> dict[str, Any]:
+    """Validate and freeze one exact current authority for a child result.
+
+    This uses the same candidate model as gate evaluation so a child cannot
+    smuggle arbitrary authority or decision IDs into a later parent release.
+    """
+    if not isinstance(selection, dict) or set(selection) != {
+        "authority_kind", "authority_identity", "decision_ids",
+    }:
+        raise ProtocolError("invalid_request", "authority_selection is invalid")
+    kind = selection["authority_kind"]
+    identity = selection["authority_identity"]
+    decision_ids = selection["decision_ids"]
+    if kind not in KINDS or not isinstance(decision_ids, list) or sorted(set(decision_ids)) != decision_ids:
+        raise ProtocolError("invalid_request", "authority_selection is invalid")
+    if kind == "confirmed-decision":
+        if identity is not None:
+            raise ProtocolError("invalid_request", "confirmed-decision has no authority identity")
+    elif not isinstance(identity, str):
+        raise ProtocolError("invalid_request", "authority identity is required")
+    if kind == "confirmed-decision" and not decision_ids:
+        # A scoped child result may deliberately carry only its immutable
+        # artifact.  Preserve that conservative, no-decision basis instead of
+        # inventing a decision authority.
+        return {
+            "authority_kind": kind,
+            "authority_identity": identity,
+            "decision_ids": [],
+            "decision_authority": [],
+            "topic_phase": _record_by_id(
+                records["Current Topics"], "topic_id", topic_id, "topic_id"
+            )["current_phase"],
+        }
+    candidates = _candidates(records, {
+        "prerequisite_topic_id": topic_id,
+        "requirement_kind": kind,
+    })
+    matching = [item for item in candidates if item["authority_id"] == identity]
+    if len(matching) != 1:
+        raise ProtocolError(
+            "topic_dependency_evidence_unavailable",
+            "selected child-result authority is not current",
+        )
+    candidate = matching[0]
+    authority = {
+        item["decision_id"]: item for item in candidate["decision_authority"]
+    }
+    if any(item not in authority for item in decision_ids):
+        raise ProtocolError(
+            "topic_dependency_evidence_unavailable",
+            "selected child-result decision authority is not current",
+        )
+    return {
+        "authority_kind": kind,
+        "authority_identity": identity,
+        "decision_ids": decision_ids,
+        "decision_authority": [authority[item] for item in decision_ids],
+        "topic_phase": _record_by_id(
+            records["Current Topics"], "topic_id", topic_id, "topic_id"
+        )["current_phase"],
+    }
 
 
 def _closed(records: dict[str, list[dict[str, Any]]], topic_id: str) -> list[dict[str, Any]]:
