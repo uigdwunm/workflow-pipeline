@@ -120,6 +120,7 @@ def require_open_gate(records: dict[str, list[dict[str, Any]]], topic_id: str) -
 def reclose_directly_affected(
     records: dict[str, list[dict[str, Any]]], *, prerequisite_topic_id: str,
     changed_decision_ids: set[str] | None, cause: dict[str, Any], ledger_revision: int,
+    invalidated_authority_ids: set[str] | None = None,
 ) -> list[str]:
     """Fail closed for direct bases with unknown or intersecting provenance only."""
     closed: list[str] = []
@@ -130,7 +131,9 @@ def reclose_directly_affected(
         authorities = basis.get("decision_authority") if basis else None
         known = isinstance(authorities, list) and all(isinstance(item, dict) and isinstance(item.get("decision_id"), str) for item in authorities)
         basis_ids = {item["decision_id"] for item in authorities} if known else set()
-        if changed_decision_ids is None or not known or basis_ids & changed_decision_ids:
+        authority = basis.get("authority", {}) if basis else {}
+        authority_id = authority.get("result_id") or authority.get("checkpoint_id")
+        if changed_decision_ids is None or not known or basis_ids & changed_decision_ids or (invalidated_authority_ids is not None and authority_id in invalidated_authority_ids):
             dependency["gate_state"] = "closed"
             dependency["record_revision"] += 1
             dependency["gate_reason_json"] = _canonical_json({"kind": "direct-upstream-invalidation", "ledger_revision": ledger_revision, **cause})

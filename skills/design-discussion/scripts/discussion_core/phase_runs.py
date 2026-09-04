@@ -1712,12 +1712,19 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
         )
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         changed = {decision_id for decision_id, action in review.items() if action != "keep"}
-        if changed:
+        invalidated_results = {
+            _json_field(record, "data_json", "phase result").get("result_id")
+            for record in records["Phase Results"]
+            if record.get("result_kind") == "phase-result" and record.get("state") == "completed"
+            and _json_field(record, "data_json", "phase result").get("topic_id") == request["actor_topic_id"]
+        }
+        if changed or invalidated_results:
             reclose_directly_affected(
                 records, prerequisite_topic_id=request["actor_topic_id"],
                 changed_decision_ids=changed,
                 cause={"kind": "phase-reopen", "affected_decision_ids": sorted(changed)},
                 ledger_revision=ledger_revision + 1,
+                invalidated_authority_ids={item for item in invalidated_results if isinstance(item, str)},
             )
         if topic.get("current_phase") == 0:
             raise ProtocolError("phase_route_conflict", "topic is already in phase 0")
