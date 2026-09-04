@@ -246,6 +246,16 @@ def _candidates(records: dict[str, list[dict[str, Any]]], dependency: dict[str, 
     return sorted(result, key=lambda item: str(item["authority_id"]))
 
 
+def has_current_authority(
+    records: dict[str, list[dict[str, Any]]], topic_id: str,
+) -> bool:
+    """Whether a child result must name one protocol-current authority."""
+    return any(_candidates(records, {
+        "prerequisite_topic_id": topic_id,
+        "requirement_kind": kind,
+    }) for kind in KINDS)
+
+
 def _normalize_authority_selection(
     candidates: list[dict[str, Any]], requirement_kind: str, authority_id: Any,
     decision_ids: Any,

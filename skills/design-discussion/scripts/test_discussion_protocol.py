@@ -3371,6 +3371,41 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertTrue(replayed["idempotent_replay"])
         self.assertEqual(replayed["child_result_id"], claimed["child_result_id"])
 
+    def test_ticket07_child_result_requires_selection_when_current_authority_exists(self) -> None:
+        project = self.make_project("ticket07-child-result-authority", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared, child_ref = self.activate_child_handoff(topic)
+        self.complete_update(
+            project, topic, ledger_revision=5, topic_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Use typed requests.",
+                "rationale": "The child has selected its public authority.",
+            },
+        )
+        ledger = Path(str(topic["ledger_path"]))
+        pending_marker = "## Pending Items\n\n"
+        pending_start = ledger.read_text(encoding="utf-8").index(pending_marker)
+        pending_end = ledger.read_text(encoding="utf-8").index("\n## ", pending_start + len(pending_marker))
+        current = ledger.read_text(encoding="utf-8")
+        pending = current[pending_start:pending_end]
+        self.rewrite_ledger_with_valid_digest(
+            ledger, pending,
+            pending.replace(str(topic["topic_id"]), str(prepared["target_topic_id"])),
+        )
+        before = ledger.read_bytes()
+        request = self.handoff_request(
+            topic, operation="submit-child-result", ledger_revision=7,
+            topic_revision=1, owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+            result_scope=["api"], summary="Use typed requests.",
+        )
+        request["actor_topic_id"] = prepared["target_topic_id"]
+        code, rejected, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "topic_dependency_authority_selection_required")
+        self.assertEqual(ledger.read_bytes(), before)
+
     def test_child_handoff_persists_topic_attempt_and_bounded_identity_payload(self) -> None:
         project = self.make_project("child-handoff", git=False)
         topic = self.bootstrap_topic(project)

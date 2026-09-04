@@ -32,6 +32,7 @@ from .state import (
 )
 from .topic_dependencies import (
     freeze_authority_selection,
+    has_current_authority,
     prepare_initial_dependencies,
     release_child_result_dependencies,
     require_open_gate,
@@ -790,6 +791,11 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
         child_result_id = f"CR-{seed}"
         next_revision = ledger_revision + 1
         selection = request.get("authority_selection")
+        if selection is None and has_current_authority(records, request["actor_topic_id"]):
+            raise ProtocolError(
+                "topic_dependency_authority_selection_required",
+                "child result must select one current authority",
+            )
         frozen_authority = (
             freeze_authority_selection(records, request["actor_topic_id"], selection)
             if selection is not None
