@@ -20,6 +20,8 @@ RECORD_FIELDS = {
     "accepted_basis_json", "gate_reason_json",
 }
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+IDENTITY_RE = re.compile(r"(?:DEP|CP|PH|CR|H)-[0-9a-f]{32}")
+UUID4_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
 
 def authority_descriptor(kind: str) -> dict[str, Any]:
@@ -75,10 +77,86 @@ def _object(value: Any, label: str, error: Callable[[str, str], None]) -> dict[s
     return decoded
 
 
+def _identity(value: Any, prefix: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    pattern = r"PH-[0-9]{8}" if prefix == "PH" else prefix + r"-[0-9a-f]{32}"
+    return bool(re.fullmatch(pattern, value))
+
+
+def _gate_reason(value: Any, error: Callable[[str, str], None]) -> None:
+    reason = _object(value, "topic dependency gate_reason_json", error)
+    kind = reason.get("kind")
+    if not isinstance(reason.get("ledger_revision"), int) or reason["ledger_revision"] < 1:
+        error("state_corrupt", "topic dependency gate reason revision is invalid")
+    exact: dict[str, set[str]] = {
+        "initial-handoff": {"kind", "handoff_id", "ledger_revision"},
+        "explicit-create": {"kind", "dependency_update_id", "ledger_revision"},
+        "explicit-replace": {"kind", "dependency_update_id", "ledger_revision"},
+        "explicit-cancel": {"kind", "dependency_update_id", "ledger_revision"},
+        "atomic-release": {"kind", "release_id", "ledger_revision"},
+        "child-result-absorb-release": {"kind", "absorb_operation_id", "ledger_revision", "child_result_id"},
+    }
+    if kind in exact:
+        if set(reason) != exact[kind]:
+            error("state_corrupt", "topic dependency gate reason fields are incoherent")
+        identity_field = {
+            "initial-handoff": "handoff_id", "explicit-create": "dependency_update_id",
+            "explicit-replace": "dependency_update_id", "explicit-cancel": "dependency_update_id",
+            "atomic-release": "release_id", "child-result-absorb-release": "absorb_operation_id",
+        }[kind]
+        if kind == "initial-handoff":
+            valid = _identity(reason[identity_field], "H")
+        else:
+            valid = isinstance(reason[identity_field], str) and bool(UUID4_RE.fullmatch(reason[identity_field]))
+        if kind == "child-result-absorb-release":
+            valid = valid and _identity(reason["child_result_id"], "CR")
+        if not valid:
+            error("state_corrupt", "topic dependency gate reason identity is invalid")
+        return
+    if kind != "direct-upstream-invalidation":
+        error("state_corrupt", "topic dependency gate reason kind is invalid")
+    cause_kinds = {
+        "topic-update": ({"kind", "ledger_revision", "topic_update_id", "decision_id", "action"}, "topic_update_id"),
+        "phase-reopen": ({"kind", "ledger_revision", "reopen_id", "affected_decision_ids", "invalidated_result_ids"}, "reopen_id"),
+        "checkpoint-broken": ({"kind", "ledger_revision", "checkpoint_id", "checkpoint_broken_id", "broken_identity"}, "checkpoint_broken_id"),
+    }
+    cause = next((item for item in cause_kinds.values() if item[1] in reason), None)
+    if cause is None or set(reason) != cause[0]:
+        error("state_corrupt", "topic dependency invalidation reason is incoherent")
+    if cause[1] == "topic_update_id":
+        valid_identity = _identity(reason[cause[1]], "DW")
+    else:
+        valid_identity = isinstance(reason[cause[1]], str) and bool(UUID4_RE.fullmatch(reason[cause[1]]))
+    if not valid_identity:
+        error("state_corrupt", "topic dependency invalidation identity is invalid")
+    if "decision_id" in reason and (not isinstance(reason["decision_id"], str) or not reason["decision_id"] or reason.get("action") not in {"adjust", "replace", "discard"}):
+        error("state_corrupt", "topic dependency update cause is invalid")
+    if "checkpoint_id" in reason and not _identity(reason["checkpoint_id"], "CP"):
+        error("state_corrupt", "topic dependency checkpoint identity is invalid")
+    if "invalidated_result_ids" in reason and (
+        not isinstance(reason["invalidated_result_ids"], list)
+        or reason["invalidated_result_ids"] != sorted(set(reason["invalidated_result_ids"]))
+        or any(not _identity(item, "PH") for item in reason["invalidated_result_ids"])
+    ):
+        error("state_corrupt", "topic dependency invalidated result identities are invalid")
+    if "affected_decision_ids" in reason and (
+        not isinstance(reason["affected_decision_ids"], list)
+        or reason["affected_decision_ids"] != sorted(set(reason["affected_decision_ids"]))
+        or any(not isinstance(item, str) or not item for item in reason["affected_decision_ids"])
+    ):
+        error("state_corrupt", "topic dependency affected decisions are invalid")
+
+
 def validate_dependency_records(
     records: dict[str, list[dict[str, Any]]], error: Callable[[str, str], None],
 ) -> None:
     """Validate ledger-only invariants without importing state or protocol owners."""
+    error_factory = error
+
+    def error(code: str, message: str) -> None:
+        raise error_factory(code, message)
+
     topics = {item.get("topic_id") for item in records["Current Topics"]}
     seen_ids: set[str] = set()
     edges: dict[str, set[str]] = {}
@@ -87,7 +165,7 @@ def validate_dependency_records(
         if set(item) != RECORD_FIELDS:
             error("state_corrupt", "topic dependency record fields are invalid")
         dep_id = item["dependency_id"]
-        if not isinstance(dep_id, str) or not dep_id.startswith("DEP-") or dep_id in seen_ids:
+        if not _identity(dep_id, "DEP") or dep_id in seen_ids:
             error("state_corrupt", "topic dependency identity is invalid or duplicated")
         seen_ids.add(dep_id)
         if not isinstance(item["record_revision"], int) or item["record_revision"] < 1:
@@ -99,7 +177,7 @@ def validate_dependency_records(
             error("state_corrupt", "topic dependency requirement is invalid")
         if item["relation_state"] not in {"active", "cancelled"} or item["gate_state"] not in {"closed", "open"}:
             error("state_corrupt", "topic dependency state is invalid")
-        _object(item["gate_reason_json"], "topic dependency gate_reason_json", error)
+        _gate_reason(item["gate_reason_json"], error)
         if item["accepted_basis_json"] is not None:
             basis = _object(item["accepted_basis_json"], "topic dependency accepted_basis_json", error)
             decisions = basis.get("decision_authority")
@@ -112,18 +190,28 @@ def validate_dependency_records(
                 or decisions != sorted(decisions, key=lambda entry: entry.get("decision_id", ""))
                 or len({entry.get("decision_id") for entry in decisions}) != len(decisions)
                 or any(not isinstance(entry, dict) or set(entry) != {"decision_id", "sha256"} or not isinstance(entry["decision_id"], str) or not isinstance(entry["sha256"], str) or not SHA256_RE.fullmatch(entry["sha256"]) for entry in decisions)
-                or set(basis) - {"basis_version", "dependency_id", "prerequisite_topic_id", "requirement_kind", "decision_authority", "authority", "child_result_id"}
+                or set(basis) != ({"basis_version", "dependency_id", "prerequisite_topic_id", "requirement_kind", "decision_authority", "authority"} | ({"child_result_id"} if "child_result_id" in basis else set()))
             ):
                 error("state_corrupt", "topic dependency accepted basis is incoherent")
             authority = basis.get("authority")
             if item["requirement_kind"] == "confirmed-decision":
                 valid = isinstance(authority, dict) and set(authority) == {"decision_set_digest"} and isinstance(authority["decision_set_digest"], str) and SHA256_RE.fullmatch(authority["decision_set_digest"]) and decisions
             elif item["requirement_kind"] == "phase-0-checkpoint":
-                valid = isinstance(authority, dict) and set(authority) == {"checkpoint_id", "record_revision", "published_identity", "decision_digest"} and isinstance(authority["checkpoint_id"], str) and isinstance(authority["record_revision"], int) and isinstance(authority["published_identity"], str) and isinstance(authority["decision_digest"], str) and SHA256_RE.fullmatch(authority["decision_digest"])
+                valid = isinstance(authority, dict) and set(authority) == {"checkpoint_id", "record_revision", "published_identity", "decision_digest"} and _identity(authority["checkpoint_id"], "CP") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and isinstance(authority["published_identity"], str) and isinstance(authority["decision_digest"], str) and SHA256_RE.fullmatch(authority["decision_digest"])
             else:
-                valid = isinstance(authority, dict) and set(authority) == {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"} and isinstance(authority["result_id"], str) and isinstance(authority["record_revision"], int) and authority["state"] == "completed" and isinstance(authority["phase_run_id"], str) and isinstance(authority["affected_decision_ids"], list)
+                valid = isinstance(authority, dict) and set(authority) == {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"} and _identity(authority["result_id"], "PH") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and authority["state"] == "completed" and isinstance(authority["phase_run_id"], str) and isinstance(authority["affected_decision_ids"], list) and authority["affected_decision_ids"] == sorted(set(authority["affected_decision_ids"])) and all(isinstance(entry, str) and entry for entry in authority["affected_decision_ids"])
             if not valid:
                 error("state_corrupt", "topic dependency authority is incoherent")
+            child_result_id = basis.get("child_result_id")
+            if child_result_id is not None:
+                child = next((record for record in records["Phase Results"] if record.get("result_id") == child_result_id), None)
+                if (
+                    not _identity(child_result_id, "CR")
+                    or child is None
+                    or child.get("result_kind") != "child-topic-result"
+                    or child.get("source_topic_id") != prerequisite
+                ):
+                    error("state_corrupt", "topic dependency child result provenance is incoherent")
         elif item["relation_state"] == "active" and item["gate_state"] == "open":
             error("state_corrupt", "open topic dependency requires an accepted basis")
         if item["relation_state"] == "active":

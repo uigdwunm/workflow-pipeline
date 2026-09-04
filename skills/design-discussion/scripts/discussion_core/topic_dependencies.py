@@ -155,7 +155,7 @@ def reclose_directly_affected(
         if changed_decision_ids is None or not known or basis_ids & changed_decision_ids or (invalidated_authority_ids is not None and authority_id in invalidated_authority_ids):
             dependency["gate_state"] = "closed"
             dependency["record_revision"] += 1
-            dependency["gate_reason_json"] = _canonical_json({"kind": "direct-upstream-invalidation", "ledger_revision": ledger_revision, **cause})
+            dependency["gate_reason_json"] = _canonical_json({**cause, "kind": "direct-upstream-invalidation", "ledger_revision": ledger_revision})
             closed.append(dependency["dependency_id"])
     return sorted(closed)
 
@@ -429,7 +429,7 @@ def has_current_authority(
     return any(_candidates(records, {
         "prerequisite_topic_id": topic_id,
         "requirement_kind": kind,
-    }) for kind in AUTHORITY_KIND_HANDLERS)
+    }) for kind in CANDIDATE_BUILDERS)
 
 
 def _normalize_authority_selection(
@@ -437,7 +437,7 @@ def _normalize_authority_selection(
     decision_ids: Any,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Select one current candidate and its exact frozen decision subset."""
-    if not isinstance(decision_ids, list) or sorted(set(decision_ids)) != decision_ids:
+    if not isinstance(decision_ids, list) or len(decision_ids) > 64 or sorted(set(decision_ids)) != decision_ids:
         raise ProtocolError("invalid_request", "basis selection decision_ids must be sorted")
     if _authority_handler(requirement_kind)["requires_decisions"] and not decision_ids:
         raise ProtocolError("topic_dependency_evidence_unavailable", "confirmed-decision requires one or more current decisions")
@@ -466,7 +466,7 @@ def freeze_authority_selection(
     kind = selection["authority_kind"]
     identity = selection["authority_identity"]
     decision_ids = selection["decision_ids"]
-    if kind not in KINDS or not isinstance(decision_ids, list) or sorted(set(decision_ids)) != decision_ids:
+    if kind not in KINDS or not isinstance(decision_ids, list) or len(decision_ids) > 64 or sorted(set(decision_ids)) != decision_ids:
         raise ProtocolError("invalid_request", "authority_selection is invalid")
     if _authority_handler(kind)["identity_field"] is None:
         if identity is not None:
@@ -505,7 +505,12 @@ def release_child_result_dependencies(
     """Validate frozen child authority and atomically normalize matching gates."""
     if not isinstance(releases, list) or len(releases) > 64:
         raise ProtocolError("invalid_request", "dependency_releases must be a bounded list")
-    if len({item.get("dependency_id") for item in releases if isinstance(item, dict)}) != len(releases):
+    if (
+        any(not isinstance(item, dict) or not isinstance(item.get("dependency_id"), str) for item in releases)
+        or [item["dependency_id"] for item in releases] != sorted(item["dependency_id"] for item in releases)
+    ):
+        raise ProtocolError("invalid_request", "dependency_releases must be canonically sorted")
+    if len({item["dependency_id"] for item in releases}) != len(releases):
         raise ProtocolError("invalid_request", "dependency_releases must name each dependency once")
     if not isinstance(frozen_authority, dict):
         raise ProtocolError("state_corrupt", "child result authority is invalid")
@@ -541,7 +546,7 @@ def release_child_result_dependencies(
             raise ProtocolError("topic_dependency_state_conflict", "child result does not match a current closed dependency")
         selected.append((dependency, ids))
     for dependency, ids in selected:
-        basis = {"basis_version": 1, "dependency_id": dependency["dependency_id"], "prerequisite_topic_id": prerequisite_topic_id, "requirement_kind": normalized["authority_kind"], "child_result_id": child_result_id, "decision_authority": [pairs[item] for item in ids]}
+        basis = {"basis_version": 1, "dependency_id": dependency["dependency_id"], "prerequisite_topic_id": prerequisite_topic_id, "requirement_kind": normalized["authority_kind"], "child_result_id": child_result_id, "decision_authority": [{"decision_id": pairs[item]["decision_id"], "sha256": pairs[item]["sha256"]} for item in ids]}
         if "authority" in normalized:
             basis["authority"] = normalized["authority"]
         dependency["gate_state"] = "open"
@@ -596,7 +601,6 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
     if releasable and selection is not None:
         release_set = sorted(proposed, key=lambda item: item["dependency_id"])
         result["release_set"] = release_set
-        result["release_set_sha256"] = _sha256(_canonical_json({"ledger_revision": 0, "topic_id": topic_id, "release_set": release_set}).encode("utf-8"))
     return result
 
 
@@ -624,7 +628,7 @@ def _validate_new_edge(records: dict[str, list[dict[str, Any]]], dependent: str,
     if kind not in KINDS or not isinstance(summary, str) or not summary or len(summary.encode("utf-8")) > 4096:
         raise ProtocolError("invalid_request", "topic dependency requirement is invalid")
     copied = [dict(item) for item in records["Topic Dependencies"] if item["dependency_id"] != replacing]
-    copied.append(_new_dependency_record(dependency_id="DEP-probe", dependent_topic_id=dependent, prerequisite_topic_id=prerequisite, requirement_kind=kind, requirement_summary=summary, reason={"kind": "probe"}))
+    copied.append(_new_dependency_record(dependency_id="DEP-" + "f" * 32, dependent_topic_id=dependent, prerequisite_topic_id=prerequisite, requirement_kind=kind, requirement_summary=summary, reason={"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1}))
     try:
         _validate_dependency_records({**records, "Topic Dependencies": copied})
     except ProtocolError as error:

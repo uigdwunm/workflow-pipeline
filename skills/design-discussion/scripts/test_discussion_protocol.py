@@ -3680,9 +3680,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         dependent_id = "topic-" + "1" * 32
         records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
         records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
-        records["Topic Dependencies"].append({"dependency_id": "DEP-stale-checkpoint", "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The root checkpoint is current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"})
+        dependency_id = "DEP-" + "a" * 32
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The root checkpoint is current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
-        gate = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": "DEP-stale-checkpoint", "authority_id": checkpoint["checkpoint_id"], "decision_ids": []}])
+        gate = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": checkpoint["checkpoint_id"], "decision_ids": []}])
         gate["actor_topic_id"] = dependent_id
         gate["actor_conversation_ref"] = "codex-thread:dependent"
         code, evaluation, stderr = self.run_cli(gate)
@@ -3709,9 +3710,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         dependent_id = "topic-" + "2" * 32
         records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 1, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
         records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
-        records["Topic Dependencies"].append({"dependency_id": "DEP-stale-result", "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-1-result", "requirement_summary": "The root Phase 1 result is current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"})
+        dependency_id = "DEP-" + "b" * 32
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-1-result", "requirement_summary": "The root Phase 1 result is current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
-        gate = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": "DEP-stale-result", "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}])
+        gate = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}])
         gate["actor_topic_id"] = dependent_id
         gate["actor_conversation_ref"] = "codex-thread:dependent"
         code, evaluation, stderr = self.run_cli(gate)
@@ -3764,8 +3766,9 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         child_id = "topic-" + "d" * 32
         records["Current Topics"].append({"topic_id": child_id, "record_revision": 1, "root_slug": "child", "parent_topic_id": str(topic["topic_id"]), "current_phase": 1, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
         records["Checkpoints"] = []
-        basis = {"basis_version": 1, "dependency_id": "DEP-retained", "prerequisite_topic_id": child_id, "requirement_kind": "phase-0-checkpoint", "decision_authority": [], "authority": {"checkpoint_id": prepared["checkpoint_id"], "record_revision": 2, "published_identity": published["snapshot_digest"], "decision_digest": prepared["decision_digest"]}}
-        dependency = {"dependency_id": "DEP-retained", "record_revision": 2, "dependent_topic_id": str(topic["topic_id"]), "prerequisite_topic_id": child_id, "requirement_kind": "phase-0-checkpoint", "requirement_summary": "Retain this checkpoint.", "relation_state": "active", "gate_state": "open", "accepted_basis_json": PROTOCOL._canonical_json(basis), "gate_reason_json": "{}"}
+        dependency_id = "DEP-" + "c" * 32
+        basis = {"basis_version": 1, "dependency_id": dependency_id, "prerequisite_topic_id": child_id, "requirement_kind": "phase-0-checkpoint", "decision_authority": [], "authority": {"checkpoint_id": prepared["checkpoint_id"], "record_revision": 2, "published_identity": published["snapshot_digest"], "decision_digest": prepared["decision_digest"]}}
+        dependency = {"dependency_id": dependency_id, "record_revision": 2, "dependent_topic_id": str(topic["topic_id"]), "prerequisite_topic_id": child_id, "requirement_kind": "phase-0-checkpoint", "requirement_summary": "Retain this checkpoint.", "relation_state": "active", "gate_state": "open", "accepted_basis_json": PROTOCOL._canonical_json(basis), "gate_reason_json": PROTOCOL._canonical_json({"kind": "atomic-release", "release_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})}
         records["Topic Dependencies"].append(dependency)
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         code, retained, stderr = self.run_cli(self.checkpoint_request(topic, operation="checkpoint-gc-dry-run"))
@@ -3837,9 +3840,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         frontmatter, records = PROTOCOL._load_records(ledger)
         records["Current Topics"].append({"topic_id": b_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 1, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
         records["Conversation Bindings"].append({"topic_id": b_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
-        records["Topic Dependencies"].append({"dependency_id": "DEP-reopen", "record_revision": 1, "dependent_topic_id": b_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-1-result", "requirement_summary": "The Phase 1 result remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"})
+        dependency_id = "DEP-" + "d" * 32
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": b_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-1-result", "requirement_summary": "The Phase 1 result remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
-        code, evaluation, stderr = self.run_cli({**self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": "DEP-reopen", "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
+        code, evaluation, stderr = self.run_cli({**self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
         self.assertEqual(code, 0, stderr)
         code, _, stderr = self.run_cli({**self.evolution_request(topic, operation="release-topic-gate", expected_revision=ledger_revision, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
         self.assertEqual(code, 0, stderr)
@@ -3847,7 +3851,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         code, reopened, stderr = self.run_cli(reopen)
         self.assertEqual(code, 0, stderr)
         _, records = PROTOCOL._load_records(ledger)
-        dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == "DEP-reopen")
+        dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == dependency_id)
         reason = json.loads(str(dependency["gate_reason_json"]))
         self.assertEqual(reason["reopen_id"], reopen["idempotency_key"])
         self.assertEqual(reason["invalidated_result_ids"], [completed["phase_result_id"]])
@@ -3868,9 +3872,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         frontmatter, records = PROTOCOL._load_records(ledger)
         records["Current Topics"].append({"topic_id": b_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 1, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
         records["Conversation Bindings"].append({"topic_id": b_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
-        records["Topic Dependencies"].append({"dependency_id": "DEP-keep", "record_revision": 1, "dependent_topic_id": b_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-1-result", "requirement_summary": "The Phase 1 result remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"})
+        dependency_id = "DEP-" + "e" * 32
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": b_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-1-result", "requirement_summary": "The Phase 1 result remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
-        code, evaluation, stderr = self.run_cli({**self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": "DEP-keep", "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
+        code, evaluation, stderr = self.run_cli({**self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
         self.assertEqual(code, 0, stderr)
         code, _, stderr = self.run_cli({**self.evolution_request(topic, operation="release-topic-gate", expected_revision=revision, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
         self.assertEqual(code, 0, stderr)
@@ -3878,7 +3883,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         code, _, stderr = self.run_cli(reopen)
         self.assertEqual(code, 0, stderr)
         _, records = PROTOCOL._load_records(ledger)
-        dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == "DEP-keep")
+        dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == dependency_id)
         reason = json.loads(str(dependency["gate_reason_json"]))
         self.assertEqual(dependency["gate_state"], "closed")
         self.assertEqual(reason["reopen_id"], reopen["idempotency_key"])
@@ -3921,9 +3926,12 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             {"item_id": "D-a", "item_kind": "decision", "topic_id": a_id, "data_json": PROTOCOL._canonical_json(a_decision)},
             {"item_id": "D-b", "item_kind": "decision", "topic_id": b_id, "data_json": PROTOCOL._canonical_json(b_decision)},
         ])
+        b_dependency_id = "DEP-" + "1" * 32
+        c_dependency_id = "DEP-" + "2" * 32
+        fixture_reason = PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})
         records["Topic Dependencies"].extend([
-            {"dependency_id": "DEP-b-a", "record_revision": 1, "dependent_topic_id": b_id, "prerequisite_topic_id": a_id, "requirement_kind": "confirmed-decision", "requirement_summary": "A remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"},
-            {"dependency_id": "DEP-c-b", "record_revision": 1, "dependent_topic_id": c_id, "prerequisite_topic_id": b_id, "requirement_kind": "confirmed-decision", "requirement_summary": "B remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"},
+            {"dependency_id": b_dependency_id, "record_revision": 1, "dependent_topic_id": b_id, "prerequisite_topic_id": a_id, "requirement_kind": "confirmed-decision", "requirement_summary": "A remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": fixture_reason},
+            {"dependency_id": c_dependency_id, "record_revision": 1, "dependent_topic_id": c_id, "prerequisite_topic_id": b_id, "requirement_kind": "confirmed-decision", "requirement_summary": "B remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": fixture_reason},
         ])
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
 
@@ -3934,8 +3942,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             return request
 
         for actor, owner, dependency_id, decision_id, revision in (
-            (b_id, "codex-thread:b", "DEP-b-a", "D-a", 1),
-            (c_id, "codex-thread:c", "DEP-c-b", "D-b", 2),
+            (b_id, "codex-thread:b", b_dependency_id, "D-a", 1),
+            (c_id, "codex-thread:c", c_dependency_id, "D-b", 2),
         ):
             code, evaluated, stderr = self.run_cli(gate_request(actor, owner, "evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "decision_ids": [decision_id]}]))
             self.assertEqual(code, 0, stderr)
@@ -3944,7 +3952,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             self.assertEqual(released["state"], "open")
 
         _, before_records = PROTOCOL._load_records(ledger)
-        before_c = next(item for item in before_records["Topic Dependencies"] if item["dependency_id"] == "DEP-c-b")
+        before_c = next(item for item in before_records["Topic Dependencies"] if item["dependency_id"] == c_dependency_id)
         changed, ledger_revision, topic_revision = self.complete_update(
             project, topic, ledger_revision=3, topic_revision=1,
             mutation={"type": "change-direction", "summary": "Replace A.", "affected_decision_ids": ["D-a"]},
@@ -3957,8 +3965,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         code, update, stderr = self.run_cli(update_request)
         self.assertEqual(code, 0, stderr)
         _, after_records = PROTOCOL._load_records(ledger)
-        b_dependency = next(item for item in after_records["Topic Dependencies"] if item["dependency_id"] == "DEP-b-a")
-        c_dependency = next(item for item in after_records["Topic Dependencies"] if item["dependency_id"] == "DEP-c-b")
+        b_dependency = next(item for item in after_records["Topic Dependencies"] if item["dependency_id"] == b_dependency_id)
+        c_dependency = next(item for item in after_records["Topic Dependencies"] if item["dependency_id"] == c_dependency_id)
         self.assertEqual(b_dependency["gate_state"], "closed")
         self.assertEqual(b_dependency["record_revision"], 3)
         reason = json.loads(str(b_dependency["gate_reason_json"]))
@@ -3976,14 +3984,15 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         decision = {"decision_id": "D-a", "summary": "Keep A.", "rationale": "Current authority.", "state": "confirmed", "evolution": "confirmed"}
         digest = hashlib.sha256(PROTOCOL._canonical_json(decision).encode("utf-8")).hexdigest()
         authority = [{"decision_id": "D-a", "sha256": digest, "summary": "Keep A."}]
-        basis = {"basis_version": 1, "dependency_id": "DEP-b-a", "prerequisite_topic_id": a_id, "requirement_kind": "confirmed-decision", "decision_authority": [{"decision_id": "D-a", "sha256": digest}], "authority": {"decision_set_digest": hashlib.sha256(PROTOCOL._canonical_json(authority).encode("utf-8")).hexdigest()}}
+        dependency_id = "DEP-" + "3" * 32
+        basis = {"basis_version": 1, "dependency_id": dependency_id, "prerequisite_topic_id": a_id, "requirement_kind": "confirmed-decision", "decision_authority": [{"decision_id": "D-a", "sha256": digest}], "authority": {"decision_set_digest": hashlib.sha256(PROTOCOL._canonical_json(authority).encode("utf-8")).hexdigest()}}
         frontmatter, records = PROTOCOL._load_records(ledger)
         records["Current Topics"].append({"topic_id": b_id, "record_revision": 1, "root_slug": "topic-b", "parent_topic_id": a_id, "current_phase": 2, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
         records["Pending Items"].append({"item_id": "D-a", "item_kind": "decision", "topic_id": a_id, "data_json": PROTOCOL._canonical_json(decision)})
-        records["Topic Dependencies"].append({"dependency_id": "DEP-b-a", "record_revision": 2, "dependent_topic_id": b_id, "prerequisite_topic_id": a_id, "requirement_kind": "confirmed-decision", "requirement_summary": "A remains current.", "relation_state": "active", "gate_state": "open", "accepted_basis_json": PROTOCOL._canonical_json(basis), "gate_reason_json": "{}"})
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 2, "dependent_topic_id": b_id, "prerequisite_topic_id": a_id, "requirement_kind": "confirmed-decision", "requirement_summary": "A remains current.", "relation_state": "active", "gate_state": "open", "accepted_basis_json": PROTOCOL._canonical_json(basis), "gate_reason_json": PROTOCOL._canonical_json({"kind": "atomic-release", "release_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         _, before_records = PROTOCOL._load_records(ledger)
-        before_dependency = next(item for item in before_records["Topic Dependencies"] if item["dependency_id"] == "DEP-b-a")
+        before_dependency = next(item for item in before_records["Topic Dependencies"] if item["dependency_id"] == dependency_id)
         changed, ledger_revision, topic_revision = self.complete_update(
             project, topic, ledger_revision=1, topic_revision=1,
             mutation={"type": "change-direction", "summary": "Replace A.", "affected_decision_ids": ["D-a"]},
@@ -3995,7 +4004,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         ))
         self.assertEqual(code, 0, stderr)
         _, after_records = PROTOCOL._load_records(ledger)
-        after_dependency = next(item for item in after_records["Topic Dependencies"] if item["dependency_id"] == "DEP-b-a")
+        after_dependency = next(item for item in after_records["Topic Dependencies"] if item["dependency_id"] == dependency_id)
         self.assertEqual(after_dependency, before_dependency)
 
     def test_child_handoff_persists_topic_attempt_and_bounded_identity_payload(self) -> None:
@@ -7234,10 +7243,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 ledger = Path(str(topic["ledger_path"]))
                 frontmatter, records = PROTOCOL._load_records(ledger)
                 dependent_id = "topic-" + uuid.uuid4().hex
-                dependency_id = f"DEP-checkpoint-{fault}"
+                dependency_id = f"DEP-{uuid.uuid5(uuid.NAMESPACE_URL, f'checkpoint-{fault}').hex}"
                 records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": f"dependent-{fault}", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
                 records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
-                records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The published checkpoint must remain exact.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"})
+                records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The published checkpoint must remain exact.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
                 ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
                 selected = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": checkpoint["checkpoint_id"], "decision_ids": []}])
                 selected["actor_topic_id"] = dependent_id
@@ -7285,10 +7294,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 ledger = Path(str(topic["ledger_path"]))
                 frontmatter, records = PROTOCOL._load_records(ledger)
                 dependent_id = "topic-" + uuid.uuid4().hex
-                dependency_id = f"DEP-result-{fault}"
+                dependency_id = f"DEP-{uuid.uuid5(uuid.NAMESPACE_URL, f'result-{fault}').hex}"
                 records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": f"dependent-{fault}", "parent_topic_id": str(topic["topic_id"]), "current_phase": 1, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
                 records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
-                records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-1-result", "requirement_summary": "The frozen Phase Result remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"})
+                records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-1-result", "requirement_summary": "The frozen Phase Result remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
                 ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
                 selected = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}])
                 selected["actor_topic_id"] = dependent_id
@@ -7412,10 +7421,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         ledger = Path(str(topic["ledger_path"]))
         frontmatter, records = PROTOCOL._load_records(ledger)
         dependent_id = "topic-" + uuid.uuid4().hex
-        dependency_id = "DEP-broken-checkpoint-direct"
+        dependency_id = "DEP-" + uuid.uuid4().hex
         records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
         records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
-        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The checkpoint remains publishable.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"})
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The checkpoint remains publishable.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         evaluation_request = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": checkpoint["checkpoint_id"], "decision_ids": []}])
         evaluation_request["actor_topic_id"] = dependent_id
@@ -7462,10 +7471,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         ledger = Path(str(topic["ledger_path"]))
         frontmatter, records = PROTOCOL._load_records(ledger)
         dependent_id = "topic-" + uuid.uuid4().hex
-        dependency_id = "DEP-git-checkpoint-current"
+        dependency_id = "DEP-" + uuid.uuid4().hex
         records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
         records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
-        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The Git checkpoint stays exact.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"})
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The Git checkpoint stays exact.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         gate = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": checkpoint["checkpoint_id"], "decision_ids": []}])
         gate["actor_topic_id"] = dependent_id
