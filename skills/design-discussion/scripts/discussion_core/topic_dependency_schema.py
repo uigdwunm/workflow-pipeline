@@ -328,19 +328,21 @@ def validate_dependency_records(
         if item["accepted_basis_json"] is not None:
             basis = canonical_object(item["accepted_basis_json"], "topic dependency accepted_basis_json", error)
             decisions = basis.get("decision_authority")
+            historical_basis = (
+                basis.get("prerequisite_topic_id") != prerequisite
+                or basis.get("requirement_kind") != item["requirement_kind"]
+            )
             if (
                 basis.get("basis_version") != 1
                 or basis.get("dependency_id") != dep_id
-                or (not (item["gate_state"] == "closed" and canonical_object(item["gate_reason_json"], "topic dependency gate_reason_json", error).get("kind") == "explicit-replace") and basis.get("prerequisite_topic_id") != prerequisite)
-                or (not (item["gate_state"] == "closed" and canonical_object(item["gate_reason_json"], "topic dependency gate_reason_json", error).get("kind") == "explicit-replace") and basis.get("requirement_kind") != item["requirement_kind"])
+                or (not historical_basis and basis.get("prerequisite_topic_id") != prerequisite)
+                or (not historical_basis and basis.get("requirement_kind") != item["requirement_kind"])
                 or not _decision_pairs(decisions)
                 or set(basis) != ({"basis_version", "dependency_id", "prerequisite_topic_id", "requirement_kind", "decision_authority", "authority"} | ({"child_result_id"} if "child_result_id" in basis else set()))
             ):
                 error("state_corrupt", "topic dependency accepted basis is incoherent")
             authority = basis.get("authority")
-            historical_replace = item["gate_state"] == "closed" and canonical_object(
-                item["gate_reason_json"], "topic dependency gate_reason_json", error
-            ).get("kind") == "explicit-replace"
+            historical_replace = historical_basis
             authority_kind = basis["requirement_kind"] if historical_replace else item["requirement_kind"]
             if authority_kind not in DEPENDENCY_AUTHORITY_KINDS:
                 valid = False
