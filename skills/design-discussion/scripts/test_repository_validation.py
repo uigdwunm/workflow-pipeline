@@ -33,9 +33,9 @@ class RepositoryValidationTests(unittest.TestCase):
         self.assertIn("split-gate-contract.md", framing)
         for marker in ("independent, nameable goal", "evaluate-topic-gate", "release-topic-gate", "First-turn handoff acceptance"):
             self.assertIn(marker, split_gate)
-        for marker in ("initial_dependencies", "first-turn acceptance remains allowed", "atomically release the complete closed"):
+        for marker in ("initial_dependencies", "first-turn acceptance remains allowed", "split-gate-contract.md"):
             self.assertIn(marker, handoff)
-        for marker in ("新话题建议", "确认后结果", "本次尚不创建任务"):
+        for marker in ("新话题建议", "依赖关系", "等待与唤醒", "确认后结果", "本次尚不创建任务"):
             self.assertIn(marker, templates)
 
     def test_stage_three_assigns_candidate_review_to_the_originating_task(self) -> None:

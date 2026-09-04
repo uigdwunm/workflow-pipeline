@@ -3264,6 +3264,18 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         )
         self.assertEqual(code, 0)
         self.assertEqual(evaluation["state"], "blocked")
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        selection = {"dependency_id": read["topic_dependencies"][0]["dependency_id"], "decision_ids": []}
+        code, duplicate, _ = self.run_cli(
+            self.evolution_request(
+                topic, operation="evaluate-topic-gate",
+                basis_selection=[selection, selection],
+            )
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(duplicate["error"]["code"], "invalid_request")
+        self.assertEqual(ledger.read_bytes(), before)
 
     def test_dependent_owner_can_create_and_cancel_a_dependency(self) -> None:
         project = self.make_project("dependency-update", git=False)

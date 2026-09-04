@@ -12,6 +12,9 @@ the exact dependency direction and semantic result if any, current-topic
 handling, result return, and the separate confirmation that creates one task.
 The confirmed proposal prepares ledger state only.
 
+For standalone `1拷问`, a split creates a new root topic only: it creates no
+parent, continuation, or executable dependency edge.
+
 On a later user-requested Phase-0/1 turn with a closed gate, call
 `evaluate-topic-gate`. Report the exact waiting condition if blocked. If it is
 releasable, show the selected current bases, obtain fresh confirmation, and

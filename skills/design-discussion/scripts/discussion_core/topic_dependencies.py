@@ -89,6 +89,7 @@ def _validate_dependency_records(records: dict[str, list[dict[str, Any]]]) -> No
                 or decisions != sorted(decisions, key=lambda entry: entry.get("decision_id", ""))
                 or len({entry.get("decision_id") for entry in decisions}) != len(decisions)
                 or any(not isinstance(entry, dict) or set(entry) != {"decision_id", "sha256"} or not isinstance(entry["decision_id"], str) or not isinstance(entry["sha256"], str) or not SHA256_RE.fullmatch(entry["sha256"]) for entry in decisions)
+                or set(basis) - {"basis_version", "dependency_id", "prerequisite_topic_id", "requirement_kind", "decision_authority", "authority", "child_result_id"}
             ):
                 raise ProtocolError("state_corrupt", "topic dependency accepted basis is incoherent")
             authority = basis.get("authority")
@@ -97,6 +98,24 @@ def _validate_dependency_records(records: dict[str, list[dict[str, Any]]]) -> No
                     raise ProtocolError("state_corrupt", "confirmed-decision basis is incoherent")
             elif not isinstance(authority, dict):
                 raise ProtocolError("state_corrupt", "authority-backed dependency basis is incoherent")
+            elif item["requirement_kind"] == "phase-0-checkpoint" and (
+                set(authority) != {"checkpoint_id", "record_revision", "published_identity", "decision_digest"}
+                or not isinstance(authority["checkpoint_id"], str)
+                or not isinstance(authority["record_revision"], int)
+                or not isinstance(authority["published_identity"], str)
+                or not isinstance(authority["decision_digest"], str)
+                or not SHA256_RE.fullmatch(authority["decision_digest"])
+            ):
+                raise ProtocolError("state_corrupt", "checkpoint dependency authority is incoherent")
+            elif item["requirement_kind"] == "phase-1-result" and (
+                set(authority) != {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"}
+                or not isinstance(authority["result_id"], str)
+                or not isinstance(authority["record_revision"], int)
+                or authority["state"] != "completed"
+                or not isinstance(authority["phase_run_id"], str)
+                or not isinstance(authority["affected_decision_ids"], list)
+            ):
+                raise ProtocolError("state_corrupt", "phase-result dependency authority is incoherent")
         elif item["relation_state"] == "active" and item["gate_state"] == "open":
             raise ProtocolError("state_corrupt", "open topic dependency requires an accepted basis")
         if item["relation_state"] == "active":
@@ -158,9 +177,12 @@ def reclose_directly_affected(
     for dependency in records["Topic Dependencies"]:
         if dependency["relation_state"] != "active" or dependency["gate_state"] != "open" or dependency["prerequisite_topic_id"] != prerequisite_topic_id:
             continue
+        dependent = _record_by_id(records["Current Topics"], "topic_id", dependency["dependent_topic_id"], "dependent_topic_id")
+        if dependent.get("current_phase") not in {0, 1}:
+            continue
         basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json") if dependency["accepted_basis_json"] else None
         authorities = basis.get("decision_authority") if basis else None
-        known = isinstance(authorities, list) and all(isinstance(item, dict) and isinstance(item.get("decision_id"), str) for item in authorities)
+        known = isinstance(authorities, list) and bool(authorities) and all(isinstance(item, dict) and isinstance(item.get("decision_id"), str) for item in authorities)
         basis_ids = {item["decision_id"] for item in authorities} if known else set()
         authority = basis.get("authority", {}) if basis else {}
         authority_id = authority.get("result_id") or authority.get("checkpoint_id")
@@ -210,9 +232,31 @@ def _candidates(records: dict[str, list[dict[str, Any]]], dependency: dict[str, 
             continue
         ids = phase_result.get("affected_decision_ids")
         if not isinstance(ids, list): continue
-        decisions = {item["decision_id"]: _sha256(_canonical_json(item).encode("utf-8")) for item in _topic_snapshot(records, prerequisite)["decisions"]}
+        snapshot = {item["decision_id"]: item for item in _topic_snapshot(records, prerequisite)["decisions"]}
+        if any(item not in snapshot or snapshot[item].get("state") != "confirmed" for item in ids):
+            continue
+        decisions = {item: _sha256(_canonical_json(snapshot[item]).encode("utf-8")) for item in ids}
         result.append({"authority_id": phase_result["result_id"], "authority": {"result_id": phase_result["result_id"], "record_revision": record["record_revision"], "state": "completed", "phase_run_id": phase_result["phase_run_id"], "affected_decision_ids": sorted(ids)}, "decision_authority": [{"decision_id": item, "sha256": decisions.get(item, "") } for item in sorted(ids)]})
     return sorted(result, key=lambda item: str(item["authority_id"]))
+
+
+def _normalize_authority_selection(
+    candidates: list[dict[str, Any]], requirement_kind: str, authority_id: Any,
+    decision_ids: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Select one current candidate and its exact frozen decision subset."""
+    if not isinstance(decision_ids, list) or sorted(set(decision_ids)) != decision_ids:
+        raise ProtocolError("invalid_request", "basis selection decision_ids must be sorted")
+    if requirement_kind == "confirmed-decision" and not decision_ids:
+        raise ProtocolError("topic_dependency_evidence_unavailable", "confirmed-decision requires one or more current decisions")
+    matching = [item for item in candidates if item["authority_id"] == authority_id]
+    if len(matching) != 1:
+        raise ProtocolError("topic_dependency_evidence_unavailable", "selected dependency evidence is not current")
+    candidate = matching[0]
+    authority = {item["decision_id"]: item for item in candidate["decision_authority"]}
+    if any(item not in authority or not authority[item].get("sha256") for item in decision_ids):
+        raise ProtocolError("topic_dependency_evidence_unavailable", "selected dependency evidence is not current")
+    return candidate, [authority[item] for item in decision_ids]
 
 
 def freeze_authority_selection(
@@ -237,32 +281,21 @@ def freeze_authority_selection(
             raise ProtocolError("invalid_request", "confirmed-decision has no authority identity")
     elif not isinstance(identity, str):
         raise ProtocolError("invalid_request", "authority identity is required")
-    if kind == "confirmed-decision" and not decision_ids:
-        raise ProtocolError("topic_dependency_evidence_unavailable", "confirmed-decision requires one or more current decisions")
     candidates = _candidates(records, {
         "prerequisite_topic_id": topic_id,
         "requirement_kind": kind,
     })
-    matching = [item for item in candidates if item["authority_id"] == identity]
-    if len(matching) != 1:
-        raise ProtocolError(
-            "topic_dependency_evidence_unavailable",
-            "selected child-result authority is not current",
+    try:
+        candidate, chosen = _normalize_authority_selection(
+            candidates, kind, identity, decision_ids
         )
-    candidate = matching[0]
-    authority = {
-        item["decision_id"]: item for item in candidate["decision_authority"]
-    }
-    if any(item not in authority for item in decision_ids):
-        raise ProtocolError(
-            "topic_dependency_evidence_unavailable",
-            "selected child-result decision authority is not current",
-        )
+    except ProtocolError as error:
+        raise ProtocolError(error.code, error.message.replace("dependency", "child-result")) from error
     frozen = {
         "authority_kind": kind,
         "authority_identity": identity,
         "decision_ids": decision_ids,
-        "decision_authority": [authority[item] for item in decision_ids],
+        "decision_authority": chosen,
         "topic_phase": _record_by_id(
             records["Current Topics"], "topic_id", topic_id, "topic_id"
         )["current_phase"],
@@ -333,6 +366,8 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
     if not closed:
         return {"state": "open", "derived_gate_state": "open", "dependencies": []}
     choices = {item.get("dependency_id"): item for item in selection or []}
+    if selection is not None and len(choices) != len(selection):
+        raise ProtocolError("invalid_request", "basis_selection must name every closed dependency exactly once")
     details = []
     proposed = []
     for dependency in closed:
@@ -341,21 +376,13 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
         selected = choices.get(dependency["dependency_id"])
         detail: dict[str, Any] = {"dependency_id": dependency["dependency_id"], "record_revision": dependency["record_revision"], "requirement_kind": dependency["requirement_kind"], "requirement_summary": dependency["requirement_summary"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "prerequisite_phase": prerequisite_topic["current_phase"], "prerequisite_state": prerequisite_topic["topic_state"], "candidates": candidates}
         if selected is not None:
-            decision_ids = selected.get("decision_ids")
-            if not isinstance(decision_ids, list) or sorted(set(decision_ids)) != decision_ids:
-                raise ProtocolError("invalid_request", "basis selection decision_ids must be sorted")
-            if dependency["requirement_kind"] == "confirmed-decision" and not decision_ids:
-                raise ProtocolError("topic_dependency_evidence_unavailable", "confirmed-decision requires one or more current decisions")
             authority_id = selected.get("authority_id")
             if set(selected) != ({"dependency_id", "decision_ids"} if dependency["requirement_kind"] == "confirmed-decision" else {"dependency_id", "authority_id", "decision_ids"}):
                 raise ProtocolError("topic_dependency_evidence_unavailable", "selected dependency evidence is not current")
-            matching = [item for item in candidates if item["authority_id"] == authority_id]
-            if len(matching) != 1:
-                raise ProtocolError("topic_dependency_evidence_unavailable", "selected dependency evidence is not current")
-            candidate = matching[0]
-            chosen = [item for item in candidate["decision_authority"] if item["decision_id"] in decision_ids]
-            if len(chosen) != len(decision_ids) or any(not item["sha256"] for item in chosen):
-                raise ProtocolError("topic_dependency_evidence_unavailable", "selected dependency evidence is not current")
+            candidate, chosen = _normalize_authority_selection(
+                candidates, dependency["requirement_kind"], authority_id,
+                selected.get("decision_ids"),
+            )
             basis = {"basis_version": 1, "dependency_id": dependency["dependency_id"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "requirement_kind": dependency["requirement_kind"], "decision_authority": [{"decision_id": item["decision_id"], "sha256": item["sha256"]} for item in chosen]}
             if candidate["authority_id"] is not None:
                 basis["authority"] = candidate["authority"]
@@ -497,6 +524,8 @@ def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
         topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        if topic["current_phase"] not in {0, 1}:
+            raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are immutable after Phase 1")
         selection = [{"dependency_id": item.get("dependency_id"), "decision_ids": [entry["decision_id"] for entry in item.get("basis", {}).get("decision_authority", [])], **({"authority_id": item["basis"]["authority"].get("checkpoint_id", item["basis"]["authority"].get("result_id"))} if isinstance(item.get("basis"), dict) and "authority" in item["basis"] else {})} for item in request["release_set"]] if isinstance(request["release_set"], list) else None
         evaluation = _evaluation(records, request["actor_topic_id"], selection)
         expected = _sha256(_canonical_json({"ledger_revision": revision, "topic_revision": topic_revision, "release_set": evaluation.get("release_set")}).encode("utf-8"))

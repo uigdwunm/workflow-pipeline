@@ -42,6 +42,7 @@ from discussion_core.state import (
     _new_identity,
     _parse_frontmatter,
     _parse_record_section,
+    _promote_ledger_schema,
     _project_lock_name,
     _record_by_id,
     _render_records_ledger,
@@ -1151,7 +1152,7 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             invalidated_dependencies = reclose_directly_affected(
                 next_records, prerequisite_topic_id=request["actor_topic_id"],
                 changed_decision_ids={mutation["decision_id"]},
-                cause={"decision_id": mutation["decision_id"], "action": mutation["action"]},
+                cause={"decision_id": mutation["decision_id"], "action": mutation["action"], "topic_update_id": f"DW-{uuid.UUID(request['idempotency_key']).hex}"},
                 ledger_revision=next_revision,
             )
         next_topic_revision = topic_revision + 1
@@ -1218,7 +1219,7 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             "invalidated_dependency_ids": invalidated_dependencies,
         }
         _append_event(next_records, request, revision=next_revision, event_type="topic-update-prepared", result=result)
-        frontmatter["schema_version"] = "3"
+        _promote_ledger_schema(frontmatter)
         frontmatter["ledger_revision"] = str(next_revision)
         frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
         if os.environ.get("CODEX_DISCUSSION_TEST_FAILPOINT") == "topic-update-ledger-replace":
@@ -1282,7 +1283,7 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
             "after_sha256": write["after_sha256"],
         }
         _append_event(records, request, revision=next_revision, event_type="document-write-completed", result=result)
-        frontmatter["schema_version"] = "3"
+        _promote_ledger_schema(frontmatter)
         frontmatter["ledger_revision"] = str(next_revision)
         frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
         _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
@@ -1915,7 +1916,7 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
                             "data_json": _canonical_json(item),
                         }
                     )
-                frontmatter["schema_version"] = "3"
+                _promote_ledger_schema(frontmatter)
                 data = _render_records_ledger(frontmatter, records)
             _inject_failure("document-context-before-ledger-create")
             _write_new_file(ledger_path, data, created_files)

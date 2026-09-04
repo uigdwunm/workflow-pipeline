@@ -79,11 +79,10 @@ ordinary one-question discussion loop. A first-turn attempt to authorize must
 surface `handoff_next_turn_required`; never hide it by changing the turn number.
 
 If a topic has a closed gate, first-turn acceptance remains allowed. On a later
-user-triggered turn, evaluate every closed dependency. Report the exact waiting
-condition when evidence is unavailable. Otherwise show the selected current
-bases, obtain a new confirmation, and atomically release the complete closed
-set before authorizing substantive discussion. An open gate is not polled or
-reevaluated on ordinary turns.
+user-triggered turn, apply the shared
+[split and requirements-gate contract](split-gate-contract.md) before
+authorizing substantive discussion; this child protocol adds only the
+first-turn acceptance exception.
 
 ## Return and absorb results
 

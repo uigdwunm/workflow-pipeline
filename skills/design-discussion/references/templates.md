@@ -31,6 +31,7 @@ and `reread_verified: true`.
 
 依赖关系：<none | dependent depends on prerequisite; exact required result; initial gate closed>
 当前话题处理：<continue | wait>
+等待与唤醒：<none | user returns after the prerequisite result; no polling or automatic wakeup>
 结果回流：<absorb | impact review | no return required>
 
 确认事项：接受以上拆分方向，并准备新话题身份、初始依赖和 handoff
