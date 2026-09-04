@@ -901,6 +901,7 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
                 records, dependent_topic_id=request["actor_topic_id"],
                 prerequisite_topic_id=handoff["target_topic_id"], child_result_id=claim["result_id"],
                 frozen_authority=frozen, releases=releases, ledger_revision=next_revision,
+                absorb_operation_id=request["idempotency_key"],
             )
         else:
             impact_id = f"IMP-{seed}"

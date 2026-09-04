@@ -253,7 +253,7 @@ def freeze_authority_selection(
 def release_child_result_dependencies(
     records: dict[str, list[dict[str, Any]],], *, dependent_topic_id: str,
     prerequisite_topic_id: str, child_result_id: str, frozen_authority: Any,
-    releases: Any, ledger_revision: int,
+    releases: Any, ledger_revision: int, absorb_operation_id: str,
 ) -> list[str]:
     """Validate frozen child authority and atomically normalize matching gates."""
     if not isinstance(releases, list) or len(releases) > 64:
@@ -300,7 +300,7 @@ def release_child_result_dependencies(
         dependency["gate_state"] = "open"
         dependency["record_revision"] += 1
         dependency["accepted_basis_json"] = _canonical_json(basis)
-        dependency["gate_reason_json"] = _canonical_json({"kind": "child-result-absorb-release", "ledger_revision": ledger_revision, "child_result_id": child_result_id})
+        dependency["gate_reason_json"] = _canonical_json({"kind": "child-result-absorb-release", "absorb_operation_id": absorb_operation_id, "ledger_revision": ledger_revision, "child_result_id": child_result_id})
     return sorted(item[0]["dependency_id"] for item in selected)
 
 
