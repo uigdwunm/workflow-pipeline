@@ -206,17 +206,22 @@ def _reject_published_authority_change(
                     "authority_id": checkpoint.get("checkpoint_id")}
                 break
     elif topic.get("current_phase") == 1:
-        for record in reversed(records["Phase Results"]):
-            if record.get("result_kind") != "phase-result" or record.get("state") != "completed":
+        # A completed result becomes published authority only when the Phase-1
+        # stage-entry checkpoint publishes it.  Ordinary completion remains
+        # mutable until that explicit publication step.
+        for record in reversed(records["Checkpoints"]):
+            if record.get("topic_id") != dependent_topic_id or record.get("state") != "completed":
                 continue
             try:
-                result = json.loads(str(record.get("data_json")))
+                checkpoint = json.loads(str(record.get("data_json")))
             except (TypeError, ValueError, json.JSONDecodeError) as error:
-                raise ProtocolError("state_corrupt", "published Phase Result is corrupt") from error
-            if (result.get("topic_id") == dependent_topic_id
-                and result.get("from_phase") == 0 and result.get("to_phase") == 1):
+                raise ProtocolError("state_corrupt", "published Phase-1 checkpoint is corrupt") from error
+            if (checkpoint.get("purpose") == "stage-entry"
+                and checkpoint.get("stage_entry_phase") == 1
+                and checkpoint.get("stage_entry_phase_result_id")
+                and checkpoint.get("published_identity")):
                 authority = {"authority_kind": "phase-1-result",
-                    "authority_id": result.get("result_id")}
+                    "authority_id": checkpoint.get("stage_entry_phase_result_id")}
                 break
     if authority is not None:
         raise ProtocolError(

@@ -29,9 +29,12 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
                         mutation={"type": "confirm-decision", "summary": "Current.",
                                   "rationale": "Current."},
                     )
-                    self.fixture.complete_current_topic_phase(
+                    _, revision, topic_revision = self.fixture.complete_current_topic_phase(
                         topic, ledger_revision=revision, topic_revision=topic_revision,
                         from_phase=0, to_phase=1,
+                    )
+                    self.fixture.publish_non_git_stage_entry_checkpoint(
+                        topic, ledger_revision=revision, topic_revision=topic_revision,
                     )
                 ledger = Path(str(topic["ledger_path"]))
                 frontmatter, records = PROTOCOL._load_records(ledger)
