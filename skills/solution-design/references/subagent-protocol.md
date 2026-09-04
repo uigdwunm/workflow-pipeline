@@ -217,6 +217,12 @@ write. The primary agent performs no concurrent stage-2 writes. Unrelated
 primary-checkout changes remain outside the Flow Worktree and are never copied,
 staged, stashed, removed, or included in the planning commit.
 
+For every Flow Worktree operation, serialize the exact disclosed request as one
+JSON object and send those bytes to `supervision_protocol.py` on stdin. Do not
+create a temporary request file or pass `--input`, `/dev/stdin`, `/dev/fd/*`, a
+FIFO, or process substitution. The shared worktree execution contract owns this
+command interface.
+
 Continue design from committed objects. Before each Spec, ADR, or Ticket write,
 verify the path is stage-owned and its baseline has not changed. When design and
 review are complete, compare branch, HEAD, workspace state, and exact document

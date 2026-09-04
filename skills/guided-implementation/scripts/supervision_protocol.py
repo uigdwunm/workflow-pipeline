@@ -15,7 +15,7 @@ import sys
 import time
 from typing import Any
 
-from supervision_core import ArgumentSpec, CommandRegistry, CommandSpec
+from supervision_core import CommandRegistry, CommandSpec
 
 
 MAX_INPUT_BYTES = 1_048_576
@@ -59,13 +59,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _load_input(path: Path) -> dict[str, Any]:
-    try:
-        if not path.is_file():
-            raise ProtocolError("invalid_input", f"input file is not regular: {path}")
-        data = path.read_bytes()
-    except OSError as error:
-        raise ProtocolError("invalid_input", f"cannot read input file: {path}") from error
+def _load_input(data: bytes) -> dict[str, Any]:
     if not data or len(data) > MAX_INPUT_BYTES:
         raise ProtocolError(
             "invalid_input",
@@ -434,8 +428,7 @@ def _verify_binding(binding: dict[str, Any], *, platform_cwd: Path | None = None
     return {"current_commit": head, "verified": True}
 
 
-def start_worktree(input_path: Path) -> dict[str, Any]:
-    request = _load_input(input_path)
+def start_worktree(request: dict[str, Any]) -> dict[str, Any]:
     _expect_keys(
         request,
         {
@@ -490,8 +483,7 @@ def start_worktree(input_path: Path) -> dict[str, Any]:
     return {"binding": binding, "ok": True, "state": "created"}
 
 
-def verify_worktree(input_path: Path) -> dict[str, Any]:
-    request = _load_input(input_path)
+def verify_worktree(request: dict[str, Any]) -> dict[str, Any]:
     _expect_keys(request, {"binding", "platform_cwd"}, "verify-worktree input")
     binding = _binding(request["binding"])
     platform_cwd = _canonical_absolute_path(
@@ -781,8 +773,7 @@ def _prepare_planning_candidate(
     return target_head, candidate, changed
 
 
-def publish_planning(input_path: Path) -> dict[str, Any]:
-    request = _load_input(input_path)
+def publish_planning(request: dict[str, Any]) -> dict[str, Any]:
     _expect_keys(
         request,
         {"allowed_paths", "binding", "planning_commit", "protected_paths"},
@@ -896,8 +887,7 @@ def publish_planning(input_path: Path) -> dict[str, Any]:
     }
 
 
-def complete_worktree(input_path: Path) -> dict[str, Any]:
-    request = _load_input(input_path)
+def complete_worktree(request: dict[str, Any]) -> dict[str, Any]:
     _expect_keys(
         request,
         {
@@ -980,18 +970,13 @@ def _emit_json(value: Any) -> None:
     sys.stdout.buffer.write(data)
 
 
-def _argument(*flags: str, **options: Any) -> ArgumentSpec:
-    return ArgumentSpec(flags=flags, options=options)
-
-
 def _build_command_registry() -> CommandRegistry:
-    path_input = (_argument("--input", required=True, type=Path),)
     return CommandRegistry(
         [
-            CommandSpec("start-worktree", path_input, lambda a: start_worktree(a.input)),
-            CommandSpec("verify-worktree", path_input, lambda a: verify_worktree(a.input)),
-            CommandSpec("publish-planning", path_input, lambda a: publish_planning(a.input)),
-            CommandSpec("complete-worktree", path_input, lambda a: complete_worktree(a.input)),
+            CommandSpec("start-worktree", lambda a: start_worktree(a.request)),
+            CommandSpec("verify-worktree", lambda a: verify_worktree(a.request)),
+            CommandSpec("publish-planning", lambda a: publish_planning(a.request)),
+            CommandSpec("complete-worktree", lambda a: complete_worktree(a.request)),
         ]
     )
 
@@ -1009,6 +994,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     arguments = parser.parse_args(argv)
     try:
+        arguments.request = _load_input(sys.stdin.buffer.read(MAX_INPUT_BYTES + 1))
         _, result = COMMAND_REGISTRY.dispatch(arguments)
         _emit_json(result)
     except ProtocolError as error:

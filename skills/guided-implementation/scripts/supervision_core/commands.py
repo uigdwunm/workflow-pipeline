@@ -9,15 +9,8 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class ArgumentSpec:
-    flags: tuple[str, ...]
-    options: dict[str, Any]
-
-
-@dataclass(frozen=True)
 class CommandSpec:
     name: str
-    arguments: tuple[ArgumentSpec, ...]
     handler: Callable[[argparse.Namespace], Any]
     raw_output: bool = False
 
@@ -40,9 +33,7 @@ class CommandRegistry:
         parser = argparse.ArgumentParser(description=description)
         subparsers = parser.add_subparsers(dest="command", required=True)
         for spec in self.specs:
-            command = subparsers.add_parser(spec.name)
-            for argument in spec.arguments:
-                command.add_argument(*argument.flags, **argument.options)
+            subparsers.add_parser(spec.name)
         return parser
 
     def dispatch(self, arguments: argparse.Namespace) -> tuple[bool, Any]:

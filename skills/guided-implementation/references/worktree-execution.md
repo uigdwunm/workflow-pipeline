@@ -4,6 +4,25 @@
 Worktree may carry stages 2, 3, and 4. Git is the only worktree registry; no
 separate ownership state is created.
 
+## Command input
+
+Every operation reads exactly one bounded UTF-8 JSON object from standard
+input. The command interface has no input-path argument: callers send the
+request bytes directly to stdin, or redirect a saved request file to stdin when
+replay is useful. A temporary file, `/dev/stdin`, `/dev/fd/*`, a FIFO, or
+process substitution is never part of the protocol interface.
+
+For example:
+
+```bash
+python3 supervision_protocol.py start-worktree <<'JSON'
+{"branch":"codex/example","repository":"/absolute/repository","target_branch":"main","worktree":"/absolute/worktree"}
+JSON
+```
+
+Input decoding, size checks, and schema validation complete before an operation
+performs any Git action.
+
 ## `start-worktree`
 
 Input fields are `repository`, `worktree`, `branch`, and `target_branch`. The

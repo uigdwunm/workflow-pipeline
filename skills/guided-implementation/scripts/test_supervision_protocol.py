@@ -46,24 +46,29 @@ class WorktreeProtocolTests(unittest.TestCase):
         )
         return completed.stdout.strip()
 
-    def write_input(self, name: str, value: dict[str, object]) -> Path:
-        path = self.root / name
-        path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
-        return path
+    def run_cli(
+        self,
+        command: str,
+        input_data: bytes,
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            [sys.executable, str(Path(PROTOCOL.__file__)), command],
+            input=input_data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
 
     def start(
         self,
         name: str,
     ) -> dict[str, object]:
-        request = self.write_input(
-            f"start-{name}.json",
-            {
-                "branch": f"codex/{name}",
-                "repository": str(self.repository),
-                "target_branch": "main",
-                "worktree": str(self.root / name),
-            },
-        )
+        request = {
+            "branch": f"codex/{name}",
+            "repository": str(self.repository),
+            "target_branch": "main",
+            "worktree": str(self.root / name),
+        }
         return PROTOCOL.start_worktree(request)["binding"]
 
     def commit(self, worktree: Path, path: str, contents: str, message: str) -> str:
@@ -84,18 +89,15 @@ class WorktreeProtocolTests(unittest.TestCase):
         allowed_paths: list[str] | None = None,
         protected_paths: list[str] | None = None,
         scope_base_commit: str | None = None,
-    ) -> Path:
-        return self.write_input(
-            f"complete-{name}.json",
-            {
-                "allowed_paths": ["a.txt", "b.txt"] if allowed_paths is None else allowed_paths,
-                "binding": binding,
-                "candidate_commit": candidate,
-                "expected_target_head": expected_target_head,
-                "protected_paths": ["spec.md"] if protected_paths is None else protected_paths,
-                "scope_base_commit": scope_base_commit or str(binding["base_commit"]),
-            },
-        )
+    ) -> dict[str, object]:
+        return {
+            "allowed_paths": ["a.txt", "b.txt"] if allowed_paths is None else allowed_paths,
+            "binding": binding,
+            "candidate_commit": candidate,
+            "expected_target_head": expected_target_head,
+            "protected_paths": ["spec.md"] if protected_paths is None else protected_paths,
+            "scope_base_commit": scope_base_commit or str(binding["base_commit"]),
+        }
 
     def publish_input(
         self,
@@ -105,21 +107,18 @@ class WorktreeProtocolTests(unittest.TestCase):
         *,
         allowed_paths: list[str],
         protected_paths: list[str] | None = None,
-    ) -> Path:
-        return self.write_input(
-            f"publish-{name}.json",
-            {
-                "allowed_paths": allowed_paths,
-                "binding": binding,
-                "planning_commit": planning_commit,
-                "protected_paths": ["spec.md"] if protected_paths is None else protected_paths,
-            },
-        )
+    ) -> dict[str, object]:
+        return {
+            "allowed_paths": allowed_paths,
+            "binding": binding,
+            "planning_commit": planning_commit,
+            "protected_paths": ["spec.md"] if protected_paths is None else protected_paths,
+        }
 
     def publish_with_failed_flow_advance(
         self,
         worktree: Path,
-        publish_input: Path,
+        publish_input: dict[str, object],
     ) -> PROTOCOL.ProtocolError:
         original_run_git = PROTOCOL._run_git
         failed_advance = False
@@ -169,6 +168,72 @@ class WorktreeProtocolTests(unittest.TestCase):
             set(PROTOCOL.COMMAND_REGISTRY.names),
             set(PROTOCOL._build_parser()._subparsers._group_actions[0].choices),
         )
+        for command in PROTOCOL.COMMAND_REGISTRY.names:
+            arguments = PROTOCOL._build_parser().parse_args([command])
+            self.assertFalse(hasattr(arguments, "input"))
+
+    def test_cli_start_reads_one_json_object_from_stdin(self) -> None:
+        worktree = self.root / "stdin"
+        request = {
+            "branch": "codex/stdin",
+            "repository": str(self.repository),
+            "target_branch": "main",
+            "worktree": str(worktree),
+        }
+
+        completed = self.run_cli(
+            "start-worktree",
+            json.dumps(request, sort_keys=True).encode("utf-8"),
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8"))
+        response = json.loads(completed.stdout)
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["binding"]["worktree"], str(worktree))
+        self.assertTrue(worktree.is_dir())
+
+    def test_every_cli_operation_reads_from_the_same_stdin_interface(self) -> None:
+        for command in PROTOCOL.COMMAND_REGISTRY.names:
+            with self.subTest(command=command):
+                completed = self.run_cli(command, b"{")
+                self.assertEqual(completed.returncode, 2)
+                response = json.loads(completed.stdout)
+                self.assertEqual(response["command"], command)
+                self.assertEqual(response["error"]["code"], "invalid_input")
+
+    def test_cli_rejects_invalid_json_forms_before_git_side_effects(self) -> None:
+        worktrees_before = self.git("worktree", "list", "--porcelain")
+        branches_before = self.git("branch", "--format=%(refname)")
+        invalid_inputs = {
+            "empty": b"",
+            "malformed": b"{",
+            "invalid-utf8": b"\xff",
+            "duplicate-key": b'{"branch":"one","branch":"two"}',
+            "floating-point": b'{"value":1.5}',
+            "non-finite": b'{"value":NaN}',
+            "not-object": b"[]",
+        }
+
+        for label, input_data in invalid_inputs.items():
+            with self.subTest(label=label):
+                completed = self.run_cli("start-worktree", input_data)
+                self.assertEqual(completed.returncode, 2)
+                response = json.loads(completed.stdout)
+                self.assertEqual(response["error"]["code"], "invalid_input")
+
+        self.assertEqual(self.git("worktree", "list", "--porcelain"), worktrees_before)
+        self.assertEqual(self.git("branch", "--format=%(refname)"), branches_before)
+
+    def test_cli_rejects_oversized_stdin_before_git_side_effects(self) -> None:
+        completed = self.run_cli(
+            "start-worktree",
+            b"{" + b" " * PROTOCOL.MAX_INPUT_BYTES + b"}",
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        response = json.loads(completed.stdout)
+        self.assertEqual(response["error"]["code"], "invalid_input")
+        self.assertEqual(self.git("branch", "--list", "codex/oversized-stdin"), "")
 
     def test_publication_lock_timeout_reports_busy(self) -> None:
         with tempfile.TemporaryFile() as lock_stream:
@@ -251,18 +316,12 @@ class WorktreeProtocolTests(unittest.TestCase):
 
     def test_verify_uses_git_as_the_only_worktree_authority(self) -> None:
         binding = self.start("verify")
-        verify_input = self.write_input(
-            "verify.json",
-            {"binding": binding, "platform_cwd": binding["worktree"]},
-        )
+        verify_input = {"binding": binding, "platform_cwd": binding["worktree"]}
 
         verified = PROTOCOL.verify_worktree(verify_input)
 
         self.assertTrue(verified["verified"])
-        wrong_input = self.write_input(
-            "verify-wrong.json",
-            {"binding": binding, "platform_cwd": str(self.repository)},
-        )
+        wrong_input = {"binding": binding, "platform_cwd": str(self.repository)}
         with self.assertRaises(PROTOCOL.ProtocolError) as raised:
             PROTOCOL.verify_worktree(wrong_input)
         self.assertEqual(raised.exception.code, "worktree_mismatch")
