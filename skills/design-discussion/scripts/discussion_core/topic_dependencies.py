@@ -232,10 +232,16 @@ def _current_checkpoint(record: dict[str, Any], checkpoint: dict[str, Any], reco
 def _checkpoint_candidates(
     records: dict[str, list[dict[str, Any]]], prerequisite: str,
 ) -> list[dict[str, Any]]:
-    authorities = [
-        record for record in records["Checkpoints"]
-        if record.get("topic_id") == prerequisite
-    ]
+    authorities = []
+    for record in records["Checkpoints"]:
+        if record.get("topic_id") != prerequisite:
+            continue
+        checkpoint = _json_field(record, "data_json", "checkpoint")
+        if (
+            checkpoint.get("purpose") == "stage-entry"
+            and checkpoint.get("stage_entry_phase") == 0
+        ):
+            authorities.append(record)
     if not authorities:
         return []
     # The latest persisted authority is decisive: an invalid replacement must
@@ -248,11 +254,21 @@ def _checkpoint_candidates(
         if not _current_checkpoint(record, checkpoint, records, prerequisite):
             return []
         digests = json.loads(checkpoint["decision_digests_json"])
+        confirmed_ids = json.loads(checkpoint["confirmed_decision_ids_json"])
+        if (
+            not isinstance(digests, dict)
+            or not _canonical_string_array(confirmed_ids)
+            or any(
+                not isinstance(item, str) or item not in digests
+                for item in confirmed_ids
+            )
+        ):
+            raise ProtocolError("state_corrupt", "latest checkpoint authority is corrupt")
     except ProtocolError as error:
         raise ProtocolError("state_corrupt", "latest checkpoint authority is corrupt") from error
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise ProtocolError("state_corrupt", "latest checkpoint authority is corrupt") from error
-    return [{"authority_id": checkpoint["checkpoint_id"], "authority": {"checkpoint_id": checkpoint["checkpoint_id"], "record_revision": checkpoint["record_revision"], "published_identity": checkpoint["published_identity"], "decision_digest": checkpoint["decision_digest"]}, "decision_authority": [{"decision_id": key, "sha256": value} for key, value in sorted(digests.items())]}]
+    return [{"authority_id": checkpoint["checkpoint_id"], "authority": {"checkpoint_id": checkpoint["checkpoint_id"], "record_revision": checkpoint["record_revision"], "published_identity": checkpoint["published_identity"], "decision_digest": checkpoint["decision_digest"]}, "decision_authority": [{"decision_id": key, "sha256": digests[key]} for key in confirmed_ids]}]
 
 
 def _phase_result_candidates(
