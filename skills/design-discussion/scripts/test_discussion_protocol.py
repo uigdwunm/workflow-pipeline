@@ -7529,7 +7529,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
 
         self.assertEqual(code, 0, stderr)
         self.assertEqual(retained["candidates"], [])
-        records["Phase Results"][0]["state"] = "cancelled"
+        records["Phase Results"][0]["state"] = "absorbed"
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         code, collectable, stderr = self.run_cli(
             self.checkpoint_request(topic, operation="checkpoint-gc-dry-run")
