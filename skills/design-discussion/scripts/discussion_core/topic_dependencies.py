@@ -27,6 +27,10 @@ RECORD_FIELDS = {
 }
 
 
+def _new_dependency_record(*, dependency_id: str, dependent_topic_id: str, prerequisite_topic_id: str, requirement_kind: str, requirement_summary: str, reason: dict[str, Any]) -> dict[str, Any]:
+    return {"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_topic_id, "prerequisite_topic_id": prerequisite_topic_id, "requirement_kind": requirement_kind, "requirement_summary": requirement_summary, "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": _canonical_json(reason)}
+
+
 def retained_checkpoint_identities(records: dict[str, list[dict[str, Any]]]) -> set[str]:
     """Return snapshot identities retained by active accepted dependency bases."""
     retained: set[str] = set()
@@ -248,7 +252,7 @@ def _validate_new_edge(records: dict[str, list[dict[str, Any]]], dependent: str,
     if kind not in KINDS or not isinstance(summary, str) or not summary or len(summary.encode("utf-8")) > 4096:
         raise ProtocolError("invalid_request", "topic dependency requirement is invalid")
     copied = [dict(item) for item in records["Topic Dependencies"] if item["dependency_id"] != replacing]
-    copied.append({"dependency_id": "DEP-probe", "record_revision": 1, "dependent_topic_id": dependent, "prerequisite_topic_id": prerequisite, "requirement_kind": kind, "requirement_summary": summary, "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": _canonical_json({"kind": "probe"})})
+    copied.append(_new_dependency_record(dependency_id="DEP-probe", dependent_topic_id=dependent, prerequisite_topic_id=prerequisite, requirement_kind=kind, requirement_summary=summary, reason={"kind": "probe"}))
     try:
         _validate_dependency_records({**records, "Topic Dependencies": copied})
     except ProtocolError as error:
@@ -279,7 +283,7 @@ def prepare_initial_dependencies(
             raise ProtocolError("invalid_request", "initial dependency endpoint is invalid")
         _validate_new_edge(records, dependent, prerequisite, item["requirement_kind"], item["requirement_summary"])
         seed = _sha256(_canonical_json({"handoff_id": handoff_id, "index": index}).encode("utf-8"))[:32]
-        record = {"dependency_id": f"DEP-{seed}", "record_revision": 1, "dependent_topic_id": dependent, "prerequisite_topic_id": prerequisite, "requirement_kind": item["requirement_kind"], "requirement_summary": item["requirement_summary"], "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": _canonical_json({"kind": "initial-handoff", "handoff_id": handoff_id, "ledger_revision": ledger_revision})}
+        record = _new_dependency_record(dependency_id=f"DEP-{seed}", dependent_topic_id=dependent, prerequisite_topic_id=prerequisite, requirement_kind=item["requirement_kind"], requirement_summary=item["requirement_summary"], reason={"kind": "initial-handoff", "handoff_id": handoff_id, "ledger_revision": ledger_revision})
         records["Topic Dependencies"].append(record)
         created.append({key: record[key] for key in ("dependency_id", "record_revision", "dependent_topic_id", "prerequisite_topic_id", "requirement_kind", "requirement_summary", "gate_state")})
     return sorted(created, key=lambda item: item["dependency_id"])
@@ -302,7 +306,7 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
         if action == "create":
             if any(request[key] is not None for key in {"dependency_id", "expected_dependency_revision"}): raise ProtocolError("invalid_request", "create must not name a dependency revision")
             _validate_new_edge(records, request["actor_topic_id"], request["prerequisite_topic_id"], request["requirement_kind"], request["requirement_summary"])
-            dep = {"dependency_id": _dependency_id(request["idempotency_key"]), "record_revision": 1, "dependent_topic_id": request["actor_topic_id"], "prerequisite_topic_id": request["prerequisite_topic_id"], "requirement_kind": request["requirement_kind"], "requirement_summary": request["requirement_summary"], "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": _canonical_json({"kind": "explicit-create", "ledger_revision": revision + 1})}
+            dep = _new_dependency_record(dependency_id=_dependency_id(request["idempotency_key"]), dependent_topic_id=request["actor_topic_id"], prerequisite_topic_id=request["prerequisite_topic_id"], requirement_kind=request["requirement_kind"], requirement_summary=request["requirement_summary"], reason={"kind": "explicit-create", "ledger_revision": revision + 1})
             records["Topic Dependencies"].append(dep)
         else:
             dep = _record_by_id(records["Topic Dependencies"], "dependency_id", request["dependency_id"], "dependency_id")
