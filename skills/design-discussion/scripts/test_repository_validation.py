@@ -80,6 +80,50 @@ class RepositoryValidationTests(unittest.TestCase):
         ):
             self.assertIn(marker, normalized_worktree_execution)
 
+    def test_stage_three_intakes_execution_results_before_declaring_completion(self) -> None:
+        guided = (
+            REPOSITORY / "skills/guided-implementation/SKILL.md"
+        ).read_text(encoding="utf-8")
+        execution = (
+            REPOSITORY
+            / "skills/guided-implementation/references/execution-protocol.md"
+        ).read_text(encoding="utf-8")
+        originating = (
+            REPOSITORY
+            / "skills/guided-implementation/references/originating-task-protocol.md"
+        ).read_text(encoding="utf-8")
+        normalized_guided = " ".join(guided.split())
+        normalized_execution = " ".join(execution.split())
+        normalized_originating = " ".join(originating.split())
+
+        self.assertIn(
+            "A platform terminal result ends one execution turn; it does not complete Stage 3",
+            normalized_originating,
+        )
+        for result_type in ("candidate", "checkpoint", "blocked", "no-progress"):
+            self.assertIn(f"`{result_type}`", normalized_originating)
+        for marker in (
+            "exact HEAD before and after the turn",
+            "ordinary continuation, not recovery",
+            "one corrective continuation",
+            "at most one active Dedicated Implementation Task",
+            "same Flow Worktree and current verified clean HEAD",
+        ):
+            self.assertIn(marker, normalized_originating)
+        for marker in (
+            "结果类型：<candidate | checkpoint | blocked>",
+            "当前 HEAD：<commit>",
+            "已完成：<completed scope>",
+            "剩余：<remaining scope | none>",
+            "阻塞：<specific decision gap | none>",
+        ):
+            self.assertIn(marker, execution)
+        self.assertIn(
+            "at most one active dedicated implementation task",
+            normalized_guided.casefold(),
+        )
+        self.assertNotIn("连续两次恢复", guided + execution + originating)
+
     def test_stage_three_uses_executable_thread_settings_verification(self) -> None:
         execution = (
             REPOSITORY

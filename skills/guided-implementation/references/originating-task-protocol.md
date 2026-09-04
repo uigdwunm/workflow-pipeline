@@ -1,8 +1,8 @@
 # Originating Task Protocol
 
-The originating task binds the Flow Worktree, launches one dedicated task,
-independently reviews its committed candidate, and passes the retained flow to
-Stage 4. It does not implement code.
+The originating task binds the Flow Worktree, keeps at most one active Dedicated
+Implementation Task, independently reviews its committed candidate, and passes
+the retained flow to Stage 4. It does not implement code.
 
 ## Launch
 
@@ -29,6 +29,62 @@ changes, explicit out-of-scope items, documentation boundary and
 remote-authority boundary in the launch prompt. Do not launch while a material
 product, scope, behavior, architecture, compatibility, data, or testing-seam
 decision remains unresolved.
+
+## Intake
+
+A platform terminal result ends one execution turn; it does not complete Stage
+3. Before acting on each result, the Originating Task records the exact HEAD
+before and after the turn, verifies the Worktree Binding and Git state, and
+classifies the result:
+
+- `candidate`: the confirmed scope is complete, the exact HEAD is a clean
+  committed candidate, focused and full checks are reported, and no planned
+  work remains.
+- `checkpoint`: planned work remains and the exact HEAD advanced to clean,
+  committed, in-scope progress.
+- `blocked`: a specific implementation-authority decision, changed protected
+  source, or evidenced technical condition prevents the next edit. The amount
+  of remaining work is not a blocker.
+- `no-progress`: planned work remains, no specific blocker was reported, and
+  the exact HEAD and clean worktree are unchanged.
+
+Route a `candidate` to Accept. Continue a `checkpoint` in the same Dedicated
+Implementation Task and worktree from the exact current HEAD and remaining
+scope; this is ordinary continuation, not recovery. Route a material `blocked`
+decision to the user and return an ordinary technical condition within the
+confirmed scope to the same Dedicated Implementation Task.
+
+For `no-progress`, send one corrective continuation to the same task. Name the
+next dependency-ready Ticket or exact remaining implementation slice and state
+that its prior terminal result did not satisfy Stage 3. If the next result is
+again `no-progress`, classify that executor as stalled; do not keep issuing
+continuations to it.
+
+Maintain at most one active Dedicated Implementation Task. Before proposing a
+successor for a stalled executor, require its terminal result, stop tracking it,
+reverify the same Worktree Binding and current verified clean HEAD, and confirm
+that no protected source changed. Emit:
+
+```text
+流程异常：需要用户决策
+异常类型：实现任务无进展
+当前阶段：3实现
+原专用任务：<exact task identity>
+当前检查点：<verified clean HEAD>
+已完成：<committed scope>
+未完成：<remaining scope>
+阻塞检查：未发现需要用户决策的具体阻塞
+建议：在同一 Flow Worktree 和当前检查点创建一个替代实现任务
+确认后行为：停止跟踪原任务；替代任务先检查已有提交，再继续剩余范围；不创建替代 Flow Worktree
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
+```
+
+After confirmation, launch one successor with the original authority boundary,
+the exact completed and remaining scope, and the same Flow Worktree and current
+verified clean HEAD. The successor inspects existing commits before editing.
+This exception replaces only a terminal stalled executor; ordinary
+continuation and remediation stay with the same task. A changed or dirty Git
+state is a separate anomaly and must be resolved before launch.
 
 ## Accept
 

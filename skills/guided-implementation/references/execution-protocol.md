@@ -46,7 +46,26 @@ Implementation commits contain only code, tests and required implementation
 artifacts; report documentation paths and intended updates to the originating
 task for Stage 4 instead of editing or committing them here.
 
-Before reporting a candidate:
+Before ending any execution turn, report one result block:
+
+```text
+结果类型：<candidate | checkpoint | blocked>
+当前 HEAD：<commit>
+已完成：<completed scope>
+剩余：<remaining scope | none>
+验证：<focused and full checks | checks run for this checkpoint>
+阻塞：<specific decision gap | none>
+```
+
+Use `candidate` only after all confirmed work is complete and the clean exact
+HEAD has focused and full verification. Use `checkpoint` for clean committed
+in-scope progress when planned work remains; the Originating Task will continue
+the same task from that HEAD. Use `blocked` only for a concrete condition that
+prevents the next edit and identify the decision or evidence required to clear
+it. A large remaining scope or the absence of a final candidate is unfinished
+work, not a blocker.
+
+Before reporting a `candidate`:
 
 1. require a clean worktree;
 2. run focused and full checks;

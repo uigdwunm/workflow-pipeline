@@ -1,6 +1,6 @@
 ---
 name: guided-implementation
-description: Use when the user explicitly invokes $guided-implementation with a self-contained implementation request, unambiguously confirms a valid $solution-design handoff, continues from its verified continuous-flow handoff, retries a retained worktree, or the originating task receives the dedicated implementation task's terminal result. Create or reuse one verified Flow Worktree, run native $implement and $tdd there, review the committed candidate, and retain it for stage 4.
+description: Use when the user explicitly invokes $guided-implementation with a self-contained implementation request, unambiguously confirms a valid $solution-design handoff or Stage-3 recovery action, continues from its verified continuous-flow handoff, retries a retained worktree, or the originating task receives a dedicated implementation task result. Create or reuse one verified Flow Worktree, run native $implement and $tdd there, review the committed candidate, and retain it for stage 4.
 ---
 
 # 3实现
@@ -19,11 +19,13 @@ Interpret user replies through
 
 - Accept an explicit `$guided-implementation` invocation, an unambiguous
   stepwise or continuous confirmation replying to a valid Phase-2 success
-  footer, that footer's verified same-turn continuous handoff, or an
-  unambiguous retry request (including `$guided-implementation 重试`) in the
-  same task after this Skill's immediately preceding retained-worktree footer.
+  footer, an unambiguous confirmation replying to this Skill's immediately
+  preceding stalled-task replacement block, that footer's verified same-turn
+  continuous handoff, or an unambiguous retry request (including
+  `$guided-implementation 重试`) in the same task after this Skill's immediately
+  preceding retained-worktree footer.
   On retry, verify the recorded binding and current Git state before acting;
-  continue that worktree and never create a replacement.
+  continue that worktree and never create a replacement Flow Worktree.
 - Track one `流程模式`. An explicit standalone invocation or ordinary
   unambiguous affirmation uses `逐阶段确认`; a clear request for automatic
   remaining execution or a verified upstream footer carrying
@@ -131,10 +133,10 @@ claim, queue entry, or mutable run record.
 An inherited entry must reuse its Flow Worktree. An invalid claimed binding
 must not silently become a standalone entry or create a replacement.
 
-Create one dedicated implementation task in that returned worktree. Pass the
-binding, inherited planning sources and ordered Tickets or the fixed standalone
-brief, testing basis, flow mode and exact authority boundaries in its prompt.
-The dedicated task must call
+Keep at most one active dedicated implementation task. Launch the initial task
+in the returned worktree and pass the binding, inherited planning sources and
+ordered Tickets or the fixed standalone brief, testing basis, flow mode and
+exact authority boundaries in its prompt. The dedicated task must call
 `verify-worktree` with its actual platform working directory before substantive
 work.
 
@@ -168,6 +170,9 @@ work.
   integration and cleanup. The candidate, review, and remediation
   contract is authoritative in
   [references/originating-task-protocol.md](references/originating-task-protocol.md).
+- A dedicated task result ends one execution turn, not Stage 3. The Originating
+  Task applies the result-intake classifications and continuation rules in the
+  authoritative originating-task protocol before review or recovery.
 
 If the target branch advances, inspect the committed changes since the binding
 base. A changed source path stops for user direction. Otherwise merge the new
@@ -186,8 +191,9 @@ and review evidence to Stage 4. Stage 4 owns the final publication and cleanup.
 
 For a Stage-3 failure with the worktree retained, emit the retained-worktree
 footer from `worktree-execution.md` with recovery command
-`$guided-implementation 重试`. A successful Stage-3 handoff is not a failure and
-uses the success footer below.
+`$guided-implementation 重试`. A stalled dedicated task awaiting replacement
+uses the decision block in `originating-task-protocol.md` instead. A successful
+Stage-3 handoff is not a failure and uses the success footer below.
 
 After success, emit a complete Stage-4 handoff:
 
