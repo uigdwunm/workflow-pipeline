@@ -19,6 +19,16 @@ import validate_repository as REPOSITORY_VALIDATION
 
 
 class RepositoryValidationTests(unittest.TestCase):
+    def test_dedicated_grilling_split_proposal_contract_is_fixed(self) -> None:
+        protocol = (REPOSITORY / "skills/problem-framing/references/dedicated-grilling-protocol.md").read_text(encoding="utf-8")
+        for marker in (
+            "Fixed carrier split proposal", "proposal_id", "source_topic_id",
+            "source_disposition", "All seven keys are required",
+            "authenticated carrier return/intake", "separate task-creation confirmation before",
+            "The carrier is information-only", "0讨论",
+        ):
+            self.assertIn(marker, protocol)
+
     def test_topic_dependency_wrapper_contracts_are_shipped(self) -> None:
         discussion = (REPOSITORY / "skills/design-discussion/SKILL.md").read_text(encoding="utf-8")
         framing = (REPOSITORY / "skills/problem-framing/SKILL.md").read_text(encoding="utf-8")

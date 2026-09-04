@@ -26,6 +26,11 @@ Phase 2 and later do not consult Topic Dependencies.
 The Phase Source Task owns split preparation and creation confirmations. A
 dedicated grilling carrier may return only a bounded proposal; it never
 prepares, releases, or changes Topic Dependencies.
+Its authenticated return contains the exact seven fields defined by
+[`../../problem-framing/references/dedicated-grilling-protocol.md`](../../problem-framing/references/dedicated-grilling-protocol.md); the source
+restates that payload and obtains both normal confirmations before preparing,
+creating, binding, or cancelling a handoff. A carrier may do none of those
+operations, and every accepted split starts a new topic in `0讨论`.
 
 ## Dependency update consumer contract
 
