@@ -407,14 +407,15 @@ def _phase_result_candidates(
 
 
 CANDIDATE_BUILDERS = {
-    "confirmed-decision": _confirmed_decision_candidates,
-    "phase-0-checkpoint": _checkpoint_candidates,
-    "phase-1-result": _phase_result_candidates,
+    "confirmed": _confirmed_decision_candidates,
+    "checkpoint": _checkpoint_candidates,
+    "phase_result": _phase_result_candidates,
 }
 
 
 def _authority_handler(kind: str) -> dict[str, Any]:
-    return {**authority_descriptor(kind), "candidate": CANDIDATE_BUILDERS[kind]}
+    descriptor = authority_descriptor(kind)
+    return {**descriptor, "candidate": CANDIDATE_BUILDERS[descriptor["candidate_key"]]}
 
 
 def _candidates(records: dict[str, list[dict[str, Any]]], dependency: dict[str, Any]) -> list[dict[str, Any]]:
@@ -429,7 +430,7 @@ def has_current_authority(
     return any(_candidates(records, {
         "prerequisite_topic_id": topic_id,
         "requirement_kind": kind,
-    }) for kind in CANDIDATE_BUILDERS)
+    }) for kind in KINDS)
 
 
 def _normalize_authority_selection(

@@ -9,9 +9,9 @@ from typing import Any, Callable
 
 
 AUTHORITY_DESCRIPTORS = {
-    "confirmed-decision": {"identity_field": None, "requires_decisions": True},
-    "phase-0-checkpoint": {"identity_field": "checkpoint_id", "requires_decisions": False},
-    "phase-1-result": {"identity_field": "result_id", "requires_decisions": False},
+    "confirmed-decision": {"candidate_key": "confirmed", "identity_field": None, "requires_decisions": True},
+    "phase-0-checkpoint": {"candidate_key": "checkpoint", "identity_field": "checkpoint_id", "requires_decisions": False},
+    "phase-1-result": {"candidate_key": "phase_result", "identity_field": "result_id", "requires_decisions": False},
 }
 KINDS = frozenset(AUTHORITY_DESCRIPTORS)
 RECORD_FIELDS = {
