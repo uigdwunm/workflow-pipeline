@@ -140,15 +140,13 @@ def verify_artifact_integrity(
             identity, ref = checkpoint["published_identity"], checkpoint["checkpoint_ref"]
             if not isinstance(identity, str) or not isinstance(ref, str) or git("rev-parse", "--verify", ref).decode("ascii").strip() != identity or git("cat-file", "-t", identity).decode("ascii").strip() != "commit":
                 return None
-            metadata = git_commit_metadata(git("cat-file", "-p", identity).decode("utf-8"))
-            if metadata["parents"] != [checkpoint.get("replacement_parent") or checkpoint["base_commit"]]:
+            if git_checkpoint_matches(
+                checkpoint, identity,
+                expected_parent=checkpoint.get("replacement_parent"),
+                git=git, sha256=sha256,
+            ) is None:
                 return None
-            paths, blobs, digests = checkpoint_artifact_fields(checkpoint)
-            expected = checkpoint_trailers(checkpoint, digests, paths)
-            if metadata["trailers"] != expected or sorted(git("diff-tree", "--no-commit-id", "--name-only", "-r", identity).decode("utf-8").splitlines()) != paths:
-                return None
-            if any(git("rev-parse", f"{identity}:{path}").decode("ascii").strip() != blobs[path] or sha256(git("cat-file", "blob", blobs[path])) != digests[path] for path in paths):
-                return None
+            _, _, digests = checkpoint_artifact_fields(checkpoint)
             document_digests = digests
         elif storage_kind == "non-git":
             snapshot_bytes = read_regular(Path(checkpoint["snapshot_path"]), "checkpoint snapshot")
