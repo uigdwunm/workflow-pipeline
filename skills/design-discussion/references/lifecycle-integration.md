@@ -51,10 +51,12 @@ prior attempt is eligible. Use `read-phase-run` to inspect one run and
 return a topic to phase 0.
 
 Phase 1 always updates the existing topic document through its `DW-*` protocol.
-Phase 2 treats that checkpoint as read-only and owns
-only Spec, ADR, Tickets and its planning commit. Phase 3 accepts only Phase-2
-planning artifacts and a verified `2→3` handoff; Phase 1 never routes directly
-to implementation. Pending impacts, non-latest checkpoints or any evidence
+Phase 2 treats that checkpoint as read-only and owns only Spec, ADR, Tickets and
+its planning commit. A discussion-attached Phase 3 accepts only Phase-2 planning
+artifacts and a verified `2→3` handoff; Phase 1 never routes directly to
+implementation. An explicit standalone Stage-3 invocation is unattached, uses
+its fixed implementation brief, and does not read, mutate, or advance the
+discussion lifecycle. Pending impacts, non-latest checkpoints or any evidence
 drift stop preparation or activation.
 
 Continuous flow has one origin: a clear natural-language request for continuous

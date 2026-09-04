@@ -5,7 +5,7 @@
 0. **0讨论 — `$design-discussion`（可选）**：为需要跨对话延续的设计讨论维护可验证话题、文档与检查点。
 1. **1拷问 — `$problem-framing`**：创建或继承唯一需求草案，通过追问持续更新并冻结目标、范围、行为契约与验收条件。
 2. **2方案 — `$solution-design`**：创建 Flow Worktree，把已确认需求转成 Spec、ADR 和必要的 Tickets，并把方案合并到目标分支。
-3. **3实现 — `$guided-implementation`**：只依据2方案产物并复用其 Flow Worktree，完成实现与验收并保留候选。
+3. **3实现 — `$guided-implementation`**：依据2方案产物复用其 Flow Worktree，或根据明确、完整的显式请求独立创建一个，完成实现与验收并保留候选。
 4. **4归档 — `$change-closure`**：继续复用 Flow Worktree，对齐归档文档，统一合并实现与归档并清理。
 
 五个 Skill 必须以同一版本安装。跨阶段继承模型与推理强度时统一使用
@@ -53,7 +53,7 @@ npx skills@latest add uigdwunm/workflow-pipeline
 $problem-framing 帮我明确这次需求
 ```
 
-需要持久化设计上下文时可显式从 `$design-discussion` 开始，并按验证后的路由进入 1 或 2；也可直接从 1 开始。独立进入 2 时，必须提供按仓库内路径、Git commit 和 SHA-256 验证的已冻结需求草案；前文聊天或摘要不能代替该草案。3实现必须来自已验证的2方案交接。权威路由与恢复规则只在 [生命周期集成引用](skills/design-discussion/references/lifecycle-integration.md) 中维护。阶段完成后，可用明确的自然语言同意逐阶段继续，或明确要求在无需用户决策时连续执行剩余阶段；确认绑定的是最近披露的单一动作，不是固定口令。
+需要持久化设计上下文时可显式从 `$design-discussion` 开始，并按验证后的路由进入 1 或 2；也可直接从 1 开始。独立进入 2 时，必须提供按仓库内路径、Git commit 和 SHA-256 验证的已冻结需求草案；前文聊天或摘要不能代替该草案。3实现既可来自已验证的2方案交接，也可由明确且完整的显式实现请求独立进入；后者不推进讨论阶段，也不补造 Spec。权威路由与恢复规则只在 [生命周期集成引用](skills/design-discussion/references/lifecycle-integration.md) 中维护。阶段完成后，可用明确的自然语言同意逐阶段继续，或明确要求在无需用户决策时连续执行剩余阶段；确认绑定的是最近披露的单一动作，不是固定口令。
 
 0讨论不会自动创建实现 worktree，也不会扩大远程写入、付费、破坏性操作或其它外部副作用权限；这些动作仍按原阶段规则逐项确认。
 

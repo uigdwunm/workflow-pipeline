@@ -18,7 +18,7 @@ Interpret user replies through
 For a Stage-3 transition, require the exact repository, target branch, accepted
 candidate, planning merge or standalone base commit, inherited Flow Worktree
 binding, verification summary, review result, implementation path scope,
-protected requirement-source paths, and closure-owned document paths. Verify
+protected requirement-source paths or `none`, and closure-owned document paths. Verify
 from Git that the clean inherited Flow Worktree `HEAD` is the accepted candidate
 and record the target's current `HEAD`; the target-advance path below applies
 when it differs from the handed-off publication base.

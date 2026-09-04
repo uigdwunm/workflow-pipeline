@@ -1,6 +1,6 @@
 # ADR-0004: Require planning before implementation
 
-Status: Accepted
+Status: Superseded by ADR-0005
 Supersedes: ADR-0003
 
 Phases 0 and 1 maintain exactly one current requirement document. Phase 2 reads

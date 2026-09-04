@@ -1,6 +1,6 @@
 ---
 name: guided-implementation
-description: Use when the user unambiguously confirms a valid $solution-design handoff, continues from its verified continuous-flow handoff, invokes $guided-implementation 重试 after this Skill's retained-worktree footer, or the originating task receives the dedicated implementation task's terminal result. Require and reuse the verified Phase-2 Flow Worktree and planning artifacts, run native $implement and $tdd there, and retain the accepted candidate for stage 4.
+description: Use when the user explicitly invokes $guided-implementation with a self-contained implementation request, unambiguously confirms a valid $solution-design handoff, continues from its verified continuous-flow handoff, retries a retained worktree, or the originating task receives the dedicated implementation task's terminal result. Create or reuse one verified Flow Worktree, run native $implement and $tdd there, review the committed candidate, and retain it for stage 4.
 ---
 
 # 3实现
@@ -17,32 +17,68 @@ Interpret user replies through
 
 ## Entry
 
-- Accept an unambiguous stepwise or continuous confirmation replying to a valid
-  Phase-2 success footer, that footer's verified same-turn continuous handoff,
-  or an unambiguous retry request (including `$guided-implementation 重试`) in the same task after this Skill's
-  immediately preceding retained-worktree footer. A standalone invocation with
-  no verified Phase-2 handoff does not enter implementation. On retry,
-  verify the recorded binding and current Git state before acting; continue that
-  worktree and never create a replacement.
-- Track one `流程模式`. An ordinary unambiguous affirmation uses `逐阶段确认`;
-  a clear request for automatic remaining execution or a verified upstream footer carrying
+- Accept an explicit `$guided-implementation` invocation, an unambiguous
+  stepwise or continuous confirmation replying to a valid Phase-2 success
+  footer, that footer's verified same-turn continuous handoff, or an
+  unambiguous retry request (including `$guided-implementation 重试`) in the
+  same task after this Skill's immediately preceding retained-worktree footer.
+  On retry, verify the recorded binding and current Git state before acting;
+  continue that worktree and never create a replacement.
+- Track one `流程模式`. An explicit standalone invocation or ordinary
+  unambiguous affirmation uses `逐阶段确认`; a clear request for automatic
+  remaining execution or a verified upstream footer carrying
   `流程模式：连续执行后续全部流程` uses `连续执行后续全部流程`. Preserve it through
   launch, remediation, retry, completion and the Stage-4 handoff.
-- Resolve the target branch, committed Spec/ADR/Ticket paths, protected
-  requirement-draft path, and allowed implementation paths. Every protected source path must exist at the
-  implementation scope base.
-- Verify and reuse the Flow Worktree supplied by Stage 2. If the binding is
-  missing, invalid, or points elsewhere, stop as an anomaly and do not create a
-  replacement. Retry always reuses the retained binding.
+- For an inherited entry, resolve the target branch, committed Spec/ADR/Ticket
+  paths, protected requirement-draft path, and allowed implementation paths.
+  Every protected source path must exist at the implementation scope base.
+- Verify and reuse the Flow Worktree supplied by Stage 2. If an inherited
+  binding is missing, invalid, or points elsewhere, stop as an anomaly and do
+  not create a replacement. A standalone entry creates one Flow Worktree only
+  after its implementation brief passes the gate below. Retry always reuses
+  the retained binding.
 - Uncommitted primary-checkout files stay outside the Flow Worktree and are
   never copied, staged, stashed, or removed.
 - The originating task supervises and reviews. It never edits implementation
   files.
 
+## Establish standalone authority
+
+For an explicit invocation without a Phase-2 handoff, inspect the repository
+read-only and freeze one standalone implementation brief from the user's exact
+request plus repository-resolved facts. The brief must identify the target,
+observable result, included and excluded scope, failure semantics, acceptance
+checks, testing seam, and allowed implementation paths. Repository conventions
+may resolve ordinary technical details; they may not supply a missing product,
+scope, behavior, architecture, compatibility, data, or testing decision.
+
+Enter standalone only when the brief is self-contained and no material decision
+remains. Preserve the exact request and fixed brief in the dedicated task launch
+and both review axes; they are the complete implementation authority. Create no
+requirement, Spec, ADR, or Ticket merely to satisfy this route.
+
+Standalone entry is always discussion-unattached and performs no discussion
+discovery or lifecycle operation. If the invocation claims an attached topic or
+Phase-2 handoff but its evidence is missing or invalid, stop as an inherited-flow
+anomaly instead of discarding that claim and continuing standalone.
+
+If the gate fails, make no write and create no Flow Worktree or task. Emit:
+
+```text
+进入结果：未进入
+当前阶段：3实现
+入口类型：standalone
+缺失条件：<the unresolved target, behavior, scope, failure, acceptance, or testing fact>
+影响：未创建 Flow Worktree，未启动专用实现任务，未修改仓库
+建议：<use $problem-framing when requirements are unresolved | use $solution-design when engineering design is unresolved>
+继续方式：补充缺失条件后重新显式调用 `$guided-implementation`，或进入建议阶段
+```
+
 ## Enforce the confirmed implementation boundary
 
-Treat the committed Spec, ADR, Tickets, and exact Stage-2 handoff as the
-complete implementation authority. Keep the requirement draft protected and
+Treat either the committed Spec/ADR/Tickets and exact Stage-2 handoff, or the
+fixed standalone implementation brief, as the complete implementation
+authority. For an inherited flow, keep the requirement draft protected and
 read-only, but do not use it to add or reinterpret implementation scope.
 Implement a robust, coherent result
 inside that boundary; the goal is not merely the smallest diff. Do not infer
@@ -61,9 +97,10 @@ instead of implementing them or turning them into blocking questions.
 
 If an unexpected implementation fact makes a material expansion or unconfirmed
 behavior change unavoidable, stop before the affected edit and return the exact
-gap to the originating task. Treat the question as a planning omission, obtain
-an explicit user decision through the originating task, and resume only with
-updated authority. Never make the change first and disclose it at completion.
+gap to the originating task. Treat the question as an implementation-authority
+gap, obtain an explicit user decision through the originating task, and resume
+only with updated authority. Never make the change first and disclose it at
+completion.
 
 ## Attach a discussion Phase Run when present
 
@@ -78,30 +115,34 @@ verified retained Flow Worktree it calls
 must prove the same active, open topic is owned by the current task, has no
 pending document write and is at `current_phase: 3`. Carry that exact discussion
 identity, binding, Phase Result and the returned ledger/topic revisions in the
-Stage-4 handoff. An unattached Stage-2 handoff creates no discussion Phase Run,
-performs none of these calls and carries `none` for every discussion field.
+Stage-4 handoff. An unattached Stage-2 handoff or standalone Stage-3 entry
+creates no discussion Phase Run, performs none of these calls and carries
+`none` for every discussion field.
 
 ## Bind the Flow Worktree
 
 For a valid Stage-2 handoff, call `verify-worktree` with its exact binding and
 use that Flow Worktree without creating another one. The worktree must be clean
-at the reported planning merge commit. Stage 3 never calls `start-worktree` and
-never creates a lease, claim, queue entry, or mutable run record.
+at the reported planning merge commit. For a qualified standalone entry, call
+`start-worktree` once from the exact target `HEAD`; record that commit as the
+standalone base and implementation scope base. Neither route creates a lease,
+claim, queue entry, or mutable run record.
 
-Every entry must reuse the inherited Flow Worktree. An invalid binding must not
-silently create a replacement.
+An inherited entry must reuse its Flow Worktree. An invalid claimed binding
+must not silently become a standalone entry or create a replacement.
 
 Create one dedicated implementation task in that returned worktree. Pass the
-binding, planning sources, ordered Tickets, testing basis, flow mode and exact
-authority boundaries in its prompt. The dedicated task must call
+binding, inherited planning sources and ordered Tickets or the fixed standalone
+brief, testing basis, flow mode and exact authority boundaries in its prompt.
+The dedicated task must call
 `verify-worktree` with its actual platform working directory before substantive
 work.
 
 ## Implement and review
 
-- Read every Ticket completely, topologically sort `Blocked by`, preserve source
-  document order among simultaneously ready Tickets, and implement them in that
-  order.
+- When Tickets are present, read each completely, topologically sort `Blocked
+  by`, preserve source document order among simultaneously ready Tickets, and
+  implement them in that order.
 - Work only inside the verified worktree. Invoke the complete native
   `$implement` workflow, including `$tdd`, focused and full checks, typecheck,
   lint or build where applicable, and commit a clean candidate.
@@ -112,17 +153,19 @@ work.
 - Implementation commits contain no documentation. Commit only task-owned code,
   tests and required implementation artifacts. Report exact documentation paths
   and required updates as `待归档文档`; Stage 4 owns those edits and commits.
-- Do not modify the committed planning-source paths.
+- Do not modify committed planning-source paths. A standalone flow has none.
 - The dedicated task never asks the user directly. It resolves ordinary
   technical details from the confirmed sources and repository conventions. An
-  unexpected material decision is a planning gap: return it to the originating
-  task before the affected edit, and let that task obtain the user's explicit
-  decision. Review or test remediation returns to the same dedicated task and
-  worktree.
+  unexpected material decision is an implementation-authority gap: return it
+  to the originating task before the affected edit, and let that task obtain
+  the user's explicit decision. Review or test remediation returns to the same
+  dedicated task and worktree.
 - Local stage entry grants no push, pull request, deployment, release, tracker or
   other remote write. Each such action requires separate explicit authority.
-- The Originating Task owns `$code-review` and candidate acceptance. Stage 4
-  owns final integration and cleanup. The candidate, review, and remediation
+- The Originating Task owns `$code-review` and candidate acceptance. Its Spec
+  axis uses the published planning artifacts for an inherited flow and the
+  fixed implementation brief for a standalone flow. Stage 4 owns final
+  integration and cleanup. The candidate, review, and remediation
   contract is authoritative in
   [references/originating-task-protocol.md](references/originating-task-protocol.md).
 
@@ -136,8 +179,9 @@ Task handles its review under the authoritative role contract.
 
 After both review axes accept the exact clean candidate, Stage 3 does not merge
 the implementation into the target and does not remove the worktree or branch.
-It passes the retained Flow Worktree, candidate, planning merge commit,
-implementation and closure path scopes, protected requirement-source paths,
+It passes the retained Flow Worktree, candidate, planning merge or standalone
+base commit, implementation and closure path scopes, protected
+requirement-source paths,
 and review evidence to Stage 4. Stage 4 owns the final publication and cleanup.
 
 For a Stage-3 failure with the worktree retained, emit the retained-worktree
@@ -153,9 +197,9 @@ After success, emit a complete Stage-4 handoff:
 专用任务：<thread id and host id>
 目标仓库：<absolute repository path>
 目标分支：<target branch>
-实现依据：<committed source paths and commit>
+实现依据：<committed source paths and commit | fixed standalone implementation brief>
 实现提交：<candidate commit>
-方案合并提交：<planning merge commit>
+方案合并提交：<planning merge commit | standalone base commit>
 Flow Worktree：<exact retained binding>
 验证：<focused and full checks>
 审查：<Standards and Spec review result>

@@ -134,8 +134,9 @@ class RepositoryValidationTests(unittest.TestCase):
             "Flow Worktree：<exact retained binding at planning merge commit>",
             solution_templates,
         )
-        self.assertIn("reuse the inherited Flow Worktree", guided)
-        self.assertIn("Stage 3 never calls `start-worktree`", guided)
+        self.assertIn("An inherited entry must reuse its Flow Worktree", guided)
+        self.assertIn("For a qualified standalone entry, call", guided)
+        self.assertIn("`start-worktree` once", guided)
         self.assertIn("never create a replacement", guided)
         self.assertNotIn("calls `complete-worktree`", guided)
         self.assertIn("passes the retained Flow Worktree", guided)
@@ -230,7 +231,7 @@ class RepositoryValidationTests(unittest.TestCase):
             self.assertIn(marker, review)
         self.assertIn("整体复检：通过", closure[footer_start:])
 
-    def test_stage_three_requires_stage_two_planning(self) -> None:
+    def test_stage_three_supports_standalone_without_restoring_one_to_three(self) -> None:
         framing = (
             REPOSITORY / "skills/problem-framing/SKILL.md"
         ).read_text(encoding="utf-8")
@@ -242,11 +243,35 @@ class RepositoryValidationTests(unittest.TestCase):
             REPOSITORY
             / "skills/design-discussion/references/lifecycle-integration.md"
         ).read_text(encoding="utf-8")
+        originating = (
+            REPOSITORY
+            / "skills/guided-implementation/references/originating-task-protocol.md"
+        ).read_text(encoding="utf-8")
+        execution = (
+            REPOSITORY
+            / "skills/guided-implementation/references/execution-protocol.md"
+        ).read_text(encoding="utf-8")
+        worktree = (
+            REPOSITORY
+            / "skills/guided-implementation/references/worktree-execution.md"
+        ).read_text(encoding="utf-8")
+        adr = (
+            REPOSITORY
+            / "docs/adr/0005-allow-standalone-implementation.md"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("Phase 1 routes only to Phase 2", framing)
         self.assertNotIn("Route `1->3`", framing)
-        self.assertIn("Phase 3 accepts only Phase-2", lifecycle)
+        self.assertIn("discussion-attached Phase 3 accepts only Phase-2", lifecycle)
+        self.assertIn("explicit standalone Stage-3 invocation is unattached", lifecycle)
         self.assertNotIn("`1→3` wrapper run", lifecycle)
+        self.assertIn("## Establish standalone authority", guided)
+        self.assertIn("fixed standalone implementation brief", guided)
+        self.assertIn("进入结果：未进入", guided)
+        self.assertIn("For an explicit standalone entry", originating)
+        self.assertIn("qualified standalone Stage-3 entry", execution)
+        self.assertIn("standalone request", worktree)
+        self.assertIn("Supersedes: ADR-0004", adr)
         self.assertIn("lifecycle-integration.md", guided)
         for marker in (
             "`claim-phase-carrier`",

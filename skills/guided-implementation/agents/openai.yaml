@@ -1,6 +1,6 @@
 interface:
   display_name: "3实现"
-  short_description: "Implement, review, integrate, and clean one worktree"
-  default_prompt: "Use $guided-implementation only from a verified 2方案 handoff, reuse its Flow Worktree and committed planning artifacts, supervise and review one committed candidate there, and retain it for 4归档."
+  short_description: "Implement and review in one isolated Flow Worktree"
+  default_prompt: "Use $guided-implementation for an explicit self-contained implementation request or a verified 2方案 handoff, create or reuse one Flow Worktree, supervise and review one committed candidate there, and retain it for 4归档."
 policy:
   allow_implicit_invocation: true
