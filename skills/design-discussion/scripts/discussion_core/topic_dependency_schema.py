@@ -225,12 +225,18 @@ def _validate_ordinary_basis(
     if len(matches) != 1:
         error("state_corrupt", "topic dependency Phase Result authority is not retained")
     result = _object(matches[0].get("data_json"), "Phase Result data_json", error)
+    full_authority = result.get("decision_authority")
+    full_pairs = {
+        entry["decision_id"]: entry["sha256"]
+        for entry in full_authority
+    } if _decision_pairs(full_authority) else None
     if (
         result.get("topic_id") != item["prerequisite_topic_id"]
         or result.get("result_id") != authority["result_id"]
         or result.get("phase_run_id") != authority["phase_run_id"]
         or result.get("affected_decision_ids") != authority["affected_decision_ids"]
-        or result.get("decision_authority") != decisions
+        or full_pairs is None
+        or any(full_pairs.get(entry["decision_id"]) != entry["sha256"] for entry in decisions)
         or matches[0].get("record_revision") != authority["record_revision"]
     ):
         error("state_corrupt", "topic dependency Phase Result authority is incoherent")

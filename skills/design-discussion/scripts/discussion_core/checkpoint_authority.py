@@ -54,12 +54,12 @@ def checkpoint_trailers(checkpoint: dict[str, Any], digests: dict[str, str], pat
     }
 
 
-def current_checkpoint_artifact(
+def verify_artifact_integrity(
     checkpoint: dict[str, Any], *, topic_path: Path,
     sha256: Callable[[bytes], str], canonical_json: Callable[[Any], str],
     read_regular: Callable[[Path, str], bytes | None],
 ) -> dict[str, Any] | None:
-    """Return normalized published authority only when its artifact is current."""
+    """Verify immutable published bytes, returning unavailable for stale artifacts."""
     try:
         storage_kind = checkpoint.get("storage_kind")
         if storage_kind == "git":
@@ -102,11 +102,26 @@ def current_checkpoint_artifact(
             document_digests = snapshot["document_digests"]
         else:
             return None
-        topic_bytes = read_regular(topic_path, "topic document")
-        if topic_bytes is None or sha256(topic_bytes) not in document_digests.values():
-            return None
         return {"published_identity": checkpoint["published_identity"], "document_digests": document_digests}
     except CheckpointAuthorityCorrupt:
         raise
     except (KeyError, TypeError, ValueError, UnicodeDecodeError, subprocess.SubprocessError):
         return None
+
+
+def current_checkpoint_artifact(
+    checkpoint: dict[str, Any], *, topic_path: Path,
+    sha256: Callable[[bytes], str], canonical_json: Callable[[Any], str],
+    read_regular: Callable[[Path, str], bytes | None],
+) -> dict[str, Any] | None:
+    """Return a usable authority only when immutable bytes and live document agree."""
+    artifact = verify_artifact_integrity(
+        checkpoint, topic_path=topic_path, sha256=sha256,
+        canonical_json=canonical_json, read_regular=read_regular,
+    )
+    if artifact is None:
+        return None
+    topic_bytes = read_regular(topic_path, "topic document")
+    if topic_bytes is None or sha256(topic_bytes) not in artifact["document_digests"].values():
+        return None
+    return artifact

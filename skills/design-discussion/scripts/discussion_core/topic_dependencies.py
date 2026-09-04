@@ -15,7 +15,7 @@ from typing import Any
 from .checkpoint_authority import CheckpointAuthorityCorrupt, current_checkpoint_artifact
 
 from .state import (
-    ProtocolError, _canonical_json, _evolution_paths, _expect_keys,
+    ProtocolError, SHA256_RE, _canonical_json, _evolution_paths, _expect_keys,
     _expect_string, _flock_with_timeout, _idempotent_result, _inject_failure, _json_field,
     _load_records, _record_by_id, _require_regular_nosymlink, _sha256, _topic_snapshot, _validate_revisions,
     _validate_uuid4, _validated_string_list, _verify_topic_owner,
@@ -710,6 +710,9 @@ def _release_selection_from_basis(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
+    digest = request.get("release_set_sha256")
+    if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+        raise ProtocolError("invalid_request", "release_set_sha256 must be a SHA-256 digest")
     _, ledger_path, _, lock_path, owner_ref = _request_context(request, {"release_set", "release_set_sha256"})
     with lock_path.open("a+b") as stream:
         _flock_with_timeout(stream)

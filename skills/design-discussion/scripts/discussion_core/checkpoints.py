@@ -19,6 +19,7 @@ from .checkpoint_authority import (
     checkpoint_artifact_fields,
     checkpoint_trailers,
     current_checkpoint_artifact,
+    verify_artifact_integrity,
 )
 from .state import (
     ProtocolError,
@@ -1684,7 +1685,7 @@ def _validate_checkpoints(
                 except ProtocolError:
                     return None
             try:
-                current = current_checkpoint_artifact(
+                current = verify_artifact_integrity(
                     checkpoint, topic_path=topic_path, sha256=_sha256,
                     canonical_json=_canonical_json, read_regular=artifact_bytes,
                 )
