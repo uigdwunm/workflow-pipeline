@@ -61,3 +61,32 @@ class TopicDependencyCliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(rejected["error"]["code"], "topic_dependency_phase_conflict")
         self.assertEqual(ledger.read_bytes(), before)
+
+    def test_ticket07_dependency_request_type_and_summary_bounds_via_cli(self) -> None:
+        project = self.fixture.make_project("ticket07-dependency-request-bounds", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        child = self.fixture.prepare_child_handoff(topic)
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        common = {
+            "expected_revision": 2,
+            "expected_topic_revision": 1,
+            "action": "create",
+            "prerequisite_topic_id": child["target_topic_id"],
+            "requirement_kind": "confirmed-decision",
+            "requirement_summary": "The child provides the authority.",
+        }
+        for field, value in (
+            ("action", None), ("action", []), ("action", {}),
+            ("prerequisite_topic_id", []), ("prerequisite_topic_id", {}),
+            ("requirement_kind", None), ("requirement_kind", []),
+            ("requirement_summary", "x" * 4097),
+        ):
+            with self.subTest(field=field, value_type=type(value).__name__):
+                request = self.fixture.evolution_request(
+                    topic, operation="update-topic-dependency", **{**common, field: value}
+                )
+                code, rejected, _ = self.fixture.run_cli(request)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "invalid_request")
+                self.assertEqual(ledger.read_bytes(), before)
