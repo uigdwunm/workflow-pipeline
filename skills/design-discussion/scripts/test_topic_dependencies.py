@@ -412,6 +412,19 @@ class TopicDependencyCliTests(TopicDependencyScenarioTest):
         dependency = next(item for item in read["topic_dependencies"] if item["dependency_id"] == dependency_id)
         self.assertEqual(dependency["gate_state"], "closed")
         self.assertEqual(dependency["accepted_basis_json"], historical_basis)
+        code, cancelled, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=4,
+            expected_topic_revision=1, action="cancel", dependency_id=dependency_id,
+            expected_dependency_revision=3,
+        ))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(cancelled["state"], "cancel")
+        code, read, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="read-topic"))
+        self.assertEqual(code, 0, stderr)
+        dependency = next(item for item in read["topic_dependencies"] if item["dependency_id"] == dependency_id)
+        self.assertEqual(dependency["relation_state"], "cancelled")
+        self.assertEqual(dependency["accepted_basis_json"], historical_basis)
 
     def test_ticket07_phase2_absorb_without_releases_skips_authority_checks_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-phase2-empty-absorb", git=False)
