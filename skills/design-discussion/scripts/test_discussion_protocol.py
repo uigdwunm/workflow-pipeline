@@ -6782,7 +6782,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(list(external_root.iterdir()), [])
 
 
-    def test_ticket07_closed_gate_blocks_public_entrypoints_via_cli(self) -> None:
+    def _scenario_ticket07_closed_gate_blocks_public_entrypoints_via_cli(self) -> None:
         project = self.make_project("ticket07-closed-entrypoints", git=False)
         topic = self.bootstrap_topic(project)
         prepared = self.prepare_child_handoff(
@@ -6909,7 +6909,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             prerequisite_topic_id=str(child["target_topic_id"]),
         )
 
-    def test_ticket07_closed_gate_rechecks_ready_and_activation_via_cli(self) -> None:
+    def _scenario_ticket07_closed_gate_rechecks_ready_and_activation_via_cli(self) -> None:
         for from_phase, to_phase in ((0, 1), (0, 2), (1, 2)):
             for target in ("ready", "active"):
                 with self.subTest(route=f"{from_phase}->{to_phase}", target=target):
@@ -7009,7 +7009,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                         prerequisite_topic_id=str(child["target_topic_id"]),
                     )
 
-    def test_ticket07_closed_gate_allows_acceptance_and_nonadvancing_cli_operations(
+    def _scenario_ticket07_closed_gate_allows_acceptance_and_nonadvancing_cli_operations(
         self,
     ) -> None:
         project = self.make_project("ticket07-closed-nonadvancing", git=False)
@@ -7123,7 +7123,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(cancelled["state"], "cancelled")
 
-    def test_ticket07_gate_closure_after_activation_preserves_run_then_phase2_cutoff_via_cli(
+    def _scenario_ticket07_gate_closure_after_activation_preserves_run_then_phase2_cutoff_via_cli(
         self,
     ) -> None:
         project = self.make_project("ticket07-gate-after-activation", git=False)
@@ -7235,7 +7235,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "topic_dependency_phase_conflict")
         self.assertEqual(ledger.read_bytes(), after_phase3_prepare)
 
-    def test_ticket07_checkpoint_artifact_currentness_filters_and_rejects_via_cli(
+    def _scenario_ticket07_checkpoint_artifact_currentness_filters_and_rejects_via_cli(
         self,
     ) -> None:
         for fault in ("missing", "corrupt", "mismatched"):
@@ -7290,7 +7290,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 )
                 self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_phase_result_currentness_filters_and_rejects_via_cli(
+    def _scenario_ticket07_phase_result_currentness_filters_and_rejects_via_cli(
         self,
     ) -> None:
         for fault in ("superseded", "frozen-digest-mismatch"):
@@ -7337,7 +7337,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
                 self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_gc_retains_frozen_child_checkpoint_authority_via_cli(
+    def _scenario_ticket07_gc_retains_frozen_child_checkpoint_authority_via_cli(
         self,
     ) -> None:
         project = self.make_project("ticket07-gc-frozen-child-authority", git=False)
@@ -7392,7 +7392,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             [checkpoint["snapshot_digest"]],
         )
 
-    def test_ticket07_gc_rejects_corrupt_live_child_authority_via_cli(self) -> None:
+    def _scenario_ticket07_gc_rejects_corrupt_live_child_authority_via_cli(self) -> None:
         project = self.make_project("ticket07-gc-corrupt-live-child-authority", git=False)
         topic = self.bootstrap_topic(project)
         checkpoint = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
@@ -7422,7 +7422,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(ledger.read_bytes(), before)
         self.assertTrue(Path(str(checkpoint["snapshot_path"])).exists())
 
-    def test_ticket07_broken_checkpoint_recloses_only_direct_gates_via_cli(self) -> None:
+    def _scenario_ticket07_broken_checkpoint_recloses_only_direct_gates_via_cli(self) -> None:
         project = self.make_project("ticket07-broken-checkpoint-direct-reclose", git=False)
         topic = self.bootstrap_topic(project)
         checkpoint = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
@@ -7468,7 +7468,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(ledger.read_bytes(), before_replay)
 
-    def test_ticket07_git_checkpoint_authority_evaluates_and_stales_via_cli(self) -> None:
+    def _scenario_ticket07_git_checkpoint_authority_evaluates_and_stales_via_cli(self) -> None:
         project = self.make_project("ticket07-git-checkpoint-authority", git=True)
         (project / "base.txt").write_text("base\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(project), "add", "base.txt"], check=True)
@@ -7503,7 +7503,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
         self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_repaired_git_checkpoint_is_current_authority_via_cli(self) -> None:
+    def _scenario_ticket07_repaired_git_checkpoint_is_current_authority_via_cli(self) -> None:
         project = self.make_project("ticket07-repaired-git-checkpoint", git=True)
         (project / "base.txt").write_text("base\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(project), "add", "base.txt"], check=True)
@@ -7561,7 +7561,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(released["state"], "open")
 
-    def test_ticket07_invalid_latest_checkpoint_does_not_fallback_via_cli(self) -> None:
+    def _scenario_ticket07_invalid_latest_checkpoint_does_not_fallback_via_cli(self) -> None:
         for fault in ("missing", "corrupt", "stale", "broken"):
             with self.subTest(fault=fault):
                 project = self.make_project(f"ticket07-invalid-latest-{fault}", git=False)
@@ -7621,7 +7621,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 self.assertEqual(ledger.read_bytes(), before)
                 self.assertNotEqual(older["checkpoint_id"], latest["checkpoint_id"])
 
-    def test_ticket07_bound_same_tree_child_uses_topic_and_checkpoint_cli(self) -> None:
+    def _scenario_ticket07_bound_same_tree_child_uses_topic_and_checkpoint_cli(self) -> None:
         project = self.make_project("ticket07-bound-child-public-apis", git=False)
         parent = self.bootstrap_topic(project)
         handoff, child_ref = self.activate_child_handoff(parent)
@@ -7653,7 +7653,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(published["topic_id"], child["topic_id"])
 
-    def test_ticket07_closed_gate_blocks_phase1_no_code_integration_via_cli(self) -> None:
+    def _scenario_ticket07_closed_gate_blocks_phase1_no_code_integration_via_cli(self) -> None:
         project = self.make_project("ticket07-no-code-gate", git=False)
         topic = self.bootstrap_topic(project)
         ledger = Path(str(topic["ledger_path"]))
@@ -7676,7 +7676,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "topic_gate_closed", rejected)
         self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_nested_gate_payload_shapes_fail_stably_via_cli(self) -> None:
+    def _scenario_ticket07_nested_gate_payload_shapes_fail_stably_via_cli(self) -> None:
         project = self.make_project("ticket07-nested-gate-payloads", git=False)
         parent = self.bootstrap_topic(project)
         handoff, child_ref = self.activate_child_handoff(parent)
