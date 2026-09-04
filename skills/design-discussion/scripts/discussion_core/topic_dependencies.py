@@ -765,6 +765,11 @@ def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
                 ) from error
             raise
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        stale_context = {
+            "ledger_revision": revision,
+            "topic_revision": topic_revision,
+            "dependent_topic_id": request["actor_topic_id"],
+        }
         if topic["current_phase"] not in {0, 1}:
             raise ProtocolError(
                 "topic_dependency_phase_conflict",
@@ -782,14 +787,18 @@ def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
         except ProtocolError as error:
             if error.code == "topic_dependency_evidence_unavailable":
                 raise ProtocolError(
-                    "topic_gate_evaluation_stale", "topic gate evaluation is stale"
+                    "topic_gate_evaluation_stale", "topic gate evaluation is stale",
+                    context=stale_context,
                 ) from error
             raise
         expected = _release_set_digest(
             revision, topic_revision, evaluation.get("release_set", [])
         )
         if evaluation.get("state") != "releasable" or request["release_set"] != evaluation.get("release_set") or request["release_set_sha256"] != expected:
-            raise ProtocolError("topic_gate_evaluation_stale", "topic gate evaluation is stale")
+            raise ProtocolError(
+                "topic_gate_evaluation_stale", "topic gate evaluation is stale",
+                context=stale_context,
+            )
         for item in _closed(records, request["actor_topic_id"]):
             match = next(entry for entry in evaluation["release_set"] if entry["dependency_id"] == item["dependency_id"])
             item["gate_state"] = "open"; item["record_revision"] += 1; item["accepted_basis_json"] = _canonical_json(match["basis"]); item["gate_reason_json"] = _canonical_json({"kind": "atomic-release", "release_id": request["idempotency_key"], "ledger_revision": revision + 1})
