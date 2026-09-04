@@ -7,6 +7,7 @@ from pathlib import Path
 import uuid
 from typing import Any
 
+from .checkpoint_authority import CheckpointAuthorityCorrupt, checkpoint_artifact_fields
 from .checkpoints import _checkpoint_data, _completed_checkpoint
 from .state import (
     ProtocolError,
@@ -202,7 +203,10 @@ def _verify_wrapper_checkpoint_current(
     ]
     if not completed_sources or completed_sources[-1]["checkpoint_id"] != checkpoint["checkpoint_id"]:
         raise ProtocolError("phase_checkpoint_invalid", "wrapper checkpoint is no longer the latest source")
-    document_digests = json.loads(checkpoint["document_digests_json"])
+    try:
+        _, _, document_digests = checkpoint_artifact_fields(checkpoint)
+    except CheckpointAuthorityCorrupt as error:
+        raise ProtocolError("state_corrupt", "checkpoint artifact fields are corrupt") from error
     if _sha256(_require_regular_nosymlink(topic_path, "topic document")) not in document_digests.values():
         raise ProtocolError("phase_source_drift", "topic document differs from the frozen checkpoint")
 

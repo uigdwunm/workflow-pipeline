@@ -54,6 +54,23 @@ def checkpoint_trailers(checkpoint: dict[str, Any], digests: dict[str, str], pat
     }
 
 
+def checkpoint_decision_fields(checkpoint: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+    """Parse the frozen decision descriptor shared by publication and gates."""
+    digests = _persisted_json(checkpoint.get("decision_digests_json"), "checkpoint decision_digests_json")
+    confirmed = _persisted_json(checkpoint.get("confirmed_decision_ids_json"), "checkpoint confirmed_decision_ids_json")
+    if (
+        not isinstance(digests, dict)
+        or not all(isinstance(key, str) and isinstance(value, str) and len(value) == 64 for key, value in digests.items())
+        or not isinstance(confirmed, list)
+        or not all(isinstance(item, str) and item for item in confirmed)
+        or confirmed != sorted(confirmed)
+        or len(set(confirmed)) != len(confirmed)
+        or any(item not in digests for item in confirmed)
+    ):
+        raise CheckpointAuthorityCorrupt("checkpoint decision fields are incoherent")
+    return digests, confirmed
+
+
 def verify_artifact_integrity(
     checkpoint: dict[str, Any], *, topic_path: Path,
     sha256: Callable[[bytes], str], canonical_json: Callable[[Any], str],

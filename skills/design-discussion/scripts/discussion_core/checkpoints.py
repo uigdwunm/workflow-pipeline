@@ -857,7 +857,11 @@ def _cancel_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         if checkpoint["state"] != "prepared":
             raise ProtocolError("checkpoint_identity_conflict", "only an uncommitted prepared checkpoint can be cancelled")
         current_digest = _sha256(_require_regular_nosymlink(topic_path, "topic document"))
-        frozen = json.loads(checkpoint["document_digests_json"])[json.loads(checkpoint["paths_json"])[0]]
+        try:
+            paths, _, digests = checkpoint_artifact_fields(checkpoint)
+        except CheckpointAuthorityCorrupt as error:
+            raise ProtocolError("state_corrupt", "checkpoint artifact fields are corrupt") from error
+        frozen = digests[paths[0]]
         checkpoint["state"] = "cancelled"
         checkpoint["record_revision"] += 1
         checkpoint["cancel_reason"] = reason
@@ -920,7 +924,7 @@ def _publish_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         base_commit = _verify_git_base(project, checkpoint["base_ref"])
         if base_commit != checkpoint["base_commit"]:
             raise ProtocolError("checkpoint_base_invalid", "checkpoint base_ref no longer resolves to the frozen base commit")
-        blobs = json.loads(checkpoint["blob_ids_json"])
+        _, blobs, _ = checkpoint_artifact_fields(checkpoint)
         tree_id = _create_checkpoint_tree(project, base_commit, blobs)
         _inject_failure("git-before-commit-create")
         commit_id = _git(
@@ -1097,8 +1101,10 @@ def _publish_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
                 "checkpoint is not the expected prepared intent",
                 context=_checkpoint_authority_context(request, ledger_revision, checkpoint),
             )
-        paths = json.loads(checkpoint["paths_json"])
-        digests = json.loads(checkpoint["document_digests_json"])
+        try:
+            paths, _, digests = checkpoint_artifact_fields(checkpoint)
+        except CheckpointAuthorityCorrupt as error:
+            raise ProtocolError("state_corrupt", "checkpoint artifact fields are corrupt") from error
         document = _require_regular_nosymlink(topic_path, "topic document")
         if _sha256(document) != digests[paths[0]]:
             raise ProtocolError("checkpoint_changed_draft", "topic document bytes differ from the frozen checkpoint intent")
@@ -1663,8 +1669,10 @@ def _validate_checkpoints(
             or not isinstance(checkpoint.get("creation_result_json"), str)
         ):
             raise ProtocolError("state_corrupt", "checkpoint record envelope does not match its data")
-        paths = json.loads(checkpoint["paths_json"])
-        digests = json.loads(checkpoint["document_digests_json"])
+        try:
+            paths, _, digests = checkpoint_artifact_fields(checkpoint)
+        except CheckpointAuthorityCorrupt as error:
+            raise ProtocolError("state_corrupt", "checkpoint artifact fields are corrupt") from error
         if (
             not isinstance(paths, list)
             or not paths

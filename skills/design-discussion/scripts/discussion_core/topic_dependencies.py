@@ -12,7 +12,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .checkpoint_authority import CheckpointAuthorityCorrupt, current_checkpoint_artifact
+from .checkpoint_authority import (
+    CheckpointAuthorityCorrupt,
+    checkpoint_decision_fields,
+    current_checkpoint_artifact,
+)
 
 from .state import (
     ProtocolError, SHA256_RE, _canonical_json, _evolution_paths, _expect_keys,
@@ -212,14 +216,15 @@ def _current_checkpoint(record: dict[str, Any], checkpoint: dict[str, Any], reco
         ):
             return False
         _, current_digests, current_digest = _decision_authority(records, prerequisite)
+        frozen_digests, frozen_confirmed = checkpoint_decision_fields(checkpoint)
         return (
-            current_digests == json.loads(checkpoint["decision_digests_json"])
+            current_digests == frozen_digests
             and current_digest == checkpoint.get("decision_digest")
             and sorted(
                 item["decision_id"]
                 for item in _topic_snapshot(records, prerequisite)["decisions"]
                 if item.get("state") == "confirmed"
-            ) == json.loads(checkpoint["confirmed_decision_ids_json"])
+            ) == frozen_confirmed
         )
     except CheckpointAuthorityCorrupt as error:
         raise ProtocolError("state_corrupt", "checkpoint authority is corrupt") from error
@@ -253,17 +258,7 @@ def _checkpoint_candidates(
             return []
         if not _current_checkpoint(record, checkpoint, records, prerequisite):
             return []
-        digests = json.loads(checkpoint["decision_digests_json"])
-        confirmed_ids = json.loads(checkpoint["confirmed_decision_ids_json"])
-        if (
-            not isinstance(digests, dict)
-            or not _canonical_string_array(confirmed_ids)
-            or any(
-                not isinstance(item, str) or item not in digests
-                for item in confirmed_ids
-            )
-        ):
-            raise ProtocolError("state_corrupt", "latest checkpoint authority is corrupt")
+        digests, confirmed_ids = checkpoint_decision_fields(checkpoint)
     except ProtocolError as error:
         raise ProtocolError("state_corrupt", "latest checkpoint authority is corrupt") from error
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
