@@ -27,8 +27,11 @@ Spec synthesis and applies it at the existing review or publication seams.
 ## Select the runtime role
 
 Operate as the **child stage owner** only when the runtime identifies this agent
-as the non-root `solution_designer` subagent and the input is the exact bootstrap
-prompt with protocol `solution-design-subagent-v1`. In that role, emit
+as a non-root native subagent and its launch input contains a structurally
+complete canonical payload with protocol `solution-design-subagent-v2`, semantic
+role `solution_designer`, and all frozen stage facts. The outer input may be the
+direct native prompt or an applicable governance envelope; the native task name
+is a transport label, not role identity. In the child role, emit
 `SOLUTION_DESIGN_STARTED`, execute the delegated stage directly, and never launch
 another subagent or apply the parent launch-confirmation flow.
 
@@ -46,8 +49,8 @@ Enter from exactly one route:
   absolute draft, commit, hash, delivery ID, archived child identity, project,
   repository, planning target, authority, and flow mode;
 - this Skill's immediately preceding launch, review, or anomaly block; or
-- the trusted `solution_designer` runtime receiving the exact
-  `solution-design-subagent-v1` bootstrap; or
+- the trusted non-root runtime receiving a valid
+  `solution-design-subagent-v2` payload for role `solution_designer`; or
 - an unambiguous continuous-flow request to this Skill's own successful footer.
 
 Natural affirmative wording is valid when it unambiguously refers to the
@@ -147,12 +150,13 @@ matching block in [references/templates.md](references/templates.md). Do not
 preload retry, review or intake details while requirement-source validation is
 still unresolved.
 
-The primary orchestrator creates exactly one context-isolated
-`solution_designer` with the disclosed model and effort and the fixed
-bootstrap. The trusted child owns native Spec/ADR/Tickets work and exact-target
-publication; the primary owns identity, user decisions, anomaly routing and
-mechanical intake. Neither role implements code or changes the accepted
-requirement source.
+The primary orchestrator creates exactly one context-isolated child with
+semantic role `solution_designer`, the disclosed model and effort, and the
+canonical bootstrap payload. The applicable dispatch path owns the outer prompt
+and native task name. The trusted child owns native Spec/ADR/Tickets work and
+exact-target publication; the primary owns identity, user decisions, anomaly
+routing and mechanical intake. Neither role implements code or changes the
+accepted requirement source.
 
 Before the child launch, the primary calls `start-worktree` once and discloses
 the returned Flow Worktree binding. The child runs in that worktree, verifies

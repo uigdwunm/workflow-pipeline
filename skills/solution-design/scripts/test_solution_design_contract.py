@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import re
 import unittest
 
 
@@ -32,6 +34,13 @@ def section(document: str, heading: str, next_heading: str | None = None) -> str
         return document[start:]
     end = document.index(next_heading, start + len(heading))
     return document[start:end]
+
+
+def fenced_block(document: str, language: str) -> str:
+    match = re.search(rf"```{re.escape(language)}\n(.*?)\n```", document, re.DOTALL)
+    if match is None:
+        raise AssertionError(f"missing {language} fenced block")
+    return match.group(1)
 
 
 class SolutionDesignContractTests(unittest.TestCase):
@@ -87,7 +96,7 @@ class SolutionDesignContractTests(unittest.TestCase):
 
         bootstrap = section(
             TEMPLATES,
-            "## Exact child bootstrap prompt",
+            "## Canonical child bootstrap payload",
             "## Started status",
         )
         self.assertIn("方案就绪检查", bootstrap)
@@ -111,7 +120,7 @@ class SolutionDesignContractTests(unittest.TestCase):
 
         bootstrap = section(
             TEMPLATES,
-            "## Exact child bootstrap prompt",
+            "## Canonical child bootstrap payload",
             "## Started status",
         )
         self.assertIn("范围扩展", bootstrap)
@@ -142,6 +151,103 @@ class SolutionDesignContractTests(unittest.TestCase):
         self.assertNotIn("SOLUTION_READINESS_REQUIRED", readiness)
         self.assertNotIn("确认方式", readiness)
         self.assertIn("same `solution_designer`", readiness)
+
+    def test_child_role_is_semantic_and_accepts_a_governance_envelope(self) -> None:
+        role = section(SKILL, "## Select the runtime role", "## Enter the stage")
+        compact_role = " ".join(role.split())
+        self.assertIn("non-root native subagent", compact_role)
+        self.assertIn("solution-design-subagent-v2", compact_role)
+        self.assertIn("semantic role `solution_designer`", compact_role)
+        self.assertIn("governance envelope", compact_role)
+        self.assertIn("native task name", compact_role)
+        self.assertIn("not role identity", compact_role)
+        self.assertNotIn("non-root `solution_designer` subagent", compact_role)
+        self.assertNotIn("input is the exact bootstrap", compact_role)
+
+    def test_governed_contract_separates_absolute_root_from_relative_paths(self) -> None:
+        bootstrap_section = section(
+            TEMPLATES,
+            "## Canonical child bootstrap payload",
+            "## Governed TaskContract v2",
+        )
+        governed_section = section(
+            TEMPLATES,
+            "## Governed TaskContract v2",
+            "## Started status",
+        )
+        payload = fenced_block(bootstrap_section, "text")
+        contract = json.loads(fenced_block(governed_section, "json"))
+        contract["context"]["summary"] = payload
+
+        self.assertEqual(contract["profile"], "strict")
+        self.assertLessEqual(len(contract["context"]["summary"]), 8192)
+        self.assertIn("协议：solution-design-subagent-v2", payload)
+        self.assertIn("业务角色：solution_designer", payload)
+        self.assertEqual(
+            contract["context"]["verified"]["workspace_root"],
+            "<absolute Flow Worktree path>",
+        )
+        self.assertEqual(
+            contract["context"]["verified"]["baseline"],
+            {"kind": "working_tree", "revision": None},
+        )
+        self.assertTrue(contract["forbidden_scope"])
+        self.assertTrue(contract["evidence"])
+        self.assertEqual(contract["spawn"]["fork_turns"], "none")
+
+        locator_paths = contract["context"]["paths"]
+        verified_paths = [
+            item["path"]
+            for item in contract["context"]["verified"]["required_paths"]
+        ]
+        self.assertEqual(locator_paths, verified_paths)
+        for path in [*locator_paths, *verified_paths]:
+            self.assertFalse(path.startswith("/"))
+            self.assertNotIn("\\", path)
+            self.assertNotIn("..", path.split("/"))
+
+    def test_governed_dispatch_preserves_native_exact_target_lifecycle(self) -> None:
+        launch = section(
+            PROTOCOL,
+            "## Launch and model inheritance",
+            "## Child responsibilities and document authority",
+        )
+        waiting = section(
+            PROTOCOL,
+            "## Waiting, decisions, and recovery",
+            "## Completion intake and stage transition",
+        )
+        completion = section(PROTOCOL, "## Completion intake and stage transition")
+        compact_launch = " ".join(launch.split())
+        compact_waiting = " ".join(waiting.split())
+        compact_completion = " ".join(completion.split())
+
+        for requirement in (
+            "strict TaskContract v2",
+            "context.summary",
+            "repository-relative POSIX paths",
+            "working_tree",
+            "Never rewrite governance's returned `spawn_args`",
+            "immediately confirm",
+            "result=failed",
+            "result=unknown",
+        ):
+            self.assertIn(requirement, compact_launch)
+        self.assertIn("terminal notification", compact_waiting)
+        self.assertIn("does not create a new governed attempt", compact_waiting)
+        self.assertIn("close the governed task once", compact_completion)
+
+    def test_continuous_launch_discloses_governance_before_final_stage_block(self) -> None:
+        disclosure = section(
+            TEMPLATES,
+            "## Continuous automatic launch disclosure",
+            "## Canonical child bootstrap payload",
+        )
+        self.assertIn("governance `user_message` immediately\nbefore this block", disclosure)
+        self.assertIn("final user-visible commentary", disclosure)
+        self.assertIn("执行环境：已创建 Flow Worktree", disclosure)
+        self.assertIn("绑定=<exact binding>", disclosure)
+        self.assertNotIn("本条披露后调用 `start-worktree`", disclosure)
 
 
 if __name__ == "__main__":

@@ -50,6 +50,22 @@ These dependencies are currently a documented runtime contract rather than vendo
 
 Do not install duplicate copies of the same dependency under different Skill providers. A unique registered name is required for deterministic routing.
 
+## Optional governed subagent dispatch
+
+`solution-design` uses native `spawn_agent` directly unless current runtime
+instructions require Subagent Governance. In a governed environment it composes
+with the injected authoritative Session identity and governance CLI through
+TaskContract v2 and the state-v9 prepare, exact-target confirmation and lifecycle
+operations. Governance owns the native task name, outer prompt and ledger;
+`solution-design` retains the canonical stage payload, permissions and
+completion contract.
+
+This is an environment compatibility path, not a hard installation dependency
+for ordinary users. Never hardcode a governance installation path or Session
+identity in this repository. A required governed runtime that does not expose
+TaskContract v2/state-v9 authority is a pre-launch anomaly rather than permission
+to fall back silently to unmanaged dispatch.
+
 ## Validation contract
 
 `./scripts/validate.sh` discovers every `skills/**/scripts/test_*.py` test and mechanically verifies registered internal/external Skill names, reachable progressive references and the absence of macOS, Linux and Windows user-specific absolute paths under `skills/`. Optional 0讨论 routes and recovery behavior are exercised without granting any new external-write authority.

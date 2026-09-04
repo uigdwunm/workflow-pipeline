@@ -13,7 +13,8 @@ through
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
 规划载体：<exact target>
-方案子 agent：solution_designer
+业务角色：solution_designer
+派发方式：<native | governed TaskContract v2>
 目标模型：<primary thread exact model>
 模型来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 推理强度：<primary thread exact reasoning effort>
@@ -32,8 +33,9 @@ Worktree：确认后调用 `start-worktree` 创建；路径=<canonical path>; �
 
 ## Continuous automatic launch disclosure
 
-This must be the final user-visible commentary immediately before
-`spawn_agent`.
+For governed dispatch, show the returned governance `user_message` immediately
+before this block. This block must remain the final user-visible commentary
+before `spawn_agent`.
 
 ```text
 连续模式自动动作：启动 2方案子 agent
@@ -42,14 +44,15 @@ This must be the final user-visible commentary immediately before
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
 规划载体：<exact target>
-方案子 agent：solution_designer
+业务角色：solution_designer
+派发方式：<native | governed TaskContract v2>
 目标模型：<primary thread exact model>
 模型来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 推理强度：<primary thread exact reasoning effort>
 强度来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 上下文方式：fork_turns=none；不继承历史；仅读取需求来源和明确交接材料
-执行环境：新建 Flow Worktree
-Worktree：本条披露后调用 `start-worktree` 创建；路径=<canonical path>; 分支=<branch>
+执行环境：已创建 Flow Worktree
+Worktree：路径=<canonical path>; 分支=<branch>; 绑定=<exact binding>
 允许动作：执行标准 $to-spec、ADR、$ask-matt、$to-tickets、原生发布；只写入并提交本阶段拥有的本地规划文档
 禁止动作：修改实现代码、创建 PR、部署、发布版本、进入 3实现或处理无关任务
 异常规则：执行失败、结果或副作用不确定、意外情况、与原计划不符或需要调整计划时停止并报告
@@ -57,13 +60,14 @@ Worktree：本条披露后调用 `start-worktree` 创建；路径=<canonical pat
 执行状态：本条披露后立即启动；不等待阶段确认
 ```
 
-## Exact child bootstrap prompt
+## Canonical child bootstrap payload
 
 ```text
 $solution-design
 
-协议：solution-design-subagent-v1
-角色：你是本次 2方案 的唯一阶段负责人；主 agent只负责用户决策和阶段编排。
+协议：solution-design-subagent-v2
+业务角色：solution_designer
+角色说明：你是本次 2方案 的唯一阶段负责人；主 agent只负责用户决策和阶段编排。
 本次目标：<goal>
 需求来源类型：immutable-problem-framing-draft
 需求草案：<absolute path>
@@ -88,11 +92,67 @@ Flow Worktree：<exact binding returned by start-worktree>
 协议文件：完整遵循 $solution-design 的 references/subagent-protocol.md 和 references/templates.md。
 ```
 
+The native dispatch uses this payload as its complete message. A governed
+dispatch carries the same payload unchanged in `context.summary`; governance
+may add an outer prompt and generate a different native task name.
+
+## Governed TaskContract v2
+
+Use this mapping only when current runtime instructions require governed
+dispatch. Every `context.paths` and `required_paths[].path` value is a normalized
+repository-relative POSIX path. The complete canonical payload must fit in the
+8192-character `context.summary` field.
+
+```json
+{
+  "profile": "strict",
+  "objective": "<goal>",
+  "scope": [
+    "Execute the complete Stage-2 Spec, necessary ADR and useful Tickets workflow",
+    "Write and commit only stage-owned planning documents in the verified Flow Worktree"
+  ],
+  "forbidden_scope": [
+    "Modify implementation code, create a pull request, deploy, release, change the planning target or enter Stage 3"
+  ],
+  "completion": [
+    "Return one solution-design-subagent-v2 terminal message after the planning commit is complete and the Flow Worktree is clean"
+  ],
+  "evidence": [
+    "Report Spec, ADR, Tickets, planning commit, readiness evidence and clean Flow Worktree state"
+  ],
+  "context": {
+    "summary": "<complete canonical child bootstrap payload>",
+    "paths": [
+      "<repository-relative requirement path>"
+    ],
+    "verified": {
+      "mode": "declared",
+      "workspace_root": "<absolute Flow Worktree path>",
+      "baseline": {
+        "kind": "working_tree",
+        "revision": null
+      },
+      "required_paths": [
+        {
+          "path": "<repository-relative requirement path>",
+          "type": "file"
+        }
+      ]
+    }
+  },
+  "spawn": {
+    "fork_turns": "none",
+    "model": "<exact model>",
+    "reasoning_effort": "<exact reasoning effort>"
+  }
+}
+```
+
 ## Started status
 
 ```text
 SOLUTION_DESIGN_STARTED
-协议：solution-design-subagent-v1
+协议：solution-design-subagent-v2
 本次目标：<goal>
 需求来源：<source>
 规划载体：<exact target>
@@ -103,7 +163,7 @@ SOLUTION_DESIGN_STARTED
 
 ```text
 SOLUTION_REVIEW_REQUIRED
-协议：solution-design-subagent-v1
+协议：solution-design-subagent-v2
 审阅 ID：<unique id>
 需求来源：<source>
 Spec 草稿：<path or URL>
@@ -126,7 +186,7 @@ ADR：<paths or none>
 
 ```text
 TICKETS_REVIEW_REQUIRED
-协议：solution-design-subagent-v1
+协议：solution-design-subagent-v2
 审阅 ID：<unique id>
 Spec：<published path or URL>
 Tickets 草稿：<paths or structured list>
@@ -145,7 +205,7 @@ Ticket 数量：<number>
 
 ```text
 PARENT_DECISION
-协议：solution-design-subagent-v1
+协议：solution-design-subagent-v2
 目标子 agent：<trusted agent id>
 关联类型：<solution-review | tickets-review | anomaly>
 关联 ID：<review or anomaly id>
@@ -157,7 +217,7 @@ PARENT_DECISION
 
 ```text
 SOLUTION_DESIGN_ANOMALY
-协议：solution-design-subagent-v1
+协议：solution-design-subagent-v2
 异常 ID：<unique id>
 异常类型：<执行失败 | 结果不确定 | 意外情况 | 与原计划不符 | 需要调整计划>
 当前阶段：2方案
@@ -180,7 +240,7 @@ SOLUTION_DESIGN_ANOMALY
 
 ```text
 SOLUTION_DESIGN_COMPLETE
-协议：solution-design-subagent-v1
+协议：solution-design-subagent-v2
 需求来源：<draft path, commit and hash>
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
