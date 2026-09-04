@@ -308,23 +308,32 @@ def validate_dependency_records(
                  if topic.get("topic_id") == item["dependent_topic_id"]),
                 None,
             )
-            # Closed gates retain historical bases so their exact invalidation
-            # provenance remains auditable; Phase 2+ history is non-enforcing.
-            # An enforcing open Phase-0/1 gate, however, must still resolve.
+            # A currently enforcing open gate must resolve current authority.
+            # Closed/cancelled/Phase-2 records retain historical evidence even
+            # after a legitimate invalidation changes the source decisions.
             if (
                 item["relation_state"] == "active"
                 and item["gate_state"] == "open"
                 and dependent_phase in {0, 1}
             ):
-                _validate_ordinary_basis(records, item, basis, decisions, authority, error)
+                historical_item = {
+                    **item,
+                    "prerequisite_topic_id": basis["prerequisite_topic_id"],
+                    "requirement_kind": basis["requirement_kind"],
+                }
+                _validate_ordinary_basis(
+                    records, historical_item, basis, decisions, authority, error
+                )
             child_result_id = basis.get("child_result_id")
             if child_result_id is not None:
+                historical_prerequisite = basis["prerequisite_topic_id"]
+                historical_kind = basis["requirement_kind"]
                 child = next((record for record in records["Phase Results"] if record.get("result_id") == child_result_id), None)
                 if (
                     not _identity(child_result_id, "CR")
                     or child is None
                     or child.get("result_kind") != "child-topic-result"
-                    or child.get("source_topic_id") != prerequisite
+                    or child.get("source_topic_id") != historical_prerequisite
                 ):
                     error("state_corrupt", "topic dependency child result provenance is incoherent")
                 frozen = canonical_object(child.get("authority_json"), "child result authority_json", error)
@@ -337,7 +346,7 @@ def validate_dependency_records(
                 if (
                     set(frozen) != frozen_fields
                     or
-                    frozen.get("authority_kind") != item["requirement_kind"]
+                    frozen.get("authority_kind") != historical_kind
                     or not canonical_string_array(frozen_ids)
                     or not _decision_pairs(frozen_pairs)
                     or frozen_ids != [entry["decision_id"] for entry in decisions]
