@@ -3406,6 +3406,106 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "topic_dependency_authority_selection_required")
         self.assertEqual(ledger.read_bytes(), before)
 
+    def test_ticket07_duplicate_absorb_release_is_atomic_via_cli(self) -> None:
+        project = self.make_project("ticket07-duplicate-absorb-release", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared, child_ref = self.activate_child_handoff(
+            topic,
+            initial_dependencies=[{
+                "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+                "requirement_kind": "confirmed-decision",
+                "requirement_summary": "The child selects the API.",
+            }],
+        )
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        child_decision = {
+            "decision_id": "D-child", "summary": "Use typed requests.",
+            "rationale": "The child selected the API.", "state": "confirmed",
+            "evolution": "confirmed",
+        }
+        records["Pending Items"].append({
+            "item_id": "D-child", "item_kind": "decision",
+            "topic_id": prepared["target_topic_id"],
+            "data_json": PROTOCOL._canonical_json(child_decision),
+        })
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        submit = self.handoff_request(
+            topic, operation="submit-child-result", ledger_revision=5,
+            owner_ref=child_ref, handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"], result_scope=["api"],
+            summary="Use typed requests.", authority_selection={
+                "authority_kind": "confirmed-decision", "authority_identity": None,
+                "decision_ids": ["D-child"],
+            },
+        )
+        submit["actor_topic_id"] = prepared["target_topic_id"]
+        code, claimed, stderr = self.run_cli(submit)
+        self.assertEqual(code, 0, stderr)
+        dependency_id = prepared["initial_dependencies"][0]["dependency_id"]
+        release = {
+            "dependency_id": dependency_id, "authority_kind": "confirmed-decision",
+            "authority_identity": None, "decision_ids": ["D-child"],
+        }
+        duplicate = self.handoff_request(
+            topic, operation="record-child-result", ledger_revision=6,
+            handoff_id=prepared["handoff_id"], child_result_id=claimed["child_result_id"],
+            effect="absorb", dependency_releases=[release, release],
+        )
+        before = ledger.read_bytes()
+        code, rejected, _ = self.run_cli(duplicate)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "invalid_request")
+        self.assertEqual(ledger.read_bytes(), before)
+        code, handoff, stderr = self.run_cli(self.handoff_request(
+            topic, operation="read-handoff", handoff_id=prepared["handoff_id"],
+        ))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(handoff["handoff"]["record_revision"], 4)
+        self.assertEqual(handoff["attempts"][0]["state"], "active")
+
+    def test_ticket07_concurrent_dependency_updates_commit_once_via_cli(self) -> None:
+        project = self.make_project("ticket07-concurrent-dependency-updates", git=False)
+        topic = self.bootstrap_topic(project)
+        child = self.prepare_child_handoff(topic)
+        code, created, stderr = self.run_cli(self.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=2,
+            expected_topic_revision=1, action="create",
+            prerequisite_topic_id=child["target_topic_id"],
+            requirement_kind="confirmed-decision", requirement_summary="The child selects the API.",
+        ))
+        self.assertEqual(code, 0, stderr)
+        replace = self.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=3,
+            expected_topic_revision=1, action="replace",
+            dependency_id=created["dependency_id"], expected_dependency_revision=1,
+            prerequisite_topic_id=child["target_topic_id"],
+            requirement_kind="phase-1-result", requirement_summary="The child completes Phase 1.",
+        )
+        cancel = self.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=3,
+            expected_topic_revision=1, action="cancel",
+            dependency_id=created["dependency_id"], expected_dependency_revision=1,
+        )
+
+        def invoke(request: dict[str, object]) -> tuple[int, dict[str, object], str]:
+            return self.run_cli(request)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(invoke, (replace, cancel)))
+        successful = [response for code, response, _ in outcomes if code == 0]
+        conflicted = [response for code, response, _ in outcomes if code == 1]
+        self.assertEqual(len(successful), 1)
+        self.assertEqual(len(conflicted), 1)
+        self.assertEqual(conflicted[0]["error"]["code"], "ledger_revision_conflict")
+        ledger = Path(str(topic["ledger_path"]))
+        _, records = PROTOCOL._load_records(ledger)
+        dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == created["dependency_id"])
+        self.assertEqual(int(PROTOCOL._load_records(ledger)[0]["ledger_revision"]), 4)
+        self.assertEqual(dependency["record_revision"], 2)
+        self.assertIn(dependency["relation_state"], {"active", "cancelled"})
+        self.assertEqual(len([event for event in records["Recent Events"] if event["event_type"].startswith("topic-dependency-")]), 2)
+
     def test_ticket07_direct_invalidation_does_not_propagate_via_cli(self) -> None:
         project = self.make_project("ticket07-direct-invalidation", git=False)
         topic = self.bootstrap_topic(project)
