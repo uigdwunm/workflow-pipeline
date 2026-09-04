@@ -33,6 +33,22 @@ class AuthoritySelection:
     authority_identity: str | None
     decision_ids: tuple[str, ...]
 
+    @property
+    def descriptor(self) -> dict[str, Any]:
+        """The single kind strategy used by parsing and basis construction."""
+        return authority_descriptor(self.authority_kind)
+
+    def requires_decisions(self) -> bool:
+        return bool(self.descriptor["requires_decisions"])
+
+    def as_request_fields(self) -> dict[str, Any]:
+        """Return the canonical selection shape used for currentness checks."""
+        return {
+            "authority_kind": self.authority_kind,
+            "authority_identity": self.authority_identity,
+            "decision_ids": list(self.decision_ids),
+        }
+
     @classmethod
     def parse(cls, value: Any, error: Callable[[str, str], None]) -> "AuthoritySelection":
         if not isinstance(value, dict) or set(value) != {

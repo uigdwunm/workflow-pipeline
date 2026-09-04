@@ -7,6 +7,7 @@ which authority can satisfy a record; that is the authority module's concern.
 from __future__ import annotations
 
 import uuid
+import json
 from typing import Any
 
 from .state import (
@@ -178,6 +179,55 @@ def _validate_new_edge(records: dict[str, list[dict[str, Any]]], dependent: str,
         raise
 
 
+def _reject_published_authority_change(
+    records: dict[str, list[dict[str, Any]]], dependent_topic_id: str,
+) -> None:
+    """Keep a published Phase-0/1 authority coherent with its dependency set.
+
+    Adding a new closed gate after publication would make the published
+    checkpoint/result claim a readiness state it no longer represents.  The
+    existing impact/reopen operations are the explicit path for that change.
+    """
+    topic = _record_by_id(records["Current Topics"], "topic_id", dependent_topic_id,
+        "dependent_topic_id")
+    authority: dict[str, Any] | None = None
+    if topic.get("current_phase") == 0:
+        for record in reversed(records["Checkpoints"]):
+            if record.get("topic_id") != dependent_topic_id or record.get("state") != "completed":
+                continue
+            try:
+                checkpoint = json.loads(str(record.get("data_json")))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ProtocolError("state_corrupt", "published checkpoint is corrupt") from error
+            if (checkpoint.get("purpose") == "stage-entry"
+                and checkpoint.get("stage_entry_phase") == 0
+                and checkpoint.get("published_identity")):
+                authority = {"authority_kind": "phase-0-checkpoint",
+                    "authority_id": checkpoint.get("checkpoint_id")}
+                break
+    elif topic.get("current_phase") == 1:
+        for record in reversed(records["Phase Results"]):
+            if record.get("result_kind") != "phase-result" or record.get("state") != "completed":
+                continue
+            try:
+                result = json.loads(str(record.get("data_json")))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ProtocolError("state_corrupt", "published Phase Result is corrupt") from error
+            if (result.get("topic_id") == dependent_topic_id
+                and result.get("from_phase") == 0 and result.get("to_phase") == 1):
+                authority = {"authority_kind": "phase-1-result",
+                    "authority_id": result.get("result_id")}
+                break
+    if authority is not None:
+        raise ProtocolError(
+            "topic_dependency_published_authority_conflict",
+            "published authority requires explicit impact or reopen before changing dependencies",
+            context=dependency_context(
+                dependent_topic_id=dependent_topic_id, phase=topic.get("current_phase"),
+            ) | authority,
+        )
+
+
 def prepare_initial_dependencies(records: dict[str, list[dict[str, Any]]], *,
     request: dict[str, Any], target_topic_id: str, handoff_id: str,
     ledger_revision: int,
@@ -240,6 +290,7 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
                 context=dependency_context(dependent_topic_id=request["actor_topic_id"],
                     phase=topic["current_phase"]))
         if action == "create":
+            _reject_published_authority_change(records, request["actor_topic_id"])
             _validate_new_edge(records, request["actor_topic_id"],
                 request["prerequisite_topic_id"], request["requirement_kind"],
                 request["requirement_summary"])
@@ -269,6 +320,7 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
                         expected_dependency_revision=request["expected_dependency_revision"],
                         actual_dependency_revision=dep["record_revision"]))
             if action == "replace":
+                _reject_published_authority_change(records, request["actor_topic_id"])
                 _validate_new_edge(records, request["actor_topic_id"],
                     request["prerequisite_topic_id"], request["requirement_kind"],
                     request["requirement_summary"], replacing=dep["dependency_id"])

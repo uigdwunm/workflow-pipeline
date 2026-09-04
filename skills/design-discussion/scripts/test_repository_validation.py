@@ -23,7 +23,8 @@ class RepositoryValidationTests(unittest.TestCase):
         protocol = (REPOSITORY / "skills/problem-framing/references/dedicated-grilling-protocol.md").read_text(encoding="utf-8")
         for marker in (
             "Fixed carrier split proposal", "proposal_id", "source_topic_id",
-            "source_disposition", "All seven keys are required",
+            "current_topic_behavior", "result_return_behavior", "scope",
+            "seven semantic fields",
             "authenticated carrier return/intake", "separate task-creation confirmation before",
             "The carrier is information-only", "0讨论",
         ):

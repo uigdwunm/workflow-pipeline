@@ -11,6 +11,83 @@ from test_topic_dependency_support import TopicDependencyScenarioTest
 
 
 class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_published_authority_blocks_dependency_create_and_replace_via_cli(self) -> None:
+        """A published Phase-0/1 authority must be explicitly reopened first."""
+        for authority_phase in (0, 1):
+            with self.fixture.subTest(authority_phase=authority_phase):
+                project = self.fixture.make_project(
+                    f"ticket07-published-authority-{authority_phase}", git=False,
+                )
+                topic = self.fixture.bootstrap_topic(project)
+                if authority_phase == 0:
+                    self.fixture.publish_non_git_stage_entry_checkpoint(
+                        topic, ledger_revision=1,
+                    )
+                else:
+                    _, revision, topic_revision = self.fixture.complete_update(
+                        project, topic, ledger_revision=1, topic_revision=1,
+                        mutation={"type": "confirm-decision", "summary": "Current.",
+                                  "rationale": "Current."},
+                    )
+                    self.fixture.complete_current_topic_phase(
+                        topic, ledger_revision=revision, topic_revision=topic_revision,
+                        from_phase=0, to_phase=1,
+                    )
+                ledger = Path(str(topic["ledger_path"]))
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                topic_record = next(item for item in records["Current Topics"]
+                                    if item["topic_id"] == topic["topic_id"])
+                prerequisite_id = "topic-" + uuid.uuid4().hex
+                records["Current Topics"].append({
+                    "topic_id": prerequisite_id, "record_revision": 1,
+                    "root_slug": "prerequisite", "parent_topic_id": topic["topic_id"],
+                    "current_phase": 0, "phase_state": "active",
+                    "review_state": "unreviewed", "topic_state": "open",
+                    "topic_document_path": None,
+                })
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                revision = int(frontmatter["ledger_revision"])
+                before = ledger.read_bytes()
+                create = self.fixture.evolution_request(
+                    topic, operation="update-topic-dependency", expected_revision=revision,
+                    expected_topic_revision=topic_record["record_revision"], action="create",
+                    prerequisite_topic_id=prerequisite_id,
+                    requirement_kind="confirmed-decision", requirement_summary="A new gate.",
+                )
+                code, rejected, _ = self.fixture.run_cli(create)
+                self.fixture.assertEqual(code, 1)
+                self.fixture.assertEqual(rejected["error"]["code"],
+                                         "topic_dependency_published_authority_conflict")
+                self.fixture.assertEqual(rejected["error"]["context"]["phase"], authority_phase)
+                self.fixture.assertEqual(ledger.read_bytes(), before)
+                records["Topic Dependencies"].append({
+                    "dependency_id": "DEP-" + uuid.uuid4().hex, "record_revision": 1,
+                    "dependent_topic_id": topic["topic_id"],
+                    "prerequisite_topic_id": prerequisite_id,
+                    "requirement_kind": "confirmed-decision",
+                    "requirement_summary": "Existing gate.", "relation_state": "active",
+                    "gate_state": "closed", "accepted_basis_json": None,
+                    "gate_reason_json": PROTOCOL._canonical_json({
+                        "kind": "explicit-create",
+                        "dependency_update_id": "00000000-0000-4000-8000-000000000000",
+                        "ledger_revision": 1,
+                    }),
+                })
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                before = ledger.read_bytes()
+                replace = self.fixture.evolution_request(
+                    topic, operation="update-topic-dependency", expected_revision=revision,
+                    expected_topic_revision=topic_record["record_revision"], action="replace",
+                    dependency_id=records["Topic Dependencies"][-1]["dependency_id"],
+                    expected_dependency_revision=1, prerequisite_topic_id=prerequisite_id,
+                    requirement_kind="phase-1-result", requirement_summary="Replacement.",
+                )
+                code, rejected, _ = self.fixture.run_cli(replace)
+                self.fixture.assertEqual(code, 1)
+                self.fixture.assertEqual(rejected["error"]["code"],
+                                         "topic_dependency_published_authority_conflict")
+                self.fixture.assertEqual(ledger.read_bytes(), before)
+
     def test_ticket07_nested_authority_selection_is_bounded_and_sorted_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-nested-authority-bounds", git=False)
         topic = self.fixture.bootstrap_topic(project)
@@ -335,4 +412,3 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
         self.fixture.assertEqual(code, 0, stderr)
         self.fixture.assertTrue(replay["idempotent_replay"])
         self.fixture.assertEqual(ledger.read_bytes(), before)
-

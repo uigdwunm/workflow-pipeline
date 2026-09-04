@@ -299,9 +299,7 @@ def freeze_authority_selection(
     except ProtocolError as error:
         raise ProtocolError(error.code, error.message.replace("dependency", "child-result")) from error
     frozen = {
-        "authority_kind": kind,
-        "authority_identity": identity,
-        "decision_ids": decision_ids,
+        **parsed.as_request_fields(),
         "decision_authority": [
             {"decision_id": item["decision_id"], "sha256": item["sha256"]}
             for item in chosen

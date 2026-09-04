@@ -9,17 +9,18 @@ Interpret every user confirmation through
 
 ## Fixed carrier split proposal
 
-A dedicated carrier may send exactly one authenticated, bounded seven-field
-proposal to its source task:
+A dedicated carrier may send exactly one authenticated, bounded seven-semantic-
+field proposal to its source task. `proposal_id` and `source_topic_id` are
+authenticated envelope metadata, not semantic proposal fields:
 
 ```json
-{"proposal_id":"SP-<32 lowercase hex>","source_topic_id":"topic-<32 lowercase hex>","goal":"<1..4096 UTF-8 bytes>","rationale":"<1..4096 UTF-8 bytes>","ownership":"current-tree-child|new-root","dependency":"<1..4096 UTF-8 bytes>","source_disposition":"continue|wait"}
+{"proposal_id":"SP-<32 lowercase hex>","source_topic_id":"topic-<32 lowercase hex>","proposal":{"goal":"<1..4096 UTF-8 bytes>","scope":"<1..4096 UTF-8 bytes>","rationale":"<1..4096 UTF-8 bytes>","ownership":"current-tree-child|new-root","dependencies":"<1..4096 UTF-8 bytes>","current_topic_behavior":"continue|wait","result_return_behavior":"<1..4096 UTF-8 bytes>"}}
 ```
 
-All seven keys are required; no extra keys, nested values, or unbounded text
-are accepted. Delivery uses the authenticated carrier return/intake path tied
+The nested `proposal` has exactly those seven keys; no extra keys, nested
+values, or unbounded text are accepted. Delivery uses the authenticated carrier return/intake path tied
 to the claimed `PA-*` and frozen source checkpoint. The source must restate
-the exact seven fields and obtain the existing preparation confirmation and
+the complete exact seven semantic fields and obtain the existing preparation confirmation and
 separate task-creation confirmation before any handoff mutation. The proposed
 topic always begins at `0讨论`.
 
