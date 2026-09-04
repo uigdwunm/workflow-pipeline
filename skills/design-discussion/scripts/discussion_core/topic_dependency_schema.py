@@ -9,10 +9,23 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
+@dataclass(frozen=True)
+class AuthorityDescriptor:
+    """One fixed authority-kind strategy shared by schema and discovery."""
+    kind: str
+    candidate_key: str
+    identity_field: str | None
+    requires_decisions: bool
+
+    def __getitem__(self, field: str) -> Any:
+        """Temporary mapping compatibility while callers move to attributes."""
+        return getattr(self, field)
+
+
 AUTHORITY_DESCRIPTORS = {
-    "confirmed-decision": {"candidate_key": "confirmed", "identity_field": None, "requires_decisions": True},
-    "phase-0-checkpoint": {"candidate_key": "checkpoint", "identity_field": "checkpoint_id", "requires_decisions": False},
-    "phase-1-result": {"candidate_key": "phase_result", "identity_field": "result_id", "requires_decisions": False},
+    "confirmed-decision": AuthorityDescriptor("confirmed-decision", "confirmed", None, True),
+    "phase-0-checkpoint": AuthorityDescriptor("phase-0-checkpoint", "checkpoint", "checkpoint_id", False),
+    "phase-1-result": AuthorityDescriptor("phase-1-result", "phase_result", "result_id", False),
 }
 DEPENDENCY_AUTHORITY_KINDS = frozenset(AUTHORITY_DESCRIPTORS)
 RECORD_FIELDS = {
@@ -34,7 +47,7 @@ class AuthoritySelection:
     decision_ids: tuple[str, ...]
 
     @property
-    def descriptor(self) -> dict[str, Any]:
+    def descriptor(self) -> AuthorityDescriptor:
         """The single kind strategy used by parsing and basis construction."""
         return authority_descriptor(self.authority_kind)
 

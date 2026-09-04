@@ -237,7 +237,12 @@ CANDIDATE_BUILDERS = {
 
 def authority_handler(kind: str) -> dict[str, Any]:
     descriptor = authority_descriptor(kind)
-    return {**descriptor, "candidate": CANDIDATE_BUILDERS[descriptor["candidate_key"]]}
+    return {
+        "candidate_key": descriptor.candidate_key,
+        "identity_field": descriptor.identity_field,
+        "requires_decisions": descriptor.requires_decisions,
+        "candidate": CANDIDATE_BUILDERS[descriptor.candidate_key],
+    }
 
 
 def authority_candidates(
