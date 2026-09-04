@@ -82,7 +82,8 @@ Flow Worktree：<exact binding returned by start-worktree>
 禁止动作：修改实现代码、创建 PR、部署、发布版本、改变规划目标、进入 3实现、修改 1拷问草案或处理无关任务。
 文档权威：1拷问草案拥有需求；CONTEXT.md 拥有术语；ADR 拥有难逆决策；Spec 拥有实施方案与测试决策；Tickets 拥有实施切片和阻塞关系。不要创建单独的 2方案草案。
 逐阶段模式：在方案审阅和 Tickets 审阅点返回固定 review 消息并停止，收到匹配 ID 的 PARENT_DECISION 后继续。
-连续模式：此前的 执行后续全部流程 是标准方案选择和原生审阅问题的预授权；不要发 review 消息，不运行额外质量门，直接选择、发布并交付。
+连续模式：此前的 执行后续全部流程 是标准方案选择和原生审阅问题的预授权；不发出 review 消息；仍完成方案就绪检查、原生发布和规划提交，通过后直接交付。
+范围扩展：认为需求边界外的改动是形成完整方案的必要条件时，按 $solution-design 的 visible-scope 规则返回 SOLUTION_DESIGN_ANOMALY，并等待用户明确决定。
 异常：执行失败、结果不确定、意外情况、与需求或已发布计划不符、或者需要调整计划时，返回 SOLUTION_DESIGN_ANOMALY 并停止；不要擅自调整。
 启动：第一条状态必须使用 SOLUTION_DESIGN_STARTED。
 完成：只在规划提交已完成且 Flow Worktree 干净后返回一次 SOLUTION_DESIGN_COMPLETE；不要自行进入 3实现。
@@ -194,6 +195,12 @@ Flow Worktree：<exact binding>
 发布结果：<completed results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
+方案就绪检查：<通过；evidence summary>
+模块与 Interface：<owning modules and boundaries | evidence-based not applicable>
+决策覆盖：<precedence and material branches | evidence-based not applicable>
+状态覆盖：<states, transitions and recovery | evidence-based not applicable>
+测试 seam：<acceptance conditions mapped to observable seams>
+Tickets 追踪：<Spec and acceptance mapping | not applicable after native $ask-matt decision>
 实现范围：<included scope>
 既有行为变化：<confirmed additions, removals, replacements and effects | none>
 必要关联改动：<confirmed required collateral changes | none>
@@ -219,6 +226,12 @@ Flow Worktree：<exact retained binding at planning merge commit>
 发布结果：<results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
+方案就绪检查：<通过；evidence summary>
+模块与 Interface：<owning modules and boundaries | evidence-based not applicable>
+决策覆盖：<precedence and material branches | evidence-based not applicable>
+状态覆盖：<states, transitions and recovery | evidence-based not applicable>
+测试 seam：<acceptance conditions mapped to observable seams>
+Tickets 追踪：<Spec and acceptance mapping | not applicable after native $ask-matt decision>
 实现范围：<included scope>
 既有行为变化：<confirmed additions, removals, replacements and effects | none>
 必要关联改动：<confirmed required collateral changes | none>
@@ -256,6 +269,12 @@ Flow Worktree：<exact retained binding at planning merge commit>
 发布结果：<child-reported results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<child-reported Testing Decisions or exact Spec section>
+方案就绪检查：<通过；child-reported evidence summary>
+模块与 Interface：<child-reported owning modules and boundaries | evidence-based not applicable>
+决策覆盖：<child-reported precedence and material branches | evidence-based not applicable>
+状态覆盖：<child-reported states, transitions and recovery | evidence-based not applicable>
+测试 seam：<child-reported acceptance conditions mapped to observable seams>
+Tickets 追踪：<child-reported Spec and acceptance mapping | not applicable after native $ask-matt decision>
 实现范围：<child-reported included scope>
 既有行为变化：<child-reported confirmed additions, removals, replacements and effects | none>
 必要关联改动：<child-reported confirmed required collateral changes | none>

@@ -89,14 +89,16 @@ The child is the complete stage owner. It must:
 3. Write only stage-owned local planning documents whose baseline is known,
    then commit only those exact paths.
 4. Use the project's terminology and existing ADRs.
-5. Invoke the complete `$to-spec` behavior and publish the Spec to the exact
+5. Read `design-readiness.md` completely before starting native Spec work and
+   apply it at the existing review or publication seams.
+6. Invoke the complete `$to-spec` behavior and publish the Spec to the exact
    configured carrier.
-6. Create or update ADRs only for hard-to-reverse decisions.
-7. Invoke `$ask-matt` only to decide whether Tickets are useful.
-8. Invoke the complete `$to-tickets` behavior when Tickets are useful and
+7. Create or update ADRs only for hard-to-reverse decisions.
+8. Invoke `$ask-matt` only to decide whether Tickets are useful.
+9. Invoke the complete `$to-tickets` behavior when Tickets are useful and
    publish them to the exact configured carrier.
-9. Commit only clean-baseline, stage-owned local Spec, ADR, and Ticket paths.
-10. Finish with exactly one terminal review, anomaly, or completion message.
+10. Commit only clean-baseline, stage-owned local Spec, ADR, and Ticket paths.
+11. Finish with exactly one terminal review, anomaly, or completion message.
 
 Before invoking `$to-spec`, `$ask-matt`, or `$to-tickets`, read that Skill's
 complete `SKILL.md` through the selected project's registered Skill link. Treat
@@ -118,7 +120,9 @@ drafting state to its final published state.
 ## Stepwise review flow
 
 The child runs `$to-spec` until the native testing-seam and solution review
-point, then returns `SOLUTION_REVIEW_REQUIRED` instead of addressing the user.
+point, then completes **Spec readiness** from `design-readiness.md`. It repairs
+the draft inside the accepted scope before it returns
+`SOLUTION_REVIEW_REQUIRED` instead of addressing the user.
 It must include the exact candidate Spec, decisions, ADRs, scope, target, and a
 review ID. The review represents the child's proposed answer to the native
 testing-seam question and the complete solution choice; exact confirmation
@@ -134,8 +138,10 @@ The primary agent shows the fixed review block:
 
 After accepted Spec publication, the child invokes `$ask-matt`. If Tickets are
 not useful, continue without another confirmation. If Tickets are useful, run
-`$to-tickets` through its quiz point and return `TICKETS_REVIEW_REQUIRED` with
-the exact draft set, order, dependencies, target, and review ID.
+`$to-tickets` through its quiz point, complete **Ticket traceability** from
+`design-readiness.md`, and repair any in-scope gap before returning
+`TICKETS_REVIEW_REQUIRED` with the exact draft set, order, dependencies, target,
+and review ID.
 
 Handle acceptance or edits identically. The child performs the actual native
 publication after acceptance and owns uncertain-publication recovery.
@@ -152,18 +158,20 @@ standard stage-2 decisions and native review questions on the frozen target.
 The child must:
 
 - answer the `$to-spec` testing-seam question using its best judgment;
+- complete **Spec readiness** and repair in-scope draft gaps before publication;
 - choose the solution without `SOLUTION_REVIEW_REQUIRED`;
 - decide whether Tickets are useful;
 - answer the `$to-tickets` quiz using its best judgment;
+- when Tickets are useful, complete **Ticket traceability** and repair in-scope
+  gaps before publication;
 - publish Spec, ADRs, and Tickets directly;
-- emit no human review, completeness, reasonableness, testing-strategy,
-  granularity, acceptance-condition, dependency, cycle, duplicate, or
-  independent quality gate; and
+- emit no human review or independent readiness-review message; and
 - finish with `SOLUTION_DESIGN_COMPLETE` unless an anomaly occurs.
 
-This skips review and checking gates, not the work needed to produce the native
-artifacts. Do not claim a check was run when continuous mode deliberately skips
-it.
+This skips human review, not native artifact work or the child's readiness
+checks. Readiness failures that stay inside the accepted scope are repaired by
+the same child; the existing anomaly contract still governs scope or plan
+changes.
 
 ## Anomaly contract
 
@@ -274,15 +282,16 @@ uncertainty instead of retrying blindly.
 The child may emit `SOLUTION_DESIGN_COMPLETE` only after it has finished its
 selected native publication and required local stage-owned commit work. The message must
 name requirement source, Spec, ADRs, Tickets, planning commit, publication
-result, implementation basis, flow mode, Flow Worktree binding, and workspace
-state. Completion requires the child to report a clean Flow Worktree with
-stage-owned planning paths committed. Any different state is an anomaly,
-including in continuous mode.
+result, implementation basis, flow mode, Flow Worktree binding, workspace
+state, and every fixed readiness-evidence field. Completion requires the child
+to report a clean Flow Worktree with stage-owned planning paths committed. Any
+different state is an anomaly, including in continuous mode.
 
 Accept completion only from the trusted child returned by `spawn_agent`.
 
 - **Stepwise:** mechanically require referenced files or URLs, publication
-  results, the planning commit, and Flow Worktree state.
+  results, the planning commit, Flow Worktree state, and non-empty readiness
+  evidence fields.
   Do not re-review content or repeat publication.
 - **Continuous:** require the saved child identity, exact message type, protocol
   version, flow mode, all fixed completion fields, and child-reported

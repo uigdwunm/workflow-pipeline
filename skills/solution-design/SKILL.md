@@ -16,6 +16,9 @@ Read
 completely before launching, resuming, or accepting a solution-design
 subagent. Before creating or publishing the Flow Worktree, also read
 [the shared worktree execution contract](../guided-implementation/references/worktree-execution.md).
+The child reads
+[references/design-readiness.md](references/design-readiness.md) before native
+Spec synthesis and applies it at the existing review or publication seams.
 
 ## Select the runtime role
 
@@ -93,11 +96,15 @@ Before review or publication, make all material effects visible:
   user-visible side effects; and
 - valuable improvements intentionally left outside the current scope.
 
-An effect outside the accepted boundary must be proposed before it enters the
-solution. In stepwise mode, obtain the user's explicit decision at the solution
-review or anomaly checkpoint. In continuous mode, prior authorization covers
-only choices inside the accepted requirement source; a scope expansion still
-stops as an anomaly. Never publish the expansion first and disclose it later.
+Keep every unapproved effect outside the accepted boundary out of the solution.
+When the child judges such an effect necessary for a coherent solution, stop as
+a `SOLUTION_DESIGN_ANOMALY` in every flow mode before incorporating it. Report
+why it is necessary, the exact scope expansion, user-visible and compatibility,
+data, or API effects, reasonable alternatives including staying within scope,
+and the recommended choice. Wait for the user's explicit decision. Prior
+authorization in continuous mode covers only choices inside the accepted
+requirement source. Never incorporate or publish an expansion first and
+disclose it later.
 
 Resolve every material product, scope, behavior, architecture, compatibility,
 data, and testing-seam decision in stage 2. Leave stage 3 only ordinary
@@ -115,9 +122,9 @@ Only exact `执行后续全部流程` from a verified successful stage-1 footer 
 - In `逐阶段确认`, require the fixed launch confirmation, solution review,
   optional Tickets review, and final confirmation before `3实现`.
 - In `连续执行后续全部流程`, disclose the launch configuration without pausing,
-  skip human review and additional quality gates, accept trusted child
-  completion without independent content or mechanical review, and enter
-  `3实现` immediately.
+  skip human review, retain solution readiness and the existing mechanical
+  completion intake, accept the trusted child's readiness evidence without an
+  independent content review, and enter `3实现` immediately.
 
 Continuous mode never authorizes a changed target, expanded permissions,
 destructive workspace action, implementation during stage 2, or silent
@@ -146,10 +153,11 @@ do not block Flow Worktree creation.
 
 Use the protocol's notification wait, review/anomaly and resume messages with
 the same child. Stepwise mode preserves launch, solution, optional Tickets and
-final confirmations. Continuous mode skips only the documented reviews and
-quality gates; it does not widen target, permissions or side effects. Process
-one trusted completion once and route any inconsistency through the anomaly
-checkpoint instead of improvising or spawning a replacement.
+final confirmations. Continuous mode skips only the documented human reviews;
+it retains the child's solution readiness work and the existing mechanical
+completion intake, and it does not widen target, permissions or side effects.
+Process one trusted completion once and route any inconsistency through the
+anomaly checkpoint instead of improvising or spawning a replacement.
 ## Complete the stage
 
 After accepting the trusted child's clean planning commit, call
