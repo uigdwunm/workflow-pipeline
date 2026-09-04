@@ -3498,10 +3498,12 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         submit["actor_topic_id"] = prepared["target_topic_id"]
         code, claimed, stderr = self.run_cli(submit)
         self.assertEqual(code, 0, stderr)
+        self.assertEqual(claimed["frozen_authority"]["decision_ids"], ["D-child"])
         release = {"dependency_id": prepared["initial_dependencies"][0]["dependency_id"], "authority_kind": "confirmed-decision", "authority_identity": None, "decision_ids": ["D-child"]}
         absorb = self.handoff_request(topic, operation="record-child-result", ledger_revision=6, handoff_id=prepared["handoff_id"], child_result_id=claimed["child_result_id"], effect="absorb", dependency_releases=[release])
-        code, _, stderr = self.run_cli(absorb)
+        code, absorbed, stderr = self.run_cli(absorb)
         self.assertEqual(code, 0, stderr)
+        self.assertEqual(absorbed["frozen_authority"], claimed["frozen_authority"])
         frontmatter, records = PROTOCOL._load_records(ledger)
         child = next(item for item in records["Phase Results"] if item["result_id"] == claimed["child_result_id"])
         frozen = json.loads(str(child["authority_json"]))
@@ -4659,6 +4661,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         returncode, claimed, stderr = self.run_cli(submit)
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(claimed["state"], "pending-parent-acceptance")
+        self.assertEqual(claimed["frozen_authority"]["authority_kind"], "none")
         returncode, absorbed, stderr = self.run_cli(
             self.handoff_request(
                 topic,

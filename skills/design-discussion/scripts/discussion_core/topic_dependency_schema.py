@@ -182,7 +182,7 @@ def _ledger_decision_pairs(
             continue
         decision = _object(record.get("data_json"), "decision data_json", error)
         decision_id = decision.get("decision_id")
-        if not isinstance(decision_id, str) or record.get("decision_id") != decision_id:
+        if not isinstance(decision_id, str) or record.get("item_id") != decision_id:
             error("state_corrupt", "decision envelope is incoherent")
         pairs[decision_id] = hashlib.sha256(
             json.dumps(decision, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
