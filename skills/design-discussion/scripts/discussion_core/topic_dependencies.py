@@ -431,7 +431,7 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
         if topic["current_phase"] not in {0, 1}: raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are immutable after Phase 1")
         if action == "create":
             _validate_new_edge(records, request["actor_topic_id"], request["prerequisite_topic_id"], request["requirement_kind"], request["requirement_summary"])
-            dep = _new_dependency_record(dependency_id=_dependency_id(request["idempotency_key"]), dependent_topic_id=request["actor_topic_id"], prerequisite_topic_id=request["prerequisite_topic_id"], requirement_kind=request["requirement_kind"], requirement_summary=request["requirement_summary"], reason={"kind": "explicit-create", "ledger_revision": revision + 1})
+            dep = _new_dependency_record(dependency_id=_dependency_id(request["idempotency_key"]), dependent_topic_id=request["actor_topic_id"], prerequisite_topic_id=request["prerequisite_topic_id"], requirement_kind=request["requirement_kind"], requirement_summary=request["requirement_summary"], reason={"kind": "explicit-create", "dependency_update_id": request["idempotency_key"], "ledger_revision": revision + 1})
             records["Topic Dependencies"].append(dep)
         else:
             dep = _record_by_id(records["Topic Dependencies"], "dependency_id", request["dependency_id"], "dependency_id")
@@ -443,7 +443,7 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
             else:
                 dep["relation_state"] = "cancelled"
             dep["record_revision"] += 1
-            dep["gate_reason_json"] = _canonical_json({"kind": f"explicit-{action}", "ledger_revision": revision + 1})
+            dep["gate_reason_json"] = _canonical_json({"kind": f"explicit-{action}", "dependency_update_id": request["idempotency_key"], "ledger_revision": revision + 1})
         result = {"ok": True, "state": action, "idempotent_replay": False, "dependency_id": dep["dependency_id"], "dependency_revision": dep["record_revision"], "ledger_revision": revision + 1, "record_revision": topic_revision, "derived_gate_state": derived_gate(records, request["actor_topic_id"])}
         _inject_failure("topic-dependency-before-ledger-write")
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=revision + 1, event_type=f"topic-dependency-{action}", result=result)
@@ -492,7 +492,7 @@ def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("topic_gate_evaluation_stale", "topic gate evaluation is stale")
         for item in _closed(records, request["actor_topic_id"]):
             match = next(entry for entry in evaluation["release_set"] if entry["dependency_id"] == item["dependency_id"])
-            item["gate_state"] = "open"; item["record_revision"] += 1; item["accepted_basis_json"] = _canonical_json(match["basis"]); item["gate_reason_json"] = _canonical_json({"kind": "atomic-release", "ledger_revision": revision + 1})
+            item["gate_state"] = "open"; item["record_revision"] += 1; item["accepted_basis_json"] = _canonical_json(match["basis"]); item["gate_reason_json"] = _canonical_json({"kind": "atomic-release", "release_id": request["idempotency_key"], "ledger_revision": revision + 1})
         result = {"ok": True, "state": "open", "idempotent_replay": False, "ledger_revision": revision + 1, "record_revision": topic_revision, "derived_gate_state": "open", "accepted_bases": evaluation["release_set"]}
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=revision + 1, event_type="topic-gate-released", result=result)
         return result

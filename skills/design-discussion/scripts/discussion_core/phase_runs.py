@@ -1733,7 +1733,7 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
             reclose_directly_affected(
                 records, prerequisite_topic_id=request["actor_topic_id"],
                 changed_decision_ids=changed,
-                cause={"kind": "phase-reopen", "affected_decision_ids": sorted(changed), "invalidated_result_ids": sorted(item for item in invalidated_results if isinstance(item, str))},
+                cause={"kind": "phase-reopen", "reopen_id": request["idempotency_key"], "affected_decision_ids": sorted(changed), "invalidated_result_ids": sorted(item for item in invalidated_results if isinstance(item, str))},
                 ledger_revision=ledger_revision + 1,
                 invalidated_authority_ids={item for item in invalidated_results if isinstance(item, str)},
             )
