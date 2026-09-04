@@ -417,16 +417,17 @@ def _render_records_ledger(
         f"project_id: {frontmatter['project_id']}",
         f"tree_id: {frontmatter['tree_id']}",
     ]
-    if schema_version in {"2", "3"}:
+    if schema_version == "2" or (
+        schema_version == "3" and "creation_idempotency_key" in frontmatter
+    ):
         _validate_creation_receipt(frontmatter)
-        frontmatter_lines.extend(
-            [
-                "creation_idempotency_key: "
-                f"{json.dumps(frontmatter['creation_idempotency_key'])}",
-                "creation_fingerprint: "
-                f"{json.dumps(frontmatter['creation_fingerprint'])}",
-            ]
-        )
+        frontmatter_lines.extend([
+            "creation_idempotency_key: " f"{json.dumps(frontmatter['creation_idempotency_key'])}",
+            "creation_fingerprint: " f"{json.dumps(frontmatter['creation_fingerprint'])}",
+        ])
+    elif schema_version == "3":
+        if "creation_fingerprint" in frontmatter:
+            raise ProtocolError("state_corrupt", "ledger creation receipt is incomplete")
     elif schema_version == "1":
         if (
             "creation_idempotency_key" in frontmatter
@@ -480,8 +481,12 @@ def _hydrate_legacy_creation_receipt(
     schema_version = frontmatter.get("schema_version")
     has_key = "creation_idempotency_key" in frontmatter
     has_fingerprint = "creation_fingerprint" in frontmatter
-    if schema_version in {"2", "3"}:
+    if schema_version == "2":
         _validate_creation_receipt(frontmatter)
+        return
+    if schema_version == "3":
+        if "creation_idempotency_key" in frontmatter or "creation_fingerprint" in frontmatter:
+            _validate_creation_receipt(frontmatter)
         return
     if schema_version != "1":
         raise ProtocolError("state_corrupt", "ledger schema_version is unsupported")
@@ -523,6 +528,8 @@ def _is_exact_creation_replay(
     frontmatter: dict[str, str], *, idempotency_key: str, request_fingerprint: str
 ) -> bool:
     if frontmatter.get("schema_version") == "1":
+        return False
+    if "creation_idempotency_key" not in frontmatter:
         return False
     stored_key, stored_fingerprint = _validate_creation_receipt(frontmatter)
     if stored_key != idempotency_key:

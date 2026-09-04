@@ -815,7 +815,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         prepared = self.prepare_phase_run(topic)
         self.assertEqual(prepared["ledger_revision"], 2)
         self.assertIn(
-            "schema_version: 1", ledger_path.read_text(encoding="utf-8")
+            "schema_version: 3", ledger_path.read_text(encoding="utf-8")
         )
 
     def test_read_topic_returns_current_lifecycle_state(self) -> None:
