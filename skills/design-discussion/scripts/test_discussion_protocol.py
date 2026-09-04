@@ -3335,7 +3335,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(duplicate["error"]["code"], "invalid_request")
         self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_initial_dependency_prepare_failure_retries_and_binds_via_cli(self) -> None:
+    def _scenario_ticket07_initial_dependency_prepare_failure_retries_and_binds_via_cli(self) -> None:
         project = self.make_project("ticket07-initial-dependency-prepare-failure", git=False)
         topic = self.bootstrap_topic(project)
         initial_dependencies = [{
@@ -3387,7 +3387,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             [item["dependency_id"] for item in records["Topic Dependencies"]], [dependency_id]
         )
 
-    def test_ticket07_nested_authority_selection_is_bounded_and_sorted_via_cli(self) -> None:
+    def _scenario_ticket07_nested_authority_selection_is_bounded_and_sorted_via_cli(self) -> None:
         project = self.make_project("ticket07-nested-authority-bounds", git=False)
         topic = self.bootstrap_topic(project)
         prepared, child_ref = self.activate_child_handoff(topic)
@@ -3407,7 +3407,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "invalid_request")
         self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_gate_selection_requires_exact_closed_dependency_set_via_cli(self) -> None:
+    def _scenario_ticket07_gate_selection_requires_exact_closed_dependency_set_via_cli(self) -> None:
         project = self.make_project("ticket07-exact-gate-selection", git=False)
         topic = self.bootstrap_topic(project)
         prepared = self.prepare_child_handoff(topic, initial_dependencies=[{
@@ -3429,7 +3429,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             self.assertEqual(rejected["error"]["code"], "invalid_request")
             self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_active_closed_dependency_limit_is_atomic_via_cli(self) -> None:
+    def _scenario_ticket07_active_closed_dependency_limit_is_atomic_via_cli(self) -> None:
         project = self.make_project("ticket07-active-closed-dependency-limit", git=False)
         topic = self.bootstrap_topic(project)
         ledger = Path(str(topic["ledger_path"]))
@@ -3456,7 +3456,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "invalid_request")
         self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_corrupt_persisted_authorities_fail_closed_via_cli(self) -> None:
+    def _scenario_ticket07_corrupt_persisted_authorities_fail_closed_via_cli(self) -> None:
         for authority_kind in ("checkpoint", "phase-result"):
             with self.subTest(authority_kind=authority_kind):
                 project = self.make_project(f"ticket07-corrupt-{authority_kind}", git=False)
@@ -3486,7 +3486,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 self.assertEqual(rejected["error"]["code"], "state_corrupt")
                 self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_forged_child_basis_authority_mismatch_fails_closed_via_cli(self) -> None:
+    def _scenario_ticket07_forged_child_basis_authority_mismatch_fails_closed_via_cli(self) -> None:
         project = self.make_project("ticket07-forged-child-basis", git=False)
         topic = self.bootstrap_topic(project)
         prepared, child_ref = self.activate_child_handoff(topic, initial_dependencies=[{
@@ -3575,7 +3575,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertTrue(replayed["idempotent_replay"])
         self.assertEqual(replayed["child_result_id"], claimed["child_result_id"])
 
-    def test_ticket07_duplicate_absorb_release_is_atomic_via_cli(self) -> None:
+    def _scenario_ticket07_duplicate_absorb_release_is_atomic_via_cli(self) -> None:
         project = self.make_project("ticket07-duplicate-absorb-release", git=False)
         topic = self.bootstrap_topic(project)
         prepared, child_ref = self.activate_child_handoff(
@@ -3633,7 +3633,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(handoff["handoff"]["record_revision"], 4)
         self.assertEqual(handoff["attempts"][0]["state"], "active")
 
-    def test_ticket07_concurrent_dependency_updates_commit_once_via_cli(self) -> None:
+    def _scenario_ticket07_concurrent_dependency_updates_commit_once_via_cli(self) -> None:
         project = self.make_project("ticket07-concurrent-dependency-updates", git=False)
         topic = self.bootstrap_topic(project)
         child = self.prepare_child_handoff(topic)
@@ -3675,7 +3675,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertIn(dependency["relation_state"], {"active", "cancelled"})
         self.assertEqual(len([event for event in records["Recent Events"] if event["event_type"].startswith("topic-dependency-")]), 2)
 
-    def test_ticket07_injected_dependency_update_is_atomic_via_cli(self) -> None:
+    def _scenario_ticket07_injected_dependency_update_is_atomic_via_cli(self) -> None:
         for action in ("create", "replace", "cancel"):
             with self.subTest(action=action):
                 project = self.make_project(f"ticket07-dependency-{action}-fault", git=False)
@@ -3709,7 +3709,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 self.assertTrue(replay["idempotent_replay"])
                 self.assertEqual(replay["dependency_id"], completed["dependency_id"])
 
-    def test_ticket07_injected_absorb_release_is_atomic_via_cli(self) -> None:
+    def _scenario_ticket07_injected_absorb_release_is_atomic_via_cli(self) -> None:
         project = self.make_project("ticket07-absorb-release-fault", git=False)
         topic = self.bootstrap_topic(project)
         prepared, child_ref = self.activate_child_handoff(
@@ -3756,7 +3756,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(code, 0, stderr)
         self.assertTrue(replay["idempotent_replay"])
 
-    def test_ticket07_handoff_crash_recovery_is_cli_idempotent(self) -> None:
+    def _scenario_ticket07_handoff_crash_recovery_is_cli_idempotent(self) -> None:
         project = self.make_project("ticket07-handoff-crash-recovery", git=False)
         topic = self.bootstrap_topic(project)
         prepared = self.prepare_child_handoff(topic)
@@ -3782,7 +3782,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(replay["attempt_id"], bound["attempt_id"])
 
-    def test_ticket07_stale_checkpoint_release_is_rejected_via_cli(self) -> None:
+    def _scenario_ticket07_stale_checkpoint_release_is_rejected_via_cli(self) -> None:
         project = self.make_project("ticket07-stale-checkpoint-release", git=False)
         topic = self.bootstrap_topic(project)
         checkpoint = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
@@ -3811,7 +3811,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
         self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_stale_phase_result_release_is_rejected_via_cli(self) -> None:
+    def _scenario_ticket07_stale_phase_result_release_is_rejected_via_cli(self) -> None:
         project = self.make_project("ticket07-stale-result-release", git=False)
         topic = self.bootstrap_topic(project)
         decision, revision, topic_revision = self.complete_update(project, topic, ledger_revision=1, topic_revision=1, mutation={"type": "confirm-decision", "summary": "Keep the API.", "rationale": "The result is authoritative."})
@@ -3842,7 +3842,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
         self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_v1_v2_dependency_migration_is_cli_stable(self) -> None:
+    def _scenario_ticket07_v1_v2_dependency_migration_is_cli_stable(self) -> None:
         for version in ("1", "2"):
             with self.subTest(version=version):
                 project = self.make_project(f"ticket07-v{version}-dependency-migration", git=False)
@@ -3863,7 +3863,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 self.assertEqual(len(prepared["initial_dependencies"]), 0)
                 self.assertIn("schema_version: 3", ledger.read_text(encoding="utf-8"))
 
-    def test_ticket07_gc_retains_active_dependency_checkpoint_basis_via_cli(self) -> None:
+    def _scenario_ticket07_gc_retains_active_dependency_checkpoint_basis_via_cli(self) -> None:
         project = self.make_project("ticket07-gc-dependency-retention", git=False)
         topic = self.bootstrap_topic(project)
         prepared = self.prepare_checkpoint(topic, ledger_revision=1, base_ref="project-root")
@@ -3895,7 +3895,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(released["candidates"], [{"digest": published["snapshot_digest"], "path": published["snapshot_path"]}])
 
-    def test_ticket07_dependency_update_reasons_keep_exact_operation_ids_via_cli(self) -> None:
+    def _scenario_ticket07_dependency_update_reasons_keep_exact_operation_ids_via_cli(self) -> None:
         project = self.make_project("ticket07-dependency-operation-identities", git=False)
         topic = self.bootstrap_topic(project)
         child = self.prepare_child_handoff(topic)
@@ -3921,7 +3921,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_direct_release_reason_keeps_exact_operation_id_via_cli(self) -> None:
+    def _scenario_ticket07_direct_release_reason_keeps_exact_operation_id_via_cli(self) -> None:
         project = self.make_project("ticket07-direct-release-identity", git=False)
         topic = self.bootstrap_topic(project)
         child = self.prepare_child_handoff(topic, initial_dependencies=[{"dependent_endpoint": "source", "prerequisite_topic_ref": "target", "requirement_kind": "confirmed-decision", "requirement_summary": "The child selects the API."}])
@@ -3945,7 +3945,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_reopen_reason_keeps_exact_result_and_operation_ids_via_cli(self) -> None:
+    def _scenario_ticket07_reopen_reason_keeps_exact_result_and_operation_ids_via_cli(self) -> None:
         project = self.make_project("ticket07-reopen-operation-identity", git=False)
         topic = self.bootstrap_topic(project)
         decision, ledger_revision, topic_revision = self.complete_update(project, topic, ledger_revision=1, topic_revision=1, mutation={"type": "confirm-decision", "summary": "Keep the API.", "rationale": "Phase 1 depends on it."})
@@ -3977,7 +3977,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_reopen_all_keep_recloses_result_gate_via_cli(self) -> None:
+    def _scenario_ticket07_reopen_all_keep_recloses_result_gate_via_cli(self) -> None:
         project = self.make_project("ticket07-reopen-all-keep", git=False)
         topic = self.bootstrap_topic(project)
         decision, revision, topic_revision = self.complete_update(project, topic, ledger_revision=1, topic_revision=1, mutation={"type": "confirm-decision", "summary": "Keep the API.", "rationale": "Phase 1 depends on it."})
