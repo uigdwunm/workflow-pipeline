@@ -257,10 +257,16 @@ def _phase_result_candidates(
             frozen = phase_result["decision_authority"]
             if (
                 record.get("result_id") != phase_result.get("result_id")
-                or phase_result.get("topic_id") != prerequisite
+            ):
+                raise ProtocolError("state_corrupt", "completed Phase Result envelope is incoherent")
+            if (
+                phase_result.get("topic_id") != prerequisite
                 or phase_result.get("from_phase") != 0
                 or phase_result.get("to_phase") != 1
-                or not isinstance(phase_result.get("phase_run_id"), str)
+            ):
+                continue
+            if (
+                not isinstance(phase_result.get("phase_run_id"), str)
                 or not isinstance(ids, list)
                 or ids != sorted(set(ids))
                 or not isinstance(frozen, list)

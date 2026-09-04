@@ -7674,6 +7674,113 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
         self.assertEqual(ledger.read_bytes(), before)
 
+    def test_ticket07_repaired_git_checkpoint_is_current_authority_via_cli(self) -> None:
+        project = self.make_project("ticket07-repaired-git-checkpoint", git=True)
+        (project / "base.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(project), "add", "base.txt"], check=True)
+        subprocess.run(["git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"], check=True)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_checkpoint(topic, ledger_revision=1, purpose="stage-entry")
+        published = self.publish_git_checkpoint(project, topic, prepared, ledger_revision=2)
+        original_commit = str(published["commit_id"])
+        tree = subprocess.run(["git", "-C", str(project), "show", "-s", "--format=%T", "HEAD"], check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+        replacement_parent = subprocess.run(
+            ["git", "-C", str(project), "commit-tree", tree], input="rewritten base\n",
+            check=True, stdout=subprocess.PIPE, text=True,
+            env={**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com", "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.com"},
+        ).stdout.strip()
+        replacement = self.create_matching_checkpoint_commit(
+            project, prepared, timestamp="2026-02-01T00:00:00+00:00", parent_commit=replacement_parent,
+        )
+        code, _, stderr = self.run_cli(self.checkpoint_request(
+            topic, operation="mark-checkpoint-broken", ledger_revision=3,
+            checkpoint_id=prepared["checkpoint_id"], expected_checkpoint_revision=2,
+            broken_identity=original_commit, reason="history rewritten",
+        ))
+        self.assertEqual(code, 0, stderr)
+        repair = self.checkpoint_request(
+            topic, operation="repair-checkpoint", ledger_revision=4,
+            checkpoint_id=prepared["checkpoint_id"], expected_checkpoint_revision=3,
+            replacement_commit=replacement, replacement_base_ref=replacement_parent,
+        )
+        code, repaired, stderr = self.run_cli(repair)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(repaired["replacement_identity"], replacement)
+        ledger = Path(str(topic["ledger_path"]))
+        after_repair = ledger.read_bytes()
+        code, replay, stderr = self.run_cli(repair)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(ledger.read_bytes(), after_repair)
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        dependent_id = "topic-" + uuid.uuid4().hex
+        dependency_id = "DEP-" + uuid.uuid4().hex
+        records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
+        records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The repaired checkpoint remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        evaluate = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": prepared["checkpoint_id"], "decision_ids": []}])
+        evaluate["actor_topic_id"] = dependent_id
+        evaluate["actor_conversation_ref"] = "codex-thread:dependent"
+        code, evaluation, stderr = self.run_cli(evaluate)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(evaluation["state"], "releasable")
+        release = self.evolution_request(topic, operation="release-topic-gate", expected_revision=5, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"])
+        release["actor_topic_id"] = dependent_id
+        release["actor_conversation_ref"] = "codex-thread:dependent"
+        code, released, stderr = self.run_cli(release)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(released["state"], "open")
+
+    def test_ticket07_invalid_latest_checkpoint_does_not_fallback_via_cli(self) -> None:
+        for fault in ("missing", "corrupt", "stale"):
+            with self.subTest(fault=fault):
+                project = self.make_project(f"ticket07-invalid-latest-{fault}", git=False)
+                topic = self.bootstrap_topic(project)
+                older = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+                latest = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=3)
+                ledger = Path(str(topic["ledger_path"]))
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                dependent_id = "topic-" + uuid.uuid4().hex
+                dependency_id = "DEP-" + uuid.uuid4().hex
+                records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
+                records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
+                records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "Only the latest authority may release this gate.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                selected = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": latest["checkpoint_id"], "decision_ids": []}])
+                selected["actor_topic_id"] = dependent_id
+                selected["actor_conversation_ref"] = "codex-thread:dependent"
+                code, evaluation, stderr = self.run_cli(selected)
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(evaluation["state"], "releasable")
+                snapshot_path = Path(str(latest["snapshot_path"]))
+                if fault == "missing":
+                    snapshot_path.unlink()
+                elif fault == "corrupt":
+                    snapshot_path.chmod(0o600)
+                    snapshot_path.write_bytes(b"not a checkpoint artifact\n")
+                else:
+                    snapshot_path.chmod(0o600)
+                    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                    snapshot["purpose"] = "pause"
+                    snapshot_path.write_text(PROTOCOL._canonical_json(snapshot) + "\n", encoding="utf-8")
+                blocked = self.evolution_request(topic, operation="evaluate-topic-gate")
+                blocked["actor_topic_id"] = dependent_id
+                blocked["actor_conversation_ref"] = "codex-thread:dependent"
+                code, unavailable, stderr = self.run_cli(blocked)
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(unavailable["state"], "blocked")
+                self.assertEqual(unavailable["dependencies"][0]["candidates"], [])
+                before = ledger.read_bytes()
+                release = self.evolution_request(topic, operation="release-topic-gate", expected_revision=5, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"])
+                release["actor_topic_id"] = dependent_id
+                release["actor_conversation_ref"] = "codex-thread:dependent"
+                code, rejected, _ = self.run_cli(release)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
+                self.assertEqual(ledger.read_bytes(), before)
+                self.assertNotEqual(older["checkpoint_id"], latest["checkpoint_id"])
+
 
 if __name__ == "__main__":
     unittest.main()
