@@ -3387,6 +3387,26 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             [item["dependency_id"] for item in records["Topic Dependencies"]], [dependency_id]
         )
 
+    def test_ticket07_nested_authority_selection_is_bounded_and_sorted_via_cli(self) -> None:
+        project = self.make_project("ticket07-nested-authority-bounds", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared, child_ref = self.activate_child_handoff(topic)
+        request = self.handoff_request(
+            topic, operation="submit-child-result", ledger_revision=5, owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+            result_scope=["api"], summary="Bounded authority.", authority_selection={
+                "authority_kind": "confirmed-decision", "authority_identity": None,
+                "decision_ids": [f"D-{index:02d}" for index in range(65)],
+            },
+        )
+        request["actor_topic_id"] = prepared["target_topic_id"]
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        code, rejected, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "invalid_request")
+        self.assertEqual(ledger.read_bytes(), before)
+
     def test_dependent_owner_can_create_and_cancel_a_dependency(self) -> None:
         project = self.make_project("dependency-update", git=False)
         topic = self.bootstrap_topic(project)
