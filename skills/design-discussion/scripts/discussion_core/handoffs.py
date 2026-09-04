@@ -356,6 +356,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             _record_by_id(records["Phase Runs"], "run_id", handoff_id, "handoff_id"),
             handoff,
         )
+        _inject_failure("handoff-after-initial-dependencies-before-ledger-write")
         _write_ledger_transaction(
             ledger_path, frontmatter, records, request,
             ledger_revision=next_revision, event_type="handoff-prepared", result=result,

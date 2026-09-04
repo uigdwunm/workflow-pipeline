@@ -3335,6 +3335,58 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(duplicate["error"]["code"], "invalid_request")
         self.assertEqual(ledger.read_bytes(), before)
 
+    def test_ticket07_initial_dependency_prepare_failure_retries_and_binds_via_cli(self) -> None:
+        project = self.make_project("ticket07-initial-dependency-prepare-failure", git=False)
+        topic = self.bootstrap_topic(project)
+        initial_dependencies = [{
+            "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+            "requirement_kind": "confirmed-decision",
+            "requirement_summary": "The child selects the API.",
+        }]
+        request = self.handoff_request(
+            topic, operation="prepare-handoff", ledger_revision=1,
+            handoff_kind="child", target_slug="api-shape", scope=["api"],
+            work_snapshot={"goal": "Choose the API.", "confirmed_decisions": [], "pending_questions": ["Which API?"]},
+            authoritative_references=[{"kind": "checkpoint", "identity": "CP-source", "sha256": "1" * 64}],
+            initial_dependencies=initial_dependencies,
+        )
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        code, failed, _ = self.run_cli(
+            request, failpoint="handoff-after-initial-dependencies-before-ledger-write"
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(failed["error"]["code"], "injected_failure")
+        self.assertEqual(ledger.read_bytes(), before)
+        code, prepared, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(len(prepared["initial_dependencies"]), 1)
+        dependency_id = prepared["initial_dependencies"][0]["dependency_id"]
+        self.assertRegex(dependency_id, r"^DEP-[0-9a-f]{32}$")
+        code, replay, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(replay["initial_dependencies"], prepared["initial_dependencies"])
+        bind = self.handoff_request(
+            topic, operation="bind-handoff", ledger_revision=2,
+            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+            conversation_ref="codex-thread:late-bound-child", verified_identity={
+                "project_id": topic["project_id"], "tree_id": topic["tree_id"],
+                "topic_id": prepared["target_topic_id"], "handoff_id": prepared["handoff_id"],
+                "attempt_id": prepared["attempt_id"], "payload_sha256": prepared["payload_sha256"],
+            },
+        )
+        code, bound, stderr = self.run_cli(bind)
+        self.assertEqual(code, 0, stderr)
+        code, duplicate_bind, stderr = self.run_cli(bind)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(duplicate_bind["idempotent_replay"])
+        self.assertEqual(duplicate_bind["attempt_id"], bound["attempt_id"])
+        _, records = PROTOCOL._load_records(ledger)
+        self.assertEqual(
+            [item["dependency_id"] for item in records["Topic Dependencies"]], [dependency_id]
+        )
+
     def test_dependent_owner_can_create_and_cancel_a_dependency(self) -> None:
         project = self.make_project("dependency-update", git=False)
         topic = self.bootstrap_topic(project)

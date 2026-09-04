@@ -23,17 +23,21 @@ and `reread_verified: true`.
 
 当前话题：<current topic>
 建议拆出：<new topic goal>
-判断依据：<independent goal, outcome, interruption, removability>
+判断依据：<why this is an independent discussion target>
 
 话题归属：<current discussion tree | new root topic>
 结构来源：<parent topic | none>
 新话题入口：0讨论
 
-依赖关系：<none | dependent depends on prerequisite>
-所需结果：<none | exact semantic prerequisite result>
-初始门禁：<open | closed>
-放行触发：<none | user-confirmed evaluation of exact current authority>
-当前话题处理：<continue | wait>
+依赖关系：
+- <no dependency; both topics may continue>
+or
+- <dependent topic> depends on <prerequisite topic>
+- 所需结果：<specific Phase-0/1 result>
+- 初始门禁：关闭
+- 放行触发：用户在依赖方话题中要求继续时检查
+
+当前话题处理：<continue | wait for the new topic result>
 结果回流：<absorb | impact review | no return required>
 
 确认事项：接受以上拆分方向，并准备新话题身份、初始依赖和 handoff
