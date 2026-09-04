@@ -530,10 +530,22 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
                 expected_selection_fields.add("authority_id")
             if set(selected) != expected_selection_fields:
                 raise ProtocolError("topic_dependency_evidence_unavailable", "selected dependency evidence is not current")
-            candidate, chosen = _normalize_authority_selection(
-                candidates, dependency["requirement_kind"], authority_id,
-                selected.get("decision_ids"),
-            )
+            try:
+                candidate, chosen = _normalize_authority_selection(
+                    candidates, dependency["requirement_kind"], authority_id,
+                    selected.get("decision_ids"),
+                )
+            except ProtocolError as error:
+                if error.code == "topic_dependency_evidence_unavailable":
+                    raise ProtocolError(
+                        error.code, error.message,
+                        context=_dependency_context(
+                            dependency_id=dependency["dependency_id"],
+                            dependent_topic_id=dependency["dependent_topic_id"],
+                            prerequisite_topic_id=dependency["prerequisite_topic_id"],
+                        ),
+                    ) from error
+                raise
             basis = {"basis_version": 1, "dependency_id": dependency["dependency_id"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "requirement_kind": dependency["requirement_kind"], "decision_authority": [{"decision_id": item["decision_id"], "sha256": item["sha256"]} for item in chosen]}
             if candidate.get("authority") is not None:
                 basis["authority"] = candidate["authority"]
@@ -759,7 +771,14 @@ def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
         revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         if topic["current_phase"] not in {0, 1}:
-            raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are immutable after Phase 1")
+            raise ProtocolError(
+                "topic_dependency_phase_conflict",
+                "topic dependencies are immutable after Phase 1",
+                context=_dependency_context(
+                    dependent_topic_id=request["actor_topic_id"],
+                    phase=topic["current_phase"],
+                ),
+            )
         if not isinstance(request["release_set"], list) or len(request["release_set"]) > 64:
             raise ProtocolError("invalid_request", "release_set is invalid")
         selection = [_release_selection_from_basis(item) for item in request["release_set"]]

@@ -62,6 +62,9 @@ class TopicDependencyCliTests(unittest.TestCase):
             expected_topic_revision=1, release_set=[], release_set_sha256="0" * 64))
         self.assertEqual(code, 1)
         self.assertEqual(rejected["error"]["code"], "topic_dependency_phase_conflict")
+        self.assertEqual(rejected["error"]["context"], {
+            "dependent_topic_id": topic["topic_id"], "phase": 2,
+        })
         self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_direct_invalidation_does_not_propagate_via_cli(self) -> None:
@@ -157,3 +160,119 @@ class TopicDependencyCliTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertEqual(rejected["error"]["code"], "invalid_request")
                 self.assertEqual(ledger.read_bytes(), before)
+
+    def test_ticket07_dependency_error_context_matrix_via_cli(self) -> None:
+        """Dependency failures name the affected edge and never partially write."""
+        protocol = importlib.import_module("discussion_protocol")
+        project = self.fixture.make_project("ticket07-dependency-error-context", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        ledger = Path(str(topic["ledger_path"]))
+        dependent_id = str(topic["topic_id"])
+        prerequisite_id = "topic-" + "d" * 32
+        frontmatter, records = protocol._load_records(ledger)
+        records["Current Topics"].append({
+            "topic_id": prerequisite_id, "record_revision": 1,
+            "root_slug": "prerequisite", "parent_topic_id": dependent_id,
+            "current_phase": 1, "phase_state": "active", "review_state": "unreviewed",
+            "topic_state": "open", "topic_document_path": None,
+        })
+        records["Conversation Bindings"].append({
+            "topic_id": prerequisite_id, "conversation_ref": "codex-thread:prerequisite",
+            "binding_state": "active", "record_revision": 1,
+            "handoff_id": None, "attempt_id": None,
+        })
+        ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
+        create = self.fixture.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=1,
+            expected_topic_revision=1, action="create",
+            prerequisite_topic_id=prerequisite_id,
+            requirement_kind="confirmed-decision", requirement_summary="Await the prerequisite decision.",
+        )
+        code, created, stderr = self.fixture.run_cli(create)
+        self.assertEqual(code, 0, stderr)
+        dependency_id = created["dependency_id"]
+        committed = ledger.read_bytes()
+
+        def reject(request: dict[str, object], code_name: str, context: dict[str, object]) -> None:
+            with self.subTest(code=code_name):
+                code, response, _ = self.fixture.run_cli(request)
+                self.assertEqual(code, 1)
+                self.assertEqual(response["error"]["code"], code_name)
+                self.assertEqual(response["error"]["context"], context)
+                self.assertEqual(ledger.read_bytes(), committed)
+
+        reject(self.fixture.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=2,
+            expected_topic_revision=1, action="cancel", dependency_id=dependency_id,
+            expected_dependency_revision=99,
+        ), "record_revision_conflict", {
+            "dependency_id": dependency_id, "dependent_topic_id": dependent_id,
+            "prerequisite_topic_id": prerequisite_id,
+            "expected_dependency_revision": 99, "actual_dependency_revision": 1,
+        })
+        reject(self.fixture.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=2,
+            expected_topic_revision=1, action="create",
+            prerequisite_topic_id=prerequisite_id, requirement_kind="confirmed-decision",
+            requirement_summary="The duplicate edge.",
+        ), "topic_dependency_duplicate", {
+            "dependent_topic_id": dependent_id, "prerequisite_topic_id": prerequisite_id,
+        })
+        wrong_owner = self.fixture.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=2,
+            expected_topic_revision=1, action="cancel", dependency_id=dependency_id,
+            expected_dependency_revision=1,
+        )
+        wrong_owner.update({"actor_topic_id": prerequisite_id, "actor_conversation_ref": "codex-thread:prerequisite"})
+        reject(wrong_owner, "topic_dependency_ownership_conflict", {
+            "dependency_id": dependency_id, "dependent_topic_id": dependent_id,
+            "prerequisite_topic_id": prerequisite_id,
+        })
+        cycle = self.fixture.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=2,
+            expected_topic_revision=1, action="create",
+            prerequisite_topic_id=dependent_id, requirement_kind="confirmed-decision",
+            requirement_summary="This would make a cycle.",
+        )
+        cycle.update({"actor_topic_id": prerequisite_id, "actor_conversation_ref": "codex-thread:prerequisite"})
+        reject(cycle, "topic_dependency_cycle", {
+            "dependent_topic_id": prerequisite_id, "prerequisite_topic_id": dependent_id,
+        })
+        evidence = self.fixture.evolution_request(
+            topic, operation="evaluate-topic-gate",
+            basis_selection=[{"dependency_id": dependency_id, "decision_ids": []}],
+        )
+        reject(evidence, "topic_dependency_evidence_unavailable", {
+            "dependency_id": dependency_id, "dependent_topic_id": dependent_id,
+            "prerequisite_topic_id": prerequisite_id,
+        })
+
+    def test_ticket07_persisted_dependency_shape_is_state_corrupt_via_cli(self) -> None:
+        """Malformed persisted nested data is fail-closed, not an internal error."""
+        protocol = importlib.import_module("discussion_protocol")
+        project = self.fixture.make_project("ticket07-dependency-persisted-shape", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        child = self.fixture.prepare_child_handoff(topic)
+        ledger = Path(str(topic["ledger_path"]))
+        code, _, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=2,
+            expected_topic_revision=1, action="create",
+            prerequisite_topic_id=child["target_topic_id"],
+            requirement_kind="confirmed-decision", requirement_summary="The child supplies authority.",
+        ))
+        self.assertEqual(code, 0, stderr)
+        frontmatter, records = protocol._load_records(ledger)
+        dependency = records["Topic Dependencies"][0]
+        dependency["gate_reason_json"] = protocol._canonical_json({
+            "kind": "explicit-create", "dependency_update_id": [],
+            "ledger_revision": 3, "unexpected": {"nested": True},
+        })
+        ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
+        malformed = ledger.read_bytes()
+        code, response, _ = self.fixture.run_cli(
+            self.fixture.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(response["error"]["code"], "state_corrupt")
+        self.assertNotEqual(response["error"]["code"], "internal_error")
+        self.assertEqual(ledger.read_bytes(), malformed)
