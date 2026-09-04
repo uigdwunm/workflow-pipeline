@@ -63,7 +63,7 @@ def decision_authority(
     return descriptor, digests, digest
 
 
-def _object(value: Any, label: str, error: Callable[[str, str], None]) -> dict[str, Any]:
+def canonical_object(value: Any, label: str, error: Callable[[str, str], None]) -> dict[str, Any]:
     if not isinstance(value, str):
         error("state_corrupt", f"{label} must be canonical JSON")
     try:
@@ -116,7 +116,7 @@ def _decision_pairs(value: Any) -> bool:
 
 
 def _gate_reason(value: Any, error: Callable[[str, str], None]) -> None:
-    reason = _object(value, "topic dependency gate_reason_json", error)
+    reason = canonical_object(value, "topic dependency gate_reason_json", error)
     kind = reason.get("kind")
     if not isinstance(reason.get("ledger_revision"), int) or reason["ledger_revision"] < 1:
         error("state_corrupt", "topic dependency gate reason revision is invalid")
@@ -183,7 +183,7 @@ def _ledger_decision_pairs(
     for record in records["Pending Items"]:
         if record.get("topic_id") != topic_id or record.get("item_kind") != "decision":
             continue
-        decision = _object(record.get("data_json"), "decision data_json", error)
+        decision = canonical_object(record.get("data_json"), "decision data_json", error)
         decision_id = decision.get("decision_id")
         if not isinstance(decision_id, str) or record.get("item_id") != decision_id:
             error("state_corrupt", "decision envelope is incoherent")
@@ -211,7 +211,7 @@ def _validate_ordinary_basis(
         ]
         if len(matches) != 1:
             error("state_corrupt", "topic dependency checkpoint authority is not retained")
-        checkpoint = _object(matches[0].get("data_json"), "checkpoint data_json", error)
+        checkpoint = canonical_object(matches[0].get("data_json"), "checkpoint data_json", error)
         if (
             checkpoint.get("topic_id") != item["prerequisite_topic_id"]
             or checkpoint.get("checkpoint_id") != authority["checkpoint_id"]
@@ -227,7 +227,7 @@ def _validate_ordinary_basis(
     ]
     if len(matches) != 1:
         error("state_corrupt", "topic dependency Phase Result authority is not retained")
-    result = _object(matches[0].get("data_json"), "Phase Result data_json", error)
+    result = canonical_object(matches[0].get("data_json"), "Phase Result data_json", error)
     full_authority = result.get("decision_authority")
     full_pairs = {
         entry["decision_id"]: entry["sha256"]
@@ -276,19 +276,19 @@ def validate_dependency_records(
             error("state_corrupt", "topic dependency state is invalid")
         _gate_reason(item["gate_reason_json"], error)
         if item["accepted_basis_json"] is not None:
-            basis = _object(item["accepted_basis_json"], "topic dependency accepted_basis_json", error)
+            basis = canonical_object(item["accepted_basis_json"], "topic dependency accepted_basis_json", error)
             decisions = basis.get("decision_authority")
             if (
                 basis.get("basis_version") != 1
                 or basis.get("dependency_id") != dep_id
-                or (not (item["gate_state"] == "closed" and _object(item["gate_reason_json"], "topic dependency gate_reason_json", error).get("kind") == "explicit-replace") and basis.get("prerequisite_topic_id") != prerequisite)
-                or (not (item["gate_state"] == "closed" and _object(item["gate_reason_json"], "topic dependency gate_reason_json", error).get("kind") == "explicit-replace") and basis.get("requirement_kind") != item["requirement_kind"])
+                or (not (item["gate_state"] == "closed" and canonical_object(item["gate_reason_json"], "topic dependency gate_reason_json", error).get("kind") == "explicit-replace") and basis.get("prerequisite_topic_id") != prerequisite)
+                or (not (item["gate_state"] == "closed" and canonical_object(item["gate_reason_json"], "topic dependency gate_reason_json", error).get("kind") == "explicit-replace") and basis.get("requirement_kind") != item["requirement_kind"])
                 or not _decision_pairs(decisions)
                 or set(basis) != ({"basis_version", "dependency_id", "prerequisite_topic_id", "requirement_kind", "decision_authority", "authority"} | ({"child_result_id"} if "child_result_id" in basis else set()))
             ):
                 error("state_corrupt", "topic dependency accepted basis is incoherent")
             authority = basis.get("authority")
-            historical_replace = item["gate_state"] == "closed" and _object(
+            historical_replace = item["gate_state"] == "closed" and canonical_object(
                 item["gate_reason_json"], "topic dependency gate_reason_json", error
             ).get("kind") == "explicit-replace"
             if historical_replace:
@@ -327,7 +327,7 @@ def validate_dependency_records(
                     or child.get("source_topic_id") != prerequisite
                 ):
                     error("state_corrupt", "topic dependency child result provenance is incoherent")
-                frozen = _object(child.get("authority_json"), "child result authority_json", error)
+                frozen = canonical_object(child.get("authority_json"), "child result authority_json", error)
                 frozen_pairs = frozen.get("decision_authority")
                 frozen_ids = frozen.get("decision_ids")
                 frozen_fields = {

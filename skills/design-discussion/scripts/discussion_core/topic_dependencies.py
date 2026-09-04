@@ -26,7 +26,7 @@ from .state import (
     _write_ledger_transaction,
 )
 from .topic_dependency_schema import (
-    KINDS, authority_descriptor, canonical_string_array as _canonical_string_array, decision_authority, validate_dependency_records,
+    KINDS, authority_descriptor, canonical_object as _canonical_object, canonical_string_array as _canonical_string_array, decision_authority, validate_dependency_records,
 )
 
 
@@ -41,7 +41,7 @@ def retained_checkpoint_identities(records: dict[str, list[dict[str, Any]]]) -> 
     for dependency in records["Topic Dependencies"]:
         if dependency["relation_state"] != "active" or not dependency["accepted_basis_json"]:
             continue
-        basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json")
+        basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json", ProtocolError)
         identity = basis.get("authority", {}).get("published_identity")
         if isinstance(identity, str): retained.add(identity)
     for result in records["Phase Results"]:
@@ -51,7 +51,7 @@ def retained_checkpoint_identities(records: dict[str, list[dict[str, Any]]]) -> 
         ):
             continue
         authority = _canonical_object(
-            result.get("authority_json"), "child result authority_json"
+            result.get("authority_json"), "child result authority_json", ProtocolError
         )
         if authority.get("authority_kind") != "phase-0-checkpoint":
             continue
@@ -59,18 +59,6 @@ def retained_checkpoint_identities(records: dict[str, list[dict[str, Any]]]) -> 
         if isinstance(identity, str):
             retained.add(identity)
     return retained
-
-
-def _canonical_object(value: Any, label: str) -> dict[str, Any]:
-    if not isinstance(value, str):
-        raise ProtocolError("state_corrupt", f"{label} must be canonical JSON")
-    try:
-        decoded = json.loads(value)
-    except json.JSONDecodeError as error:
-        raise ProtocolError("state_corrupt", f"{label} is invalid JSON") from error
-    if not isinstance(decoded, dict) or _canonical_json(decoded) != value:
-        raise ProtocolError("state_corrupt", f"{label} must be a canonical JSON object")
-    return decoded
 
 
 def _validate_dependency_records(records: dict[str, list[dict[str, Any]]]) -> None:
@@ -150,7 +138,7 @@ def reclose_directly_affected(
         dependent = _record_by_id(records["Current Topics"], "topic_id", dependency["dependent_topic_id"], "dependent_topic_id")
         if dependent.get("current_phase") not in {0, 1}:
             continue
-        basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json") if dependency["accepted_basis_json"] else None
+        basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json", ProtocolError) if dependency["accepted_basis_json"] else None
         authorities = basis.get("decision_authority") if basis else None
         known = isinstance(authorities, list) and bool(authorities) and all(isinstance(item, dict) and isinstance(item.get("decision_id"), str) for item in authorities)
         basis_ids = {item["decision_id"] for item in authorities} if known else set()
