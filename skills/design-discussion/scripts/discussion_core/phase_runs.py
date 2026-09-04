@@ -1146,8 +1146,6 @@ def _reconcile_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         record = _phase_record(records, request["phase_run_id"])
         data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
-        if target in {"ready", "active"} and data.get("from_phase") in {0, 1}:
-            require_open_gate(records, request["actor_topic_id"])
         attempt = _phase_attempt(data, request["attempt_id"])
         if attempt["state"] != "outcome-unknown":
             raise ProtocolError(
@@ -1223,6 +1221,8 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
         record = _phase_record(records, request["phase_run_id"])
         data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
+        if target in {"ready", "active"} and data.get("from_phase") in {0, 1}:
+            require_open_gate(records, request["actor_topic_id"])
         attempt = _phase_attempt(data, request["attempt_id"])
         if target == "ready":
             if data["state"] != "setup-pending" or attempt["state"] != "setup-pending":
