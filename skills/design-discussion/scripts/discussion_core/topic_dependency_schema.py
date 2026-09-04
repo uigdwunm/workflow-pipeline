@@ -288,7 +288,14 @@ def validate_dependency_records(
             ):
                 error("state_corrupt", "topic dependency accepted basis is incoherent")
             authority = basis.get("authority")
-            if item["requirement_kind"] == "confirmed-decision":
+            historical_replace = item["gate_state"] == "closed" and _object(
+                item["gate_reason_json"], "topic dependency gate_reason_json", error
+            ).get("kind") == "explicit-replace"
+            if historical_replace:
+                # This basis is immutable evidence of the edge before the
+                # replace operation, not authority for the newly closed edge.
+                valid = isinstance(authority, dict)
+            elif item["requirement_kind"] == "confirmed-decision":
                 valid = isinstance(authority, dict) and set(authority) == {"decision_set_digest"} and isinstance(authority["decision_set_digest"], str) and SHA256_RE.fullmatch(authority["decision_set_digest"]) and decisions
             elif item["requirement_kind"] == "phase-0-checkpoint":
                 valid = isinstance(authority, dict) and set(authority) == {"checkpoint_id", "record_revision", "published_identity", "decision_digest"} and _identity(authority["checkpoint_id"], "CP") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and isinstance(authority["published_identity"], str) and isinstance(authority["decision_digest"], str) and SHA256_RE.fullmatch(authority["decision_digest"])

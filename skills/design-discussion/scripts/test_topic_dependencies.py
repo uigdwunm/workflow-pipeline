@@ -347,3 +347,32 @@ class TopicDependencyCliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(response["error"]["code"], "state_corrupt")
         self.assertEqual(ledger.read_bytes(), malformed)
+
+    def test_ticket07_released_dependency_replace_keeps_historical_basis_via_cli(self) -> None:
+        protocol = importlib.import_module("discussion_protocol")
+        project = self.fixture.make_project("ticket07-replace-released", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        child = self.fixture.prepare_child_handoff(topic, initial_dependencies=[{
+            "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+            "requirement_kind": "confirmed-decision", "requirement_summary": "Child decision.",
+        }])
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = protocol._load_records(ledger)
+        decision = {"decision_id": "D-child", "summary": "Typed.", "rationale": "Current.", "state": "confirmed", "evolution": "confirmed"}
+        records["Pending Items"].append({"item_id": "D-child", "item_kind": "decision", "topic_id": child["target_topic_id"], "data_json": protocol._canonical_json(decision)})
+        ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
+        dependency_id = child["initial_dependencies"][0]["dependency_id"]
+        code, evaluation, stderr = self.fixture.run_cli(self.fixture.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "decision_ids": ["D-child"]}]))
+        self.assertEqual(code, 0, stderr)
+        code, _, stderr = self.fixture.run_cli(self.fixture.evolution_request(topic, operation="release-topic-gate", expected_revision=2, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"]))
+        self.assertEqual(code, 0, stderr)
+        _, before = protocol._load_records(ledger)
+        historical_basis = next(item for item in before["Topic Dependencies"] if item["dependency_id"] == dependency_id)["accepted_basis_json"]
+        code, replaced, stderr = self.fixture.run_cli(self.fixture.evolution_request(topic, operation="update-topic-dependency", expected_revision=3, expected_topic_revision=1, action="replace", dependency_id=dependency_id, expected_dependency_revision=2, prerequisite_topic_id=child["target_topic_id"], requirement_kind="phase-1-result", requirement_summary="Child Phase 1 result."))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(replaced["state"], "replace")
+        code, read, stderr = self.fixture.run_cli(self.fixture.evolution_request(topic, operation="read-topic"))
+        self.assertEqual(code, 0, stderr)
+        dependency = next(item for item in read["topic_dependencies"] if item["dependency_id"] == dependency_id)
+        self.assertEqual(dependency["gate_state"], "closed")
+        self.assertEqual(dependency["accepted_basis_json"], historical_basis)

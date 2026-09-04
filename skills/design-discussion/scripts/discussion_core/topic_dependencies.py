@@ -678,6 +678,10 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
             if action == "replace":
                 _validate_new_edge(records, request["actor_topic_id"], request["prerequisite_topic_id"], request["requirement_kind"], request["requirement_summary"], replacing=dep["dependency_id"])
                 dep.update({"prerequisite_topic_id": request["prerequisite_topic_id"], "requirement_kind": request["requirement_kind"], "requirement_summary": request["requirement_summary"], "relation_state": "active", "gate_state": "closed"})
+                # A released basis documents the prior edge.  Mark this
+                # replacement provenance before derived-gate validation reads
+                # the changed record in the transaction.
+                dep["gate_reason_json"] = _canonical_json({"kind": "explicit-replace", "dependency_update_id": request["idempotency_key"], "ledger_revision": revision + 1})
             else:
                 dep["relation_state"] = "cancelled"
             dep["record_revision"] += 1
