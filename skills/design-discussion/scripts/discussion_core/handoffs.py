@@ -859,6 +859,14 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
         frozen = _json_field(claim, "authority_json", "child result authority")
         frozen_kind = frozen.get("authority_kind")
         frozen_identity = frozen.get("authority_identity")
+        if frozen_kind == "phase-0-checkpoint":
+            matches = [item for item in records["Checkpoints"] if item.get("checkpoint_id") == frozen_identity]
+            if len(matches) != 1 or matches[0].get("topic_id") != handoff["target_topic_id"] or matches[0].get("state") != "completed":
+                raise ProtocolError("topic_dependency_evidence_unavailable", "frozen checkpoint authority is no longer current")
+        if frozen_kind == "phase-1-result":
+            matches = [item for item in records["Phase Results"] if item.get("result_id") == frozen_identity]
+            if len(matches) != 1 or matches[0].get("result_kind") != "phase-result" or matches[0].get("state") != "completed" or _json_field(matches[0], "data_json", "phase result").get("topic_id") != handoff["target_topic_id"]:
+                raise ProtocolError("topic_dependency_evidence_unavailable", "frozen phase-result authority is no longer current")
         frozen_decisions = {item.get("decision_id"): item for item in frozen.get("decision_authority", []) if isinstance(item, dict)}
         selected_dependencies = []
         for release in releases:
