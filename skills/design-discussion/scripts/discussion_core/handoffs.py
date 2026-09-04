@@ -188,7 +188,9 @@ def _handoff_result(
 
 
 def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
-    project, ledger_path, _, lock_path, owner_ref = _evolution_paths(request)
+    project, ledger_path, _, lock_path, owner_ref = _evolution_paths(
+        request, allow_tree_topic=True
+    )
     allowed = {
             "protocol_version", "operation", "project_path", "project_id", "tree_id",
             "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision",

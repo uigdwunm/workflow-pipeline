@@ -4,27 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 import importlib
-import sys
-import unittest
 import uuid
+from pathlib import Path
+import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from test_topic_dependency_support import TopicDependencyScenarioTest
 
-class TopicDependencyCliTests(unittest.TestCase):
+
+class TopicDependencyCliTests(TopicDependencyScenarioTest):
     """Reuse the evolution fixture without inheriting its unrelated test methods."""
-
-    def setUp(self) -> None:
-        fixture_class = importlib.import_module(
-            "test_discussion_protocol"
-        ).DiscussionProtocolEvolutionTests
-        self.fixture = fixture_class("runTest")
-        self.fixture.setUp()
-
-    def tearDown(self) -> None:
-        self.fixture.tearDown()
 
     def test_ticket07_dependency_create_replay_is_cli_idempotent(self) -> None:
         project = self.fixture.make_project("ticket07-dependency-replay", git=False)

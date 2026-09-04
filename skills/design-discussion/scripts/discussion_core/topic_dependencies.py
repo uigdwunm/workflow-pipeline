@@ -26,7 +26,7 @@ from .state import (
     _write_ledger_transaction,
 )
 from .topic_dependency_schema import (
-    KINDS, authority_descriptor, canonical_string_array, decision_authority, validate_dependency_records,
+    KINDS, authority_descriptor, canonical_string_array as _canonical_string_array, decision_authority, validate_dependency_records,
 )
 
 
@@ -484,10 +484,6 @@ def _closed(records: dict[str, list[dict[str, Any]]], topic_id: str) -> list[dic
     return sorted((item for item in records["Topic Dependencies"] if item["dependent_topic_id"] == topic_id and item["relation_state"] == "active" and item["gate_state"] == "closed"), key=lambda item: item["dependency_id"])
 
 
-def _canonical_string_array(value: Any, *, maximum: int = 64) -> bool:
-    return canonical_string_array(value, maximum=maximum)
-
-
 def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selection: list[dict[str, Any]] | None) -> dict[str, Any]:
     closed = _closed(records, topic_id)
     if not closed:
@@ -767,7 +763,15 @@ def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
         replay = _idempotent_result(records, request)
         if replay is not None: return replay
         topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        revision, topic_revision = _validate_revisions(request, frontmatter, topic)
+        try:
+            revision, topic_revision = _validate_revisions(request, frontmatter, topic)
+        except ProtocolError as error:
+            if error.code in {"ledger_revision_conflict", "topic_revision_conflict"}:
+                raise ProtocolError(
+                    "topic_gate_evaluation_stale", "topic gate evaluation is stale",
+                    context=error.context,
+                ) from error
+            raise
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         if topic["current_phase"] not in {0, 1}:
             raise ProtocolError(

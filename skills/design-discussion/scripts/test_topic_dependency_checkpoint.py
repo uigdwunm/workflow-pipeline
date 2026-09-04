@@ -505,7 +505,7 @@ class TopicDependencyCheckpointCliTests(TopicDependencyScenarioTest):
                 self.fixture.assertEqual(code, 1)
                 self.fixture.assertEqual(
                     rejected["error"]["code"],
-                    "ledger_revision_conflict" if fault == "broken" else "topic_gate_evaluation_stale",
+                    "topic_gate_evaluation_stale",
                 )
                 self.fixture.assertEqual(ledger.read_bytes(), before)
                 self.fixture.assertNotEqual(older["checkpoint_id"], latest["checkpoint_id"])
@@ -541,4 +541,3 @@ class TopicDependencyCheckpointCliTests(TopicDependencyScenarioTest):
         code, published, stderr = self.fixture.run_cli(publish)
         self.fixture.assertEqual(code, 0, stderr)
         self.fixture.assertEqual(published["topic_id"], child["topic_id"])
-
