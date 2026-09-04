@@ -169,23 +169,9 @@ bootstrap or an informal prompt-only handoff.
 
 For the shared split and gate sequence, read
 [references/split-gate-contract.md](references/split-gate-contract.md). Keep
-the stage-specific direction below when acting in `0讨论`.
-
-Recommend a separate topic only when the new content has an independent,
-nameable goal, its own scope or acceptance outcome, would materially interrupt
-the active discussion, and can be removed without making the current topic
-incomplete. Show one complete `新话题建议` before preparing state: current and
-new goals, tree ownership, parent relation, Phase-0 entry, any exact dependency
-direction and semantic result, current-topic handling, result return, and the
-separate task-creation confirmation. A confirmed proposal prepares only the
-ledger; it never creates a task.
-
-At the start of a later user-requested Phase-0/1 turn, call
-`evaluate-topic-gate`. Stop with its waiting details when blocked. When it is
-releasable, show the exact selected bases and call `release-topic-gate` only
-after a fresh user confirmation; then continue. Do not poll, notify, wake, or
-reevaluate an already-open gate. Phase 2 and later do not consult Topic
-Dependencies.
+the stage-specific direction below when acting in `0讨论`: use the proposal to
+preserve the active exploratory question, and return to that question only
+through its existing resume, adjust, or invalidate action after a split.
 
 ## Judge maturity
 

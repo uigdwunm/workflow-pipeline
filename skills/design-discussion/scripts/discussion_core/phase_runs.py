@@ -918,7 +918,7 @@ def _authoritative_phase_evidence(
                 [
                     item
                     for item in records["Relations and Coverage"]
-                    if topic_id
+                    if item.get("relation_type") == "absorbs" and topic_id
                     in {item.get("source_topic_id"), item.get("target_topic_id")}
                 ]
             ).encode("utf-8")
@@ -1733,7 +1733,7 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
             reclose_directly_affected(
                 records, prerequisite_topic_id=request["actor_topic_id"],
                 changed_decision_ids=changed,
-                cause={"kind": "phase-reopen", "affected_decision_ids": sorted(changed)},
+                cause={"kind": "phase-reopen", "affected_decision_ids": sorted(changed), "invalidated_result_ids": sorted(item for item in invalidated_results if isinstance(item, str))},
                 ledger_revision=ledger_revision + 1,
                 invalidated_authority_ids={item for item in invalidated_results if isinstance(item, str)},
             )

@@ -79,8 +79,26 @@ def _validate_dependency_records(records: dict[str, list[dict[str, Any]]]) -> No
         _canonical_object(item["gate_reason_json"], "topic dependency gate_reason_json")
         if item["accepted_basis_json"] is not None:
             basis = _canonical_object(item["accepted_basis_json"], "topic dependency accepted_basis_json")
-            if basis.get("dependency_id") != dep_id or basis.get("prerequisite_topic_id") != prerequisite:
+            decisions = basis.get("decision_authority")
+            if (
+                basis.get("basis_version") != 1
+                or basis.get("dependency_id") != dep_id
+                or basis.get("prerequisite_topic_id") != prerequisite
+                or basis.get("requirement_kind") != item["requirement_kind"]
+                or not isinstance(decisions, list)
+                or decisions != sorted(decisions, key=lambda entry: entry.get("decision_id", ""))
+                or len({entry.get("decision_id") for entry in decisions}) != len(decisions)
+                or any(not isinstance(entry, dict) or set(entry) != {"decision_id", "sha256"} or not isinstance(entry["decision_id"], str) or not isinstance(entry["sha256"], str) or not SHA256_RE.fullmatch(entry["sha256"]) for entry in decisions)
+            ):
                 raise ProtocolError("state_corrupt", "topic dependency accepted basis is incoherent")
+            authority = basis.get("authority")
+            if item["requirement_kind"] == "confirmed-decision":
+                if authority is not None or not decisions:
+                    raise ProtocolError("state_corrupt", "confirmed-decision basis is incoherent")
+            elif not isinstance(authority, dict):
+                raise ProtocolError("state_corrupt", "authority-backed dependency basis is incoherent")
+        elif item["relation_state"] == "active" and item["gate_state"] == "open":
+            raise ProtocolError("state_corrupt", "open topic dependency requires an accepted basis")
         if item["relation_state"] == "active":
             pair = (dependent, prerequisite)
             if pair in pairs:
@@ -180,7 +198,9 @@ def _candidates(records: dict[str, list[dict[str, Any]]], dependency: dict[str, 
             if not isinstance(digests, dict):
                 continue
             result.append({"authority_id": checkpoint["checkpoint_id"], "authority": {"checkpoint_id": checkpoint["checkpoint_id"], "record_revision": checkpoint["record_revision"], "published_identity": checkpoint["published_identity"], "decision_digest": checkpoint["decision_digest"]}, "decision_authority": [{"decision_id": key, "sha256": value} for key, value in sorted(digests.items())]})
-        return sorted(result, key=lambda item: str(item["authority_id"]))
+        # A later completed Phase-0 entry checkpoint supersedes earlier draft
+        # identities for release purposes.
+        return result[-1:]
     result = []
     for record in records["Phase Results"]:
         if record.get("result_kind") != "phase-result" or record.get("state") != "completed":
@@ -218,18 +238,7 @@ def freeze_authority_selection(
     elif not isinstance(identity, str):
         raise ProtocolError("invalid_request", "authority identity is required")
     if kind == "confirmed-decision" and not decision_ids:
-        # A scoped child result may deliberately carry only its immutable
-        # artifact.  Preserve that conservative, no-decision basis instead of
-        # inventing a decision authority.
-        return {
-            "authority_kind": kind,
-            "authority_identity": identity,
-            "decision_ids": [],
-            "decision_authority": [],
-            "topic_phase": _record_by_id(
-                records["Current Topics"], "topic_id", topic_id, "topic_id"
-            )["current_phase"],
-        }
+        raise ProtocolError("topic_dependency_evidence_unavailable", "confirmed-decision requires one or more current decisions")
     candidates = _candidates(records, {
         "prerequisite_topic_id": topic_id,
         "requirement_kind": kind,
@@ -249,7 +258,7 @@ def freeze_authority_selection(
             "topic_dependency_evidence_unavailable",
             "selected child-result decision authority is not current",
         )
-    return {
+    frozen = {
         "authority_kind": kind,
         "authority_identity": identity,
         "decision_ids": decision_ids,
@@ -258,6 +267,61 @@ def freeze_authority_selection(
             records["Current Topics"], "topic_id", topic_id, "topic_id"
         )["current_phase"],
     }
+    if candidate.get("authority") is not None:
+        frozen["authority"] = candidate["authority"]
+    return frozen
+
+
+def release_child_result_dependencies(
+    records: dict[str, list[dict[str, Any]],], *, dependent_topic_id: str,
+    prerequisite_topic_id: str, child_result_id: str, frozen_authority: Any,
+    releases: Any, ledger_revision: int,
+) -> list[str]:
+    """Validate frozen child authority and atomically normalize matching gates."""
+    if not isinstance(releases, list) or len(releases) > 64:
+        raise ProtocolError("invalid_request", "dependency_releases must be a bounded list")
+    if not isinstance(frozen_authority, dict):
+        raise ProtocolError("state_corrupt", "child result authority is invalid")
+    if frozen_authority.get("authority_kind") == "none":
+        if releases:
+            raise ProtocolError("topic_dependency_state_conflict", "a child result without frozen authority cannot release a gate")
+        return []
+    normalized = freeze_authority_selection(records, prerequisite_topic_id, {
+        "authority_kind": frozen_authority.get("authority_kind"),
+        "authority_identity": frozen_authority.get("authority_identity"),
+        "decision_ids": frozen_authority.get("decision_ids"),
+    })
+    if _canonical_json(normalized) != _canonical_json(frozen_authority):
+        raise ProtocolError("topic_dependency_evidence_unavailable", "frozen child authority is no longer current")
+    selected: list[tuple[dict[str, Any], list[str]]] = []
+    pairs = {item["decision_id"]: item for item in normalized["decision_authority"]}
+    for release in releases:
+        if not isinstance(release, dict) or set(release) != {"dependency_id", "decision_ids", "authority_kind", "authority_identity"}:
+            raise ProtocolError("invalid_request", "dependency release is invalid")
+        ids = release["decision_ids"]
+        dependency = _record_by_id(records["Topic Dependencies"], "dependency_id", release["dependency_id"], "dependency_id")
+        if (
+            release["authority_kind"] != normalized["authority_kind"]
+            or release["authority_identity"] != normalized["authority_identity"]
+            or dependency["requirement_kind"] != normalized["authority_kind"]
+            or dependency["dependent_topic_id"] != dependent_topic_id
+            or dependency["prerequisite_topic_id"] != prerequisite_topic_id
+            or dependency["relation_state"] != "active" or dependency["gate_state"] != "closed"
+            or not isinstance(ids, list) or sorted(set(ids)) != ids
+            or any(item not in pairs for item in ids)
+            or (dependency["requirement_kind"] == "confirmed-decision" and not ids)
+        ):
+            raise ProtocolError("topic_dependency_state_conflict", "child result does not match a current closed dependency")
+        selected.append((dependency, ids))
+    for dependency, ids in selected:
+        basis = {"basis_version": 1, "dependency_id": dependency["dependency_id"], "prerequisite_topic_id": prerequisite_topic_id, "requirement_kind": normalized["authority_kind"], "child_result_id": child_result_id, "decision_authority": [pairs[item] for item in ids]}
+        if "authority" in normalized:
+            basis["authority"] = normalized["authority"]
+        dependency["gate_state"] = "open"
+        dependency["record_revision"] += 1
+        dependency["accepted_basis_json"] = _canonical_json(basis)
+        dependency["gate_reason_json"] = _canonical_json({"kind": "child-result-absorb-release", "ledger_revision": ledger_revision, "child_result_id": child_result_id})
+    return sorted(item[0]["dependency_id"] for item in selected)
 
 
 def _closed(records: dict[str, list[dict[str, Any]]], topic_id: str) -> list[dict[str, Any]]:
@@ -280,6 +344,8 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
             decision_ids = selected.get("decision_ids")
             if not isinstance(decision_ids, list) or sorted(set(decision_ids)) != decision_ids:
                 raise ProtocolError("invalid_request", "basis selection decision_ids must be sorted")
+            if dependency["requirement_kind"] == "confirmed-decision" and not decision_ids:
+                raise ProtocolError("topic_dependency_evidence_unavailable", "confirmed-decision requires one or more current decisions")
             authority_id = selected.get("authority_id")
             if set(selected) != ({"dependency_id", "decision_ids"} if dependency["requirement_kind"] == "confirmed-decision" else {"dependency_id", "authority_id", "decision_ids"}):
                 raise ProtocolError("topic_dependency_evidence_unavailable", "selected dependency evidence is not current")

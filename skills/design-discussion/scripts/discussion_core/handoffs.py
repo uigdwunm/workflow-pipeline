@@ -33,6 +33,7 @@ from .state import (
 from .topic_dependencies import (
     freeze_authority_selection,
     prepare_initial_dependencies,
+    release_child_result_dependencies,
     require_open_gate,
 )
 
@@ -331,6 +332,15 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
                 }
             )
             initial_dependencies = []
+        # The bound task sees resolved endpoints and record identities, never
+        # the caller's source/target aliases.  Bind the payload after that
+        # transaction-local normalization so replay cannot retarget an edge.
+        handoff["initial_dependencies"] = initial_dependencies
+        identity_envelope, payload_digest, payload_bytes = _handoff_payload(
+            handoff, attempt_id
+        )
+        attempt["payload_sha256"] = payload_digest
+        attempt["handoff_payload_bytes"] = payload_bytes
         next_revision = ledger_revision + 1
         result = {
             **_handoff_result(
@@ -780,9 +790,11 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
         seed = uuid.UUID(request["idempotency_key"]).hex
         child_result_id = f"CR-{seed}"
         next_revision = ledger_revision + 1
-        selection = request.get("authority_selection", {"authority_kind": "confirmed-decision", "authority_identity": None, "decision_ids": []})
-        frozen_authority = freeze_authority_selection(
-            records, request["actor_topic_id"], selection
+        selection = request.get("authority_selection")
+        frozen_authority = (
+            freeze_authority_selection(records, request["actor_topic_id"], selection)
+            if selection is not None
+            else {"authority_kind": "none", "authority_identity": None, "decision_ids": [], "decision_authority": [], "topic_phase": topic_record["current_phase"]}
         )
         claim = {
             "result_id": child_result_id,
@@ -855,30 +867,7 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
         releases = request.get("dependency_releases", [])
         if effect != "absorb" and releases:
             raise ProtocolError("topic_dependency_state_conflict", "only an absorbed child result can release a gate")
-        if not isinstance(releases, list) or len(releases) > 64:
-            raise ProtocolError("invalid_request", "dependency_releases must be a bounded list")
         frozen = _json_field(claim, "authority_json", "child result authority")
-        frozen_kind = frozen.get("authority_kind")
-        frozen_identity = frozen.get("authority_identity")
-        if frozen_kind == "phase-0-checkpoint":
-            matches = [item for item in records["Checkpoints"] if item.get("checkpoint_id") == frozen_identity]
-            if len(matches) != 1 or matches[0].get("topic_id") != handoff["target_topic_id"] or matches[0].get("state") != "completed":
-                raise ProtocolError("topic_dependency_evidence_unavailable", "frozen checkpoint authority is no longer current")
-        if frozen_kind == "phase-1-result":
-            matches = [item for item in records["Phase Results"] if item.get("result_id") == frozen_identity]
-            if len(matches) != 1 or matches[0].get("result_kind") != "phase-result" or matches[0].get("state") != "completed" or _json_field(matches[0], "data_json", "phase result").get("topic_id") != handoff["target_topic_id"]:
-                raise ProtocolError("topic_dependency_evidence_unavailable", "frozen phase-result authority is no longer current")
-        frozen_decisions = {item.get("decision_id"): item for item in frozen.get("decision_authority", []) if isinstance(item, dict)}
-        selected_dependencies = []
-        for release in releases:
-            if not isinstance(release, dict) or set(release) != {"dependency_id", "decision_ids", "authority_kind", "authority_identity"}:
-                raise ProtocolError("invalid_request", "dependency release is invalid")
-            dependency = _record_by_id(records["Topic Dependencies"], "dependency_id", release["dependency_id"], "dependency_id")
-            ids = release["decision_ids"]
-            expected_kind = {"confirmed-decision": "confirmed-decision", "phase-0-checkpoint": "phase-0-checkpoint", "phase-1-result": "phase-1-result"}.get(dependency.get("requirement_kind"))
-            if (release["authority_kind"] != frozen_kind or release["authority_identity"] != frozen_identity or expected_kind != frozen_kind or dependency.get("dependent_topic_id") != request["actor_topic_id"] or dependency.get("prerequisite_topic_id") != handoff["target_topic_id"] or dependency.get("relation_state") != "active" or dependency.get("gate_state") != "closed" or not isinstance(ids, list) or sorted(set(ids)) != ids or any(item not in frozen_decisions for item in ids)):
-                raise ProtocolError("topic_dependency_state_conflict", "child result does not match a current closed dependency")
-            selected_dependencies.append((dependency, ids))
         seed = uuid.UUID(request["idempotency_key"]).hex
         next_revision = ledger_revision + 1
         if effect == "absorb":
@@ -903,15 +892,11 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
                 "relation_id": relation_id,
             }
             claim["state"] = "absorbed"
-            for dependency, ids in selected_dependencies:
-                authority = [{"decision_id": item, "sha256": _sha256(_canonical_json(frozen_decisions[item]).encode("utf-8"))} for item in ids]
-                dependency["gate_state"] = "open"
-                dependency["record_revision"] += 1
-                basis = {"basis_version": 1, "dependency_id": dependency["dependency_id"], "prerequisite_topic_id": handoff["target_topic_id"], "requirement_kind": frozen_kind, "child_result_id": claim["result_id"], "decision_authority": authority}
-                if frozen_identity is not None: basis["authority"] = {"result_id" if frozen_kind == "phase-1-result" else "checkpoint_id": frozen_identity}
-                dependency["accepted_basis_json"] = _canonical_json(basis)
-                dependency["gate_reason_json"] = _canonical_json({"kind": "child-result-absorb-release", "ledger_revision": next_revision, "child_result_id": claim["result_id"]})
-            result["released_dependency_ids"] = sorted(item[0]["dependency_id"] for item in selected_dependencies)
+            result["released_dependency_ids"] = release_child_result_dependencies(
+                records, dependent_topic_id=request["actor_topic_id"],
+                prerequisite_topic_id=handoff["target_topic_id"], child_result_id=claim["result_id"],
+                frozen_authority=frozen, releases=releases, ledger_revision=next_revision,
+            )
         else:
             impact_id = f"IMP-{seed}"
             impact = {

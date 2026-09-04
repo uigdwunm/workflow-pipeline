@@ -3313,10 +3313,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
 
         valid = dict(invalid)
         valid["idempotency_key"] = str(uuid.uuid4())
-        valid["authority_selection"] = {
-            "authority_kind": "confirmed-decision", "authority_identity": None,
-            "decision_ids": [],
-        }
+        valid.pop("authority_selection")
         code, claimed, stderr = self.run_cli(valid)
         self.assertEqual(code, 0, stderr)
         code, replayed, stderr = self.run_cli(valid)
