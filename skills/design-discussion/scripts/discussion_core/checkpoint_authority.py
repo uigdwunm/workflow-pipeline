@@ -27,13 +27,19 @@ def checkpoint_artifact_fields(checkpoint: dict[str, Any]) -> tuple[list[str], d
     paths = _persisted_json(checkpoint.get("paths_json"), "checkpoint paths_json")
     blobs = _persisted_json(checkpoint.get("blob_ids_json"), "checkpoint blob_ids_json")
     digests = _persisted_json(checkpoint.get("document_digests_json"), "checkpoint document_digests_json")
+    storage_kind = checkpoint.get("storage_kind")
     if (
         not isinstance(paths, list) or not paths or paths != sorted(paths)
         or not all(isinstance(path, str) and path for path in paths)
         or not isinstance(blobs, dict) or not isinstance(digests, dict)
-        or set(blobs) != set(paths) or set(digests) != set(paths)
-        or not all(isinstance(value, str) for value in blobs.values())
+        or set(digests) != set(paths)
         or not all(isinstance(value, str) and len(value) == 64 for value in digests.values())
+        or storage_kind not in {"git", "non-git"}
+        or (storage_kind == "git" and (
+            set(blobs) != set(paths)
+            or not all(isinstance(value, str) for value in blobs.values())
+        ))
+        or (storage_kind == "non-git" and blobs)
     ):
         raise CheckpointAuthorityCorrupt("checkpoint artifact fields are incoherent")
     return paths, blobs, digests
