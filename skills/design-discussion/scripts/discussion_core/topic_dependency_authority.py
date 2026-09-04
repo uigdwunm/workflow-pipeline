@@ -257,6 +257,24 @@ def has_current_authority(
     }) for kind in DEPENDENCY_AUTHORITY_KINDS)
 
 
+def current_topic_authorities(
+    records: dict[str, list[dict[str, Any]]], topic_id: str,
+) -> list[dict[str, Any]]:
+    """Expose protocol-derived current authority for child-result submission."""
+    result: list[dict[str, Any]] = []
+    for kind in sorted(DEPENDENCY_AUTHORITY_KINDS):
+        for candidate in authority_candidates(records, {
+            "prerequisite_topic_id": topic_id, "requirement_kind": kind,
+        }):
+            result.append({
+                "authority_kind": kind,
+                "authority_identity": candidate["authority_id"],
+                "decision_authority": candidate["decision_authority"],
+                "authority": candidate.get("authority"),
+            })
+    return result
+
+
 def normalize_authority_selection(
     candidates: list[dict[str, Any]], requirement_kind: str, authority_id: Any,
     decision_ids: Any,

@@ -87,8 +87,9 @@ first-turn acceptance exception.
 ## Return and absorb results
 
 The active child submits one scoped result through `submit-child-result`. It
-constructs `authority_selection` from exactly one current candidate returned by
-`evaluate-topic-gate`: `authority_kind`, its required `authority_identity` (or
+constructs `authority_selection` from exactly one current-topic candidate
+returned by `read-topic` as `current_authority_candidates`; this is separate
+from `evaluate-topic-gate`, whose candidates describe prerequisites. It uses `authority_kind`, its required `authority_identity` (or
 `null` for `confirmed-decision`), and canonically sorted unique `decision_ids`.
 When any authority is current, omitting this selection is rejected; when none
 is current, the child submits the explicit no-authority result permitted by the

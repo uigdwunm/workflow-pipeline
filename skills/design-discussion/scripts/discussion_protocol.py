@@ -104,6 +104,7 @@ from discussion_core.phase_runs import (
 )
 from discussion_core.topic_dependencies import (
     derived_gate,
+    current_topic_authorities,
     evaluate_topic_gate,
     release_topic_gate,
     reclose_directly_affected,
@@ -1993,6 +1994,9 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
             "active_question": active_question_record[1] if active_question_record else None,
             "pending_document_writes": pending, "checkpoints": checkpoints,
             "derived_gate_state": gate_state,
+            "current_authority_candidates": current_topic_authorities(
+                records, request["actor_topic_id"]
+            ),
             "topic_dependencies": [dict(item) for item in records["Topic Dependencies"] if item["dependent_topic_id"] == request["actor_topic_id"]], **snapshot,
         }
 
