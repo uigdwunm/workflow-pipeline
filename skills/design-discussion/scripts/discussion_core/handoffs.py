@@ -23,6 +23,7 @@ from .state import (
     _mutation_fingerprint,
     _record_by_id,
     _sha256,
+    _topic_snapshot,
     _validate_revisions,
     _validate_uuid4,
     _validated_string_list,
@@ -783,6 +784,7 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
             "target_topic_id": handoff["source_topic_id"],
             "result_scope_json": _canonical_json(result_scope),
             "summary": summary,
+            "authority_json": _canonical_json({"decision_authority": _topic_snapshot(records, request["actor_topic_id"])["decisions"], "topic_phase": topic_record["current_phase"]}),
             "state": "pending",
             "record_revision": 1,
         }
@@ -802,9 +804,10 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
-    ledger_path, lock_path, _, owner_ref = _handoff_mutation_context(
-        request, {"handoff_id", "child_result_id", "effect"}
-    )
+    extra = {"handoff_id", "child_result_id", "effect"}
+    if "dependency_releases" in request:
+        extra.add("dependency_releases")
+    ledger_path, lock_path, _, owner_ref = _handoff_mutation_context(request, extra)
     effect = _expect_string(request["effect"], "effect", max_bytes=32)
     if effect not in {"absorb", "impact"}:
         raise ProtocolError("invalid_request", "effect must be absorb or impact")
@@ -839,6 +842,22 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
         within_scope = set(result_scope).issubset(set(handoff["scope"]))
         if effect == "absorb" and not within_scope:
             raise ProtocolError("impact_state_conflict", "cross-topic result cannot be silently absorbed")
+        releases = request.get("dependency_releases", [])
+        if effect != "absorb" and releases:
+            raise ProtocolError("topic_dependency_state_conflict", "only an absorbed child result can release a gate")
+        if not isinstance(releases, list) or len(releases) > 64:
+            raise ProtocolError("invalid_request", "dependency_releases must be a bounded list")
+        frozen = _json_field(claim, "authority_json", "child result authority")
+        frozen_decisions = {item.get("decision_id"): item for item in frozen.get("decision_authority", []) if isinstance(item, dict)}
+        selected_dependencies = []
+        for release in releases:
+            if not isinstance(release, dict) or set(release) != {"dependency_id", "decision_ids"}:
+                raise ProtocolError("invalid_request", "dependency release is invalid")
+            dependency = _record_by_id(records["Topic Dependencies"], "dependency_id", release["dependency_id"], "dependency_id")
+            ids = release["decision_ids"]
+            if (dependency.get("dependent_topic_id") != request["actor_topic_id"] or dependency.get("prerequisite_topic_id") != handoff["target_topic_id"] or dependency.get("relation_state") != "active" or dependency.get("gate_state") != "closed" or dependency.get("requirement_kind") != "confirmed-decision" or not isinstance(ids, list) or not ids or sorted(set(ids)) != ids or any(item not in frozen_decisions for item in ids)):
+                raise ProtocolError("topic_dependency_state_conflict", "child result does not match a current closed dependency")
+            selected_dependencies.append((dependency, ids))
         seed = uuid.UUID(request["idempotency_key"]).hex
         next_revision = ledger_revision + 1
         if effect == "absorb":
@@ -863,6 +882,13 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
                 "relation_id": relation_id,
             }
             claim["state"] = "absorbed"
+            for dependency, ids in selected_dependencies:
+                authority = [{"decision_id": item, "sha256": _sha256(_canonical_json(frozen_decisions[item]).encode("utf-8"))} for item in ids]
+                dependency["gate_state"] = "open"
+                dependency["record_revision"] += 1
+                dependency["accepted_basis_json"] = _canonical_json({"basis_version": 1, "dependency_id": dependency["dependency_id"], "prerequisite_topic_id": handoff["target_topic_id"], "requirement_kind": "confirmed-decision", "child_result_id": claim["result_id"], "decision_authority": authority})
+                dependency["gate_reason_json"] = _canonical_json({"kind": "child-result-absorb-release", "ledger_revision": next_revision, "child_result_id": claim["result_id"]})
+            result["released_dependency_ids"] = sorted(item[0]["dependency_id"] for item in selected_dependencies)
         else:
             impact_id = f"IMP-{seed}"
             impact = {

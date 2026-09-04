@@ -1343,6 +1343,20 @@ def _checkpoint_gc_candidates(ledger_path: Path, records: dict[str, list[dict[st
         for checkpoint in (_checkpoint_data(record) for record in records["Checkpoints"])
         if checkpoint.get("state") not in {"cancelled", "superseded"}
     }
+    # A topic gate's accepted basis is durable authority, not Recent Event
+    # history.  Active dependencies therefore retain their checkpoint object
+    # even after a later direct invalidation closes the gate again.
+    for dependency in records.get("Topic Dependencies", []):
+        if dependency.get("relation_state") != "active" or not dependency.get("accepted_basis_json"):
+            continue
+        try:
+            basis = json.loads(dependency["accepted_basis_json"])
+            authority = basis.get("authority", {})
+            identity = authority.get("published_identity")
+            if isinstance(identity, str):
+                referenced.add(identity)
+        except (TypeError, json.JSONDecodeError):
+            raise ProtocolError("state_corrupt", "topic dependency accepted basis is invalid")
     uncertain = {
         checkpoint.get("published_identity")
         for checkpoint in (_checkpoint_data(record) for record in records["Checkpoints"])

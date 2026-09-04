@@ -30,7 +30,7 @@ from .state import (
     _verify_topic_owner,
     _write_ledger_transaction,
 )
-from .topic_dependencies import require_open_gate
+from .topic_dependencies import reclose_directly_affected, require_open_gate
 
 
 PHASE_ROUTES = {(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)}
@@ -1707,6 +1707,14 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
             topic,
         )
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        changed = {decision_id for decision_id, action in review.items() if action != "keep"}
+        if changed:
+            reclose_directly_affected(
+                records, prerequisite_topic_id=request["actor_topic_id"],
+                changed_decision_ids=changed,
+                cause={"kind": "phase-reopen", "affected_decision_ids": sorted(changed)},
+                ledger_revision=ledger_revision + 1,
+            )
         if topic.get("current_phase") == 0:
             raise ProtocolError("phase_route_conflict", "topic is already in phase 0")
         active_runs = [
