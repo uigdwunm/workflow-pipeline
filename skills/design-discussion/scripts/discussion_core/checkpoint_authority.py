@@ -9,10 +9,23 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+class CheckpointAuthorityCorrupt(ValueError):
+    """Persisted checkpoint fields cannot be interpreted coherently."""
+
+
+def _persisted_json(value: Any, label: str) -> Any:
+    if not isinstance(value, str):
+        raise CheckpointAuthorityCorrupt(f"{label} is missing")
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise CheckpointAuthorityCorrupt(f"{label} is invalid") from error
+
+
 def current_checkpoint_artifact(
     checkpoint: dict[str, Any], *, topic_path: Path,
     sha256: Callable[[bytes], str], canonical_json: Callable[[Any], str],
-    read_regular: Callable[[Path, str], bytes],
+    read_regular: Callable[[Path, str], bytes | None],
 ) -> dict[str, Any] | None:
     """Return normalized published authority only when its artifact is current."""
     try:
@@ -31,7 +44,16 @@ def current_checkpoint_artifact(
             if [line.split(" ", 1)[1] for line in header.splitlines() if line.startswith("parent ")] != [checkpoint.get("replacement_parent") or checkpoint["base_commit"]]:
                 return None
             trailers = {key: value for key, value in (line.split(": ", 1) for line in message.splitlines() if ": " in line and line.startswith("Codex-"))}
-            paths, blobs, digests = json.loads(checkpoint["paths_json"]), json.loads(checkpoint["blob_ids_json"]), json.loads(checkpoint["document_digests_json"])
+            paths = _persisted_json(checkpoint["paths_json"], "checkpoint paths_json")
+            blobs = _persisted_json(checkpoint["blob_ids_json"], "checkpoint blob_ids_json")
+            digests = _persisted_json(checkpoint["document_digests_json"], "checkpoint document_digests_json")
+            if (
+                not isinstance(paths, list) or not paths or paths != sorted(paths)
+                or not all(isinstance(path, str) and path for path in paths)
+                or not isinstance(blobs, dict) or not isinstance(digests, dict)
+                or set(blobs) != set(paths) or set(digests) != set(paths)
+            ):
+                raise CheckpointAuthorityCorrupt("checkpoint Git authority fields are incoherent")
             expected = {"Codex-Discussion-Checkpoint": checkpoint["checkpoint_id"], "Codex-Document-SHA256": digests[paths[0]], "Codex-Discussion-Decision-SHA256": checkpoint["decision_digest"], "Codex-Discussion-Paths-SHA256": checkpoint["path_set_digest"]}
             if trailers != expected or sorted(git("diff-tree", "--no-commit-id", "--name-only", "-r", identity).decode("utf-8").splitlines()) != paths:
                 return None
@@ -40,10 +62,17 @@ def current_checkpoint_artifact(
             document_digests = digests
         elif storage_kind == "non-git":
             snapshot_bytes = read_regular(Path(checkpoint["snapshot_path"]), "checkpoint snapshot")
+            if snapshot_bytes is None:
+                return None
             if sha256(snapshot_bytes) != checkpoint["published_identity"] or base64.b64decode(checkpoint["snapshot_bytes_b64"], validate=True) != snapshot_bytes:
                 return None
-            snapshot = json.loads(snapshot_bytes.decode("utf-8"))
-            if not isinstance(snapshot, dict) or (canonical_json(snapshot) + "\n").encode("utf-8") != snapshot_bytes or snapshot.get("purpose") != "stage-entry" or snapshot.get("decision_digest") != checkpoint.get("decision_digest") or snapshot.get("document_digests") != json.loads(checkpoint["document_digests_json"]) or snapshot.get("paths") != json.loads(checkpoint["paths_json"]) or snapshot.get("path_set_digest") != checkpoint.get("path_set_digest"):
+            try:
+                snapshot = json.loads(snapshot_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return None
+            paths = _persisted_json(checkpoint["paths_json"], "checkpoint paths_json")
+            digests = _persisted_json(checkpoint["document_digests_json"], "checkpoint document_digests_json")
+            if not isinstance(snapshot, dict) or (canonical_json(snapshot) + "\n").encode("utf-8") != snapshot_bytes or snapshot.get("purpose") != "stage-entry" or snapshot.get("decision_digest") != checkpoint.get("decision_digest") or snapshot.get("document_digests") != digests or snapshot.get("paths") != paths or snapshot.get("path_set_digest") != checkpoint.get("path_set_digest"):
                 return None
             documents = {path: base64.b64decode(value, validate=True) for path, value in snapshot.get("documents", {}).items() if isinstance(path, str) and isinstance(value, str)}
             if set(documents) != set(snapshot["paths"]) or {path: sha256(value) for path, value in documents.items()} != snapshot["document_digests"]:
@@ -51,8 +80,11 @@ def current_checkpoint_artifact(
             document_digests = snapshot["document_digests"]
         else:
             return None
-        if sha256(read_regular(topic_path, "topic document")) not in document_digests.values():
+        topic_bytes = read_regular(topic_path, "topic document")
+        if topic_bytes is None or sha256(topic_bytes) not in document_digests.values():
             return None
         return {"published_identity": checkpoint["published_identity"], "document_digests": document_digests}
-    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError, subprocess.SubprocessError):
+    except CheckpointAuthorityCorrupt:
+        raise
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, subprocess.SubprocessError):
         return None

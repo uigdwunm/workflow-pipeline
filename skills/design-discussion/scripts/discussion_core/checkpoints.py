@@ -14,6 +14,7 @@ import tempfile
 import uuid
 from typing import Any, Iterator
 
+from .checkpoint_authority import CheckpointAuthorityCorrupt, current_checkpoint_artifact
 from .state import (
     ProtocolError,
     _active_pending_write,
@@ -1673,18 +1674,25 @@ def _validate_checkpoints(
         ):
             raise ProtocolError("state_corrupt", "checkpoint frozen paths or digests are invalid")
         if checkpoint["state"] == "completed":
-            if checkpoint["storage_kind"] == "git":
-                expected_parent = checkpoint.get("replacement_parent")
-                if checkpoint.get("checkpoint_ref"):
-                    ref_commit = _git(project, ["rev-parse", "--verify", checkpoint["checkpoint_ref"]]).decode("ascii").strip()
-                    if ref_commit != checkpoint["published_identity"]:
-                        raise ProtocolError("checkpoint_history_mismatch", "checkpoint ref does not resolve to published identity")
-                if _commit_matches_checkpoint(project, checkpoint["published_identity"], checkpoint, expected_parent=expected_parent) is None:
-                    raise ProtocolError("checkpoint_history_mismatch", "completed Git checkpoint no longer fully verifies")
-            else:
-                snapshot_path = Path(checkpoint["snapshot_path"])
-                snapshot = _require_regular_nosymlink(snapshot_path, "checkpoint snapshot")
-                if _sha256(snapshot) != checkpoint["published_identity"]:
-                    raise ProtocolError("checkpoint_snapshot_corrupt", "completed snapshot digest no longer verifies")
+            roots = [item for item in records["Current Topics"] if item.get("parent_topic_id") is None]
+            topic = _record_by_id(records["Current Topics"], "topic_id", checkpoint.get("topic_id"), "checkpoint topic_id")
+            if len(roots) != 1 or not isinstance(roots[0].get("topic_document_path"), str):
+                raise ProtocolError("state_corrupt", "checkpoint topic document authority is unavailable")
+            topic_path = _verify_topic_path_authority(topic, Path(roots[0]["topic_document_path"]), records=records)
+            def artifact_bytes(path: Path, label: str) -> bytes | None:
+                try:
+                    return _require_regular_nosymlink(path, label)
+                except ProtocolError:
+                    return None
+            try:
+                current = current_checkpoint_artifact(
+                    checkpoint, topic_path=topic_path, sha256=_sha256,
+                    canonical_json=_canonical_json, read_regular=artifact_bytes,
+                )
+            except CheckpointAuthorityCorrupt as error:
+                raise ProtocolError("state_corrupt", "checkpoint authority is corrupt") from error
+            if current is None:
+                code = "checkpoint_history_mismatch" if checkpoint["storage_kind"] == "git" else "checkpoint_snapshot_corrupt"
+                raise ProtocolError(code, "completed checkpoint artifact is no longer current")
         checkpoints.append(dict(checkpoint))
     return sorted(checkpoints, key=lambda item: item["checkpoint_id"])

@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .checkpoint_authority import current_checkpoint_artifact
+from .checkpoint_authority import CheckpointAuthorityCorrupt, current_checkpoint_artifact
 
 from .state import (
     ProtocolError, _canonical_json, _evolution_paths, _expect_keys,
@@ -198,11 +198,16 @@ def _current_checkpoint(record: dict[str, Any], checkpoint: dict[str, Any], reco
             return False
         topic = _record_by_id(records["Current Topics"], "topic_id", prerequisite, "topic_id")
         topic_path = topic.get("topic_document_path")
+        def artifact_bytes(path: Path, label: str) -> bytes | None:
+            try:
+                return _require_regular_nosymlink(path, label)
+            except ProtocolError:
+                return None
         if (
             not isinstance(topic_path, str)
             or current_checkpoint_artifact(
                 checkpoint, topic_path=Path(topic_path), sha256=_sha256,
-                canonical_json=_canonical_json, read_regular=_require_regular_nosymlink,
+                canonical_json=_canonical_json, read_regular=artifact_bytes,
             ) is None
         ):
             return False
@@ -216,8 +221,12 @@ def _current_checkpoint(record: dict[str, Any], checkpoint: dict[str, Any], reco
                 if item.get("state") == "confirmed"
             ) == json.loads(checkpoint["confirmed_decision_ids_json"])
         )
-    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError, ProtocolError):
-        return False
+    except CheckpointAuthorityCorrupt as error:
+        raise ProtocolError("state_corrupt", "checkpoint authority is corrupt") from error
+    except ProtocolError as error:
+        raise ProtocolError("state_corrupt", "checkpoint authority is corrupt") from error
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ProtocolError("state_corrupt", "checkpoint authority is corrupt") from error
 
 
 def _checkpoint_candidates(
