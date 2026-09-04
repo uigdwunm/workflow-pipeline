@@ -479,7 +479,14 @@ def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
         if topic["current_phase"] not in {0, 1}:
             raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are immutable after Phase 1")
         selection = [{"dependency_id": item.get("dependency_id"), "decision_ids": [entry["decision_id"] for entry in item.get("basis", {}).get("decision_authority", [])], **({"authority_id": item["basis"]["authority"].get("checkpoint_id", item["basis"]["authority"].get("result_id"))} if isinstance(item.get("basis"), dict) and item["basis"].get("requirement_kind") != "confirmed-decision" and "authority" in item["basis"] else {})} for item in request["release_set"]] if isinstance(request["release_set"], list) else None
-        evaluation = _evaluation(records, request["actor_topic_id"], selection)
+        try:
+            evaluation = _evaluation(records, request["actor_topic_id"], selection)
+        except ProtocolError as error:
+            if error.code == "topic_dependency_evidence_unavailable":
+                raise ProtocolError(
+                    "topic_gate_evaluation_stale", "topic gate evaluation is stale"
+                ) from error
+            raise
         expected = _sha256(_canonical_json({"ledger_revision": revision, "topic_revision": topic_revision, "release_set": evaluation.get("release_set")}).encode("utf-8"))
         if evaluation.get("state") != "releasable" or request["release_set"] != evaluation.get("release_set") or request["release_set_sha256"] != expected:
             raise ProtocolError("topic_gate_evaluation_stale", "topic gate evaluation is stale")

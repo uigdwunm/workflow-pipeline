@@ -3608,6 +3608,94 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(replay["attempt_id"], bound["attempt_id"])
 
+    def test_ticket07_stale_checkpoint_release_is_rejected_via_cli(self) -> None:
+        project = self.make_project("ticket07-stale-checkpoint-release", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic, initial_dependencies=[{"dependent_endpoint": "source", "prerequisite_topic_ref": "target", "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The child checkpoint is current."}])
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        records["Checkpoints"].append({"checkpoint_id": "CP-child", "topic_id": prepared["target_topic_id"], "state": "completed", "record_revision": 1, "data_json": PROTOCOL._canonical_json({"checkpoint_id": "CP-child", "record_revision": 1, "purpose": "stage-entry", "stage_entry_phase": 0, "published_identity": "a" * 64, "decision_digest": "b" * 64, "decision_digests_json": "{}"})})
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        dependency_id = prepared["initial_dependencies"][0]["dependency_id"]
+        code, evaluation, stderr = self.run_cli(self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": "CP-child", "decision_ids": []}]))
+        self.assertEqual(code, 0, stderr)
+        _, records = PROTOCOL._load_records(ledger)
+        records["Checkpoints"][0]["state"] = "superseded"
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before = ledger.read_bytes()
+        code, rejected, _ = self.run_cli(self.evolution_request(topic, operation="release-topic-gate", expected_revision=2, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"]))
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
+        self.assertEqual(ledger.read_bytes(), before)
+
+    def test_ticket07_stale_phase_result_release_is_rejected_via_cli(self) -> None:
+        project = self.make_project("ticket07-stale-result-release", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic, initial_dependencies=[{"dependent_endpoint": "source", "prerequisite_topic_ref": "target", "requirement_kind": "phase-1-result", "requirement_summary": "The child Phase 1 result is current."}])
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        records["Phase Results"].append({"result_id": "PH-child", "result_kind": "phase-result", "state": "completed", "record_revision": 1, "data_json": PROTOCOL._canonical_json({"result_id": "PH-child", "topic_id": prepared["target_topic_id"], "from_phase": 0, "to_phase": 1, "phase_run_id": "PR-child", "affected_decision_ids": []})})
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        dependency_id = prepared["initial_dependencies"][0]["dependency_id"]
+        code, evaluation, stderr = self.run_cli(self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": "PH-child", "decision_ids": []}]))
+        self.assertEqual(code, 0, stderr)
+        _, records = PROTOCOL._load_records(ledger)
+        records["Phase Results"][0]["state"] = "superseded"
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before = ledger.read_bytes()
+        code, rejected, _ = self.run_cli(self.evolution_request(topic, operation="release-topic-gate", expected_revision=2, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"]))
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
+        self.assertEqual(ledger.read_bytes(), before)
+
+    def test_ticket07_v1_v2_dependency_migration_is_cli_stable(self) -> None:
+        for version in ("1", "2"):
+            with self.subTest(version=version):
+                project = self.make_project(f"ticket07-v{version}-dependency-migration", git=False)
+                topic = self.bootstrap_topic(project)
+                ledger = Path(str(topic["ledger_path"]))
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                frontmatter["schema_version"] = version
+                if version == "1":
+                    frontmatter.pop("creation_idempotency_key", None)
+                    frontmatter.pop("creation_fingerprint", None)
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                before_read = ledger.read_bytes()
+                code, read, stderr = self.run_cli(self.evolution_request(topic, operation="read-topic"))
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(read["topic_dependencies"], [])
+                self.assertEqual(ledger.read_bytes(), before_read)
+                prepared = self.prepare_child_handoff(topic)
+                self.assertEqual(len(prepared["initial_dependencies"]), 0)
+                self.assertIn("schema_version: 3", ledger.read_text(encoding="utf-8"))
+
+    def test_ticket07_gc_retains_active_dependency_checkpoint_basis_via_cli(self) -> None:
+        project = self.make_project("ticket07-gc-dependency-retention", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_checkpoint(topic, ledger_revision=1, base_ref="project-root")
+        code, published, stderr = self.run_cli(self.checkpoint_request(
+            topic, operation="publish-non-git-checkpoint", ledger_revision=2,
+            checkpoint_id=prepared["checkpoint_id"], expected_checkpoint_revision=1,
+        ))
+        self.assertEqual(code, 0, stderr)
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        child_id = "topic-" + "d" * 32
+        records["Current Topics"].append({"topic_id": child_id, "record_revision": 1, "root_slug": "child", "parent_topic_id": str(topic["topic_id"]), "current_phase": 1, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
+        records["Checkpoints"] = []
+        basis = {"basis_version": 1, "dependency_id": "DEP-retained", "prerequisite_topic_id": child_id, "requirement_kind": "phase-0-checkpoint", "decision_authority": [], "authority": {"checkpoint_id": prepared["checkpoint_id"], "record_revision": 2, "published_identity": published["snapshot_digest"], "decision_digest": prepared["decision_digest"]}}
+        dependency = {"dependency_id": "DEP-retained", "record_revision": 2, "dependent_topic_id": str(topic["topic_id"]), "prerequisite_topic_id": child_id, "requirement_kind": "phase-0-checkpoint", "requirement_summary": "Retain this checkpoint.", "relation_state": "active", "gate_state": "open", "accepted_basis_json": PROTOCOL._canonical_json(basis), "gate_reason_json": "{}"}
+        records["Topic Dependencies"].append(dependency)
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        code, retained, stderr = self.run_cli(self.checkpoint_request(topic, operation="checkpoint-gc-dry-run"))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(retained["candidates"], [])
+        dependency["relation_state"] = "cancelled"
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        code, released, stderr = self.run_cli(self.checkpoint_request(topic, operation="checkpoint-gc-dry-run"))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(released["candidates"], [{"digest": published["snapshot_digest"], "path": published["snapshot_path"]}])
+
     def test_ticket07_direct_invalidation_does_not_propagate_via_cli(self) -> None:
         project = self.make_project("ticket07-direct-invalidation", git=False)
         topic = self.bootstrap_topic(project)
