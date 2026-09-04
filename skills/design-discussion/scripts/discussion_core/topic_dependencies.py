@@ -65,7 +65,40 @@ def derived_gate(records: dict[str, list[dict[str, Any]]], topic_id: str) -> str
 def require_open_gate(records: dict[str, list[dict[str, Any]]], topic_id: str) -> None:
     topic = _record_by_id(records["Current Topics"], "topic_id", topic_id, "topic_id")
     if topic.get("current_phase") in {0, 1} and derived_gate(records, topic_id) == "closed":
-        raise ProtocolError("topic_gate_closed", "topic has an active closed requirements dependency", context={"topic_id": topic_id})
+        blocked_dependencies = []
+        for dependency in records["Topic Dependencies"]:
+            if (
+                dependency["dependent_topic_id"] != topic_id
+                or dependency["relation_state"] != "active"
+                or dependency["gate_state"] != "closed"
+            ):
+                continue
+            prerequisite = _record_by_id(
+                records["Current Topics"],
+                "topic_id",
+                dependency["prerequisite_topic_id"],
+                "prerequisite_topic_id",
+            )
+            blocked_dependencies.append(
+                {
+                    "dependency_id": dependency["dependency_id"],
+                    "prerequisite_topic_id": prerequisite["topic_id"],
+                    "prerequisite_phase": prerequisite["current_phase"],
+                    "prerequisite_state": prerequisite["topic_state"],
+                    "waiting_reason": "current required authority is unavailable",
+                }
+            )
+        raise ProtocolError(
+            "topic_gate_closed",
+            "topic has an active closed requirements dependency",
+            context={
+                "topic_id": topic_id,
+                "derived_gate_state": "closed",
+                "blocked_dependencies": sorted(
+                    blocked_dependencies, key=lambda item: item["dependency_id"]
+                ),
+            },
+        )
 
 
 def require_open_gate_for_phase_transition(

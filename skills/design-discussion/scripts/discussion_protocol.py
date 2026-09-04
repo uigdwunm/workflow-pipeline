@@ -213,6 +213,8 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "retryable": error.retryable,
         "cause": error.cause,
     }
+    if error.code == "topic_gate_closed":
+        detail["context"] = error.context
     return {
         "ok": False,
         "state": error.context.get("state", "stopped"),
