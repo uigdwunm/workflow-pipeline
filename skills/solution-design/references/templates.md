@@ -1,16 +1,15 @@
 # Fixed Formats
 
-Use these formats verbatim and replace every placeholder. Exact confirmation
-means that, after trimming surrounding whitespace, the entire reply equals
-`确认`. Punctuation, conditions, prefixes, suffixes, `继续`, and `可以` are not
-confirmation.
+Use these formats verbatim and replace every placeholder. Interpret user replies
+through
+[`../../design-discussion/references/confirmation-contract.md`](../../design-discussion/references/confirmation-contract.md).
 
 ## Stepwise subagent launch confirmation
 
 ```text
 确认事项：启动 2方案子 agent
 本次目标：<goal>
-需求来源：<immutable draft path and commit/hash | current-task accepted handoff>
+需求来源：<immutable draft path, commit and hash>
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
 规划载体：<exact target>
@@ -28,7 +27,7 @@ Worktree：确认后调用 `start-worktree` 创建；路径=<canonical path>; �
 流程模式：逐阶段确认
 确认后结果：使用上述具体模型、强度和权限启动一个 2方案子 agent
 修改方式：说明需要修改的目标、需求来源、项目、载体、模型、强度或权限
-确认方式：回复 `确认`
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
 
 ## Continuous automatic launch disclosure
@@ -39,7 +38,7 @@ This must be the final user-visible commentary immediately before
 ```text
 连续模式自动动作：启动 2方案子 agent
 本次目标：<goal>
-需求来源：<immutable draft path and commit/hash | current-task accepted handoff>
+需求来源：<immutable draft path, commit and hash>
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
 规划载体：<exact target>
@@ -66,11 +65,10 @@ $solution-design
 协议：solution-design-subagent-v1
 角色：你是本次 2方案 的唯一阶段负责人；主 agent只负责用户决策和阶段编排。
 本次目标：<goal>
-需求来源类型：<immutable-problem-framing-draft | current-task-handoff>
-需求草案：<absolute path | none>
-草案提交：<commit | none>
-草案 SHA-256：<hash | none>
-当前任务交接：<complete accepted target-relevant context | none>
+需求来源类型：immutable-problem-framing-draft
+需求草案：<absolute path>
+草案提交：<commit>
+草案 SHA-256：<hash>
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
 规划载体：<exact target>
@@ -121,7 +119,7 @@ ADR：<paths or none>
 恢复位置：<checkpoint>
 确认事项：接受当前方案并由同一个子 agent发布 Spec
 修改方式：说明需要修改的方案内容
-确认方式：回复 `确认`
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
 
 ## Tickets review
@@ -140,7 +138,7 @@ Ticket 数量：<number>
 恢复位置：<checkpoint>
 确认事项：接受当前 Tickets 并由同一个子 agent发布
 修改方式：说明需要增加、删除、合并、拆分或修改的 Ticket
-确认方式：回复 `确认`
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
 
 ## Parent decision
@@ -151,7 +149,7 @@ PARENT_DECISION
 目标子 agent：<trusted agent id>
 关联类型：<solution-review | tickets-review | anomaly>
 关联 ID：<review or anomaly id>
-用户决定：<exact confirmation or requested change>
+用户决定：<normalized confirmation intent or requested change>
 恢复位置：<checkpoint>
 ```
 
@@ -175,7 +173,7 @@ SOLUTION_DESIGN_ANOMALY
 恢复位置：<checkpoint>
 确认事项：按上述建议处理异常并继续
 修改方式：说明要选择的其他处理方式
-确认方式：回复 `确认`
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
 
 ## Completion
@@ -183,7 +181,7 @@ SOLUTION_DESIGN_ANOMALY
 ```text
 SOLUTION_DESIGN_COMPLETE
 协议：solution-design-subagent-v1
-需求来源：<draft path, commit and hash | current-task handoff>
+需求来源：<draft path, commit and hash>
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
 规划载体：<exact target>
@@ -245,8 +243,8 @@ Matt 原生发布：Spec=<verified path or URL>; Tickets=<verified paths or URLs
 下一阶段：`$guided-implementation`（3实现）
 进入条件：已满足
 确认事项：进入 3实现
-确认方式：回复 `确认`
-连续模式：回复 `执行后续全部流程`，自动执行 3实现和 4归档
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
+连续模式：可明确要求自动执行剩余阶段
 ```
 
 ## Continuous completion handoff
@@ -257,7 +255,7 @@ message; do not independently revalidate the reported facts.
 
 ```text
 阶段结果：方案完成
-需求来源：<draft path, commit and hash | current-task handoff>
+需求来源：<draft path, commit and hash>
 Spec：<clickable path or URL>
 ADR：<clickable paths or none>
 Tickets：<clickable paths or URLs | 不需要，完整 Spec 可在一个实现上下文中完成>
@@ -308,7 +306,7 @@ Matt 原生发布：Spec=<child-reported path or URL>; Tickets=<child-reported p
 建议：<recommended correction or recovery>
 确认事项：按上述建议修正启动信息
 修改方式：说明要采用的其他值或处理方式
-确认方式：回复 `确认`
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
 
 ## Child termination anomaly
@@ -324,5 +322,5 @@ Matt 原生发布：Spec=<child-reported path or URL>; Tickets=<child-reported p
 建议：优先恢复同一个子 agent；无法恢复时再确认是否创建替代子 agent
 恢复位置：<checkpoint>
 确认事项：按上述建议恢复
-确认方式：回复 `确认`
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```

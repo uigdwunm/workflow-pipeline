@@ -49,6 +49,7 @@ class RolloutCandidate(NamedTuple):
 class ParsedRollout(NamedTuple):
     lineage_state: tuple[str, str | None]
     source_state: tuple[str | None, str | None]
+    history_mode: str | None
     history_base_id: str | None
     latest: dict[str, str] | None
 
@@ -189,6 +190,7 @@ def _read_rollout(
     session_ids: set[str] = set()
     lineage_states: set[tuple[str, str | None]] = set()
     source_states: set[tuple[str | None, str | None]] = set()
+    history_mode_states: set[str | None] = set()
     history_base_states: set[tuple[str, str | None]] = set()
     latest: dict[str, str] | None = None
     with os.fdopen(os.dup(candidate.file_fd), "r", encoding="utf-8") as stream:
@@ -222,11 +224,11 @@ def _read_rollout(
                     source_states.add((None, None))
                 else:
                     source_states.add(_source_identity(payload.get("source")))
-                if candidate.segment_id is not None:
-                    if payload.get("history_mode") != "paginated":
-                        raise SettingsError(
-                            "paginated rollout has invalid history metadata"
-                        )
+                history_mode = payload.get("history_mode")
+                if history_mode not in (None, "paginated"):
+                    raise SettingsError("rollout has invalid history metadata")
+                history_mode_states.add(history_mode)
+                if history_mode == "paginated":
                     history_base = payload.get("history_base")
                     if history_base is None:
                         history_base_states.add(("root", None))
@@ -243,6 +245,10 @@ def _read_rollout(
                         raise SettingsError(
                             "paginated rollout has invalid history metadata"
                         )
+                elif candidate.segment_id is not None:
+                    raise SettingsError(
+                        "paginated rollout has invalid history metadata"
+                    )
             elif record_type == "turn_context":
                 model = payload.get("model")
                 effort = payload.get("effort")
@@ -260,14 +266,18 @@ def _read_rollout(
         raise SettingsError("rollout session_meta does not match the frozen thread id")
     if len(lineage_states) != 1 or len(source_states) != 1:
         raise SettingsError("rollout session_meta identity fields conflict")
+    if len(history_mode_states) != 1:
+        raise SettingsError("rollout history metadata conflicts")
+    history_mode = next(iter(history_mode_states))
     history_base_id: str | None = None
-    if candidate.segment_id is not None:
+    if history_mode == "paginated":
         if len(history_base_states) != 1:
             raise SettingsError("paginated rollout history metadata conflicts")
         _, history_base_id = next(iter(history_base_states))
     return ParsedRollout(
         lineage_state=next(iter(lineage_states)),
         source_state=next(iter(source_states)),
+        history_mode=history_mode,
         history_base_id=history_base_id,
         latest=latest,
     )
@@ -346,14 +356,22 @@ def _read_rollout_facts(thread_id: str, root: Path) -> RolloutFacts:
         raise SettingsError("rollout session_meta identity fields conflict")
 
     if segment_candidates:
+        if len(canonical_candidates) != 1:
+            raise SettingsError("paginated rollout canonical root is unavailable")
         segments: dict[str, ParsedRollout] = {}
         for candidate, parsed in parsed_candidates:
-            segment_id = candidate.segment_id
-            if segment_id is None:
-                continue
-            if segment_id in segments:
+            if parsed.history_mode != "paginated":
+                raise SettingsError(
+                    "paginated rollout canonical root has invalid history metadata"
+                )
+            node_id = candidate.segment_id or thread_id
+            if candidate.segment_id is None and parsed.history_base_id is not None:
+                raise SettingsError(
+                    "paginated rollout canonical root has invalid history metadata"
+                )
+            if node_id in segments:
                 raise SettingsError("duplicate paginated rollout segment")
-            segments[segment_id] = parsed
+            segments[node_id] = parsed
         selected = _latest_paginated_rollout(segments)
         latest = selected.latest
     else:

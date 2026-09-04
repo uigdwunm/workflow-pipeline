@@ -1,6 +1,6 @@
 ---
 name: guided-implementation
-description: Use when the user explicitly invokes $guided-implementation (3实现), gives an exact stage-entry confirmation to a valid upstream footer, continues from its verified continuous-flow handoff, invokes $guided-implementation 重试 in the same task after this Skill's retained-worktree footer, or the originating task receives the dedicated implementation task's terminal result. Reuse a valid Flow Worktree from stage 2 or create one for standalone entry, run native $implement and $tdd there, have the Originating Task review the committed candidate, and retain the same worktree for stage 4.
+description: Use when the user unambiguously confirms a valid $solution-design handoff, continues from its verified continuous-flow handoff, invokes $guided-implementation 重试 after this Skill's retained-worktree footer, or the originating task receives the dedicated implementation task's terminal result. Require and reuse the verified Phase-2 Flow Worktree and planning artifacts, run native $implement and $tdd there, and retain the accepted candidate for stage 4.
 ---
 
 # 3实现
@@ -12,28 +12,28 @@ Every implementation uses one Flow Worktree and branch. Read
 corresponding action. Read
 [references/thread-settings-protocol.md](references/thread-settings-protocol.md)
 immediately before resolving task settings.
+Interpret user replies through
+[`../design-discussion/references/confirmation-contract.md`](../design-discussion/references/confirmation-contract.md).
 
 ## Entry
 
-- Accept only explicit invocation, exact `确认` or `执行后续全部流程` replying to a
-  valid upstream success footer, that footer's verified same-turn continuous
-  handoff, or exact `$guided-implementation 重试` in the same task after this
-  Skill's immediately preceding retained-worktree footer. Punctuation, prefixes,
-  suffixes, added conditions, `继续`, and `可以` do not enter this stage. On retry,
+- Accept an unambiguous stepwise or continuous confirmation replying to a valid
+  Phase-2 success footer, that footer's verified same-turn continuous handoff,
+  or an unambiguous retry request (including `$guided-implementation 重试`) in the same task after this Skill's
+  immediately preceding retained-worktree footer. A standalone invocation with
+  no verified Phase-2 handoff does not enter implementation. On retry,
   verify the recorded binding and current Git state before acting; continue that
   worktree and never create a replacement.
-- Track one `流程模式`. Explicit invocation and exact `确认` use `逐阶段确认`;
-  exact `执行后续全部流程` or a verified upstream footer carrying
+- Track one `流程模式`. An ordinary unambiguous affirmation uses `逐阶段确认`;
+  a clear request for automatic remaining execution or a verified upstream footer carrying
   `流程模式：连续执行后续全部流程` uses `连续执行后续全部流程`. Preserve it through
   launch, remediation, retry, completion and the Stage-4 handoff.
-- Resolve the target branch, committed requirement/Spec/ADR/Ticket paths, and
-  allowed implementation paths. Every protected source path must exist at the
+- Resolve the target branch, committed Spec/ADR/Ticket paths, protected
+  requirement-draft path, and allowed implementation paths. Every protected source path must exist at the
   implementation scope base.
-- When Stage 2 supplies a Flow Worktree binding, verify and reuse the inherited
-  Flow Worktree. Standalone Stage 3 creates one Flow Worktree when no upstream
-  binding is claimed. If an upstream handoff claims a binding but it is missing,
-  invalid, or points elsewhere, stop as an anomaly and must not silently create
-  a replacement. Exact retry always reuses the retained binding.
+- Verify and reuse the Flow Worktree supplied by Stage 2. If the binding is
+  missing, invalid, or points elsewhere, stop as an anomaly and do not create a
+  replacement. Retry always reuses the retained binding.
 - Uncommitted primary-checkout files stay outside the Flow Worktree and are
   never copied, staged, stashed, or removed.
 - The originating task supervises and reviews. It never edits implementation
@@ -41,8 +41,10 @@ immediately before resolving task settings.
 
 ## Enforce the confirmed implementation boundary
 
-Treat the committed requirement, Spec, ADR, Tickets, and exact stage handoff as
-the complete implementation boundary. Implement a robust, coherent result
+Treat the committed Spec, ADR, Tickets, and exact Stage-2 handoff as the
+complete implementation authority. Keep the requirement draft protected and
+read-only, but do not use it to add or reinterpret implementation scope.
+Implement a robust, coherent result
 inside that boundary; the goal is not merely the smallest diff. Do not infer
 authority from nearby code, an attractive refactor, or a possible future need.
 
@@ -76,22 +78,18 @@ verified retained Flow Worktree it calls
 must prove the same active, open topic is owned by the current task, has no
 pending document write and is at `current_phase: 3`. Carry that exact discussion
 identity, binding, Phase Result and the returned ledger/topic revisions in the
-Stage-4 handoff. Standalone entry creates no Phase Run, performs none of these
-calls and carries `none` for every discussion field.
+Stage-4 handoff. An unattached Stage-2 handoff creates no discussion Phase Run,
+performs none of these calls and carries `none` for every discussion field.
 
 ## Bind the Flow Worktree
 
 For a valid Stage-2 handoff, call `verify-worktree` with its exact binding and
 use that Flow Worktree without creating another one. The worktree must be clean
-at the reported planning merge commit. For an explicit standalone Stage-3 entry
-that claims no upstream binding, call `start-worktree` once with the canonical
-primary checkout, new worktree path, new branch, and target branch. The command
-creates the branch and worktree from the exact target `HEAD` and returns its
-plain Git binding. Neither route creates a lease, claim, queue entry, or mutable
-run record.
+at the reported planning merge commit. Stage 3 never calls `start-worktree` and
+never creates a lease, claim, queue entry, or mutable run record.
 
-Valid upstream entry must reuse the inherited Flow Worktree.
-An invalid claimed binding must not silently create a replacement.
+Every entry must reuse the inherited Flow Worktree. An invalid binding must not
+silently create a replacement.
 
 Create one dedicated implementation task in that returned worktree. Pass the
 binding, planning sources, ordered Tickets, testing basis, flow mode and exact
@@ -157,14 +155,14 @@ After success, emit a complete Stage-4 handoff:
 目标分支：<target branch>
 实现依据：<committed source paths and commit>
 实现提交：<candidate commit>
-方案合并提交：<planning merge commit | standalone base commit>
+方案合并提交：<planning merge commit>
 Flow Worktree：<exact retained binding>
 验证：<focused and full checks>
 审查：<Standards and Spec review result>
 待归档文档：<exact paths and required updates | none>
 清理结果：Flow Worktree and branch retained for Stage 4
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
-讨论上下文：<standalone | attached>
+讨论上下文：<unattached | attached>
 讨论身份：<project path, project id, tree id and topic id | none>
 讨论绑定：<actor conversation ref | none>
 阶段 3 结果：<phase result id | none>
@@ -172,10 +170,10 @@ Flow Worktree：<exact retained binding>
 远程操作：<separately authorized results | none>
 下一阶段：`$change-closure`（4归档）
 进入条件：已满足
-继续方式：逐阶段确认时回复 `确认`；连续执行后续全部流程时同一轮立即进入 4归档
+继续方式：逐阶段确认时明确同意上述单一待执行事项；连续执行后续全部流程时同一轮立即进入 4归档
 ```
 
-In `逐阶段确认`, stop after this footer; only exact `确认` enters Stage 4. In
+In `逐阶段确认`, stop after this footer; an unambiguous affirmation enters Stage 4. In
 `连续执行后续全部流程`, emit the footer and invoke `$change-closure` in the same
 turn. A blocker, failed verification or material decision always stops either
 mode.

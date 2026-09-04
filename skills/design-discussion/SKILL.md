@@ -8,6 +8,12 @@ description: Use when the user explicitly invokes $design-discussion, says 0шоиш
 Maintain a durable, document-driven design discussion while keeping ordinary
 consultation stateless.
 
+Read the shared
+[`requirement-document-contract.md`](references/requirement-document-contract.md)
+before creating or changing the requirement document, and use
+[`confirmation-contract.md`](references/confirmation-contract.md) whenever a
+workflow action needs user confirmation.
+
 ## Select the mode
 
 Enter persistent mode only for one of these explicit signals:
@@ -74,11 +80,16 @@ question. Do not silently preserve, replace or discard an earlier decision.
 For detailed document sections and confirmation boundaries, read
 [references/topic-document-protocol.md](references/topic-document-protocol.md).
 
-For a confirmed substantive update, call `prepare-topic-update` with the
+For a substantive document update, call `prepare-topic-update` with the
 current ledger and topic revisions, the authenticated topic binding, a new
 UUIDv4 idempotency key and exactly one typed mutation. Supported Ticket 02
 mutations are `confirm-decision`, `set-active-question`, `insert-idea`,
-`resolve-inserted-idea`, `change-direction` and `resolve-impact`. Reuse the
+`resolve-inserted-idea`, `change-direction`, `resolve-impact`, and
+`refresh-requirement-narrative`. Use the refresh mutation after every material
+answer or conclusion so the goal, scope, scenarios, facts, constraints, and
+acceptance conditions remain a coherent current-state snapshot. Supply at most
+one current direction-change note when it prevents likely misunderstanding.
+Reuse the
 same idempotency key only to replay the exact same request. Stable decision,
 question, idea, impact and document-write identities come from the protocol;
 do not construct or rewrite them in prose.

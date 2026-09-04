@@ -24,13 +24,21 @@ protocol, or imply that the consultation will persist.
 ## Minimum topic document
 
 ```markdown
+## Goal
+## Background and Current State
+## Scope
+## Non-goals
+## Users and Key Scenarios
 ## Confirmed Decisions
 ## Candidate Solution
 ## Tentative Assumptions
 ## Facts
+## Constraints
+## Acceptance Conditions
 ## Pending Questions
 ## Decision Evolution
 ```
 
 The headings are stable; content changes only through the authorized protocol
-operations.
+operations. `Decision Evolution` stays empty unless one concise change note is
+needed to prevent a likely misunderstanding; it is not an audit log.

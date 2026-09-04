@@ -4,6 +4,9 @@ Read this reference only when the user asks to split a mature topic or continue
 an unavailable conversation. This is the action authority for the Codex task
 seam; do not duplicate its sequence in the root Skill.
 
+Interpret user confirmation through
+[`confirmation-contract.md`](confirmation-contract.md).
+
 ## Freeze one user-confirmed direction
 
 Before external task creation, discuss the proposed child or continuation one
@@ -33,8 +36,8 @@ before calling `prepare-handoff` so an unavailable current Adapter or
 
 Show a fixed creation confirmation naming the saved Codex project, child versus
 continuation, goal, scope, checkpoint, exact task count (`1`), model, reasoning
-effort, settings source, and the absence of remote writes. Only an exact `确认`
-in reply authorizes `create_thread`.
+effort, settings source, and the absence of remote writes. Only a clear,
+unconditional confirmation of that pending action authorizes `create_thread`.
 
 ## Create and bind one Codex task
 

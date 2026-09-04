@@ -33,9 +33,12 @@ python3 <guided-implementation-skill-root>/scripts/thread_settings.py resolve \
 Run the command unchanged. `--current` reads the existing `CODEX_THREAD_ID`
 as the current thread identity and binds each canonical or paginated rollout
 filename plus `session_meta.id` to it. Paginated rollouts must form one verified
-`history_base` chain; a missing link, branch, duplicate segment or identity
-conflict fails closed. It separately treats `CODEX_SESSION_ID`, when present,
-as the session-lineage identity and requires it to match
+`history_base` chain rooted at the canonical rollout without a filename segment
+suffix. That root's node ID is the current thread ID; every suffixed segment
+must link to it or a preceding suffixed segment. A missing canonical root,
+missing link, branch, duplicate segment or identity conflict fails closed. It
+separately treats `CODEX_SESSION_ID`, when present, as the session-lineage
+identity and requires it to match
 `session_meta.session_id`. A root task requires its lineage ID to equal its
 current thread ID. A native subagent instead requires a distinct lineage ID
 and a canonical, distinct

@@ -802,6 +802,13 @@ def _topic_snapshot(records: dict[str, list[dict[str, Any]]], topic_id: str) -> 
         for record in pending_items
         if record.get("item_kind") == "idea"
     ]
+    narratives = [
+        _json_field(record, "data_json", "requirement narrative")
+        for record in pending_items
+        if record.get("item_kind") == "requirement-narrative"
+    ]
+    if len(narratives) > 1:
+        raise ProtocolError("state_corrupt", "topic has multiple requirement narratives")
     impacts = [
         _json_field(record, "data_json", "impact")
         for record in records["Impacts"]
@@ -811,6 +818,7 @@ def _topic_snapshot(records: dict[str, list[dict[str, Any]]], topic_id: str) -> 
         "decisions": sorted(decisions, key=lambda item: item["decision_id"]),
         "questions": sorted(questions, key=lambda item: item["question_id"]),
         "ideas": sorted(ideas, key=lambda item: item["idea_id"]),
+        "requirement_narrative": narratives[0] if narratives else None,
         "impacts": sorted(impacts, key=lambda item: item["impact_id"]),
     }
 

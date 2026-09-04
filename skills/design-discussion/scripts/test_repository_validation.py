@@ -103,7 +103,7 @@ class RepositoryValidationTests(unittest.TestCase):
             "验证：<focused and full checks>",
             "审查：<Standards and Spec review result>",
             "待归档文档：<exact paths and required updates | none>",
-            "讨论上下文：<standalone | attached>",
+            "讨论上下文：<unattached | attached>",
             "讨论身份：<project path, project id, tree id and topic id | none>",
             "讨论绑定：<actor conversation ref | none>",
             "阶段 3 结果：<phase result id | none>",
@@ -135,8 +135,8 @@ class RepositoryValidationTests(unittest.TestCase):
             solution_templates,
         )
         self.assertIn("reuse the inherited Flow Worktree", guided)
-        self.assertIn("Standalone Stage 3 creates", guided)
-        self.assertIn("must not silently create a replacement", guided)
+        self.assertIn("Stage 3 never calls `start-worktree`", guided)
+        self.assertIn("never create a replacement", guided)
         self.assertNotIn("calls `complete-worktree`", guided)
         self.assertIn("passes the retained Flow Worktree", guided)
         self.assertIn("Flow Worktree：<exact retained binding>", guided)
@@ -230,7 +230,7 @@ class RepositoryValidationTests(unittest.TestCase):
             self.assertIn(marker, review)
         self.assertIn("整体复检：通过", closure[footer_start:])
 
-    def test_direct_implementation_has_committed_source_and_phase_run_seam(self) -> None:
+    def test_stage_three_requires_stage_two_planning(self) -> None:
         framing = (
             REPOSITORY / "skills/problem-framing/SKILL.md"
         ).read_text(encoding="utf-8")
@@ -238,7 +238,15 @@ class RepositoryValidationTests(unittest.TestCase):
             REPOSITORY / "skills/guided-implementation/SKILL.md"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("committed minimal requirement source", framing)
+        lifecycle = (
+            REPOSITORY
+            / "skills/design-discussion/references/lifecycle-integration.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("Phase 1 routes only to Phase 2", framing)
+        self.assertNotIn("Route `1->3`", framing)
+        self.assertIn("Phase 3 accepts only Phase-2", lifecycle)
+        self.assertNotIn("`1→3` wrapper run", lifecycle)
         self.assertIn("lifecycle-integration.md", guided)
         for marker in (
             "`claim-phase-carrier`",
@@ -248,6 +256,63 @@ class RepositoryValidationTests(unittest.TestCase):
             "`finalize-phase-run`",
         ):
             self.assertIn(marker, guided)
+
+    def test_phase_one_always_owns_one_current_requirement_document(self) -> None:
+        framing = (
+            REPOSITORY / "skills/problem-framing/SKILL.md"
+        ).read_text(encoding="utf-8")
+        requirement_contract = (
+            REPOSITORY
+            / "skills/design-discussion/references/requirement-document-contract.md"
+        ).read_text(encoding="utf-8")
+        solution = (
+            REPOSITORY / "skills/solution-design/SKILL.md"
+        ).read_text(encoding="utf-8")
+        solution_protocol = (
+            REPOSITORY
+            / "skills/solution-design/references/subagent-protocol.md"
+        ).read_text(encoding="utf-8")
+        solution_templates = (
+            REPOSITORY / "skills/solution-design/references/templates.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("exactly one such document", framing)
+        self.assertIn("before the first substantive question", requirement_contract)
+        self.assertIn("After every material answer", requirement_contract)
+        self.assertIn("not a transcript or an audit", requirement_contract)
+        self.assertIn("at most one current concise change note", requirement_contract)
+        self.assertIn("one committed, frozen Phase-1 requirement draft", solution)
+        self.assertIn("supplement it from chat", solution)
+        self.assertIn("before creating a Flow Worktree", solution)
+        self.assertIn("fixed pre-launch anomaly", solution)
+        self.assertIn("before `start-worktree` or launch", solution_protocol)
+        self.assertIn("recommends returning to `$problem-framing`", solution_protocol)
+        self.assertNotIn("current-task accepted handoff", solution_templates)
+        self.assertNotIn("current-task-handoff", solution_templates)
+
+    def test_confirmations_bind_context_not_magic_strings(self) -> None:
+        confirmation = (
+            REPOSITORY
+            / "skills/design-discussion/references/confirmation-contract.md"
+        ).read_text(encoding="utf-8")
+        for marker in (
+            "not a password or an exact-string challenge",
+            "immediately preceding unresolved confirmation block",
+            "Natural replies",
+            "meaning-preserving wording",
+            "confirmation_intent",
+        ):
+            self.assertIn(marker, confirmation)
+
+        for relative_path in (
+            "skills/problem-framing/SKILL.md",
+            "skills/solution-design/SKILL.md",
+            "skills/guided-implementation/SKILL.md",
+            "skills/change-closure/SKILL.md",
+        ):
+            document = (REPOSITORY / relative_path).read_text(encoding="utf-8")
+            self.assertIn("confirmation-contract.md", document)
+            self.assertNotIn("only exact `确认`", document)
 
     def test_stage_boundaries_and_dependency_contract_match_execution(self) -> None:
         guided = (
@@ -295,7 +360,7 @@ class RepositoryValidationTests(unittest.TestCase):
         ordered = [
             "publish the latest verified `CP-*`",
             "`prepare-handoff` exactly once",
-            "Only an exact `确认`",
+            "Only a clear,",
             "call `create_thread` once",
             "call `bind-handoff`",
             "call `accept-handoff`",

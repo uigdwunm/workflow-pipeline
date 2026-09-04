@@ -1,6 +1,6 @@
 ---
 name: solution-design
-description: Use when the user explicitly invokes $solution-design; confirms a stable current-task $problem-framing handoff; $problem-framing explicitly enters this stage after accepting and archiving a dedicated grilling task; replies to this Skill's launch, review, or anomaly block; or selects 执行后续全部流程 from a verified success footer. Create one Flow Worktree, orchestrate one context-isolated solution-designer subagent there, publish its committed planning files to the target, retain the same worktree for stages 3 and 4, and preserve exact confirmation and anomaly boundaries.
+description: Use when the user explicitly invokes $solution-design with a committed Phase-1 requirement draft, unambiguously confirms a valid Phase-1 handoff, enters from an authenticated dedicated-grilling handoff, replies to this Skill's launch/review/anomaly block, or continues from a verified continuous-flow handoff. Create one Flow Worktree, orchestrate one context-isolated solution-designer subagent, and publish planning artifacts from that frozen draft for Stage 3.
 ---
 
 # 2方案
@@ -16,6 +16,10 @@ Read
 completely before launching, resuming, or accepting a solution-design
 subagent. Before creating or publishing the Flow Worktree, also read
 [the shared worktree execution contract](../guided-implementation/references/worktree-execution.md).
+Interpret user replies through
+[`../design-discussion/references/confirmation-contract.md`](../design-discussion/references/confirmation-contract.md)
+and require the frozen document defined by
+[`../design-discussion/references/requirement-document-contract.md`](../design-discussion/references/requirement-document-contract.md).
 The child reads
 [references/design-readiness.md](references/design-readiness.md) before native
 Spec synthesis and applies it at the existing review or publication seams.
@@ -37,30 +41,35 @@ Enter from exactly one route:
 
 - an explicit `$solution-design` invocation;
 - a stable current-task `$problem-framing` success footer selecting this stage,
-  followed after trimming whitespace by exact `确认` or
-  `执行后续全部流程`;
+  followed by an unambiguous stepwise or continuous confirmation;
 - the authenticated post-archive handoff from `$problem-framing` containing the
   absolute draft, commit, hash, delivery ID, archived child identity, project,
   repository, planning target, authority, and flow mode;
 - this Skill's immediately preceding launch, review, or anomaly block; or
 - the trusted `solution_designer` runtime receiving the exact
   `solution-design-subagent-v1` bootstrap; or
-- exact `执行后续全部流程` to this Skill's own successful footer.
+- an unambiguous continuous-flow request to this Skill's own successful footer.
 
-Reject punctuation, prefixes, suffixes, added conditions, `继续`, and `可以` as
-stage confirmation. Treat an unrelated approval as ordinary conversation.
+Natural affirmative wording is valid when it unambiguously refers to the
+immediately preceding pending action. Treat a bare affirmation without such an
+action as ordinary conversation, and treat a material condition as a
+modification request.
 
 ## Establish the requirement source
 
-Use one source:
+Mechanically require one committed, frozen Phase-1 requirement draft by path,
+commit, and SHA-256. For a dedicated-task delivery, also require the
+authenticated post-archive handoff. Read the immutable draft as the complete
+requirement source; do not re-audit the grilling, supplement it from chat
+history, modify it, or create a second requirement or solution draft.
 
-- **Delivered draft:** mechanically require the authenticated post-archive
-  handoff and read the immutable problem-framing draft as the complete
-  requirement source. Do not re-audit the grilling or modify the draft.
-- **Current-task handoff:** extract the already accepted target, background,
-  scope, constraints, decisions, acceptance conditions, and planning target
-  into the child bootstrap prompt. Do not create a second requirement or
-  solution draft merely for delegation.
+Verify this source before creating a Flow Worktree or launching the child. A
+missing path, commit, hash, committed file, or matching document state emits
+the fixed pre-launch anomaly from `references/templates.md`, recommends
+returning to `$problem-framing` to create or repair the frozen draft, and stops.
+Confirmation of that anomaly may correct the disclosed source identity; it
+never turns conversation history into a requirement source or authorizes
+Phase-1 work inside this stage.
 
 If a correction changes goal, scope, constraints, or acceptance conditions,
 keep it in `$problem-framing`; do not silently absorb it as solution design.
@@ -114,10 +123,10 @@ material outcome, the solution is not complete.
 
 ## Track the flow mode
 
-Use `逐阶段确认` for an explicit invocation, a phase-0 discussion route or exact
-`确认`. Preserve an authenticated inherited mode only from `$problem-framing`.
-Only exact `执行后续全部流程` from a verified successful stage-1 footer enables
-`连续执行后续全部流程`.
+Use `逐阶段确认` for an explicit invocation, a phase-0 discussion route, or an
+ordinary unambiguous affirmation. Preserve an authenticated inherited mode only
+from `$problem-framing`. Only a clear request for automatic remaining execution
+from a verified successful stage-1 footer enables `连续执行后续全部流程`.
 
 - In `逐阶段确认`, require the fixed launch confirmation, solution review,
   optional Tickets review, and final confirmation before `3实现`.
@@ -173,8 +182,8 @@ state and must not call `publish-planning` again. Do not create a replacement.
 Do not add checks for pre-existing or duplicate planning files.
 
 In stepwise mode, show the fixed success footer from `references/templates.md`.
-Exact `确认` enters `$guided-implementation`. Exact
-`执行后续全部流程` switches to continuous mode and enters
+An unambiguous affirmation enters `$guided-implementation`. A clear request to
+continue through the remaining stages switches to continuous mode and enters
 `$guided-implementation`.
 
 In continuous mode, emit the fixed continuous completion handoff from

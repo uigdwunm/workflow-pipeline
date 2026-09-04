@@ -109,10 +109,11 @@ class ThreadSettingsTests(unittest.TestCase):
     def test_resolve_uses_latest_paginated_rollout_context(self):
         with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
-            self.make_rollout(root, contexts=[])
+            self.make_rollout(root, paginated=True, contexts=[])
             self.make_rollout(
                 root,
                 segment_id=self.first_segment_id,
+                history_base_id=self.thread_id,
                 paginated=True,
                 contexts=[("gpt-5.6-terra", "medium", "turn-1")],
                 timestamp="2026-08-06T19-52-38",
@@ -137,14 +138,13 @@ class ThreadSettingsTests(unittest.TestCase):
             root = Path(directory)
             self.make_rollout(
                 root,
-                segment_id=self.first_segment_id,
                 paginated=True,
                 contexts=[("gpt-5.6-sol", "high", "turn-1")],
             )
             self.make_rollout(
                 root,
-                segment_id=self.second_segment_id,
-                history_base_id=self.first_segment_id,
+                segment_id=self.first_segment_id,
+                history_base_id=self.thread_id,
                 paginated=True,
                 contexts=[],
                 timestamp="2026-08-06T19-52-38",
@@ -154,9 +154,37 @@ class ThreadSettingsTests(unittest.TestCase):
 
         self.assertEqual(result["turn_id"], "turn-1")
 
+    def test_paginated_rollout_requires_canonical_root(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory)
+            self.make_rollout(
+                root,
+                segment_id=self.first_segment_id,
+                history_base_id=self.thread_id,
+                paginated=True,
+            )
+
+            with self.assertRaisesRegex(MODULE.SettingsError, "canonical root"):
+                MODULE.resolve_thread_settings(self.thread_id, root)
+
+    def test_paginated_rollout_rejects_legacy_suffixed_root(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory)
+            self.make_rollout(root, paginated=True)
+            self.make_rollout(
+                root,
+                segment_id=self.first_segment_id,
+                paginated=True,
+                timestamp="2026-08-06T19-52-38",
+            )
+
+            with self.assertRaisesRegex(MODULE.SettingsError, "ambiguous"):
+                MODULE.resolve_thread_settings(self.thread_id, root)
+
     def test_paginated_rollout_rejects_unproven_history(self):
         with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)
+            self.make_rollout(root, paginated=True)
             self.make_rollout(
                 root,
                 segment_id=self.second_segment_id,

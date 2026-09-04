@@ -2,11 +2,8 @@
 
 Use these formats verbatim, replacing angle-bracket placeholders. Do not remove
 fields. Keep user-provided text concise enough to review, but show exact paths,
-IDs, hashes, model settings, and actions.
-
-Every `确认方式：回复 \`确认\`` line means that, after trimming surrounding
-whitespace, the entire reply must be exactly `确认`. Punctuation, conditions, or
-any other suffix is a modification or non-confirming reply.
+IDs, hashes, model settings, and actions. Interpret replies through
+[`../../design-discussion/references/confirmation-contract.md`](../../design-discussion/references/confirmation-contract.md).
 
 ## Base confirmation block
 
@@ -19,7 +16,7 @@ any other suffix is a modification or non-confirming reply.
 当前依据：<文件、提交、哈希或配置>
 确认后结果：<结果>
 修改方式：说明需要修改的内容
-确认方式：回复 `确认`
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
 
 ## Long-context migration offer
@@ -32,15 +29,15 @@ any other suffix is a modification or non-confirming reply.
 拟排除内容：<unrelated history and non-transferable authority>
 执行环境：同一项目的 `local` 环境；不创建 worktree
 原任务行为：创建后停止；不等待、不轮询、不监督
-确认事项：整理本次目标相关上下文，形成草案，并在最终创建确认前不创建新任务
+确认事项：把当前 1拷问迁移到专用任务，并在最终创建确认前不创建新任务
 确认范围：
 1. 读取并整理当前任务中与本次目标相关的上下文
-2. 在项目文档区创建并迭代一个阶段自有草案；只写入并提交本阶段拥有的文档
+2. 继续迭代当前任务已经创建或继承的唯一需求草案；不创建第二份草案
 影响目标：<goal>
 当前依据：<current task title, project, repository, and context disclosure>
-确认后结果：形成可审阅草案并展示新任务创建确认；尚不创建新任务
+确认后结果：当前草案完成迁移准备并展示新任务创建确认；尚不创建新任务
 修改方式：说明需要调整的迁移范围；如不迁移，直接说明在当前任务继续
-确认方式：回复 `确认`
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
 
 ## Dedicated-task creation confirmation
@@ -70,7 +67,7 @@ any other suffix is a modification or non-confirming reply.
 当前依据：草案=<absolute path>; 存储=repository-document-zone; sha256=<sha256>; 原任务=<threadId>; 配置=<model>/<effort>; 设置证据=<source and source turn id>
 确认后结果：出现一个仅用于本次拷问的专用任务；原任务不等待其结果
 修改方式：说明要修改的目标、草案、标题、提示词、项目、模型或推理强度
-确认方式：回复 `确认`
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
 
 ## Exact initial prompt
@@ -129,7 +126,7 @@ not from the draft or child task.
 ```markdown
 ---
 artifact: problem-framing-draft
-schema_version: 4
+schema_version: 5
 status: drafting
 storage_mode: repository-document-zone
 repository_target_path: <absolute repository path>
@@ -146,10 +143,14 @@ original_task:
   thread_id: <id>
   host_id: <id>
   title: <title>
+write_owner:
+  kind: current-task
+  thread_id: <id>
+  host_id: <id>
 dedicated_task:
-  thread_id: null
-  host_id: null
-  title: <confirmed title>
+  thread_id: <null until migration>
+  host_id: <null until migration>
+  title: <null until migration>
 model: <model id>
 model_source: <codex-rollout-latest-turn-context | user-requested-override>
 reasoning_effort: <effort>
@@ -187,6 +188,11 @@ context_disclosure:
 
 这里只摘要并链接相关 ADR。
 
+## 必要的方向变更摘要
+
+只保留能够防止后续误解或重复讨论的一句话摘要。已推翻的推理、场景和
+验收细节从当前草案删除；仍然有效的内容改写为当前事实、约束或非目标。
+
 ## 验收条件
 
 ## 未决问题与延期项
@@ -212,7 +218,7 @@ context_disclosure:
 ```
 
 At finalization set `阶段结果：拷问完成` and record the user completion
-confirmation. After the exact stage-owned documentation commit, use
+confirmation. After the stage-owned documentation commit, use
 `status: complete` and `规划提交状态：complete`. Do not write the final commit,
 hash, or delivery ID into
 the committed draft when doing so would create a self-referential commit or
@@ -237,7 +243,7 @@ hash; those canonical values belong in the delivery payload.
 当前依据：草案=<path>; 当前sha256=<sha256>; 原任务=<threadId>; 专用任务=<threadId>
 确认后结果：本专用任务完成，草案成为包含此前上下文和本次拷问结果的主要最终交付物，并交付原任务
 修改方式：说明仍需补充、纠正或继续拷问的内容
-确认方式：回复 `确认`
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
 
 ## Completion confirmation
@@ -263,7 +269,7 @@ hash; those canonical values belong in the delivery payload.
 当前依据：草案=<repository path>; 当前sha256=<sha256>; pinned_HEAD=<sha>; current_HEAD=<sha>; 原任务=<threadId>; 专用任务=<threadId | none for current-task flow>
 确认后结果：完成规划提交和交付；仓库事实变化时重新核对，不重复拷问
 修改方式：说明仍需补充、纠正或继续拷问的内容
-确认方式：回复 `确认`
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
 
 ## Child-to-original delivery payload
@@ -301,8 +307,8 @@ Matt 原生动作：publish Spec; review and publish Tickets when needed; apply 
 进入条件：已满足
 交接来源：上述草案文件
 确认事项：归档专用拷问任务并进入 2方案
-确认方式：回复 `确认`
-流程模式：回复 `执行后续全部流程` 归档专用任务、进入 2方案，并在无需用户决策时自动顺序执行剩余阶段
+确认方式：明确同意上述单一待执行事项；如需调整可直接说明
+流程模式：可明确要求归档专用任务、进入 2方案，并在无需用户决策时自动顺序执行剩余阶段
 ```
 
 ## Failure checkpoint
@@ -319,7 +325,7 @@ Matt 原生动作：publish Spec; review and publish Tickets when needed; apply 
 阶段状态：受阻
 恢复类型：重试当前阶段
 下一阶段：none
-恢复方式：修复条件后回复 `$problem-framing 重试`
+恢复方式：修复条件后明确要求重试；也可使用 `$problem-framing 重试`
 ```
 
 ## Post-archive stage-2 handoff

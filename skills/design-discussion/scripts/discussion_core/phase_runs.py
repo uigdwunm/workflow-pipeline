@@ -32,7 +32,7 @@ from .state import (
 )
 
 
-PHASE_ROUTES = {(0, 1), (0, 2), (1, 2), (1, 3), (2, 3), (3, 4)}
+PHASE_ROUTES = {(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)}
 PHASE_RUN_STATES = {
     "prepared", "setup-pending", "ready", "active", "completion-claimed",
     "completion-pending", "completed", "blocked", "failed", "outcome-unknown",
@@ -54,10 +54,6 @@ WRAPPER_CARRIER_ROUTES = {
     "current-problem-framing": {(0, 1)},
     "dedicated-grilling": {(0, 1)},
     "solution-designer": {(0, 2), (1, 2)},
-    "guided-implementation": {(1, 3)},
-}
-DIRECT_IMPLEMENTATION_COMPLETENESS = {
-    "scope", "behavior", "failures", "acceptance_conditions", "test_seam"
 }
 
 
@@ -265,7 +261,7 @@ def _verify_continuous_flow_authority(
             and authority.get("source_checkpoint_id") == checkpoint.get("checkpoint_id")
             and authority.get("source_checkpoint_identity")
             == checkpoint.get("published_identity")
-            and authority.get("user_reply") == "执行后续全部流程"
+            and authority.get("confirmation_intent") == "continuous"
         ):
             matches.append(authority)
     if len(matches) != 1:
@@ -283,10 +279,14 @@ def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
             "source_checkpoint_id",
             "source_checkpoint_identity",
             "phase_result_id",
+            "confirmation_intent",
             "user_reply",
         },
     )[:4]
     user_reply = _expect_string(request["user_reply"], "user_reply", max_bytes=128)
+    confirmation_intent = _expect_string(
+        request["confirmation_intent"], "confirmation_intent", max_bytes=32
+    )
     source_checkpoint_identity = _expect_string(
         request["source_checkpoint_identity"],
         "source_checkpoint_identity",
@@ -295,10 +295,10 @@ def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
     requested_phase_result_id = _expect_string(
         request["phase_result_id"], "phase_result_id", max_bytes=64
     )
-    if user_reply != "执行后续全部流程":
+    if confirmation_intent != "continuous":
         raise ProtocolError(
             "phase_flow_mode_invalid",
-            "continuous authorization requires the exact successful-footer reply",
+            "continuous authorization requires normalized continuous intent",
         )
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)
@@ -362,6 +362,7 @@ def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
             "phase_result_id": phase_result_id,
             "source_checkpoint_id": checkpoint["checkpoint_id"],
             "source_checkpoint_identity": checkpoint["published_identity"],
+            "confirmation_intent": confirmation_intent,
             "user_reply": user_reply,
         }
         records["Phase Results"].append(
@@ -406,7 +407,7 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         {
             "from_phase", "to_phase", "route", "carrier_kind",
             "source_checkpoint_id", "flow_mode", "flow_mode_source",
-            "requirement_completeness", "scope",
+            "scope",
         },
     )[:4]
     from_phase = request["from_phase"]
@@ -415,7 +416,7 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         raise ProtocolError("invalid_request", "phase values must be integers")
     route = (from_phase, to_phase)
     if route not in PHASE_ROUTES:
-        raise ProtocolError("invalid_phase_route", "only the six approved forward routes are legal")
+        raise ProtocolError("invalid_phase_route", "only the five approved forward routes are legal")
     supplied_route = _expect_string(request["route"], "route", max_bytes=32)
     if supplied_route not in {f"{from_phase}->{to_phase}", f"{from_phase}\u2192{to_phase}"}:
         raise ProtocolError("phase_route_conflict", "route label does not match the requested phase transition")
@@ -438,20 +439,6 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
     }:
         raise ProtocolError("phase_flow_mode_invalid", "stepwise flow source is unsupported")
     scope = _validated_string_list(request["scope"], "scope")
-    completeness = request["requirement_completeness"]
-    if route == (1, 3):
-        if (
-            not isinstance(completeness, dict)
-            or set(completeness) != DIRECT_IMPLEMENTATION_COMPLETENESS
-            or any(value is not True for value in completeness.values())
-        ):
-            raise ProtocolError(
-                "phase_requirement_incomplete",
-                "direct implementation requires complete scope, behavior, failures, "
-                "acceptance conditions and test seam",
-            )
-    elif completeness is not None:
-        raise ProtocolError("invalid_request", "requirement_completeness is only valid for route 1->3")
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)
         frontmatter, records = _load_records(ledger_path)
@@ -533,7 +520,6 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
                 else None
             ),
             "scope": scope,
-            "requirement_completeness": completeness,
             "requirement_document_mode": "shared-0-1-topic" if to_phase == 1 else "frozen-read-only",
             "stage_ownership": stage_ownership,
             "may_modify_requirement_source": to_phase == 1,
@@ -953,7 +939,7 @@ def _prepare_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         raise ProtocolError("invalid_request", "phase values must be integers")
     route = (request["from_phase"], request["to_phase"])
     if route not in PHASE_ROUTES:
-        raise ProtocolError("invalid_phase_route", "only the six approved forward routes are legal")
+        raise ProtocolError("invalid_phase_route", "only the five approved forward routes are legal")
     supplied_route = _expect_string(request["route"], "route", max_bytes=32)
     if supplied_route not in {f"{route[0]}->{route[1]}", f"{route[0]}\u2192{route[1]}"}:
         raise ProtocolError("phase_route_conflict", "route label does not match the requested phase transition")
@@ -1262,26 +1248,6 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                     )
             attempt["state"] = "active"
             data["state"] = "active"
-            if data.get("wrapper_integration") is True and data.get("route") == [1, 3]:
-                result_id = f"PH-{data['run_id'][3:]}-NA2"
-                records["Phase Results"].append({
-                    "result_id": result_id,
-                    "result_kind": "phase-result",
-                    "state": "not_applicable",
-                    "record_revision": 1,
-                    "data_json": _canonical_json({
-                        "result_id": result_id,
-                        "phase_run_id": data["run_id"],
-                        "phase": 2,
-                        "state": "not_applicable",
-                        "scope": data["scope"],
-                        "reason": (
-                            "absorbed child implementation fully covers the integration scope"
-                            if data.get("implementation_mode") == "no-code-integration"
-                            else "stage-1 requirement completeness gate satisfied"
-                        ),
-                    }),
-                })
         else:
             if target == "completion-claimed" and data["state"] != "active":
                 raise ProtocolError(
@@ -1328,8 +1294,6 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
             "phase_run_id": data["run_id"],
             "attempt_id": attempt["attempt_id"],
         }
-        if target == "active" and data.get("wrapper_integration") is True and data.get("route") == [1, 3]:
-            result.update({"not_applicable_phase": 2, "not_applicable_scope": data["scope"]})
         _write_ledger_transaction(
             ledger_path,
             frontmatter,

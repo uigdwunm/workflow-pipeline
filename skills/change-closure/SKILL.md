@@ -10,6 +10,8 @@ Stage 4 never repairs implementation code. Read
 [references/closure-protocol.md](references/closure-protocol.md) before acting.
 Before verifying, creating, completing, or recovering a Flow Worktree, also read
 [the shared worktree execution contract](../guided-implementation/references/worktree-execution.md).
+Interpret user replies through
+[`../design-discussion/references/confirmation-contract.md`](../design-discussion/references/confirmation-contract.md).
 
 ## Enter
 
@@ -22,9 +24,9 @@ and record the target's current `HEAD`; the target-advance path below applies
 when it differs from the handed-off publication base.
 
 An explicit `$change-closure` invocation starts stepwise closure. A transition
-from Stage 3 requires its complete handoff and either exact `确认` in
-`逐阶段确认` or the verified field `流程模式：连续执行后续全部流程` for same-turn
-entry. Punctuation, added conditions, `继续`, and `可以` do not enter closure.
+from Stage 3 requires its complete handoff and either an unambiguous affirmation
+in `逐阶段确认` or the verified field `流程模式：连续执行后续全部流程` for same-turn
+entry. A material condition modifies the pending action instead of confirming it.
 
 If that handoff carries `讨论上下文：attached`, require its exact discussion
 identity, actor binding, phase-3 result id and ledger/topic revisions. Read
@@ -33,8 +35,8 @@ and execute its topic-local Stage-4 route around the ordinary closure work.
 Standalone Stage-4 entry performs no discussion discovery or protocol calls.
 It claims no inherited implementation candidate or Flow Worktree.
 
-Accept exact `$change-closure 重试` only in the same task after this Skill's
-immediately preceding retained-worktree footer. Verify the recorded binding and
+Accept an unambiguous retry request, including `$change-closure 重试`, only in
+the same task after this Skill's immediately preceding retained-worktree footer. Verify the recorded binding and
 current Git state, then continue that Flow Worktree and the same active
 Phase Run attempt without creating a replacement.
 

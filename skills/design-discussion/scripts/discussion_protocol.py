@@ -273,10 +273,17 @@ def _render_topic_document(
         "topic_revision: 1\n"
         "---\n"
         f"# {root_slug}\n\n"
+        "## Goal\n\n- None.\n\n"
+        "## Background and Current State\n\n- None.\n\n"
+        "## Scope\n\n- None.\n\n"
+        "## Non-goals\n\n- None.\n\n"
+        "## Users and Key Scenarios\n\n- None.\n\n"
         "## Confirmed Decisions\n\n- None.\n\n"
         "## Candidate Solution\n\n- None.\n\n"
         "## Tentative Assumptions\n\n- None.\n\n"
         "## Facts\n\n- Persistent discussion workspace initialized.\n\n"
+        "## Constraints\n\n- None.\n\n"
+        "## Acceptance Conditions\n\n- None.\n\n"
         "## Pending Questions\n\n- The first substantive question is asked after bootstrap verification.\n\n"
         "## Decision Evolution\n\n- None.\n"
     ).encode("utf-8")
@@ -766,6 +773,7 @@ SUBSTANTIVE_MUTATIONS = {
     "resolve-inserted-idea",
     "change-direction",
     "resolve-impact",
+    "refresh-requirement-narrative",
 }
 IMPACT_ACTIONS = {"keep", "adjust", "replace", "discard"}
 QUESTION_ACTIONS = {"resume", "adjust", "invalidate"}
@@ -793,19 +801,13 @@ def _render_evolved_topic(
         for item in snapshot["questions"]
         if item["state"] in {"active", "suspended"}
     ] or ["- None."]
-    evolution_lines = []
-    for item in decisions:
-        evolution_lines.append(
-            f"- `{item['decision_id']}`: {item.get('evolution', 'confirmed')}"
-        )
-    for impact in snapshot["impacts"]:
-        evolution_lines.append(
-            f"- `{impact['decision_id']}` impact `{impact['impact_id']}`: "
-            f"{impact['state']}"
-            + (f" ({impact['action']})" if impact.get("action") else "")
-        )
-    if not evolution_lines:
-        evolution_lines = ["- None."]
+    narrative = snapshot.get("requirement_narrative") or {}
+
+    def narrative_lines(field: str) -> list[str]:
+        return [f"- {item}" for item in narrative.get(field, [])] or ["- None."]
+
+    goal = narrative.get("goal", "None.")
+    evolution_lines = narrative_lines("direction_change_summary")
     return (
         "---\n"
         "schema_version: 1\n"
@@ -816,12 +818,30 @@ def _render_evolved_topic(
         f"topic_revision: {topic_revision}\n"
         "---\n"
         f"# {root_slug}\n\n"
+        "## Goal\n\n"
+        + goal
+        + "\n\n## Background and Current State\n\n"
+        + "\n".join(narrative_lines("background"))
+        + "\n\n## Scope\n\n"
+        + "\n".join(narrative_lines("scope"))
+        + "\n\n## Non-goals\n\n"
+        + "\n".join(narrative_lines("non_goals"))
+        + "\n\n## Users and Key Scenarios\n\n"
+        + "\n".join(narrative_lines("scenarios"))
+        + "\n\n"
         "## Confirmed Decisions\n\n"
         + "\n".join(decision_lines)
         + "\n\n## Candidate Solution\n\n"
         + "\n".join(candidate_lines)
-        + "\n\n## Tentative Assumptions\n\n- None.\n\n"
-        "## Facts\n\n- Persistent discussion workspace initialized.\n\n"
+        + "\n\n## Tentative Assumptions\n\n"
+        + "\n".join(narrative_lines("tentative_assumptions"))
+        + "\n\n## Facts\n\n"
+        + "\n".join(narrative_lines("facts"))
+        + "\n\n## Constraints\n\n"
+        + "\n".join(narrative_lines("constraints"))
+        + "\n\n## Acceptance Conditions\n\n"
+        + "\n".join(narrative_lines("acceptance_conditions"))
+        + "\n\n"
         "## Pending Questions\n\n"
         + "\n".join(question_lines)
         + "\n\n## Decision Evolution\n\n"
@@ -971,6 +991,54 @@ def _apply_mutation_to_records(
             )
             impact_ids.append(impact_id)
         result["impact_ids"] = impact_ids
+    elif mutation_type == "refresh-requirement-narrative":
+        fields = {
+            "type", "goal", "background", "scope", "non_goals", "scenarios",
+            "tentative_assumptions", "facts", "constraints", "acceptance_conditions",
+            "direction_change_summary",
+        }
+        _expect_keys(mutation, fields, "refresh-requirement-narrative mutation")
+
+        def bounded_lines(field: str) -> list[str]:
+            value = mutation[field]
+            if not isinstance(value, list) or len(value) > 64:
+                raise ProtocolError("invalid_request", f"mutation.{field} must be a bounded array")
+            if field == "direction_change_summary" and len(value) > 1:
+                raise ProtocolError(
+                    "invalid_request",
+                    "mutation.direction_change_summary must contain at most one current note",
+                )
+            lines = [
+                _expect_string(item, f"mutation.{field} item", max_bytes=2048)
+                for item in value
+            ]
+            if len(set(lines)) != len(lines):
+                raise ProtocolError("invalid_request", f"mutation.{field} values must be unique")
+            return lines
+
+        data = {
+            "narrative_id": f"RN-{topic_id.removeprefix('topic-')}",
+            "goal": _expect_string(mutation["goal"], "mutation.goal", max_bytes=2048),
+            **{field: bounded_lines(field) for field in fields - {"type", "goal"}},
+        }
+        existing = [
+            record for record in records["Pending Items"]
+            if record.get("topic_id") == topic_id
+            and record.get("item_kind") == "requirement-narrative"
+        ]
+        if len(existing) > 1:
+            raise ProtocolError("state_corrupt", "topic has multiple requirement narratives")
+        record = {
+            "item_id": data["narrative_id"],
+            "item_kind": "requirement-narrative",
+            "topic_id": topic_id,
+            "data_json": _canonical_json(data),
+        }
+        if existing:
+            existing[0].update(record)
+        else:
+            records["Pending Items"].append(record)
+        result["requirement_narrative_id"] = data["narrative_id"]
     else:
         expected = {"type", "impact_id", "decision_id", "action", "summary"}
         _expect_keys(mutation, expected, "resolve-impact mutation")

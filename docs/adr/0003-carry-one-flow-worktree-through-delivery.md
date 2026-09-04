@@ -1,6 +1,6 @@
 # ADR-0003: Carry one Flow Worktree through delivery
 
-Status: Accepted
+Status: Superseded by ADR-0004
 Supersedes: ADR-0002
 
 Stage 2 currently writes in the primary checkout, while Stages 3 and 4 create
@@ -22,4 +22,3 @@ interface but gains no lease, queue, scheduler, durable execution lifecycle, or
 remote authority. The result isolates planning and implementation from
 unrelated checkout work while preserving explicit user control over real
 conflicts.
-

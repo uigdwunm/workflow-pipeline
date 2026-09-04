@@ -1,6 +1,6 @@
 interface:
   display_name: "1拷问"
   short_description: "Sharpen a target and commit its planning sources"
-  default_prompt: "Use $problem-framing to sharpen this target, write only stage-owned planning documents, commit them before implementation, and offer 执行后续全部流程 only in the final success footer."
+  default_prompt: "Use $problem-framing to create or inherit one requirement draft, keep it current while sharpening the target, commit and freeze it, and hand it only to $solution-design."
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

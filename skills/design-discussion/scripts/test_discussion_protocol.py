@@ -1339,7 +1339,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         ledger_revision: int,
         checkpoint: dict[str, object],
         phase_result_id: str,
-        user_reply: str = "执行后续全部流程",
+        user_reply: str = "可以，后续阶段自动执行",
+        confirmation_intent: str = "continuous",
     ) -> tuple[int, dict[str, object], str]:
         return self.run_cli(
             self.phase_request(
@@ -1350,6 +1351,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 source_checkpoint_id=checkpoint["checkpoint_id"],
                 source_checkpoint_identity=checkpoint["snapshot_digest"],
                 phase_result_id=phase_result_id,
+                confirmation_intent=confirmation_intent,
                 user_reply=user_reply,
             )
         )
@@ -1365,7 +1367,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         source_checkpoint_id: str,
         flow_mode: str = "stepwise",
         flow_mode_source: str = "explicit-stage-confirmation",
-        requirement_completeness: dict[str, bool] | None = None,
         scope: list[str] | None = None,
         topic_revision: int = 1,
     ) -> dict[str, object]:
@@ -1381,7 +1382,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             source_checkpoint_id=source_checkpoint_id,
             flow_mode=flow_mode,
             flow_mode_source=flow_mode_source,
-            requirement_completeness=requirement_completeness,
             scope=scope or ["repository"],
         )
 
@@ -1581,7 +1581,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(code, 1)
         self.assertEqual(drifted["error"]["code"], "phase_source_drift")
 
-    def test_wrapper_pending_impacts_and_direct_to_three_completeness(self) -> None:
+    def test_wrapper_pending_impacts_and_direct_to_three_is_rejected(self) -> None:
         impacted_project = self.make_project("wrapper-pending-impact", git=False)
         impacted = self.bootstrap_topic(impacted_project)
         ledger = Path(str(impacted["ledger_path"]))
@@ -1616,13 +1616,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             phase_ledger, "current_phase: 0", "current_phase: 1"
         )
         checkpoint = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
-        incomplete = {
-            "scope": True,
-            "behavior": True,
-            "failures": True,
-            "acceptance_conditions": True,
-            "test_seam": False,
-        }
         code, rejected, _ = self.run_cli(
             self.wrapper_phase_request(
                 topic,
@@ -1631,52 +1624,11 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 to_phase=3,
                 carrier_kind="guided-implementation",
                 source_checkpoint_id=str(checkpoint["checkpoint_id"]),
-                requirement_completeness=incomplete,
                 scope=["skills/design-discussion/scripts"],
             )
         )
         self.assertEqual(code, 1)
-        self.assertEqual(rejected["error"]["code"], "phase_requirement_incomplete")
-        complete = {key: True for key in incomplete}
-        code, prepared, stderr = self.run_cli(
-            self.wrapper_phase_request(
-                topic,
-                3,
-                from_phase=1,
-                to_phase=3,
-                carrier_kind="guided-implementation",
-                source_checkpoint_id=str(checkpoint["checkpoint_id"]),
-                requirement_completeness=complete,
-                scope=["skills/design-discussion/scripts"],
-            )
-        )
-        self.assertEqual(code, 0, stderr)
-        evidence = prepared["evidence"]
-        _, _, _ = self.run_cli(
-            self.phase_request(topic, "authorize-phase-carrier", 4, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="agent:implementation")
-        )
-        claim = self.phase_request(topic, "claim-phase-carrier", 5, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="agent:implementation", source_checkpoint_id=checkpoint["checkpoint_id"], source_checkpoint_identity=checkpoint["snapshot_digest"])
-        claim["actor_conversation_ref"] = "agent:implementation"
-        self.assertEqual(self.run_cli(claim)[0], 0)
-        ready = self.phase_request(topic, "phase-ready", 6, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="agent:implementation", evidence=evidence)
-        ready["actor_conversation_ref"] = "agent:implementation"
-        self.assertEqual(self.run_cli(ready)[0], 0)
-        code, activated, stderr = self.run_cli(self.phase_request(topic, "phase-activate", 7, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], evidence=evidence))
-        self.assertEqual(code, 0, stderr)
-        self.assertEqual(activated["not_applicable_phase"], 2)
-        self.assertEqual(activated["not_applicable_scope"], ["skills/design-discussion/scripts"])
-        activated_ledger = phase_ledger.read_text(encoding="utf-8")
-        self.assertIn('state: "not_applicable"', activated_ledger)
-        self.assertNotIn("planning_artifact", activated_ledger)
-        completion = self.phase_request(topic, "claim-phase-completion", 8, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], carrier_ref="agent:implementation", evidence=evidence)
-        completion["actor_conversation_ref"] = "agent:implementation"
-        self.assertEqual(self.run_cli(completion)[0], 0)
-        self.assertEqual(self.run_cli(self.phase_request(topic, "complete-phase-run", 9, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], evidence=evidence))[0], 0)
-        code, finalized, stderr = self.run_cli(self.phase_request(topic, "finalize-phase-run", 10, phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], evidence=evidence))
-        self.assertEqual(code, 0, stderr)
-        ledger_text = phase_ledger.read_text(encoding="utf-8")
-        self.assertIn('state: "not_applicable"', ledger_text)
-        self.assertNotIn("planning_artifact", ledger_text)
+        self.assertEqual(rejected["error"]["code"], "invalid_phase_route")
 
     def test_wrapper_continuous_mode_only_inherits_successful_stage_one_footer(self) -> None:
         project = self.make_project("wrapper-continuous-zero", git=False)
@@ -1725,7 +1677,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             ledger_revision=10,
             checkpoint=stage_one_checkpoint,
             phase_result_id=str(stage_one_result["phase_result_id"]),
-            user_reply="执行后续全部流程。",
+            user_reply="可以",
+            confirmation_intent="stepwise",
         )
         self.assertEqual(code, 1)
         self.assertEqual(rejected["error"]["code"], "phase_flow_mode_invalid")
@@ -1734,6 +1687,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             ledger_revision=10,
             checkpoint=stage_one_checkpoint,
             phase_result_id=str(stage_one_result["phase_result_id"]),
+            user_reply="可以，后续阶段都自动执行。",
         )
         self.assertEqual(code, 0, stderr)
         self.assertEqual(authorized["state"], "authorized")
@@ -1745,7 +1699,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             source_checkpoint_id=stage_one_checkpoint["checkpoint_id"],
             source_checkpoint_identity=stage_one_checkpoint["snapshot_digest"],
             phase_result_id=stage_one_result["phase_result_id"],
-            user_reply="执行后续全部流程",
+            confirmation_intent="continuous",
+            user_reply="按这个做，后续阶段自动执行",
         )
         foreign["actor_conversation_ref"] = "codex-thread:not-source-owner"
         code, rejected, _ = self.run_cli(foreign)
@@ -2199,7 +2154,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         )
 
     def test_every_legal_route_and_illegal_route_matrix(self) -> None:
-        legal = {(0, 1), (0, 2), (1, 2), (1, 3), (2, 3), (3, 4)}
+        legal = {(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)}
         evidence = {key: "0" * 64 for key in ("source", "route", "impact", "coverage", "dependency", "coordination")}
         for source in range(5):
             for target in range(5):
@@ -4975,6 +4930,69 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             self.assertEqual(len(resolved), index + 1)
         self.assertEqual(
             [item["action"] for item in current["impacts"]], actions
+        )
+        topic_text = Path(str(topic["topic_document_path"])).read_text(encoding="utf-8")
+        self.assertNotIn(" impact `IMP-", topic_text)
+        self.assertNotIn(": confirmed", topic_text)
+        self.assertNotIn(": kept:", topic_text)
+
+    def test_requirement_narrative_refresh_replaces_obsolete_current_detail(self) -> None:
+        project = self.make_project("requirement-current-state", git=False)
+        topic = self.bootstrap_topic(project)
+        ledger_revision = topic_revision = 1
+        _, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "refresh-requirement-narrative",
+                "goal": "Support offline editing.",
+                "background": ["Users work without a network."],
+                "scope": ["Offline writes"],
+                "non_goals": [],
+                "scenarios": ["Edit while disconnected"],
+                "tentative_assumptions": ["Conflicts are rare."],
+                "facts": ["The client has local storage."],
+                "constraints": ["Changes must sync later."],
+                "acceptance_conditions": ["Offline edits survive restart."],
+                "direction_change_summary": [],
+            },
+        )
+        _, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={
+                "type": "refresh-requirement-narrative",
+                "goal": "Support online editing only.",
+                "background": ["The first release requires a network."],
+                "scope": ["Online writes"],
+                "non_goals": ["Offline editing"],
+                "scenarios": ["Edit while connected"],
+                "tentative_assumptions": [],
+                "facts": ["The server is authoritative."],
+                "constraints": ["Reject writes while disconnected."],
+                "acceptance_conditions": ["Disconnected writes fail clearly."],
+                "direction_change_summary": [
+                    "Offline editing was removed because it is outside the first release."
+                ],
+            },
+        )
+        text = Path(str(topic["topic_document_path"])).read_text(encoding="utf-8")
+        self.assertIn("Support online editing only.", text)
+        self.assertIn("Disconnected writes fail clearly.", text)
+        self.assertIn("Offline editing was removed because", text)
+        self.assertNotIn("Support offline editing.", text)
+        self.assertNotIn("Offline edits survive restart.", text)
+        code, current, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(
+            current["requirement_narrative"]["goal"],
+            "Support online editing only.",
         )
 
     def test_git_checkpoint_freezes_and_publishes_exact_document_commit(self) -> None:

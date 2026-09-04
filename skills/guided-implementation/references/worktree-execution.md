@@ -12,10 +12,9 @@ branch. Uncommitted primary-checkout changes do not block creation and are not
 copied, staged, stashed, or removed. The command resolves the exact target
 `HEAD` and runs `git worktree add -b` from that object ID.
 
-Stage 2 calls this operation before its first planning write. Stage 3 reuses a
-valid inherited binding; a standalone Stage 3 with no claimed binding calls it
-for itself. A claimed inherited binding that is absent or invalid is an anomaly
-and must not silently fall back to a new worktree. Retry always reuses the
+Stage 2 calls this operation before its first planning write. Stage 3 only
+reuses that valid inherited binding. An absent or invalid inherited binding is
+an anomaly and must not fall back to a new worktree. Retry always reuses the
 retained binding.
 
 ## `verify-worktree`

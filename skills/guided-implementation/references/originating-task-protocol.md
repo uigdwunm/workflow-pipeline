@@ -8,9 +8,8 @@ Stage 4. It does not implement code.
 
 Confirm that every planning source is committed and list the exact allowed
 implementation paths. A valid Stage-2 handoff must be verified and reused.
-Standalone Stage 3 chooses a new branch and canonical worktree path and calls
-`start-worktree`; a claimed but invalid upstream binding is an anomaly, not a
-standalone fallback. Launch one task in the resulting Flow Worktree with the
+Stage 3 has no standalone fallback; a missing or invalid Stage-2 binding is an
+anomaly. Launch one task in the inherited Flow Worktree with the
 verified binding. Launch the implementation task with the fixed pair
 `model: gpt-5.6-terra` and `thinking: high`; pass `model` and `thinking`
 explicitly after verifying the current runtime supports that pair. Include the
@@ -48,14 +47,14 @@ Task then establishes its exact replacement fixed point and reruns both axes.
 
 After accepting the exact candidate, verify that it is still the clean Flow
 Worktree `HEAD`. Do not update the target branch and do not remove the worktree
-or branch. Pass its exact binding, candidate commit, planning merge or
-standalone base commit, implementation and closure path scopes, protected
+or branch. Pass its exact binding, candidate commit, planning merge commit,
+implementation and closure path scopes, protected
 requirement-source paths, verification/review evidence, exact closure-document
 updates, and flow mode to Stage 4. No claim, lease, proposal receipt, or closure
 checkpoint is carried forward.
 
 When Stage 3 is attached to a discussion topic, also pass the exact
 project/tree/topic identity, actor binding, completed phase-3 result id and the
-ledger/topic revisions returned by the required final `read-topic`; standalone
-Stage 3 passes `none` for that entire group. Local completion grants no
+ledger/topic revisions returned by the required final `read-topic`; an
+unattached Stage-2 flow passes `none` for that entire group. Local completion grants no
 remote-write authority.

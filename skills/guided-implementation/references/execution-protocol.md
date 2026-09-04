@@ -1,7 +1,7 @@
 # Dedicated Worktree Execution Protocol
 
 The dedicated task accepts only the verified Flow Worktree binding inherited
-from Stage 2 or returned by standalone Stage 3's `start-worktree`. It must run
+from Stage 2. It must run
 `verify-worktree` against its actual working directory before editing.
 
 Before editing, run the executable `thread-settings-v4` verification:
