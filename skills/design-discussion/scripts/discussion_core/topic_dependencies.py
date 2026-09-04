@@ -26,7 +26,7 @@ from .state import (
     _write_ledger_transaction,
 )
 from .topic_dependency_schema import (
-    KINDS, authority_descriptor, canonical_object as _canonical_object, canonical_string_array as _canonical_string_array, decision_authority, validate_dependency_records,
+    AuthoritySelection, DEPENDENCY_AUTHORITY_KINDS, authority_descriptor, canonical_object as _canonical_object, canonical_string_array as _canonical_string_array, decision_authority, validate_dependency_records,
 )
 
 
@@ -36,6 +36,10 @@ def _new_dependency_record(*, dependency_id: str, dependent_topic_id: str, prere
 
 
 def _state_corrupt(code: str, message: str) -> None:
+    raise ProtocolError(code, message)
+
+
+def _invalid_request(code: str, message: str) -> None:
     raise ProtocolError(code, message)
 
 
@@ -340,7 +344,7 @@ def has_current_authority(
     return any(_candidates(records, {
         "prerequisite_topic_id": topic_id,
         "requirement_kind": kind,
-    }) for kind in KINDS)
+    }) for kind in DEPENDENCY_AUTHORITY_KINDS)
 
 
 def _normalize_authority_selection(
@@ -370,20 +374,10 @@ def freeze_authority_selection(
     This uses the same candidate model as gate evaluation so a child cannot
     smuggle arbitrary authority or decision IDs into a later parent release.
     """
-    if not isinstance(selection, dict) or set(selection) != {
-        "authority_kind", "authority_identity", "decision_ids",
-    }:
-        raise ProtocolError("invalid_request", "authority_selection is invalid")
-    kind = selection["authority_kind"]
-    identity = selection["authority_identity"]
-    decision_ids = selection["decision_ids"]
-    if kind not in KINDS or not _canonical_string_array(decision_ids):
-        raise ProtocolError("invalid_request", "authority_selection is invalid")
-    if _authority_handler(kind)["identity_field"] is None:
-        if identity is not None:
-            raise ProtocolError("invalid_request", "confirmed-decision has no authority identity")
-    elif not isinstance(identity, str):
-        raise ProtocolError("invalid_request", "authority identity is required")
+    parsed = AuthoritySelection.parse(selection, _invalid_request)
+    kind = parsed.authority_kind
+    identity = parsed.authority_identity
+    decision_ids = list(parsed.decision_ids)
     candidates = _candidates(records, {
         "prerequisite_topic_id": topic_id,
         "requirement_kind": kind,
@@ -588,7 +582,7 @@ def _validate_new_edge(records: dict[str, list[dict[str, Any]]], dependent: str,
     topic = _record_by_id(records["Current Topics"], "topic_id", dependent, "dependent_topic_id")
     if topic.get("current_phase") not in {0, 1}:
         raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are mutable only in Phase 0 or 1", context=_dependency_context(dependent_topic_id=dependent, prerequisite_topic_id=prerequisite, phase=topic.get("current_phase")))
-    if not isinstance(kind, str) or kind not in KINDS or not isinstance(summary, str) or not summary or len(summary.encode("utf-8")) > 4096:
+    if not isinstance(kind, str) or kind not in DEPENDENCY_AUTHORITY_KINDS or not isinstance(summary, str) or not summary or len(summary.encode("utf-8")) > 4096:
         raise ProtocolError("invalid_request", "topic dependency requirement is invalid")
     copied = [dict(item) for item in records["Topic Dependencies"] if item["dependency_id"] != replacing]
     if sum(
@@ -725,7 +719,7 @@ def _release_selection_from_basis(item: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(basis, dict):
         return {"dependency_id": item.get("dependency_id"), "decision_ids": []}
     kind = basis.get("requirement_kind")
-    handler = _authority_handler(kind) if isinstance(kind, str) and kind in KINDS else None
+    handler = _authority_handler(kind) if isinstance(kind, str) and kind in DEPENDENCY_AUTHORITY_KINDS else None
     selection = {
         "dependency_id": item.get("dependency_id"),
         "decision_ids": [

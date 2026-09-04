@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+from dataclasses import dataclass
 from typing import Any, Callable
 
 
@@ -13,7 +14,7 @@ AUTHORITY_DESCRIPTORS = {
     "phase-0-checkpoint": {"candidate_key": "checkpoint", "identity_field": "checkpoint_id", "requires_decisions": False},
     "phase-1-result": {"candidate_key": "phase_result", "identity_field": "result_id", "requires_decisions": False},
 }
-KINDS = frozenset(AUTHORITY_DESCRIPTORS)
+DEPENDENCY_AUTHORITY_KINDS = frozenset(AUTHORITY_DESCRIPTORS)
 RECORD_FIELDS = {
     "dependency_id", "record_revision", "dependent_topic_id", "prerequisite_topic_id",
     "requirement_kind", "requirement_summary", "relation_state", "gate_state",
@@ -22,6 +23,33 @@ RECORD_FIELDS = {
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 IDENTITY_RE = re.compile(r"(?:DEP|CP|PH|CR|H|DW)-[0-9a-f]{32}")
 UUID4_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+
+
+@dataclass(frozen=True)
+class AuthoritySelection:
+    """One normalized authority choice shared by child and gate flows."""
+
+    authority_kind: str
+    authority_identity: str | None
+    decision_ids: tuple[str, ...]
+
+    @classmethod
+    def parse(cls, value: Any, error: Callable[[str, str], None]) -> "AuthoritySelection":
+        if not isinstance(value, dict) or set(value) != {
+            "authority_kind", "authority_identity", "decision_ids",
+        }:
+            error("invalid_request", "authority_selection is invalid")
+        kind = value["authority_kind"]
+        identity = value["authority_identity"]
+        ids = value["decision_ids"]
+        if kind not in DEPENDENCY_AUTHORITY_KINDS or not canonical_string_array(ids):
+            error("invalid_request", "authority_selection is invalid")
+        if authority_descriptor(kind)["identity_field"] is None:
+            if identity is not None:
+                error("invalid_request", "confirmed-decision has no authority identity")
+        elif not isinstance(identity, str):
+            error("invalid_request", "authority identity is required")
+        return cls(kind, identity, tuple(ids))
 
 
 def authority_descriptor(kind: str) -> dict[str, Any]:
@@ -270,7 +298,7 @@ def validate_dependency_records(
         dependent, prerequisite = item["dependent_topic_id"], item["prerequisite_topic_id"]
         if dependent not in topics or prerequisite not in topics or dependent == prerequisite:
             error("state_corrupt", "topic dependency endpoints are invalid")
-        if item["requirement_kind"] not in KINDS or not isinstance(item["requirement_summary"], str) or not item["requirement_summary"] or len(item["requirement_summary"].encode("utf-8")) > 4096:
+        if item["requirement_kind"] not in DEPENDENCY_AUTHORITY_KINDS or not isinstance(item["requirement_summary"], str) or not item["requirement_summary"] or len(item["requirement_summary"].encode("utf-8")) > 4096:
             error("state_corrupt", "topic dependency requirement is invalid")
         if item["relation_state"] not in {"active", "cancelled"} or item["gate_state"] not in {"closed", "open"}:
             error("state_corrupt", "topic dependency state is invalid")
