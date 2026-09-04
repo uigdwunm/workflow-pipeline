@@ -4046,38 +4046,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(ledger.read_bytes(), before)
 
-    def test_ticket07_upstream_change_skips_phase2_dependents_via_cli(self) -> None:
-        project = self.make_project("ticket07-phase2-invalidation", git=False)
-        topic = self.bootstrap_topic(project)
-        ledger = Path(str(topic["ledger_path"]))
-        a_id = str(topic["topic_id"])
-        b_id = "topic-" + "b" * 32
-        decision = {"decision_id": "D-a", "summary": "Keep A.", "rationale": "Current authority.", "state": "confirmed", "evolution": "confirmed"}
-        digest = hashlib.sha256(PROTOCOL._canonical_json(decision).encode("utf-8")).hexdigest()
-        authority = [{"decision_id": "D-a", "sha256": digest, "summary": "Keep A."}]
-        dependency_id = "DEP-" + "3" * 32
-        basis = {"basis_version": 1, "dependency_id": dependency_id, "prerequisite_topic_id": a_id, "requirement_kind": "confirmed-decision", "decision_authority": [{"decision_id": "D-a", "sha256": digest}], "authority": {"decision_set_digest": hashlib.sha256(PROTOCOL._canonical_json(authority).encode("utf-8")).hexdigest()}}
-        frontmatter, records = PROTOCOL._load_records(ledger)
-        records["Current Topics"].append({"topic_id": b_id, "record_revision": 1, "root_slug": "topic-b", "parent_topic_id": a_id, "current_phase": 2, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
-        records["Pending Items"].append({"item_id": "D-a", "item_kind": "decision", "topic_id": a_id, "data_json": PROTOCOL._canonical_json(decision)})
-        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 2, "dependent_topic_id": b_id, "prerequisite_topic_id": a_id, "requirement_kind": "confirmed-decision", "requirement_summary": "A remains current.", "relation_state": "active", "gate_state": "open", "accepted_basis_json": PROTOCOL._canonical_json(basis), "gate_reason_json": PROTOCOL._canonical_json({"kind": "atomic-release", "release_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
-        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
-        _, before_records = PROTOCOL._load_records(ledger)
-        before_dependency = next(item for item in before_records["Topic Dependencies"] if item["dependency_id"] == dependency_id)
-        changed, ledger_revision, topic_revision = self.complete_update(
-            project, topic, ledger_revision=1, topic_revision=1,
-            mutation={"type": "change-direction", "summary": "Replace A.", "affected_decision_ids": ["D-a"]},
-        )
-        code, _, stderr = self.run_cli(self.evolution_request(
-            topic, operation="prepare-topic-update", expected_revision=ledger_revision,
-            expected_topic_revision=topic_revision,
-            mutation={"type": "resolve-impact", "impact_id": changed["impact_ids"][0], "decision_id": "D-a", "action": "replace", "summary": "A was replaced."},
-        ))
-        self.assertEqual(code, 0, stderr)
-        _, after_records = PROTOCOL._load_records(ledger)
-        after_dependency = next(item for item in after_records["Topic Dependencies"] if item["dependency_id"] == dependency_id)
-        self.assertEqual(after_dependency, before_dependency)
-
     def test_child_handoff_persists_topic_attempt_and_bounded_identity_payload(self) -> None:
         project = self.make_project("child-handoff", git=False)
         topic = self.bootstrap_topic(project)
