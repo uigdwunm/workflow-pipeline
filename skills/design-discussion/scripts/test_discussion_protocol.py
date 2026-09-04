@@ -3301,6 +3301,26 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(cancelled["derived_gate_state"], "open")
 
+    def test_ticket07_dependency_create_replay_is_cli_idempotent(self) -> None:
+        project = self.make_project("ticket07-dependency-replay", git=False)
+        topic = self.bootstrap_topic(project)
+        child = self.prepare_child_handoff(topic)
+        request = self.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=2,
+            expected_topic_revision=1, action="create",
+            prerequisite_topic_id=child["target_topic_id"],
+            requirement_kind="confirmed-decision", requirement_summary="The API is chosen.",
+        )
+        code, first, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        ledger = Path(str(topic["ledger_path"]))
+        committed = ledger.read_bytes()
+        code, replay, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(replay["dependency_id"], first["dependency_id"])
+        self.assertEqual(ledger.read_bytes(), committed)
+
     def test_child_result_freezes_only_current_selected_authority_and_replays(self) -> None:
         project = self.make_project("frozen-child-authority", git=False)
         topic = self.bootstrap_topic(project)
