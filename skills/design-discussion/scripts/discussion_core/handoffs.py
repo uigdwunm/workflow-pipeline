@@ -269,14 +269,13 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             "creation_result_json": "",
             "initial_dependencies": request.get("initial_dependencies", []),
         }
-        identity_envelope, payload_digest, payload_bytes = _handoff_payload(handoff, attempt_id)
         attempt = {
             "attempt_id": attempt_id,
             "attempt_number": 1,
             "state": "setup-pending",
             "binding_eligible": True,
-            "payload_sha256": payload_digest,
-            "handoff_payload_bytes": payload_bytes,
+            "payload_sha256": "",
+            "handoff_payload_bytes": 0,
             "conversation_ref": None,
             "reason": None,
         }

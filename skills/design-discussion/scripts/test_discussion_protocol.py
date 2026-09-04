@@ -3284,7 +3284,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         code, created, stderr = self.run_cli(
             self.evolution_request(
                 topic, operation="update-topic-dependency", expected_revision=2, expected_topic_revision=1,
-                action="create", dependency_id=None, expected_dependency_revision=None,
+                action="create",
                 prerequisite_topic_id=child["target_topic_id"],
                 requirement_kind="confirmed-decision", requirement_summary="API shape is chosen.",
             )
@@ -3295,8 +3295,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             self.evolution_request(
                 topic, operation="update-topic-dependency", expected_revision=3, expected_topic_revision=1,
                 action="cancel", dependency_id=created["dependency_id"],
-                expected_dependency_revision=1, prerequisite_topic_id=None,
-                requirement_kind=None, requirement_summary=None,
+                expected_dependency_revision=1,
             )
         )
         self.assertEqual(code, 0, stderr)

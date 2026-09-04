@@ -94,7 +94,13 @@ def _validate_dependency_records(records: dict[str, list[dict[str, Any]]]) -> No
                 raise ProtocolError("state_corrupt", "topic dependency accepted basis is incoherent")
             authority = basis.get("authority")
             if item["requirement_kind"] == "confirmed-decision":
-                if authority is not None or not decisions:
+                if (
+                    not isinstance(authority, dict)
+                    or set(authority) != {"decision_set_digest"}
+                    or not isinstance(authority["decision_set_digest"], str)
+                    or not SHA256_RE.fullmatch(authority["decision_set_digest"])
+                    or not decisions
+                ):
                     raise ProtocolError("state_corrupt", "confirmed-decision basis is incoherent")
             elif not isinstance(authority, dict):
                 raise ProtocolError("state_corrupt", "authority-backed dependency basis is incoherent")
@@ -207,7 +213,7 @@ def _candidates(records: dict[str, list[dict[str, Any]]], dependency: dict[str, 
     prerequisite = dependency["prerequisite_topic_id"]
     if dependency["requirement_kind"] == "confirmed-decision":
         decisions = _candidate_decisions(records, prerequisite)
-        return [{"authority_id": None, "decision_authority": decisions}] if decisions else []
+        return [{"authority_id": None, "authority": {"decision_set_digest": _sha256(_canonical_json(decisions).encode("utf-8"))}, "decision_authority": decisions}] if decisions else []
     if dependency["requirement_kind"] == "phase-0-checkpoint":
         result = []
         for record in records["Checkpoints"]:
@@ -313,6 +319,8 @@ def release_child_result_dependencies(
     """Validate frozen child authority and atomically normalize matching gates."""
     if not isinstance(releases, list) or len(releases) > 64:
         raise ProtocolError("invalid_request", "dependency_releases must be a bounded list")
+    if len({item.get("dependency_id") for item in releases if isinstance(item, dict)}) != len(releases):
+        raise ProtocolError("invalid_request", "dependency_releases must name each dependency once")
     if not isinstance(frozen_authority, dict):
         raise ProtocolError("state_corrupt", "child result authority is invalid")
     if frozen_authority.get("authority_kind") == "none":
@@ -384,7 +392,7 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
                 selected.get("decision_ids"),
             )
             basis = {"basis_version": 1, "dependency_id": dependency["dependency_id"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "requirement_kind": dependency["requirement_kind"], "decision_authority": [{"decision_id": item["decision_id"], "sha256": item["sha256"]} for item in chosen]}
-            if candidate["authority_id"] is not None:
+            if candidate.get("authority") is not None:
                 basis["authority"] = candidate["authority"]
             detail["proposed_basis"] = basis
             proposed.append({"dependency_id": dependency["dependency_id"], "record_revision": dependency["record_revision"], "basis": basis})
@@ -464,10 +472,15 @@ def prepare_initial_dependencies(
 
 
 def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
-    _, ledger_path, _, lock_path, owner_ref = _request_context(request, {"action", "dependency_id", "expected_dependency_revision", "prerequisite_topic_id", "requirement_kind", "requirement_summary"})
-    action = request["action"]
+    action = request.get("action")
     if action not in {"create", "replace", "cancel"}:
         raise ProtocolError("invalid_request", "dependency action is unsupported")
+    fields = {
+        "create": {"action", "prerequisite_topic_id", "requirement_kind", "requirement_summary"},
+        "replace": {"action", "dependency_id", "expected_dependency_revision", "prerequisite_topic_id", "requirement_kind", "requirement_summary"},
+        "cancel": {"action", "dependency_id", "expected_dependency_revision"},
+    }
+    _, ledger_path, _, lock_path, owner_ref = _request_context(request, fields[action])
     with lock_path.open("a+b") as stream:
         _flock_with_timeout(stream)
         frontmatter, records = _load_records(ledger_path)
@@ -478,7 +491,6 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         if topic["current_phase"] not in {0, 1}: raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are immutable after Phase 1")
         if action == "create":
-            if any(request[key] is not None for key in {"dependency_id", "expected_dependency_revision"}): raise ProtocolError("invalid_request", "create must not name a dependency revision")
             _validate_new_edge(records, request["actor_topic_id"], request["prerequisite_topic_id"], request["requirement_kind"], request["requirement_summary"])
             dep = _new_dependency_record(dependency_id=_dependency_id(request["idempotency_key"]), dependent_topic_id=request["actor_topic_id"], prerequisite_topic_id=request["prerequisite_topic_id"], requirement_kind=request["requirement_kind"], requirement_summary=request["requirement_summary"], reason={"kind": "explicit-create", "ledger_revision": revision + 1})
             records["Topic Dependencies"].append(dep)
