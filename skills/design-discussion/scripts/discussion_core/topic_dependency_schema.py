@@ -341,18 +341,24 @@ def validate_dependency_records(
             historical_replace = item["gate_state"] == "closed" and canonical_object(
                 item["gate_reason_json"], "topic dependency gate_reason_json", error
             ).get("kind") == "explicit-replace"
-            if historical_replace:
-                # This basis is immutable evidence of the edge before the
-                # replace operation, not authority for the newly closed edge.
-                valid = isinstance(authority, dict)
-            elif item["requirement_kind"] == "confirmed-decision":
+            authority_kind = basis["requirement_kind"] if historical_replace else item["requirement_kind"]
+            if authority_kind not in DEPENDENCY_AUTHORITY_KINDS:
+                valid = False
+            elif authority_kind == "confirmed-decision":
                 valid = isinstance(authority, dict) and set(authority) == {"decision_set_digest"} and isinstance(authority["decision_set_digest"], str) and SHA256_RE.fullmatch(authority["decision_set_digest"]) and decisions
-            elif item["requirement_kind"] == "phase-0-checkpoint":
+            elif authority_kind == "phase-0-checkpoint":
                 valid = isinstance(authority, dict) and set(authority) == {"checkpoint_id", "record_revision", "published_identity", "decision_digest"} and _identity(authority["checkpoint_id"], "CP") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and isinstance(authority["published_identity"], str) and isinstance(authority["decision_digest"], str) and SHA256_RE.fullmatch(authority["decision_digest"])
             else:
                 valid = isinstance(authority, dict) and set(authority) == {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"} and _identity(authority["result_id"], "PH") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and authority["state"] == "completed" and isinstance(authority["phase_run_id"], str) and canonical_string_array(authority["affected_decision_ids"])
             if not valid:
                 error("state_corrupt", "topic dependency authority is incoherent")
+            if historical_replace:
+                # Retained replace evidence is historical, not current, but
+                # still has to resolve exactly against its frozen provenance.
+                _validate_ordinary_basis(records, {
+                    **item, "prerequisite_topic_id": basis["prerequisite_topic_id"],
+                    "requirement_kind": authority_kind,
+                }, basis, decisions, authority, error)
             dependent_phase = next(
                 (topic.get("current_phase") for topic in records["Current Topics"]
                  if topic.get("topic_id") == item["dependent_topic_id"]),
