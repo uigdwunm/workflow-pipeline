@@ -13,7 +13,7 @@ from typing import Any
 
 from .state import (
     ProtocolError, _canonical_json, _evolution_paths, _expect_keys,
-    _expect_string, _flock_with_timeout, _idempotent_result, _json_field,
+    _expect_string, _flock_with_timeout, _idempotent_result, _inject_failure, _json_field,
     _load_records, _record_by_id, _sha256, _topic_snapshot, _validate_revisions,
     _validate_uuid4, _validated_string_list, _verify_topic_owner,
     _write_ledger_transaction,
@@ -445,6 +445,7 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
             dep["record_revision"] += 1
             dep["gate_reason_json"] = _canonical_json({"kind": f"explicit-{action}", "ledger_revision": revision + 1})
         result = {"ok": True, "state": action, "idempotent_replay": False, "dependency_id": dep["dependency_id"], "dependency_revision": dep["record_revision"], "ledger_revision": revision + 1, "record_revision": topic_revision, "derived_gate_state": derived_gate(records, request["actor_topic_id"])}
+        _inject_failure("topic-dependency-before-ledger-write")
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=revision + 1, event_type=f"topic-dependency-{action}", result=result)
         return result
 

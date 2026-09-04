@@ -3506,6 +3506,108 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertIn(dependency["relation_state"], {"active", "cancelled"})
         self.assertEqual(len([event for event in records["Recent Events"] if event["event_type"].startswith("topic-dependency-")]), 2)
 
+    def test_ticket07_injected_dependency_update_is_atomic_via_cli(self) -> None:
+        for action in ("create", "replace", "cancel"):
+            with self.subTest(action=action):
+                project = self.make_project(f"ticket07-dependency-{action}-fault", git=False)
+                topic = self.bootstrap_topic(project)
+                child = self.prepare_child_handoff(topic)
+                created = None
+                if action != "create":
+                    code, created, stderr = self.run_cli(self.evolution_request(
+                        topic, operation="update-topic-dependency", expected_revision=2,
+                        expected_topic_revision=1, action="create",
+                        prerequisite_topic_id=child["target_topic_id"],
+                        requirement_kind="confirmed-decision", requirement_summary="The child selects the API.",
+                    ))
+                    self.assertEqual(code, 0, stderr)
+                request = self.evolution_request(
+                    topic, operation="update-topic-dependency",
+                    expected_revision=2 if action == "create" else 3,
+                    expected_topic_revision=1, action=action,
+                    **({"prerequisite_topic_id": child["target_topic_id"], "requirement_kind": "confirmed-decision", "requirement_summary": "The child selects the API."} if action == "create" else {"dependency_id": created["dependency_id"], "expected_dependency_revision": 1, **({"prerequisite_topic_id": child["target_topic_id"], "requirement_kind": "phase-1-result", "requirement_summary": "The child completes Phase 1."} if action == "replace" else {})}),
+                )
+                ledger = Path(str(topic["ledger_path"]))
+                before = ledger.read_bytes()
+                code, failed, _ = self.run_cli(request, failpoint="topic-dependency-before-ledger-write")
+                self.assertEqual(code, 1)
+                self.assertEqual(failed["error"]["code"], "injected_failure")
+                self.assertEqual(ledger.read_bytes(), before)
+                code, completed, stderr = self.run_cli(request)
+                self.assertEqual(code, 0, stderr)
+                code, replay, stderr = self.run_cli(request)
+                self.assertEqual(code, 0, stderr)
+                self.assertTrue(replay["idempotent_replay"])
+                self.assertEqual(replay["dependency_id"], completed["dependency_id"])
+
+    def test_ticket07_injected_absorb_release_is_atomic_via_cli(self) -> None:
+        project = self.make_project("ticket07-absorb-release-fault", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared, child_ref = self.activate_child_handoff(
+            topic,
+            initial_dependencies=[{
+                "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+                "requirement_kind": "confirmed-decision",
+                "requirement_summary": "The child selects the API.",
+            }],
+        )
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        decision = {"decision_id": "D-child", "summary": "Use typed requests.", "rationale": "The child selected the API.", "state": "confirmed", "evolution": "confirmed"}
+        records["Pending Items"].append({"item_id": "D-child", "item_kind": "decision", "topic_id": prepared["target_topic_id"], "data_json": PROTOCOL._canonical_json(decision)})
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        submit = self.handoff_request(
+            topic, operation="submit-child-result", ledger_revision=5, owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+            result_scope=["api"], summary="Use typed requests.", authority_selection={"authority_kind": "confirmed-decision", "authority_identity": None, "decision_ids": ["D-child"]},
+        )
+        submit["actor_topic_id"] = prepared["target_topic_id"]
+        code, claimed, stderr = self.run_cli(submit)
+        self.assertEqual(code, 0, stderr)
+        release = {"dependency_id": prepared["initial_dependencies"][0]["dependency_id"], "authority_kind": "confirmed-decision", "authority_identity": None, "decision_ids": ["D-child"]}
+        absorb = self.handoff_request(
+            topic, operation="record-child-result", ledger_revision=6,
+            handoff_id=prepared["handoff_id"], child_result_id=claimed["child_result_id"],
+            effect="absorb", dependency_releases=[release],
+        )
+        before = ledger.read_bytes()
+        code, failed, _ = self.run_cli(absorb, failpoint="child-result-absorb-before-ledger-write")
+        self.assertEqual(code, 1)
+        self.assertEqual(failed["error"]["code"], "injected_failure")
+        self.assertEqual(ledger.read_bytes(), before)
+        code, absorbed, stderr = self.run_cli(absorb)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(absorbed["released_dependency_ids"], [release["dependency_id"]])
+        code, replay, stderr = self.run_cli(absorb)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+
+    def test_ticket07_handoff_crash_recovery_is_cli_idempotent(self) -> None:
+        project = self.make_project("ticket07-handoff-crash-recovery", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic)
+        bind = self.handoff_request(
+            topic, operation="bind-handoff", ledger_revision=2,
+            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+            conversation_ref="codex-thread:recovered-child", verified_identity={
+                "project_id": topic["project_id"], "tree_id": topic["tree_id"],
+                "topic_id": prepared["target_topic_id"], "handoff_id": prepared["handoff_id"],
+                "attempt_id": prepared["attempt_id"], "payload_sha256": prepared["payload_sha256"],
+            },
+        )
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        code, failed, _ = self.run_cli(bind, failpoint="handoff-before-binding-ledger-write")
+        self.assertEqual(code, 1)
+        self.assertEqual(failed["error"]["code"], "injected_failure")
+        self.assertEqual(ledger.read_bytes(), before)
+        code, bound, stderr = self.run_cli(bind)
+        self.assertEqual(code, 0, stderr)
+        code, replay, stderr = self.run_cli(bind)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(replay["attempt_id"], bound["attempt_id"])
+
     def test_ticket07_direct_invalidation_does_not_propagate_via_cli(self) -> None:
         project = self.make_project("ticket07-direct-invalidation", git=False)
         topic = self.bootstrap_topic(project)

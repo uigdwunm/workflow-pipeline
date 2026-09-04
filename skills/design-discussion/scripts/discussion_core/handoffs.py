@@ -925,6 +925,7 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
             }
             claim["state"] = "impact-recorded"
         claim["record_revision"] += 1
+        _inject_failure("child-result-absorb-before-ledger-write")
         _write_ledger_transaction(
             ledger_path, frontmatter, records, request,
             ledger_revision=next_revision, event_type=f"child-result-{result['state']}", result=result,
