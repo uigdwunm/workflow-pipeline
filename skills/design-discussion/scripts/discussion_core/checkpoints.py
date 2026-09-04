@@ -40,6 +40,7 @@ from .state import (
 )
 from .topic_dependencies import reclose_directly_affected, require_open_gate
 from .topic_dependencies import retained_checkpoint_identities
+from .topic_dependency_schema import decision_authority
 
 
 CHECKPOINT_PURPOSES = {"pause", "handoff", "split", "stage-entry", "implementation-source"}
@@ -321,36 +322,16 @@ def _active_checkpoint_gc(
 
 
 def _checkpoint_decision_digest(records: dict[str, list[dict[str, Any]]], topic_id: str) -> str:
-    decisions = _topic_snapshot(records, topic_id)["decisions"]
-    normalized = [
-        {
-            "decision_id": item["decision_id"],
-            "evolution": item.get("evolution"),
-            "rationale": item.get("rationale"),
-            "state": item.get("state"),
-            "summary": item["summary"],
-        }
-        for item in decisions
-    ]
-    return _sha256(_canonical_json(normalized).encode("utf-8"))
+    return decision_authority(_topic_snapshot(records, topic_id)["decisions"])[2]
 
 
 def _checkpoint_decision_authority(
     records: dict[str, list[dict[str, Any]]], topic_id: str
 ) -> tuple[dict[str, str], list[str]]:
-    decisions = [
-        _json_field(record, "data_json", "decision")
-        for record in records["Pending Items"]
-        if record.get("topic_id") == topic_id and record.get("item_kind") == "decision"
-    ]
-    digests = {
-        item["decision_id"]: _sha256(_canonical_json(item).encode("utf-8"))
-        for item in sorted(decisions, key=lambda item: item["decision_id"])
-    }
-    confirmed = sorted(
-        item["decision_id"] for item in decisions if item.get("state") == "confirmed"
+    descriptor, digests, _ = decision_authority(
+        _topic_snapshot(records, topic_id)["decisions"]
     )
-    return digests, confirmed
+    return digests, [item["decision_id"] for item in descriptor]
 
 
 def _checkpoint_authority_context(

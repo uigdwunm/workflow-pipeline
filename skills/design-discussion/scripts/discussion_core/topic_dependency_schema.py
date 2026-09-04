@@ -3,17 +3,62 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from typing import Any, Callable
 
 
-KINDS = {"phase-0-checkpoint", "phase-1-result", "confirmed-decision"}
+AUTHORITY_DESCRIPTORS = {
+    "confirmed-decision": {"identity_field": None, "requires_decisions": True},
+    "phase-0-checkpoint": {"identity_field": "checkpoint_id", "requires_decisions": False},
+    "phase-1-result": {"identity_field": "result_id", "requires_decisions": False},
+}
+KINDS = frozenset(AUTHORITY_DESCRIPTORS)
 RECORD_FIELDS = {
     "dependency_id", "record_revision", "dependent_topic_id", "prerequisite_topic_id",
     "requirement_kind", "requirement_summary", "relation_state", "gate_state",
     "accepted_basis_json", "gate_reason_json",
 }
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def authority_descriptor(kind: str) -> dict[str, Any]:
+    """Return the one neutral descriptor for a supported authority kind."""
+    return AUTHORITY_DESCRIPTORS[kind]
+
+
+def decision_authority(
+    decisions: list[dict[str, Any]], *, relevant_decision_ids: set[str] | None = None,
+) -> tuple[list[dict[str, str]], dict[str, str], str]:
+    """Normalize and hash decision authority without depending on ledger owners."""
+    ordered = sorted(decisions, key=lambda item: item["decision_id"])
+    digests = {
+        item["decision_id"]: hashlib.sha256(
+            json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        for item in ordered
+    }
+    relevant = relevant_decision_ids if relevant_decision_ids is not None else {
+        item["decision_id"] for item in ordered if item.get("state") == "confirmed"
+    }
+    descriptor = [
+        {"decision_id": item["decision_id"], "sha256": digests[item["decision_id"]]}
+        for item in ordered if item["decision_id"] in relevant
+    ]
+    normalized = [
+        {
+            "decision_id": item["decision_id"],
+            "evolution": item.get("evolution"),
+            "rationale": item.get("rationale"),
+            "state": item.get("state"),
+            "summary": item["summary"],
+        }
+        for item in ordered
+    ]
+    digest = hashlib.sha256(
+        json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return descriptor, digests, digest
 
 
 def _object(value: Any, label: str, error: Callable[[str, str], None]) -> dict[str, Any]:

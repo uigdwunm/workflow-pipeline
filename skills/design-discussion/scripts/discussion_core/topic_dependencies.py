@@ -21,7 +21,9 @@ from .state import (
     _validate_uuid4, _validated_string_list, _verify_topic_owner,
     _write_ledger_transaction,
 )
-from .topic_dependency_schema import KINDS, validate_dependency_records
+from .topic_dependency_schema import (
+    KINDS, authority_descriptor, decision_authority, validate_dependency_records,
+)
 
 
 
@@ -176,26 +178,7 @@ def _confirmed_decision_candidates(
 
 def _decision_authority(records: dict[str, list[dict[str, Any]]], topic_id: str) -> tuple[list[dict[str, Any]], dict[str, str], str]:
     """Return the one canonical decision descriptor used by every authority kind."""
-    decisions = sorted(_topic_snapshot(records, topic_id)["decisions"], key=lambda item: item["decision_id"])
-    digests = {
-        item["decision_id"]: _sha256(_canonical_json(item).encode("utf-8"))
-        for item in decisions
-    }
-    descriptor = [
-        {"decision_id": item["decision_id"], "sha256": digests[item["decision_id"]], "summary": item.get("summary", "")}
-        for item in decisions if item.get("state") == "confirmed"
-    ]
-    digest_input = [
-        {
-            "decision_id": item["decision_id"],
-            "evolution": item.get("evolution"),
-            "rationale": item.get("rationale"),
-            "state": item.get("state"),
-            "summary": item["summary"],
-        }
-        for item in decisions
-    ]
-    return descriptor, digests, _sha256(_canonical_json(digest_input).encode("utf-8"))
+    return decision_authority(_topic_snapshot(records, topic_id)["decisions"])
 
 
 def _git_checkpoint_current(
@@ -423,27 +406,15 @@ def _phase_result_candidates(
     return sorted(result, key=lambda item: str(item["authority_id"]))
 
 
-AUTHORITY_KIND_HANDLERS = {
-    "confirmed-decision": {
-        "candidate": _confirmed_decision_candidates,
-        "identity_field": None,
-        "requires_decisions": True,
-    },
-    "phase-0-checkpoint": {
-        "candidate": _checkpoint_candidates,
-        "identity_field": "checkpoint_id",
-        "requires_decisions": False,
-    },
-    "phase-1-result": {
-        "candidate": _phase_result_candidates,
-        "identity_field": "result_id",
-        "requires_decisions": False,
-    },
+CANDIDATE_BUILDERS = {
+    "confirmed-decision": _confirmed_decision_candidates,
+    "phase-0-checkpoint": _checkpoint_candidates,
+    "phase-1-result": _phase_result_candidates,
 }
 
 
 def _authority_handler(kind: str) -> dict[str, Any]:
-    return AUTHORITY_KIND_HANDLERS[kind]
+    return {**authority_descriptor(kind), "candidate": CANDIDATE_BUILDERS[kind]}
 
 
 def _candidates(records: dict[str, list[dict[str, Any]]], dependency: dict[str, Any]) -> list[dict[str, Any]]:
