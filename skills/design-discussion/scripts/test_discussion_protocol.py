@@ -3440,10 +3440,14 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             {"topic_id": topic_id, "record_revision": 1, "root_slug": f"prerequisite-{index}", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None}
             for index, topic_id in enumerate(prerequisite_ids)
         )
-        records["Topic Dependencies"].extend(
-            {"dependency_id": "DEP-" + uuid.uuid4().hex, "record_revision": 1, "dependent_topic_id": str(topic["topic_id"]), "prerequisite_topic_id": prerequisite_ids[index], "requirement_kind": "confirmed-decision", "requirement_summary": "A bounded prerequisite.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": reason}
-            for index in range(64)
-        )
+        for index, prerequisite_id in enumerate(prerequisite_ids[:64]):
+            decision = {"decision_id": f"D-{index:032x}", "summary": f"Keep prerequisite {index}.", "rationale": "It is an accepted basis.", "state": "confirmed", "evolution": "confirmed"}
+            digest = hashlib.sha256(PROTOCOL._canonical_json(decision).encode("utf-8")).hexdigest()
+            descriptor = [{"decision_id": decision["decision_id"], "sha256": digest, "summary": decision["summary"]}]
+            dependency_id = "DEP-" + uuid.uuid4().hex
+            basis = {"basis_version": 1, "dependency_id": dependency_id, "prerequisite_topic_id": prerequisite_id, "requirement_kind": "confirmed-decision", "decision_authority": [{"decision_id": decision["decision_id"], "sha256": digest}], "authority": {"decision_set_digest": hashlib.sha256(PROTOCOL._canonical_json(descriptor).encode("utf-8")).hexdigest()}}
+            records["Pending Items"].append({"item_id": decision["decision_id"], "item_kind": "decision", "topic_id": prerequisite_id, "data_json": PROTOCOL._canonical_json(decision)})
+            records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 2, "dependent_topic_id": str(topic["topic_id"]), "prerequisite_topic_id": prerequisite_id, "requirement_kind": "confirmed-decision", "requirement_summary": "A bounded prerequisite.", "relation_state": "active", "gate_state": "open", "accepted_basis_json": PROTOCOL._canonical_json(basis), "gate_reason_json": PROTOCOL._canonical_json({"kind": "atomic-release", "release_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         before = ledger.read_bytes()
         request = self.evolution_request(topic, operation="update-topic-dependency", expected_revision=1, expected_topic_revision=1, action="create", prerequisite_topic_id=prerequisite_ids[64], requirement_kind="confirmed-decision", requirement_summary="The sixty-fifth prerequisite.")
