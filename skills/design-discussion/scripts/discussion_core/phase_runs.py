@@ -312,6 +312,7 @@ def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        require_open_gate(records, request["actor_topic_id"])
         if topic.get("current_phase") != 1:
             raise ProtocolError(
                 "phase_flow_mode_invalid",
@@ -824,6 +825,8 @@ def _claim_phase_carrier(request: dict[str, Any]) -> dict[str, Any]:
         record = _phase_record(records, request["phase_run_id"])
         data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
+        if data.get("from_phase") in {0, 1}:
+            require_open_gate(records, request["actor_topic_id"])
         attempt = _phase_attempt(data, request["attempt_id"])
         if data.get("wrapper_integration") is not True:
             raise ProtocolError("phase_identity_conflict", "carrier claims apply only to wrapper Phase Runs")
@@ -1143,6 +1146,8 @@ def _reconcile_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         record = _phase_record(records, request["phase_run_id"])
         data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
+        if target in {"ready", "active"} and data.get("from_phase") in {0, 1}:
+            require_open_gate(records, request["actor_topic_id"])
         attempt = _phase_attempt(data, request["attempt_id"])
         if attempt["state"] != "outcome-unknown":
             raise ProtocolError(
