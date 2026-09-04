@@ -725,9 +725,9 @@ def _reconcile_handoff_attempt(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
-    ledger_path, lock_path, _, owner_ref = _handoff_mutation_context(
-        request, {"handoff_id", "attempt_id", "result_scope", "summary"}
-    )
+    extra = {"handoff_id", "attempt_id", "result_scope", "summary"}
+    if "authority_selection" in request: extra.add("authority_selection")
+    ledger_path, lock_path, _, owner_ref = _handoff_mutation_context(request, extra)
     result_scope = _validated_string_list(request["result_scope"], "result_scope")
     summary = _expect_string(request["summary"], "summary", max_bytes=4096)
     with lock_path.open("a+b") as lock_stream:
@@ -776,6 +776,13 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
         seed = uuid.UUID(request["idempotency_key"]).hex
         child_result_id = f"CR-{seed}"
         next_revision = ledger_revision + 1
+        selection = request.get("authority_selection", {"authority_kind": "confirmed-decision", "authority_identity": None, "decision_ids": []})
+        if not isinstance(selection, dict) or set(selection) != {"authority_kind", "authority_identity", "decision_ids"} or selection["authority_kind"] not in {"confirmed-decision", "phase-0-checkpoint", "phase-1-result"} or not isinstance(selection["decision_ids"], list) or sorted(set(selection["decision_ids"])) != selection["decision_ids"]:
+            raise ProtocolError("invalid_request", "authority_selection is invalid")
+        if selection["authority_kind"] == "confirmed-decision":
+            if selection["authority_identity"] is not None: raise ProtocolError("invalid_request", "confirmed-decision has no authority identity")
+        elif not isinstance(selection["authority_identity"], str):
+            raise ProtocolError("invalid_request", "authority identity is required")
         claim = {
             "result_id": child_result_id,
             "result_kind": "child-topic-result",
@@ -786,7 +793,7 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
             "target_topic_id": handoff["source_topic_id"],
             "result_scope_json": _canonical_json(result_scope),
             "summary": summary,
-            "authority_json": _canonical_json({"decision_authority": _topic_snapshot(records, request["actor_topic_id"])["decisions"], "topic_phase": topic_record["current_phase"]}),
+            "authority_json": _canonical_json({"authority_kind": selection["authority_kind"], "authority_identity": selection["authority_identity"], "decision_ids": selection["decision_ids"], "decision_authority": _topic_snapshot(records, request["actor_topic_id"])["decisions"], "topic_phase": topic_record["current_phase"]}),
             "state": "pending",
             "record_revision": 1,
         }
