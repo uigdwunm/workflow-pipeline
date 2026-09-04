@@ -7781,6 +7781,61 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 self.assertEqual(ledger.read_bytes(), before)
                 self.assertNotEqual(older["checkpoint_id"], latest["checkpoint_id"])
 
+    def test_ticket07_bound_same_tree_child_uses_topic_and_checkpoint_cli(self) -> None:
+        project = self.make_project("ticket07-bound-child-public-apis", git=False)
+        parent = self.bootstrap_topic(project)
+        handoff, child_ref = self.activate_child_handoff(parent)
+        child = {**parent, "topic_id": handoff["target_topic_id"]}
+        read = self.evolution_request(
+            child, operation="read-topic", owner_ref=child_ref
+        )
+        code, observed, stderr = self.run_cli(read)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(observed["record_revision"], 1)
+        _, revision, topic_revision = self.complete_update(
+            project, child, ledger_revision=5, topic_revision=1, owner_ref=child_ref,
+            mutation={"type": "confirm-decision", "summary": "Keep the child API narrow.", "rationale": "It is owned by the bound child."},
+        )
+        prepare = self.checkpoint_request(
+            child, operation="prepare-checkpoint", ledger_revision=revision,
+            topic_revision=topic_revision, purpose="pause", base_ref="HEAD",
+        )
+        prepare["actor_conversation_ref"] = child_ref
+        code, prepared, stderr = self.run_cli(prepare)
+        self.assertEqual(code, 0, stderr)
+        publish = self.checkpoint_request(
+            child, operation="publish-non-git-checkpoint", ledger_revision=revision + 1,
+            topic_revision=topic_revision, checkpoint_id=prepared["checkpoint_id"],
+            expected_checkpoint_revision=prepared["checkpoint_record_revision"],
+        )
+        publish["actor_conversation_ref"] = child_ref
+        code, published, stderr = self.run_cli(publish)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(published["topic_id"], child["topic_id"])
+
+    def test_ticket07_closed_gate_blocks_phase1_no_code_integration_via_cli(self) -> None:
+        project = self.make_project("ticket07-no-code-gate", git=False)
+        topic = self.bootstrap_topic(project)
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        records["Current Topics"][0]["current_phase"] = 1
+        prerequisite_id = "topic-" + uuid.uuid4().hex
+        dependency_id = "DEP-" + uuid.uuid4().hex
+        records["Current Topics"].append({"topic_id": prerequisite_id, "record_revision": 1, "root_slug": "prerequisite", "parent_topic_id": None, "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
+        records["Conversation Bindings"].append({"topic_id": prerequisite_id, "conversation_ref": "codex-thread:prerequisite", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": topic["topic_id"], "prerequisite_topic_id": prerequisite_id, "requirement_kind": "confirmed-decision", "requirement_summary": "The prerequisite authority is required.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before = ledger.read_bytes()
+        request = self.phase_request(
+            topic, "prepare-no-code-integration-run", 1,
+            source_checkpoint_id="CP-" + "a" * 32, scope=["api"],
+            absorbed_relation_ids=["R-" + "a" * 32], child_phase_result_ids=["PH-00000000"],
+        )
+        code, rejected, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "topic_gate_closed", rejected)
+        self.assertEqual(ledger.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

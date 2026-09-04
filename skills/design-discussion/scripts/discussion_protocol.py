@@ -1091,7 +1091,7 @@ def _apply_mutation_to_records(
 
 
 def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
-    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request)
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, allow_tree_topic=True)
     allowed = {
         "protocol_version", "operation", "project_path", "project_id", "tree_id",
         "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision",
@@ -1107,7 +1107,7 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
         if replay is not None:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        _verify_topic_path_authority(topic_record, topic_path)
+        topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(
             records,
@@ -1230,7 +1230,7 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
-    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request)
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, allow_tree_topic=True)
     _expect_keys(
         request,
         {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key", "document_write_id"},
@@ -1244,7 +1244,7 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
         if replay is not None:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        _verify_topic_path_authority(topic_record, topic_path)
+        topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(
             records,
@@ -1957,7 +1957,7 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
-    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, query=True)
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, query=True, allow_tree_topic=True)
     allowed = {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref"}
     _expect_keys(request, allowed, f"{request['operation']} request")
     with lock_path.open("a+b") as lock_stream:
@@ -1968,7 +1968,7 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
         checkpoints = _validate_checkpoints(project, records)
         handoff_count = _validate_handoffs(records)
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        _verify_topic_path_authority(topic_record, topic_path)
+        topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
         snapshot = _topic_snapshot(records, request["actor_topic_id"])
         gate_state = derived_gate(records, request["actor_topic_id"])
         active_question_record = _single_active_question_record(

@@ -604,6 +604,10 @@ def _prepare_no_code_integration_run(request: dict[str, Any]) -> dict[str, Any]:
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         from_phase = topic.get("current_phase")
+        if from_phase == 1:
+            require_open_gate_for_phase_transition(
+                records, request["actor_topic_id"], from_phase
+            )
         if from_phase not in {1, 2}:
             raise ProtocolError(
                 "phase_route_conflict",

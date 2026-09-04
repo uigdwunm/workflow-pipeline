@@ -529,10 +529,11 @@ def _validate_new_edge(records: dict[str, list[dict[str, Any]]], dependent: str,
     if sum(
         item["dependent_topic_id"] == dependent
         and item["relation_state"] == "active"
-        and item["gate_state"] == "closed"
+        # Capacity is about mutable active edges, not their momentary gate
+        # state: an open edge can be directly reclosed later.
         for item in copied
     ) >= 64:
-        raise ProtocolError("invalid_request", "a topic may have at most 64 active closed dependencies")
+        raise ProtocolError("invalid_request", "a topic may have at most 64 active dependencies")
     copied.append(_new_dependency_record(dependency_id="DEP-" + "f" * 32, dependent_topic_id=dependent, prerequisite_topic_id=prerequisite, requirement_kind=kind, requirement_summary=summary, reason={"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1}))
     try:
         _validate_dependency_records({**records, "Topic Dependencies": copied})
