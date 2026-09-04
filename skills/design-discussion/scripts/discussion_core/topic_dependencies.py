@@ -117,26 +117,35 @@ def _candidate_decisions(records: dict[str, list[dict[str, Any]]], prerequisite:
     return sorted(result, key=lambda item: item["decision_id"])
 
 
-def _candidates(records: dict[str, list[dict[str, Any]]], dependency: dict[str, Any]) -> list[dict[str, Any]]:
-    prerequisite = dependency["prerequisite_topic_id"]
-    if dependency["requirement_kind"] == "confirmed-decision":
-        decisions = _candidate_decisions(records, prerequisite)
-        return [{"authority_id": None, "authority": {"decision_set_digest": _sha256(_canonical_json(decisions).encode("utf-8"))}, "decision_authority": decisions}] if decisions else []
-    if dependency["requirement_kind"] == "phase-0-checkpoint":
-        result = []
-        for record in records["Checkpoints"]:
-            if record.get("topic_id") != prerequisite or record.get("state") != "completed":
-                continue
-            checkpoint = _json_field(record, "data_json", "checkpoint")
-            if checkpoint.get("purpose") != "stage-entry" or checkpoint.get("stage_entry_phase") != 0 or not checkpoint.get("published_identity"):
-                continue
-            digests = json.loads(checkpoint.get("decision_digests_json", "{}"))
-            if not isinstance(digests, dict):
-                continue
-            result.append({"authority_id": checkpoint["checkpoint_id"], "authority": {"checkpoint_id": checkpoint["checkpoint_id"], "record_revision": checkpoint["record_revision"], "published_identity": checkpoint["published_identity"], "decision_digest": checkpoint["decision_digest"]}, "decision_authority": [{"decision_id": key, "sha256": value} for key, value in sorted(digests.items())]})
-        # A later completed Phase-0 entry checkpoint supersedes earlier draft
-        # identities for release purposes.
-        return result[-1:]
+def _confirmed_decision_candidates(
+    records: dict[str, list[dict[str, Any]]], prerequisite: str,
+) -> list[dict[str, Any]]:
+    decisions = _candidate_decisions(records, prerequisite)
+    return [{"authority_id": None, "authority": {"decision_set_digest": _sha256(_canonical_json(decisions).encode("utf-8"))}, "decision_authority": decisions}] if decisions else []
+
+
+def _checkpoint_candidates(
+    records: dict[str, list[dict[str, Any]]], prerequisite: str,
+) -> list[dict[str, Any]]:
+    result = []
+    for record in records["Checkpoints"]:
+        if record.get("topic_id") != prerequisite or record.get("state") != "completed":
+            continue
+        checkpoint = _json_field(record, "data_json", "checkpoint")
+        if checkpoint.get("purpose") != "stage-entry" or checkpoint.get("stage_entry_phase") != 0 or not checkpoint.get("published_identity"):
+            continue
+        digests = json.loads(checkpoint.get("decision_digests_json", "{}"))
+        if not isinstance(digests, dict):
+            continue
+        result.append({"authority_id": checkpoint["checkpoint_id"], "authority": {"checkpoint_id": checkpoint["checkpoint_id"], "record_revision": checkpoint["record_revision"], "published_identity": checkpoint["published_identity"], "decision_digest": checkpoint["decision_digest"]}, "decision_authority": [{"decision_id": key, "sha256": value} for key, value in sorted(digests.items())]})
+    # A later completed Phase-0 entry checkpoint supersedes earlier draft
+    # identities for release purposes.
+    return result[-1:]
+
+
+def _phase_result_candidates(
+    records: dict[str, list[dict[str, Any]]], prerequisite: str,
+) -> list[dict[str, Any]]:
     result = []
     for record in records["Phase Results"]:
         if record.get("result_kind") != "phase-result" or record.get("state") != "completed":
@@ -152,6 +161,18 @@ def _candidates(records: dict[str, list[dict[str, Any]]], dependency: dict[str, 
         decisions = {item: _sha256(_canonical_json(snapshot[item]).encode("utf-8")) for item in ids}
         result.append({"authority_id": phase_result["result_id"], "authority": {"result_id": phase_result["result_id"], "record_revision": record["record_revision"], "state": "completed", "phase_run_id": phase_result["phase_run_id"], "affected_decision_ids": sorted(ids)}, "decision_authority": [{"decision_id": item, "sha256": decisions.get(item, "") } for item in sorted(ids)]})
     return sorted(result, key=lambda item: str(item["authority_id"]))
+
+
+AUTHORITY_CANDIDATE_HANDLERS = {
+    "confirmed-decision": _confirmed_decision_candidates,
+    "phase-0-checkpoint": _checkpoint_candidates,
+    "phase-1-result": _phase_result_candidates,
+}
+
+
+def _candidates(records: dict[str, list[dict[str, Any]]], dependency: dict[str, Any]) -> list[dict[str, Any]]:
+    kind = dependency["requirement_kind"]
+    return AUTHORITY_CANDIDATE_HANDLERS[kind](records, dependency["prerequisite_topic_id"])
 
 
 def has_current_authority(
