@@ -246,11 +246,19 @@ def prepare_initial_dependencies(records: dict[str, list[dict[str, Any]]], *,
             raise ProtocolError("invalid_request", f"initial_dependencies[{index}] must be an object")
         _expect_keys(item, {"dependent_endpoint", "prerequisite_topic_ref",
             "requirement_kind", "requirement_summary"}, "initial dependency")
+        endpoint = item["dependent_endpoint"]
+        prerequisite_ref = item["prerequisite_topic_ref"]
+        if (
+            not isinstance(endpoint, str) or not endpoint
+            or not isinstance(prerequisite_ref, str) or not prerequisite_ref
+            or len(endpoint.encode("utf-8")) > 4096
+            or len(prerequisite_ref.encode("utf-8")) > 4096
+        ):
+            raise ProtocolError("invalid_request", "initial dependency endpoint is invalid")
         endpoints = {"source": request["actor_topic_id"], "target": target_topic_id}
-        dependent = endpoints.get(item["dependent_endpoint"])
-        prerequisite = endpoints.get(item["prerequisite_topic_ref"],
-            item["prerequisite_topic_ref"])
-        if dependent is None or not isinstance(prerequisite, str):
+        dependent = endpoints.get(endpoint)
+        prerequisite = endpoints.get(prerequisite_ref, prerequisite_ref)
+        if dependent is None:
             raise ProtocolError("invalid_request", "initial dependency endpoint is invalid")
         _validate_new_edge(records, dependent, prerequisite, item["requirement_kind"],
             item["requirement_summary"])

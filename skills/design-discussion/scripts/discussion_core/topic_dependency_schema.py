@@ -58,7 +58,11 @@ class AuthoritySelection:
         kind = value["authority_kind"]
         identity = value["authority_identity"]
         ids = value["decision_ids"]
-        if kind not in DEPENDENCY_AUTHORITY_KINDS or not canonical_string_array(ids):
+        if (
+            not isinstance(kind, str)
+            or kind not in DEPENDENCY_AUTHORITY_KINDS
+            or not canonical_string_array(ids)
+        ):
             error("invalid_request", "authority_selection is invalid")
         if authority_descriptor(kind)["identity_field"] is None:
             if identity is not None:
@@ -70,6 +74,8 @@ class AuthoritySelection:
 
 def authority_descriptor(kind: str) -> dict[str, Any]:
     """Return the one neutral descriptor for a supported authority kind."""
+    if not isinstance(kind, str) or kind not in DEPENDENCY_AUTHORITY_KINDS:
+        raise ValueError("unsupported dependency authority kind")
     return AUTHORITY_DESCRIPTORS[kind]
 
 
@@ -314,7 +320,7 @@ def validate_dependency_records(
         dependent, prerequisite = item["dependent_topic_id"], item["prerequisite_topic_id"]
         if dependent not in topics or prerequisite not in topics or dependent == prerequisite:
             error("state_corrupt", "topic dependency endpoints are invalid")
-        if item["requirement_kind"] not in DEPENDENCY_AUTHORITY_KINDS or not isinstance(item["requirement_summary"], str) or not item["requirement_summary"] or len(item["requirement_summary"].encode("utf-8")) > 4096:
+        if not isinstance(item["requirement_kind"], str) or item["requirement_kind"] not in DEPENDENCY_AUTHORITY_KINDS or not isinstance(item["requirement_summary"], str) or not item["requirement_summary"] or len(item["requirement_summary"].encode("utf-8")) > 4096:
             error("state_corrupt", "topic dependency requirement is invalid")
         if item["relation_state"] not in {"active", "cancelled"} or item["gate_state"] not in {"closed", "open"}:
             error("state_corrupt", "topic dependency state is invalid")

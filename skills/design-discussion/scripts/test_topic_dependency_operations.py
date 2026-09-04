@@ -11,6 +11,40 @@ from test_topic_dependency_support import TopicDependencyScenarioTest
 
 
 class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_malformed_dependency_discriminators_fail_stably_via_cli(self) -> None:
+        project = self.fixture.make_project("ticket07-malformed-discriminators", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        for endpoint, prerequisite in (([], "target"), ({}, "target"), ("source", []), ("source", {})):
+            request = self.fixture.handoff_request(
+                topic, operation="prepare-handoff", ledger_revision=1,
+                initial_dependencies=[{
+                    "dependent_endpoint": endpoint,
+                    "prerequisite_topic_ref": prerequisite,
+                    "requirement_kind": "confirmed-decision",
+                    "requirement_summary": "Bounded.",
+                }],
+            )
+            code, rejected, _ = self.fixture.run_cli(request)
+            self.fixture.assertEqual(code, 1)
+            self.fixture.assertEqual(rejected["error"]["code"], "invalid_request")
+            self.fixture.assertEqual(ledger.read_bytes(), before)
+        prepared, child_ref = self.fixture.activate_child_handoff(topic)
+        submit = self.fixture.handoff_request(
+            topic, operation="submit-child-result", ledger_revision=5,
+            owner_ref=child_ref, handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"], result_scope=["api"], summary="Typed.",
+            authority_selection={"authority_kind": [], "authority_identity": None,
+                                 "decision_ids": []},
+        )
+        submit["actor_topic_id"] = prepared["target_topic_id"]
+        before = ledger.read_bytes()
+        code, rejected, _ = self.fixture.run_cli(submit)
+        self.fixture.assertEqual(code, 1)
+        self.fixture.assertEqual(rejected["error"]["code"], "invalid_request")
+        self.fixture.assertEqual(ledger.read_bytes(), before)
+
     def test_ticket07_published_authority_blocks_dependency_create_and_replace_via_cli(self) -> None:
         """A published Phase-0/1 authority must be explicitly reopened first."""
         for authority_phase in (0, 1):
