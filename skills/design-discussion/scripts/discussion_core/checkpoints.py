@@ -18,6 +18,7 @@ from .checkpoint_authority import (
     CheckpointAuthorityCorrupt,
     checkpoint_artifact_fields,
     checkpoint_trailers,
+    git_commit_metadata,
     current_checkpoint_artifact,
     verify_artifact_integrity,
 )
@@ -492,19 +493,10 @@ def _checkpoint_commit_message(checkpoint: dict[str, Any]) -> str:
 
 
 def _commit_metadata(project: Path, commit_id: str) -> dict[str, Any]:
-    raw = _git(project, ["cat-file", "-p", commit_id]).decode("utf-8")
-    header, message = raw.split("\n\n", 1)
-    parents = [line.split(" ", 1)[1] for line in header.splitlines() if line.startswith("parent ")]
-    trees = [line.split(" ", 1)[1] for line in header.splitlines() if line.startswith("tree ")]
-    trailers: dict[str, str] = {}
-    for line in message.splitlines():
-        if ": " in line:
-            key, value = line.split(": ", 1)
-            if key.startswith("Codex-"):
-                if key in trailers:
-                    raise ProtocolError("checkpoint_history_mismatch", "checkpoint trailer is duplicated")
-                trailers[key] = value
-    return {"message": message, "parents": parents, "trailers": trailers, "tree": trees[0] if len(trees) == 1 else None}
+    try:
+        return git_commit_metadata(_git(project, ["cat-file", "-p", commit_id]).decode("utf-8"))
+    except CheckpointAuthorityCorrupt as error:
+        raise ProtocolError("checkpoint_history_mismatch", "checkpoint metadata is corrupt") from error
 
 
 def _commit_matches_checkpoint(

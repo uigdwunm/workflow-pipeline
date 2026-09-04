@@ -13,6 +13,27 @@ class CheckpointAuthorityCorrupt(ValueError):
     """Persisted checkpoint fields cannot be interpreted coherently."""
 
 
+def git_commit_metadata(raw: str) -> dict[str, Any]:
+    """Parse one Git commit once, rejecting ambiguous checkpoint trailers."""
+    try:
+        header, message = raw.split("\n\n", 1)
+    except ValueError as error:
+        raise CheckpointAuthorityCorrupt("checkpoint commit is malformed") from error
+    parents = [line.split(" ", 1)[1] for line in header.splitlines() if line.startswith("parent ")]
+    trees = [line.split(" ", 1)[1] for line in header.splitlines() if line.startswith("tree ")]
+    trailers: dict[str, str] = {}
+    for line in message.splitlines():
+        if ": " not in line:
+            continue
+        key, value = line.split(": ", 1)
+        if key.startswith("Codex-"):
+            if key in trailers:
+                raise CheckpointAuthorityCorrupt("checkpoint trailer is duplicated")
+            trailers[key] = value
+    return {"message": message, "parents": parents, "trailers": trailers,
+            "tree": trees[0] if len(trees) == 1 else None}
+
+
 def _persisted_json(value: Any, label: str) -> Any:
     if not isinstance(value, str):
         raise CheckpointAuthorityCorrupt(f"{label} is missing")
@@ -89,13 +110,12 @@ def verify_artifact_integrity(
             identity, ref = checkpoint["published_identity"], checkpoint["checkpoint_ref"]
             if not isinstance(identity, str) or not isinstance(ref, str) or git("rev-parse", "--verify", ref).decode("ascii").strip() != identity or git("cat-file", "-t", identity).decode("ascii").strip() != "commit":
                 return None
-            header, message = git("cat-file", "-p", identity).decode("utf-8").split("\n\n", 1)
-            if [line.split(" ", 1)[1] for line in header.splitlines() if line.startswith("parent ")] != [checkpoint.get("replacement_parent") or checkpoint["base_commit"]]:
+            metadata = git_commit_metadata(git("cat-file", "-p", identity).decode("utf-8"))
+            if metadata["parents"] != [checkpoint.get("replacement_parent") or checkpoint["base_commit"]]:
                 return None
-            trailers = {key: value for key, value in (line.split(": ", 1) for line in message.splitlines() if ": " in line and line.startswith("Codex-"))}
             paths, blobs, digests = checkpoint_artifact_fields(checkpoint)
             expected = checkpoint_trailers(checkpoint, digests, paths)
-            if trailers != expected or sorted(git("diff-tree", "--no-commit-id", "--name-only", "-r", identity).decode("utf-8").splitlines()) != paths:
+            if metadata["trailers"] != expected or sorted(git("diff-tree", "--no-commit-id", "--name-only", "-r", identity).decode("utf-8").splitlines()) != paths:
                 return None
             if any(git("rev-parse", f"{identity}:{path}").decode("ascii").strip() != blobs[path] or sha256(git("cat-file", "blob", blobs[path])) != digests[path] for path in paths):
                 return None
