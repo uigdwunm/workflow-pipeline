@@ -167,6 +167,18 @@ class ThreadSettingsTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.SettingsError, "canonical root"):
                 MODULE.resolve_thread_settings(self.thread_id, root)
 
+    def test_paginated_canonical_rollout_must_be_the_root(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory)
+            self.make_rollout(
+                root,
+                history_base_id=self.first_segment_id,
+                paginated=True,
+            )
+
+            with self.assertRaisesRegex(MODULE.SettingsError, "canonical root"):
+                MODULE.resolve_thread_settings(self.thread_id, root)
+
     def test_paginated_rollout_rejects_legacy_suffixed_root(self):
         with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
             root = Path(directory)

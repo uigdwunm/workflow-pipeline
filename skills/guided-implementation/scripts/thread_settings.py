@@ -355,6 +355,23 @@ def _read_rollout_facts(thread_id: str, root: Path) -> RolloutFacts:
     if len(lineage_states) != 1 or len(source_states) != 1:
         raise SettingsError("rollout session_meta identity fields conflict")
 
+    canonical_parsed = next(
+        (
+            parsed
+            for candidate, parsed in parsed_candidates
+            if candidate.segment_id is None
+        ),
+        None,
+    )
+    if (
+        canonical_parsed is not None
+        and canonical_parsed.history_mode == "paginated"
+        and canonical_parsed.history_base_id is not None
+    ):
+        raise SettingsError(
+            "paginated rollout canonical root has invalid history metadata"
+        )
+
     if segment_candidates:
         if len(canonical_candidates) != 1:
             raise SettingsError("paginated rollout canonical root is unavailable")
@@ -365,10 +382,6 @@ def _read_rollout_facts(thread_id: str, root: Path) -> RolloutFacts:
                     "paginated rollout canonical root has invalid history metadata"
                 )
             node_id = candidate.segment_id or thread_id
-            if candidate.segment_id is None and parsed.history_base_id is not None:
-                raise SettingsError(
-                    "paginated rollout canonical root has invalid history metadata"
-                )
             if node_id in segments:
                 raise SettingsError("duplicate paginated rollout segment")
             segments[node_id] = parsed
