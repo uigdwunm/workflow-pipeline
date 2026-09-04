@@ -3944,10 +3944,14 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         frontmatter, records = PROTOCOL._load_records(ledger)
         child_id = "topic-" + "d" * 32
         records["Current Topics"].append({"topic_id": child_id, "record_revision": 1, "root_slug": "child", "parent_topic_id": str(topic["topic_id"]), "current_phase": 1, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
-        records["Checkpoints"] = []
+        checkpoint_record = records["Checkpoints"][0]
+        checkpoint_data = json.loads(str(checkpoint_record["data_json"]))
+        checkpoint_record["state"] = "cancelled"
+        checkpoint_data["state"] = "cancelled"
+        checkpoint_record["data_json"] = PROTOCOL._canonical_json(checkpoint_data)
         dependency_id = "DEP-" + "c" * 32
-        basis = {"basis_version": 1, "dependency_id": dependency_id, "prerequisite_topic_id": child_id, "requirement_kind": "phase-0-checkpoint", "decision_authority": [], "authority": {"checkpoint_id": prepared["checkpoint_id"], "record_revision": 2, "published_identity": published["snapshot_digest"], "decision_digest": prepared["decision_digest"]}}
-        dependency = {"dependency_id": dependency_id, "record_revision": 2, "dependent_topic_id": str(topic["topic_id"]), "prerequisite_topic_id": child_id, "requirement_kind": "phase-0-checkpoint", "requirement_summary": "Retain this checkpoint.", "relation_state": "active", "gate_state": "open", "accepted_basis_json": PROTOCOL._canonical_json(basis), "gate_reason_json": PROTOCOL._canonical_json({"kind": "atomic-release", "release_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})}
+        basis = {"basis_version": 1, "dependency_id": dependency_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "decision_authority": [], "authority": {"checkpoint_id": prepared["checkpoint_id"], "record_revision": 2, "published_identity": published["snapshot_digest"], "decision_digest": prepared["decision_digest"]}}
+        dependency = {"dependency_id": dependency_id, "record_revision": 2, "dependent_topic_id": child_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "Retain this checkpoint.", "relation_state": "active", "gate_state": "open", "accepted_basis_json": PROTOCOL._canonical_json(basis), "gate_reason_json": PROTOCOL._canonical_json({"kind": "atomic-release", "release_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})}
         records["Topic Dependencies"].append(dependency)
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         code, retained, stderr = self.run_cli(self.checkpoint_request(topic, operation="checkpoint-gc-dry-run"))
@@ -7458,7 +7462,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 release["actor_conversation_ref"] = "codex-thread:dependent"
                 code, rejected, _ = self.run_cli(release)
                 self.assertEqual(code, 1)
-                self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
+                self.assertEqual(
+                    rejected["error"]["code"],
+                    "record_revision_conflict" if fault == "broken" else "topic_gate_evaluation_stale",
+                )
                 self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_phase_result_currentness_filters_and_rejects_via_cli(
@@ -7733,7 +7740,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(released["state"], "open")
 
     def test_ticket07_invalid_latest_checkpoint_does_not_fallback_via_cli(self) -> None:
-        for fault in ("missing", "corrupt", "stale"):
+        for fault in ("missing", "corrupt", "stale", "broken"):
             with self.subTest(fault=fault):
                 project = self.make_project(f"ticket07-invalid-latest-{fault}", git=False)
                 topic = self.bootstrap_topic(project)
@@ -7759,11 +7766,19 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 elif fault == "corrupt":
                     snapshot_path.chmod(0o600)
                     snapshot_path.write_bytes(b"not a checkpoint artifact\n")
-                else:
+                elif fault == "stale":
                     snapshot_path.chmod(0o600)
                     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
                     snapshot["purpose"] = "pause"
                     snapshot_path.write_text(PROTOCOL._canonical_json(snapshot) + "\n", encoding="utf-8")
+                else:
+                    broken = self.checkpoint_request(
+                        topic, operation="mark-checkpoint-broken", ledger_revision=5,
+                        checkpoint_id=latest["checkpoint_id"], expected_checkpoint_revision=2,
+                        broken_identity=latest["snapshot_digest"], reason="latest authority was invalidated",
+                    )
+                    code, _, stderr = self.run_cli(broken)
+                    self.assertEqual(code, 0, stderr)
                 blocked = self.evolution_request(topic, operation="evaluate-topic-gate")
                 blocked["actor_topic_id"] = dependent_id
                 blocked["actor_conversation_ref"] = "codex-thread:dependent"
@@ -7777,7 +7792,10 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 release["actor_conversation_ref"] = "codex-thread:dependent"
                 code, rejected, _ = self.run_cli(release)
                 self.assertEqual(code, 1)
-                self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
+                self.assertEqual(
+                    rejected["error"]["code"],
+                    "ledger_revision_conflict" if fault == "broken" else "topic_gate_evaluation_stale",
+                )
                 self.assertEqual(ledger.read_bytes(), before)
                 self.assertNotEqual(older["checkpoint_id"], latest["checkpoint_id"])
 

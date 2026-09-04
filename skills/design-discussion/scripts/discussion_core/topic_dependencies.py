@@ -223,17 +223,19 @@ def _current_checkpoint(record: dict[str, Any], checkpoint: dict[str, Any], reco
 def _checkpoint_candidates(
     records: dict[str, list[dict[str, Any]]], prerequisite: str,
 ) -> list[dict[str, Any]]:
-    completed = [
+    authorities = [
         record for record in records["Checkpoints"]
-        if record.get("topic_id") == prerequisite and record.get("state") == "completed"
+        if record.get("topic_id") == prerequisite
     ]
-    if not completed:
+    if not authorities:
         return []
     # The latest persisted authority is decisive: an invalid replacement must
     # fail closed rather than silently restoring an older checkpoint.
-    record = completed[-1]
+    record = authorities[-1]
     try:
         checkpoint = _json_field(record, "data_json", "checkpoint")
+        if record.get("state") != "completed":
+            return []
         if not _current_checkpoint(record, checkpoint, records, prerequisite):
             return []
         digests = json.loads(checkpoint["decision_digests_json"])

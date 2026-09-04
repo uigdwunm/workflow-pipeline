@@ -173,6 +173,69 @@ def _gate_reason(value: Any, error: Callable[[str, str], None]) -> None:
         error("state_corrupt", "topic dependency affected decisions are invalid")
 
 
+def _ledger_decision_pairs(
+    records: dict[str, list[dict[str, Any]]], topic_id: str, error: Callable[[str, str], None],
+) -> dict[str, str]:
+    pairs: dict[str, str] = {}
+    for record in records["Pending Items"]:
+        if record.get("topic_id") != topic_id or record.get("item_kind") != "decision":
+            continue
+        decision = _object(record.get("data_json"), "decision data_json", error)
+        decision_id = decision.get("decision_id")
+        if not isinstance(decision_id, str) or record.get("decision_id") != decision_id:
+            error("state_corrupt", "decision envelope is incoherent")
+        pairs[decision_id] = hashlib.sha256(
+            json.dumps(decision, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    return pairs
+
+
+def _validate_ordinary_basis(
+    records: dict[str, list[dict[str, Any]]], item: dict[str, Any], basis: dict[str, Any],
+    decisions: list[dict[str, str]], authority: dict[str, Any], error: Callable[[str, str], None],
+) -> None:
+    """Resolve a persisted non-child basis to its retained ledger provenance."""
+    kind = item["requirement_kind"]
+    decision_pairs = _ledger_decision_pairs(records, item["prerequisite_topic_id"], error)
+    if any(decision_pairs.get(entry["decision_id"]) != entry["sha256"] for entry in decisions):
+        error("state_corrupt", "topic dependency decision authority is not retained")
+    if kind == "confirmed-decision":
+        return
+    if kind == "phase-0-checkpoint":
+        matches = [
+            record for record in records["Checkpoints"]
+            if record.get("checkpoint_id") == authority["checkpoint_id"]
+        ]
+        if len(matches) != 1:
+            error("state_corrupt", "topic dependency checkpoint authority is not retained")
+        checkpoint = _object(matches[0].get("data_json"), "checkpoint data_json", error)
+        if (
+            checkpoint.get("topic_id") != item["prerequisite_topic_id"]
+            or checkpoint.get("checkpoint_id") != authority["checkpoint_id"]
+            or checkpoint.get("record_revision") != authority["record_revision"]
+            or checkpoint.get("published_identity") != authority["published_identity"]
+            or checkpoint.get("decision_digest") != authority["decision_digest"]
+        ):
+            error("state_corrupt", "topic dependency checkpoint authority is incoherent")
+        return
+    matches = [
+        record for record in records["Phase Results"]
+        if record.get("result_id") == authority["result_id"]
+    ]
+    if len(matches) != 1:
+        error("state_corrupt", "topic dependency Phase Result authority is not retained")
+    result = _object(matches[0].get("data_json"), "Phase Result data_json", error)
+    if (
+        result.get("topic_id") != item["prerequisite_topic_id"]
+        or result.get("result_id") != authority["result_id"]
+        or result.get("phase_run_id") != authority["phase_run_id"]
+        or result.get("affected_decision_ids") != authority["affected_decision_ids"]
+        or result.get("decision_authority") != decisions
+        or matches[0].get("record_revision") != authority["record_revision"]
+    ):
+        error("state_corrupt", "topic dependency Phase Result authority is incoherent")
+
+
 def validate_dependency_records(
     records: dict[str, list[dict[str, Any]]], error: Callable[[str, str], None],
 ) -> None:
@@ -224,6 +287,7 @@ def validate_dependency_records(
                 valid = isinstance(authority, dict) and set(authority) == {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"} and _identity(authority["result_id"], "PH") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and authority["state"] == "completed" and isinstance(authority["phase_run_id"], str) and _canonical_strings(authority["affected_decision_ids"])
             if not valid:
                 error("state_corrupt", "topic dependency authority is incoherent")
+            _validate_ordinary_basis(records, item, basis, decisions, authority, error)
             child_result_id = basis.get("child_result_id")
             if child_result_id is not None:
                 child = next((record for record in records["Phase Results"] if record.get("result_id") == child_result_id), None)

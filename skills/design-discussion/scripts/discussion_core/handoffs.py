@@ -823,6 +823,7 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
             "topic_id": request["actor_topic_id"], "ledger_revision": next_revision,
             "record_revision": topic_revision, "handoff_id": handoff["handoff_id"],
             "attempt_id": attempt["attempt_id"], "child_result_id": child_result_id,
+            "frozen_authority": frozen_authority,
         }
         _write_ledger_transaction(
             ledger_path, frontmatter, records, request,
@@ -896,6 +897,7 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
                 "topic_id": request["actor_topic_id"], "ledger_revision": next_revision,
                 "record_revision": topic_revision, "handoff_id": handoff["handoff_id"],
                 "relation_id": relation_id,
+                "frozen_authority": frozen,
             }
             claim["state"] = "absorbed"
             result["released_dependency_ids"] = release_child_result_dependencies(
