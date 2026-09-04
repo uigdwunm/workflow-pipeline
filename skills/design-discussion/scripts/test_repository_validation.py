@@ -31,8 +31,10 @@ class RepositoryValidationTests(unittest.TestCase):
             self.assertIn(marker, framing)
         for marker in ("independent, nameable goal", "evaluate-topic-gate", "release-topic-gate", "First-turn handoff acceptance"):
             self.assertIn(marker, split_gate)
-        for marker in ("initial_dependencies", "first-turn acceptance remains allowed", "split-gate-contract.md"):
+        for marker in ("initial_dependencies", "authority_selection", "dependency_releases", "first-turn acceptance remains allowed", "split-gate-contract.md"):
             self.assertIn(marker, handoff)
+        for marker in ("update-topic-dependency", "Only the dependent topic", "Phase 0 or 1", "Phase-2-or-later"):
+            self.assertIn(marker, split_gate)
         expected_split_block = """新话题建议
 
 当前话题：<current topic>

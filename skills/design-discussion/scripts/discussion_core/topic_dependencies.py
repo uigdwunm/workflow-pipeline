@@ -43,7 +43,7 @@ def retained_checkpoint_identities(records: dict[str, list[dict[str, Any]]]) -> 
     for result in records["Phase Results"]:
         if (
             result.get("result_kind") != "child-topic-result"
-            or result.get("state") in {"cancelled", "superseded"}
+            or result.get("state") not in {"pending", "impact-recorded"}
         ):
             continue
         authority = _canonical_object(
@@ -635,6 +635,13 @@ def _validate_new_edge(records: dict[str, list[dict[str, Any]]], dependent: str,
     if kind not in KINDS or not isinstance(summary, str) or not summary or len(summary.encode("utf-8")) > 4096:
         raise ProtocolError("invalid_request", "topic dependency requirement is invalid")
     copied = [dict(item) for item in records["Topic Dependencies"] if item["dependency_id"] != replacing]
+    if sum(
+        item["dependent_topic_id"] == dependent
+        and item["relation_state"] == "active"
+        and item["gate_state"] == "closed"
+        for item in copied
+    ) >= 64:
+        raise ProtocolError("invalid_request", "a topic may have at most 64 active closed dependencies")
     copied.append(_new_dependency_record(dependency_id="DEP-" + "f" * 32, dependent_topic_id=dependent, prerequisite_topic_id=prerequisite, requirement_kind=kind, requirement_summary=summary, reason={"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1}))
     try:
         _validate_dependency_records({**records, "Topic Dependencies": copied})

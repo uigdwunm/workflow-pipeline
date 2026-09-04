@@ -86,8 +86,26 @@ first-turn acceptance exception.
 
 ## Return and absorb results
 
-The active child submits one scoped result through `submit-child-result`. The
-parent reads the claim and asks the user to confirm how it affects the parent:
+The active child submits one scoped result through `submit-child-result`. It
+constructs `authority_selection` from exactly one current candidate returned by
+`evaluate-topic-gate`: `authority_kind`, its required `authority_identity` (or
+`null` for `confirmed-decision`), and canonically sorted unique `decision_ids`.
+When any authority is current, omitting this selection is rejected; when none
+is current, the child submits the explicit no-authority result permitted by the
+protocol. The resulting frozen descriptor and SHA-256 decision pairs are the
+only authority a parent may later use.
+
+The parent reads the claim, presents the frozen descriptor and proposed effect,
+and obtains confirmation. For an absorb, construct
+`dependency_releases` as a canonically sorted, duplicate-free list of exact
+`dependency_id`, `authority_kind`, `authority_identity`, and `decision_ids`
+selections that match the child's frozen authority. Omitting releases is valid:
+it absorbs the result without opening a gate. A nonempty list is accepted only
+with `effect: absorb`; the gate release, accepted basis, handoff absorption,
+and result receipt are one ledger transaction, so any rejection or failure
+leaves all of them unchanged.
+
+After that confirmation, `record-child-result` follows these rules:
 
 - `record-child-result` with `effect: absorb` is allowed only when the result
   scope is contained by the frozen child scope; it records explicit coverage;

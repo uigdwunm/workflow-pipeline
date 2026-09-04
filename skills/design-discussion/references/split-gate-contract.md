@@ -26,3 +26,16 @@ Phase 2 and later do not consult Topic Dependencies.
 The Phase Source Task owns split preparation and creation confirmations. A
 dedicated grilling carrier may return only a bounded proposal; it never
 prepares, releases, or changes Topic Dependencies.
+
+## Dependency update consumer contract
+
+Only the dependent topic's authenticated owner may call
+`update-topic-dependency`, and only while that topic is in Phase 0 or 1. A
+fresh user confirmation authorizes exactly one action-specific request:
+`create` supplies prerequisite, requirement kind and summary; `replace` also
+supplies the dependency identity and expected dependency revision; `cancel`
+supplies only that identity and revision. Cycles, duplicate active endpoints,
+stale revisions, and Phase-2-or-later changes are rejected without a write.
+Topic Dependencies are historical and immutable in Phase 2; use the shared
+gate evaluation/release contract instead of reconstructing dependency rules in
+another Skill.
