@@ -12,19 +12,14 @@ import uuid
 from typing import Any
 
 from .state import (
-    ProtocolError, SHA256_RE, _canonical_json, _evolution_paths, _expect_keys,
+    ProtocolError, _canonical_json, _evolution_paths, _expect_keys,
     _expect_string, _flock_with_timeout, _idempotent_result, _json_field,
     _load_records, _record_by_id, _sha256, _topic_snapshot, _validate_revisions,
     _validate_uuid4, _validated_string_list, _verify_topic_owner,
     _write_ledger_transaction,
 )
+from .topic_dependency_schema import KINDS, validate_dependency_records
 
-KINDS = {"phase-0-checkpoint", "phase-1-result", "confirmed-decision"}
-RECORD_FIELDS = {
-    "dependency_id", "record_revision", "dependent_topic_id", "prerequisite_topic_id",
-    "requirement_kind", "requirement_summary", "relation_state", "gate_state",
-    "accepted_basis_json", "gate_reason_json",
-}
 
 
 def _new_dependency_record(*, dependency_id: str, dependent_topic_id: str, prerequisite_topic_id: str, requirement_kind: str, requirement_summary: str, reason: dict[str, Any]) -> dict[str, Any]:
@@ -56,94 +51,7 @@ def _canonical_object(value: Any, label: str) -> dict[str, Any]:
 
 
 def _validate_dependency_records(records: dict[str, list[dict[str, Any]]]) -> None:
-    topics = {item.get("topic_id") for item in records["Current Topics"]}
-    seen_ids: set[str] = set()
-    edges: dict[str, set[str]] = {}
-    pairs: set[tuple[str, str]] = set()
-    for item in records["Topic Dependencies"]:
-        if set(item) != RECORD_FIELDS:
-            raise ProtocolError("state_corrupt", "topic dependency record fields are invalid")
-        dep_id = item["dependency_id"]
-        if not isinstance(dep_id, str) or not dep_id.startswith("DEP-") or dep_id in seen_ids:
-            raise ProtocolError("state_corrupt", "topic dependency identity is invalid or duplicated")
-        seen_ids.add(dep_id)
-        if not isinstance(item["record_revision"], int) or item["record_revision"] < 1:
-            raise ProtocolError("state_corrupt", "topic dependency revision is invalid")
-        dependent, prerequisite = item["dependent_topic_id"], item["prerequisite_topic_id"]
-        if dependent not in topics or prerequisite not in topics or dependent == prerequisite:
-            raise ProtocolError("state_corrupt", "topic dependency endpoints are invalid")
-        if item["requirement_kind"] not in KINDS or not isinstance(item["requirement_summary"], str) or not item["requirement_summary"]:
-            raise ProtocolError("state_corrupt", "topic dependency requirement is invalid")
-        if item["relation_state"] not in {"active", "cancelled"} or item["gate_state"] not in {"closed", "open"}:
-            raise ProtocolError("state_corrupt", "topic dependency state is invalid")
-        _canonical_object(item["gate_reason_json"], "topic dependency gate_reason_json")
-        if item["accepted_basis_json"] is not None:
-            basis = _canonical_object(item["accepted_basis_json"], "topic dependency accepted_basis_json")
-            decisions = basis.get("decision_authority")
-            if (
-                basis.get("basis_version") != 1
-                or basis.get("dependency_id") != dep_id
-                or basis.get("prerequisite_topic_id") != prerequisite
-                or basis.get("requirement_kind") != item["requirement_kind"]
-                or not isinstance(decisions, list)
-                or decisions != sorted(decisions, key=lambda entry: entry.get("decision_id", ""))
-                or len({entry.get("decision_id") for entry in decisions}) != len(decisions)
-                or any(not isinstance(entry, dict) or set(entry) != {"decision_id", "sha256"} or not isinstance(entry["decision_id"], str) or not isinstance(entry["sha256"], str) or not SHA256_RE.fullmatch(entry["sha256"]) for entry in decisions)
-                or set(basis) - {"basis_version", "dependency_id", "prerequisite_topic_id", "requirement_kind", "decision_authority", "authority", "child_result_id"}
-            ):
-                raise ProtocolError("state_corrupt", "topic dependency accepted basis is incoherent")
-            authority = basis.get("authority")
-            if item["requirement_kind"] == "confirmed-decision":
-                if (
-                    not isinstance(authority, dict)
-                    or set(authority) != {"decision_set_digest"}
-                    or not isinstance(authority["decision_set_digest"], str)
-                    or not SHA256_RE.fullmatch(authority["decision_set_digest"])
-                    or not decisions
-                ):
-                    raise ProtocolError("state_corrupt", "confirmed-decision basis is incoherent")
-            elif not isinstance(authority, dict):
-                raise ProtocolError("state_corrupt", "authority-backed dependency basis is incoherent")
-            elif item["requirement_kind"] == "phase-0-checkpoint" and (
-                set(authority) != {"checkpoint_id", "record_revision", "published_identity", "decision_digest"}
-                or not isinstance(authority["checkpoint_id"], str)
-                or not isinstance(authority["record_revision"], int)
-                or not isinstance(authority["published_identity"], str)
-                or not isinstance(authority["decision_digest"], str)
-                or not SHA256_RE.fullmatch(authority["decision_digest"])
-            ):
-                raise ProtocolError("state_corrupt", "checkpoint dependency authority is incoherent")
-            elif item["requirement_kind"] == "phase-1-result" and (
-                set(authority) != {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"}
-                or not isinstance(authority["result_id"], str)
-                or not isinstance(authority["record_revision"], int)
-                or authority["state"] != "completed"
-                or not isinstance(authority["phase_run_id"], str)
-                or not isinstance(authority["affected_decision_ids"], list)
-            ):
-                raise ProtocolError("state_corrupt", "phase-result dependency authority is incoherent")
-        elif item["relation_state"] == "active" and item["gate_state"] == "open":
-            raise ProtocolError("state_corrupt", "open topic dependency requires an accepted basis")
-        if item["relation_state"] == "active":
-            pair = (dependent, prerequisite)
-            if pair in pairs:
-                raise ProtocolError("state_corrupt", "active topic dependency endpoint pair is duplicated")
-            pairs.add(pair)
-            edges.setdefault(dependent, set()).add(prerequisite)
-    visiting: set[str] = set()
-    visited: set[str] = set()
-    def visit(node: str) -> None:
-        if node in visiting:
-            raise ProtocolError("state_corrupt", "active topic dependency graph contains a cycle")
-        if node in visited:
-            return
-        visiting.add(node)
-        for target in edges.get(node, set()):
-            visit(target)
-        visiting.remove(node)
-        visited.add(node)
-    for node in edges:
-        visit(node)
+    validate_dependency_records(records, ProtocolError)
 
 
 def derived_gate(records: dict[str, list[dict[str, Any]]], topic_id: str) -> str:

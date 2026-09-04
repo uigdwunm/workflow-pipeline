@@ -556,8 +556,8 @@ def _load_records(ledger_path: Path) -> tuple[dict[str, str], dict[str, list[dic
         records["Topic Dependencies"] = []
     _hydrate_legacy_creation_receipt(frontmatter, records)
     # Keep corruption fail-closed before any operation can observe ledger state.
-    from .topic_dependencies import _validate_dependency_records
-    _validate_dependency_records(records)
+    from .topic_dependency_schema import validate_dependency_records
+    validate_dependency_records(records, ProtocolError)
     return frontmatter, records
 
 
