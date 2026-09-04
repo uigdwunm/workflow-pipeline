@@ -17,6 +17,33 @@ from test_topic_dependency_support import TopicDependencyScenarioTest
 class TopicDependencyCliTests(TopicDependencyScenarioTest):
     """Reuse the evolution fixture without inheriting its unrelated test methods."""
 
+    def _evaluated_confirmed_dependency(self, name: str) -> tuple[dict[str, object], dict[str, object], Path, dict[str, object]]:
+        protocol = importlib.import_module("discussion_protocol")
+        project = self.fixture.make_project(name, git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        child = self.fixture.prepare_child_handoff(topic, initial_dependencies=[{
+            "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+            "requirement_kind": "confirmed-decision", "requirement_summary": "Child decision.",
+        }])
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = protocol._load_records(ledger)
+        decision = {"decision_id": "D-child", "summary": "Typed.", "rationale": "Current.", "state": "confirmed", "evolution": "confirmed"}
+        records["Pending Items"].append({"item_id": "D-child", "item_kind": "decision", "topic_id": child["target_topic_id"], "data_json": protocol._canonical_json(decision)})
+        ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
+        dependency_id = child["initial_dependencies"][0]["dependency_id"]
+        code, evaluation, stderr = self.fixture.run_cli(self.fixture.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "decision_ids": ["D-child"]}]))
+        self.assertEqual(code, 0, stderr)
+        return topic, child, ledger, evaluation
+
+    def _assert_stale_release(self, topic: dict[str, object], ledger: Path, evaluation: dict[str, object], *, expected_revision: int) -> None:
+        before = ledger.read_bytes()
+        code, rejected, _ = self.fixture.run_cli(self.fixture.evolution_request(topic, operation="release-topic-gate", expected_revision=expected_revision, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"]))
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
+        self.assertEqual(rejected["error"]["context"]["ledger_revision"], expected_revision)
+        self.assertEqual(rejected["error"]["context"]["topic_revision"], 1)
+        self.assertEqual(ledger.read_bytes(), before)
+
     def test_ticket07_dependency_create_replay_is_cli_idempotent(self) -> None:
         project = self.fixture.make_project("ticket07-dependency-replay", git=False)
         topic = self.fixture.bootstrap_topic(project)
@@ -36,6 +63,24 @@ class TopicDependencyCliTests(TopicDependencyScenarioTest):
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(replay["dependency_id"], first["dependency_id"])
         self.assertEqual(ledger.read_bytes(), committed)
+
+    def test_ticket07_release_rejects_dependency_record_drift_via_cli(self) -> None:
+        topic, child, ledger, evaluation = self._evaluated_confirmed_dependency("ticket07-release-dependency-drift")
+        dependency_id = evaluation["release_set"][0]["dependency_id"]
+        code, _, stderr = self.fixture.run_cli(self.fixture.evolution_request(topic, operation="update-topic-dependency", expected_revision=2, expected_topic_revision=1, action="replace", dependency_id=dependency_id, expected_dependency_revision=1, prerequisite_topic_id=child["target_topic_id"], requirement_kind="phase-1-result", requirement_summary="New edge."))
+        self.assertEqual(code, 0, stderr)
+        self._assert_stale_release(topic, ledger, evaluation, expected_revision=3)
+
+    def test_ticket07_release_rejects_confirmed_decision_digest_drift_via_cli(self) -> None:
+        protocol = importlib.import_module("discussion_protocol")
+        topic, _, ledger, evaluation = self._evaluated_confirmed_dependency("ticket07-release-decision-drift")
+        frontmatter, records = protocol._load_records(ledger)
+        item = next(record for record in records["Pending Items"] if record["item_id"] == "D-child")
+        decision = json.loads(str(item["data_json"]))
+        decision["summary"] = "Typed requests changed."
+        item["data_json"] = protocol._canonical_json(decision)
+        ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
+        self._assert_stale_release(topic, ledger, evaluation, expected_revision=2)
 
     def test_ticket07_phase2_dependency_history_is_immutable_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-phase2-cutoff", git=False)
