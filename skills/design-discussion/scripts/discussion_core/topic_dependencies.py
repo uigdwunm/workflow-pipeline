@@ -29,7 +29,7 @@ def _new_dependency_record(*, dependency_id: str, dependent_topic_id: str, prere
 
 
 def retained_checkpoint_identities(records: dict[str, list[dict[str, Any]]]) -> set[str]:
-    """Return snapshot identities retained by active accepted dependency bases."""
+    """Return snapshots retained by active bases and live frozen child authority."""
     retained: set[str] = set()
     for dependency in records["Topic Dependencies"]:
         if dependency["relation_state"] != "active" or not dependency["accepted_basis_json"]:
@@ -37,6 +37,23 @@ def retained_checkpoint_identities(records: dict[str, list[dict[str, Any]]]) -> 
         basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json")
         identity = basis.get("authority", {}).get("published_identity")
         if isinstance(identity, str): retained.add(identity)
+    for result in records["Phase Results"]:
+        if (
+            result.get("result_kind") != "child-topic-result"
+            or result.get("state") in {"cancelled", "superseded"}
+        ):
+            continue
+        try:
+            authority = _canonical_object(
+                result.get("authority_json"), "child result authority_json"
+            )
+        except ProtocolError:
+            continue
+        if authority.get("authority_kind") != "phase-0-checkpoint":
+            continue
+        identity = authority.get("authority", {}).get("published_identity")
+        if isinstance(identity, str):
+            retained.add(identity)
     return retained
 
 

@@ -7320,6 +7320,61 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
                 self.assertEqual(ledger.read_bytes(), before)
 
+    def test_ticket07_gc_retains_frozen_child_checkpoint_authority_via_cli(
+        self,
+    ) -> None:
+        project = self.make_project("ticket07-gc-frozen-child-authority", git=False)
+        topic = self.bootstrap_topic(project)
+        checkpoint = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        checkpoint_record = records["Checkpoints"][0]
+        checkpoint_data = json.loads(str(checkpoint_record["data_json"]))
+        checkpoint_record["state"] = "cancelled"
+        checkpoint_data["state"] = "cancelled"
+        checkpoint_record["data_json"] = PROTOCOL._canonical_json(checkpoint_data)
+        records["Phase Results"].append(
+            {
+                "result_id": "CR-frozen-checkpoint",
+                "result_kind": "child-topic-result",
+                "state": "pending",
+                "record_revision": 1,
+                "authority_json": PROTOCOL._canonical_json(
+                    {
+                        "authority_kind": "phase-0-checkpoint",
+                        "authority_identity": checkpoint["checkpoint_id"],
+                        "decision_ids": [],
+                        "decision_authority": [],
+                        "topic_phase": 0,
+                        "authority": {
+                            "checkpoint_id": checkpoint["checkpoint_id"],
+                            "record_revision": checkpoint_data["record_revision"],
+                            "published_identity": checkpoint["snapshot_digest"],
+                            "decision_digest": checkpoint_data["decision_digest"],
+                        },
+                    }
+                ),
+            }
+        )
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+
+        code, retained, stderr = self.run_cli(
+            self.checkpoint_request(topic, operation="checkpoint-gc-dry-run")
+        )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(retained["candidates"], [])
+        records["Phase Results"][0]["state"] = "cancelled"
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        code, collectable, stderr = self.run_cli(
+            self.checkpoint_request(topic, operation="checkpoint-gc-dry-run")
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(
+            [item["digest"] for item in collectable["candidates"]],
+            [checkpoint["snapshot_digest"]],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
