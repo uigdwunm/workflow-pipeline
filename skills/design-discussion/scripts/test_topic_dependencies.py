@@ -158,6 +158,26 @@ class TopicDependencyCliTests(unittest.TestCase):
         _, after_records = protocol._load_records(ledger)
         self.assertEqual(next(item for item in after_records["Topic Dependencies"] if item["dependency_id"] == dependency_id), before_dependency)
 
+    def test_ticket07_child_result_requires_selection_when_current_authority_exists(self) -> None:
+        project = self.fixture.make_project("ticket07-child-result-authority", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        prepared, child_ref = self.fixture.activate_child_handoff(topic)
+        self.fixture.complete_update(project, topic, ledger_revision=5, topic_revision=1, mutation={"type": "confirm-decision", "summary": "Use typed requests.", "rationale": "The child has selected its public authority."})
+        ledger = Path(str(topic["ledger_path"]))
+        pending_marker = "## Pending Items\n\n"
+        current = ledger.read_text(encoding="utf-8")
+        pending_start = current.index(pending_marker)
+        pending_end = current.index("\n## ", pending_start + len(pending_marker))
+        pending = current[pending_start:pending_end]
+        self.fixture.rewrite_ledger_with_valid_digest(ledger, pending, pending.replace(str(topic["topic_id"]), str(prepared["target_topic_id"])))
+        before = ledger.read_bytes()
+        request = self.fixture.handoff_request(topic, operation="submit-child-result", ledger_revision=7, topic_revision=1, owner_ref=child_ref, handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"], result_scope=["api"], summary="Use typed requests.")
+        request["actor_topic_id"] = prepared["target_topic_id"]
+        code, rejected, _ = self.fixture.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "topic_dependency_authority_selection_required")
+        self.assertEqual(ledger.read_bytes(), before)
+
     def test_ticket07_dependency_request_type_and_summary_bounds_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-dependency-request-bounds", git=False)
         topic = self.fixture.bootstrap_topic(project)
