@@ -19,6 +19,7 @@ from .checkpoint_authority import (
     checkpoint_artifact_fields,
     checkpoint_trailers,
     git_commit_metadata,
+    git_checkpoint_matches,
     current_checkpoint_artifact,
     verify_artifact_integrity,
 )
@@ -506,29 +507,11 @@ def _commit_matches_checkpoint(
     *,
     expected_parent: str | None = None,
 ) -> dict[str, Any] | None:
-    if _git_object_type(project, commit_id) != "commit":
-        return None
-    metadata = _commit_metadata(project, commit_id)
-    parent_commit = expected_parent or checkpoint["base_commit"]
-    if metadata["parents"] != [parent_commit]:
-        return None
-    paths, blobs, digests = checkpoint_artifact_fields(checkpoint)
-    expected_trailers = checkpoint_trailers(checkpoint, digests, paths)
-    if metadata["trailers"] != expected_trailers:
-        return None
-    parent_tree = _git(project, ["show", "-s", "--format=%T", parent_commit]).decode("ascii").strip()
-    parent_entries = _tree_entries(project, parent_tree)
-    expected_entries = dict(parent_entries)
-    for path in paths:
-        expected_entries[path] = ("100644", blobs[path])
-    observed_entries = _tree_entries(project, metadata["tree"])
-    if observed_entries != expected_entries:
-        return None
-    for path in paths:
-        content = _git(project, ["cat-file", "blob", blobs[path]])
-        if _sha256(content) != digests[path]:
-            return None
-    return {"commit_id": commit_id, "tree_id": metadata["tree"]}
+    try:
+        return git_checkpoint_matches(checkpoint, commit_id, expected_parent=expected_parent,
+            git=lambda *args: _git(project, list(args)), sha256=_sha256)
+    except CheckpointAuthorityCorrupt as error:
+        raise ProtocolError("checkpoint_history_mismatch", "checkpoint metadata is corrupt") from error
 
 
 def _all_checkpoint_candidates(

@@ -92,6 +92,36 @@ def checkpoint_decision_fields(checkpoint: dict[str, Any]) -> tuple[dict[str, st
     return digests, confirmed
 
 
+def git_checkpoint_matches(
+    checkpoint: dict[str, Any], commit_id: str, *, expected_parent: str | None,
+    git: Callable[..., bytes], sha256: Callable[[bytes], str],
+) -> dict[str, Any] | None:
+    """Verify one Git checkpoint commit's metadata, full tree, modes and blobs."""
+    if git("cat-file", "-t", commit_id).decode("ascii").strip() != "commit":
+        return None
+    metadata = git_commit_metadata(git("cat-file", "-p", commit_id).decode("utf-8"))
+    parent = expected_parent or checkpoint["base_commit"]
+    if metadata["parents"] != [parent]: return None
+    paths, blobs, digests = checkpoint_artifact_fields(checkpoint)
+    if metadata["trailers"] != checkpoint_trailers(checkpoint, digests, paths): return None
+    def entries(tree: str) -> dict[str, tuple[str, str]]:
+        result = {}
+        for raw in git("ls-tree", "-rz", tree).split(b"\0"):
+            if raw:
+                meta, path = raw.split(b"\t", 1)
+                mode, object_type, object_id = meta.decode("ascii").split(" ")
+                if object_type not in {"blob", "commit", "tree"}:
+                    raise CheckpointAuthorityCorrupt("Git tree contains unsupported object")
+                result[path.decode("utf-8")] = (mode, object_id)
+        return result
+    parent_tree = git("show", "-s", "--format=%T", parent).decode("ascii").strip()
+    expected = entries(parent_tree)
+    expected.update({path: ("100644", blobs[path]) for path in paths})
+    if metadata["tree"] is None or entries(metadata["tree"]) != expected: return None
+    if any(sha256(git("cat-file", "blob", blobs[path])) != digests[path] for path in paths): return None
+    return {"commit_id": commit_id, "tree_id": metadata["tree"]}
+
+
 def verify_artifact_integrity(
     checkpoint: dict[str, Any], *, topic_path: Path,
     sha256: Callable[[bytes], str], canonical_json: Callable[[Any], str],
