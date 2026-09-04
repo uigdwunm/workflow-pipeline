@@ -322,3 +322,28 @@ class TopicDependencyCliTests(unittest.TestCase):
         self.assertEqual(response["error"]["code"], "state_corrupt")
         self.assertNotEqual(response["error"]["code"], "internal_error")
         self.assertEqual(ledger.read_bytes(), malformed)
+
+    def test_ticket07_oversized_persisted_dependency_summary_is_state_corrupt_via_cli(self) -> None:
+        """A ledger-only summary bound is enforced before any read response."""
+        protocol = importlib.import_module("discussion_protocol")
+        project = self.fixture.make_project("ticket07-oversized-persisted-summary", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        child = self.fixture.prepare_child_handoff(topic)
+        ledger = Path(str(topic["ledger_path"]))
+        code, _, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=2,
+            expected_topic_revision=1, action="create",
+            prerequisite_topic_id=child["target_topic_id"],
+            requirement_kind="confirmed-decision", requirement_summary="Bounded summary.",
+        ))
+        self.assertEqual(code, 0, stderr)
+        frontmatter, records = protocol._load_records(ledger)
+        records["Topic Dependencies"][0]["requirement_summary"] = "x" * 4097
+        ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
+        malformed = ledger.read_bytes()
+        code, response, _ = self.fixture.run_cli(
+            self.fixture.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(response["error"]["code"], "state_corrupt")
+        self.assertEqual(ledger.read_bytes(), malformed)
