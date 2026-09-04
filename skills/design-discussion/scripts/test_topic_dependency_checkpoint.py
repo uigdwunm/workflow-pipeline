@@ -175,7 +175,7 @@ class TopicDependencyCheckpointCliTests(TopicDependencyScenarioTest):
                 self.fixture.assertEqual(code, 1)
                 self.fixture.assertEqual(
                     rejected["error"]["code"],
-                    "record_revision_conflict" if fault == "broken" else "topic_gate_evaluation_stale",
+                    "topic_gate_evaluation_stale",
                 )
                 self.fixture.assertEqual(ledger.read_bytes(), before)
 
