@@ -564,14 +564,36 @@ def _dependency_id(key: str) -> str:
     return f"DEP-{uuid.UUID(key).hex}"
 
 
+def _dependency_context(
+    *, dependent_topic_id: str | None = None,
+    prerequisite_topic_id: str | None = None,
+    dependency_id: str | None = None,
+    expected_dependency_revision: int | None = None,
+    actual_dependency_revision: int | None = None,
+    phase: int | None = None,
+) -> dict[str, Any]:
+    return {
+        key: value for key, value in {
+            "dependent_topic_id": dependent_topic_id,
+            "prerequisite_topic_id": prerequisite_topic_id,
+            "dependency_id": dependency_id,
+            "expected_dependency_revision": expected_dependency_revision,
+            "actual_dependency_revision": actual_dependency_revision,
+            "phase": phase,
+        }.items() if value is not None
+    }
+
+
 def _validate_new_edge(records: dict[str, list[dict[str, Any]]], dependent: str, prerequisite: str, kind: Any, summary: Any, *, replacing: str | None = None) -> None:
+    if not isinstance(dependent, str) or not isinstance(prerequisite, str):
+        raise ProtocolError("invalid_request", "topic dependency endpoints are invalid")
     if dependent == prerequisite:
-        raise ProtocolError("topic_dependency_state_conflict", "a topic cannot depend on itself")
+        raise ProtocolError("topic_dependency_state_conflict", "a topic cannot depend on itself", context=_dependency_context(dependent_topic_id=dependent, prerequisite_topic_id=prerequisite))
     _record_by_id(records["Current Topics"], "topic_id", prerequisite, "prerequisite_topic_id")
     topic = _record_by_id(records["Current Topics"], "topic_id", dependent, "dependent_topic_id")
     if topic.get("current_phase") not in {0, 1}:
-        raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are mutable only in Phase 0 or 1")
-    if kind not in KINDS or not isinstance(summary, str) or not summary or len(summary.encode("utf-8")) > 4096:
+        raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are mutable only in Phase 0 or 1", context=_dependency_context(dependent_topic_id=dependent, prerequisite_topic_id=prerequisite, phase=topic.get("current_phase")))
+    if not isinstance(kind, str) or kind not in KINDS or not isinstance(summary, str) or not summary or len(summary.encode("utf-8")) > 4096:
         raise ProtocolError("invalid_request", "topic dependency requirement is invalid")
     copied = [dict(item) for item in records["Topic Dependencies"] if item["dependency_id"] != replacing]
     if sum(
@@ -587,9 +609,9 @@ def _validate_new_edge(records: dict[str, list[dict[str, Any]]], dependent: str,
         _validate_dependency_records({**records, "Topic Dependencies": copied})
     except ProtocolError as error:
         if "cycle" in error.message:
-            raise ProtocolError("topic_dependency_cycle", "active dependency graph would contain a cycle") from error
+            raise ProtocolError("topic_dependency_cycle", "active dependency graph would contain a cycle", context=_dependency_context(dependent_topic_id=dependent, prerequisite_topic_id=prerequisite)) from error
         if "duplicated" in error.message:
-            raise ProtocolError("topic_dependency_duplicate", "active dependency endpoint pair is duplicated") from error
+            raise ProtocolError("topic_dependency_duplicate", "active dependency endpoint pair is duplicated", context=_dependency_context(dependent_topic_id=dependent, prerequisite_topic_id=prerequisite)) from error
         raise
 
 
@@ -621,7 +643,7 @@ def prepare_initial_dependencies(
 
 def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
     action = request.get("action")
-    if action not in {"create", "replace", "cancel"}:
+    if not isinstance(action, str) or action not in {"create", "replace", "cancel"}:
         raise ProtocolError("invalid_request", "dependency action is unsupported")
     fields = {
         "create": {"action", "prerequisite_topic_id", "requirement_kind", "requirement_summary"},
@@ -637,15 +659,15 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
         topic = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        if topic["current_phase"] not in {0, 1}: raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are immutable after Phase 1")
+        if topic["current_phase"] not in {0, 1}: raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are immutable after Phase 1", context=_dependency_context(dependent_topic_id=request["actor_topic_id"], phase=topic["current_phase"]))
         if action == "create":
             _validate_new_edge(records, request["actor_topic_id"], request["prerequisite_topic_id"], request["requirement_kind"], request["requirement_summary"])
             dep = _new_dependency_record(dependency_id=_dependency_id(request["idempotency_key"]), dependent_topic_id=request["actor_topic_id"], prerequisite_topic_id=request["prerequisite_topic_id"], requirement_kind=request["requirement_kind"], requirement_summary=request["requirement_summary"], reason={"kind": "explicit-create", "dependency_update_id": request["idempotency_key"], "ledger_revision": revision + 1})
             records["Topic Dependencies"].append(dep)
         else:
             dep = _record_by_id(records["Topic Dependencies"], "dependency_id", request["dependency_id"], "dependency_id")
-            if dep["dependent_topic_id"] != request["actor_topic_id"]: raise ProtocolError("topic_dependency_ownership_conflict", "only the dependent topic may mutate a dependency")
-            if request["expected_dependency_revision"] != dep["record_revision"]: raise ProtocolError("record_revision_conflict", "dependency revision is stale", context={"record_revision": dep["record_revision"]})
+            if dep["dependent_topic_id"] != request["actor_topic_id"]: raise ProtocolError("topic_dependency_ownership_conflict", "only the dependent topic may mutate a dependency", context=_dependency_context(dependency_id=dep["dependency_id"], dependent_topic_id=dep["dependent_topic_id"], prerequisite_topic_id=dep["prerequisite_topic_id"]))
+            if request["expected_dependency_revision"] != dep["record_revision"]: raise ProtocolError("record_revision_conflict", "dependency revision is stale", context=_dependency_context(dependency_id=dep["dependency_id"], dependent_topic_id=dep["dependent_topic_id"], prerequisite_topic_id=dep["prerequisite_topic_id"], expected_dependency_revision=request["expected_dependency_revision"], actual_dependency_revision=dep["record_revision"]))
             if action == "replace":
                 _validate_new_edge(records, request["actor_topic_id"], request["prerequisite_topic_id"], request["requirement_kind"], request["requirement_summary"], replacing=dep["dependency_id"])
                 dep.update({"prerequisite_topic_id": request["prerequisite_topic_id"], "requirement_kind": request["requirement_kind"], "requirement_summary": request["requirement_summary"], "relation_state": "active", "gate_state": "closed"})
