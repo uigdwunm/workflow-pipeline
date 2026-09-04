@@ -607,11 +607,6 @@ def _transition_handoff_attempt(
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        if effect == "absorb" and topic_record.get("current_phase") not in {0, 1}:
-            raise ProtocolError(
-                "topic_dependency_phase_conflict",
-                "dependency releases are immutable after Phase 1",
-            )
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         if handoff["source_topic_id"] != request["actor_topic_id"]:
@@ -854,6 +849,11 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        if effect == "absorb" and topic_record.get("current_phase") not in {0, 1}:
+            raise ProtocolError(
+                "topic_dependency_phase_conflict",
+                "dependency releases are immutable after Phase 1",
+            )
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         if handoff["kind"] != "child" or handoff["source_topic_id"] != request["actor_topic_id"]:
