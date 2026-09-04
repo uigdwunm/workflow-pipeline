@@ -818,6 +818,37 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             "schema_version: 3", ledger_path.read_text(encoding="utf-8")
         )
 
+    def test_v1_special_topic_update_write_promotes_only_on_commit(self) -> None:
+        project = self.make_project("v1-special-write-promotion", git=False)
+        topic = self.bootstrap_topic(project)
+        ledger_path = Path(str(topic["ledger_path"]))
+        self.downgrade_ledger_to_v1(ledger_path, keep_creation_event=True)
+        before_read = ledger_path.read_bytes()
+
+        code, _, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(ledger_path.read_bytes(), before_read)
+        code, prepared, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-topic-update",
+                expected_revision=1,
+                expected_topic_revision=1,
+                mutation={
+                    "type": "confirm-decision",
+                    "summary": "The special write upgrades the ledger.",
+                    "rationale": "Promotion belongs to persistence.",
+                },
+            )
+        )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(prepared["ledger_revision"], 2)
+        self.assertIn("schema_version: 3", ledger_path.read_text(encoding="utf-8"))
+
     def test_read_topic_returns_current_lifecycle_state(self) -> None:
         project = self.make_project("read-topic-lifecycle", git=False)
         topic = self.bootstrap_topic(project)

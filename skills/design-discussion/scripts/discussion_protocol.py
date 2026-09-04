@@ -42,7 +42,7 @@ from discussion_core.state import (
     _new_identity,
     _parse_frontmatter,
     _parse_record_section,
-    _promote_ledger_schema,
+    _persist_ledger,
     _project_lock_name,
     _record_by_id,
     _render_records_ledger,
@@ -1221,12 +1221,11 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             "invalidated_dependency_ids": invalidated_dependencies,
         }
         _append_event(next_records, request, revision=next_revision, event_type="topic-update-prepared", result=result)
-        _promote_ledger_schema(frontmatter)
         frontmatter["ledger_revision"] = str(next_revision)
         frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
         if os.environ.get("CODEX_DISCUSSION_TEST_FAILPOINT") == "topic-update-ledger-replace":
             raise OSError("injected topic update ledger replace failure")
-        _atomic_replace(ledger_path, _render_records_ledger(frontmatter, next_records))
+        _persist_ledger(ledger_path, frontmatter, next_records)
         return result
 
 
@@ -1285,10 +1284,9 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
             "after_sha256": write["after_sha256"],
         }
         _append_event(records, request, revision=next_revision, event_type="document-write-completed", result=result)
-        _promote_ledger_schema(frontmatter)
         frontmatter["ledger_revision"] = str(next_revision)
         frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
-        _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
+        _persist_ledger(ledger_path, frontmatter, records)
         return result
 
 
@@ -1918,7 +1916,6 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
                             "data_json": _canonical_json(item),
                         }
                     )
-                _promote_ledger_schema(frontmatter)
                 data = _render_records_ledger(frontmatter, records)
             _inject_failure("document-context-before-ledger-create")
             _write_new_file(ledger_path, data, created_files)

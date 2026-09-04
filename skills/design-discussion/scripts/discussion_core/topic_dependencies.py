@@ -325,16 +325,32 @@ def _phase_result_candidates(
     return sorted(result, key=lambda item: str(item["authority_id"]))
 
 
-AUTHORITY_CANDIDATE_HANDLERS = {
-    "confirmed-decision": _confirmed_decision_candidates,
-    "phase-0-checkpoint": _checkpoint_candidates,
-    "phase-1-result": _phase_result_candidates,
+AUTHORITY_KIND_HANDLERS = {
+    "confirmed-decision": {
+        "candidate": _confirmed_decision_candidates,
+        "identity_field": None,
+        "requires_decisions": True,
+    },
+    "phase-0-checkpoint": {
+        "candidate": _checkpoint_candidates,
+        "identity_field": "checkpoint_id",
+        "requires_decisions": False,
+    },
+    "phase-1-result": {
+        "candidate": _phase_result_candidates,
+        "identity_field": "result_id",
+        "requires_decisions": False,
+    },
 }
+
+
+def _authority_handler(kind: str) -> dict[str, Any]:
+    return AUTHORITY_KIND_HANDLERS[kind]
 
 
 def _candidates(records: dict[str, list[dict[str, Any]]], dependency: dict[str, Any]) -> list[dict[str, Any]]:
     kind = dependency["requirement_kind"]
-    return AUTHORITY_CANDIDATE_HANDLERS[kind](records, dependency["prerequisite_topic_id"])
+    return _authority_handler(kind)["candidate"](records, dependency["prerequisite_topic_id"])
 
 
 def has_current_authority(
@@ -344,7 +360,7 @@ def has_current_authority(
     return any(_candidates(records, {
         "prerequisite_topic_id": topic_id,
         "requirement_kind": kind,
-    }) for kind in KINDS)
+    }) for kind in AUTHORITY_KIND_HANDLERS)
 
 
 def _normalize_authority_selection(
@@ -354,7 +370,7 @@ def _normalize_authority_selection(
     """Select one current candidate and its exact frozen decision subset."""
     if not isinstance(decision_ids, list) or sorted(set(decision_ids)) != decision_ids:
         raise ProtocolError("invalid_request", "basis selection decision_ids must be sorted")
-    if requirement_kind == "confirmed-decision" and not decision_ids:
+    if _authority_handler(requirement_kind)["requires_decisions"] and not decision_ids:
         raise ProtocolError("topic_dependency_evidence_unavailable", "confirmed-decision requires one or more current decisions")
     matching = [item for item in candidates if item["authority_id"] == authority_id]
     if len(matching) != 1:
@@ -383,7 +399,7 @@ def freeze_authority_selection(
     decision_ids = selection["decision_ids"]
     if kind not in KINDS or not isinstance(decision_ids, list) or sorted(set(decision_ids)) != decision_ids:
         raise ProtocolError("invalid_request", "authority_selection is invalid")
-    if kind == "confirmed-decision":
+    if _authority_handler(kind)["identity_field"] is None:
         if identity is not None:
             raise ProtocolError("invalid_request", "confirmed-decision has no authority identity")
     elif not isinstance(identity, str):
@@ -451,7 +467,7 @@ def release_child_result_dependencies(
             or dependency["relation_state"] != "active" or dependency["gate_state"] != "closed"
             or not isinstance(ids, list) or sorted(set(ids)) != ids
             or any(item not in pairs for item in ids)
-            or (dependency["requirement_kind"] == "confirmed-decision" and not ids)
+            or (_authority_handler(dependency["requirement_kind"])["requires_decisions"] and not ids)
         ):
             raise ProtocolError("topic_dependency_state_conflict", "child result does not match a current closed dependency")
         selected.append((dependency, ids))
@@ -486,7 +502,11 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
         detail: dict[str, Any] = {"dependency_id": dependency["dependency_id"], "record_revision": dependency["record_revision"], "requirement_kind": dependency["requirement_kind"], "requirement_summary": dependency["requirement_summary"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "prerequisite_phase": prerequisite_topic["current_phase"], "prerequisite_state": prerequisite_topic["topic_state"], "candidates": candidates}
         if selected is not None:
             authority_id = selected.get("authority_id")
-            if set(selected) != ({"dependency_id", "decision_ids"} if dependency["requirement_kind"] == "confirmed-decision" else {"dependency_id", "authority_id", "decision_ids"}):
+            handler = _authority_handler(dependency["requirement_kind"])
+            expected_selection_fields = {"dependency_id", "decision_ids"}
+            if handler["identity_field"] is not None:
+                expected_selection_fields.add("authority_id")
+            if set(selected) != expected_selection_fields:
                 raise ProtocolError("topic_dependency_evidence_unavailable", "selected dependency evidence is not current")
             candidate, chosen = _normalize_authority_selection(
                 candidates, dependency["requirement_kind"], authority_id,
@@ -628,6 +648,30 @@ def evaluate_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
         return result
 
 
+def _release_selection_from_basis(item: dict[str, Any]) -> dict[str, Any]:
+    basis = item.get("basis")
+    if not isinstance(basis, dict):
+        return {"dependency_id": item.get("dependency_id"), "decision_ids": []}
+    kind = basis.get("requirement_kind")
+    handler = _authority_handler(kind) if isinstance(kind, str) and kind in KINDS else None
+    selection = {
+        "dependency_id": item.get("dependency_id"),
+        "decision_ids": [
+            entry["decision_id"]
+            for entry in basis.get("decision_authority", [])
+            if isinstance(entry, dict) and isinstance(entry.get("decision_id"), str)
+        ],
+    }
+    if handler is not None and handler["identity_field"] is not None:
+        authority = basis.get("authority")
+        selection["authority_id"] = (
+            authority.get(handler["identity_field"])
+            if isinstance(authority, dict)
+            else None
+        )
+    return selection
+
+
 def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
     _, ledger_path, _, lock_path, owner_ref = _request_context(request, {"release_set", "release_set_sha256"})
     with lock_path.open("a+b") as stream:
@@ -640,7 +684,11 @@ def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         if topic["current_phase"] not in {0, 1}:
             raise ProtocolError("topic_dependency_phase_conflict", "topic dependencies are immutable after Phase 1")
-        selection = [{"dependency_id": item.get("dependency_id"), "decision_ids": [entry["decision_id"] for entry in item.get("basis", {}).get("decision_authority", [])], **({"authority_id": item["basis"]["authority"].get("checkpoint_id", item["basis"]["authority"].get("result_id"))} if isinstance(item.get("basis"), dict) and item["basis"].get("requirement_kind") != "confirmed-decision" and "authority" in item["basis"] else {})} for item in request["release_set"]] if isinstance(request["release_set"], list) else None
+        selection = (
+            [_release_selection_from_basis(item) for item in request["release_set"]]
+            if isinstance(request["release_set"], list)
+            else None
+        )
         try:
             evaluation = _evaluation(records, request["actor_topic_id"], selection)
         except ProtocolError as error:

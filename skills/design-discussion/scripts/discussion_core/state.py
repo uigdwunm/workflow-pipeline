@@ -904,15 +904,19 @@ def _write_ledger_transaction(
         event_type=event_type,
         result=result,
     )
-    _promote_ledger_schema(frontmatter)
     frontmatter["ledger_revision"] = str(ledger_revision)
     frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
-    _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
+    _persist_ledger(ledger_path, frontmatter, records)
 
 
-def _promote_ledger_schema(frontmatter: dict[str, str]) -> None:
-    """Apply the write-time schema promotion shared by all ledger writers."""
+def _persist_ledger(
+    ledger_path: Path,
+    frontmatter: dict[str, str],
+    records: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Serialize every committed ledger mutation at the current schema boundary."""
     frontmatter["schema_version"] = "3"
+    _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
 
 
 def _validate_revisions(
