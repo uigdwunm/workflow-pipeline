@@ -287,7 +287,20 @@ def validate_dependency_records(
                 valid = isinstance(authority, dict) and set(authority) == {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"} and _identity(authority["result_id"], "PH") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and authority["state"] == "completed" and isinstance(authority["phase_run_id"], str) and _canonical_strings(authority["affected_decision_ids"])
             if not valid:
                 error("state_corrupt", "topic dependency authority is incoherent")
-            _validate_ordinary_basis(records, item, basis, decisions, authority, error)
+            dependent_phase = next(
+                (topic.get("current_phase") for topic in records["Current Topics"]
+                 if topic.get("topic_id") == item["dependent_topic_id"]),
+                None,
+            )
+            # Closed gates retain historical bases so their exact invalidation
+            # provenance remains auditable; Phase 2+ history is non-enforcing.
+            # An enforcing open Phase-0/1 gate, however, must still resolve.
+            if (
+                item["relation_state"] == "active"
+                and item["gate_state"] == "open"
+                and dependent_phase in {0, 1}
+            ):
+                _validate_ordinary_basis(records, item, basis, decisions, authority, error)
             child_result_id = basis.get("child_result_id")
             if child_result_id is not None:
                 child = next((record for record in records["Phase Results"] if record.get("result_id") == child_result_id), None)
