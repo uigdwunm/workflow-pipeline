@@ -19,6 +19,20 @@ import validate_repository as REPOSITORY_VALIDATION
 
 
 class RepositoryValidationTests(unittest.TestCase):
+    def test_topic_dependency_wrapper_contracts_are_shipped(self) -> None:
+        discussion = (REPOSITORY / "skills/design-discussion/SKILL.md").read_text(encoding="utf-8")
+        framing = (REPOSITORY / "skills/problem-framing/SKILL.md").read_text(encoding="utf-8")
+        handoff = (REPOSITORY / "skills/design-discussion/references/child-topic-protocol.md").read_text(encoding="utf-8")
+        templates = (REPOSITORY / "skills/design-discussion/references/templates.md").read_text(encoding="utf-8")
+        for marker in ("independent,", "nameable goal", "evaluate-topic-gate", "release-topic-gate", "Do not poll", "Phase 2"):
+            self.assertIn(marker, discussion)
+        for marker in ("proactive split rule", "dedicated grilling carrier", "Topic Dependencies", "Do not add polling"):
+            self.assertIn(marker, framing)
+        for marker in ("initial_dependencies", "first-turn acceptance remains allowed", "atomically release the complete closed"):
+            self.assertIn(marker, handoff)
+        for marker in ("新话题建议", "确认后结果", "本次尚不创建任务"):
+            self.assertIn(marker, templates)
+
     def test_stage_three_assigns_candidate_review_to_the_originating_task(self) -> None:
         guided = (
             REPOSITORY / "skills/guided-implementation/SKILL.md"

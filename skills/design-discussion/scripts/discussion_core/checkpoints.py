@@ -38,6 +38,7 @@ from .state import (
     _verify_topic_owner,
     _write_ledger_transaction,
 )
+from .topic_dependencies import require_open_gate
 
 
 CHECKPOINT_PURPOSES = {"pause", "handoff", "split", "stage-entry", "implementation-source"}
@@ -673,6 +674,8 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         _verify_topic_path_authority(topic_record, topic_path)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        if purpose == "stage-entry":
+            require_open_gate(records, request["actor_topic_id"])
         if _active_pending_write(records) is not None:
             raise ProtocolError("document_write_reconciliation_required", "document write must complete before checkpoint preparation")
         active_gc = _active_checkpoint_gc(records)

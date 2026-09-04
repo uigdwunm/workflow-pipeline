@@ -48,6 +48,17 @@ Phase Run operation. Phase 1 routes only to Phase 2. A natural-language request
 for continuous execution can be selected only from the successful stage-1
 footer; a stage-0 route is always stepwise.
 
+Apply the same proactive split rule as `0讨论`: recommend a new topic only for
+an independently nameable goal with its own acceptance outcome that materially
+interrupts this framing and can be removed without making this topic incomplete.
+The source topic presents the complete fixed `新话题建议` and retains both
+preparation and task-creation confirmations. A dedicated grilling carrier may
+return only a bounded split proposal to its Phase Source Task; it must never
+prepare, release, or change Topic Dependencies. On a later gated turn,
+evaluate and, after confirmation, release all current closed dependencies
+before substantive Phase-1 work. Do not add polling or a Phase-2 dependency
+check.
+
 ## Enter the stage
 
 - Start from an explicit `$problem-framing` invocation, a clear natural-language

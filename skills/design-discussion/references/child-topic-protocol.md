@@ -31,6 +31,9 @@ before calling `prepare-handoff` so an unavailable current Adapter or
   continuation relation;
 - `scope`, `work_snapshot` and `authoritative_references` contain only the
   confirmed, allowlisted context needed by the target; and
+- `initial_dependencies`, when confirmed, names only same-tree source/target
+  endpoints, one exact requirement kind and semantic result per edge; its
+  records are created atomically with the child identity and parent relation;
 - the returned `H-*`, `A-*`, identity envelope and digests are the only task
   bootstrap authority. Never reconstruct or edit them in prose.
 
@@ -74,6 +77,13 @@ On a later turn, the same authenticated child calls
 successful response with `substantive_discussion_allowed: true` permits the
 ordinary one-question discussion loop. A first-turn attempt to authorize must
 surface `handoff_next_turn_required`; never hide it by changing the turn number.
+
+If a topic has a closed gate, first-turn acceptance remains allowed. On a later
+user-triggered turn, evaluate every closed dependency. Report the exact waiting
+condition when evidence is unavailable. Otherwise show the selected current
+bases, obtain a new confirmation, and atomically release the complete closed
+set before authorizing substantive discussion. An open gate is not polled or
+reevaluated on ordinary turns.
 
 ## Return and absorb results
 
