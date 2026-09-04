@@ -38,7 +38,7 @@ from .state import (
     _verify_topic_owner,
     _write_ledger_transaction,
 )
-from .topic_dependencies import require_open_gate
+from .topic_dependencies import reclose_directly_affected, require_open_gate
 from .topic_dependencies import retained_checkpoint_identities
 
 
@@ -1251,12 +1251,25 @@ def _mark_checkpoint_broken(request: dict[str, Any]) -> dict[str, Any]:
         checkpoint["break_reason"] = reason
         _store_checkpoint(record, checkpoint)
         next_revision = ledger_revision + 1
+        reclosed_dependency_ids = reclose_directly_affected(
+            records,
+            prerequisite_topic_id=request["actor_topic_id"],
+            changed_decision_ids=set(),
+            invalidated_authority_ids={checkpoint["checkpoint_id"]},
+            ledger_revision=next_revision,
+            cause={
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "checkpoint_broken_id": request["idempotency_key"],
+                "broken_identity": broken_identity,
+            },
+        )
         result = {
             "ok": True, "state": "broken", "idempotent_replay": False,
             "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
             "ledger_revision": next_revision, "record_revision": topic_revision,
             "checkpoint_id": checkpoint["checkpoint_id"], "checkpoint_record_revision": checkpoint["record_revision"],
             "broken_identity": broken_identity, "original_fact_preserved": True,
+            "reclosed_dependency_ids": reclosed_dependency_ids,
         }
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="checkpoint-broken", result=result)
         return result

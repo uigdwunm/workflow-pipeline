@@ -7375,6 +7375,117 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             [checkpoint["snapshot_digest"]],
         )
 
+    def test_ticket07_gc_rejects_corrupt_live_child_authority_via_cli(self) -> None:
+        project = self.make_project("ticket07-gc-corrupt-live-child-authority", git=False)
+        topic = self.bootstrap_topic(project)
+        checkpoint = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        checkpoint_record = records["Checkpoints"][0]
+        checkpoint_data = json.loads(str(checkpoint_record["data_json"]))
+        checkpoint_record["state"] = "cancelled"
+        checkpoint_data["state"] = "cancelled"
+        checkpoint_record["data_json"] = PROTOCOL._canonical_json(checkpoint_data)
+        records["Phase Results"].append(
+            {
+                "result_id": "CR-corrupt-frozen-checkpoint",
+                "result_kind": "child-topic-result",
+                "state": "pending",
+                "record_revision": 1,
+                "authority_json": "not-canonical-json",
+            }
+        )
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before = ledger.read_bytes()
+        code, rejected, _ = self.run_cli(
+            self.checkpoint_request(topic, operation="checkpoint-gc-dry-run")
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "state_corrupt")
+        self.assertEqual(ledger.read_bytes(), before)
+        self.assertTrue(Path(str(checkpoint["snapshot_path"])).exists())
+
+    def test_ticket07_broken_checkpoint_recloses_only_direct_gates_via_cli(self) -> None:
+        project = self.make_project("ticket07-broken-checkpoint-direct-reclose", git=False)
+        topic = self.bootstrap_topic(project)
+        checkpoint = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        dependent_id = "topic-" + uuid.uuid4().hex
+        dependency_id = "DEP-broken-checkpoint-direct"
+        records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
+        records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The checkpoint remains publishable.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"})
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        evaluation_request = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": checkpoint["checkpoint_id"], "decision_ids": []}])
+        evaluation_request["actor_topic_id"] = dependent_id
+        evaluation_request["actor_conversation_ref"] = "codex-thread:dependent"
+        code, evaluation, stderr = self.run_cli(evaluation_request)
+        self.assertEqual(code, 0, stderr)
+        release = self.evolution_request(topic, operation="release-topic-gate", expected_revision=3, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"])
+        release["actor_topic_id"] = dependent_id
+        release["actor_conversation_ref"] = "codex-thread:dependent"
+        code, released, stderr = self.run_cli(release)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(released["state"], "open")
+        dependent_before = next(item.copy() for item in PROTOCOL._load_records(ledger)[1]["Current Topics"] if item["topic_id"] == dependent_id)
+        broken_request = self.checkpoint_request(
+            topic, operation="mark-checkpoint-broken", ledger_revision=4,
+            checkpoint_id=checkpoint["checkpoint_id"], expected_checkpoint_revision=2,
+            broken_identity=checkpoint["snapshot_digest"], reason="snapshot object disappeared",
+        )
+        code, broken, stderr = self.run_cli(broken_request)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(broken["reclosed_dependency_ids"], [dependency_id])
+        _, after = PROTOCOL._load_records(ledger)
+        dependency = next(item for item in after["Topic Dependencies"] if item["dependency_id"] == dependency_id)
+        reason = json.loads(str(dependency["gate_reason_json"]))
+        self.assertEqual(dependency["gate_state"], "closed")
+        self.assertEqual(reason["checkpoint_id"], checkpoint["checkpoint_id"])
+        self.assertEqual(reason["checkpoint_broken_id"], broken_request["idempotency_key"])
+        self.assertEqual(reason["broken_identity"], checkpoint["snapshot_digest"])
+        self.assertEqual(next(item for item in after["Current Topics"] if item["topic_id"] == dependent_id), dependent_before)
+        before_replay = ledger.read_bytes()
+        code, replay, stderr = self.run_cli(broken_request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(ledger.read_bytes(), before_replay)
+
+    def test_ticket07_git_checkpoint_authority_evaluates_and_stales_via_cli(self) -> None:
+        project = self.make_project("ticket07-git-checkpoint-authority", git=True)
+        (project / "base.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(project), "add", "base.txt"], check=True)
+        subprocess.run(["git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"], check=True)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_checkpoint(topic, ledger_revision=1, purpose="stage-entry")
+        checkpoint = self.publish_git_checkpoint(project, topic, prepared, ledger_revision=2)
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        dependent_id = "topic-" + uuid.uuid4().hex
+        dependency_id = "DEP-git-checkpoint-current"
+        records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
+        records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
+        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The Git checkpoint stays exact.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": "{}"})
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        gate = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": checkpoint["checkpoint_id"], "decision_ids": []}])
+        gate["actor_topic_id"] = dependent_id
+        gate["actor_conversation_ref"] = "codex-thread:dependent"
+        code, evaluation, stderr = self.run_cli(gate)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(evaluation["state"], "releasable")
+        subprocess.run(["git", "-C", str(project), "update-ref", str(checkpoint["checkpoint_ref"]), "HEAD"], check=True)
+        code, unavailable, _ = self.run_cli(gate)
+        self.assertEqual(code, 1)
+        self.assertEqual(unavailable["error"]["code"], "topic_dependency_evidence_unavailable")
+        before = ledger.read_bytes()
+        release = self.evolution_request(topic, operation="release-topic-gate", expected_revision=3, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"])
+        release["actor_topic_id"] = dependent_id
+        release["actor_conversation_ref"] = "codex-thread:dependent"
+        code, rejected, _ = self.run_cli(release)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
+        self.assertEqual(ledger.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

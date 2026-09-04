@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any
@@ -43,12 +44,9 @@ def retained_checkpoint_identities(records: dict[str, list[dict[str, Any]]]) -> 
             or result.get("state") in {"cancelled", "superseded"}
         ):
             continue
-        try:
-            authority = _canonical_object(
-                result.get("authority_json"), "child result authority_json"
-            )
-        except ProtocolError:
-            continue
+        authority = _canonical_object(
+            result.get("authority_json"), "child result authority_json"
+        )
         if authority.get("authority_kind") != "phase-0-checkpoint":
             continue
         identity = authority.get("authority", {}).get("published_identity")
@@ -200,6 +198,71 @@ def _decision_authority(records: dict[str, list[dict[str, Any]]], topic_id: str)
     return descriptor, digests, _sha256(_canonical_json(digest_input).encode("utf-8"))
 
 
+def _git_checkpoint_current(
+    checkpoint: dict[str, Any], *, topic_path: Path,
+) -> bool:
+    """Verify the published Git checkpoint and its frozen manifest in place."""
+    try:
+        project = Path(
+            subprocess.run(
+                ["git", "-C", str(topic_path.parent), "rev-parse", "--show-toplevel"],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            ).stdout.strip()
+        )
+        published_identity = checkpoint["published_identity"]
+        checkpoint_ref = checkpoint["checkpoint_ref"]
+        if not isinstance(published_identity, str) or not isinstance(checkpoint_ref, str):
+            return False
+        def git(*args: str) -> bytes:
+            return subprocess.run(
+                ["git", "-C", str(project), *args], check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            ).stdout
+        if git("rev-parse", "--verify", checkpoint_ref).decode("ascii").strip() != published_identity:
+            return False
+        if git("cat-file", "-t", published_identity).decode("ascii").strip() != "commit":
+            return False
+        raw = git("cat-file", "-p", published_identity).decode("utf-8")
+        header, message = raw.split("\n\n", 1)
+        parents = [line.split(" ", 1)[1] for line in header.splitlines() if line.startswith("parent ")]
+        if parents != [checkpoint["base_commit"]]:
+            return False
+        trailers: dict[str, str] = {}
+        for line in message.splitlines():
+            if ": " in line:
+                key, value = line.split(": ", 1)
+                if key.startswith("Codex-"):
+                    if key in trailers:
+                        return False
+                    trailers[key] = value
+        paths = json.loads(checkpoint["paths_json"])
+        blobs = json.loads(checkpoint["blob_ids_json"])
+        document_digests = json.loads(checkpoint["document_digests_json"])
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            return False
+        expected_trailers = {
+            "Codex-Discussion-Checkpoint": checkpoint["checkpoint_id"],
+            "Codex-Document-SHA256": document_digests[paths[0]],
+            "Codex-Discussion-Decision-SHA256": checkpoint["decision_digest"],
+            "Codex-Discussion-Paths-SHA256": checkpoint["path_set_digest"],
+        }
+        if trailers != expected_trailers:
+            return False
+        changed_paths = git("diff-tree", "--no-commit-id", "--name-only", "-r", published_identity).decode("utf-8").splitlines()
+        if sorted(changed_paths) != paths:
+            return False
+        for path in paths:
+            if git("rev-parse", f"{published_identity}:{path}").decode("ascii").strip() != blobs[path]:
+                return False
+            if _sha256(git("cat-file", "blob", blobs[path])) != document_digests[path]:
+                return False
+        if _sha256(_require_regular_nosymlink(topic_path, "topic document")) not in document_digests.values():
+            return False
+        return True
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError, subprocess.SubprocessError):
+        return False
+
+
 def _current_checkpoint(record: dict[str, Any], checkpoint: dict[str, Any], records: dict[str, list[dict[str, Any]]], prerequisite: str) -> bool:
     """Verify a completed Phase-0 artifact before exposing it as authority."""
     try:
@@ -213,7 +276,25 @@ def _current_checkpoint(record: dict[str, Any], checkpoint: dict[str, Any], reco
             or checkpoint.get("state") != "completed"
             or checkpoint.get("replacement_identity") is not None
             or not isinstance(checkpoint.get("published_identity"), str)
-            or checkpoint.get("storage_kind") != "non-git"
+        ):
+            return False
+        if checkpoint.get("storage_kind") == "git":
+            topic = _record_by_id(records["Current Topics"], "topic_id", prerequisite, "topic_id")
+            topic_path = topic.get("topic_document_path")
+            if not isinstance(topic_path, str) or not _git_checkpoint_current(checkpoint, topic_path=Path(topic_path)):
+                return False
+            _, current_digests, current_digest = _decision_authority(records, prerequisite)
+            return (
+                current_digests == json.loads(checkpoint["decision_digests_json"])
+                and current_digest == checkpoint.get("decision_digest")
+                and sorted(
+                    item["decision_id"]
+                    for item in _topic_snapshot(records, prerequisite)["decisions"]
+                    if item.get("state") == "confirmed"
+                ) == json.loads(checkpoint["confirmed_decision_ids_json"])
+            )
+        if (
+            checkpoint.get("storage_kind") != "non-git"
             or not isinstance(checkpoint.get("snapshot_path"), str)
             or checkpoint.get("snapshot_digest") != checkpoint.get("published_identity")
             or not isinstance(checkpoint.get("snapshot_bytes_b64"), str)
