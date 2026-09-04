@@ -212,6 +212,25 @@ def validate_dependency_records(
                     or child.get("source_topic_id") != prerequisite
                 ):
                     error("state_corrupt", "topic dependency child result provenance is incoherent")
+                frozen = _object(child.get("authority_json"), "child result authority_json", error)
+                frozen_pairs = frozen.get("decision_authority")
+                frozen_ids = frozen.get("decision_ids")
+                normalized_pairs = [
+                    {"decision_id": entry["decision_id"], "sha256": entry["sha256"]}
+                    for entry in frozen_pairs
+                ] if isinstance(frozen_pairs, list) and all(
+                    isinstance(entry, dict)
+                    and isinstance(entry.get("decision_id"), str)
+                    and isinstance(entry.get("sha256"), str)
+                    for entry in frozen_pairs
+                ) else None
+                if (
+                    frozen.get("authority_kind") != item["requirement_kind"]
+                    or frozen_ids != [entry["decision_id"] for entry in decisions]
+                    or normalized_pairs != decisions
+                    or frozen.get("authority") != authority
+                ):
+                    error("state_corrupt", "topic dependency child basis does not match frozen authority")
         elif item["relation_state"] == "active" and item["gate_state"] == "open":
             error("state_corrupt", "open topic dependency requires an accepted basis")
         if item["relation_state"] == "active":

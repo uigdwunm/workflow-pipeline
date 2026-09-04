@@ -3459,6 +3459,38 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
                 self.assertEqual(rejected["error"]["code"], "state_corrupt")
                 self.assertEqual(ledger.read_bytes(), before)
 
+    def test_ticket07_forged_child_basis_authority_mismatch_fails_closed_via_cli(self) -> None:
+        project = self.make_project("ticket07-forged-child-basis", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared, child_ref = self.activate_child_handoff(topic, initial_dependencies=[{
+            "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+            "requirement_kind": "confirmed-decision", "requirement_summary": "The child selects the API.",
+        }])
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        decision = {"decision_id": "D-child", "summary": "Current.", "rationale": "Current.", "state": "confirmed", "evolution": "confirmed"}
+        records["Pending Items"].append({"item_id": "D-child", "item_kind": "decision", "topic_id": prepared["target_topic_id"], "data_json": PROTOCOL._canonical_json(decision)})
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        submit = self.handoff_request(topic, operation="submit-child-result", ledger_revision=5, owner_ref=child_ref, handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"], result_scope=["api"], summary="Current.", authority_selection={"authority_kind": "confirmed-decision", "authority_identity": None, "decision_ids": ["D-child"]})
+        submit["actor_topic_id"] = prepared["target_topic_id"]
+        code, claimed, stderr = self.run_cli(submit)
+        self.assertEqual(code, 0, stderr)
+        release = {"dependency_id": prepared["initial_dependencies"][0]["dependency_id"], "authority_kind": "confirmed-decision", "authority_identity": None, "decision_ids": ["D-child"]}
+        absorb = self.handoff_request(topic, operation="record-child-result", ledger_revision=6, handoff_id=prepared["handoff_id"], child_result_id=claimed["child_result_id"], effect="absorb", dependency_releases=[release])
+        code, _, stderr = self.run_cli(absorb)
+        self.assertEqual(code, 0, stderr)
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        child = next(item for item in records["Phase Results"] if item["result_id"] == claimed["child_result_id"])
+        frozen = json.loads(str(child["authority_json"]))
+        frozen["decision_ids"] = ["D-forged"]
+        child["authority_json"] = PROTOCOL._canonical_json(frozen)
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before = ledger.read_bytes()
+        code, rejected, _ = self.run_cli(self.evolution_request(topic, operation="read-topic"))
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "state_corrupt")
+        self.assertEqual(ledger.read_bytes(), before)
+
     def test_dependent_owner_can_create_and_cancel_a_dependency(self) -> None:
         project = self.make_project("dependency-update", git=False)
         topic = self.bootstrap_topic(project)
