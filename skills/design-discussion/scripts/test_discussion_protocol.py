@@ -3321,6 +3321,25 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(replay["dependency_id"], first["dependency_id"])
         self.assertEqual(ledger.read_bytes(), committed)
 
+    def test_ticket07_phase2_dependency_history_is_immutable_via_cli(self) -> None:
+        project = self.make_project("ticket07-phase2-cutoff", git=False)
+        topic = self.bootstrap_topic(project)
+        child = self.prepare_child_handoff(topic)
+        code, created, stderr = self.run_cli(self.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=2,
+            expected_topic_revision=1, action="create", prerequisite_topic_id=child["target_topic_id"],
+            requirement_kind="confirmed-decision", requirement_summary="The child decides the API."))
+        self.assertEqual(code, 0, stderr)
+        ledger = Path(str(topic["ledger_path"]))
+        self.rewrite_ledger_with_valid_digest(ledger, "current_phase: 0", "current_phase: 2")
+        before = ledger.read_bytes()
+        code, rejected, _ = self.run_cli(self.evolution_request(
+            topic, operation="release-topic-gate", expected_revision=3,
+            expected_topic_revision=1, release_set=[], release_set_sha256="0" * 64))
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "topic_dependency_phase_conflict")
+        self.assertEqual(ledger.read_bytes(), before)
+
     def test_child_result_freezes_only_current_selected_authority_and_replays(self) -> None:
         project = self.make_project("frozen-child-authority", git=False)
         topic = self.bootstrap_topic(project)
