@@ -35,13 +35,17 @@ def _new_dependency_record(*, dependency_id: str, dependent_topic_id: str, prere
     return {"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_topic_id, "prerequisite_topic_id": prerequisite_topic_id, "requirement_kind": requirement_kind, "requirement_summary": requirement_summary, "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": _canonical_json(reason)}
 
 
+def _state_corrupt(code: str, message: str) -> None:
+    raise ProtocolError(code, message)
+
+
 def retained_checkpoint_identities(records: dict[str, list[dict[str, Any]]]) -> set[str]:
     """Return snapshots retained by active bases and live frozen child authority."""
     retained: set[str] = set()
     for dependency in records["Topic Dependencies"]:
         if dependency["relation_state"] != "active" or not dependency["accepted_basis_json"]:
             continue
-        basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json", ProtocolError)
+        basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json", _state_corrupt)
         identity = basis.get("authority", {}).get("published_identity")
         if isinstance(identity, str): retained.add(identity)
     for result in records["Phase Results"]:
@@ -51,7 +55,7 @@ def retained_checkpoint_identities(records: dict[str, list[dict[str, Any]]]) -> 
         ):
             continue
         authority = _canonical_object(
-            result.get("authority_json"), "child result authority_json", ProtocolError
+            result.get("authority_json"), "child result authority_json", _state_corrupt
         )
         if authority.get("authority_kind") != "phase-0-checkpoint":
             continue
@@ -138,7 +142,7 @@ def reclose_directly_affected(
         dependent = _record_by_id(records["Current Topics"], "topic_id", dependency["dependent_topic_id"], "dependent_topic_id")
         if dependent.get("current_phase") not in {0, 1}:
             continue
-        basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json", ProtocolError) if dependency["accepted_basis_json"] else None
+        basis = _canonical_object(dependency["accepted_basis_json"], "topic dependency accepted_basis_json", _state_corrupt) if dependency["accepted_basis_json"] else None
         authorities = basis.get("decision_authority") if basis else None
         known = isinstance(authorities, list) and bool(authorities) and all(isinstance(item, dict) and isinstance(item.get("decision_id"), str) for item in authorities)
         basis_ids = {item["decision_id"] for item in authorities} if known else set()

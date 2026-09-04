@@ -541,3 +541,30 @@ class TopicDependencyCheckpointCliTests(TopicDependencyScenarioTest):
         code, published, stderr = self.fixture.run_cli(publish)
         self.fixture.assertEqual(code, 0, stderr)
         self.fixture.assertEqual(published["topic_id"], child["topic_id"])
+
+    def test_ticket07_bound_child_prepares_nested_child_via_cli(self) -> None:
+        project = self.fixture.make_project("ticket07-nested-child", git=False)
+        root = self.fixture.bootstrap_topic(project)
+        handoff, child_ref = self.fixture.activate_child_handoff(root)
+        child = {**root, "topic_id": handoff["target_topic_id"]}
+        request = self.fixture.handoff_request(
+            child, operation="prepare-handoff", ledger_revision=5, owner_ref=child_ref,
+            handoff_kind="child", target_slug="nested-api", scope=["nested"],
+            work_snapshot={"goal": "Refine nested API.", "confirmed_decisions": [], "pending_questions": []},
+            authoritative_references=[],
+        )
+        code, nested, stderr = self.fixture.run_cli(request)
+        self.fixture.assertEqual(code, 0, stderr)
+        self.fixture.assertEqual(nested["topic_id"], child["topic_id"])
+        self.fixture.assertNotEqual(nested["target_topic_id"], child["topic_id"])
+        ledger = Path(str(root["ledger_path"]))
+        before = ledger.read_bytes()
+        wrong_owner = self.fixture.handoff_request(
+            child, operation="prepare-handoff", ledger_revision=6,
+            owner_ref="codex-thread:wrong-owner", handoff_kind="child", target_slug="rejected",
+            scope=["nested"], work_snapshot={"goal": "Reject.", "confirmed_decisions": [], "pending_questions": []}, authoritative_references=[],
+        )
+        code, rejected, _ = self.fixture.run_cli(wrong_owner)
+        self.fixture.assertEqual(code, 1)
+        self.fixture.assertEqual(rejected["error"]["code"], "document_ownership_conflict")
+        self.fixture.assertEqual(ledger.read_bytes(), before)
