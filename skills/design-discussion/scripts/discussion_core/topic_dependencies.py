@@ -208,7 +208,7 @@ def _git_checkpoint_current(
         raw = git("cat-file", "-p", published_identity).decode("utf-8")
         header, message = raw.split("\n\n", 1)
         parents = [line.split(" ", 1)[1] for line in header.splitlines() if line.startswith("parent ")]
-        if parents != [checkpoint["base_commit"]]:
+        if parents != [checkpoint.get("replacement_parent") or checkpoint["base_commit"]]:
             return False
         trailers: dict[str, str] = {}
         for line in message.splitlines():
@@ -257,7 +257,6 @@ def _current_checkpoint(record: dict[str, Any], checkpoint: dict[str, Any], reco
             or checkpoint.get("purpose") != "stage-entry"
             or checkpoint.get("stage_entry_phase") != 0
             or checkpoint.get("state") != "completed"
-            or checkpoint.get("replacement_identity") is not None
             or not isinstance(checkpoint.get("published_identity"), str)
         ):
             return False
@@ -339,21 +338,25 @@ def _current_checkpoint(record: dict[str, Any], checkpoint: dict[str, Any], reco
 def _checkpoint_candidates(
     records: dict[str, list[dict[str, Any]]], prerequisite: str,
 ) -> list[dict[str, Any]]:
-    result = []
-    for record in records["Checkpoints"]:
-        if record.get("topic_id") != prerequisite or record.get("state") != "completed":
-            continue
-        try:
-            checkpoint = _json_field(record, "data_json", "checkpoint")
-        except ProtocolError:
-            continue
+    completed = [
+        record for record in records["Checkpoints"]
+        if record.get("topic_id") == prerequisite and record.get("state") == "completed"
+    ]
+    if not completed:
+        return []
+    # The latest persisted authority is decisive: an invalid replacement must
+    # fail closed rather than silently restoring an older checkpoint.
+    record = completed[-1]
+    try:
+        checkpoint = _json_field(record, "data_json", "checkpoint")
         if not _current_checkpoint(record, checkpoint, records, prerequisite):
-            continue
+            return []
         digests = json.loads(checkpoint["decision_digests_json"])
-        result.append({"authority_id": checkpoint["checkpoint_id"], "authority": {"checkpoint_id": checkpoint["checkpoint_id"], "record_revision": checkpoint["record_revision"], "published_identity": checkpoint["published_identity"], "decision_digest": checkpoint["decision_digest"]}, "decision_authority": [{"decision_id": key, "sha256": value} for key, value in sorted(digests.items())]})
-    # A later completed Phase-0 entry checkpoint supersedes earlier draft
-    # identities for release purposes.
-    return result[-1:]
+    except ProtocolError as error:
+        raise ProtocolError("state_corrupt", "latest checkpoint authority is corrupt") from error
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ProtocolError("state_corrupt", "latest checkpoint authority is corrupt") from error
+    return [{"authority_id": checkpoint["checkpoint_id"], "authority": {"checkpoint_id": checkpoint["checkpoint_id"], "record_revision": checkpoint["record_revision"], "published_identity": checkpoint["published_identity"], "decision_digest": checkpoint["decision_digest"]}, "decision_authority": [{"decision_id": key, "sha256": value} for key, value in sorted(digests.items())]}]
 
 
 def _phase_result_candidates(
@@ -380,7 +383,7 @@ def _phase_result_candidates(
                 or any(not isinstance(item, dict) or set(item) != {"decision_id", "sha256"} for item in frozen)
                 or [item["decision_id"] for item in frozen] != ids
             ):
-                continue
+                raise ProtocolError("state_corrupt", "completed Phase Result envelope is incoherent")
             current, _, _ = _decision_authority(records, prerequisite)
             current_by_id = {
                 item["decision_id"]: {
@@ -399,9 +402,11 @@ def _phase_result_candidates(
                 or phase_data.get("from_phase") != 0
                 or phase_data.get("to_phase") != 1
             ):
-                continue
-        except (KeyError, TypeError, ProtocolError):
-            continue
+                raise ProtocolError("state_corrupt", "completed Phase Result provenance is incoherent")
+        except ProtocolError as error:
+            raise ProtocolError("state_corrupt", "Phase Result authority is corrupt") from error
+        except (KeyError, TypeError) as error:
+            raise ProtocolError("state_corrupt", "Phase Result authority is corrupt") from error
         result.append({"authority_id": phase_result["result_id"], "authority": {"result_id": phase_result["result_id"], "record_revision": record["record_revision"], "state": "completed", "phase_run_id": phase_result["phase_run_id"], "affected_decision_ids": ids}, "decision_authority": frozen})
     return sorted(result, key=lambda item: str(item["authority_id"]))
 
@@ -566,8 +571,11 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
     if not closed:
         return {"state": "open", "derived_gate_state": "open", "dependencies": []}
     choices = {item.get("dependency_id"): item for item in selection or []}
-    if selection is not None and len(choices) != len(selection):
-        raise ProtocolError("invalid_request", "basis_selection must name every closed dependency exactly once")
+    if selection is not None:
+        selected_ids = [item.get("dependency_id") for item in selection if isinstance(item, dict)]
+        closed_ids = [item["dependency_id"] for item in closed]
+        if len(selected_ids) != len(selection) or selected_ids != closed_ids:
+            raise ProtocolError("invalid_request", "basis_selection must name active closed dependencies exactly once in canonical order")
     details = []
     proposed = []
     for dependency in closed:
@@ -595,8 +603,6 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
         elif not candidates:
             detail["waiting_reason"] = "current required authority is unavailable"
         details.append(detail)
-    if selection is not None and len(choices) != len(closed):
-        raise ProtocolError("invalid_request", "basis_selection must name every active closed dependency")
     releasable = all(item["candidates"] for item in details)
     result: dict[str, Any] = {"state": "releasable" if releasable else "blocked", "derived_gate_state": "closed", "dependencies": details}
     if releasable and selection is not None:

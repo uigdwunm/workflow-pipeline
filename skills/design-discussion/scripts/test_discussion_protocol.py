@@ -3407,6 +3407,58 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "invalid_request")
         self.assertEqual(ledger.read_bytes(), before)
 
+    def test_ticket07_gate_selection_requires_exact_closed_dependency_set_via_cli(self) -> None:
+        project = self.make_project("ticket07-exact-gate-selection", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic, initial_dependencies=[{
+            "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+            "requirement_kind": "confirmed-decision", "requirement_summary": "The child selects the API.",
+        }])
+        ledger = Path(str(topic["ledger_path"]))
+        dependency_id = prepared["initial_dependencies"][0]["dependency_id"]
+        before = ledger.read_bytes()
+        for selection in (
+            [],
+            [{"dependency_id": "DEP-" + "f" * 32, "decision_ids": []}],
+            [{"dependency_id": dependency_id, "decision_ids": []}] * 2,
+        ):
+            code, rejected, _ = self.run_cli(self.evolution_request(
+                topic, operation="evaluate-topic-gate", basis_selection=selection
+            ))
+            self.assertEqual(code, 1)
+            self.assertEqual(rejected["error"]["code"], "invalid_request")
+            self.assertEqual(ledger.read_bytes(), before)
+
+    def test_ticket07_corrupt_persisted_authorities_fail_closed_via_cli(self) -> None:
+        for authority_kind in ("checkpoint", "phase-result"):
+            with self.subTest(authority_kind=authority_kind):
+                project = self.make_project(f"ticket07-corrupt-{authority_kind}", git=False)
+                topic = self.bootstrap_topic(project)
+                if authority_kind == "checkpoint":
+                    published = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+                    dependency_kind, authority_id, revision = "phase-0-checkpoint", published["checkpoint_id"], 3
+                else:
+                    decision, revision, topic_revision = self.complete_update(project, topic, ledger_revision=1, topic_revision=1, mutation={"type": "confirm-decision", "summary": "Current.", "rationale": "Current."})
+                    completed, revision, _ = self.complete_current_topic_phase(topic, ledger_revision=revision, topic_revision=topic_revision, from_phase=0, to_phase=1)
+                    dependency_kind, authority_id = "phase-1-result", completed["phase_result_id"]
+                ledger = Path(str(topic["ledger_path"]))
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                dependent_id, dependency_id = "topic-" + uuid.uuid4().hex, "DEP-" + uuid.uuid4().hex
+                records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
+                records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
+                records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": dependency_kind, "requirement_summary": "Authority remains exact.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
+                target = records["Checkpoints"][0] if authority_kind == "checkpoint" else next(item for item in records["Phase Results"] if item["result_id"] == authority_id)
+                target["data_json"] = "not-canonical-json"
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                before = ledger.read_bytes()
+                request = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": authority_id, "decision_ids": []}])
+                request["actor_topic_id"] = dependent_id
+                request["actor_conversation_ref"] = "codex-thread:dependent"
+                code, rejected, _ = self.run_cli(request)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "state_corrupt")
+                self.assertEqual(ledger.read_bytes(), before)
+
     def test_dependent_owner_can_create_and_cancel_a_dependency(self) -> None:
         project = self.make_project("dependency-update", git=False)
         topic = self.bootstrap_topic(project)
