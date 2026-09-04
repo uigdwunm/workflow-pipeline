@@ -272,6 +272,12 @@ Stage only exact clean-baseline Spec, ADR, and Ticket files. Verify the staged
 path list contains nothing else and at least one stage-owned planning path, then
 create one concise planning commit. Do not create an empty commit.
 
+Before completion, compare the verified staged path set with the planning
+commit's first-parent changed-path set; they must exactly match. Report that set
+as `本地规划路径`, sorted as repository-relative POSIX file paths with one path per
+list item. Report individual files so the primary can use the list as the exact
+publication allowlist; a directory, glob, or summary is incomplete.
+
 Unrelated recognized documentation paths may remain unstaged. A shared file
 whose complete diff cannot be attributed to this stage is an anomaly requiring
 reconciliation.
@@ -338,30 +344,35 @@ uncertainty instead of retrying blindly.
 ## Completion intake and stage transition
 
 The child may emit `SOLUTION_DESIGN_COMPLETE` only after it has finished its
-selected native publication and required local stage-owned commit work. The message must
-name requirement source, Spec, ADRs, Tickets, planning commit, publication
-result, implementation basis, flow mode, Flow Worktree binding, workspace
-state, and every fixed readiness-evidence field. Completion requires the child
-to report a clean Flow Worktree with stage-owned planning paths committed. Any
-different state is an anomaly, including in continuous mode.
+selected native publication and required local stage-owned commit work. The
+message must name requirement source, Spec, ADRs, Tickets, planning commit,
+the complete `本地规划路径` manifest, publication result, implementation basis,
+flow mode, Flow Worktree binding, workspace state, and every fixed
+readiness-evidence field. Completion requires the child to report a clean Flow
+Worktree with stage-owned planning paths committed. Any different state is an
+anomaly, including in continuous mode.
 
 Accept completion only from the trusted child returned by `spawn_agent`.
 
 - **Stepwise:** mechanically require referenced files or URLs, publication
-  results, the planning commit, Flow Worktree state, and non-empty readiness
-  evidence fields.
+  results, the planning commit, Flow Worktree state, a non-empty sorted
+  repository-relative `本地规划路径` with one path per list item, and non-empty
+  readiness evidence fields.
   Do not re-review content or repeat publication.
 - **Continuous:** require the saved child identity, exact message type, protocol
-  version, flow mode, all fixed completion fields, and child-reported
-  documentation-aware clean state. Do not independently validate artifact, publication,
-  commit, workspace, semantic, or quality claims. Missing or inconsistent schema
-  is an orchestration anomaly; reported facts are otherwise trusted.
+  version, flow mode, all fixed completion fields including the same path
+  manifest, and child-reported documentation-aware clean state. Do not
+  independently validate artifact, publication, commit, workspace, semantic,
+  or quality claims. Missing or inconsistent schema is an orchestration
+  anomaly; reported facts are otherwise trusted.
 
-Process each trusted child completion once. Publish the accepted planning
-commit once, then pass the retained Flow Worktree at the verified planning merge
-commit. In stepwise mode show the fixed success footer. In continuous mode use
-the fixed continuous completion handoff and immediately invoke
-`$guided-implementation` with the preserved mode.
+Process each trusted child completion once. Pass its `本地规划路径` unchanged as
+`allowed_paths` and the frozen requirement-source paths as `protected_paths`,
+then publish the accepted planning commit once. Carry the same path manifest
+with the retained Flow Worktree at the verified planning merge commit. In
+stepwise mode show the fixed success footer. In continuous mode use the fixed
+continuous completion handoff and immediately invoke `$guided-implementation`
+with the preserved mode.
 
 After planning publication and Flow Worktree verification succeed, close the
 governed task once with a bounded reason recording that Stage 2 accepted and

@@ -115,10 +115,10 @@ repository-relative POSIX path. The complete canonical payload must fit in the
     "Modify implementation code, create a pull request, deploy, release, change the planning target or enter Stage 3"
   ],
   "completion": [
-    "Return one solution-design-subagent-v2 terminal message after the planning commit is complete and the Flow Worktree is clean"
+    "Return one solution-design-subagent-v2 terminal message with the complete local planning path manifest after the planning commit is complete and the Flow Worktree is clean"
   ],
   "evidence": [
-    "Report Spec, ADR, Tickets, planning commit, readiness evidence and clean Flow Worktree state"
+    "Report Spec, ADR, Tickets, planning commit, complete local planning path manifest, readiness evidence and clean Flow Worktree state"
   ],
   "context": {
     "summary": "<complete canonical child bootstrap payload>",
@@ -250,6 +250,8 @@ ADR：<paths or none>
 Tickets：<paths or URLs | none>
 规划提交：<commit>
 Flow Worktree：<exact binding>
+本地规划路径：
+- <repository-relative path>
 发布结果：<completed results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
@@ -281,6 +283,8 @@ Tickets：<clickable paths or URLs | 不需要，完整 Spec 可在一个实现�
 规划提交：<commit>
 方案合并提交：<planning merge commit>
 Flow Worktree：<exact retained binding at planning merge commit>
+本地规划路径：
+- <repository-relative path>
 发布结果：<results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
@@ -324,6 +328,8 @@ Tickets：<clickable paths or URLs | 不需要，完整 Spec 可在一个实现�
 规划提交：<commit>
 方案合并提交：<planning merge commit>
 Flow Worktree：<exact retained binding at planning merge commit>
+本地规划路径：
+- <repository-relative path>
 发布结果：<child-reported results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<child-reported Testing Decisions or exact Spec section>

@@ -173,9 +173,11 @@ Process one trusted completion once and route any inconsistency through the
 anomaly checkpoint instead of improvising or spawning a replacement.
 ## Complete the stage
 
-After accepting the trusted child's clean planning commit, call
-`publish-planning` with the exact stage-owned planning paths and read-only
-requirement-source paths. A successful publication needs no user confirmation:
+After accepting the trusted child's clean planning commit, take the complete
+sorted repository-relative paths from its `本地规划路径` field and pass them
+unchanged as `allowed_paths` to `publish-planning`; pass the read-only
+requirement-source paths as `protected_paths`. A successful publication needs
+no user confirmation:
 it retains the Flow Worktree for Stage 3; record the planning merge commit and
 verify the Flow Worktree at that commit, then carry its exact binding into
 Stage 3. The protocol retries one target race itself. A `planning_conflict` or

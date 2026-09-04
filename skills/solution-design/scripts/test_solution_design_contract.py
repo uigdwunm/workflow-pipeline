@@ -145,6 +145,56 @@ class SolutionDesignContractTests(unittest.TestCase):
             for field in EVIDENCE_FIELDS:
                 self.assertIn(field, block)
 
+    def test_complete_planning_path_manifest_reaches_publication_and_handoffs(self) -> None:
+        blocks = (
+            section(TEMPLATES, "## Completion", "## Stepwise success footer"),
+            section(
+                TEMPLATES,
+                "## Stepwise success footer",
+                "## Continuous completion handoff",
+            ),
+            section(
+                TEMPLATES,
+                "## Continuous completion handoff",
+                "## Pre-launch anomaly",
+            ),
+        )
+        for block in blocks:
+            self.assertIn("本地规划路径：", block)
+            self.assertIn("- <repository-relative path>", block)
+
+        repository_boundary = section(
+            PROTOCOL,
+            "## Repository and publication boundaries",
+            "## Waiting, decisions, and recovery",
+        )
+        compact_repository_boundary = " ".join(repository_boundary.split())
+        for obligation in (
+            "first-parent changed-path set",
+            "exactly match",
+            "sorted",
+            "repository-relative",
+            "one path per list item",
+        ):
+            self.assertIn(obligation, compact_repository_boundary)
+
+        completion = section(PROTOCOL, "## Completion intake and stage transition")
+        compact_completion = " ".join(completion.split())
+        self.assertIn("`本地规划路径`", compact_completion)
+        self.assertIn("unchanged as `allowed_paths`", compact_completion)
+
+        complete_stage = section(SKILL, "## Complete the stage")
+        compact_complete_stage = " ".join(complete_stage.split())
+        self.assertIn("`本地规划路径`", compact_complete_stage)
+        self.assertIn("unchanged as `allowed_paths`", compact_complete_stage)
+
+        governed_contract = section(
+            TEMPLATES,
+            "## Governed TaskContract v2",
+            "## Started status",
+        )
+        self.assertIn("complete local planning path manifest", governed_contract)
+
     def test_readiness_adds_no_new_review_message_or_agent(self) -> None:
         readiness = READINESS_PATH.read_text(encoding="utf-8")
         self.assertNotIn("spawn_agent", readiness)
