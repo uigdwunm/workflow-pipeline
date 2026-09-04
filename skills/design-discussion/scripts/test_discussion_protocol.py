@@ -3429,6 +3429,29 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             self.assertEqual(rejected["error"]["code"], "invalid_request")
             self.assertEqual(ledger.read_bytes(), before)
 
+    def test_ticket07_active_closed_dependency_limit_is_atomic_via_cli(self) -> None:
+        project = self.make_project("ticket07-active-closed-dependency-limit", git=False)
+        topic = self.bootstrap_topic(project)
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        reason = PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})
+        prerequisite_ids = ["topic-" + uuid.uuid4().hex for _ in range(65)]
+        records["Current Topics"].extend(
+            {"topic_id": topic_id, "record_revision": 1, "root_slug": f"prerequisite-{index}", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None}
+            for index, topic_id in enumerate(prerequisite_ids)
+        )
+        records["Topic Dependencies"].extend(
+            {"dependency_id": "DEP-" + uuid.uuid4().hex, "record_revision": 1, "dependent_topic_id": str(topic["topic_id"]), "prerequisite_topic_id": prerequisite_ids[index], "requirement_kind": "confirmed-decision", "requirement_summary": "A bounded prerequisite.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": reason}
+            for index in range(64)
+        )
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before = ledger.read_bytes()
+        request = self.evolution_request(topic, operation="update-topic-dependency", expected_revision=1, expected_topic_revision=1, action="create", prerequisite_topic_id=prerequisite_ids[64], requirement_kind="confirmed-decision", requirement_summary="The sixty-fifth prerequisite.")
+        code, rejected, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "invalid_request")
+        self.assertEqual(ledger.read_bytes(), before)
+
     def test_ticket07_corrupt_persisted_authorities_fail_closed_via_cli(self) -> None:
         for authority_kind in ("checkpoint", "phase-result"):
             with self.subTest(authority_kind=authority_kind):
