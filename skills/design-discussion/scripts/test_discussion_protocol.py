@@ -2340,7 +2340,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
             "source": ("topic-document", ""),
             "route": ("phase_state: \"active\"", "phase_state: \"paused\""),
             "impact": ("## Impacts\n\n```yaml\nrecords:\n  []\n```", "## Impacts\n\n```yaml\nrecords:\n  - impact_id: \"IMP-drift\"\n    topic_id: \"TOPIC_ID\"\n    data_json: \"{}\"\n```"),
-            "coverage": ("## Relations and Coverage\n\n```yaml\nrecords:\n  []\n```", "## Relations and Coverage\n\n```yaml\nrecords:\n  - relation_id: \"REL-drift\"\n    source_topic_id: \"TOPIC_ID\"\n    target_topic_id: \"topic-99999999999999999999999999999999\"\n```"),
+            "coverage": ("## Relations and Coverage\n\n```yaml\nrecords:\n  []\n```", "## Relations and Coverage\n\n```yaml\nrecords:\n  - relation_id: \"REL-drift\"\n    relation_type: \"absorbs\"\n    source_topic_id: \"TOPIC_ID\"\n    target_topic_id: \"topic-99999999999999999999999999999999\"\n```"),
             "dependency": ("## Dependencies and Active Implementations\n\n```yaml\nrecords:\n  []\n```", "## Dependencies and Active Implementations\n\n```yaml\nrecords:\n  - dependency_id: \"DEP-drift\"\n    state: \"unknown\"\n```"),
             "coordination": (
                 "binding_state: \"active\"\n    record_revision: 1",
