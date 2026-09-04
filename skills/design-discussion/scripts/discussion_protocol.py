@@ -103,12 +103,11 @@ from discussion_core.phase_runs import (
     _transition_phase_attempt,
 )
 from discussion_core.topic_dependencies import (
+    apply_gate_policy,
     derived_gate,
     current_topic_authorities,
     evaluate_topic_gate,
     release_topic_gate,
-    reclose_directly_affected,
-    require_open_gate,
     update_topic_dependency,
 )
 
@@ -1116,7 +1115,7 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             owner_ref,
             allow_active_grilling=True,
         )
-        require_open_gate(records, request["actor_topic_id"])
+        apply_gate_policy(records, "discussion-update", request["actor_topic_id"])
         active_write = _active_pending_write(records)
         if active_write is not None:
             raise ProtocolError(
@@ -1152,11 +1151,12 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
         next_revision = ledger_revision + 1
         invalidated_dependencies: list[str] = []
         if mutation.get("type") == "resolve-impact" and mutation.get("action") in {"adjust", "replace", "discard"}:
-            invalidated_dependencies = reclose_directly_affected(
-                next_records, prerequisite_topic_id=request["actor_topic_id"],
-                changed_decision_ids={mutation["decision_id"]},
-                cause={"decision_id": mutation["decision_id"], "action": mutation["action"], "topic_update_id": f"DW-{uuid.UUID(request['idempotency_key']).hex}"},
-                ledger_revision=next_revision,
+            invalidated_dependencies = apply_gate_policy(
+                next_records, "decision-impact", request["actor_topic_id"], reclose={
+                    "changed_decision_ids": {mutation["decision_id"]},
+                    "cause": {"decision_id": mutation["decision_id"], "action": mutation["action"], "topic_update_id": f"DW-{uuid.UUID(request['idempotency_key']).hex}"},
+                    "ledger_revision": next_revision,
+                },
             )
         next_topic_revision = topic_revision + 1
         next_snapshot = _topic_snapshot(next_records, request["actor_topic_id"])

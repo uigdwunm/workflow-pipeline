@@ -6,11 +6,26 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 import discussion_protocol as PROTOCOL
+from discussion_core.topic_dependency_gates import GATE_OPERATION_POLICIES
 from test_discussion_protocol import hashlib, json, os, subprocess, uuid, ThreadPoolExecutor
 from test_topic_dependency_support import TopicDependencyScenarioTest
 
 
 class TopicDependencyPhaseGateCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_gate_operation_policy_declares_every_boundary(self) -> None:
+        enforcing = {
+            "discussion-update", "stage-entry-checkpoint", "prepare-handoff",
+            "authorize-handoff-discussion", "phase-transition",
+        }
+        reclosing = {"decision-impact", "checkpoint-broken", "phase-reopen"}
+        self.assertEqual(set(GATE_OPERATION_POLICIES), enforcing | reclosing)
+        for operation in enforcing:
+            with self.subTest(operation=operation):
+                self.assertEqual(GATE_OPERATION_POLICIES[operation].gate_phases, frozenset({0, 1}))
+        for operation in reclosing:
+            with self.subTest(operation=operation):
+                self.assertTrue(GATE_OPERATION_POLICIES[operation].reclose_directly_affected)
+
     def test_ticket07_closed_gate_blocks_public_entrypoints_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-closed-entrypoints", git=False)
         topic = self.fixture.bootstrap_topic(project)

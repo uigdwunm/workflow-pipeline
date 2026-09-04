@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 from test_topic_dependency_support import TopicDependencyScenarioTest
+from discussion_core.topic_dependency_schema import authority_descriptor
 
 
 class TopicDependencyCliTests(TopicDependencyScenarioTest):
@@ -43,6 +44,52 @@ class TopicDependencyCliTests(TopicDependencyScenarioTest):
         self.assertEqual(rejected["error"]["context"]["ledger_revision"], expected_revision)
         self.assertEqual(rejected["error"]["context"]["topic_revision"], 1)
         self.assertEqual(ledger.read_bytes(), before)
+
+    def test_ticket07_authority_descriptors_own_basis_validation_and_selection(self) -> None:
+        """Every authority kind converts and validates its own persisted shape."""
+        decisions = [{"decision_id": "D-current", "sha256": "a" * 64}]
+        cases = {
+            "confirmed-decision": (
+                {"decision_set_digest": "b" * 64}, None,
+            ),
+            "phase-0-checkpoint": (
+                {
+                    "checkpoint_id": "CP-" + "c" * 32,
+                    "record_revision": 1,
+                    "published_identity": "checkpoint-artifact",
+                    "decision_digest": "d" * 64,
+                },
+                "CP-" + "c" * 32,
+            ),
+            "phase-1-result": (
+                {
+                    "result_id": "PH-00000001",
+                    "record_revision": 1,
+                    "state": "completed",
+                    "phase_run_id": "PR-00000001",
+                    "affected_decision_ids": ["D-current"],
+                },
+                "PH-00000001",
+            ),
+        }
+        for kind, (authority, expected_identity) in cases.items():
+            with self.subTest(kind=kind):
+                descriptor = authority_descriptor(kind)
+                self.assertTrue(descriptor.validate_authority(authority, decisions))
+                self.assertFalse(descriptor.validate_authority({**authority, "extra": True}, decisions))
+                candidate = {"authority": authority}
+                basis = descriptor.basis_from_candidate(
+                    candidate,
+                    dependency_id="DEP-" + "e" * 32,
+                    prerequisite_topic_id="topic-prerequisite",
+                    decision_authority=decisions,
+                )
+                selection = descriptor.selection_from_basis(basis)
+                self.assertEqual(selection["decision_ids"], ["D-current"])
+                if expected_identity is None:
+                    self.assertNotIn("authority_id", selection)
+                else:
+                    self.assertEqual(selection["authority_id"], expected_identity)
 
     def test_ticket07_dependency_create_replay_is_cli_idempotent(self) -> None:
         project = self.fixture.make_project("ticket07-dependency-replay", git=False)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from .state import (
@@ -10,14 +11,63 @@ from .state import (
     _validate_revisions, _verify_topic_owner, _write_ledger_transaction,
 )
 from .topic_dependency_schema import (
-    DEPENDENCY_AUTHORITY_KINDS, canonical_string_array,
+    DEPENDENCY_AUTHORITY_KINDS, authority_descriptor, canonical_string_array,
 )
 from .topic_dependency_authority import (
-    authority_candidates, authority_handler, normalize_authority_selection,
+    authority_candidates, normalize_authority_selection,
 )
 from .topic_dependency_lifecycle import (
-    dependency_context, derived_gate, request_context,
+    dependency_context, derived_gate, reclose_directly_affected, request_context,
 )
+
+
+@dataclass(frozen=True)
+class GateOperationPolicy:
+    """Declarative boundary for operations governed by Phase-0/1 dependencies."""
+
+    gate_phases: frozenset[int] = frozenset()
+    reclose_directly_affected: bool = False
+
+
+GATE_OPERATION_POLICIES = {
+    "discussion-update": GateOperationPolicy(frozenset({0, 1})),
+    "stage-entry-checkpoint": GateOperationPolicy(frozenset({0, 1})),
+    "prepare-handoff": GateOperationPolicy(frozenset({0, 1})),
+    "authorize-handoff-discussion": GateOperationPolicy(frozenset({0, 1})),
+    "phase-transition": GateOperationPolicy(frozenset({0, 1})),
+    "decision-impact": GateOperationPolicy(reclose_directly_affected=True),
+    "checkpoint-broken": GateOperationPolicy(reclose_directly_affected=True),
+    "phase-reopen": GateOperationPolicy(reclose_directly_affected=True),
+}
+
+
+def apply_gate_policy(
+    records: dict[str, list[dict[str, Any]]], operation: str, topic_id: str,
+    *, phase: Any | None = None, reclose: dict[str, Any] | None = None,
+) -> list[str]:
+    """Enforce or reclose through the one declared operation policy.
+
+    The boundary keeps all public operations on the same Phase-0/1 rule while
+    leaving Phase 2+ and transitions already outside that domain untouched.
+    """
+    policy = GATE_OPERATION_POLICIES.get(operation)
+    if policy is None:
+        raise ValueError(f"unknown topic dependency gate operation: {operation}")
+    if policy.gate_phases:
+        subject_phase = phase
+        if subject_phase is None:
+            subject_phase = _record_by_id(
+                records["Current Topics"], "topic_id", topic_id, "topic_id"
+            ).get("current_phase")
+        if subject_phase in policy.gate_phases:
+            require_open_gate(records, topic_id)
+    if not policy.reclose_directly_affected:
+        return []
+    if not isinstance(reclose, dict):
+        raise ValueError(f"{operation} requires direct invalidation details")
+    return reclose_directly_affected(
+        records, prerequisite_topic_id=topic_id, **reclose
+    )
 
 def require_open_gate(records: dict[str, list[dict[str, Any]]], topic_id: str) -> None:
     topic = _record_by_id(records["Current Topics"], "topic_id", topic_id, "topic_id")
@@ -106,9 +156,9 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
         detail: dict[str, Any] = {"dependency_id": dependency["dependency_id"], "record_revision": dependency["record_revision"], "requirement_kind": dependency["requirement_kind"], "requirement_summary": dependency["requirement_summary"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "prerequisite_phase": prerequisite_topic["current_phase"], "prerequisite_state": prerequisite_topic["topic_state"], "candidates": candidates}
         if selected is not None:
             authority_id = selected.get("authority_id")
-            handler = authority_handler(dependency["requirement_kind"])
+            descriptor = authority_descriptor(dependency["requirement_kind"])
             expected_selection_fields = {"dependency_id", "decision_ids"}
-            if handler["identity_field"] is not None:
+            if descriptor.identity_field is not None:
                 expected_selection_fields.add("authority_id")
             if set(selected) != expected_selection_fields:
                 raise ProtocolError("topic_dependency_evidence_unavailable", "selected dependency evidence is not current")
@@ -128,9 +178,15 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
                         ),
                     ) from error
                 raise
-            basis = {"basis_version": 1, "dependency_id": dependency["dependency_id"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "requirement_kind": dependency["requirement_kind"], "decision_authority": [{"decision_id": item["decision_id"], "sha256": item["sha256"]} for item in chosen]}
-            if candidate.get("authority") is not None:
-                basis["authority"] = candidate["authority"]
+            basis = descriptor.basis_from_candidate(
+                candidate,
+                dependency_id=dependency["dependency_id"],
+                prerequisite_topic_id=dependency["prerequisite_topic_id"],
+                decision_authority=[
+                    {"decision_id": item["decision_id"], "sha256": item["sha256"]}
+                    for item in chosen
+                ],
+            )
             detail["proposed_basis"] = basis
             proposed.append({"dependency_id": dependency["dependency_id"], "record_revision": dependency["record_revision"], "basis": basis})
         elif not candidates:
@@ -189,22 +245,10 @@ def _release_selection_from_basis(item: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(basis, dict):
         return {"dependency_id": item.get("dependency_id"), "decision_ids": []}
     kind = basis.get("requirement_kind")
-    handler = authority_handler(kind) if isinstance(kind, str) and kind in DEPENDENCY_AUTHORITY_KINDS else None
-    selection = {
-        "dependency_id": item.get("dependency_id"),
-        "decision_ids": [
-            entry["decision_id"]
-            for entry in basis.get("decision_authority", [])
-            if isinstance(entry, dict) and isinstance(entry.get("decision_id"), str)
-        ],
-    }
-    if handler is not None and handler["identity_field"] is not None:
-        authority = basis.get("authority")
-        selection["authority_id"] = (
-            authority.get(handler["identity_field"])
-            if isinstance(authority, dict)
-            else None
-        )
+    if not isinstance(kind, str) or kind not in DEPENDENCY_AUTHORITY_KINDS:
+        return {"dependency_id": item.get("dependency_id"), "decision_ids": []}
+    selection = authority_descriptor(kind).selection_from_basis(basis)
+    selection["dependency_id"] = item["dependency_id"]
     return selection
 
 

@@ -47,7 +47,7 @@ from .state import (
     _verify_topic_owner,
     _write_ledger_transaction,
 )
-from .topic_dependencies import reclose_directly_affected, require_open_gate
+from .topic_dependencies import apply_gate_policy
 from .topic_dependencies import retained_checkpoint_identities
 from .topic_dependency_schema import decision_authority
 
@@ -633,7 +633,9 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         if purpose == "stage-entry":
-            require_open_gate(records, request["actor_topic_id"])
+            apply_gate_policy(
+                records, "stage-entry-checkpoint", request["actor_topic_id"]
+            )
         if _active_pending_write(records) is not None:
             raise ProtocolError("document_write_reconciliation_required", "document write must complete before checkpoint preparation")
         active_gc = _active_checkpoint_gc(records)
@@ -1216,16 +1218,16 @@ def _mark_checkpoint_broken(request: dict[str, Any]) -> dict[str, Any]:
         checkpoint["break_reason"] = reason
         _store_checkpoint(record, checkpoint)
         next_revision = ledger_revision + 1
-        reclosed_dependency_ids = reclose_directly_affected(
-            records,
-            prerequisite_topic_id=request["actor_topic_id"],
-            changed_decision_ids=set(),
-            invalidated_authority_ids={checkpoint["checkpoint_id"]},
-            ledger_revision=next_revision,
-            cause={
-                "checkpoint_id": checkpoint["checkpoint_id"],
-                "checkpoint_broken_id": request["idempotency_key"],
-                "broken_identity": broken_identity,
+        reclosed_dependency_ids = apply_gate_policy(
+            records, "checkpoint-broken", request["actor_topic_id"], reclose={
+                "changed_decision_ids": set(),
+                "invalidated_authority_ids": {checkpoint["checkpoint_id"]},
+                "ledger_revision": next_revision,
+                "cause": {
+                    "checkpoint_id": checkpoint["checkpoint_id"],
+                    "checkpoint_broken_id": request["idempotency_key"],
+                    "broken_identity": broken_identity,
+                },
             },
         )
         result = {

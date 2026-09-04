@@ -235,21 +235,14 @@ CANDIDATE_BUILDERS = {
 }
 
 
-def authority_handler(kind: str) -> dict[str, Any]:
-    descriptor = authority_descriptor(kind)
-    return {
-        "candidate_key": descriptor.candidate_key,
-        "identity_field": descriptor.identity_field,
-        "requires_decisions": descriptor.requires_decisions,
-        "candidate": CANDIDATE_BUILDERS[descriptor.candidate_key],
-    }
-
-
 def authority_candidates(
     records: dict[str, list[dict[str, Any]]], dependency: dict[str, Any],
 ) -> list[dict[str, Any]]:
     kind = dependency["requirement_kind"]
-    return authority_handler(kind)["candidate"](records, dependency["prerequisite_topic_id"])
+    descriptor = authority_descriptor(kind)
+    return CANDIDATE_BUILDERS[descriptor.candidate_key](
+        records, dependency["prerequisite_topic_id"]
+    )
 
 
 def has_current_authority(
@@ -287,7 +280,7 @@ def normalize_authority_selection(
     """Select one current candidate and its exact frozen decision subset."""
     if not canonical_string_array(decision_ids):
         raise ProtocolError("invalid_request", "basis selection decision_ids must be sorted")
-    if authority_handler(requirement_kind)["requires_decisions"] and not decision_ids:
+    if authority_descriptor(requirement_kind).requires_decisions and not decision_ids:
         raise ProtocolError("topic_dependency_evidence_unavailable", "confirmed-decision requires one or more current decisions")
     matching = [item for item in candidates if item["authority_id"] == authority_id]
     if len(matching) != 1:
@@ -382,14 +375,22 @@ def release_child_result_dependencies(
             or dependency["relation_state"] != "active" or dependency["gate_state"] != "closed"
             or not canonical_string_array(ids)
             or any(item not in pairs for item in ids)
-            or (authority_handler(dependency["requirement_kind"])["requires_decisions"] and not ids)
+            or (authority_descriptor(dependency["requirement_kind"]).requires_decisions and not ids)
         ):
             raise ProtocolError("topic_dependency_state_conflict", "child result does not match a current closed dependency")
         selected.append((dependency, ids))
     for dependency, ids in selected:
-        basis = {"basis_version": 1, "dependency_id": dependency["dependency_id"], "prerequisite_topic_id": prerequisite_topic_id, "requirement_kind": normalized["authority_kind"], "child_result_id": child_result_id, "decision_authority": [{"decision_id": pairs[item]["decision_id"], "sha256": pairs[item]["sha256"]} for item in ids]}
-        if "authority" in normalized:
-            basis["authority"] = normalized["authority"]
+        descriptor = authority_descriptor(normalized["authority_kind"])
+        basis = descriptor.basis_from_candidate(
+            {"authority": normalized.get("authority")},
+            dependency_id=dependency["dependency_id"],
+            prerequisite_topic_id=prerequisite_topic_id,
+            decision_authority=[
+                {"decision_id": pairs[item]["decision_id"], "sha256": pairs[item]["sha256"]}
+                for item in ids
+            ],
+            child_result_id=child_result_id,
+        )
         dependency["gate_state"] = "open"
         dependency["record_revision"] += 1
         dependency["accepted_basis_json"] = _canonical_json(basis)

@@ -31,11 +31,11 @@ from .state import (
     _write_ledger_transaction,
 )
 from .topic_dependencies import (
+    apply_gate_policy,
     freeze_authority_selection,
     has_current_authority,
     prepare_initial_dependencies,
     release_child_result_dependencies,
-    require_open_gate,
 )
 
 
@@ -246,7 +246,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, source_topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        require_open_gate(records, request["actor_topic_id"])
+        apply_gate_policy(records, "prepare-handoff", request["actor_topic_id"])
         target_topic_id = (
             request["actor_topic_id"] if kind == "continuation" else f"topic-{uuid.UUID(request['idempotency_key']).hex}"
         )
@@ -562,7 +562,9 @@ def _authorize_handoff_discussion(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        require_open_gate(records, request["actor_topic_id"])
+        apply_gate_policy(
+            records, "authorize-handoff-discussion", request["actor_topic_id"]
+        )
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         attempt = _handoff_attempt(handoff, request["attempt_id"])

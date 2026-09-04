@@ -16,18 +16,78 @@ class AuthorityDescriptor:
     candidate_key: str
     identity_field: str | None
     requires_decisions: bool
+    authority_is_valid: Callable[[Any, list[dict[str, str]]], bool]
+    retained_provenance_is_valid: Callable[
+        [dict[str, list[dict[str, Any]]], str, dict[str, Any], list[dict[str, str]], Callable[[str, str], None]],
+        None,
+    ]
 
     def __getitem__(self, field: str) -> Any:
         """Temporary mapping compatibility while callers move to attributes."""
         return getattr(self, field)
 
+    def validate_authority(self, authority: Any, decisions: list[dict[str, str]]) -> bool:
+        """Validate this kind's exact persisted authority shape."""
+        return self.authority_is_valid(authority, decisions)
 
-AUTHORITY_DESCRIPTORS = {
-    "confirmed-decision": AuthorityDescriptor("confirmed-decision", "confirmed", None, True),
-    "phase-0-checkpoint": AuthorityDescriptor("phase-0-checkpoint", "checkpoint", "checkpoint_id", False),
-    "phase-1-result": AuthorityDescriptor("phase-1-result", "phase_result", "result_id", False),
-}
-DEPENDENCY_AUTHORITY_KINDS = frozenset(AUTHORITY_DESCRIPTORS)
+    def validate_retained_provenance(
+        self,
+        records: dict[str, list[dict[str, Any]]],
+        prerequisite_topic_id: str,
+        authority: dict[str, Any],
+        decisions: list[dict[str, str]],
+        error: Callable[[str, str], None],
+    ) -> None:
+        """Resolve this kind's historical basis against retained records."""
+        self.retained_provenance_is_valid(
+            records, prerequisite_topic_id, authority, decisions, error
+        )
+
+    def selection_from_basis(self, basis: dict[str, Any]) -> dict[str, Any]:
+        """Recover the canonical release selection from this kind's basis."""
+        authority = basis.get("authority")
+        selection = {
+            "dependency_id": basis.get("dependency_id"),
+            "decision_ids": [
+                entry["decision_id"]
+                for entry in basis.get("decision_authority", [])
+                if isinstance(entry, dict) and isinstance(entry.get("decision_id"), str)
+            ],
+        }
+        if self.identity_field is not None:
+            selection["authority_id"] = (
+                authority.get(self.identity_field) if isinstance(authority, dict) else None
+            )
+        return selection
+
+    def basis_from_candidate(
+        self,
+        candidate: dict[str, Any],
+        *,
+        dependency_id: str,
+        prerequisite_topic_id: str,
+        decision_authority: list[dict[str, str]],
+        child_result_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Convert this kind's current candidate into one persisted basis."""
+        basis: dict[str, Any] = {
+            "basis_version": 1,
+            "dependency_id": dependency_id,
+            "prerequisite_topic_id": prerequisite_topic_id,
+            "requirement_kind": self.kind,
+            "decision_authority": decision_authority,
+        }
+        if child_result_id is not None:
+            basis["child_result_id"] = child_result_id
+        if candidate.get("authority") is not None:
+            basis["authority"] = candidate["authority"]
+        return basis
+
+
+AUTHORITY_DESCRIPTORS: dict[str, AuthorityDescriptor] = {}
+DEPENDENCY_AUTHORITY_KINDS = frozenset({
+    "confirmed-decision", "phase-0-checkpoint", "phase-1-result",
+})
 RECORD_FIELDS = {
     "dependency_id", "record_revision", "dependent_topic_id", "prerequisite_topic_id",
     "requirement_kind", "requirement_summary", "relation_state", "gate_state",
@@ -256,34 +316,52 @@ def _ledger_decision_pairs(
     return pairs
 
 
-def _validate_ordinary_basis(
-    records: dict[str, list[dict[str, Any]]], item: dict[str, Any], basis: dict[str, Any],
-    decisions: list[dict[str, str]], authority: dict[str, Any], error: Callable[[str, str], None],
+def _validate_retained_decisions(
+    records: dict[str, list[dict[str, Any]]], prerequisite_topic_id: str,
+    decisions: list[dict[str, str]], error: Callable[[str, str], None],
 ) -> None:
-    """Resolve a persisted non-child basis to its retained ledger provenance."""
-    kind = item["requirement_kind"]
-    decision_pairs = _ledger_decision_pairs(records, item["prerequisite_topic_id"], error)
+    decision_pairs = _ledger_decision_pairs(records, prerequisite_topic_id, error)
     if any(decision_pairs.get(entry["decision_id"]) != entry["sha256"] for entry in decisions):
         error("state_corrupt", "topic dependency decision authority is not retained")
-    if kind == "confirmed-decision":
-        return
-    if kind == "phase-0-checkpoint":
-        matches = [
-            record for record in records["Checkpoints"]
-            if record.get("checkpoint_id") == authority["checkpoint_id"]
-        ]
-        if len(matches) != 1:
-            error("state_corrupt", "topic dependency checkpoint authority is not retained")
-        checkpoint = canonical_object(matches[0].get("data_json"), "checkpoint data_json", error)
-        if (
-            checkpoint.get("topic_id") != item["prerequisite_topic_id"]
-            or checkpoint.get("checkpoint_id") != authority["checkpoint_id"]
-            or checkpoint.get("record_revision") != authority["record_revision"]
-            or checkpoint.get("published_identity") != authority["published_identity"]
-            or checkpoint.get("decision_digest") != authority["decision_digest"]
-        ):
-            error("state_corrupt", "topic dependency checkpoint authority is incoherent")
-        return
+
+
+def _validate_confirmed_decision_provenance(
+    records: dict[str, list[dict[str, Any]]], prerequisite_topic_id: str,
+    authority: dict[str, Any], decisions: list[dict[str, str]],
+    error: Callable[[str, str], None],
+) -> None:
+    _validate_retained_decisions(records, prerequisite_topic_id, decisions, error)
+
+
+def _validate_checkpoint_provenance(
+    records: dict[str, list[dict[str, Any]]], prerequisite_topic_id: str,
+    authority: dict[str, Any], decisions: list[dict[str, str]],
+    error: Callable[[str, str], None],
+) -> None:
+    _validate_retained_decisions(records, prerequisite_topic_id, decisions, error)
+    matches = [
+        record for record in records["Checkpoints"]
+        if record.get("checkpoint_id") == authority["checkpoint_id"]
+    ]
+    if len(matches) != 1:
+        error("state_corrupt", "topic dependency checkpoint authority is not retained")
+    checkpoint = canonical_object(matches[0].get("data_json"), "checkpoint data_json", error)
+    if (
+        checkpoint.get("topic_id") != prerequisite_topic_id
+        or checkpoint.get("checkpoint_id") != authority["checkpoint_id"]
+        or checkpoint.get("record_revision") != authority["record_revision"]
+        or checkpoint.get("published_identity") != authority["published_identity"]
+        or checkpoint.get("decision_digest") != authority["decision_digest"]
+    ):
+        error("state_corrupt", "topic dependency checkpoint authority is incoherent")
+
+
+def _validate_phase_result_provenance(
+    records: dict[str, list[dict[str, Any]]], prerequisite_topic_id: str,
+    authority: dict[str, Any], decisions: list[dict[str, str]],
+    error: Callable[[str, str], None],
+) -> None:
+    _validate_retained_decisions(records, prerequisite_topic_id, decisions, error)
     matches = [
         record for record in records["Phase Results"]
         if record.get("result_id") == authority["result_id"]
@@ -297,7 +375,7 @@ def _validate_ordinary_basis(
         for entry in full_authority
     } if _decision_pairs(full_authority) else None
     if (
-        result.get("topic_id") != item["prerequisite_topic_id"]
+        result.get("topic_id") != prerequisite_topic_id
         or result.get("result_id") != authority["result_id"]
         or result.get("phase_run_id") != authority["phase_run_id"]
         or result.get("affected_decision_ids") != authority["affected_decision_ids"]
@@ -306,6 +384,78 @@ def _validate_ordinary_basis(
         or matches[0].get("record_revision") != authority["record_revision"]
     ):
         error("state_corrupt", "topic dependency Phase Result authority is incoherent")
+
+
+def _confirmed_authority_is_valid(
+    authority: Any, decisions: list[dict[str, str]],
+) -> bool:
+    return (
+        isinstance(authority, dict)
+        and set(authority) == {"decision_set_digest"}
+        and isinstance(authority["decision_set_digest"], str)
+        and SHA256_RE.fullmatch(authority["decision_set_digest"])
+        and bool(decisions)
+    )
+
+
+def _checkpoint_authority_is_valid(
+    authority: Any, decisions: list[dict[str, str]],
+) -> bool:
+    return (
+        isinstance(authority, dict)
+        and set(authority) == {
+            "checkpoint_id", "record_revision", "published_identity", "decision_digest",
+        }
+        and _identity(authority["checkpoint_id"], "CP")
+        and isinstance(authority["record_revision"], int)
+        and authority["record_revision"] >= 1
+        and isinstance(authority["published_identity"], str)
+        and isinstance(authority["decision_digest"], str)
+        and SHA256_RE.fullmatch(authority["decision_digest"])
+    )
+
+
+def _phase_result_authority_is_valid(
+    authority: Any, decisions: list[dict[str, str]],
+) -> bool:
+    return (
+        isinstance(authority, dict)
+        and set(authority) == {
+            "result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids",
+        }
+        and _identity(authority["result_id"], "PH")
+        and isinstance(authority["record_revision"], int)
+        and authority["record_revision"] >= 1
+        and authority["state"] == "completed"
+        and isinstance(authority["phase_run_id"], str)
+        and canonical_string_array(authority["affected_decision_ids"])
+    )
+
+
+AUTHORITY_DESCRIPTORS.update({
+    "confirmed-decision": AuthorityDescriptor(
+        "confirmed-decision", "confirmed", None, True,
+        _confirmed_authority_is_valid, _validate_confirmed_decision_provenance,
+    ),
+    "phase-0-checkpoint": AuthorityDescriptor(
+        "phase-0-checkpoint", "checkpoint", "checkpoint_id", False,
+        _checkpoint_authority_is_valid, _validate_checkpoint_provenance,
+    ),
+    "phase-1-result": AuthorityDescriptor(
+        "phase-1-result", "phase_result", "result_id", False,
+        _phase_result_authority_is_valid, _validate_phase_result_provenance,
+    ),
+})
+
+
+def _validate_ordinary_basis(
+    records: dict[str, list[dict[str, Any]]], item: dict[str, Any], basis: dict[str, Any],
+    decisions: list[dict[str, str]], authority: dict[str, Any], error: Callable[[str, str], None],
+) -> None:
+    """Resolve a persisted basis through its authority-kind strategy."""
+    authority_descriptor(item["requirement_kind"]).validate_retained_provenance(
+        records, item["prerequisite_topic_id"], authority, decisions, error
+    )
 
 
 def validate_dependency_records(
@@ -357,15 +507,12 @@ def validate_dependency_records(
             authority = basis.get("authority")
             historical_replace = historical_basis
             authority_kind = basis["requirement_kind"] if historical_replace else item["requirement_kind"]
-            if authority_kind not in DEPENDENCY_AUTHORITY_KINDS:
-                valid = False
-            elif authority_kind == "confirmed-decision":
-                valid = isinstance(authority, dict) and set(authority) == {"decision_set_digest"} and isinstance(authority["decision_set_digest"], str) and SHA256_RE.fullmatch(authority["decision_set_digest"]) and decisions
-            elif authority_kind == "phase-0-checkpoint":
-                valid = isinstance(authority, dict) and set(authority) == {"checkpoint_id", "record_revision", "published_identity", "decision_digest"} and _identity(authority["checkpoint_id"], "CP") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and isinstance(authority["published_identity"], str) and isinstance(authority["decision_digest"], str) and SHA256_RE.fullmatch(authority["decision_digest"])
-            else:
-                valid = isinstance(authority, dict) and set(authority) == {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"} and _identity(authority["result_id"], "PH") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and authority["state"] == "completed" and isinstance(authority["phase_run_id"], str) and canonical_string_array(authority["affected_decision_ids"])
-            if not valid:
+            descriptor = (
+                authority_descriptor(authority_kind)
+                if authority_kind in DEPENDENCY_AUTHORITY_KINDS
+                else None
+            )
+            if descriptor is None or not descriptor.validate_authority(authority, decisions):
                 error("state_corrupt", "topic dependency authority is incoherent")
             if historical_replace:
                 # Retained replace evidence is historical, not current, but
