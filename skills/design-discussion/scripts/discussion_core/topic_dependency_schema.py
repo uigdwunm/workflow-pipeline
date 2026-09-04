@@ -20,7 +20,7 @@ RECORD_FIELDS = {
     "accepted_basis_json", "gate_reason_json",
 }
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
-IDENTITY_RE = re.compile(r"(?:DEP|CP|PH|CR|H)-[0-9a-f]{32}")
+IDENTITY_RE = re.compile(r"(?:DEP|CP|PH|CR|H|DW)-[0-9a-f]{32}")
 UUID4_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
 
@@ -80,11 +80,14 @@ def _object(value: Any, label: str, error: Callable[[str, str], None]) -> dict[s
 def _identity(value: Any, prefix: str) -> bool:
     if not isinstance(value, str):
         return False
-    pattern = r"PH-[0-9]{8}" if prefix == "PH" else prefix + r"-[0-9a-f]{32}"
-    return bool(re.fullmatch(pattern, value))
+    return (
+        bool(re.fullmatch(r"PH-[0-9]{8}", value))
+        if prefix == "PH"
+        else bool(IDENTITY_RE.fullmatch(value)) and value.startswith(prefix + "-")
+    )
 
 
-def _canonical_strings(value: Any, *, maximum: int = 64) -> bool:
+def canonical_string_array(value: Any, *, maximum: int = 64) -> bool:
     return (
         isinstance(value, list)
         and len(value) <= maximum
@@ -163,12 +166,12 @@ def _gate_reason(value: Any, error: Callable[[str, str], None]) -> None:
     if "checkpoint_id" in reason and not _identity(reason["checkpoint_id"], "CP"):
         error("state_corrupt", "topic dependency checkpoint identity is invalid")
     if "invalidated_result_ids" in reason and (
-        not _canonical_strings(reason["invalidated_result_ids"])
+        not canonical_string_array(reason["invalidated_result_ids"])
         or any(not _identity(item, "PH") for item in reason["invalidated_result_ids"])
     ):
         error("state_corrupt", "topic dependency invalidated result identities are invalid")
     if "affected_decision_ids" in reason and (
-        not _canonical_strings(reason["affected_decision_ids"])
+        not canonical_string_array(reason["affected_decision_ids"])
     ):
         error("state_corrupt", "topic dependency affected decisions are invalid")
 
@@ -267,7 +270,7 @@ def validate_dependency_records(
         dependent, prerequisite = item["dependent_topic_id"], item["prerequisite_topic_id"]
         if dependent not in topics or prerequisite not in topics or dependent == prerequisite:
             error("state_corrupt", "topic dependency endpoints are invalid")
-        if item["requirement_kind"] not in KINDS or not isinstance(item["requirement_summary"], str) or not item["requirement_summary"]:
+        if item["requirement_kind"] not in KINDS or not isinstance(item["requirement_summary"], str) or not item["requirement_summary"] or len(item["requirement_summary"].encode("utf-8")) > 4096:
             error("state_corrupt", "topic dependency requirement is invalid")
         if item["relation_state"] not in {"active", "cancelled"} or item["gate_state"] not in {"closed", "open"}:
             error("state_corrupt", "topic dependency state is invalid")
@@ -278,8 +281,8 @@ def validate_dependency_records(
             if (
                 basis.get("basis_version") != 1
                 or basis.get("dependency_id") != dep_id
-                or basis.get("prerequisite_topic_id") != prerequisite
-                or basis.get("requirement_kind") != item["requirement_kind"]
+                or (not (item["gate_state"] == "closed" and _object(item["gate_reason_json"], "topic dependency gate_reason_json", error).get("kind") == "explicit-replace") and basis.get("prerequisite_topic_id") != prerequisite)
+                or (not (item["gate_state"] == "closed" and _object(item["gate_reason_json"], "topic dependency gate_reason_json", error).get("kind") == "explicit-replace") and basis.get("requirement_kind") != item["requirement_kind"])
                 or not _decision_pairs(decisions)
                 or set(basis) != ({"basis_version", "dependency_id", "prerequisite_topic_id", "requirement_kind", "decision_authority", "authority"} | ({"child_result_id"} if "child_result_id" in basis else set()))
             ):
@@ -290,7 +293,7 @@ def validate_dependency_records(
             elif item["requirement_kind"] == "phase-0-checkpoint":
                 valid = isinstance(authority, dict) and set(authority) == {"checkpoint_id", "record_revision", "published_identity", "decision_digest"} and _identity(authority["checkpoint_id"], "CP") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and isinstance(authority["published_identity"], str) and isinstance(authority["decision_digest"], str) and SHA256_RE.fullmatch(authority["decision_digest"])
             else:
-                valid = isinstance(authority, dict) and set(authority) == {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"} and _identity(authority["result_id"], "PH") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and authority["state"] == "completed" and isinstance(authority["phase_run_id"], str) and _canonical_strings(authority["affected_decision_ids"])
+                valid = isinstance(authority, dict) and set(authority) == {"result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids"} and _identity(authority["result_id"], "PH") and isinstance(authority["record_revision"], int) and authority["record_revision"] >= 1 and authority["state"] == "completed" and isinstance(authority["phase_run_id"], str) and canonical_string_array(authority["affected_decision_ids"])
             if not valid:
                 error("state_corrupt", "topic dependency authority is incoherent")
             dependent_phase = next(
@@ -328,7 +331,7 @@ def validate_dependency_records(
                     set(frozen) != frozen_fields
                     or
                     frozen.get("authority_kind") != item["requirement_kind"]
-                    or not _canonical_strings(frozen_ids)
+                    or not canonical_string_array(frozen_ids)
                     or not _decision_pairs(frozen_pairs)
                     or frozen_ids != [entry["decision_id"] for entry in decisions]
                     or frozen_pairs != decisions

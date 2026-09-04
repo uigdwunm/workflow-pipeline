@@ -26,7 +26,7 @@ from .state import (
     _write_ledger_transaction,
 )
 from .topic_dependency_schema import (
-    KINDS, authority_descriptor, decision_authority, validate_dependency_records,
+    KINDS, authority_descriptor, canonical_string_array, decision_authority, validate_dependency_records,
 )
 
 
@@ -427,6 +427,8 @@ def release_child_result_dependencies(
     """Validate frozen child authority and atomically normalize matching gates."""
     if not isinstance(releases, list) or len(releases) > 64:
         raise ProtocolError("invalid_request", "dependency_releases must be a bounded list")
+    if not releases:
+        return []
     if (
         any(not isinstance(item, dict) or not isinstance(item.get("dependency_id"), str) for item in releases)
         or [item["dependency_id"] for item in releases] != sorted(item["dependency_id"] for item in releases)
@@ -483,14 +485,7 @@ def _closed(records: dict[str, list[dict[str, Any]]], topic_id: str) -> list[dic
 
 
 def _canonical_string_array(value: Any, *, maximum: int = 64) -> bool:
-    """Whether an untrusted nested array is bounded canonical string data."""
-    return (
-        isinstance(value, list)
-        and len(value) <= maximum
-        and all(isinstance(item, str) and item for item in value)
-        and value == sorted(value)
-        and len(set(value)) == len(value)
-    )
+    return canonical_string_array(value, maximum=maximum)
 
 
 def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selection: list[dict[str, Any]] | None) -> dict[str, Any]:
