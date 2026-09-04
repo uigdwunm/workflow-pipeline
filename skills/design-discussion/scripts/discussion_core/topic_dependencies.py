@@ -395,7 +395,10 @@ def freeze_authority_selection(
         "authority_kind": kind,
         "authority_identity": identity,
         "decision_ids": decision_ids,
-        "decision_authority": chosen,
+        "decision_authority": [
+            {"decision_id": item["decision_id"], "sha256": item["sha256"]}
+            for item in chosen
+        ],
         "topic_phase": _record_by_id(
             records["Current Topics"], "topic_id", topic_id, "topic_id"
         )["current_phase"],
