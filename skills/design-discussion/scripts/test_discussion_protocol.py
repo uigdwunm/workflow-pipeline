@@ -6181,4 +6181,3 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolScenarioFixture, Discus
         self.assertEqual(raised.exception.code, "invalid_storage_path")
         self.assertEqual(ledger_path.read_bytes(), ledger_before)
         self.assertEqual(list(external_root.iterdir()), [])
-

@@ -52,4 +52,3 @@ def add_closed_dependency(
         "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None,
         "gate_reason_json": gate_reason_json,
     })
-
