@@ -295,6 +295,70 @@ class TopicDependencyCheckpointCliTests(TopicDependencyScenarioMixin, unittest.T
                     basis["authority"]["checkpoint_id"], checkpoint_one["checkpoint_id"],
                 )
 
+                evaluate = self.evolution_request(
+                    topic, operation="evaluate-topic-gate", basis_selection=[{
+                        "dependency_id": dependency_id,
+                        "authority_id": checkpoint_two["checkpoint_id"],
+                        "decision_ids": [],
+                    }],
+                )
+                evaluate["actor_topic_id"] = dependent_id
+                evaluate["actor_conversation_ref"] = "codex-thread:dependent"
+                code, proposal, stderr = self.run_cli(evaluate)
+                self.assertEqual(code, 0, stderr)
+                release = self.evolution_request(
+                    topic, operation="release-topic-gate",
+                    expected_revision=checkpoint_two["ledger_revision"],
+                    expected_topic_revision=1, release_set=proposal["release_set"],
+                    release_set_sha256=proposal["release_set_sha256"],
+                )
+                release["actor_topic_id"] = dependent_id
+                release["actor_conversation_ref"] = "codex-thread:dependent"
+                code, reopened, stderr = self.run_cli(release)
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(reopened["state"], "open")
+                _, current_revision, current_topic_revision = self.complete_update(
+                    project, topic, ledger_revision=reopened["ledger_revision"],
+                    topic_revision=publication_topic_revision, mutation={
+                        "type": "confirm-decision", "summary": "An unpublished conclusion.",
+                        "rationale": "No external CP3 artifact exists to supersede CP2.",
+                    },
+                )
+                prepared_three = self.prepare_checkpoint(
+                    topic, ledger_revision=current_revision,
+                    topic_revision=current_topic_revision, purpose="stage-entry",
+                    base_ref="HEAD" if git else "project-root",
+                )
+                unknown = self.checkpoint_request(
+                    topic, operation="record-checkpoint-outcome-unknown",
+                    ledger_revision=current_revision + 1,
+                    topic_revision=current_topic_revision,
+                    checkpoint_id=prepared_three["checkpoint_id"],
+                    expected_checkpoint_revision=prepared_three["checkpoint_record_revision"],
+                )
+                code, unknown_result, stderr = self.run_cli(unknown)
+                self.assertEqual(code, 0, stderr)
+                reconcile_request = self.checkpoint_request(
+                    topic,
+                    operation="reconcile-git-checkpoint" if git else "reconcile-non-git-checkpoint",
+                    ledger_revision=unknown_result["ledger_revision"],
+                    topic_revision=current_topic_revision,
+                    checkpoint_id=prepared_three["checkpoint_id"],
+                    expected_checkpoint_revision=unknown_result["checkpoint_record_revision"],
+                )
+                code, no_match, stderr = self.run_cli(reconcile_request)
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(no_match["state"], "prepared")
+                self.assertEqual(no_match["reclosed_dependency_ids"], [])
+                code, current, stderr = self.run_cli(read)
+                self.assertEqual(code, 0, stderr)
+                dependency = current["topic_dependencies"][0]
+                self.assertEqual(dependency["gate_state"], "open")
+                basis = json.loads(dependency["accepted_basis_json"])
+                self.assertEqual(
+                    basis["authority"]["checkpoint_id"], checkpoint_two["checkpoint_id"],
+                )
+
     def test_ticket07_enforcing_open_basis_cannot_keep_historical_edge_via_cli(self) -> None:
         project = self.make_project("ticket07-enforcing-current-basis", git=False)
         topic = self.bootstrap_topic(project)

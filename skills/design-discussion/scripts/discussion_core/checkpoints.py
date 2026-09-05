@@ -1081,9 +1081,12 @@ def _reconcile_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             checkpoint["checkpoint_ref"] = checkpoint_ref
         _store_checkpoint(record, checkpoint)
         next_revision = ledger_revision + 1
-        reclosed_dependency_ids = _reclose_superseded_stage_entry_gates(
-            records, checkpoint, ledger_revision=next_revision,
-            idempotency_key=request["idempotency_key"],
+        reclosed_dependency_ids = (
+            _reclose_superseded_stage_entry_gates(
+                records, checkpoint, ledger_revision=next_revision,
+                idempotency_key=request["idempotency_key"],
+            )
+            if next_state == "completed" else []
         )
         result = {
             "ok": True, "state": next_state, "idempotent_replay": False,
@@ -1243,9 +1246,12 @@ def _reconcile_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         checkpoint["record_revision"] += 1
         _store_checkpoint(record, checkpoint)
         next_revision = ledger_revision + 1
-        reclosed_dependency_ids = _reclose_superseded_stage_entry_gates(
-            records, checkpoint, ledger_revision=next_revision,
-            idempotency_key=request["idempotency_key"],
+        reclosed_dependency_ids = (
+            _reclose_superseded_stage_entry_gates(
+                records, checkpoint, ledger_revision=next_revision,
+                idempotency_key=request["idempotency_key"],
+            )
+            if next_state == "completed" else []
         )
         result = {
             "ok": True, "state": next_state, "idempotent_replay": False,
