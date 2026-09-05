@@ -38,6 +38,7 @@ from .state import (
     _load_records,
     _mutation_fingerprint,
     _record_by_id,
+    _read_regular_nosymlink_or_none,
     _require_regular_nosymlink,
     _sha256,
     _topic_snapshot,
@@ -1756,15 +1757,11 @@ def _validate_checkpoints(
             if len(roots) != 1 or not isinstance(roots[0].get("topic_document_path"), str):
                 raise ProtocolError("state_corrupt", "checkpoint topic document authority is unavailable")
             topic_path = _verify_topic_path_authority(topic, Path(roots[0]["topic_document_path"]), records=records)
-            def artifact_bytes(path: Path, label: str) -> bytes | None:
-                try:
-                    return _require_regular_nosymlink(path, label)
-                except ProtocolError:
-                    return None
             try:
                 current = verify_artifact_integrity(
                     checkpoint, topic_path=topic_path, sha256=_sha256,
-                    canonical_json=_canonical_json, read_regular=artifact_bytes,
+                    canonical_json=_canonical_json,
+                    read_regular=_read_regular_nosymlink_or_none,
                 )
             except CheckpointAuthorityCorrupt as error:
                 raise ProtocolError("state_corrupt", "checkpoint authority is corrupt") from error

@@ -260,6 +260,14 @@ def _require_regular_nosymlink(path: Path, label: str) -> bytes:
         raise ProtocolError("state_corrupt", f"cannot read {label}", cause=str(error)) from error
 
 
+def _read_regular_nosymlink_or_none(path: Path, label: str) -> bytes | None:
+    """Return secure artifact bytes, treating an unavailable artifact as absent."""
+    try:
+        return _require_regular_nosymlink(path, label)
+    except ProtocolError:
+        return None
+
+
 def _verify_ledger_digest(data: bytes) -> tuple[dict[str, str], str]:
     try:
         text = data.decode("utf-8")

@@ -11,7 +11,7 @@ from .state import (
     _canonical_json,
     _json_field,
     _record_by_id,
-    _require_regular_nosymlink,
+    _read_regular_nosymlink_or_none,
     _sha256,
     _topic_snapshot,
 )
@@ -160,16 +160,12 @@ def _current_checkpoint(record: dict[str, Any], checkpoint: dict[str, Any], reco
             return False
         topic = _record_by_id(records["Current Topics"], "topic_id", prerequisite, "topic_id")
         topic_path = topic.get("topic_document_path")
-        def artifact_bytes(path: Path, label: str) -> bytes | None:
-            try:
-                return _require_regular_nosymlink(path, label)
-            except ProtocolError:
-                return None
         if (
             not isinstance(topic_path, str)
             or current_checkpoint_artifact(
                 checkpoint, topic_path=Path(topic_path), sha256=_sha256,
-                canonical_json=_canonical_json, read_regular=artifact_bytes,
+                canonical_json=_canonical_json,
+                read_regular=_read_regular_nosymlink_or_none,
             ) is None
         ):
             return False
