@@ -341,7 +341,8 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, source_topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        apply_gate_policy(records, "prepare-handoff", request["actor_topic_id"])
+        if kind == "child":
+            apply_gate_policy(records, "prepare-handoff", request["actor_topic_id"])
         suspended_question_resolution = _freeze_suspended_question_resolution(
             records, topic_id=request["actor_topic_id"],
             value=request.get("suspended_question_resolution"),
@@ -349,14 +350,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         resolved_topic_revision = topic_revision + int(suspended_question_resolution is not None)
         if suspended_question_resolution is not None:
             source_topic["record_revision"] = resolved_topic_revision
-            document_write = _freeze_resolution_document_write(
-                records, ledger_path=ledger_path, topic_path=topic_path,
-                topic_id=request["actor_topic_id"], topic_revision=resolved_topic_revision,
-                owner_ref=owner_ref, resolution=suspended_question_resolution,
-                idempotency_key=request["idempotency_key"],
-            )
-        else:
-            document_write = None
+        document_write = None
         target_topic_id = (
             request["actor_topic_id"] if kind == "continuation" else f"topic-{uuid.UUID(request['idempotency_key']).hex}"
         )
@@ -455,6 +449,14 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         )
         attempt["payload_sha256"] = payload_digest
         attempt["handoff_payload_bytes"] = payload_bytes
+        if suspended_question_resolution is not None:
+            document_write = _freeze_resolution_document_write(
+                records, ledger_path=ledger_path, topic_path=topic_path,
+                topic_id=request["actor_topic_id"], topic_revision=resolved_topic_revision,
+                owner_ref=owner_ref, resolution=suspended_question_resolution,
+                idempotency_key=request["idempotency_key"],
+            )
+            handoff["document_write"] = document_write
         next_revision = ledger_revision + 1
         result = {
             **_handoff_result(

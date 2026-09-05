@@ -64,25 +64,12 @@ class TopicDependencyPhaseGateCliTests(DiscussionProtocolScenarioFixture, Discus
                 base_ref="project-root",
             ),
         ]
-        for handoff_kind in ("child", "continuation"):
-            blocked.append(
-                self.handoff_request(
-                    topic,
-                    operation="prepare-handoff",
-                    ledger_revision=2,
-                    handoff_kind=handoff_kind,
-                    target_slug=f"closed-{handoff_kind}",
-                    scope=["gate"],
-                    work_snapshot={
-                        "goal": "Attempt gated substantive work.",
-                        "confirmed_decisions": [],
-                        "pending_questions": ["Is the authority current?"],
-                    },
-                    authoritative_references=[
-                        {"kind": "checkpoint", "identity": "CP-source", "sha256": "1" * 64}
-                    ],
-                )
-            )
+        blocked.append(self.handoff_request(
+            topic, operation="prepare-handoff", ledger_revision=2, handoff_kind="child",
+            target_slug="closed-child", scope=["gate"],
+            work_snapshot={"goal": "Attempt gated substantive work.", "confirmed_decisions": [], "pending_questions": ["Is the authority current?"]},
+            authoritative_references=[{"kind": "checkpoint", "identity": "CP-source", "sha256": "1" * 64}],
+        ))
         for request in blocked:
             self.assert_topic_gate_blocked(
                 self.run_cli(request),
@@ -90,7 +77,6 @@ class TopicDependencyPhaseGateCliTests(DiscussionProtocolScenarioFixture, Discus
                 before=before,
                 prerequisite_topic_id=str(prepared["target_topic_id"]),
             )
-
         for to_phase in (1, 2):
             request = self.phase_request(
                 topic,
@@ -107,6 +93,16 @@ class TopicDependencyPhaseGateCliTests(DiscussionProtocolScenarioFixture, Discus
                 before=before,
                 prerequisite_topic_id=str(prepared["target_topic_id"]),
             )
+
+        continuation = self.handoff_request(
+            topic, operation="prepare-handoff", ledger_revision=2, handoff_kind="continuation",
+            target_slug="closed-continuation", scope=["recovery"],
+            work_snapshot={"goal": "Recover the unavailable conversation.", "confirmed_decisions": [], "pending_questions": []},
+            authoritative_references=[{"kind": "checkpoint", "identity": "CP-source", "sha256": "1" * 64}],
+        )
+        code, recovered, stderr = self.run_cli(continuation)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(recovered["state"], "setup-pending")
 
         phase_one_project = self.make_project("ticket07-closed-one-to-two", git=False)
         phase_one_topic = self.bootstrap_topic(phase_one_project)
