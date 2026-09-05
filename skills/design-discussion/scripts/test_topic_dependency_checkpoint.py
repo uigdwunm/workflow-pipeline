@@ -13,6 +13,113 @@ from test_topic_dependency_support import (
 
 
 class TopicDependencyCheckpointCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_large_checkpoint_candidate_releases_only_bounded_basis_via_cli(self) -> None:
+        """A legal 65-decision authority remains readable; only its basis is bounded."""
+        for git in (False, True):
+            with self.fixture.subTest(storage_kind="git" if git else "non-git"):
+                project = self.fixture.make_project(
+                    f"ticket07-large-checkpoint-candidate-{git}", git=git,
+                )
+                if git:
+                    (project / "base.txt").write_text("base\n", encoding="utf-8")
+                    subprocess.run(["git", "-C", str(project), "add", "base.txt"], check=True)
+                    subprocess.run(
+                        ["git", "-C", str(project), "-c", "user.name=Test",
+                         "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+                        check=True,
+                    )
+                topic = self.fixture.bootstrap_topic(project)
+                ledger = Path(str(topic["ledger_path"]))
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                decision_ids = [f"D-{index:03d}" for index in range(65)]
+                for decision_id in decision_ids:
+                    decision = {
+                        "decision_id": decision_id, "summary": f"Keep {decision_id}.",
+                        "rationale": "The candidate remains authoritative.",
+                        "state": "confirmed", "evolution": "confirmed",
+                    }
+                    records["Pending Items"].append({
+                        "item_id": decision_id, "item_kind": "decision",
+                        "topic_id": topic["topic_id"],
+                        "data_json": PROTOCOL._canonical_json(decision),
+                    })
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                prepared = self.fixture.prepare_checkpoint(
+                    topic, ledger_revision=1, purpose="stage-entry",
+                    base_ref="HEAD" if git else "project-root",
+                )
+                if git:
+                    checkpoint = self.fixture.publish_git_checkpoint(
+                        project, topic, prepared, ledger_revision=2,
+                    )
+                else:
+                    code, checkpoint, stderr = self.fixture.run_cli(
+                        self.fixture.checkpoint_request(
+                            topic, operation="publish-non-git-checkpoint",
+                            ledger_revision=2, checkpoint_id=prepared["checkpoint_id"],
+                            expected_checkpoint_revision=1,
+                        )
+                    )
+                    self.fixture.assertEqual(code, 0, stderr)
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                dependent_id = "topic-" + uuid.uuid4().hex
+                dependency_id = "DEP-" + uuid.uuid4().hex
+                add_topic(records, topic_id=dependent_id, root_slug="bounded-dependent",
+                    parent_topic_id=str(topic["topic_id"]))
+                add_binding(records, topic_id=dependent_id,
+                    conversation_ref="codex-thread:bounded-dependent")
+                add_closed_dependency(
+                    records, dependency_id=dependency_id, dependent_topic_id=dependent_id,
+                    prerequisite_topic_id=str(topic["topic_id"]),
+                    requirement_kind="phase-0-checkpoint",
+                    requirement_summary="Choose a bounded subset from the authority.",
+                    gate_reason_json=PROTOCOL._canonical_json({
+                        "kind": "explicit-create",
+                        "dependency_update_id": "00000000-0000-4000-8000-000000000000",
+                        "ledger_revision": 3,
+                    }),
+                )
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                bad = self.fixture.evolution_request(
+                    topic, operation="evaluate-topic-gate", basis_selection=[{
+                        "dependency_id": dependency_id,
+                        "authority_id": checkpoint["checkpoint_id"],
+                        "decision_ids": decision_ids,
+                    }],
+                )
+                bad["actor_topic_id"] = dependent_id
+                bad["actor_conversation_ref"] = "codex-thread:bounded-dependent"
+                before = ledger.read_bytes()
+                code, rejected, _ = self.fixture.run_cli(bad)
+                self.fixture.assertEqual(code, 1)
+                self.fixture.assertEqual(rejected["error"]["code"], "invalid_request")
+                self.fixture.assertEqual(ledger.read_bytes(), before)
+                good = {**bad, "basis_selection": [{
+                    "dependency_id": dependency_id,
+                    "authority_id": checkpoint["checkpoint_id"],
+                    "decision_ids": decision_ids[:64],
+                }]}
+                code, evaluation, stderr = self.fixture.run_cli(good)
+                self.fixture.assertEqual(code, 0, stderr)
+                release = self.fixture.evolution_request(
+                    topic, operation="release-topic-gate", expected_revision=3,
+                    expected_topic_revision=1, release_set=evaluation["release_set"],
+                    release_set_sha256=evaluation["release_set_sha256"],
+                )
+                release["actor_topic_id"] = dependent_id
+                release["actor_conversation_ref"] = "codex-thread:bounded-dependent"
+                code, opened, stderr = self.fixture.run_cli(release)
+                self.fixture.assertEqual(code, 0, stderr)
+                self.fixture.assertEqual(opened["state"], "open")
+                code, reread, stderr = self.fixture.run_cli(
+                    self.fixture.evolution_request(
+                        {**topic, "topic_id": dependent_id}, operation="read-topic",
+                        owner_ref="codex-thread:bounded-dependent",
+                    )
+                )
+                self.fixture.assertEqual(code, 0, stderr)
+                self.fixture.assertEqual(reread["derived_gate_state"], "open")
+
     def test_ticket07_checkpoint_supersession_recloses_direct_open_gates_via_cli(self) -> None:
         """A newer Phase-0 checkpoint retires only the released CP1 basis."""
         for git, reconcile in ((False, False), (True, False), (False, True)):

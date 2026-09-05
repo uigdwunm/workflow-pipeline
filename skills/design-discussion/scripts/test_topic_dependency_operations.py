@@ -11,6 +11,53 @@ from test_topic_dependency_support import TopicDependencyScenarioTest, add_topic
 
 
 class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_source_initial_dependency_rejects_published_authority_via_cli(self) -> None:
+        for phase in (0, 1):
+            with self.fixture.subTest(phase=phase):
+                project = self.fixture.make_project(
+                    f"ticket07-source-initial-published-{phase}", git=False,
+                )
+                topic = self.fixture.bootstrap_topic(project)
+                ledger_revision = 1
+                topic_revision = 1
+                if phase == 1:
+                    _, ledger_revision, topic_revision = self.fixture.complete_current_topic_phase(
+                        topic, ledger_revision=ledger_revision,
+                        topic_revision=topic_revision, from_phase=0, to_phase=1,
+                    )
+                self.fixture.publish_non_git_stage_entry_checkpoint(
+                    topic, ledger_revision=ledger_revision, topic_revision=topic_revision,
+                )
+                ledger_revision += 2
+                ledger = Path(str(topic["ledger_path"]))
+                before = ledger.read_bytes()
+                request = self.fixture.handoff_request(
+                    topic, operation="prepare-handoff", ledger_revision=ledger_revision,
+                    topic_revision=topic_revision, handoff_kind="child",
+                    target_slug="published-source", scope=["api"],
+                    work_snapshot={
+                        "goal": "Delegate dependent work.",
+                        "confirmed_decisions": [],
+                        "pending_questions": ["Which authority remains current?"],
+                    },
+                    authoritative_references=[{
+                        "kind": "checkpoint", "identity": "CP-source", "sha256": "1" * 64,
+                    }],
+                    initial_dependencies=[{
+                        "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+                        "requirement_kind": "confirmed-decision",
+                        "requirement_summary": "The child must provide the decision.",
+                    }],
+                )
+                code, rejected, _ = self.fixture.run_cli(request)
+                self.fixture.assertEqual(code, 1)
+                self.fixture.assertEqual(
+                    rejected["error"]["code"],
+                    "topic_dependency_published_authority_conflict",
+                )
+                self.fixture.assertEqual(rejected["error"]["context"]["phase"], phase)
+                self.fixture.assertEqual(ledger.read_bytes(), before)
+
     def test_ticket07_revision_booleans_are_rejected_in_request_and_ledger_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-exact-integers", git=False)
         topic = self.fixture.bootstrap_topic(project)

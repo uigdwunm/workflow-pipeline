@@ -12,7 +12,7 @@ from .state import (
 )
 from .topic_dependency_schema import (
     DEPENDENCY_AUTHORITY_KINDS, authority_descriptor, canonical_object,
-    canonical_string_array,
+    canonical_string_array, validate_dependency_records,
 )
 from .topic_dependency_authority import (
     authority_candidates, normalize_authority_selection,
@@ -327,6 +327,7 @@ def release_topic_gate(request: dict[str, Any]) -> dict[str, Any]:
         for item in _closed(records, request["actor_topic_id"]):
             match = next(entry for entry in evaluation["release_set"] if entry["dependency_id"] == item["dependency_id"])
             item["gate_state"] = "open"; item["record_revision"] += 1; item["accepted_basis_json"] = _canonical_json(match["basis"]); item["gate_reason_json"] = _canonical_json({"kind": "atomic-release", "release_id": request["idempotency_key"], "ledger_revision": revision + 1})
+        validate_dependency_records(records, ProtocolError)
         result = {"ok": True, "state": "open", "idempotent_replay": False, "ledger_revision": revision + 1, "record_revision": topic_revision, "derived_gate_state": "open", "accepted_bases": evaluation["release_set"]}
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=revision + 1, event_type="topic-gate-released", result=result)
         return result

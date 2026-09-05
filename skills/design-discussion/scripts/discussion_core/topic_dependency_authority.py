@@ -23,6 +23,7 @@ from .topic_dependency_schema import (
     canonical_string_array,
     decision_authority,
     decision_pair_digest,
+    validate_dependency_records,
 )
 
 def _state_corrupt(code: str, message: str) -> None:
@@ -451,4 +452,5 @@ def release_child_result_dependencies(
         dependency["record_revision"] += 1
         dependency["accepted_basis_json"] = _canonical_json(basis)
         dependency["gate_reason_json"] = _canonical_json({"kind": "child-result-absorb-release", "absorb_operation_id": absorb_operation_id, "ledger_revision": ledger_revision, "child_result_id": child_result_id})
+    validate_dependency_records(records, ProtocolError)
     return sorted(item[0]["dependency_id"] for item in selected)

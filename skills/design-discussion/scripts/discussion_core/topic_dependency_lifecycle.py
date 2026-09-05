@@ -227,6 +227,8 @@ def prepare_initial_dependencies(records: dict[str, list[dict[str, Any]]], *,
         prerequisite = endpoints.get(prerequisite_ref, prerequisite_ref)
         if dependent is None:
             raise ProtocolError("invalid_request", "initial dependency endpoint is invalid")
+        if dependent == request["actor_topic_id"]:
+            _reject_published_authority_change(records, dependent)
         _validate_new_edge(records, dependent, prerequisite, item["requirement_kind"],
             item["requirement_summary"])
         seed = _sha256(_canonical_json({"handoff_id": handoff_id, "index": index}).encode("utf-8"))[:32]

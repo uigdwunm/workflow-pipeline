@@ -15,13 +15,17 @@ The confirmed proposal prepares ledger state only.
 For standalone `1拷问`, a split creates a new root topic only: it creates no
 parent, continuation, or executable dependency edge.
 
-On a later user-requested Phase-0/1 turn with a closed gate, call
+On every later user-requested Phase-0/1 turn for a topic with Topic
+Dependencies, first call `read-topic` and inspect its current
+`derived_gate_state` before substantive work. This mandatory per-turn read
+observes an upstream reclosure that occurred between turns. If the derived gate
+is open, proceed without reevaluating evidence. If it is closed, call
 `evaluate-topic-gate`. Report the exact waiting condition if blocked. If it is
 releasable, show the selected current bases, obtain fresh confirmation, and
 call `release-topic-gate` for the complete closed set before substantive work.
 First-turn handoff acceptance, read-only inspection, and recovery remain
-available while closed. Do not poll, notify, wake, or reevaluate an open gate;
-Phase 2 and later do not consult Topic Dependencies.
+available while closed. Do not poll, notify, or wake an open gate; Phase 2 and
+later do not consult Topic Dependencies.
 
 The Phase Source Task owns split preparation and creation confirmations. A
 dedicated grilling carrier may return only a bounded proposal; it never

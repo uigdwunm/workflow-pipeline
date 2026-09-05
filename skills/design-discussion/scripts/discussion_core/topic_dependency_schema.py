@@ -86,6 +86,7 @@ AUTHORITY_DESCRIPTORS: dict[str, AuthorityDescriptor] = {}
 DEPENDENCY_AUTHORITY_KINDS = frozenset({
     "confirmed-decision", "phase-0-checkpoint", "phase-1-result",
 })
+MAX_AUTHORITY_DECISIONS = 64
 RECORD_FIELDS = {
     "dependency_id", "record_revision", "dependent_topic_id", "prerequisite_topic_id",
     "requirement_kind", "requirement_summary", "relation_state", "gate_state",
@@ -216,7 +217,9 @@ def _identity(value: Any, prefix: str) -> bool:
     )
 
 
-def canonical_string_array(value: Any, *, maximum: int = 64) -> bool:
+def canonical_string_array(
+    value: Any, *, maximum: int = MAX_AUTHORITY_DECISIONS,
+) -> bool:
     return (
         isinstance(value, list)
         and len(value) <= maximum
@@ -229,7 +232,7 @@ def canonical_string_array(value: Any, *, maximum: int = 64) -> bool:
 def _decision_pairs(value: Any) -> bool:
     return (
         isinstance(value, list)
-        and len(value) <= 64
+        and len(value) <= MAX_AUTHORITY_DECISIONS
         and all(
             isinstance(entry, dict)
             and set(entry) == {"decision_id", "sha256"}
@@ -477,16 +480,6 @@ AUTHORITY_DESCRIPTORS.update({
 })
 
 
-def _validate_ordinary_basis(
-    records: dict[str, list[dict[str, Any]]], item: dict[str, Any], basis: dict[str, Any],
-    decisions: list[dict[str, str]], authority: dict[str, Any], error: Callable[[str, str], None],
-) -> None:
-    """Resolve a persisted basis through its authority-kind strategy."""
-    authority_descriptor(item["requirement_kind"]).validate_retained_provenance(
-        records, item["prerequisite_topic_id"], authority, decisions, error
-    )
-
-
 def validate_dependency_records(
     records: dict[str, list[dict[str, Any]]], error: Callable[[str, str], None],
 ) -> None:
@@ -568,13 +561,8 @@ def validate_dependency_records(
                 and item["gate_state"] == "open"
                 and dependent_phase in {0, 1}
             ):
-                historical_item = {
-                    **item,
-                    "prerequisite_topic_id": basis["prerequisite_topic_id"],
-                    "requirement_kind": basis["requirement_kind"],
-                }
-                _validate_ordinary_basis(
-                    records, historical_item, basis, decisions, authority, error
+                descriptor.validate_retained_provenance(
+                    records, basis["prerequisite_topic_id"], authority, decisions, error
                 )
             child_result_id = basis.get("child_result_id")
             if child_result_id is not None:
