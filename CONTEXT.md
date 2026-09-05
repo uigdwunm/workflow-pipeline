@@ -68,6 +68,18 @@ The recorded association granting one Codex task or conversation active
 authority over a Discussion Topic.
 _Avoid_: Worktree Binding
 
+**Topic Dependency**:
+A requirements-stage prerequisite owned by its dependent Discussion Topic. It
+names one same-tree prerequisite and is mutable only in Discussion Phase 0 or
+1; it is not a structural relation or an implementation dependency.
+_Avoid_: Parent relation, implementation dependency
+
+**Topic Gate**:
+The derived Phase-0/1 permission to begin substantive work or advance a topic.
+It is closed while any active Topic Dependency is closed, is checked when the
+user asks to continue, and is not consulted by Workflow Stages 2–4.
+_Avoid_: Background monitor, implementation blocker
+
 ## Workflow roles
 
 **Phase Source Task**:

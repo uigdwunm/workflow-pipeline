@@ -1,6 +1,7 @@
 # 02 — Prepare gated topics from proactive split proposals
 
-Status: `ready-for-agent`
+Status: `completed`
+Lifecycle: completed
 
 ## What to build
 
@@ -21,10 +22,16 @@ created.
 
 ## Acceptance criteria
 
-- [ ] Phase-0 and Phase-1 wrapper contracts recommend a split only when all four confirmed independence criteria hold and display the complete fixed proposal before preparation.
-- [ ] Accepting the proposal authorizes only exact discussion-state preparation; the existing task-creation confirmation remains separate and names one task.
-- [ ] Attached Phase-0/1 flows create a same-tree Phase-0 child, while standalone Phase 1 proposes a new root without an executable cross-tree dependency.
-- [ ] A dedicated grilling carrier can return a bounded proposal but cannot prepare, create, bind, change, release, or cancel the dependency itself.
-- [ ] Child handoff preparation resolves source/target endpoint references internally and commits the topic, parent relation, handoff attempt, and all initial closed dependencies in one ledger transaction.
-- [ ] Failure injection proves the transaction creates all records or none, and handoff failure/outcome-unknown/retry/late-bind paths reuse the same dependencies without duplication.
-- [ ] Parent and continuation topology alone does not change Phase Run coverage evidence.
+- [x] Phase-0 and Phase-1 wrapper contracts recommend a split only when all four confirmed independence criteria hold and display the complete fixed proposal before preparation.
+- [x] Accepting the proposal authorizes only exact discussion-state preparation; the existing task-creation confirmation remains separate and names one task.
+- [x] Attached Phase-0/1 flows create a same-tree Phase-0 child, while standalone Phase 1 proposes a new root without an executable cross-tree dependency.
+- [x] A dedicated grilling carrier can return a bounded proposal but cannot prepare, create, bind, change, release, or cancel the dependency itself.
+- [x] Child handoff preparation resolves source/target endpoint references internally and commits the topic, parent relation, handoff attempt, and all initial closed dependencies in one ledger transaction.
+- [x] Failure injection proves the transaction creates all records or none, and handoff failure/outcome-unknown/retry/late-bind paths reuse the same dependencies without duplication.
+- [x] Parent and continuation topology alone does not change Phase Run coverage evidence.
+
+## Closure evidence
+
+- Accepted candidate: `7aab54330383ea8a7ff90815015f455f4efd4372`.
+- Wrapper, handoff, recovery, atomicity, and coverage contracts passed the
+  focused 108-test run and the 278-test full validation.
