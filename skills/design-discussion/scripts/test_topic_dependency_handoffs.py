@@ -139,6 +139,113 @@ class TopicDependencyHandoffCliTests(TopicDependencyScenarioMixin, unittest.Test
         self.assertEqual(code, 0, stderr)
         self.assertEqual(released["state"], "open")
 
+    def test_ticket07_only_closed_prerequisite_child_impact_bypasses_parent_gate_via_cli(self) -> None:
+        project = self.make_project("ticket07-impact-source-gate", git=False)
+        topic = self.bootstrap_topic(project)
+        ledger = Path(str(topic["ledger_path"]))
+
+        def activate(prepared: dict[str, object], child_ref: str, revision: int) -> int:
+            code, _, stderr = self.run_cli(self.handoff_request(
+                topic, operation="bind-handoff", ledger_revision=revision,
+                handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+                conversation_ref=child_ref, verified_identity={
+                    "project_id": topic["project_id"], "tree_id": topic["tree_id"],
+                    "topic_id": prepared["target_topic_id"], "handoff_id": prepared["handoff_id"],
+                    "attempt_id": prepared["attempt_id"], "payload_sha256": prepared["payload_sha256"],
+                },
+            ))
+            self.assertEqual(code, 0, stderr)
+            accept = self.handoff_request(
+                topic, operation="accept-handoff", ledger_revision=revision + 1,
+                owner_ref=child_ref, handoff_id=prepared["handoff_id"],
+                attempt_id=prepared["attempt_id"], payload_sha256=prepared["payload_sha256"],
+                source_reference_sha256=prepared["authoritative_references_sha256"], turn_number=1,
+            )
+            accept["actor_topic_id"] = prepared["target_topic_id"]
+            code, _, stderr = self.run_cli(accept)
+            self.assertEqual(code, 0, stderr)
+            authorize = self.handoff_request(
+                topic, operation="authorize-handoff-discussion", ledger_revision=revision + 2,
+                owner_ref=child_ref, handoff_id=prepared["handoff_id"],
+                attempt_id=prepared["attempt_id"], turn_number=2,
+            )
+            authorize["actor_topic_id"] = prepared["target_topic_id"]
+            code, _, stderr = self.run_cli(authorize)
+            self.assertEqual(code, 0, stderr)
+            return revision + 3
+
+        unrelated = self.prepare_child_handoff(topic)
+        revision = activate(unrelated, "codex-thread:unrelated-child", 2)
+        prerequisite = self.prepare_child_handoff(
+            topic, ledger_revision=revision,
+            initial_dependencies=[{
+                "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+                "requirement_kind": "confirmed-decision",
+                "requirement_summary": "Only this child may unblock the parent.",
+            }],
+        )
+        revision = activate(prerequisite, "codex-thread:prerequisite-child", revision + 1)
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        for prepared, decision_id in ((unrelated, "D-unrelated"), (prerequisite, "D-prerequisite")):
+            records["Pending Items"].append({
+                "item_id": decision_id, "item_kind": "decision",
+                "topic_id": prepared["target_topic_id"],
+                "data_json": PROTOCOL._canonical_json({
+                    "decision_id": decision_id, "summary": decision_id, "rationale": "Current.",
+                    "state": "confirmed", "evolution": "confirmed",
+                }),
+            })
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+
+        def submit_and_impact(
+            prepared: dict[str, object], child_ref: str, decision_id: str, current_revision: int,
+        ) -> tuple[dict[str, object], int]:
+            submit = self.handoff_request(
+                topic, operation="submit-child-result", ledger_revision=current_revision,
+                owner_ref=child_ref, handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+                result_scope=["api"], summary=decision_id, authority_selection={
+                    "authority_kind": "confirmed-decision", "authority_identity": None,
+                    "decision_ids": [decision_id],
+                },
+            )
+            submit["actor_topic_id"] = prepared["target_topic_id"]
+            code, claimed, stderr = self.run_cli(submit)
+            self.assertEqual(code, 0, stderr)
+            code, impact, stderr = self.run_cli(self.handoff_request(
+                topic, operation="record-child-result", ledger_revision=current_revision + 1,
+                handoff_id=prepared["handoff_id"], child_result_id=claimed["child_result_id"],
+                effect="impact",
+            ))
+            self.assertEqual(code, 0, stderr)
+            return impact, current_revision + 2
+
+        unrelated_impact, revision = submit_and_impact(
+            unrelated, "codex-thread:unrelated-child", "D-unrelated", revision
+        )
+        prerequisite_impact, revision = submit_and_impact(
+            prerequisite, "codex-thread:prerequisite-child", "D-prerequisite", revision
+        )
+        before = ledger.read_bytes()
+        code, rejected, _ = self.run_cli(self.evolution_request(
+            topic, operation="prepare-topic-update", expected_revision=revision,
+            expected_topic_revision=1, mutation={
+                "type": "resolve-impact", "impact_id": unrelated_impact["impact_id"],
+                "action": "accept", "summary": "Unrelated child cannot bypass this gate.",
+            },
+        ))
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "topic_gate_closed")
+        self.assertEqual(ledger.read_bytes(), before)
+        code, accepted, stderr = self.run_cli(self.evolution_request(
+            topic, operation="prepare-topic-update", expected_revision=revision,
+            expected_topic_revision=1, mutation={
+                "type": "resolve-impact", "impact_id": prerequisite_impact["impact_id"],
+                "action": "accept", "summary": "The prerequisite child may unblock its gate.",
+            },
+        ))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(accepted["impact_action"], "accept")
+
     def test_ticket07_absorb_release_replace_preserves_historical_child_basis_via_cli(self) -> None:
         project = self.make_project("ticket07-absorb-replace-history", git=False)
         topic = self.bootstrap_topic(project)

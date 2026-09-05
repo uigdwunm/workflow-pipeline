@@ -1137,6 +1137,13 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
                     isinstance(impact.get(field), str) and impact[field]
                     for field in ("impact_id", "source_topic_id", "handoff_id")
                 )
+                and any(
+                    dependency.get("dependent_topic_id") == request["actor_topic_id"]
+                    and dependency.get("prerequisite_topic_id") == impact["source_topic_id"]
+                    and dependency.get("relation_state") == "active"
+                    and dependency.get("gate_state") == "closed"
+                    for dependency in records["Topic Dependencies"]
+                )
             )
         if not child_result_impact_acceptance:
             apply_gate_policy(records, "discussion-update", request["actor_topic_id"])
