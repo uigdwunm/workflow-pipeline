@@ -500,6 +500,18 @@ def validate_dependency_records(
                 basis.get("prerequisite_topic_id") != prerequisite
                 or basis.get("requirement_kind") != item["requirement_kind"]
             )
+            dependent_phase = next(
+                (topic.get("current_phase") for topic in records["Current Topics"]
+                 if topic.get("topic_id") == item["dependent_topic_id"]),
+                None,
+            )
+            if (
+                item["relation_state"] == "active"
+                and item["gate_state"] == "open"
+                and dependent_phase in {0, 1}
+                and historical_basis
+            ):
+                error("state_corrupt", "enforcing topic dependency basis must be current")
             if (
                 basis.get("basis_version") != 1
                 or basis.get("dependency_id") != dep_id
@@ -526,11 +538,6 @@ def validate_dependency_records(
                     **item, "prerequisite_topic_id": basis["prerequisite_topic_id"],
                     "requirement_kind": authority_kind,
                 }, basis, decisions, authority, error)
-            dependent_phase = next(
-                (topic.get("current_phase") for topic in records["Current Topics"]
-                 if topic.get("topic_id") == item["dependent_topic_id"]),
-                None,
-            )
             # A currently enforcing open gate must resolve current authority.
             # Closed/cancelled/Phase-2 records retain historical evidence even
             # after a legitimate invalidation changes the source decisions.

@@ -7,7 +7,6 @@ which authority can satisfy a record; that is the authority module's concern.
 from __future__ import annotations
 
 import uuid
-import json
 from typing import Any
 
 from .state import (
@@ -19,6 +18,7 @@ from .state import (
 from .topic_dependency_schema import (
     DEPENDENCY_AUTHORITY_KINDS, canonical_object, validate_dependency_records,
 )
+from .topic_dependency_authority import published_stage_entry_authority
 
 
 def _state_corrupt(code: str, message: str) -> None:
@@ -179,57 +179,6 @@ def _validate_new_edge(records: dict[str, list[dict[str, Any]]], dependent: str,
         raise
 
 
-def _published_stage_entry_authority(
-    records: dict[str, list[dict[str, Any]]], dependent_topic_id: str, phase: int,
-) -> dict[str, Any] | None:
-    """Project the one still-current stage-entry authority for a phase.
-
-    A Phase-0 checkpoint is consumed by a later Phase Result.  It is not
-    resurrected when that result is reopened, so a reopened Phase 0 can mutate
-    dependencies before it publishes a fresh stage-entry authority.
-    """
-    if phase == 0:
-        for result in records["Phase Results"]:
-            if (
-                result.get("result_kind") != "phase-result"
-                or result.get("state") not in {"completed", "review-pending"}
-            ):
-                continue
-            try:
-                data = json.loads(str(result.get("data_json")))
-            except (TypeError, ValueError, json.JSONDecodeError) as error:
-                raise ProtocolError("state_corrupt", "Phase Result authority is corrupt") from error
-            if (
-                data.get("topic_id") == dependent_topic_id
-                and data.get("from_phase") == 0
-            ):
-                return None
-    for record in reversed(records["Checkpoints"]):
-        if record.get("topic_id") != dependent_topic_id or record.get("state") != "completed":
-            continue
-        try:
-            checkpoint = json.loads(str(record.get("data_json")))
-        except (TypeError, ValueError, json.JSONDecodeError) as error:
-            raise ProtocolError("state_corrupt", "published checkpoint is corrupt") from error
-        if (
-            checkpoint.get("purpose") != "stage-entry"
-            or checkpoint.get("stage_entry_phase") != phase
-            or not checkpoint.get("published_identity")
-        ):
-            continue
-        if phase == 0:
-            return {
-                "authority_kind": "phase-0-checkpoint",
-                "authority_id": checkpoint.get("checkpoint_id"),
-            }
-        if phase == 1 and checkpoint.get("stage_entry_phase_result_id"):
-            return {
-                "authority_kind": "phase-1-result",
-                "authority_id": checkpoint.get("stage_entry_phase_result_id"),
-            }
-    return None
-
-
 def _reject_published_authority_change(
     records: dict[str, list[dict[str, Any]]], dependent_topic_id: str,
 ) -> None:
@@ -238,7 +187,7 @@ def _reject_published_authority_change(
         "dependent_topic_id")
     phase = topic.get("current_phase")
     authority = (
-        _published_stage_entry_authority(records, dependent_topic_id, phase)
+        published_stage_entry_authority(records, dependent_topic_id, phase)
         if phase in {0, 1} else None
     )
     if authority is not None:

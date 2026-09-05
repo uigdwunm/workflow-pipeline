@@ -13,6 +13,62 @@ from test_topic_dependency_support import (
 
 
 class TopicDependencyCheckpointCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_enforcing_open_basis_cannot_keep_historical_edge_via_cli(self) -> None:
+        project = self.fixture.make_project("ticket07-enforcing-current-basis", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        self.fixture.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        prerequisite_id = "topic-" + "a" * 32
+        dependent_id = "topic-" + "c" * 32
+        add_topic(records, topic_id=prerequisite_id, root_slug="decision-source",
+            parent_topic_id=str(topic["topic_id"]))
+        add_topic(records, topic_id=dependent_id, root_slug="dependent",
+            parent_topic_id=str(topic["topic_id"]))
+        add_binding(records, topic_id=dependent_id, conversation_ref="codex-thread:dependent")
+        decision = {
+            "decision_id": "D-a", "summary": "Keep A.", "rationale": "Current.",
+            "state": "confirmed", "evolution": "confirmed",
+        }
+        digest = hashlib.sha256(PROTOCOL._canonical_json(decision).encode("utf-8")).hexdigest()
+        pairs = [{"decision_id": "D-a", "sha256": digest}]
+        records["Pending Items"].append({
+            "item_id": "D-a", "item_kind": "decision", "topic_id": prerequisite_id,
+            "data_json": PROTOCOL._canonical_json(decision),
+        })
+        dependency_id = "DEP-" + "d" * 32
+        add_closed_dependency(
+            records, dependency_id=dependency_id, dependent_topic_id=dependent_id,
+            prerequisite_topic_id=str(topic["topic_id"]),
+            requirement_kind="phase-0-checkpoint", requirement_summary="Checkpoint C.",
+            gate_reason_json=PROTOCOL._canonical_json({
+                "kind": "atomic-release", "release_id": "00000000-0000-4000-8000-000000000000",
+                "ledger_revision": 1,
+            }),
+        )
+        dependency = records["Topic Dependencies"][-1]
+        dependency["record_revision"] = 2
+        dependency["gate_state"] = "open"
+        dependency["accepted_basis_json"] = PROTOCOL._canonical_json({
+            "basis_version": 1, "dependency_id": dependency_id,
+            "prerequisite_topic_id": prerequisite_id,
+            "requirement_kind": "confirmed-decision", "decision_authority": pairs,
+            "authority": {
+                "decision_set_digest": hashlib.sha256(
+                    PROTOCOL._canonical_json(pairs).encode("utf-8")
+                ).hexdigest(),
+            },
+        })
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before = ledger.read_bytes()
+        request = self.fixture.evolution_request(topic, operation="read-topic")
+        request["actor_topic_id"] = dependent_id
+        request["actor_conversation_ref"] = "codex-thread:dependent"
+        code, rejected, _ = self.fixture.run_cli(request)
+        self.fixture.assertEqual(code, 1)
+        self.fixture.assertEqual(rejected["error"]["code"], "state_corrupt")
+        self.fixture.assertEqual(ledger.read_bytes(), before)
+
     def test_ticket07_stale_checkpoint_release_is_rejected_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-stale-checkpoint-release", git=False)
         topic = self.fixture.bootstrap_topic(project)
