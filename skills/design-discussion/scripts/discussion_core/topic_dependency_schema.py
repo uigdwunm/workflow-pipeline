@@ -154,9 +154,7 @@ def decision_authority(
     """Normalize and hash decision authority without depending on ledger owners."""
     ordered = sorted(decisions, key=lambda item: item["decision_id"])
     digests = {
-        item["decision_id"]: hashlib.sha256(
-            json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        item["decision_id"]: _decision_sha256(item)
         for item in ordered
     }
     relevant = relevant_decision_ids if relevant_decision_ids is not None else {
@@ -190,6 +188,13 @@ def decision_pair_digest(decisions: list[dict[str, Any]]) -> str:
     ]
     return hashlib.sha256(
         json.dumps(pairs, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _decision_sha256(decision: dict[str, Any]) -> str:
+    """Hash one exact canonical decision record wherever provenance needs it."""
+    return hashlib.sha256(
+        json.dumps(decision, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
 
 
@@ -325,9 +330,7 @@ def _ledger_decision_pairs(
         decision_id = decision.get("decision_id")
         if not isinstance(decision_id, str) or record.get("item_id") != decision_id:
             error("state_corrupt", "decision envelope is incoherent")
-        pairs[decision_id] = hashlib.sha256(
-            json.dumps(decision, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        pairs[decision_id] = _decision_sha256(decision)
     return pairs
 
 

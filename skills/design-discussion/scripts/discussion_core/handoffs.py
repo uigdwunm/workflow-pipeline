@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import re
 import uuid
 from typing import Any
 
@@ -20,8 +22,10 @@ from .state import (
     _inject_failure,
     _json_field,
     _load_records,
+    _parse_frontmatter,
     _mutation_fingerprint,
     _record_by_id,
+    _require_regular_nosymlink,
     _sha256,
     _topic_snapshot,
     _validate_revisions,
@@ -205,6 +209,51 @@ def _freeze_suspended_question_resolution(
     return frozen
 
 
+def _freeze_resolution_document_write(
+    records: dict[str, list[dict[str, Any]]], *, ledger_path: Path, topic_path: Path,
+    topic_id: str, topic_revision: int, owner_ref: str, resolution: dict[str, str], idempotency_key: str,
+) -> dict[str, str]:
+    """Stage the source document replacement with the same recoverable write contract."""
+    before = _require_regular_nosymlink(topic_path, "topic document")
+    question_id = re.escape(resolution["question_id"])
+    text = before.decode("utf-8")
+    if resolution["action"] == "invalidate":
+        after_text, count = re.subn(rf"(?m)^- `{question_id}` \[suspended\] .*\n?", "", text)
+    else:
+        prompt = resolution.get("adjusted_prompt")
+        replacement = f"- `{resolution['question_id']}` [active] " + (prompt or "")
+        if prompt is None:
+            match = re.search(rf"(?m)^- `{question_id}` \[suspended\] (.*)$", text)
+            if match is None:
+                raise ProtocolError("state_corrupt", "suspended question is missing from topic document")
+            replacement += match.group(1)
+        after_text, count = re.subn(rf"(?m)^- `{question_id}` \[suspended\] .*$", replacement, text)
+    if count != 1:
+        raise ProtocolError("state_corrupt", "suspended question is missing from topic document")
+    after_text, revision_count = re.subn(
+        rf"(?m)^topic_revision: {topic_revision - 1}$", f"topic_revision: {topic_revision}", after_text,
+    )
+    if revision_count != 1:
+        raise ProtocolError("state_corrupt", "topic document revision is not current")
+    after = after_text.encode("utf-8")
+    write_id = f"DW-{uuid.UUID(idempotency_key).hex}"
+    payload_path = ledger_path.parent / "pending-writes" / f"{write_id}.payload"
+    payload_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        fd = os.open(payload_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+    except OSError as error:
+        raise ProtocolError("document_write_orphan_conflict", "handoff document payload already exists") from error
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(after)
+    records["Pending Document Writes"].append({
+        "document_write_id": write_id, "topic_id": topic_id, "owner_ref": owner_ref,
+        "topic_path": str(topic_path), "payload_path": str(payload_path),
+        "before_sha256": _sha256(before), "after_sha256": _sha256(after),
+        "state": "confirmed-but-pending",
+    })
+    return {"document_write_id": write_id, "payload_path": str(payload_path)}
+
+
 def _handoff_result(
     request: dict[str, Any],
     handoff: dict[str, Any],
@@ -232,7 +281,7 @@ def _handoff_result(
 
 
 def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
-    project, ledger_path, _, lock_path, owner_ref = _evolution_paths(
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(
         request, allow_tree_topic=True
     )
     allowed = {
@@ -300,6 +349,14 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         resolved_topic_revision = topic_revision + int(suspended_question_resolution is not None)
         if suspended_question_resolution is not None:
             source_topic["record_revision"] = resolved_topic_revision
+            document_write = _freeze_resolution_document_write(
+                records, ledger_path=ledger_path, topic_path=topic_path,
+                topic_id=request["actor_topic_id"], topic_revision=resolved_topic_revision,
+                owner_ref=owner_ref, resolution=suspended_question_resolution,
+                idempotency_key=request["idempotency_key"],
+            )
+        else:
+            document_write = None
         target_topic_id = (
             request["actor_topic_id"] if kind == "continuation" else f"topic-{uuid.UUID(request['idempotency_key']).hex}"
         )
@@ -325,6 +382,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             "creation_result_json": "",
             "initial_dependencies": request.get("initial_dependencies", []),
             "suspended_question_resolution": suspended_question_resolution,
+            "document_write": document_write,
         }
         attempt = {
             "attempt_id": attempt_id,
@@ -408,17 +466,23 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             "handoff_payload_bytes": payload_bytes,
             "initial_dependencies": initial_dependencies,
             "suspended_question_resolution": suspended_question_resolution,
+            **({"document_write_id": document_write["document_write_id"]} if document_write else {}),
         }
         handoff["creation_result_json"] = _canonical_json(result)
         _store_handoff(
             _record_by_id(records["Phase Runs"], "run_id", handoff_id, "handoff_id"),
             handoff,
         )
-        _inject_failure("handoff-after-initial-dependencies-before-ledger-write")
-        _write_ledger_transaction(
-            ledger_path, frontmatter, records, request,
-            ledger_revision=next_revision, event_type="handoff-prepared", result=result,
-        )
+        try:
+            _inject_failure("handoff-after-initial-dependencies-before-ledger-write")
+            _write_ledger_transaction(
+                ledger_path, frontmatter, records, request,
+                ledger_revision=next_revision, event_type="handoff-prepared", result=result,
+            )
+        except Exception:
+            if document_write is not None:
+                Path(document_write["payload_path"]).unlink(missing_ok=True)
+            raise
         return result
 
 

@@ -34,6 +34,8 @@ class TopicDependencyHandoffCliTests(DiscussionProtocolScenarioFixture, Discussi
                     resolution = {"question_id": question["question_id"], "action": action}
                     if action == "adjust":
                         resolution["adjusted_prompt"] = "Which dependency boundary is safest?"
+                    topic_path = Path(str(topic["topic_document_path"]))
+                    before_document = topic_path.read_bytes()
                     initial_dependencies = ([{
                         "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
                         "requirement_kind": "confirmed-decision",
@@ -62,6 +64,7 @@ class TopicDependencyHandoffCliTests(DiscussionProtocolScenarioFixture, Discussi
                         self.assertEqual(code, 1)
                         self.assertEqual(rejected["error"]["code"], "injected_failure")
                         self.assertEqual(Path(str(topic["ledger_path"])).read_bytes(), before)
+                        self.assertEqual(topic_path.read_bytes(), before_document)
                     prepared = self.prepare_child_handoff(
                         topic, ledger_revision=ledger_revision, topic_revision=topic_revision,
                         initial_dependencies=initial_dependencies,
@@ -69,6 +72,23 @@ class TopicDependencyHandoffCliTests(DiscussionProtocolScenarioFixture, Discussi
                     )
                     self.assertEqual(prepared["suspended_question_resolution"], resolution)
                     self.assertEqual(prepared["record_revision"], topic_revision + 1)
+                    code, applied, stderr = self.run_cli(self.evolution_request(
+                        topic, operation="apply-document-write",
+                        expected_revision=prepared["ledger_revision"],
+                        expected_topic_revision=prepared["record_revision"],
+                        document_write_id=prepared["document_write_id"],
+                    ))
+                    self.assertEqual(code, 0, stderr)
+                    self.assertTrue(applied["document_verified"])
+                    document = topic_path.read_text(encoding="utf-8")
+                    self.assertNotEqual(topic_path.read_bytes(), before_document)
+                    self.assertIn(f"topic_revision: {topic_revision + 1}", document)
+                    if action == "invalidate":
+                        self.assertNotIn(str(question["question_id"]), document)
+                    else:
+                        self.assertIn(f"`{question['question_id']}` [active]", document)
+                    if action == "adjust":
+                        self.assertIn(resolution["adjusted_prompt"], document)
                     code, current, stderr = self.run_cli(self.evolution_request(topic, operation="read-topic"))
                     self.assertEqual(code, 0, stderr)
                     resolved = next(item for item in current["questions"] if item["question_id"] == question["question_id"])
