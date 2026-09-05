@@ -2,16 +2,15 @@
 
 from pathlib import Path
 import sys
-import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 import discussion_protocol as PROTOCOL
 from test_discussion_protocol import hashlib, json, os, subprocess, uuid, ThreadPoolExecutor
-from test_topic_dependency_support import TopicDependencyScenarioMixin
+from test_topic_dependency_support import DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport
 
 
-class TopicDependencyHandoffCliTests(TopicDependencyScenarioMixin, unittest.TestCase):
+class TopicDependencyHandoffCliTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport):
     def test_ticket07_confirmed_child_result_freezes_only_selected_decisions_via_cli(self) -> None:
         project = self.make_project("ticket07-confirmed-narrow-child", git=False)
         topic = self.bootstrap_topic(project)

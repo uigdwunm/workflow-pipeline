@@ -1,4 +1,4 @@
-"""Shared fixture adapter for focused Ticket-07 CLI test modules."""
+"""Shared record builders and scenario bases for focused Ticket-07 CLI tests."""
 
 from __future__ import annotations
 
@@ -7,6 +7,11 @@ import sys
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+from test_discussion_protocol import (
+    DiscussionProtocolScenarioFixture,
+    DiscussionProtocolTestSupport,
+)
 
 
 def add_topic(
@@ -48,24 +53,3 @@ def add_closed_dependency(
         "gate_reason_json": gate_reason_json,
     })
 
-
-class TopicDependencyScenarioMixin:
-    """Expose the protocol scenario helpers directly to dependency test cases."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        from test_discussion_protocol import DiscussionProtocolEvolutionTests
-        self._protocol_scenario = DiscussionProtocolEvolutionTests("runTest")
-        self._protocol_scenario.setUp()
-
-    def tearDown(self) -> None:
-        try:
-            self._protocol_scenario.tearDown()
-        finally:
-            super().tearDown()
-
-    def __getattr__(self, name: str) -> Any:
-        scenario = self.__dict__.get("_protocol_scenario")
-        if scenario is None:
-            raise AttributeError(name)
-        return getattr(scenario, name)

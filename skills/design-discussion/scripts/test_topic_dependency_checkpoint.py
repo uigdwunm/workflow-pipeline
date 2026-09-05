@@ -2,18 +2,17 @@
 
 from pathlib import Path
 import sys
-import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 import discussion_protocol as PROTOCOL
 from test_discussion_protocol import hashlib, json, os, subprocess, uuid, ThreadPoolExecutor
 from test_topic_dependency_support import (
-    TopicDependencyScenarioMixin, add_binding, add_closed_dependency, add_topic,
+    DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport, add_binding, add_closed_dependency, add_topic,
 )
 
 
-class TopicDependencyCheckpointCliTests(TopicDependencyScenarioMixin, unittest.TestCase):
+class TopicDependencyCheckpointCliTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport):
     def test_ticket07_cross_topic_checkpoint_mutation_is_rejected_atomically_via_cli(self) -> None:
         project = self.make_project("ticket07-cross-topic-checkpoint", git=False)
         topic = self.bootstrap_topic(project)

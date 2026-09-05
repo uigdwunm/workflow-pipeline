@@ -8,16 +8,15 @@ import importlib
 import uuid
 from pathlib import Path
 import sys
-import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 import discussion_protocol as PROTOCOL
-from test_topic_dependency_support import TopicDependencyScenarioMixin
+from test_topic_dependency_support import DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport
 from discussion_core.topic_dependency_schema import authority_descriptor
 
 
-class TopicDependencyCliTests(TopicDependencyScenarioMixin, unittest.TestCase):
+class TopicDependencyCliTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport):
     """Reuse the evolution fixture without inheriting its unrelated test methods."""
 
     def _evaluated_confirmed_dependency(self, name: str) -> tuple[dict[str, object], dict[str, object], Path, dict[str, object]]:

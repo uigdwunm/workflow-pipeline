@@ -2,16 +2,15 @@
 
 from pathlib import Path
 import sys
-import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 import discussion_protocol as PROTOCOL
 from test_discussion_protocol import hashlib, json, os, subprocess, uuid, ThreadPoolExecutor
-from test_topic_dependency_support import TopicDependencyScenarioMixin, add_topic
+from test_topic_dependency_support import DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport, add_topic
 
 
-class TopicDependencyOperationCliTests(TopicDependencyScenarioMixin, unittest.TestCase):
+class TopicDependencyOperationCliTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport):
     def test_ticket07_phase_two_reopen_recloses_stale_own_gate_via_cli(self) -> None:
         project = self.make_project("ticket07-reopen-stale-own-gate", git=False)
         topic = self.bootstrap_topic(project)

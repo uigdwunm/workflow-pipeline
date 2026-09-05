@@ -2,7 +2,6 @@
 
 from pathlib import Path
 import sys
-import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -10,11 +9,11 @@ import discussion_protocol as PROTOCOL
 from discussion_core.topic_dependency_gates import GATE_OPERATION_POLICIES
 from test_discussion_protocol import hashlib, json, os, subprocess, uuid, ThreadPoolExecutor
 from test_topic_dependency_support import (
-    TopicDependencyScenarioMixin, add_binding, add_closed_dependency, add_topic,
+    DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport, add_binding, add_closed_dependency, add_topic,
 )
 
 
-class TopicDependencyPhaseGateCliTests(TopicDependencyScenarioMixin, unittest.TestCase):
+class TopicDependencyPhaseGateCliTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport):
     def test_ticket07_gate_operation_policy_declares_every_boundary(self) -> None:
         enforcing = {
             "discussion-update", "stage-entry-checkpoint", "prepare-handoff",

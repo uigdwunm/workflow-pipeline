@@ -708,7 +708,9 @@ class DiscussionProtocolBootstrapTests(DiscussionProtocolTestSupport):
         )
 
 
-class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
+class DiscussionProtocolScenarioFixture:
+    """Reusable CLI scenario helpers; this class defines no test methods."""
+
     def bootstrap_topic(
         self, project: Path, *, owner_ref: str = "discussion-task"
     ) -> tuple[dict[str, object], dict[str, str]]:
@@ -717,6 +719,440 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         )
         self.assertEqual(returncode, 0, stderr)
         return response
+
+    def phase_request(self, topic, operation, revision, **parameters):
+        return {
+            "protocol_version": 1,
+            "operation": operation,
+            "project_path": str(Path(str(topic["topic_document_path"])).parents[3]),
+            "project_id": topic["project_id"],
+            "tree_id": topic["tree_id"],
+            "actor_topic_id": topic["topic_id"],
+            "actor_conversation_ref": "discussion-task",
+            "expected_ledger_revision": revision,
+            "expected_topic_revision": parameters.pop("topic_revision", 1),
+            "idempotency_key": str(uuid.uuid4()),
+            **parameters,
+        }
+
+    def prepare_phase_run(
+        self,
+        topic,
+        *,
+        revision=1,
+        topic_revision=1,
+        from_phase=0,
+        to_phase=1,
+        carrier_kind="worker",
+    ):
+        code, prepared, stderr = self.run_cli(
+            self.phase_request(
+                topic,
+                "prepare-phase-run",
+                revision,
+                topic_revision=topic_revision,
+                from_phase=from_phase,
+                to_phase=to_phase,
+                route=f"{from_phase}->{to_phase}",
+                carrier_kind=carrier_kind,
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(
+            set(prepared["evidence"]),
+            {"source", "route", "impact", "coverage", "dependency", "coordination"},
+        )
+        return prepared
+
+    def complete_current_topic_phase(
+        self,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int,
+        topic_revision: int,
+        from_phase: int,
+        to_phase: int,
+    ) -> tuple[dict[str, object], int, int]:
+        prepared = self.prepare_phase_run(
+            topic,
+            revision=ledger_revision,
+            topic_revision=topic_revision,
+            from_phase=from_phase,
+            to_phase=to_phase,
+            carrier_kind="current-topic",
+        )
+        evidence = prepared["evidence"]
+        revision = ledger_revision + 1
+        result: dict[str, object] = prepared
+        for operation, parameters in (
+            ("authorize-phase-carrier", {"carrier_ref": "discussion-task"}),
+            ("phase-ready", {"carrier_ref": "discussion-task", "evidence": evidence}),
+            ("phase-activate", {"evidence": evidence}),
+            (
+                "claim-phase-completion",
+                {"carrier_ref": "discussion-task", "evidence": evidence},
+            ),
+            ("complete-phase-run", {"evidence": evidence}),
+            ("finalize-phase-run", {"evidence": evidence}),
+        ):
+            code, result, stderr = self.run_cli(
+                self.phase_request(
+                    topic,
+                    operation,
+                    revision,
+                    topic_revision=topic_revision,
+                    phase_run_id=prepared["phase_run_id"],
+                    attempt_id=prepared["attempt_id"],
+                    **parameters,
+                )
+            )
+            self.assertEqual(code, 0, stderr)
+            revision += 1
+        return result, revision, topic_revision + 1
+
+    def publish_non_git_stage_entry_checkpoint(
+        self,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int,
+        topic_revision: int = 1,
+    ) -> dict[str, object]:
+        prepared = self.prepare_checkpoint(
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            purpose="stage-entry",
+        )
+        code, published, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="publish-non-git-checkpoint",
+                ledger_revision=ledger_revision + 1,
+                topic_revision=topic_revision,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=prepared["checkpoint_record_revision"],
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        return published
+
+    def evolution_request(
+        self,
+        topic: dict[str, object],
+        *,
+        operation: str,
+        expected_revision: int | None = None,
+        expected_topic_revision: int | None = None,
+        owner_ref: str = "discussion-task",
+        **parameters: object,
+    ) -> dict[str, object]:
+        request: dict[str, object] = {
+            "protocol_version": 1,
+            "operation": operation,
+            "project_path": str(Path(str(topic["topic_document_path"])).parents[3]),
+            "project_id": topic["project_id"],
+            "tree_id": topic["tree_id"],
+            "actor_topic_id": topic["topic_id"],
+            "actor_conversation_ref": owner_ref,
+        }
+        if expected_revision is not None:
+            request.update(
+                {
+                    "expected_ledger_revision": expected_revision,
+                    "expected_topic_revision": expected_topic_revision or expected_revision,
+                    "idempotency_key": str(uuid.uuid4()),
+                }
+            )
+        request.update(parameters)
+        return request
+
+    def checkpoint_request(
+        self,
+        topic: dict[str, object],
+        *,
+        operation: str,
+        ledger_revision: int | None = None,
+        topic_revision: int = 1,
+        **parameters: object,
+    ) -> dict[str, object]:
+        return self.evolution_request(
+            topic,
+            operation=operation,
+            expected_revision=ledger_revision,
+            expected_topic_revision=topic_revision,
+            **parameters,
+        )
+
+    def handoff_request(
+        self,
+        topic: dict[str, object],
+        *,
+        operation: str,
+        ledger_revision: int | None = None,
+        topic_revision: int = 1,
+        owner_ref: str = "discussion-task",
+        **parameters: object,
+    ) -> dict[str, object]:
+        return self.evolution_request(
+            topic,
+            operation=operation,
+            expected_revision=ledger_revision,
+            expected_topic_revision=topic_revision,
+            owner_ref=owner_ref,
+            **parameters,
+        )
+
+    def prepare_child_handoff(
+        self,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int = 1,
+        topic_revision: int = 1,
+        scope: list[str] | None = None,
+        work_snapshot: dict[str, object] | None = None,
+        initial_dependencies: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        returncode, prepared, stderr = self.run_cli(
+            self.handoff_request(
+                topic,
+                operation="prepare-handoff",
+                ledger_revision=ledger_revision,
+                topic_revision=topic_revision,
+                handoff_kind="child",
+                target_slug="api-shape",
+                scope=scope or ["api"],
+                work_snapshot=work_snapshot
+                or {
+                    "goal": "Choose the public API shape.",
+                    "confirmed_decisions": [],
+                    "pending_questions": ["Which requests are public?"],
+                },
+                authoritative_references=[
+                    {
+                        "kind": "checkpoint",
+                        "identity": "CP-source",
+                        "sha256": "1" * 64,
+                    }
+                ],
+                **({"initial_dependencies": initial_dependencies} if initial_dependencies is not None else {}),
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        return prepared
+
+    def activate_child_handoff(
+        self, topic: dict[str, object], *, initial_dependencies: list[dict[str, object]] | None = None,
+    ) -> tuple[dict[str, object], str]:
+        """Cross the public handoff seam through later-turn authorization."""
+        prepared = self.prepare_child_handoff(
+            topic, initial_dependencies=initial_dependencies
+        )
+        child_ref = "codex-thread:dependency-child"
+        code, _, stderr = self.run_cli(
+            self.handoff_request(
+                topic, operation="bind-handoff", ledger_revision=2,
+                handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+                conversation_ref=child_ref,
+                verified_identity={
+                    "project_id": topic["project_id"], "tree_id": topic["tree_id"],
+                    "topic_id": prepared["target_topic_id"], "handoff_id": prepared["handoff_id"],
+                    "attempt_id": prepared["attempt_id"], "payload_sha256": prepared["payload_sha256"],
+                },
+            )
+        )
+        self.assertEqual(code, 0, stderr)
+        accept = self.handoff_request(
+            topic, operation="accept-handoff", ledger_revision=3, owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+            payload_sha256=prepared["payload_sha256"],
+            source_reference_sha256=prepared["authoritative_references_sha256"], turn_number=1,
+        )
+        accept["actor_topic_id"] = prepared["target_topic_id"]
+        code, _, stderr = self.run_cli(accept)
+        self.assertEqual(code, 0, stderr)
+        authorize = self.handoff_request(
+            topic, operation="authorize-handoff-discussion", ledger_revision=4,
+            owner_ref=child_ref, handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"], turn_number=2,
+        )
+        authorize["actor_topic_id"] = prepared["target_topic_id"]
+        code, _, stderr = self.run_cli(authorize)
+        self.assertEqual(code, 0, stderr)
+        return prepared, child_ref
+
+    def assert_topic_gate_blocked(
+        self,
+        result: tuple[int, dict[str, object], str],
+        *,
+        ledger: Path,
+        before: bytes,
+        prerequisite_topic_id: str,
+    ) -> None:
+        code, rejected, stderr = result
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(rejected["error"]["code"], "topic_gate_closed")
+        context = rejected["error"]["context"]
+        self.assertEqual(context["derived_gate_state"], "closed")
+        self.assertEqual(
+            context["blocked_dependencies"][0]["prerequisite_topic_id"],
+            prerequisite_topic_id,
+        )
+        self.assertEqual(context["blocked_dependencies"][0]["prerequisite_phase"], 0)
+        self.assertEqual(context["blocked_dependencies"][0]["prerequisite_state"], "open")
+        self.assertEqual(
+            context["blocked_dependencies"][0]["waiting_reason"],
+            "current required authority is unavailable",
+        )
+        self.assertEqual(ledger.read_bytes(), before)
+
+    def prepare_checkpoint(
+        self,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int,
+        topic_revision: int = 1,
+        purpose: str = "pause",
+        base_ref: str = "HEAD",
+    ) -> dict[str, object]:
+        returncode, prepared, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="prepare-checkpoint",
+                ledger_revision=ledger_revision,
+                topic_revision=topic_revision,
+                purpose=purpose,
+                base_ref=base_ref,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        return prepared
+
+    def publish_git_checkpoint(
+        self,
+        project: Path,
+        topic: dict[str, object],
+        prepared: dict[str, object],
+        *,
+        ledger_revision: int,
+        topic_revision: int = 1,
+    ) -> dict[str, object]:
+        returncode, published, stderr = self.run_cli(
+            self.checkpoint_request(
+                topic,
+                operation="publish-git-checkpoint",
+                ledger_revision=ledger_revision,
+                topic_revision=topic_revision,
+                checkpoint_id=prepared["checkpoint_id"],
+                expected_checkpoint_revision=prepared["checkpoint_record_revision"],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        return published
+
+    def create_matching_checkpoint_commit(
+        self,
+        project: Path,
+        prepared: dict[str, object],
+        *,
+        timestamp: str,
+        parent_commit: str | None = None,
+    ) -> str:
+        path = str(prepared["paths"][0])
+        document = (project / path).read_bytes()
+        blob_id = subprocess.run(
+            ["git", "-C", str(project), "hash-object", "-w", "--stdin"],
+            input=document,
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout.decode("ascii").strip()
+        index_path = self.root / f"index-{uuid.uuid4().hex}"
+        environment = dict(os.environ)
+        environment["GIT_INDEX_FILE"] = str(index_path)
+        parent = parent_commit or str(prepared["base_commit"])
+        subprocess.run(
+            ["git", "-C", str(project), "read-tree", parent],
+            check=True,
+            env=environment,
+        )
+        subprocess.run(
+            ["git", "-C", str(project), "update-index", "--add", "--cacheinfo", "100644", blob_id, path],
+            check=True,
+            env=environment,
+        )
+        tree_id = subprocess.run(
+            ["git", "-C", str(project), "write-tree"],
+            check=True,
+            env=environment,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        message = (
+            f"discussion checkpoint: {prepared['purpose']}\n\n"
+            f"Codex-Discussion-Checkpoint: {prepared['checkpoint_id']}\n"
+            f"Codex-Document-SHA256: {prepared['document_digests'][path]}\n"
+            f"Codex-Discussion-Decision-SHA256: {prepared['decision_digest']}\n"
+            f"Codex-Discussion-Paths-SHA256: {prepared['path_set_digest']}\n"
+        )
+        environment.update(
+            {
+                "GIT_AUTHOR_NAME": "Checkpoint Test",
+                "GIT_AUTHOR_EMAIL": "checkpoint@example.com",
+                "GIT_AUTHOR_DATE": timestamp,
+                "GIT_COMMITTER_NAME": "Checkpoint Test",
+                "GIT_COMMITTER_EMAIL": "checkpoint@example.com",
+                "GIT_COMMITTER_DATE": timestamp,
+            }
+        )
+        return subprocess.run(
+            [
+                "git", "-C", str(project), "commit-tree", tree_id, "-p",
+                parent,
+            ],
+            input=message,
+            check=True,
+            env=environment,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+
+    def complete_update(
+        self,
+        project: Path,
+        topic: dict[str, object],
+        *,
+        ledger_revision: int,
+        topic_revision: int,
+        mutation: dict[str, object],
+        owner_ref: str = "discussion-task",
+    ) -> tuple[dict[str, object], int, int]:
+        returncode, prepared, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="prepare-topic-update",
+                expected_revision=ledger_revision,
+                expected_topic_revision=topic_revision,
+                owner_ref=owner_ref,
+                mutation=mutation,
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        returncode, applied, stderr = self.run_cli(
+            self.evolution_request(
+                topic,
+                operation="apply-document-write",
+                expected_revision=ledger_revision + 1,
+                expected_topic_revision=topic_revision + 1,
+                owner_ref=owner_ref,
+                document_write_id=prepared["document_write_id"],
+            )
+        )
+        self.assertEqual(returncode, 0, stderr)
+        self.assertTrue(applied["document_verified"])
+        self.assertEqual(applied["state"], "completed")
+        return prepared, ledger_revision + 2, topic_revision + 1
+
+
+class DiscussionProtocolEvolutionTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport):
 
     def test_bootstrap_replay_reads_evolved_ledger_without_rewriting_it(self) -> None:
         project = self.make_project("bootstrap-replay-after-evolution", git=False)
@@ -991,95 +1427,8 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(code, 1)
         self.assertEqual(response["error"]["code"], "state_corrupt")
 
-    def phase_request(self, topic, operation, revision, **parameters):
-        return {
-            "protocol_version": 1,
-            "operation": operation,
-            "project_path": str(Path(str(topic["topic_document_path"])).parents[3]),
-            "project_id": topic["project_id"],
-            "tree_id": topic["tree_id"],
-            "actor_topic_id": topic["topic_id"],
-            "actor_conversation_ref": "discussion-task",
-            "expected_ledger_revision": revision,
-            "expected_topic_revision": parameters.pop("topic_revision", 1),
-            "idempotency_key": str(uuid.uuid4()),
-            **parameters,
-        }
 
-    def prepare_phase_run(
-        self,
-        topic,
-        *,
-        revision=1,
-        topic_revision=1,
-        from_phase=0,
-        to_phase=1,
-        carrier_kind="worker",
-    ):
-        code, prepared, stderr = self.run_cli(
-            self.phase_request(
-                topic,
-                "prepare-phase-run",
-                revision,
-                topic_revision=topic_revision,
-                from_phase=from_phase,
-                to_phase=to_phase,
-                route=f"{from_phase}->{to_phase}",
-                carrier_kind=carrier_kind,
-            )
-        )
-        self.assertEqual(code, 0, stderr)
-        self.assertEqual(
-            set(prepared["evidence"]),
-            {"source", "route", "impact", "coverage", "dependency", "coordination"},
-        )
-        return prepared
 
-    def complete_current_topic_phase(
-        self,
-        topic: dict[str, object],
-        *,
-        ledger_revision: int,
-        topic_revision: int,
-        from_phase: int,
-        to_phase: int,
-    ) -> tuple[dict[str, object], int, int]:
-        prepared = self.prepare_phase_run(
-            topic,
-            revision=ledger_revision,
-            topic_revision=topic_revision,
-            from_phase=from_phase,
-            to_phase=to_phase,
-            carrier_kind="current-topic",
-        )
-        evidence = prepared["evidence"]
-        revision = ledger_revision + 1
-        result: dict[str, object] = prepared
-        for operation, parameters in (
-            ("authorize-phase-carrier", {"carrier_ref": "discussion-task"}),
-            ("phase-ready", {"carrier_ref": "discussion-task", "evidence": evidence}),
-            ("phase-activate", {"evidence": evidence}),
-            (
-                "claim-phase-completion",
-                {"carrier_ref": "discussion-task", "evidence": evidence},
-            ),
-            ("complete-phase-run", {"evidence": evidence}),
-            ("finalize-phase-run", {"evidence": evidence}),
-        ):
-            code, result, stderr = self.run_cli(
-                self.phase_request(
-                    topic,
-                    operation,
-                    revision,
-                    topic_revision=topic_revision,
-                    phase_run_id=prepared["phase_run_id"],
-                    attempt_id=prepared["attempt_id"],
-                    **parameters,
-                )
-            )
-            self.assertEqual(code, 0, stderr)
-            revision += 1
-        return result, revision, topic_revision + 1
 
     def test_root_discussion_executes_full_zero_through_four_lifecycle(self) -> None:
         project = self.make_project("root-zero-through-four", git=False)
@@ -1223,31 +1572,6 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(rejected["error"]["code"], "phase_coordination_drift")
         self.assertEqual(ledger.read_bytes(), before)
 
-    def publish_non_git_stage_entry_checkpoint(
-        self,
-        topic: dict[str, object],
-        *,
-        ledger_revision: int,
-        topic_revision: int = 1,
-    ) -> dict[str, object]:
-        prepared = self.prepare_checkpoint(
-            topic,
-            ledger_revision=ledger_revision,
-            topic_revision=topic_revision,
-            purpose="stage-entry",
-        )
-        code, published, stderr = self.run_cli(
-            self.checkpoint_request(
-                topic,
-                operation="publish-non-git-checkpoint",
-                ledger_revision=ledger_revision + 1,
-                topic_revision=topic_revision,
-                checkpoint_id=prepared["checkpoint_id"],
-                expected_checkpoint_revision=prepared["checkpoint_record_revision"],
-            )
-        )
-        self.assertEqual(code, 0, stderr)
-        return published
 
     def publish_non_git_checkpoint(
         self,
@@ -3127,174 +3451,11 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         self.assertEqual(retained_replay["ledger_revision"], 201)
         self.assertEqual(ledger.read_bytes(), retained_bytes)
 
-    def evolution_request(
-        self,
-        topic: dict[str, object],
-        *,
-        operation: str,
-        expected_revision: int | None = None,
-        expected_topic_revision: int | None = None,
-        owner_ref: str = "discussion-task",
-        **parameters: object,
-    ) -> dict[str, object]:
-        request: dict[str, object] = {
-            "protocol_version": 1,
-            "operation": operation,
-            "project_path": str(Path(str(topic["topic_document_path"])).parents[3]),
-            "project_id": topic["project_id"],
-            "tree_id": topic["tree_id"],
-            "actor_topic_id": topic["topic_id"],
-            "actor_conversation_ref": owner_ref,
-        }
-        if expected_revision is not None:
-            request.update(
-                {
-                    "expected_ledger_revision": expected_revision,
-                    "expected_topic_revision": expected_topic_revision or expected_revision,
-                    "idempotency_key": str(uuid.uuid4()),
-                }
-            )
-        request.update(parameters)
-        return request
 
-    def checkpoint_request(
-        self,
-        topic: dict[str, object],
-        *,
-        operation: str,
-        ledger_revision: int | None = None,
-        topic_revision: int = 1,
-        **parameters: object,
-    ) -> dict[str, object]:
-        return self.evolution_request(
-            topic,
-            operation=operation,
-            expected_revision=ledger_revision,
-            expected_topic_revision=topic_revision,
-            **parameters,
-        )
 
-    def handoff_request(
-        self,
-        topic: dict[str, object],
-        *,
-        operation: str,
-        ledger_revision: int | None = None,
-        topic_revision: int = 1,
-        owner_ref: str = "discussion-task",
-        **parameters: object,
-    ) -> dict[str, object]:
-        return self.evolution_request(
-            topic,
-            operation=operation,
-            expected_revision=ledger_revision,
-            expected_topic_revision=topic_revision,
-            owner_ref=owner_ref,
-            **parameters,
-        )
 
-    def prepare_child_handoff(
-        self,
-        topic: dict[str, object],
-        *,
-        ledger_revision: int = 1,
-        topic_revision: int = 1,
-        scope: list[str] | None = None,
-        work_snapshot: dict[str, object] | None = None,
-        initial_dependencies: list[dict[str, object]] | None = None,
-    ) -> dict[str, object]:
-        returncode, prepared, stderr = self.run_cli(
-            self.handoff_request(
-                topic,
-                operation="prepare-handoff",
-                ledger_revision=ledger_revision,
-                topic_revision=topic_revision,
-                handoff_kind="child",
-                target_slug="api-shape",
-                scope=scope or ["api"],
-                work_snapshot=work_snapshot
-                or {
-                    "goal": "Choose the public API shape.",
-                    "confirmed_decisions": [],
-                    "pending_questions": ["Which requests are public?"],
-                },
-                authoritative_references=[
-                    {
-                        "kind": "checkpoint",
-                        "identity": "CP-source",
-                        "sha256": "1" * 64,
-                    }
-                ],
-                **({"initial_dependencies": initial_dependencies} if initial_dependencies is not None else {}),
-            )
-        )
-        self.assertEqual(returncode, 0, stderr)
-        return prepared
 
-    def activate_child_handoff(
-        self, topic: dict[str, object], *, initial_dependencies: list[dict[str, object]] | None = None,
-    ) -> tuple[dict[str, object], str]:
-        """Cross the public handoff seam through later-turn authorization."""
-        prepared = self.prepare_child_handoff(
-            topic, initial_dependencies=initial_dependencies
-        )
-        child_ref = "codex-thread:dependency-child"
-        code, _, stderr = self.run_cli(
-            self.handoff_request(
-                topic, operation="bind-handoff", ledger_revision=2,
-                handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
-                conversation_ref=child_ref,
-                verified_identity={
-                    "project_id": topic["project_id"], "tree_id": topic["tree_id"],
-                    "topic_id": prepared["target_topic_id"], "handoff_id": prepared["handoff_id"],
-                    "attempt_id": prepared["attempt_id"], "payload_sha256": prepared["payload_sha256"],
-                },
-            )
-        )
-        self.assertEqual(code, 0, stderr)
-        accept = self.handoff_request(
-            topic, operation="accept-handoff", ledger_revision=3, owner_ref=child_ref,
-            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
-            payload_sha256=prepared["payload_sha256"],
-            source_reference_sha256=prepared["authoritative_references_sha256"], turn_number=1,
-        )
-        accept["actor_topic_id"] = prepared["target_topic_id"]
-        code, _, stderr = self.run_cli(accept)
-        self.assertEqual(code, 0, stderr)
-        authorize = self.handoff_request(
-            topic, operation="authorize-handoff-discussion", ledger_revision=4,
-            owner_ref=child_ref, handoff_id=prepared["handoff_id"],
-            attempt_id=prepared["attempt_id"], turn_number=2,
-        )
-        authorize["actor_topic_id"] = prepared["target_topic_id"]
-        code, _, stderr = self.run_cli(authorize)
-        self.assertEqual(code, 0, stderr)
-        return prepared, child_ref
 
-    def assert_topic_gate_blocked(
-        self,
-        result: tuple[int, dict[str, object], str],
-        *,
-        ledger: Path,
-        before: bytes,
-        prerequisite_topic_id: str,
-    ) -> None:
-        code, rejected, stderr = result
-        self.assertEqual(code, 1, stderr)
-        self.assertEqual(rejected["error"]["code"], "topic_gate_closed")
-        context = rejected["error"]["context"]
-        self.assertEqual(context["derived_gate_state"], "closed")
-        self.assertEqual(
-            context["blocked_dependencies"][0]["prerequisite_topic_id"],
-            prerequisite_topic_id,
-        )
-        self.assertEqual(context["blocked_dependencies"][0]["prerequisite_phase"], 0)
-        self.assertEqual(context["blocked_dependencies"][0]["prerequisite_state"], "open")
-        self.assertEqual(
-            context["blocked_dependencies"][0]["waiting_reason"],
-            "current required authority is unavailable",
-        )
-        self.assertEqual(ledger.read_bytes(), before)
 
     def test_initial_dependency_is_atomic_and_exposes_a_closed_derived_gate(self) -> None:
         project = self.make_project("gated-child-handoff", git=False)
@@ -4230,151 +4391,9 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolTestSupport):
         active = [item for item in final["bindings"] if item["binding_state"] == "active"]
         self.assertEqual(len(active), 1)
 
-    def prepare_checkpoint(
-        self,
-        topic: dict[str, object],
-        *,
-        ledger_revision: int,
-        topic_revision: int = 1,
-        purpose: str = "pause",
-        base_ref: str = "HEAD",
-    ) -> dict[str, object]:
-        returncode, prepared, stderr = self.run_cli(
-            self.checkpoint_request(
-                topic,
-                operation="prepare-checkpoint",
-                ledger_revision=ledger_revision,
-                topic_revision=topic_revision,
-                purpose=purpose,
-                base_ref=base_ref,
-            )
-        )
-        self.assertEqual(returncode, 0, stderr)
-        return prepared
 
-    def publish_git_checkpoint(
-        self,
-        project: Path,
-        topic: dict[str, object],
-        prepared: dict[str, object],
-        *,
-        ledger_revision: int,
-        topic_revision: int = 1,
-    ) -> dict[str, object]:
-        returncode, published, stderr = self.run_cli(
-            self.checkpoint_request(
-                topic,
-                operation="publish-git-checkpoint",
-                ledger_revision=ledger_revision,
-                topic_revision=topic_revision,
-                checkpoint_id=prepared["checkpoint_id"],
-                expected_checkpoint_revision=prepared["checkpoint_record_revision"],
-            )
-        )
-        self.assertEqual(returncode, 0, stderr)
-        return published
 
-    def create_matching_checkpoint_commit(
-        self,
-        project: Path,
-        prepared: dict[str, object],
-        *,
-        timestamp: str,
-        parent_commit: str | None = None,
-    ) -> str:
-        path = str(prepared["paths"][0])
-        document = (project / path).read_bytes()
-        blob_id = subprocess.run(
-            ["git", "-C", str(project), "hash-object", "-w", "--stdin"],
-            input=document,
-            check=True,
-            stdout=subprocess.PIPE,
-        ).stdout.decode("ascii").strip()
-        index_path = self.root / f"index-{uuid.uuid4().hex}"
-        environment = dict(os.environ)
-        environment["GIT_INDEX_FILE"] = str(index_path)
-        parent = parent_commit or str(prepared["base_commit"])
-        subprocess.run(
-            ["git", "-C", str(project), "read-tree", parent],
-            check=True,
-            env=environment,
-        )
-        subprocess.run(
-            ["git", "-C", str(project), "update-index", "--add", "--cacheinfo", "100644", blob_id, path],
-            check=True,
-            env=environment,
-        )
-        tree_id = subprocess.run(
-            ["git", "-C", str(project), "write-tree"],
-            check=True,
-            env=environment,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.strip()
-        message = (
-            f"discussion checkpoint: {prepared['purpose']}\n\n"
-            f"Codex-Discussion-Checkpoint: {prepared['checkpoint_id']}\n"
-            f"Codex-Document-SHA256: {prepared['document_digests'][path]}\n"
-            f"Codex-Discussion-Decision-SHA256: {prepared['decision_digest']}\n"
-            f"Codex-Discussion-Paths-SHA256: {prepared['path_set_digest']}\n"
-        )
-        environment.update(
-            {
-                "GIT_AUTHOR_NAME": "Checkpoint Test",
-                "GIT_AUTHOR_EMAIL": "checkpoint@example.com",
-                "GIT_AUTHOR_DATE": timestamp,
-                "GIT_COMMITTER_NAME": "Checkpoint Test",
-                "GIT_COMMITTER_EMAIL": "checkpoint@example.com",
-                "GIT_COMMITTER_DATE": timestamp,
-            }
-        )
-        return subprocess.run(
-            [
-                "git", "-C", str(project), "commit-tree", tree_id, "-p",
-                parent,
-            ],
-            input=message,
-            check=True,
-            env=environment,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.strip()
 
-    def complete_update(
-        self,
-        project: Path,
-        topic: dict[str, object],
-        *,
-        ledger_revision: int,
-        topic_revision: int,
-        mutation: dict[str, object],
-        owner_ref: str = "discussion-task",
-    ) -> tuple[dict[str, object], int, int]:
-        returncode, prepared, stderr = self.run_cli(
-            self.evolution_request(
-                topic,
-                operation="prepare-topic-update",
-                expected_revision=ledger_revision,
-                expected_topic_revision=topic_revision,
-                owner_ref=owner_ref,
-                mutation=mutation,
-            )
-        )
-        self.assertEqual(returncode, 0, stderr)
-        returncode, applied, stderr = self.run_cli(
-            self.evolution_request(
-                topic,
-                operation="apply-document-write",
-                expected_revision=ledger_revision + 1,
-                expected_topic_revision=topic_revision + 1,
-                owner_ref=owner_ref,
-                document_write_id=prepared["document_write_id"],
-            )
-        )
-        self.assertEqual(returncode, 0, stderr)
-        self.assertTrue(applied["document_verified"])
-        self.assertEqual(applied["state"], "completed")
-        return prepared, ledger_revision + 2, topic_revision + 1
 
     def test_confirmed_decision_is_applied_with_one_atomic_document_write(self) -> None:
         project = self.make_project("decision-write", git=True)
