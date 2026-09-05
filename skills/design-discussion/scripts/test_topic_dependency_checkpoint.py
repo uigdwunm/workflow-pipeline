@@ -13,6 +13,38 @@ from test_topic_dependency_support import (
 
 
 class TopicDependencyCheckpointCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_cross_topic_checkpoint_mutation_is_rejected_atomically_via_cli(self) -> None:
+        project = self.fixture.make_project("ticket07-cross-topic-checkpoint", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        checkpoint = self.fixture.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        dependent_id = "topic-" + uuid.uuid4().hex
+        add_topic(records, topic_id=dependent_id, root_slug="checkpoint-observer",
+            parent_topic_id=str(topic["topic_id"]))
+        add_binding(records, topic_id=dependent_id,
+            conversation_ref="codex-thread:checkpoint-observer")
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before = ledger.read_bytes()
+        request = self.fixture.checkpoint_request(
+            topic, operation="mark-checkpoint-broken", ledger_revision=3,
+            checkpoint_id=checkpoint["checkpoint_id"], expected_checkpoint_revision=2,
+            broken_identity=checkpoint["snapshot_digest"],
+            reason="A sibling must not mutate this checkpoint.",
+        )
+        request["actor_topic_id"] = dependent_id
+        request["actor_conversation_ref"] = "codex-thread:checkpoint-observer"
+        code, rejected, _ = self.fixture.run_cli(request)
+        self.fixture.assertEqual(code, 1)
+        self.fixture.assertEqual(rejected["error"]["code"], "checkpoint_identity_conflict")
+        self.fixture.assertEqual(ledger.read_bytes(), before)
+        read = self.fixture.evolution_request(topic, operation="read-topic")
+        read["actor_topic_id"] = dependent_id
+        read["actor_conversation_ref"] = "codex-thread:checkpoint-observer"
+        code, current, stderr = self.fixture.run_cli(read)
+        self.fixture.assertEqual(code, 0, stderr)
+        self.fixture.assertEqual(current["derived_gate_state"], "open")
+
     def test_ticket07_large_checkpoint_candidate_releases_only_bounded_basis_via_cli(self) -> None:
         """A legal 65-decision authority remains readable; only its basis is bounded."""
         for git in (False, True):

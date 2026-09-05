@@ -1124,7 +1124,23 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             owner_ref,
             allow_active_grilling=True,
         )
-        if mutation["type"] != "resolve-impact":
+        child_result_impact_acceptance = False
+        if mutation["type"] == "resolve-impact":
+            impact_record = _record_by_id(
+                records["Impacts"], "impact_id", mutation["impact_id"], "impact_id"
+            )
+            impact = _json_field(impact_record, "data_json", "impact")
+            child_result_impact_acceptance = (
+                "decision_id" not in impact
+                and mutation.get("action") == "accept"
+                and impact.get("state") == "pending"
+                and impact.get("target_topic_id") == request["actor_topic_id"]
+                and all(
+                    isinstance(impact.get(field), str) and impact[field]
+                    for field in ("impact_id", "source_topic_id", "handoff_id")
+                )
+            )
+        if not child_result_impact_acceptance:
             apply_gate_policy(records, "discussion-update", request["actor_topic_id"])
         active_write = _active_pending_write(records)
         if active_write is not None:

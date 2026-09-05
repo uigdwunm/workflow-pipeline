@@ -11,6 +11,54 @@ from test_topic_dependency_support import TopicDependencyScenarioTest, add_topic
 
 
 class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_closed_gate_blocks_decision_impact_resolution_via_cli(self) -> None:
+        for action in ("adjust", "replace", "discard"):
+            with self.fixture.subTest(action=action):
+                project = self.fixture.make_project(
+                    f"ticket07-closed-impact-{action}", git=False,
+                )
+                topic = self.fixture.bootstrap_topic(project)
+                self.fixture.prepare_child_handoff(topic, initial_dependencies=[{
+                    "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+                    "requirement_kind": "confirmed-decision",
+                    "requirement_summary": "The child authority is required first.",
+                }])
+                ledger = Path(str(topic["ledger_path"]))
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                decision_id = "D-impact"
+                records["Pending Items"].append({
+                    "item_id": decision_id, "item_kind": "decision",
+                    "topic_id": topic["topic_id"],
+                    "data_json": PROTOCOL._canonical_json({
+                        "decision_id": decision_id, "summary": "Original.",
+                        "rationale": "Still under review.", "state": "confirmed",
+                        "evolution": "confirmed",
+                    }),
+                })
+                impact_id = "IMP-" + uuid.uuid4().hex
+                records["Impacts"].append({
+                    "impact_id": impact_id, "topic_id": topic["topic_id"],
+                    "data_json": PROTOCOL._canonical_json({
+                        "impact_id": impact_id, "decision_id": decision_id,
+                        "direction": "Change the decision.", "state": "pending",
+                        "action": None,
+                    }),
+                })
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                before = ledger.read_bytes()
+                request = self.fixture.evolution_request(
+                    topic, operation="prepare-topic-update", expected_revision=2,
+                    expected_topic_revision=1, mutation={
+                        "type": "resolve-impact", "impact_id": impact_id,
+                        "decision_id": decision_id, "action": action,
+                        "summary": f"{action} requires the gate to be open.",
+                    },
+                )
+                code, rejected, _ = self.fixture.run_cli(request)
+                self.fixture.assertEqual(code, 1)
+                self.fixture.assertEqual(rejected["error"]["code"], "topic_gate_closed")
+                self.fixture.assertEqual(ledger.read_bytes(), before)
+
     def test_ticket07_source_initial_dependency_rejects_published_authority_via_cli(self) -> None:
         for phase in (0, 1):
             with self.fixture.subTest(phase=phase):
