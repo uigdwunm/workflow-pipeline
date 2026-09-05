@@ -7,7 +7,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import discussion_protocol as PROTOCOL
 from test_discussion_protocol import hashlib, json, os, subprocess, uuid, ThreadPoolExecutor
-from test_topic_dependency_support import TopicDependencyScenarioTest
+from test_topic_dependency_support import (
+    TopicDependencyScenarioTest, add_binding, add_closed_dependency, add_topic,
+)
 
 
 class TopicDependencyCheckpointCliTests(TopicDependencyScenarioTest):
@@ -18,10 +20,12 @@ class TopicDependencyCheckpointCliTests(TopicDependencyScenarioTest):
         ledger = Path(str(topic["ledger_path"]))
         frontmatter, records = PROTOCOL._load_records(ledger)
         dependent_id = "topic-" + "1" * 32
-        records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
-        records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
+        add_topic(records, topic_id=dependent_id, root_slug="dependent", parent_topic_id=str(topic["topic_id"]))
+        add_binding(records, topic_id=dependent_id, conversation_ref="codex-thread:dependent")
         dependency_id = "DEP-" + "a" * 32
-        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-0-checkpoint", "requirement_summary": "The root checkpoint is current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
+        add_closed_dependency(records, dependency_id=dependency_id, dependent_topic_id=dependent_id,
+            prerequisite_topic_id=str(topic["topic_id"]), requirement_kind="phase-0-checkpoint",
+            requirement_summary="The root checkpoint is current.", gate_reason_json=PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1}))
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         gate = self.fixture.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": checkpoint["checkpoint_id"], "decision_ids": []}])
         gate["actor_topic_id"] = dependent_id
@@ -48,10 +52,12 @@ class TopicDependencyCheckpointCliTests(TopicDependencyScenarioTest):
         ledger = Path(str(topic["ledger_path"]))
         frontmatter, records = PROTOCOL._load_records(ledger)
         dependent_id = "topic-" + "2" * 32
-        records["Current Topics"].append({"topic_id": dependent_id, "record_revision": 1, "root_slug": "dependent", "parent_topic_id": str(topic["topic_id"]), "current_phase": 1, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
-        records["Conversation Bindings"].append({"topic_id": dependent_id, "conversation_ref": "codex-thread:dependent", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
+        add_topic(records, topic_id=dependent_id, root_slug="dependent", parent_topic_id=str(topic["topic_id"]), phase=1)
+        add_binding(records, topic_id=dependent_id, conversation_ref="codex-thread:dependent")
         dependency_id = "DEP-" + "b" * 32
-        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": dependent_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-1-result", "requirement_summary": "The root Phase 1 result is current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
+        add_closed_dependency(records, dependency_id=dependency_id, dependent_topic_id=dependent_id,
+            prerequisite_topic_id=str(topic["topic_id"]), requirement_kind="phase-1-result",
+            requirement_summary="The root Phase 1 result is current.", gate_reason_json=PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1}))
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         gate = self.fixture.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}])
         gate["actor_topic_id"] = dependent_id

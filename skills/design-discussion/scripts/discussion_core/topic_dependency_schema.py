@@ -22,10 +22,6 @@ class AuthorityDescriptor:
         None,
     ]
 
-    def __getitem__(self, field: str) -> Any:
-        """Temporary mapping compatibility while callers move to attributes."""
-        return getattr(self, field)
-
     def validate_authority(self, authority: Any, decisions: list[dict[str, str]]) -> bool:
         """Validate this kind's exact persisted authority shape."""
         return self.authority_is_valid(authority, decisions)
@@ -111,9 +107,6 @@ class AuthoritySelection:
         """The single kind strategy used by parsing and basis construction."""
         return authority_descriptor(self.authority_kind)
 
-    def requires_decisions(self) -> bool:
-        return bool(self.descriptor["requires_decisions"])
-
     def as_request_fields(self) -> dict[str, Any]:
         """Return the canonical selection shape used for currentness checks."""
         return {
@@ -137,7 +130,7 @@ class AuthoritySelection:
             or not canonical_string_array(ids)
         ):
             error("invalid_request", "authority_selection is invalid")
-        if authority_descriptor(kind)["identity_field"] is None:
+        if authority_descriptor(kind).identity_field is None:
             if identity is not None:
                 error("invalid_request", "confirmed-decision has no authority identity")
         elif not isinstance(identity, str):
@@ -145,8 +138,8 @@ class AuthoritySelection:
         return cls(kind, identity, tuple(ids))
 
 
-def authority_descriptor(kind: str) -> dict[str, Any]:
-    """Return the one neutral descriptor for a supported authority kind."""
+def authority_descriptor(kind: str) -> AuthorityDescriptor:
+    """Return the authority strategy for one supported requirement kind."""
     if not isinstance(kind, str) or kind not in DEPENDENCY_AUTHORITY_KINDS:
         raise ValueError("unsupported dependency authority kind")
     return AUTHORITY_DESCRIPTORS[kind]
@@ -184,6 +177,17 @@ def decision_authority(
         json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     return descriptor, digests, digest
+
+
+def decision_pair_digest(decisions: list[dict[str, Any]]) -> str:
+    """Hash the canonical exact decision pairs retained in an authority basis."""
+    pairs = [
+        {"decision_id": item["decision_id"], "sha256": item["sha256"]}
+        for item in decisions
+    ]
+    return hashlib.sha256(
+        json.dumps(pairs, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def canonical_object(value: Any, label: str, error: Callable[[str, str], None]) -> dict[str, Any]:
@@ -395,6 +399,7 @@ def _confirmed_authority_is_valid(
         and isinstance(authority["decision_set_digest"], str)
         and SHA256_RE.fullmatch(authority["decision_set_digest"])
         and bool(decisions)
+        and authority["decision_set_digest"] == decision_pair_digest(decisions)
     )
 
 

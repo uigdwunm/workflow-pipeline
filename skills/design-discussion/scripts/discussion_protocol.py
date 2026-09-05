@@ -1059,13 +1059,24 @@ def _apply_mutation_to_records(
             records["Pending Items"].append(record)
         result["requirement_narrative_id"] = data["narrative_id"]
     else:
+        if not isinstance(mutation, dict) or not isinstance(mutation.get("impact_id"), str):
+            raise ProtocolError("invalid_request", "resolve-impact mutation is invalid")
+        record = _record_by_id(records["Impacts"], "impact_id", mutation["impact_id"], "impact_id")
+        impact = _json_field(record, "data_json", "impact")
+        if "decision_id" not in impact:
+            _expect_keys(mutation, {"type", "impact_id", "action", "summary"}, "resolve-impact mutation")
+            if mutation["action"] != "accept" or impact.get("state") != "pending":
+                raise ProtocolError("impact_state_conflict", "child result impact is not pending for acceptance")
+            impact["state"] = "resolved"
+            impact["action"] = "accept"
+            record["data_json"] = _canonical_json(impact)
+            result.update({"impact_id": impact["impact_id"], "impact_action": "accept"})
+            return result
         expected = {"type", "impact_id", "decision_id", "action", "summary"}
         _expect_keys(mutation, expected, "resolve-impact mutation")
         action = mutation["action"]
         if action not in IMPACT_ACTIONS:
             raise ProtocolError("invalid_request", "impact action is unsupported")
-        record = _record_by_id(records["Impacts"], "impact_id", mutation["impact_id"], "impact_id")
-        impact = _json_field(record, "data_json", "impact")
         if impact["decision_id"] != mutation["decision_id"] or impact["state"] != "pending":
             raise ProtocolError("impact_state_conflict", "impact is not pending for this decision")
         impact["state"] = "resolved"
@@ -1115,7 +1126,8 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             owner_ref,
             allow_active_grilling=True,
         )
-        apply_gate_policy(records, "discussion-update", request["actor_topic_id"])
+        if mutation["type"] != "resolve-impact":
+            apply_gate_policy(records, "discussion-update", request["actor_topic_id"])
         active_write = _active_pending_write(records)
         if active_write is not None:
             raise ProtocolError(

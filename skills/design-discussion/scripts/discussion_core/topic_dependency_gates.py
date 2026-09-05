@@ -11,7 +11,8 @@ from .state import (
     _validate_revisions, _verify_topic_owner, _write_ledger_transaction,
 )
 from .topic_dependency_schema import (
-    DEPENDENCY_AUTHORITY_KINDS, authority_descriptor, canonical_string_array,
+    DEPENDENCY_AUTHORITY_KINDS, authority_descriptor, canonical_object,
+    canonical_string_array,
 )
 from .topic_dependency_authority import (
     authority_candidates, normalize_authority_selection,
@@ -125,6 +126,28 @@ def _closed(records: dict[str, list[dict[str, Any]]], topic_id: str) -> list[dic
     return sorted((item for item in records["Topic Dependencies"] if item["dependent_topic_id"] == topic_id and item["relation_state"] == "active" and item["gate_state"] == "closed"), key=lambda item: item["dependency_id"])
 
 
+def _pending_child_result_impacts(
+    records: dict[str, list[dict[str, Any]]], dependency: dict[str, Any],
+) -> list[str]:
+    """Find unresolved child impacts that must keep this exact edge closed."""
+    pending: list[str] = []
+
+    def corrupt(code: str, message: str) -> None:
+        raise ProtocolError(code, message)
+
+    for record in records["Impacts"]:
+        impact = canonical_object(record.get("data_json"), "impact data_json", corrupt)
+        if (
+            impact.get("state") == "pending"
+            and impact.get("source_topic_id") == dependency["prerequisite_topic_id"]
+            and impact.get("target_topic_id") == dependency["dependent_topic_id"]
+            and isinstance(impact.get("handoff_id"), str)
+            and isinstance(impact.get("impact_id"), str)
+        ):
+            pending.append(impact["impact_id"])
+    return sorted(pending)
+
+
 def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selection: list[dict[str, Any]] | None) -> dict[str, Any]:
     closed = _closed(records, topic_id)
     if not closed:
@@ -151,9 +174,15 @@ def _evaluation(records: dict[str, list[dict[str, Any]]], topic_id: str, selecti
     proposed = []
     for dependency in closed:
         prerequisite_topic = _record_by_id(records["Current Topics"], "topic_id", dependency["prerequisite_topic_id"], "prerequisite_topic_id")
-        candidates = authority_candidates(records, dependency)
+        pending_impacts = _pending_child_result_impacts(records, dependency)
+        candidates = [] if pending_impacts else authority_candidates(records, dependency)
         selected = choices.get(dependency["dependency_id"])
         detail: dict[str, Any] = {"dependency_id": dependency["dependency_id"], "record_revision": dependency["record_revision"], "requirement_kind": dependency["requirement_kind"], "requirement_summary": dependency["requirement_summary"], "prerequisite_topic_id": dependency["prerequisite_topic_id"], "prerequisite_phase": prerequisite_topic["current_phase"], "prerequisite_state": prerequisite_topic["topic_state"], "candidates": candidates}
+        if pending_impacts:
+            detail["pending_impact_ids"] = pending_impacts
+            detail["waiting_reason"] = "matching child-result impact is pending"
+            details.append(detail)
+            continue
         if selected is not None:
             authority_id = selected.get("authority_id")
             descriptor = authority_descriptor(dependency["requirement_kind"])

@@ -11,6 +11,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import discussion_protocol as PROTOCOL
 from test_topic_dependency_support import TopicDependencyScenarioTest
 from discussion_core.topic_dependency_schema import authority_descriptor
 
@@ -50,7 +51,11 @@ class TopicDependencyCliTests(TopicDependencyScenarioTest):
         decisions = [{"decision_id": "D-current", "sha256": "a" * 64}]
         cases = {
             "confirmed-decision": (
-                {"decision_set_digest": "b" * 64}, None,
+                {
+                    "decision_set_digest": hashlib.sha256(
+                        PROTOCOL._canonical_json(decisions).encode("utf-8")
+                    ).hexdigest(),
+                }, None,
             ),
             "phase-0-checkpoint": (
                 {
@@ -128,6 +133,45 @@ class TopicDependencyCliTests(TopicDependencyScenarioTest):
         item["data_json"] = protocol._canonical_json(decision)
         ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
         self._assert_stale_release(topic, ledger, evaluation, expected_revision=2)
+
+    def test_ticket07_tampered_confirmed_basis_digest_fails_closed_via_cli(self) -> None:
+        for historical in (False, True):
+            with self.subTest(historical=historical):
+                topic, child, ledger, evaluation = self._evaluated_confirmed_dependency(
+                    f"ticket07-tampered-basis-{historical}"
+                )
+                code, _, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+                    topic, operation="release-topic-gate", expected_revision=2,
+                    expected_topic_revision=1, release_set=evaluation["release_set"],
+                    release_set_sha256=evaluation["release_set_sha256"],
+                ))
+                self.assertEqual(code, 0, stderr)
+                dependency_id = evaluation["release_set"][0]["dependency_id"]
+                if historical:
+                    code, _, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+                        topic, operation="update-topic-dependency", expected_revision=3,
+                        expected_topic_revision=1, action="replace",
+                        dependency_id=dependency_id, expected_dependency_revision=2,
+                        prerequisite_topic_id=child["target_topic_id"],
+                        requirement_kind="phase-1-result", requirement_summary="Historical basis.",
+                    ))
+                    self.assertEqual(code, 0, stderr)
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                dependency = next(
+                    item for item in records["Topic Dependencies"]
+                    if item["dependency_id"] == dependency_id
+                )
+                basis = json.loads(str(dependency["accepted_basis_json"]))
+                basis["authority"]["decision_set_digest"] = "f" * 64
+                dependency["accepted_basis_json"] = PROTOCOL._canonical_json(basis)
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                before = ledger.read_bytes()
+                code, rejected, _ = self.fixture.run_cli(
+                    self.fixture.evolution_request(topic, operation="read-topic")
+                )
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "state_corrupt")
+                self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_phase2_dependency_history_is_immutable_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-phase2-cutoff", git=False)
@@ -225,7 +269,7 @@ class TopicDependencyCliTests(TopicDependencyScenarioTest):
         b_id = "topic-" + "b" * 32
         decision = {"decision_id": "D-a", "summary": "Keep A.", "rationale": "Current authority.", "state": "confirmed", "evolution": "confirmed"}
         digest = hashlib.sha256(protocol._canonical_json(decision).encode("utf-8")).hexdigest()
-        authority = [{"decision_id": "D-a", "sha256": digest, "summary": "Keep A."}]
+        authority = [{"decision_id": "D-a", "sha256": digest}]
         dependency_id = "DEP-" + "3" * 32
         basis = {"basis_version": 1, "dependency_id": dependency_id, "prerequisite_topic_id": a_id, "requirement_kind": "confirmed-decision", "decision_authority": [{"decision_id": "D-a", "sha256": digest}], "authority": {"decision_set_digest": hashlib.sha256(protocol._canonical_json(authority).encode("utf-8")).hexdigest()}}
         frontmatter, records = protocol._load_records(ledger)

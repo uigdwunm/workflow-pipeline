@@ -7,10 +7,60 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import discussion_protocol as PROTOCOL
 from test_discussion_protocol import hashlib, json, os, subprocess, uuid, ThreadPoolExecutor
-from test_topic_dependency_support import TopicDependencyScenarioTest
+from test_topic_dependency_support import TopicDependencyScenarioTest, add_topic
 
 
 class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_reopen_retired_phase0_authority_allows_dependency_changes_via_cli(self) -> None:
+        project = self.fixture.make_project("ticket07-reopen-retired-checkpoint", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        decision, revision, topic_revision = self.fixture.complete_update(
+            project, topic, ledger_revision=1, topic_revision=1,
+            mutation={
+                "type": "confirm-decision", "summary": "Keep the API.",
+                "rationale": "The Phase 0 authority is explicit.",
+            },
+        )
+        self.fixture.publish_non_git_stage_entry_checkpoint(
+            topic, ledger_revision=revision, topic_revision=topic_revision,
+        )
+        revision += 2
+        _, revision, topic_revision = self.fixture.complete_current_topic_phase(
+            topic, ledger_revision=revision, topic_revision=topic_revision,
+            from_phase=0, to_phase=1,
+        )
+        code, reopened, stderr = self.fixture.run_cli(self.fixture.phase_request(
+            topic, "reopen-phase", revision, topic_revision=topic_revision,
+            affected_decision_ids=[decision["decision_id"]],
+            review={decision["decision_id"]: "keep"},
+            reason="Reopen Phase 0 with the old checkpoint retired.",
+        ))
+        self.fixture.assertEqual(code, 0, stderr)
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        prerequisite_id = "topic-" + uuid.uuid4().hex
+        add_topic(records, topic_id=prerequisite_id, root_slug="prerequisite",
+            parent_topic_id=topic["topic_id"])
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        code, created, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="update-topic-dependency",
+            expected_revision=reopened["ledger_revision"],
+            expected_topic_revision=reopened["record_revision"], action="create",
+            prerequisite_topic_id=prerequisite_id, requirement_kind="confirmed-decision",
+            requirement_summary="A fresh Phase 0 gate.",
+        ))
+        self.fixture.assertEqual(code, 0, stderr)
+        code, replaced, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="update-topic-dependency",
+            expected_revision=created["ledger_revision"],
+            expected_topic_revision=reopened["record_revision"], action="replace",
+            dependency_id=created["dependency_id"], expected_dependency_revision=1,
+            prerequisite_topic_id=prerequisite_id, requirement_kind="phase-1-result",
+            requirement_summary="A replacement gate after reopen.",
+        ))
+        self.fixture.assertEqual(code, 0, stderr)
+        self.fixture.assertEqual(replaced["state"], "replace")
+
     def test_ticket07_malformed_dependency_discriminators_fail_stably_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-malformed-discriminators", git=False)
         topic = self.fixture.bootstrap_topic(project)
@@ -181,7 +231,7 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
         for index, prerequisite_id in enumerate(prerequisite_ids[:64]):
             decision = {"decision_id": f"D-{index:032x}", "summary": f"Keep prerequisite {index}.", "rationale": "It is an accepted basis.", "state": "confirmed", "evolution": "confirmed"}
             digest = hashlib.sha256(PROTOCOL._canonical_json(decision).encode("utf-8")).hexdigest()
-            descriptor = [{"decision_id": decision["decision_id"], "sha256": digest, "summary": decision["summary"]}]
+            descriptor = [{"decision_id": decision["decision_id"], "sha256": digest}]
             dependency_id = "DEP-" + uuid.uuid4().hex
             basis = {"basis_version": 1, "dependency_id": dependency_id, "prerequisite_topic_id": prerequisite_id, "requirement_kind": "confirmed-decision", "decision_authority": [{"decision_id": decision["decision_id"], "sha256": digest}], "authority": {"decision_set_digest": hashlib.sha256(PROTOCOL._canonical_json(descriptor).encode("utf-8")).hexdigest()}}
             records["Pending Items"].append({"item_id": decision["decision_id"], "item_kind": "decision", "topic_id": prerequisite_id, "data_json": PROTOCOL._canonical_json(decision)})

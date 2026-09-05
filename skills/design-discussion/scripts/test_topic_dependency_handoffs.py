@@ -11,6 +11,97 @@ from test_topic_dependency_support import TopicDependencyScenarioTest
 
 
 class TopicDependencyHandoffCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_pending_child_impact_blocks_gate_until_acceptance_via_cli(self) -> None:
+        project = self.fixture.make_project("ticket07-impact-gate", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        prepared, child_ref = self.fixture.activate_child_handoff(
+            topic,
+            initial_dependencies=[{
+                "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+                "requirement_kind": "confirmed-decision",
+                "requirement_summary": "The child authority is required.",
+            }],
+        )
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        decision = {
+            "decision_id": "D-child", "summary": "Typed.", "rationale": "Current.",
+            "state": "confirmed", "evolution": "confirmed",
+        }
+        records["Pending Items"].append({
+            "item_id": "D-child", "item_kind": "decision",
+            "topic_id": prepared["target_topic_id"],
+            "data_json": PROTOCOL._canonical_json(decision),
+        })
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        submit = self.fixture.handoff_request(
+            topic, operation="submit-child-result", ledger_revision=5, owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+            result_scope=["api"], summary="Typed.", authority_selection={
+                "authority_kind": "confirmed-decision", "authority_identity": None,
+                "decision_ids": ["D-child"],
+            },
+        )
+        submit["actor_topic_id"] = prepared["target_topic_id"]
+        code, claimed, stderr = self.fixture.run_cli(submit)
+        self.fixture.assertEqual(code, 0, stderr)
+        dependency_id = prepared["initial_dependencies"][0]["dependency_id"]
+        code, before_impact, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="evaluate-topic-gate", basis_selection=[{
+                "dependency_id": dependency_id, "decision_ids": ["D-child"],
+            }],
+        ))
+        self.fixture.assertEqual(code, 0, stderr)
+        self.fixture.assertEqual(before_impact["state"], "releasable")
+        code, pending, stderr = self.fixture.run_cli(self.fixture.handoff_request(
+            topic, operation="record-child-result", ledger_revision=6,
+            handoff_id=prepared["handoff_id"], child_result_id=claimed["child_result_id"],
+            effect="impact",
+        ))
+        self.fixture.assertEqual(code, 0, stderr)
+        self.fixture.assertEqual(pending["state"], "pending-impact")
+        evaluation_request = self.fixture.evolution_request(
+            topic, operation="evaluate-topic-gate", basis_selection=[{
+                "dependency_id": dependency_id, "decision_ids": ["D-child"],
+            }],
+        )
+        code, evaluation, stderr = self.fixture.run_cli(evaluation_request)
+        self.fixture.assertEqual(code, 0, stderr)
+        self.fixture.assertEqual(evaluation["state"], "blocked")
+        self.fixture.assertEqual(evaluation["dependencies"][0]["pending_impact_ids"], [pending["impact_id"]])
+        before = ledger.read_bytes()
+        code, rejected, _ = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="release-topic-gate", expected_revision=7,
+            expected_topic_revision=1, release_set=before_impact["release_set"],
+            release_set_sha256=before_impact["release_set_sha256"],
+        ))
+        self.fixture.assertEqual(code, 1)
+        self.fixture.assertEqual(rejected["error"]["code"], "topic_gate_evaluation_stale")
+        self.fixture.assertEqual(ledger.read_bytes(), before)
+        code, accepted, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="prepare-topic-update", expected_revision=7,
+            expected_topic_revision=1, mutation={
+                "type": "resolve-impact", "impact_id": pending["impact_id"],
+                "action": "accept", "summary": "The parent accepts the child impact.",
+            },
+        ))
+        self.fixture.assertEqual(code, 0, stderr)
+        self.fixture.assertEqual(accepted["impact_action"], "accept")
+        code, evaluated, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="evaluate-topic-gate", basis_selection=[{
+                "dependency_id": dependency_id, "decision_ids": ["D-child"],
+            }],
+        ))
+        self.fixture.assertEqual(code, 0, stderr)
+        self.fixture.assertEqual(evaluated["state"], "releasable")
+        code, released, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="release-topic-gate", expected_revision=8,
+            expected_topic_revision=2, release_set=evaluated["release_set"],
+            release_set_sha256=evaluated["release_set_sha256"],
+        ))
+        self.fixture.assertEqual(code, 0, stderr)
+        self.fixture.assertEqual(released["state"], "open")
+
     def test_ticket07_absorb_release_replace_preserves_historical_child_basis_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-absorb-replace-history", git=False)
         topic = self.fixture.bootstrap_topic(project)

@@ -8,7 +8,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 import discussion_protocol as PROTOCOL
 from discussion_core.topic_dependency_gates import GATE_OPERATION_POLICIES
 from test_discussion_protocol import hashlib, json, os, subprocess, uuid, ThreadPoolExecutor
-from test_topic_dependency_support import TopicDependencyScenarioTest
+from test_topic_dependency_support import (
+    TopicDependencyScenarioTest, add_binding, add_closed_dependency, add_topic,
+)
 
 
 class TopicDependencyPhaseGateCliTests(TopicDependencyScenarioTest):
@@ -487,9 +489,11 @@ class TopicDependencyPhaseGateCliTests(TopicDependencyScenarioTest):
         records["Current Topics"][0]["current_phase"] = 1
         prerequisite_id = "topic-" + uuid.uuid4().hex
         dependency_id = "DEP-" + uuid.uuid4().hex
-        records["Current Topics"].append({"topic_id": prerequisite_id, "record_revision": 1, "root_slug": "prerequisite", "parent_topic_id": None, "current_phase": 0, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
-        records["Conversation Bindings"].append({"topic_id": prerequisite_id, "conversation_ref": "codex-thread:prerequisite", "binding_state": "active", "record_revision": 1, "handoff_id": None, "attempt_id": None})
-        records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": topic["topic_id"], "prerequisite_topic_id": prerequisite_id, "requirement_kind": "confirmed-decision", "requirement_summary": "The prerequisite authority is required.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
+        add_topic(records, topic_id=prerequisite_id, root_slug="prerequisite", parent_topic_id=None)
+        add_binding(records, topic_id=prerequisite_id, conversation_ref="codex-thread:prerequisite")
+        add_closed_dependency(records, dependency_id=dependency_id, dependent_topic_id=topic["topic_id"],
+            prerequisite_topic_id=prerequisite_id, requirement_kind="confirmed-decision",
+            requirement_summary="The prerequisite authority is required.", gate_reason_json=PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1}))
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         before = ledger.read_bytes()
         request = self.fixture.phase_request(

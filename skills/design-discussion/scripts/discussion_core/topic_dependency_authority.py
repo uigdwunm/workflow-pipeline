@@ -22,6 +22,7 @@ from .topic_dependency_schema import (
     canonical_object,
     canonical_string_array,
     decision_authority,
+    decision_pair_digest,
 )
 
 def _state_corrupt(code: str, message: str) -> None:
@@ -80,7 +81,11 @@ def _confirmed_decision_candidates(
     records: dict[str, list[dict[str, Any]]], prerequisite: str,
 ) -> list[dict[str, Any]]:
     decisions = _candidate_decisions(records, prerequisite)
-    return [{"authority_id": None, "authority": {"decision_set_digest": _sha256(_canonical_json(decisions).encode("utf-8"))}, "decision_authority": decisions}] if decisions else []
+    return [{
+        "authority_id": None,
+        "authority": {"decision_set_digest": decision_pair_digest(decisions)},
+        "decision_authority": decisions,
+    }] if decisions else []
 
 
 def decision_authority_for_topic(
