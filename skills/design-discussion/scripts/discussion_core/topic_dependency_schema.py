@@ -280,6 +280,7 @@ def _gate_reason(value: Any, error: Callable[[str, str], None]) -> None:
         "topic-update": ({"kind", "ledger_revision", "topic_update_id", "decision_id", "action"}, "topic_update_id"),
         "phase-reopen": ({"kind", "ledger_revision", "reopen_id", "affected_decision_ids", "invalidated_result_ids"}, "reopen_id"),
         "checkpoint-broken": ({"kind", "ledger_revision", "checkpoint_id", "checkpoint_broken_id", "broken_identity"}, "checkpoint_broken_id"),
+        "checkpoint-superseded": ({"kind", "ledger_revision", "checkpoint_id", "checkpoint_supersession_id", "superseded_checkpoint_ids"}, "checkpoint_supersession_id"),
     }
     cause = next((item for item in cause_kinds.values() if item[1] in reason), None)
     if cause is None or set(reason) != cause[0]:
@@ -303,6 +304,11 @@ def _gate_reason(value: Any, error: Callable[[str, str], None]) -> None:
         not canonical_string_array(reason["affected_decision_ids"])
     ):
         error("state_corrupt", "topic dependency affected decisions are invalid")
+    if "superseded_checkpoint_ids" in reason and (
+        not canonical_string_array(reason["superseded_checkpoint_ids"])
+        or any(not _identity(item, "CP") for item in reason["superseded_checkpoint_ids"])
+    ):
+        error("state_corrupt", "topic dependency superseded checkpoint identities are invalid")
 
 
 def _ledger_decision_pairs(

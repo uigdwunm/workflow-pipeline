@@ -38,6 +38,7 @@ GATE_OPERATION_POLICIES = {
     "phase-transition": GateOperationPolicy(frozenset({0, 1})),
     "decision-impact": GateOperationPolicy(reclose_directly_affected=True),
     "checkpoint-broken": GateOperationPolicy(reclose_directly_affected=True),
+    "checkpoint-superseded": GateOperationPolicy(reclose_directly_affected=True),
     "phase-reopen": GateOperationPolicy(reclose_directly_affected=True),
 }
 

@@ -19,7 +19,7 @@ class TopicDependencyPhaseGateCliTests(TopicDependencyScenarioTest):
             "discussion-update", "stage-entry-checkpoint", "prepare-handoff",
             "authorize-handoff-discussion", "phase-transition",
         }
-        reclosing = {"decision-impact", "checkpoint-broken", "phase-reopen"}
+        reclosing = {"decision-impact", "checkpoint-broken", "checkpoint-superseded", "phase-reopen"}
         self.assertEqual(set(GATE_OPERATION_POLICIES), enforcing | reclosing)
         for operation in enforcing:
             with self.subTest(operation=operation):

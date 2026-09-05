@@ -357,6 +357,58 @@ def _checkpoint_authority_context(
     }
 
 
+def _superseded_stage_entry_checkpoint_ids(
+    records: dict[str, list[dict[str, Any]]], checkpoint: dict[str, Any],
+    *, include_checkpoint: bool = False,
+) -> set[str]:
+    """Return Phase-0 stage-entry checkpoint authorities displaced by completion."""
+    if (
+        checkpoint.get("purpose") != "stage-entry"
+        or checkpoint.get("stage_entry_phase") != 0
+        or checkpoint.get("state") != "completed"
+    ):
+        return set()
+    superseded = set()
+    for candidate_record in records["Checkpoints"]:
+        if candidate_record.get("state") != "completed":
+            continue
+        candidate = _checkpoint_data(candidate_record)
+        candidate_id = candidate.get("checkpoint_id")
+        if (
+            candidate.get("topic_id") == checkpoint.get("topic_id")
+            and candidate.get("purpose") == "stage-entry"
+            and candidate.get("stage_entry_phase") == 0
+            and isinstance(candidate_id, str)
+            and (include_checkpoint or candidate_id != checkpoint.get("checkpoint_id"))
+        ):
+            superseded.add(candidate_id)
+    return superseded
+
+
+def _reclose_superseded_stage_entry_gates(
+    records: dict[str, list[dict[str, Any]]], checkpoint: dict[str, Any], *,
+    ledger_revision: int, idempotency_key: str, include_checkpoint: bool = False,
+) -> list[str]:
+    """Atomically close direct gates whose frozen checkpoint authority changed."""
+    superseded = _superseded_stage_entry_checkpoint_ids(
+        records, checkpoint, include_checkpoint=include_checkpoint,
+    )
+    if not superseded:
+        return []
+    return apply_gate_policy(
+        records, "checkpoint-superseded", checkpoint["topic_id"], reclose={
+            "changed_decision_ids": set(),
+            "invalidated_authority_ids": superseded,
+            "ledger_revision": ledger_revision,
+            "cause": {
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "checkpoint_supersession_id": idempotency_key,
+                "superseded_checkpoint_ids": sorted(superseded),
+            },
+        },
+    )
+
+
 def _project_relative_path(project: Path, path: Path, label: str) -> str:
     try:
         relative = path.relative_to(project)
@@ -900,6 +952,10 @@ def _publish_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         checkpoint["checkpoint_ref"] = checkpoint_ref
         _store_checkpoint(record, checkpoint)
         next_revision = ledger_revision + 1
+        reclosed_dependency_ids = _reclose_superseded_stage_entry_gates(
+            records, checkpoint, ledger_revision=next_revision,
+            idempotency_key=request["idempotency_key"],
+        )
         result = {
             "ok": True, "state": "completed", "idempotent_replay": False,
             "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
@@ -909,7 +965,9 @@ def _publish_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "checkpoint_ref": checkpoint_ref,
             "stage_entry_phase": checkpoint.get("stage_entry_phase"),
             "stage_entry_phase_result_id": checkpoint.get("stage_entry_phase_result_id"),
+            "reclosed_dependency_ids": reclosed_dependency_ids,
         }
+        _inject_failure("checkpoint-before-completed-ledger-write")
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="git-checkpoint-published", result=result)
         return result
 
@@ -1000,6 +1058,10 @@ def _reconcile_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             checkpoint["checkpoint_ref"] = checkpoint_ref
         _store_checkpoint(record, checkpoint)
         next_revision = ledger_revision + 1
+        reclosed_dependency_ids = _reclose_superseded_stage_entry_gates(
+            records, checkpoint, ledger_revision=next_revision,
+            idempotency_key=request["idempotency_key"],
+        )
         result = {
             "ok": True, "state": next_state, "idempotent_replay": False,
             "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
@@ -1008,7 +1070,10 @@ def _reconcile_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "commit_id": matches[0]["commit_id"] if matches else None,
             "retry_allowed": not matches, "match_count": len(matches),
             "checkpoint_ref": checkpoint.get("checkpoint_ref"),
+            "reclosed_dependency_ids": reclosed_dependency_ids,
         }
+        if next_state == "completed":
+            _inject_failure("checkpoint-before-completed-ledger-write")
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="git-checkpoint-reconciled", result=result)
         return result
 
@@ -1079,6 +1144,10 @@ def _publish_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         checkpoint["snapshot_path"] = str(snapshot_path)
         _store_checkpoint(record, checkpoint)
         next_revision = ledger_revision + 1
+        reclosed_dependency_ids = _reclose_superseded_stage_entry_gates(
+            records, checkpoint, ledger_revision=next_revision,
+            idempotency_key=request["idempotency_key"],
+        )
         result = {
             "ok": True, "state": "completed", "idempotent_replay": False,
             "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
@@ -1087,7 +1156,9 @@ def _publish_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "snapshot_digest": snapshot_digest, "snapshot_path": str(snapshot_path), "snapshot_reused": reused,
             "stage_entry_phase": checkpoint.get("stage_entry_phase"),
             "stage_entry_phase_result_id": checkpoint.get("stage_entry_phase_result_id"),
+            "reclosed_dependency_ids": reclosed_dependency_ids,
         }
+        _inject_failure("checkpoint-before-completed-ledger-write")
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="non-git-checkpoint-published", result=result)
         return result
 
@@ -1147,6 +1218,10 @@ def _reconcile_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         checkpoint["record_revision"] += 1
         _store_checkpoint(record, checkpoint)
         next_revision = ledger_revision + 1
+        reclosed_dependency_ids = _reclose_superseded_stage_entry_gates(
+            records, checkpoint, ledger_revision=next_revision,
+            idempotency_key=request["idempotency_key"],
+        )
         result = {
             "ok": True, "state": next_state, "idempotent_replay": False,
             "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
@@ -1154,7 +1229,10 @@ def _reconcile_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "checkpoint_id": checkpoint["checkpoint_id"], "checkpoint_record_revision": checkpoint["record_revision"],
             "snapshot_digest": snapshot_digest if next_state == "completed" else None,
             "snapshot_path": str(snapshot_path), "retry_allowed": next_state == "prepared",
+            "reclosed_dependency_ids": reclosed_dependency_ids,
         }
+        if next_state == "completed":
+            _inject_failure("checkpoint-before-completed-ledger-write")
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="non-git-checkpoint-reconciled", result=result)
         return result
 
@@ -1281,6 +1359,10 @@ def _repair_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             _git(project, ["update-ref", checkpoint_ref, replacement])
         _store_checkpoint(record, checkpoint)
         next_revision = ledger_revision + 1
+        reclosed_dependency_ids = _reclose_superseded_stage_entry_gates(
+            records, checkpoint, ledger_revision=next_revision,
+            idempotency_key=request["idempotency_key"], include_checkpoint=True,
+        )
         result = {
             "ok": True, "state": "completed", "idempotent_replay": False,
             "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
@@ -1288,7 +1370,9 @@ def _repair_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             "checkpoint_id": checkpoint["checkpoint_id"], "checkpoint_record_revision": checkpoint["record_revision"],
             "broken_identity": checkpoint["broken_identity"], "replacement_identity": replacement,
             "original_fact_preserved": True,
+            "reclosed_dependency_ids": reclosed_dependency_ids,
         }
+        _inject_failure("checkpoint-before-completed-ledger-write")
         _write_ledger_transaction(ledger_path, frontmatter, records, request, ledger_revision=next_revision, event_type="checkpoint-repaired", result=result)
         return result
 

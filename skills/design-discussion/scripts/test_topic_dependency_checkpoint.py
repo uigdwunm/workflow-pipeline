@@ -13,6 +13,148 @@ from test_topic_dependency_support import (
 
 
 class TopicDependencyCheckpointCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_checkpoint_supersession_recloses_direct_open_gates_via_cli(self) -> None:
+        """A newer Phase-0 checkpoint retires only the released CP1 basis."""
+        for git, reconcile in ((False, False), (True, False), (False, True)):
+            with self.fixture.subTest(
+                storage_kind="git" if git else "non-git", reconcile=reconcile,
+            ):
+                project = self.fixture.make_project(
+                    f"ticket07-checkpoint-supersession-{git}-{reconcile}", git=git,
+                )
+                if git:
+                    (project / "base.txt").write_text("base\n", encoding="utf-8")
+                    subprocess.run(["git", "-C", str(project), "add", "base.txt"], check=True)
+                    subprocess.run(
+                        ["git", "-C", str(project), "-c", "user.name=Test",
+                         "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+                        check=True,
+                    )
+                topic = self.fixture.bootstrap_topic(project)
+
+                def publish(revision: int, topic_revision: int) -> dict[str, object]:
+                    prepared = self.fixture.prepare_checkpoint(
+                        topic, ledger_revision=revision, topic_revision=topic_revision,
+                        purpose="stage-entry", base_ref="HEAD" if git else "project-root",
+                    )
+                    if git:
+                        return self.fixture.publish_git_checkpoint(
+                            project, topic, prepared, ledger_revision=revision + 1,
+                            topic_revision=topic_revision,
+                        )
+                    code, result, stderr = self.fixture.run_cli(
+                        self.fixture.checkpoint_request(
+                            topic, operation="publish-non-git-checkpoint",
+                            ledger_revision=revision + 1, topic_revision=topic_revision,
+                            checkpoint_id=prepared["checkpoint_id"],
+                            expected_checkpoint_revision=prepared["checkpoint_record_revision"],
+                        )
+                    )
+                    self.fixture.assertEqual(code, 0, stderr)
+                    return result
+
+                checkpoint_one = publish(1, 1)
+                ledger = Path(str(topic["ledger_path"]))
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                dependent_id = "topic-" + uuid.uuid4().hex
+                add_topic(records, topic_id=dependent_id, root_slug="dependent",
+                    parent_topic_id=str(topic["topic_id"]))
+                add_binding(records, topic_id=dependent_id,
+                    conversation_ref="codex-thread:dependent")
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                create = self.fixture.evolution_request(
+                    topic, operation="update-topic-dependency",
+                    expected_revision=3, expected_topic_revision=1, action="create",
+                    prerequisite_topic_id=str(topic["topic_id"]),
+                    requirement_kind="phase-0-checkpoint",
+                    requirement_summary="The first checkpoint is frozen authority.",
+                )
+                create["actor_topic_id"] = dependent_id
+                create["actor_conversation_ref"] = "codex-thread:dependent"
+                code, created, stderr = self.fixture.run_cli(create)
+                self.fixture.assertEqual(code, 0, stderr)
+                dependency_id = created["dependency_id"]
+                evaluate = self.fixture.evolution_request(
+                    topic, operation="evaluate-topic-gate", basis_selection=[{
+                        "dependency_id": dependency_id,
+                        "authority_id": checkpoint_one["checkpoint_id"],
+                        "decision_ids": [],
+                    }],
+                )
+                evaluate["actor_topic_id"] = dependent_id
+                evaluate["actor_conversation_ref"] = "codex-thread:dependent"
+                code, proposal, stderr = self.fixture.run_cli(evaluate)
+                self.fixture.assertEqual(code, 0, stderr)
+                release = self.fixture.evolution_request(
+                    topic, operation="release-topic-gate", expected_revision=4,
+                    expected_topic_revision=1, release_set=proposal["release_set"],
+                    release_set_sha256=proposal["release_set_sha256"],
+                )
+                release["actor_topic_id"] = dependent_id
+                release["actor_conversation_ref"] = "codex-thread:dependent"
+                code, opened, stderr = self.fixture.run_cli(release)
+                self.fixture.assertEqual(code, 0, stderr)
+                self.fixture.assertEqual(opened["state"], "open")
+                _, publication_revision, publication_topic_revision = self.fixture.complete_update(
+                    project, topic, ledger_revision=5, topic_revision=1, mutation={
+                        "type": "confirm-decision", "summary": "A later conclusion.",
+                        "rationale": "CP2 must freeze the updated authority.",
+                    },
+                )
+                if not reconcile:
+                    checkpoint_two = publish(publication_revision, publication_topic_revision)
+                else:
+                    prepared_two = self.fixture.prepare_checkpoint(
+                        topic, ledger_revision=publication_revision,
+                        topic_revision=publication_topic_revision,
+                        purpose="stage-entry", base_ref="project-root",
+                    )
+                    publish_two = self.fixture.checkpoint_request(
+                        topic, operation="publish-non-git-checkpoint",
+                        ledger_revision=publication_revision + 1,
+                        topic_revision=publication_topic_revision,
+                        checkpoint_id=prepared_two["checkpoint_id"],
+                        expected_checkpoint_revision=prepared_two["checkpoint_record_revision"],
+                    )
+                    before_publish = ledger.read_bytes()
+                    code, rejected, _ = self.fixture.run_cli(
+                        publish_two,
+                        failpoint="checkpoint-before-completed-ledger-write",
+                    )
+                    self.fixture.assertEqual(code, 1)
+                    self.fixture.assertEqual(rejected["error"]["code"], "injected_failure")
+                    self.fixture.assertEqual(ledger.read_bytes(), before_publish)
+                    outcome = self.fixture.checkpoint_request(
+                        topic, operation="record-checkpoint-outcome-unknown",
+                        ledger_revision=publication_revision + 1,
+                        topic_revision=publication_topic_revision,
+                        checkpoint_id=prepared_two["checkpoint_id"],
+                        expected_checkpoint_revision=1,
+                    )
+                    code, unknown, stderr = self.fixture.run_cli(outcome)
+                    self.fixture.assertEqual(code, 0, stderr)
+                    reconcile_request = self.fixture.checkpoint_request(
+                        topic, operation="reconcile-non-git-checkpoint",
+                        ledger_revision=unknown["ledger_revision"],
+                        topic_revision=publication_topic_revision,
+                        checkpoint_id=prepared_two["checkpoint_id"],
+                        expected_checkpoint_revision=unknown["checkpoint_record_revision"],
+                    )
+                    code, checkpoint_two, stderr = self.fixture.run_cli(reconcile_request)
+                    self.fixture.assertEqual(code, 0, stderr)
+                self.fixture.assertEqual(checkpoint_two["reclosed_dependency_ids"], [dependency_id])
+                read = self.fixture.evolution_request(topic, operation="read-topic")
+                read["actor_topic_id"] = dependent_id
+                read["actor_conversation_ref"] = "codex-thread:dependent"
+                code, current, stderr = self.fixture.run_cli(read)
+                self.fixture.assertEqual(code, 0, stderr)
+                dependency = current["topic_dependencies"][0]
+                self.fixture.assertEqual(dependency["gate_state"], "closed")
+                basis = json.loads(dependency["accepted_basis_json"])
+                self.fixture.assertEqual(
+                    basis["authority"]["checkpoint_id"], checkpoint_one["checkpoint_id"],
+                )
+
     def test_ticket07_enforcing_open_basis_cannot_keep_historical_edge_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-enforcing-current-basis", git=False)
         topic = self.fixture.bootstrap_topic(project)
