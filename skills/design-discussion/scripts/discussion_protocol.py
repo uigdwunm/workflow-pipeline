@@ -38,6 +38,7 @@ from discussion_core.state import (
     _is_exact_creation_replay,
     _json_field,
     _ledger_sections,
+    _mkdirs,
     _load_records,
     _new_identity,
     _parse_frontmatter,
@@ -55,6 +56,7 @@ from discussion_core.state import (
     _verify_ledger_digest,
     _verify_topic_path_authority,
     _verify_topic_owner,
+    _write_new_file,
 )
 from discussion_core.checkpoints import (
     _cancel_checkpoint,
@@ -83,6 +85,10 @@ from discussion_core.handoffs import (
     _submit_child_result,
     _transition_handoff_attempt,
     _validate_handoffs,
+)
+from discussion_core.question_resolution import (
+    resolve_suspended_question,
+    stage_pending_document_write,
 )
 from discussion_core.phase_runs import (
     _authorize_continuous_flow,
@@ -363,75 +369,6 @@ def _render_ledger(
         },
         records,
     )
-
-
-def _mkdirs(path: Path, created_directories: list[Path]) -> None:
-    missing: list[Path] = []
-    cursor = path
-    while not cursor.exists():
-        missing.append(cursor)
-        cursor = cursor.parent
-    try:
-        cursor_stat = os.lstat(cursor)
-    except OSError as error:
-        raise ProtocolError(
-            "invalid_storage_path",
-            f"cannot inspect required storage path component: {cursor}",
-            cause=str(error),
-        ) from error
-    if not stat.S_ISDIR(cursor_stat.st_mode):
-        raise ProtocolError(
-            "invalid_storage_path",
-            f"required directory parent is not a directory: {cursor}",
-        )
-    existing = cursor
-    while existing != existing.parent:
-        existing_stat = os.lstat(existing)
-        if stat.S_ISLNK(existing_stat.st_mode):
-            raise ProtocolError(
-                "invalid_storage_path",
-                f"storage path contains a symbolic-link component: {existing}",
-            )
-        existing = existing.parent
-    for directory in reversed(missing):
-        directory.mkdir()
-        created_directories.append(directory)
-
-
-def _write_new_file(path: Path, data: bytes, created_files: list[Path]) -> None:
-    if path.exists():
-        raise ProtocolError("initialization_conflict", f"refusing to replace existing path: {path}")
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-        except BaseException:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-            raise
-        try:
-            os.link(temporary, path, follow_symlinks=False)
-        except FileExistsError as error:
-            raise ProtocolError(
-                "initialization_conflict", f"refusing to replace existing path: {path}"
-            ) from error
-        created_files.append(path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _rollback(created_files: list[Path], created_directories: list[Path]) -> None:
@@ -979,10 +916,14 @@ def _apply_mutation_to_records(
         data = _json_field(record, "data_json", "question")
         if data["state"] != "suspended":
             raise ProtocolError("question_state_conflict", "only a suspended question can be resolved")
-        data["state"] = "invalidated" if action == "invalidate" else "active"
+        adjusted_prompt = None
         if action == "adjust":
-            data["prompt"] = _expect_string(mutation["adjusted_prompt"], "mutation.adjusted_prompt", max_bytes=4096)
-        record["data_json"] = _canonical_json(data)
+            adjusted_prompt = _expect_string(
+                mutation["adjusted_prompt"], "mutation.adjusted_prompt", max_bytes=4096
+            )
+        data = resolve_suspended_question(
+            record, data, action=action, adjusted_prompt=adjusted_prompt
+        )
         result.update({"question_id": data["question_id"], "question_action": action})
     elif mutation_type == "change-direction":
         _expect_keys(mutation, {"type", "summary", "affected_decision_ids"}, "change-direction mutation")
@@ -1200,53 +1141,25 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             topic_id=request["actor_topic_id"], root_slug=manifest["root_slug"],
             topic_revision=next_topic_revision, snapshot=next_snapshot,
         )
-        write_id = f"DW-{uuid.UUID(request['idempotency_key']).hex}"
-        payload_path = ledger_path.parent / "pending-writes" / f"{write_id}.payload"
-        _mkdirs(payload_path.parent, [])
-        owned_payload_paths = {
-            Path(item["payload_path"]) for item in records["Pending Document Writes"]
-        }
-        observed_payload_paths = {
-            item for item in payload_path.parent.iterdir() if item.is_file()
-        }
-        orphan_payload_paths = observed_payload_paths - owned_payload_paths
-        recovered_orphan = False
-        if orphan_payload_paths:
-            if orphan_payload_paths != {payload_path}:
-                raise ProtocolError(
-                    "orphaned_document_write",
-                    "an unrelated orphan payload must be recovered by its exact request",
-                )
-            orphan_bytes = _require_regular_nosymlink(
-                payload_path, "orphan pending document payload"
-            )
-            if orphan_bytes != after_bytes or _sha256(orphan_bytes) != _sha256(after_bytes):
-                raise ProtocolError(
-                    "document_write_orphan_conflict",
-                    "the deterministic orphan payload does not match this typed request",
-                )
-            recovered_orphan = True
-        else:
-            _write_new_file(payload_path, after_bytes, [])
-        payload_path.chmod(0o400)
-        write_record = {
-            "document_write_id": write_id,
-            "topic_id": request["actor_topic_id"],
-            "owner_ref": owner_ref,
-            "topic_path": str(topic_path),
-            "payload_path": str(payload_path),
-            "before_sha256": _sha256(current_bytes),
-            "after_sha256": _sha256(after_bytes),
-            "state": "confirmed-but-pending",
-        }
-        next_records["Pending Document Writes"].append(write_record)
+        write_record, recovered_orphan = stage_pending_document_write(
+            next_records,
+            ledger_path=ledger_path,
+            topic_path=topic_path,
+            topic_id=request["actor_topic_id"],
+            owner_ref=owner_ref,
+            idempotency_key=request["idempotency_key"],
+            before=current_bytes,
+            after=after_bytes,
+            recover_exact_orphan=True,
+        )
         next_topic_record = _record_by_id(next_records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         next_topic_record["record_revision"] = next_topic_revision
         result = {
             "ok": True, "state": "confirmed-but-pending", "idempotent_replay": False,
             "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
             "ledger_revision": next_revision, "record_revision": next_topic_revision,
-            "document_write_id": write_id, "payload_path": str(payload_path),
+            "document_write_id": write_record["document_write_id"],
+            "payload_path": write_record["payload_path"],
             "before_sha256": write_record["before_sha256"], "after_sha256": write_record["after_sha256"],
             "recovered_orphan": recovered_orphan,
             **mutation_result,

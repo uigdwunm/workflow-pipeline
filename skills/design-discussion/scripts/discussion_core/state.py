@@ -260,6 +260,77 @@ def _require_regular_nosymlink(path: Path, label: str) -> bytes:
         raise ProtocolError("state_corrupt", f"cannot read {label}", cause=str(error)) from error
 
 
+def _mkdirs(path: Path, created_directories: list[Path]) -> None:
+    """Create a storage directory only beneath verified non-symlink parents."""
+    missing: list[Path] = []
+    cursor = path
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor = cursor.parent
+    try:
+        cursor_stat = os.lstat(cursor)
+    except OSError as error:
+        raise ProtocolError(
+            "invalid_storage_path",
+            f"cannot inspect required storage path component: {cursor}",
+            cause=str(error),
+        ) from error
+    if not stat.S_ISDIR(cursor_stat.st_mode):
+        raise ProtocolError(
+            "invalid_storage_path",
+            f"required directory parent is not a directory: {cursor}",
+        )
+    existing = cursor
+    while existing != existing.parent:
+        existing_stat = os.lstat(existing)
+        if stat.S_ISLNK(existing_stat.st_mode):
+            raise ProtocolError(
+                "invalid_storage_path",
+                f"storage path contains a symbolic-link component: {existing}",
+            )
+        existing = existing.parent
+    for directory in reversed(missing):
+        directory.mkdir()
+        created_directories.append(directory)
+
+
+def _write_new_file(path: Path, data: bytes, created_files: list[Path]) -> None:
+    """Durably create, but never replace, one regular file."""
+    if path.exists():
+        raise ProtocolError("initialization_conflict", f"refusing to replace existing path: {path}")
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError as error:
+            raise ProtocolError(
+                "initialization_conflict", f"refusing to replace existing path: {path}"
+            ) from error
+        created_files.append(path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _read_regular_nosymlink_or_none(path: Path, label: str) -> bytes | None:
     """Return secure artifact bytes, treating an unavailable artifact as absent."""
     try:

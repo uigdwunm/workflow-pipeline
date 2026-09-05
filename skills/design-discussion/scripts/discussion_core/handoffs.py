@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import re
 import uuid
@@ -40,6 +39,10 @@ from .topic_dependencies import (
     has_current_authority,
     prepare_initial_dependencies,
     release_child_result_dependencies,
+)
+from .question_resolution import (
+    resolve_suspended_question,
+    stage_pending_document_write,
 )
 
 
@@ -199,21 +202,25 @@ def _freeze_suspended_question_resolution(
     if value["question_id"] != question.get("question_id"):
         raise ProtocolError("question_state_conflict", "handoff resolution names a different question")
     frozen = {"question_id": _expect_string(value["question_id"], "suspended question question_id", max_bytes=64), "action": action}
-    question["state"] = "invalidated" if action == "invalidate" else "active"
+    adjusted_prompt = None
     if action == "adjust":
-        frozen["adjusted_prompt"] = _expect_string(
+        adjusted_prompt = _expect_string(
             value["adjusted_prompt"], "suspended question adjusted_prompt", max_bytes=4096,
         )
-        question["prompt"] = frozen["adjusted_prompt"]
-    record["data_json"] = _canonical_json(question)
+        frozen["adjusted_prompt"] = adjusted_prompt
+    resolve_suspended_question(
+        record, question, action=action, adjusted_prompt=adjusted_prompt
+    )
     return frozen
 
 
-def _freeze_resolution_document_write(
-    records: dict[str, list[dict[str, Any]]], *, ledger_path: Path, topic_path: Path,
-    topic_id: str, topic_revision: int, owner_ref: str, resolution: dict[str, str], idempotency_key: str,
-) -> dict[str, str]:
-    """Stage the source document replacement with the same recoverable write contract."""
+def _render_suspended_question_resolution_document(
+    topic_path: Path,
+    *,
+    resolution: dict[str, str],
+    topic_revision: int,
+) -> tuple[bytes, bytes]:
+    """Render the source document bytes corresponding to the frozen resolution."""
     before = _require_regular_nosymlink(topic_path, "topic document")
     question_id = re.escape(resolution["question_id"])
     text = before.decode("utf-8")
@@ -231,27 +238,13 @@ def _freeze_resolution_document_write(
     if count != 1:
         raise ProtocolError("state_corrupt", "suspended question is missing from topic document")
     after_text, revision_count = re.subn(
-        rf"(?m)^topic_revision: {topic_revision - 1}$", f"topic_revision: {topic_revision}", after_text,
+        rf"(?m)^topic_revision: {topic_revision - 1}$",
+        f"topic_revision: {topic_revision}",
+        after_text,
     )
     if revision_count != 1:
         raise ProtocolError("state_corrupt", "topic document revision is not current")
-    after = after_text.encode("utf-8")
-    write_id = f"DW-{uuid.UUID(idempotency_key).hex}"
-    payload_path = ledger_path.parent / "pending-writes" / f"{write_id}.payload"
-    payload_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    try:
-        fd = os.open(payload_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
-    except OSError as error:
-        raise ProtocolError("document_write_orphan_conflict", "handoff document payload already exists") from error
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(after)
-    records["Pending Document Writes"].append({
-        "document_write_id": write_id, "topic_id": topic_id, "owner_ref": owner_ref,
-        "topic_path": str(topic_path), "payload_path": str(payload_path),
-        "before_sha256": _sha256(before), "after_sha256": _sha256(after),
-        "state": "confirmed-but-pending",
-    })
-    return {"document_write_id": write_id, "payload_path": str(payload_path)}
+    return before, after_text.encode("utf-8")
 
 
 def _handoff_result(
@@ -450,12 +443,26 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         attempt["payload_sha256"] = payload_digest
         attempt["handoff_payload_bytes"] = payload_bytes
         if suspended_question_resolution is not None:
-            document_write = _freeze_resolution_document_write(
-                records, ledger_path=ledger_path, topic_path=topic_path,
-                topic_id=request["actor_topic_id"], topic_revision=resolved_topic_revision,
-                owner_ref=owner_ref, resolution=suspended_question_resolution,
-                idempotency_key=request["idempotency_key"],
+            before, after = _render_suspended_question_resolution_document(
+                topic_path,
+                resolution=suspended_question_resolution,
+                topic_revision=resolved_topic_revision,
             )
+            write_record, _ = stage_pending_document_write(
+                records,
+                ledger_path=ledger_path,
+                topic_path=topic_path,
+                topic_id=request["actor_topic_id"],
+                owner_ref=owner_ref,
+                idempotency_key=request["idempotency_key"],
+                before=before,
+                after=after,
+                recover_exact_orphan=False,
+            )
+            document_write = {
+                "document_write_id": write_record["document_write_id"],
+                "payload_path": write_record["payload_path"],
+            }
             handoff["document_write"] = document_write
         next_revision = ledger_revision + 1
         result = {

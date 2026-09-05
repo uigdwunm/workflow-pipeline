@@ -97,6 +97,63 @@ class TopicDependencyHandoffCliTests(DiscussionProtocolScenarioFixture, Discussi
                         self.assertEqual(resolved["prompt"], resolution["adjusted_prompt"])
                     self.assertEqual(current["derived_gate_state"], "closed" if dependent_split else "open")
 
+    def test_child_handoff_rejects_existing_resolution_payload_without_partial_ledger_state(self) -> None:
+        project = self.make_project("child-handoff-existing-resolution-payload", git=False)
+        topic = self.bootstrap_topic(project)
+        question, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=1,
+            topic_revision=1,
+            mutation={
+                "type": "set-active-question",
+                "prompt": "Which child owns the open question?",
+                "recommendation": "Freeze it with the child handoff.",
+                "reason": "The source owner must resolve it before the gate closes.",
+            },
+        )
+        _, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={"type": "insert-idea", "summary": "Split the unresolved work."},
+        )
+        request = self.handoff_request(
+            topic,
+            operation="prepare-handoff",
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            handoff_kind="child",
+            target_slug="resolution-child",
+            scope=["api"],
+            work_snapshot={"goal": "Resolve the open question."},
+            authoritative_references=[],
+            suspended_question_resolution={
+                "question_id": question["question_id"],
+                "action": "resume",
+            },
+        )
+        request["idempotency_key"] = str(uuid.uuid4())
+        ledger_path = Path(str(topic["ledger_path"]))
+        payload_path = (
+            ledger_path.parent
+            / "pending-writes"
+            / f"DW-{uuid.UUID(str(request['idempotency_key'])).hex}.payload"
+        )
+        payload_path.parent.mkdir(mode=0o700, exist_ok=True)
+        payload_path.write_bytes(b"unowned existing payload")
+        before_ledger = ledger_path.read_bytes()
+        before_document = Path(str(topic["topic_document_path"])).read_bytes()
+
+        code, rejected, _ = self.run_cli(request)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "document_write_orphan_conflict")
+        self.assertEqual(ledger_path.read_bytes(), before_ledger)
+        self.assertEqual(Path(str(topic["topic_document_path"])).read_bytes(), before_document)
+        self.assertEqual(payload_path.read_bytes(), b"unowned existing payload")
+
     def test_ticket07_confirmed_child_result_freezes_only_selected_decisions_via_cli(self) -> None:
         project = self.make_project("ticket07-confirmed-narrow-child", git=False)
         topic = self.bootstrap_topic(project)
