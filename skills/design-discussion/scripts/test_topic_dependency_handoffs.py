@@ -11,6 +11,72 @@ from test_topic_dependency_support import DiscussionProtocolScenarioFixture, Dis
 
 
 class TopicDependencyHandoffCliTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport):
+    def test_ticket07_child_split_freezes_suspended_question_before_initial_gate_via_cli(self) -> None:
+        for dependent_split in (False, True):
+            for action in ("resume", "adjust", "invalidate"):
+                with self.subTest(dependent_split=dependent_split, action=action):
+                    project = self.make_project(
+                        f"ticket07-suspended-split-{dependent_split}-{action}", git=False,
+                    )
+                    topic = self.bootstrap_topic(project)
+                    question, ledger_revision, topic_revision = self.complete_update(
+                        project, topic, ledger_revision=1, topic_revision=1, mutation={
+                            "type": "set-active-question", "prompt": "Which split is safest?",
+                            "recommendation": "Keep the parent decision explicit.",
+                            "reason": "The child needs a bounded assignment.",
+                        },
+                    )
+                    _, ledger_revision, topic_revision = self.complete_update(
+                        project, topic, ledger_revision=ledger_revision,
+                        topic_revision=topic_revision,
+                        mutation={"type": "insert-idea", "summary": "Split implementation work."},
+                    )
+                    resolution = {"question_id": question["question_id"], "action": action}
+                    if action == "adjust":
+                        resolution["adjusted_prompt"] = "Which dependency boundary is safest?"
+                    initial_dependencies = ([{
+                        "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+                        "requirement_kind": "confirmed-decision",
+                        "requirement_summary": "The child conclusion is required first.",
+                    }] if dependent_split else None)
+                    if dependent_split and action == "resume":
+                        before = Path(str(topic["ledger_path"])).read_bytes()
+                        failed = self.handoff_request(
+                            topic, operation="prepare-handoff", ledger_revision=ledger_revision,
+                            topic_revision=topic_revision, handoff_kind="child",
+                            target_slug="frozen-question", scope=["api"],
+                            work_snapshot={
+                                "goal": "Choose the public API shape.",
+                                "confirmed_decisions": [],
+                                "pending_questions": ["Which requests are public?"],
+                            },
+                            authoritative_references=[{
+                                "kind": "checkpoint", "identity": "CP-source", "sha256": "1" * 64,
+                            }],
+                            initial_dependencies=initial_dependencies,
+                            suspended_question_resolution=resolution,
+                        )
+                        code, rejected, _ = self.run_cli(
+                            failed, failpoint="handoff-after-initial-dependencies-before-ledger-write",
+                        )
+                        self.assertEqual(code, 1)
+                        self.assertEqual(rejected["error"]["code"], "injected_failure")
+                        self.assertEqual(Path(str(topic["ledger_path"])).read_bytes(), before)
+                    prepared = self.prepare_child_handoff(
+                        topic, ledger_revision=ledger_revision, topic_revision=topic_revision,
+                        initial_dependencies=initial_dependencies,
+                        suspended_question_resolution=resolution,
+                    )
+                    self.assertEqual(prepared["suspended_question_resolution"], resolution)
+                    self.assertEqual(prepared["record_revision"], topic_revision + 1)
+                    code, current, stderr = self.run_cli(self.evolution_request(topic, operation="read-topic"))
+                    self.assertEqual(code, 0, stderr)
+                    resolved = next(item for item in current["questions"] if item["question_id"] == question["question_id"])
+                    self.assertEqual(resolved["state"], "invalidated" if action == "invalidate" else "active")
+                    if action == "adjust":
+                        self.assertEqual(resolved["prompt"], resolution["adjusted_prompt"])
+                    self.assertEqual(current["derived_gate_state"], "closed" if dependent_split else "open")
+
     def test_ticket07_confirmed_child_result_freezes_only_selected_decisions_via_cli(self) -> None:
         project = self.make_project("ticket07-confirmed-narrow-child", git=False)
         topic = self.bootstrap_topic(project)

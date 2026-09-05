@@ -95,7 +95,10 @@ question, idea, impact and document-write identities come from the protocol;
 do not construct or rewrite them in prose.
 
 An inserted idea suspends the active question. After the idea is understood,
-explicitly resolve that question as `resume`, `adjust` or `invalidate`. A
+explicitly resolve that question as `resume`, `adjust` or `invalidate`. When a
+child handoff is prepared before that resolution, include the exact
+`suspended_question_resolution` in the handoff proposal so it freezes and
+applies before any initial dependency can close the source gate. A
 changed direction first lists affected decision identities, then confirms one
 `keep`, `adjust`, `replace` or `discard` action per impact. Never batch several
 affected decisions into one resolution.

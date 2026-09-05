@@ -911,6 +911,7 @@ class DiscussionProtocolScenarioFixture:
         scope: list[str] | None = None,
         work_snapshot: dict[str, object] | None = None,
         initial_dependencies: list[dict[str, object]] | None = None,
+        suspended_question_resolution: dict[str, object] | None = None,
     ) -> dict[str, object]:
         returncode, prepared, stderr = self.run_cli(
             self.handoff_request(
@@ -935,6 +936,8 @@ class DiscussionProtocolScenarioFixture:
                     }
                 ],
                 **({"initial_dependencies": initial_dependencies} if initial_dependencies is not None else {}),
+                **({"suspended_question_resolution": suspended_question_resolution}
+                   if suspended_question_resolution is not None else {}),
             )
         )
         self.assertEqual(returncode, 0, stderr)
@@ -6178,5 +6181,4 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolScenarioFixture, Discus
         self.assertEqual(raised.exception.code, "invalid_storage_path")
         self.assertEqual(ledger_path.read_bytes(), ledger_before)
         self.assertEqual(list(external_root.iterdir()), [])
-
 

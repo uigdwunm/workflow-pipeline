@@ -50,6 +50,7 @@ HANDOFF_WORK_SNAPSHOT_FIELDS = {
 }
 HANDOFF_WORK_SNAPSHOT_MAX_BYTES = 16000
 HANDOFF_PAYLOAD_MAX_BYTES = 32000
+SUSPENDED_QUESTION_ACTIONS = {"resume", "adjust", "invalidate"}
 
 
 def _handoff_id(idempotency_key: str) -> str:
@@ -154,11 +155,54 @@ def _handoff_payload(
         "work_snapshot": handoff["work_snapshot"],
         "authoritative_references": handoff["authoritative_references"],
         "initial_dependencies": handoff.get("initial_dependencies", []),
+        "suspended_question_resolution": handoff.get("suspended_question_resolution"),
     }
     payload_bytes = len(_canonical_json(payload).encode("utf-8"))
     if payload_bytes > HANDOFF_PAYLOAD_MAX_BYTES:
         raise ProtocolError("handoff_payload_too_large", "handoff payload exceeds its size limit")
     return envelope, _sha256(_canonical_json(payload).encode("utf-8")), payload_bytes
+
+
+def _freeze_suspended_question_resolution(
+    records: dict[str, list[dict[str, Any]]], *, topic_id: str, value: Any,
+) -> dict[str, str] | None:
+    """Resolve the one suspended source question before an initial edge can close it."""
+    suspended = [
+        record for record in records["Pending Items"]
+        if record.get("topic_id") == topic_id and record.get("item_kind") == "question"
+        and _json_field(record, "data_json", "question").get("state") == "suspended"
+    ]
+    if not suspended:
+        if value is not None:
+            raise ProtocolError("question_state_conflict", "handoff has no suspended question to resolve")
+        return None
+    if len(suspended) != 1:
+        raise ProtocolError("state_corrupt", "topic has multiple suspended questions")
+    if not isinstance(value, dict):
+        raise ProtocolError(
+            "question_state_conflict",
+            "a child handoff must freeze the suspended question resolution",
+        )
+    expected = {"question_id", "action"}
+    if value.get("action") == "adjust":
+        expected.add("adjusted_prompt")
+    _expect_keys(value, expected, "suspended_question_resolution")
+    action = value["action"]
+    if action not in SUSPENDED_QUESTION_ACTIONS:
+        raise ProtocolError("invalid_request", "suspended question action is unsupported")
+    record = suspended[0]
+    question = _json_field(record, "data_json", "question")
+    if value["question_id"] != question.get("question_id"):
+        raise ProtocolError("question_state_conflict", "handoff resolution names a different question")
+    frozen = {"question_id": _expect_string(value["question_id"], "suspended question question_id", max_bytes=64), "action": action}
+    question["state"] = "invalidated" if action == "invalidate" else "active"
+    if action == "adjust":
+        frozen["adjusted_prompt"] = _expect_string(
+            value["adjusted_prompt"], "suspended question adjusted_prompt", max_bytes=4096,
+        )
+        question["prompt"] = frozen["adjusted_prompt"]
+    record["data_json"] = _canonical_json(question)
+    return frozen
 
 
 def _handoff_result(
@@ -199,6 +243,8 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         }
     if "initial_dependencies" in request:
         allowed.add("initial_dependencies")
+    if "suspended_question_resolution" in request:
+        allowed.add("suspended_question_resolution")
     _expect_keys(request, allowed, "prepare-handoff request")
     _validate_uuid4(request["idempotency_key"], "idempotency_key")
     kind = _expect_string(request["handoff_kind"], "handoff_kind", max_bytes=32)
@@ -247,6 +293,13 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, source_topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         apply_gate_policy(records, "prepare-handoff", request["actor_topic_id"])
+        suspended_question_resolution = _freeze_suspended_question_resolution(
+            records, topic_id=request["actor_topic_id"],
+            value=request.get("suspended_question_resolution"),
+        )
+        resolved_topic_revision = topic_revision + int(suspended_question_resolution is not None)
+        if suspended_question_resolution is not None:
+            source_topic["record_revision"] = resolved_topic_revision
         target_topic_id = (
             request["actor_topic_id"] if kind == "continuation" else f"topic-{uuid.UUID(request['idempotency_key']).hex}"
         )
@@ -271,6 +324,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             "creation_fingerprint": _mutation_fingerprint(request),
             "creation_result_json": "",
             "initial_dependencies": request.get("initial_dependencies", []),
+            "suspended_question_resolution": suspended_question_resolution,
         }
         attempt = {
             "attempt_id": attempt_id,
@@ -346,12 +400,14 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         next_revision = ledger_revision + 1
         result = {
             **_handoff_result(
-                request, handoff, attempt, ledger_revision=next_revision, topic_revision=topic_revision
+                request, handoff, attempt, ledger_revision=next_revision,
+                topic_revision=resolved_topic_revision,
             ),
             "identity_envelope": identity_envelope,
             "work_snapshot_bytes": snapshot_bytes,
             "handoff_payload_bytes": payload_bytes,
             "initial_dependencies": initial_dependencies,
+            "suspended_question_resolution": suspended_question_resolution,
         }
         handoff["creation_result_json"] = _canonical_json(result)
         _store_handoff(
