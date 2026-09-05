@@ -62,6 +62,11 @@ def _new_dependency_record(*, dependency_id: str, dependent_topic_id: str,
         "gate_reason_json": _canonical_json(reason)}
 
 
+def _dependency_definition(dependency: dict[str, Any]) -> dict[str, Any]:
+    """Freeze one complete dependency record for an auditable replacement event."""
+    return {field: dependency[field] for field in sorted(dependency)}
+
+
 def _validate_dependency_records(records: dict[str, list[dict[str, Any]]]) -> None:
     validate_dependency_records(records, ProtocolError)
 
@@ -318,6 +323,7 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
                 "topic dependencies are immutable after Phase 1",
                 context=dependency_context(dependent_topic_id=request["actor_topic_id"],
                     phase=topic["current_phase"]))
+        before_definition = None
         if action == "create":
             _reject_published_authority_change(records, request["actor_topic_id"])
             _validate_new_edge(records, request["actor_topic_id"],
@@ -353,6 +359,7 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
                 _validate_new_edge(records, request["actor_topic_id"],
                     request["prerequisite_topic_id"], request["requirement_kind"],
                     request["requirement_summary"], replacing=dep["dependency_id"])
+                before_definition = _dependency_definition(dep)
                 dep.update({"prerequisite_topic_id": request["prerequisite_topic_id"],
                     "requirement_kind": request["requirement_kind"],
                     "requirement_summary": request["requirement_summary"],
@@ -368,6 +375,9 @@ def update_topic_dependency(request: dict[str, Any]) -> dict[str, Any]:
             "dependency_revision": dep["record_revision"],
             "ledger_revision": revision + 1, "record_revision": topic_revision,
             "derived_gate_state": derived_gate(records, request["actor_topic_id"])}
+        if before_definition is not None:
+            result["dependency_before"] = before_definition
+            result["dependency_after"] = _dependency_definition(dep)
         _inject_failure("topic-dependency-before-ledger-write")
         _write_ledger_transaction(ledger_path, frontmatter, records, request,
             ledger_revision=revision + 1, event_type=f"topic-dependency-{action}",

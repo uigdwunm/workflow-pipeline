@@ -294,6 +294,11 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         raise ProtocolError("invalid_request", "handoff_kind is unsupported")
     if kind != "child" and "initial_dependencies" in request:
         raise ProtocolError("invalid_request", "initial_dependencies is valid only for a child handoff")
+    if kind != "child" and "suspended_question_resolution" in request:
+        raise ProtocolError(
+            "invalid_request",
+            "suspended_question_resolution is valid only for a child handoff",
+        )
     target_slug = _expect_string(request["target_slug"], "target_slug", max_bytes=128)
     if not ROOT_SLUG_RE.fullmatch(target_slug):
         raise ProtocolError("invalid_root_slug", "target_slug is invalid")
@@ -336,9 +341,14 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         if kind == "child":
             apply_gate_policy(records, "prepare-handoff", request["actor_topic_id"])
-        suspended_question_resolution = _freeze_suspended_question_resolution(
-            records, topic_id=request["actor_topic_id"],
-            value=request.get("suspended_question_resolution"),
+        suspended_question_resolution = (
+            _freeze_suspended_question_resolution(
+                records,
+                topic_id=request["actor_topic_id"],
+                value=request.get("suspended_question_resolution"),
+            )
+            if kind == "child"
+            else None
         )
         resolved_topic_revision = topic_revision + int(suspended_question_resolution is not None)
         if suspended_question_resolution is not None:

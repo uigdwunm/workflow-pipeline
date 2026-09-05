@@ -151,6 +151,77 @@ class TopicDependencyPhaseGateCliTests(DiscussionProtocolScenarioFixture, Discus
             prerequisite_topic_id=str(child["target_topic_id"]),
         )
 
+    def test_closed_gate_continuation_rejects_suspended_question_resolution_without_advancing(self) -> None:
+        project = self.make_project("closed-continuation-suspended-resolution", git=False)
+        topic = self.bootstrap_topic(project)
+        question, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=1,
+            topic_revision=1,
+            mutation={
+                "type": "set-active-question",
+                "prompt": "Which continuation owns this question?",
+                "recommendation": "Keep the current owner until a child accepts it.",
+                "reason": "A continuation must not resolve it through a closed gate.",
+            },
+        )
+        _, ledger_revision, topic_revision = self.complete_update(
+            project,
+            topic,
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            mutation={"type": "insert-idea", "summary": "Split the unresolved question."},
+        )
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        prerequisite_id = "topic-" + uuid.uuid4().hex
+        add_topic(
+            records,
+            topic_id=prerequisite_id,
+            root_slug="closed-prerequisite",
+            parent_topic_id=str(topic["topic_id"]),
+        )
+        add_closed_dependency(
+            records,
+            dependency_id="DEP-" + uuid.uuid4().hex,
+            dependent_topic_id=str(topic["topic_id"]),
+            prerequisite_topic_id=prerequisite_id,
+            requirement_kind="confirmed-decision",
+            requirement_summary="The child authority remains required.",
+            gate_reason_json=PROTOCOL._canonical_json({
+                "kind": "explicit-create",
+                "dependency_update_id": "00000000-0000-4000-8000-000000000000",
+                "ledger_revision": ledger_revision,
+            }),
+        )
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before_ledger = ledger.read_bytes()
+        topic_path = Path(str(topic["topic_document_path"]))
+        before_document = topic_path.read_bytes()
+        request = self.handoff_request(
+            topic,
+            operation="prepare-handoff",
+            ledger_revision=ledger_revision,
+            topic_revision=topic_revision,
+            handoff_kind="continuation",
+            target_slug="closed-continuation",
+            scope=["recovery"],
+            work_snapshot={"goal": "Recover the current conversation."},
+            authoritative_references=[],
+            suspended_question_resolution={
+                "question_id": question["question_id"],
+                "action": "resume",
+            },
+        )
+
+        code, rejected, _ = self.run_cli(request)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "invalid_request")
+        self.assertEqual(ledger.read_bytes(), before_ledger)
+        self.assertEqual(topic_path.read_bytes(), before_document)
+
     def test_ticket07_closed_gate_rechecks_ready_and_activation_via_cli(self) -> None:
         for from_phase, to_phase in ((0, 1), (0, 2), (1, 2)):
             for target in ("ready", "active"):

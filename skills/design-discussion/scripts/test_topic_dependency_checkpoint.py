@@ -511,7 +511,7 @@ class TopicDependencyCheckpointCliTests(DiscussionProtocolScenarioFixture, Discu
         ledger = Path(str(topic["ledger_path"]))
         frontmatter, records = PROTOCOL._load_records(ledger)
         child_id = "topic-" + "d" * 32
-        records["Current Topics"].append({"topic_id": child_id, "record_revision": 1, "root_slug": "child", "parent_topic_id": str(topic["topic_id"]), "current_phase": 1, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
+        records["Current Topics"].append({"topic_id": child_id, "record_revision": 1, "root_slug": "child", "parent_topic_id": str(topic["topic_id"]), "current_phase": 2, "phase_state": "active", "review_state": "unreviewed", "topic_state": "open", "topic_document_path": None})
         checkpoint_record = records["Checkpoints"][0]
         checkpoint_data = json.loads(str(checkpoint_record["data_json"]))
         checkpoint_record["state"] = "cancelled"

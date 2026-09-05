@@ -365,9 +365,11 @@ def _validate_checkpoint_provenance(
         error("state_corrupt", "topic dependency checkpoint authority is not retained")
     checkpoint = canonical_object(matches[0].get("data_json"), "checkpoint data_json", error)
     if (
-        checkpoint.get("topic_id") != prerequisite_topic_id
+        matches[0].get("state") != "completed"
+        or checkpoint.get("topic_id") != prerequisite_topic_id
         or checkpoint.get("checkpoint_id") != authority["checkpoint_id"]
         or checkpoint.get("record_revision") != authority["record_revision"]
+        or checkpoint.get("state") != "completed"
         or checkpoint.get("published_identity") != authority["published_identity"]
         or checkpoint.get("decision_digest") != authority["decision_digest"]
     ):
@@ -393,7 +395,8 @@ def _validate_phase_result_provenance(
         for entry in full_authority
     } if _decision_pairs(full_authority) else None
     if (
-        result.get("topic_id") != prerequisite_topic_id
+        matches[0].get("state") != "completed"
+        or result.get("topic_id") != prerequisite_topic_id
         or result.get("result_id") != authority["result_id"]
         or result.get("phase_run_id") != authority["phase_run_id"]
         or result.get("affected_decision_ids") != authority["affected_decision_ids"]

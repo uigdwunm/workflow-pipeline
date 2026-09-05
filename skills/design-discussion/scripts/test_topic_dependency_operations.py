@@ -570,6 +570,136 @@ class TopicDependencyOperationCliTests(DiscussionProtocolScenarioFixture, Discus
                 self.assertEqual(rejected["error"]["code"], "state_corrupt")
                 self.assertEqual(ledger.read_bytes(), before)
 
+    def test_open_gate_rejects_non_completed_retained_authority_states_via_cli(self) -> None:
+        cases = (
+            ("checkpoint-envelope", "phase-0-checkpoint", "broken"),
+            ("checkpoint-data", "phase-0-checkpoint", "broken"),
+            ("phase-result", "phase-1-result", "review-pending"),
+        )
+        for case, dependency_kind, invalid_state in cases:
+            with self.subTest(case=case):
+                project = self.make_project(f"open-gate-non-completed-{case}", git=False)
+                topic = self.bootstrap_topic(project)
+                if dependency_kind == "phase-0-checkpoint":
+                    authority = self.publish_non_git_stage_entry_checkpoint(
+                        topic, ledger_revision=1
+                    )
+                    authority_id = authority["checkpoint_id"]
+                else:
+                    decision, revision, topic_revision = self.complete_update(
+                        project,
+                        topic,
+                        ledger_revision=1,
+                        topic_revision=1,
+                        mutation={
+                            "type": "confirm-decision",
+                            "summary": "Keep the completed phase authority.",
+                            "rationale": "It is the release basis.",
+                        },
+                    )
+                    authority, _, _ = self.complete_current_topic_phase(
+                        topic,
+                        ledger_revision=revision,
+                        topic_revision=topic_revision,
+                        from_phase=0,
+                        to_phase=1,
+                    )
+                    authority_id = authority["phase_result_id"]
+                ledger = Path(str(topic["ledger_path"]))
+                ledger_revision = int(PROTOCOL._load_records(ledger)[0]["ledger_revision"])
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                dependent_id = "topic-" + uuid.uuid4().hex
+                dependency_id = "DEP-" + uuid.uuid4().hex
+                records["Current Topics"].append({
+                    "topic_id": dependent_id,
+                    "record_revision": 1,
+                    "root_slug": "dependent",
+                    "parent_topic_id": str(topic["topic_id"]),
+                    "current_phase": 0,
+                    "phase_state": "active",
+                    "review_state": "unreviewed",
+                    "topic_state": "open",
+                    "topic_document_path": None,
+                })
+                records["Conversation Bindings"].append({
+                    "topic_id": dependent_id,
+                    "conversation_ref": "codex-thread:dependent",
+                    "binding_state": "active",
+                    "record_revision": 1,
+                    "handoff_id": None,
+                    "attempt_id": None,
+                })
+                records["Topic Dependencies"].append({
+                    "dependency_id": dependency_id,
+                    "record_revision": 1,
+                    "dependent_topic_id": dependent_id,
+                    "prerequisite_topic_id": str(topic["topic_id"]),
+                    "requirement_kind": dependency_kind,
+                    "requirement_summary": "The completed authority remains required.",
+                    "relation_state": "active",
+                    "gate_state": "closed",
+                    "accepted_basis_json": None,
+                    "gate_reason_json": PROTOCOL._canonical_json({
+                        "kind": "explicit-create",
+                        "dependency_update_id": "00000000-0000-4000-8000-000000000000",
+                        "ledger_revision": ledger_revision,
+                    }),
+                })
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                selection = {
+                    "dependency_id": dependency_id,
+                    "authority_id": authority_id,
+                    "decision_ids": [] if dependency_kind == "phase-0-checkpoint"
+                    else [decision["decision_id"]],
+                }
+                evaluate = self.evolution_request(
+                    topic, operation="evaluate-topic-gate", basis_selection=[selection]
+                )
+                evaluate["actor_topic_id"] = dependent_id
+                evaluate["actor_conversation_ref"] = "codex-thread:dependent"
+                code, evaluation, stderr = self.run_cli(evaluate)
+                self.assertEqual(code, 0, stderr)
+                release = self.evolution_request(
+                    topic,
+                    operation="release-topic-gate",
+                    expected_revision=ledger_revision,
+                    expected_topic_revision=1,
+                    release_set=evaluation["release_set"],
+                    release_set_sha256=evaluation["release_set_sha256"],
+                )
+                release["actor_topic_id"] = dependent_id
+                release["actor_conversation_ref"] = "codex-thread:dependent"
+                code, opened, stderr = self.run_cli(release)
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(opened["state"], "open")
+
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                if case == "checkpoint-envelope":
+                    target = records["Checkpoints"][0]
+                    target["state"] = invalid_state
+                elif case == "checkpoint-data":
+                    target = records["Checkpoints"][0]
+                    checkpoint = json.loads(str(target["data_json"]))
+                    checkpoint["state"] = invalid_state
+                    target["data_json"] = PROTOCOL._canonical_json(checkpoint)
+                else:
+                    target = next(
+                        item for item in records["Phase Results"]
+                        if item["result_id"] == authority_id
+                    )
+                    target["state"] = invalid_state
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                before = ledger.read_bytes()
+                read = self.evolution_request(topic, operation="read-topic")
+                read["actor_topic_id"] = dependent_id
+                read["actor_conversation_ref"] = "codex-thread:dependent"
+
+                code, rejected, _ = self.run_cli(read)
+
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "state_corrupt")
+                self.assertEqual(ledger.read_bytes(), before)
+
     def test_ticket07_forged_child_basis_authority_mismatch_fails_closed_via_cli(self) -> None:
         project = self.make_project("ticket07-forged-child-basis", git=False)
         topic = self.bootstrap_topic(project)
@@ -705,6 +835,59 @@ class TopicDependencyOperationCliTests(DiscussionProtocolScenarioFixture, Discus
         self.assertEqual(code, 0, stderr)
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(ledger.read_bytes(), before)
+
+    def test_dependency_replace_event_retains_canonical_before_and_after_definitions_via_cli(self) -> None:
+        project = self.make_project("dependency-replace-event-history", git=False)
+        topic = self.bootstrap_topic(project)
+        first = self.prepare_child_handoff(topic)
+        second = self.prepare_child_handoff(topic, ledger_revision=2)
+        ledger = Path(str(topic["ledger_path"]))
+        code, created, stderr = self.run_cli(self.evolution_request(
+            topic,
+            operation="update-topic-dependency",
+            expected_revision=3,
+            expected_topic_revision=1,
+            action="create",
+            prerequisite_topic_id=first["target_topic_id"],
+            requirement_kind="confirmed-decision",
+            requirement_summary="The first child decision is required.",
+        ))
+        self.assertEqual(code, 0, stderr)
+        _, before_records = PROTOCOL._load_records(ledger)
+        before_definition = dict(next(
+            item for item in before_records["Topic Dependencies"]
+            if item["dependency_id"] == created["dependency_id"]
+        ))
+        code, replaced, stderr = self.run_cli(self.evolution_request(
+            topic,
+            operation="update-topic-dependency",
+            expected_revision=4,
+            expected_topic_revision=1,
+            action="replace",
+            dependency_id=created["dependency_id"],
+            expected_dependency_revision=1,
+            prerequisite_topic_id=second["target_topic_id"],
+            requirement_kind="phase-1-result",
+            requirement_summary="The second child Phase 1 result is required.",
+        ))
+        self.assertEqual(code, 0, stderr)
+        _, records = PROTOCOL._load_records(ledger)
+        after_definition = dict(next(
+            item for item in records["Topic Dependencies"]
+            if item["dependency_id"] == created["dependency_id"]
+        ))
+        replace_event = next(
+            event for event in records["Recent Events"]
+            if event["event_type"] == "topic-dependency-replace"
+        )
+        event_result = json.loads(str(replace_event["result_json"]))
+
+        self.assertEqual(replaced["dependency_before"], before_definition)
+        self.assertEqual(replaced["dependency_after"], after_definition)
+        self.assertEqual(event_result["dependency_before"], before_definition)
+        self.assertEqual(event_result["dependency_after"], after_definition)
+        self.assertEqual(event_result["dependency_before"]["record_revision"], 1)
+        self.assertEqual(event_result["dependency_after"]["record_revision"], 2)
 
     def test_ticket07_direct_release_reason_keeps_exact_operation_id_via_cli(self) -> None:
         project = self.make_project("ticket07-direct-release-identity", git=False)
