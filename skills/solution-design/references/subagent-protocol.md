@@ -24,7 +24,7 @@ First verify the runtime role. Child execution is valid only when the runtime
 identifies the agent as a non-root native subagent and its input contains the
 complete canonical `solution-design-subagent-v2` payload with semantic role
 `solution_designer`. The payload may be the direct native prompt or appear
-inside an applicable governance envelope. The native task name is not identity.
+inside an applicable orchestration envelope. The native task name is not identity.
 In the child role execute this protocol directly and never spawn another agent.
 A copied payload in an ordinary root or user-owned task is not child identity
 and must fall back to the primary launch flow.
@@ -57,73 +57,54 @@ Read
 `<guided-implementation-skill-root>/references/thread-settings-protocol.md`
 completely. For current-task inheritance, require
 `thread-settings-v4` and use `resolve --current`. Require the returned pair to
-be advertised by the current `spawn_agent` capability. A user-requested
-explicit supported pair uses source `user-requested-override` and never claims
+be advertised by the current native-subagent adapter. A user-requested explicit
+supported pair uses source `user-requested-override` and never claims
 current-task inheritance. An unavailable current Adapter, settings receipt,
-unsupported pair, or runtime-version mismatch emits the fixed pre-launch
-anomaly block and stops.
+unsupported pair, or runtime-version mismatch emits the fixed pre-launch anomaly
+block and stops.
 
 Build the canonical child payload from `references/templates.md`. It contains
 the semantic role, requirement source, project and repository, planning target,
-Flow Worktree binding, permissions, settings and flow mode. It must remain at
-most 8192 characters so a governed dispatch can carry it in `context.summary`.
-Do not fork conversation history.
+Flow Worktree binding, permissions, settings and flow mode. Keep it bounded to
+those stage facts and do not carry conversation history.
 
-Use exactly one dispatch path:
+Create one semantic dispatch request containing the accepted objective, allowed
+and forbidden work, completion evidence, canonical child payload, Flow Worktree,
+frozen requirement identity, resolved model and effort, and the requirement for
+an isolated context. Hand that request to the current native-subagent
+orchestration adapter. The adapter owns native tool arguments, task naming,
+exact-target binding, dispatch confirmation, liveness, terminal normalization,
+interruption and bookkeeping. This protocol owns the stage payload, permissions,
+review points, anomaly semantics and completion contract. Do not serialize,
+cache or branch on an adapter's private schema or version here.
 
-- **Native:** when no current instruction requires governed dispatch, call
-  `spawn_agent` with task name `solution_designer`, the canonical payload as
-  `message`, the resolved `model` and `reasoning_effort`, and
-  `fork_turns: "none"`.
-- **Governed:** when current runtime instructions require Subagent Governance
-  and provide its authoritative Session identity and CLI entrypoint, use their
-  prepare, exact-target confirmation and lifecycle rules. Governance owns the
-  native task name, outer prompt and ledger identity; this protocol owns the
-  canonical stage payload and business limits. Never rewrite governance's
-  returned `spawn_args`.
-
-For governed dispatch, build the strict TaskContract v2 from the fixed template:
-
-- map the accepted goal, allowed work, forbidden work, terminal completion and
-  required evidence to their corresponding contract fields;
-- put the complete canonical child payload in `context.summary`;
-- put only normalized repository-relative POSIX paths in `context.paths`;
-- declare the absolute Flow Worktree as `context.verified.workspace_root`, use
-  `working_tree` baseline, and verify the frozen requirement document as one
-  relative file path; and
-- pass the resolved model and effort explicitly with `fork_turns: "none"`.
-
-The requirement commit and SHA-256 remain the stage's immutable source
-identity. The governed working-tree verification protects the bytes at prepare
-and claim time; it does not replace or redefine that source identity.
+The requirement commit and SHA-256 remain the stage's immutable source identity.
+Adapter verification may protect those bytes during dispatch, but it does not
+replace or redefine that source identity.
 
 The stepwise launch confirmation binds to every displayed value and the
 resolution receipt. After an unambiguous confirmation, use `verify --current`
-with the confirmed pair. `status: match` authorizes `start-worktree`, governed
-prepare when applicable, and the exact spawn. `status: changed` invalidates the
-block and supplies the settings for a fresh complete confirmation. An
-unavailable verification emits the pre-launch anomaly. A user-requested
-override is revalidated from the unchanged confirmed block rather than
-represented as current-task inheritance.
+with the confirmed pair. `status: match` authorizes `start-worktree` and one
+adapter dispatch. `status: changed` invalidates the block and supplies the
+settings for a fresh complete confirmation. An unavailable verification emits
+the pre-launch anomaly. A user-requested override is revalidated from the
+unchanged confirmed block rather than represented as current-task inheritance.
 
 After stepwise authorization, create the Flow Worktree, build the payload and
-prepare the governed dispatch when applicable. Show the returned governance
-`user_message` before calling `spawn_agent`; it is a disclosure, not another
-confirmation gate.
+submit the semantic dispatch request. Show any adapter-required disclosure
+before launch; it is a disclosure, not another confirmation gate.
 
-In continuous mode, use `resolve --current`, create the Flow Worktree, and
-prepare governed dispatch when applicable before the automatic launch
-disclosure. Show the governance `user_message` first, then make the continuous
-automatic launch block the final user-visible commentary before the exact spawn
-in the same turn. Never omit either model routing argument.
+In continuous mode, use `resolve --current`, create the Flow Worktree, and submit
+the semantic dispatch request before the automatic launch disclosure. Show any
+adapter-required disclosure first, then make the continuous automatic launch
+block the final user-visible commentary before launch in the same turn. Never
+omit either model routing value.
 
-For a governed native spawn that explicitly fails without creating a child,
-record `result=failed`. Record `result=unknown` when creation is uncertain and
-stop without retrying. On a successful spawn, save the returned exact target as
-the only trusted child and immediately confirm it using the prepared governance
-task ID and ref. A confirmation failure means the child may exist without a
-trusted governance binding; stop as an anomaly and never infer or replace its
-identity. Child text never replaces the native returned target.
+If dispatch explicitly fails without creating a child, report the failed launch.
+If creation is uncertain, stop without retrying. On success, save the one child
+identity returned by the adapter as the trusted child. An unconfirmed or
+unreconciled identity is an anomaly; never infer or replace it from title,
+ordering, timestamps or child text.
 
 ## Child responsibilities and document authority
 
@@ -301,31 +282,22 @@ post-publication recovery without calling `publish-planning` again.
 
 ## Waiting, decisions, and recovery
 
-The primary agent waits through subagent orchestration. Do not use
-`wait_threads`, `create_thread`, or a user-owned Codex task.
+The primary agent waits through the current native-subagent orchestration
+adapter, never through a user-owned Codex task. The adapter owns bounded waits,
+timeout policy, backoff, liveness reconciliation and native terminal state. A
+timeout is only an observation: reconcile the trusted child before waiting
+again. Wait only while that child is currently known to be active. If it is
+terminal, missing, or cannot be reconciled, stop waiting and route the observed
+state through this protocol's completion or anomaly path.
 
-After launching the child, or after `followup_task` resumes it and leaves it
-active, enter a notification-wait loop. Call `wait_agent` with the maximum
-timeout supported by the current tool, currently `timeout_ms: 3600000`. If it
-times out without a mailbox update, immediately call it again with the same
-maximum timeout. A timeout changes no workflow state and requires no message,
-poll, status check, or other action.
-
-Exit the loop when a mailbox update, agent message, completion notification, or
-user-steered input arrives, then process that information under this protocol.
-If the child remains active and another notification is required, re-enter the
-same loop. While the loop is active, its sole operation is `wait_agent`.
-
-For a governed child, submit every normalized platform observation and native
-terminal notification through the governance lifecycle using the saved task ID,
-task ref and exact target. Review and anomaly returns may be followed by another
-native turn on the same child; `followup_task` does not create a new governed
-attempt or change the saved binding. Repeated matching terminal facts are
-idempotent. Keep the governed task open while stage work may resume.
+Mailbox updates, child messages, terminal observations and user-steered input
+return control to this protocol. Review and recoverable anomaly messages retain
+the same semantic child identity and stage checkpoint; transport bookkeeping
+does not create a new stage attempt or widen its authority.
 
 On a review or anomaly, the child becomes idle after returning its status. The
-primary agent asks the user and resumes the same child using `followup_task`.
-The follow-up must include:
+primary agent asks the user and resumes the same child through the current
+orchestration adapter. The follow-up must include:
 
 - protocol `solution-design-subagent-v2`;
 - trusted child target;
@@ -352,7 +324,8 @@ readiness-evidence field. Completion requires the child to report a clean Flow
 Worktree with stage-owned planning paths committed. Any different state is an
 anomaly, including in continuous mode.
 
-Accept completion only from the trusted child returned by `spawn_agent`.
+Accept completion only from the trusted child identity returned by the
+orchestration adapter.
 
 - **Stepwise:** mechanically require referenced files or URLs, publication
   results, the planning commit, Flow Worktree state, a non-empty sorted
@@ -374,8 +347,8 @@ stepwise mode show the fixed success footer. In continuous mode use the fixed
 continuous completion handoff and immediately invoke `$guided-implementation`
 with the preserved mode.
 
-After planning publication and Flow Worktree verification succeed, close the
-governed task once with a bounded reason recording that Stage 2 accepted and
-published the child's result. If the user instead explicitly stops recovery,
-close it with that decision after any required native interruption result has
-been recorded. Do not close a governed task at a review or recoverable anomaly.
+After planning publication and Flow Worktree verification succeed, tell the
+orchestration adapter that Stage 2 has accepted and published the child's
+result. If the user explicitly stops recovery, report that decision through the
+same adapter. The adapter owns any native interruption and terminal bookkeeping;
+a review or recoverable anomaly remains resumable stage state.

@@ -50,21 +50,24 @@ These dependencies are currently a documented runtime contract rather than vendo
 
 Do not install duplicate copies of the same dependency under different Skill providers. A unique registered name is required for deterministic routing.
 
-## Optional governed subagent dispatch
+## Optional subagent orchestration adapter
 
-`solution-design` uses native `spawn_agent` directly unless current runtime
-instructions require Subagent Governance. In a governed environment it composes
-with the injected authoritative Session identity and governance CLI through
-TaskContract v2 and the state-v9 prepare, exact-target confirmation and lifecycle
-operations. Governance owns the native task name, outer prompt and ledger;
-`solution-design` retains the canonical stage payload, permissions and
-completion contract.
+`solution-design` submits one semantic stage request to the current
+native-subagent orchestration adapter. When runtime instructions require
+Subagent Governance, that plugin is the adapter. The adapter owns native tool
+arguments, exact-target binding, liveness, waiting, terminal normalization,
+interruption and bookkeeping; `solution-design` retains the canonical stage
+payload, permissions, review and anomaly states, and completion contract.
 
 This is an environment compatibility path, not a hard installation dependency
-for ordinary users. Never hardcode a governance installation path or Session
-identity in this repository. A required governed runtime that does not expose
-TaskContract v2/state-v9 authority is a pre-launch anomaly rather than permission
-to fall back silently to unmanaged dispatch.
+for ordinary users. Never hardcode adapter installation or runtime state, private
+schema, version, timeout or polling algorithm in this repository. If the
+required adapter cannot establish one trusted child identity, dispatch stops at
+a pre-launch anomaly rather than falling back silently.
+
+This adapter seam does not own Workflow domain state. Discussion Topics, Topic
+Dependencies and Gates, discussion handoffs, Phase Runs, Phase Carriers and Flow
+Worktrees remain defined and enforced by this repository's protocols.
 
 ## Validation contract
 

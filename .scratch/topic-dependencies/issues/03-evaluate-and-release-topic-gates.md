@@ -1,6 +1,6 @@
 # 03 — Evaluate and atomically release topic gates
 
-Status: `completed`
+Status: `ready-for-agent`
 Lifecycle: completed
 
 ## What to build

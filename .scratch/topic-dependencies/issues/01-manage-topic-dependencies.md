@@ -1,6 +1,6 @@
 # 01 — Manage topic-owned requirements dependencies
 
-Status: `completed`
+Status: `ready-for-agent`
 Lifecycle: completed
 
 ## What to build

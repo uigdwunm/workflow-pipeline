@@ -1,6 +1,6 @@
 # 06 — Enforce the requirements-only gate boundary
 
-Status: `completed`
+Status: `ready-for-agent`
 Lifecycle: completed
 
 ## What to build

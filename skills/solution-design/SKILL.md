@@ -30,8 +30,8 @@ Operate as the **child stage owner** only when the runtime identifies this agent
 as a non-root native subagent and its launch input contains a structurally
 complete canonical payload with protocol `solution-design-subagent-v2`, semantic
 role `solution_designer`, and all frozen stage facts. The outer input may be the
-direct native prompt or an applicable governance envelope; the native task name
-is a transport label, not role identity. In the child role, emit
+direct native prompt or an applicable orchestration envelope; the native task
+name is a transport label, not role identity. In the child role, emit
 `SOLUTION_DESIGN_STARTED`, execute the delegated stage directly, and never launch
 another subagent or apply the parent launch-confirmation flow.
 

@@ -1,6 +1,6 @@
 # 04 — Release matching gates while absorbing child results
 
-Status: `completed`
+Status: `ready-for-agent`
 Lifecycle: completed
 
 ## What to build

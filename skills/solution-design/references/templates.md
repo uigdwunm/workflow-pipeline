@@ -14,12 +14,12 @@ through
 目标仓库：<repository identity>
 规划载体：<exact target>
 业务角色：solution_designer
-派发方式：<native | governed TaskContract v2>
+派发方式：<current native-subagent orchestration adapter>
 目标模型：<primary thread exact model>
 模型来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 推理强度：<primary thread exact reasoning effort>
 强度来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
-上下文方式：fork_turns=none；不继承历史；仅读取需求来源和明确交接材料
+上下文方式：隔离上下文；不继承历史；仅读取需求来源和明确交接材料
 执行环境：新建 Flow Worktree
 Worktree：确认后调用 `start-worktree` 创建；路径=<canonical path>; 分支=<branch>
 允许动作：执行标准 $to-spec、ADR、$ask-matt、$to-tickets、原生发布；只写入并提交本阶段拥有的本地规划文档
@@ -33,9 +33,9 @@ Worktree：确认后调用 `start-worktree` 创建；路径=<canonical path>; �
 
 ## Continuous automatic launch disclosure
 
-For governed dispatch, show the returned governance `user_message` immediately
+Show any disclosure required by the current orchestration adapter immediately
 before this block. This block must remain the final user-visible commentary
-before `spawn_agent`.
+before child launch.
 
 ```text
 连续模式自动动作：启动 2方案子 agent
@@ -45,12 +45,12 @@ before `spawn_agent`.
 目标仓库：<repository identity>
 规划载体：<exact target>
 业务角色：solution_designer
-派发方式：<native | governed TaskContract v2>
+派发方式：<current native-subagent orchestration adapter>
 目标模型：<primary thread exact model>
 模型来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
 推理强度：<primary thread exact reasoning effort>
 强度来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
-上下文方式：fork_turns=none；不继承历史；仅读取需求来源和明确交接材料
+上下文方式：隔离上下文；不继承历史；仅读取需求来源和明确交接材料
 执行环境：已创建 Flow Worktree
 Worktree：路径=<canonical path>; 分支=<branch>; 绑定=<exact binding>
 允许动作：执行标准 $to-spec、ADR、$ask-matt、$to-tickets、原生发布；只写入并提交本阶段拥有的本地规划文档
@@ -76,7 +76,7 @@ $solution-design
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
 规划载体：<exact target>
-任务设置：model=<exact model>; reasoning_effort=<exact effort>; source=<resolution receipt source and turn id | user-requested-override>; fork_turns=none
+任务设置：model=<exact model>; reasoning_effort=<exact effort>; source=<resolution receipt source and turn id | user-requested-override>; context=isolated
 Flow Worktree：<exact binding returned by start-worktree>
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
 工作区要求：在首次写入前以实际工作目录调用 `verify-worktree`；所有本地规划写入和提交只在该 Flow Worktree 内完成。
@@ -88,65 +88,13 @@ Flow Worktree：<exact binding returned by start-worktree>
 范围扩展：认为需求边界外的改动是形成完整方案的必要条件时，按 $solution-design 的 visible-scope 规则返回 SOLUTION_DESIGN_ANOMALY，并等待用户明确决定。
 异常：执行失败、结果不确定、意外情况、与需求或已发布计划不符、或者需要调整计划时，返回 SOLUTION_DESIGN_ANOMALY 并停止；不要擅自调整。
 启动：第一条状态必须使用 SOLUTION_DESIGN_STARTED。
-完成：只在规划提交已完成且 Flow Worktree 干净后返回一次 SOLUTION_DESIGN_COMPLETE；不要自行进入 3实现。
+完成：只在规划提交已完成且 Flow Worktree 干净后返回一次 SOLUTION_DESIGN_COMPLETE，并包含完整本地规划路径清单；不要自行进入 3实现。
 协议文件：完整遵循 $solution-design 的 references/subagent-protocol.md 和 references/templates.md。
 ```
 
-The native dispatch uses this payload as its complete message. A governed
-dispatch carries the same payload unchanged in `context.summary`; governance
-may add an outer prompt and generate a different native task name.
-
-## Governed TaskContract v2
-
-Use this mapping only when current runtime instructions require governed
-dispatch. Every `context.paths` and `required_paths[].path` value is a normalized
-repository-relative POSIX path. The complete canonical payload must fit in the
-8192-character `context.summary` field.
-
-```json
-{
-  "profile": "strict",
-  "objective": "<goal>",
-  "scope": [
-    "Execute the complete Stage-2 Spec, necessary ADR and useful Tickets workflow",
-    "Write and commit only stage-owned planning documents in the verified Flow Worktree"
-  ],
-  "forbidden_scope": [
-    "Modify implementation code, create a pull request, deploy, release, change the planning target or enter Stage 3"
-  ],
-  "completion": [
-    "Return one solution-design-subagent-v2 terminal message with the complete local planning path manifest after the planning commit is complete and the Flow Worktree is clean"
-  ],
-  "evidence": [
-    "Report Spec, ADR, Tickets, planning commit, complete local planning path manifest, readiness evidence and clean Flow Worktree state"
-  ],
-  "context": {
-    "summary": "<complete canonical child bootstrap payload>",
-    "paths": [
-      "<repository-relative requirement path>"
-    ],
-    "verified": {
-      "mode": "declared",
-      "workspace_root": "<absolute Flow Worktree path>",
-      "baseline": {
-        "kind": "working_tree",
-        "revision": null
-      },
-      "required_paths": [
-        {
-          "path": "<repository-relative requirement path>",
-          "type": "file"
-        }
-      ]
-    }
-  },
-  "spawn": {
-    "fork_turns": "none",
-    "model": "<exact model>",
-    "reasoning_effort": "<exact reasoning effort>"
-  }
-}
-```
+Pass this payload unchanged to the current native-subagent orchestration
+adapter. The adapter may wrap it in transport metadata or choose a different
+native task name; neither changes the semantic role or stage authority.
 
 ## Started status
 

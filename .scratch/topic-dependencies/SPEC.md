@@ -1,6 +1,6 @@
 # Spec: Proactive topic splitting and Phase-0/1 topic dependency gates
 
-Status: `completed`
+Status: `ready-for-agent`
 Lifecycle: completed
 
 Requirement source: `.scratch/topic-dependencies/PRD.md` at
@@ -197,8 +197,35 @@ gate_reason_json: "{canonical JSON object}"
 
 ### `prepare-handoff` extension
 
-The operation accepts an optional bounded `initial_dependencies` array only for
-a child handoff. Its exact item shape is:
+The operation accepts `initial_dependencies` and
+`suspended_question_resolution` only for a child handoff. Both fields are
+validated and frozen before any ledger record is published.
+
+When the source topic has one suspended question, the request must include its
+exact identity and one existing resolution action:
+
+```json
+{
+  "question_id": "Q-...",
+  "action": "resume | adjust | invalidate",
+  "adjusted_prompt": "required only for adjust"
+}
+```
+
+The question must be the source topic's one current suspended question.
+`resume` restores its existing prompt, `adjust` installs the bounded supplied
+prompt, and `invalidate` removes it. A supplied resolution is rejected when no
+question is suspended, and an omitted resolution is rejected when one is.
+Preparation applies the resolution to ledger state, increments the source topic
+revision, and stages the matching immutable document write before validating
+and creating initial dependencies. The topic, relation, handoff attempt,
+resolved question, pending document-write record, and dependency records are
+committed in one ledger transaction. Failure before ledger replacement removes
+the uncommitted payload and publishes none of those state changes. Exact replay
+returns the same resolution and document-write identity; normal document-write
+recovery applies the already-staged bytes without preparing another handoff.
+
+The optional bounded `initial_dependencies` array has this exact item shape:
 
 ```json
 {
@@ -335,6 +362,15 @@ the revision and changes only `relation_state` to cancelled. Create and replace
 validate ownership, same-tree identity, phase eligibility, duplicates and the
 whole active graph before writing. A dependency cannot be changed after Phase 1
 unless the topic first returns through the existing explicit reopen path.
+
+Create and replace are also rejected while the dependent topic has a current
+published Phase-0/1 `stage-entry` authority. The owner must first use the
+existing explicit impact or reopen flow so that authority is displaced and its
+downstream effects are recorded, then retry against fresh ledger and topic
+revisions. Cancel remains available because it removes an active constraint
+without introducing a new authority premise. Initial handoff dependencies use
+the same check when the existing source topic is the dependent endpoint; the
+new target has no previously published authority.
 
 ### Accepted child-result release
 

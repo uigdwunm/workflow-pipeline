@@ -1,6 +1,6 @@
 # 02 — Prepare gated topics from proactive split proposals
 
-Status: `completed`
+Status: `ready-for-agent`
 Lifecycle: completed
 
 ## What to build
@@ -27,6 +27,7 @@ created.
 - [x] Attached Phase-0/1 flows create a same-tree Phase-0 child, while standalone Phase 1 proposes a new root without an executable cross-tree dependency.
 - [x] A dedicated grilling carrier can return a bounded proposal but cannot prepare, create, bind, change, release, or cancel the dependency itself.
 - [x] Child handoff preparation resolves source/target endpoint references internally and commits the topic, parent relation, handoff attempt, and all initial closed dependencies in one ledger transaction.
+- [x] A child handoff with a suspended source question freezes one exact resume, adjust, or invalidate action, advances the source revision, and stages the matching document write in the same ledger transaction before an initial dependency may close the source gate.
 - [x] Failure injection proves the transaction creates all records or none, and handoff failure/outcome-unknown/retry/late-bind paths reuse the same dependencies without duplication.
 - [x] Parent and continuation topology alone does not change Phase Run coverage evidence.
 

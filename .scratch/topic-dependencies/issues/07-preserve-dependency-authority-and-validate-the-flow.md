@@ -1,6 +1,6 @@
 # 07 — Preserve dependency authority and validate the complete flow
 
-Status: `completed`
+Status: `ready-for-agent`
 Lifecycle: completed
 
 ## What to build
@@ -28,6 +28,7 @@ contracts.
 - [x] Checkpoint and snapshot garbage-collection dry runs exclude evidence referenced by any active dependency basis, open or closed, and cancellation restores ordinary eligibility.
 - [x] Current dependency records retain auditable accepted authority even when Recent Events is trimmed.
 - [x] Stable error responses expose safe revision and dependency context for blocked, stale, cyclic, duplicate, unauthorized, unavailable-evidence, and phase-conflict cases.
+- [x] Creating or replacing a dependency fails closed while its dependent topic has a published Phase-0/1 stage-entry authority; the existing impact or reopen flow must displace that authority before a fresh mutation, while cancellation remains available.
 - [x] End-to-end CLI tests cover concurrent revisions, exact idempotent replay, injected atomic-write failures, handoff creation recovery, stale release, direct-only invalidation, and Phase-2 cutoff.
 - [x] Wrapper and repository-contract tests cover the fixed split proposal, dedicated-carrier authority boundary, local Skill references, operation registration, and schema fixtures.
 - [x] The full repository validation command passes with no regressions across existing discussion, Phase Run, worktree, and documentation behavior.

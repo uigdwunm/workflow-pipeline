@@ -1,6 +1,6 @@
 # 05 — Reclose directly affected gates after conclusion changes
 
-Status: `completed`
+Status: `ready-for-agent`
 Lifecycle: completed
 
 ## What to build
