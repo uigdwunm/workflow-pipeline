@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import uuid
 from typing import Any
 
@@ -20,14 +21,28 @@ from .state import (
     _inject_failure,
     _json_field,
     _load_records,
+    _parse_frontmatter,
     _mutation_fingerprint,
     _record_by_id,
+    _require_regular_nosymlink,
     _sha256,
+    _topic_snapshot,
     _validate_revisions,
     _validate_uuid4,
     _validated_string_list,
     _verify_topic_owner,
     _write_ledger_transaction,
+)
+from .topic_dependencies import (
+    apply_gate_policy,
+    freeze_authority_selection,
+    has_current_authority,
+    prepare_initial_dependencies,
+    release_child_result_dependencies,
+)
+from .question_resolution import (
+    resolve_suspended_question,
+    stage_pending_document_write,
 )
 
 
@@ -42,6 +57,7 @@ HANDOFF_WORK_SNAPSHOT_FIELDS = {
 }
 HANDOFF_WORK_SNAPSHOT_MAX_BYTES = 16000
 HANDOFF_PAYLOAD_MAX_BYTES = 32000
+SUSPENDED_QUESTION_ACTIONS = {"resume", "adjust", "invalidate"}
 
 
 def _handoff_id(idempotency_key: str) -> str:
@@ -145,11 +161,90 @@ def _handoff_payload(
         "identity_envelope": envelope,
         "work_snapshot": handoff["work_snapshot"],
         "authoritative_references": handoff["authoritative_references"],
+        "initial_dependencies": handoff.get("initial_dependencies", []),
+        "suspended_question_resolution": handoff.get("suspended_question_resolution"),
     }
     payload_bytes = len(_canonical_json(payload).encode("utf-8"))
     if payload_bytes > HANDOFF_PAYLOAD_MAX_BYTES:
         raise ProtocolError("handoff_payload_too_large", "handoff payload exceeds its size limit")
     return envelope, _sha256(_canonical_json(payload).encode("utf-8")), payload_bytes
+
+
+def _freeze_suspended_question_resolution(
+    records: dict[str, list[dict[str, Any]]], *, topic_id: str, value: Any,
+) -> dict[str, str] | None:
+    """Resolve the one suspended source question before an initial edge can close it."""
+    suspended = [
+        record for record in records["Pending Items"]
+        if record.get("topic_id") == topic_id and record.get("item_kind") == "question"
+        and _json_field(record, "data_json", "question").get("state") == "suspended"
+    ]
+    if not suspended:
+        if value is not None:
+            raise ProtocolError("question_state_conflict", "handoff has no suspended question to resolve")
+        return None
+    if len(suspended) != 1:
+        raise ProtocolError("state_corrupt", "topic has multiple suspended questions")
+    if not isinstance(value, dict):
+        raise ProtocolError(
+            "question_state_conflict",
+            "a child handoff must freeze the suspended question resolution",
+        )
+    expected = {"question_id", "action"}
+    if value.get("action") == "adjust":
+        expected.add("adjusted_prompt")
+    _expect_keys(value, expected, "suspended_question_resolution")
+    action = value["action"]
+    if action not in SUSPENDED_QUESTION_ACTIONS:
+        raise ProtocolError("invalid_request", "suspended question action is unsupported")
+    record = suspended[0]
+    question = _json_field(record, "data_json", "question")
+    if value["question_id"] != question.get("question_id"):
+        raise ProtocolError("question_state_conflict", "handoff resolution names a different question")
+    frozen = {"question_id": _expect_string(value["question_id"], "suspended question question_id", max_bytes=64), "action": action}
+    adjusted_prompt = None
+    if action == "adjust":
+        adjusted_prompt = _expect_string(
+            value["adjusted_prompt"], "suspended question adjusted_prompt", max_bytes=4096,
+        )
+        frozen["adjusted_prompt"] = adjusted_prompt
+    resolve_suspended_question(
+        record, question, action=action, adjusted_prompt=adjusted_prompt
+    )
+    return frozen
+
+
+def _render_suspended_question_resolution_document(
+    topic_path: Path,
+    *,
+    resolution: dict[str, str],
+    topic_revision: int,
+) -> tuple[bytes, bytes]:
+    """Render the source document bytes corresponding to the frozen resolution."""
+    before = _require_regular_nosymlink(topic_path, "topic document")
+    question_id = re.escape(resolution["question_id"])
+    text = before.decode("utf-8")
+    if resolution["action"] == "invalidate":
+        after_text, count = re.subn(rf"(?m)^- `{question_id}` \[suspended\] .*\n?", "", text)
+    else:
+        prompt = resolution.get("adjusted_prompt")
+        replacement = f"- `{resolution['question_id']}` [active] " + (prompt or "")
+        if prompt is None:
+            match = re.search(rf"(?m)^- `{question_id}` \[suspended\] (.*)$", text)
+            if match is None:
+                raise ProtocolError("state_corrupt", "suspended question is missing from topic document")
+            replacement += match.group(1)
+        after_text, count = re.subn(rf"(?m)^- `{question_id}` \[suspended\] .*$", replacement, text)
+    if count != 1:
+        raise ProtocolError("state_corrupt", "suspended question is missing from topic document")
+    after_text, revision_count = re.subn(
+        rf"(?m)^topic_revision: {topic_revision - 1}$",
+        f"topic_revision: {topic_revision}",
+        after_text,
+    )
+    if revision_count != 1:
+        raise ProtocolError("state_corrupt", "topic document revision is not current")
+    return before, after_text.encode("utf-8")
 
 
 def _handoff_result(
@@ -179,21 +274,31 @@ def _handoff_result(
 
 
 def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
-    project, ledger_path, _, lock_path, owner_ref = _evolution_paths(request)
-    _expect_keys(
-        request,
-        {
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(
+        request, allow_tree_topic=True
+    )
+    allowed = {
             "protocol_version", "operation", "project_path", "project_id", "tree_id",
             "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision",
             "expected_topic_revision", "idempotency_key", "handoff_kind", "target_slug",
             "scope", "work_snapshot", "authoritative_references",
-        },
-        "prepare-handoff request",
-    )
+        }
+    if "initial_dependencies" in request:
+        allowed.add("initial_dependencies")
+    if "suspended_question_resolution" in request:
+        allowed.add("suspended_question_resolution")
+    _expect_keys(request, allowed, "prepare-handoff request")
     _validate_uuid4(request["idempotency_key"], "idempotency_key")
     kind = _expect_string(request["handoff_kind"], "handoff_kind", max_bytes=32)
     if kind not in HANDOFF_KINDS:
         raise ProtocolError("invalid_request", "handoff_kind is unsupported")
+    if kind != "child" and "initial_dependencies" in request:
+        raise ProtocolError("invalid_request", "initial_dependencies is valid only for a child handoff")
+    if kind != "child" and "suspended_question_resolution" in request:
+        raise ProtocolError(
+            "invalid_request",
+            "suspended_question_resolution is valid only for a child handoff",
+        )
     target_slug = _expect_string(request["target_slug"], "target_slug", max_bytes=128)
     if not ROOT_SLUG_RE.fullmatch(target_slug):
         raise ProtocolError("invalid_root_slug", "target_slug is invalid")
@@ -234,6 +339,21 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, source_topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        if kind == "child":
+            apply_gate_policy(records, "prepare-handoff", request["actor_topic_id"])
+        suspended_question_resolution = (
+            _freeze_suspended_question_resolution(
+                records,
+                topic_id=request["actor_topic_id"],
+                value=request.get("suspended_question_resolution"),
+            )
+            if kind == "child"
+            else None
+        )
+        resolved_topic_revision = topic_revision + int(suspended_question_resolution is not None)
+        if suspended_question_resolution is not None:
+            source_topic["record_revision"] = resolved_topic_revision
+        document_write = None
         target_topic_id = (
             request["actor_topic_id"] if kind == "continuation" else f"topic-{uuid.UUID(request['idempotency_key']).hex}"
         )
@@ -257,15 +377,17 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             "creation_idempotency_key": request["idempotency_key"],
             "creation_fingerprint": _mutation_fingerprint(request),
             "creation_result_json": "",
+            "initial_dependencies": request.get("initial_dependencies", []),
+            "suspended_question_resolution": suspended_question_resolution,
+            "document_write": document_write,
         }
-        identity_envelope, payload_digest, payload_bytes = _handoff_payload(handoff, attempt_id)
         attempt = {
             "attempt_id": attempt_id,
             "attempt_number": 1,
             "state": "setup-pending",
             "binding_eligible": True,
-            "payload_sha256": payload_digest,
-            "handoff_payload_bytes": payload_bytes,
+            "payload_sha256": "",
+            "handoff_payload_bytes": 0,
             "conversation_ref": None,
             "reason": None,
         }
@@ -305,6 +427,10 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
                     "handoff_id": handoff_id,
                 }
             )
+            initial_dependencies = prepare_initial_dependencies(
+                records, request=request, target_topic_id=target_topic_id,
+                handoff_id=handoff_id, ledger_revision=ledger_revision + 1,
+            )
         else:
             records["Relations and Coverage"].append(
                 {
@@ -316,24 +442,66 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
                     "handoff_id": handoff_id,
                 }
             )
+            initial_dependencies = []
+        # The bound task sees resolved endpoints and record identities, never
+        # the caller's source/target aliases.  Bind the payload after that
+        # transaction-local normalization so replay cannot retarget an edge.
+        handoff["initial_dependencies"] = initial_dependencies
+        identity_envelope, payload_digest, payload_bytes = _handoff_payload(
+            handoff, attempt_id
+        )
+        attempt["payload_sha256"] = payload_digest
+        attempt["handoff_payload_bytes"] = payload_bytes
+        if suspended_question_resolution is not None:
+            before, after = _render_suspended_question_resolution_document(
+                topic_path,
+                resolution=suspended_question_resolution,
+                topic_revision=resolved_topic_revision,
+            )
+            write_record, _ = stage_pending_document_write(
+                records,
+                ledger_path=ledger_path,
+                topic_path=topic_path,
+                topic_id=request["actor_topic_id"],
+                owner_ref=owner_ref,
+                idempotency_key=request["idempotency_key"],
+                before=before,
+                after=after,
+                recover_exact_orphan=False,
+            )
+            document_write = {
+                "document_write_id": write_record["document_write_id"],
+                "payload_path": write_record["payload_path"],
+            }
+            handoff["document_write"] = document_write
         next_revision = ledger_revision + 1
         result = {
             **_handoff_result(
-                request, handoff, attempt, ledger_revision=next_revision, topic_revision=topic_revision
+                request, handoff, attempt, ledger_revision=next_revision,
+                topic_revision=resolved_topic_revision,
             ),
             "identity_envelope": identity_envelope,
             "work_snapshot_bytes": snapshot_bytes,
             "handoff_payload_bytes": payload_bytes,
+            "initial_dependencies": initial_dependencies,
+            "suspended_question_resolution": suspended_question_resolution,
+            **({"document_write_id": document_write["document_write_id"]} if document_write else {}),
         }
         handoff["creation_result_json"] = _canonical_json(result)
         _store_handoff(
             _record_by_id(records["Phase Runs"], "run_id", handoff_id, "handoff_id"),
             handoff,
         )
-        _write_ledger_transaction(
-            ledger_path, frontmatter, records, request,
-            ledger_revision=next_revision, event_type="handoff-prepared", result=result,
-        )
+        try:
+            _inject_failure("handoff-after-initial-dependencies-before-ledger-write")
+            _write_ledger_transaction(
+                ledger_path, frontmatter, records, request,
+                ledger_revision=next_revision, event_type="handoff-prepared", result=result,
+            )
+        except Exception:
+            if document_write is not None:
+                Path(document_write["payload_path"]).unlink(missing_ok=True)
+            raise
         return result
 
 
@@ -522,7 +690,7 @@ def _authorize_handoff_discussion(request: dict[str, Any]) -> dict[str, Any]:
         request, {"handoff_id", "attempt_id", "turn_number"}
     )
     turn_number = request["turn_number"]
-    if not isinstance(turn_number, int) or isinstance(turn_number, bool):
+    if type(turn_number) is not int:
         raise ProtocolError("invalid_request", "turn_number must be an integer")
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)
@@ -533,6 +701,9 @@ def _authorize_handoff_discussion(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        apply_gate_policy(
+            records, "authorize-handoff-discussion", request["actor_topic_id"]
+        )
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         attempt = _handoff_attempt(handoff, request["attempt_id"])
@@ -712,9 +883,9 @@ def _reconcile_handoff_attempt(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
-    ledger_path, lock_path, _, owner_ref = _handoff_mutation_context(
-        request, {"handoff_id", "attempt_id", "result_scope", "summary"}
-    )
+    extra = {"handoff_id", "attempt_id", "result_scope", "summary"}
+    if "authority_selection" in request: extra.add("authority_selection")
+    ledger_path, lock_path, _, owner_ref = _handoff_mutation_context(request, extra)
     result_scope = _validated_string_list(request["result_scope"], "result_scope")
     summary = _expect_string(request["summary"], "summary", max_bytes=4096)
     with lock_path.open("a+b") as lock_stream:
@@ -763,6 +934,17 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
         seed = uuid.UUID(request["idempotency_key"]).hex
         child_result_id = f"CR-{seed}"
         next_revision = ledger_revision + 1
+        selection = request.get("authority_selection")
+        if selection is None and has_current_authority(records, request["actor_topic_id"]):
+            raise ProtocolError(
+                "topic_dependency_authority_selection_required",
+                "child result must select one current authority",
+            )
+        frozen_authority = (
+            freeze_authority_selection(records, request["actor_topic_id"], selection)
+            if selection is not None
+            else {"authority_kind": "none", "authority_identity": None, "decision_ids": [], "decision_authority": [], "topic_phase": topic_record["current_phase"]}
+        )
         claim = {
             "result_id": child_result_id,
             "result_kind": "child-topic-result",
@@ -773,6 +955,7 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
             "target_topic_id": handoff["source_topic_id"],
             "result_scope_json": _canonical_json(result_scope),
             "summary": summary,
+            "authority_json": _canonical_json(frozen_authority),
             "state": "pending",
             "record_revision": 1,
         }
@@ -783,6 +966,7 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
             "topic_id": request["actor_topic_id"], "ledger_revision": next_revision,
             "record_revision": topic_revision, "handoff_id": handoff["handoff_id"],
             "attempt_id": attempt["attempt_id"], "child_result_id": child_result_id,
+            "frozen_authority": frozen_authority,
         }
         _write_ledger_transaction(
             ledger_path, frontmatter, records, request,
@@ -792,9 +976,10 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
-    ledger_path, lock_path, _, owner_ref = _handoff_mutation_context(
-        request, {"handoff_id", "child_result_id", "effect"}
-    )
+    extra = {"handoff_id", "child_result_id", "effect"}
+    if "dependency_releases" in request:
+        extra.add("dependency_releases")
+    ledger_path, lock_path, _, owner_ref = _handoff_mutation_context(request, extra)
     effect = _expect_string(request["effect"], "effect", max_bytes=32)
     if effect not in {"absorb", "impact"}:
         raise ProtocolError("invalid_request", "effect must be absorb or impact")
@@ -807,6 +992,11 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        if effect == "absorb" and request.get("dependency_releases", []) and topic_record.get("current_phase") not in {0, 1}:
+            raise ProtocolError(
+                "topic_dependency_phase_conflict",
+                "dependency releases are immutable after Phase 1",
+            )
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         if handoff["kind"] != "child" or handoff["source_topic_id"] != request["actor_topic_id"]:
@@ -829,6 +1019,10 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
         within_scope = set(result_scope).issubset(set(handoff["scope"]))
         if effect == "absorb" and not within_scope:
             raise ProtocolError("impact_state_conflict", "cross-topic result cannot be silently absorbed")
+        releases = request.get("dependency_releases", [])
+        if effect != "absorb" and releases:
+            raise ProtocolError("topic_dependency_state_conflict", "only an absorbed child result can release a gate")
+        frozen = _json_field(claim, "authority_json", "child result authority")
         seed = uuid.UUID(request["idempotency_key"]).hex
         next_revision = ledger_revision + 1
         if effect == "absorb":
@@ -851,8 +1045,15 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
                 "topic_id": request["actor_topic_id"], "ledger_revision": next_revision,
                 "record_revision": topic_revision, "handoff_id": handoff["handoff_id"],
                 "relation_id": relation_id,
+                "frozen_authority": frozen,
             }
             claim["state"] = "absorbed"
+            result["released_dependency_ids"] = release_child_result_dependencies(
+                records, dependent_topic_id=request["actor_topic_id"],
+                prerequisite_topic_id=handoff["target_topic_id"], child_result_id=claim["result_id"],
+                frozen_authority=frozen, releases=releases, ledger_revision=next_revision,
+                absorb_operation_id=request["idempotency_key"],
+            )
         else:
             impact_id = f"IMP-{seed}"
             impact = {
@@ -876,6 +1077,7 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
             }
             claim["state"] = "impact-recorded"
         claim["record_revision"] += 1
+        _inject_failure("child-result-absorb-before-ledger-write")
         _write_ledger_transaction(
             ledger_path, frontmatter, records, request,
             ledger_revision=next_revision, event_type=f"child-result-{result['state']}", result=result,
@@ -997,4 +1199,3 @@ def _validate_handoffs(records: dict[str, list[dict[str, Any]]]) -> int:
             if len(current_bindings) != 1:
                 raise ProtocolError("state_corrupt", "current handoff does not own its active binding")
     return len(handoffs)
-

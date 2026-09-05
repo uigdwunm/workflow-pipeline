@@ -31,6 +31,9 @@ before calling `prepare-handoff` so an unavailable current Adapter or
   continuation relation;
 - `scope`, `work_snapshot` and `authoritative_references` contain only the
   confirmed, allowlisted context needed by the target; and
+- `initial_dependencies`, when confirmed, names only same-tree source/target
+  endpoints, one exact requirement kind and semantic result per edge; its
+  records are created atomically with the child identity and parent relation;
 - the returned `H-*`, `A-*`, identity envelope and digests are the only task
   bootstrap authority. Never reconstruct or edit them in prose.
 
@@ -75,10 +78,35 @@ successful response with `substantive_discussion_allowed: true` permits the
 ordinary one-question discussion loop. A first-turn attempt to authorize must
 surface `handoff_next_turn_required`; never hide it by changing the turn number.
 
+If a topic has a closed gate, first-turn acceptance remains allowed. On a later
+user-triggered turn, apply the shared
+[split and requirements-gate contract](split-gate-contract.md) before
+authorizing substantive discussion; this child protocol adds only the
+first-turn acceptance exception.
+
 ## Return and absorb results
 
-The active child submits one scoped result through `submit-child-result`. The
-parent reads the claim and asks the user to confirm how it affects the parent:
+The active child submits one scoped result through `submit-child-result`. It
+constructs `authority_selection` from exactly one current-topic candidate
+returned by `read-topic` as `current_authority_candidates`; this is separate
+from `evaluate-topic-gate`, whose candidates describe prerequisites. It uses `authority_kind`, its required `authority_identity` (or
+`null` for `confirmed-decision`), and canonically sorted unique `decision_ids`.
+When any authority is current, omitting this selection is rejected; when none
+is current, the child submits the explicit no-authority result permitted by the
+protocol. The resulting frozen descriptor and SHA-256 decision pairs are the
+only authority a parent may later use.
+
+The parent reads the claim, presents the frozen descriptor and proposed effect,
+and obtains confirmation. For an absorb, construct
+`dependency_releases` as a canonically sorted, duplicate-free list of exact
+`dependency_id`, `authority_kind`, `authority_identity`, and `decision_ids`
+selections that match the child's frozen authority. Omitting releases is valid:
+it absorbs the result without opening a gate. A nonempty list is accepted only
+with `effect: absorb`; the gate release, accepted basis, handoff absorption,
+and result receipt are one ledger transaction, so any rejection or failure
+leaves all of them unchanged.
+
+After that confirmation, `record-child-result` follows these rules:
 
 - `record-child-result` with `effect: absorb` is allowed only when the result
   scope is contained by the frozen child scope; it records explicit coverage;

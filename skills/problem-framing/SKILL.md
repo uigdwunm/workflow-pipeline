@@ -15,6 +15,10 @@ Read the shared
 before resolving or updating the requirement document. Phase 1 always has
 exactly one such document and always hands it to Phase 2.
 
+For a split proposal or a requirements gate, also read the shared
+[`split-gate-contract.md`](../design-discussion/references/split-gate-contract.md).
+Keep the Phase-1-specific direction below when applying it.
+
 ## Attach a verified discussion source
 
 At entry, apply the discovery order in
@@ -47,6 +51,12 @@ effective 0/1 checkpoint. Use `prepare-wrapper-phase-run`, not the generic
 Phase Run operation. Phase 1 routes only to Phase 2. A natural-language request
 for continuous execution can be selected only from the successful stage-1
 footer; a stage-0 route is always stepwise.
+
+Apply the shared split/gate contract above in Phase 1. A dedicated grilling
+carrier may return only a bounded split proposal to its Phase Source Task; it
+must never prepare, release, or change Topic Dependencies. The source topic
+retains both confirmations and resumes Phase-1 questioning only after the
+shared gate sequence permits substantive work.
 
 ## Enter the stage
 

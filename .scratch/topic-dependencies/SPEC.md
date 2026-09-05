@@ -1,6 +1,7 @@
 # Spec: Proactive topic splitting and Phase-0/1 topic dependency gates
 
-Status: `ready-for-agent`
+Status: `completed`
+Lifecycle: completed
 
 Requirement source: `.scratch/topic-dependencies/PRD.md` at
 `a46e2801801886c0915466c5aab6f6db55016fda`, SHA-256
@@ -496,3 +497,17 @@ Acceptance coverage at the CLI seam:
 - This design introduces one necessary ADR because the separate ledger domain,
   explicit guard model, and non-propagation into Phase Run evidence are durable
   architectural boundaries rather than local implementation details.
+
+## Closure
+
+- Planning source: `263de5870ff717cec3a97891889dbd44475f761c`;
+  implementation fixed point: `2e369033174ae223ab93d7cbaea09aa0fac730ab`.
+- Accepted implementation candidate:
+  `7aab54330383ea8a7ff90815015f455f4efd4372`.
+- Independent Standards and Spec reviews both examined that exact fixed
+  point/candidate pair and reported no actionable findings.
+- Focused discussion-protocol validation passed 108 tests. Full repository
+  validation passed all 278 tests with repository state `valid` and no issues;
+  `git diff --check` was clean.
+- The frozen requirement source remained unchanged. No remote operation was
+  performed.

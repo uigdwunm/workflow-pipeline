@@ -19,6 +19,60 @@ import validate_repository as REPOSITORY_VALIDATION
 
 
 class RepositoryValidationTests(unittest.TestCase):
+    def test_dedicated_grilling_split_proposal_contract_is_fixed(self) -> None:
+        protocol = (REPOSITORY / "skills/problem-framing/references/dedicated-grilling-protocol.md").read_text(encoding="utf-8")
+        for marker in (
+            "Fixed carrier split proposal", "proposal_id", "source_topic_id",
+            "current_topic_behavior", "result_return_behavior", "scope",
+            "seven semantic fields",
+            "authenticated carrier return/intake", "separate task-creation confirmation before",
+            "The carrier is information-only", "0讨论",
+        ):
+            self.assertIn(marker, protocol)
+
+    def test_topic_dependency_wrapper_contracts_are_shipped(self) -> None:
+        discussion = (REPOSITORY / "skills/design-discussion/SKILL.md").read_text(encoding="utf-8")
+        framing = (REPOSITORY / "skills/problem-framing/SKILL.md").read_text(encoding="utf-8")
+        handoff = (REPOSITORY / "skills/design-discussion/references/child-topic-protocol.md").read_text(encoding="utf-8")
+        templates = (REPOSITORY / "skills/design-discussion/references/templates.md").read_text(encoding="utf-8")
+        split_gate = (REPOSITORY / "skills/design-discussion/references/split-gate-contract.md").read_text(encoding="utf-8")
+        for marker in ("split-gate-contract.md", "existing resume, adjust, or invalidate"):
+            self.assertIn(marker, discussion)
+        for marker in ("split-gate-contract.md", "dedicated grilling carrier", "Topic Dependencies"):
+            self.assertIn(marker, framing)
+        for marker in ("independent, nameable goal", "read-topic", "derived_gate_state", "evaluate-topic-gate", "release-topic-gate", "First-turn handoff acceptance"):
+            self.assertIn(marker, split_gate)
+        for marker in ("initial_dependencies", "authority_selection", "dependency_releases", "first-turn acceptance remains allowed", "split-gate-contract.md"):
+            self.assertIn(marker, handoff)
+        for marker in ("update-topic-dependency", "Only the dependent topic", "Phase 0 or 1", "Phase-2-or-later"):
+            self.assertIn(marker, split_gate)
+        expected_split_block = """新话题建议
+
+当前话题：<current topic>
+建议拆出：<new topic goal>
+判断依据：<why this is an independent discussion target>
+
+话题归属：<current discussion tree | new root topic>
+结构来源：<parent topic | none>
+新话题入口：0讨论
+
+依赖关系：
+- <no dependency; both topics may continue>
+or
+- <dependent topic> depends on <prerequisite topic>
+- 所需结果：<specific Phase-0/1 result>
+- 初始门禁：关闭
+- 放行触发：用户在依赖方话题中要求继续时检查
+
+当前话题处理：<continue | wait for the new topic result>
+结果回流：<absorb | impact review | no return required>
+
+确认事项：接受以上拆分方向，并准备新话题身份、初始依赖和 handoff
+确认后结果：更新讨论状态并展示独立的 Codex 任务创建确认；本次尚不创建任务
+修改方式：说明需要调整的目标、归属、依赖或当前话题处理方式
+确认方式：回复 `确认`"""
+        self.assertIn(expected_split_block, templates)
+
     def test_stage_three_assigns_candidate_review_to_the_originating_task(self) -> None:
         guided = (
             REPOSITORY / "skills/guided-implementation/SKILL.md"

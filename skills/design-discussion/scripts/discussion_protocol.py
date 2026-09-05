@@ -38,10 +38,12 @@ from discussion_core.state import (
     _is_exact_creation_replay,
     _json_field,
     _ledger_sections,
+    _mkdirs,
     _load_records,
     _new_identity,
     _parse_frontmatter,
     _parse_record_section,
+    _persist_ledger,
     _project_lock_name,
     _record_by_id,
     _render_records_ledger,
@@ -54,6 +56,7 @@ from discussion_core.state import (
     _verify_ledger_digest,
     _verify_topic_path_authority,
     _verify_topic_owner,
+    _write_new_file,
 )
 from discussion_core.checkpoints import (
     _cancel_checkpoint,
@@ -83,6 +86,10 @@ from discussion_core.handoffs import (
     _transition_handoff_attempt,
     _validate_handoffs,
 )
+from discussion_core.question_resolution import (
+    resolve_suspended_question,
+    stage_pending_document_write,
+)
 from discussion_core.phase_runs import (
     _authorize_continuous_flow,
     _authorize_phase_carrier,
@@ -100,6 +107,14 @@ from discussion_core.phase_runs import (
     _revoke_phase_authorization,
     _supersede_phase_run,
     _transition_phase_attempt,
+)
+from discussion_core.topic_dependencies import (
+    apply_gate_policy,
+    derived_gate,
+    current_topic_authorities,
+    evaluate_topic_gate,
+    release_topic_gate,
+    update_topic_dependency,
 )
 
 
@@ -188,6 +203,14 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "no_code_integration_invalid": "父级范围未被已完成且已吸收的子实现完整覆盖。",
         "context_not_initialized": "document_only 上下文尚未获得用户授权初始化本地协调状态。",
         "context_identity_conflict": "发现的讨论上下文身份存在强冲突。",
+        "topic_gate_closed": "当前话题存在未放行的需求依赖门禁。",
+        "topic_dependency_cycle": "话题依赖会形成循环，未写入任何状态。",
+        "topic_dependency_duplicate": "活动话题依赖边重复。",
+        "topic_dependency_state_conflict": "话题依赖状态冲突。",
+        "topic_dependency_phase_conflict": "话题依赖只能在讨论 Phase 0 或 1 中修改。",
+        "topic_dependency_ownership_conflict": "只有依赖方话题可变更或放行依赖。",
+        "topic_dependency_evidence_unavailable": "所需的当前权威证据不可用。",
+        "topic_gate_evaluation_stale": "门禁评估已过期，请重新评估并确认。",
     }
     detail: dict[str, Any] = {
         "code": error.code,
@@ -196,6 +219,8 @@ def _response_error(error: ProtocolError) -> dict[str, Any]:
         "retryable": error.retryable,
         "cause": error.cause,
     }
+    if error.context:
+        detail["context"] = error.context
     return {
         "ok": False,
         "state": error.context.get("state", "stopped"),
@@ -233,8 +258,7 @@ def _unexpected_error_context(request: Any) -> dict[str, Any]:
 
 def _expect_integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     if (
-        not isinstance(value, int)
-        or isinstance(value, bool)
+        type(value) is not int
         or value < minimum
         or value > maximum
     ):
@@ -334,7 +358,7 @@ def _render_ledger(
     ]
     return _render_records_ledger(
         {
-            "schema_version": "2",
+            "schema_version": "3",
             "project_id": project_id,
             "tree_id": tree_id,
             "creation_idempotency_key": idempotency_key,
@@ -345,75 +369,6 @@ def _render_ledger(
         },
         records,
     )
-
-
-def _mkdirs(path: Path, created_directories: list[Path]) -> None:
-    missing: list[Path] = []
-    cursor = path
-    while not cursor.exists():
-        missing.append(cursor)
-        cursor = cursor.parent
-    try:
-        cursor_stat = os.lstat(cursor)
-    except OSError as error:
-        raise ProtocolError(
-            "invalid_storage_path",
-            f"cannot inspect required storage path component: {cursor}",
-            cause=str(error),
-        ) from error
-    if not stat.S_ISDIR(cursor_stat.st_mode):
-        raise ProtocolError(
-            "invalid_storage_path",
-            f"required directory parent is not a directory: {cursor}",
-        )
-    existing = cursor
-    while existing != existing.parent:
-        existing_stat = os.lstat(existing)
-        if stat.S_ISLNK(existing_stat.st_mode):
-            raise ProtocolError(
-                "invalid_storage_path",
-                f"storage path contains a symbolic-link component: {existing}",
-            )
-        existing = existing.parent
-    for directory in reversed(missing):
-        directory.mkdir()
-        created_directories.append(directory)
-
-
-def _write_new_file(path: Path, data: bytes, created_files: list[Path]) -> None:
-    if path.exists():
-        raise ProtocolError("initialization_conflict", f"refusing to replace existing path: {path}")
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-        except BaseException:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-            raise
-        try:
-            os.link(temporary, path, follow_symlinks=False)
-        except FileExistsError as error:
-            raise ProtocolError(
-                "initialization_conflict", f"refusing to replace existing path: {path}"
-            ) from error
-        created_files.append(path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _rollback(created_files: list[Path], created_directories: list[Path]) -> None:
@@ -546,8 +501,7 @@ def _existing_response(
             raise ProtocolError("state_corrupt", "project root topic identity is invalid")
         record_revision = topic_record.get("record_revision")
         if (
-            not isinstance(record_revision, int)
-            or isinstance(record_revision, bool)
+            type(record_revision) is not int
             or record_revision < 1
             or record_revision > ledger_revision
         ):
@@ -962,10 +916,14 @@ def _apply_mutation_to_records(
         data = _json_field(record, "data_json", "question")
         if data["state"] != "suspended":
             raise ProtocolError("question_state_conflict", "only a suspended question can be resolved")
-        data["state"] = "invalidated" if action == "invalidate" else "active"
+        adjusted_prompt = None
         if action == "adjust":
-            data["prompt"] = _expect_string(mutation["adjusted_prompt"], "mutation.adjusted_prompt", max_bytes=4096)
-        record["data_json"] = _canonical_json(data)
+            adjusted_prompt = _expect_string(
+                mutation["adjusted_prompt"], "mutation.adjusted_prompt", max_bytes=4096
+            )
+        data = resolve_suspended_question(
+            record, data, action=action, adjusted_prompt=adjusted_prompt
+        )
         result.update({"question_id": data["question_id"], "question_action": action})
     elif mutation_type == "change-direction":
         _expect_keys(mutation, {"type", "summary", "affected_decision_ids"}, "change-direction mutation")
@@ -1040,13 +998,24 @@ def _apply_mutation_to_records(
             records["Pending Items"].append(record)
         result["requirement_narrative_id"] = data["narrative_id"]
     else:
+        if not isinstance(mutation, dict) or not isinstance(mutation.get("impact_id"), str):
+            raise ProtocolError("invalid_request", "resolve-impact mutation is invalid")
+        record = _record_by_id(records["Impacts"], "impact_id", mutation["impact_id"], "impact_id")
+        impact = _json_field(record, "data_json", "impact")
+        if "decision_id" not in impact:
+            _expect_keys(mutation, {"type", "impact_id", "action", "summary"}, "resolve-impact mutation")
+            if mutation["action"] != "accept" or impact.get("state") != "pending":
+                raise ProtocolError("impact_state_conflict", "child result impact is not pending for acceptance")
+            impact["state"] = "resolved"
+            impact["action"] = "accept"
+            record["data_json"] = _canonical_json(impact)
+            result.update({"impact_id": impact["impact_id"], "impact_action": "accept"})
+            return result
         expected = {"type", "impact_id", "decision_id", "action", "summary"}
         _expect_keys(mutation, expected, "resolve-impact mutation")
         action = mutation["action"]
         if action not in IMPACT_ACTIONS:
             raise ProtocolError("invalid_request", "impact action is unsupported")
-        record = _record_by_id(records["Impacts"], "impact_id", mutation["impact_id"], "impact_id")
-        impact = _json_field(record, "data_json", "impact")
         if impact["decision_id"] != mutation["decision_id"] or impact["state"] != "pending":
             raise ProtocolError("impact_state_conflict", "impact is not pending for this decision")
         impact["state"] = "resolved"
@@ -1064,15 +1033,13 @@ def _apply_mutation_to_records(
         elif action == "discard":
             decision["state"] = "discarded"
             decision["evolution"] = f"discarded: {summary}"
-        else:
-            decision["evolution"] = f"kept: {summary}"
         decision_record["data_json"] = _canonical_json(decision)
         result.update({"impact_id": impact["impact_id"], "decision_id": decision["decision_id"], "impact_action": action})
     return result
 
 
 def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
-    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request)
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, allow_tree_topic=True)
     allowed = {
         "protocol_version", "operation", "project_path", "project_id", "tree_id",
         "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision",
@@ -1088,7 +1055,7 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
         if replay is not None:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        _verify_topic_path_authority(topic_record, topic_path)
+        topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(
             records,
@@ -1096,6 +1063,31 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             owner_ref,
             allow_active_grilling=True,
         )
+        child_result_impact_acceptance = False
+        if mutation["type"] == "resolve-impact":
+            impact_record = _record_by_id(
+                records["Impacts"], "impact_id", mutation["impact_id"], "impact_id"
+            )
+            impact = _json_field(impact_record, "data_json", "impact")
+            child_result_impact_acceptance = (
+                "decision_id" not in impact
+                and mutation.get("action") == "accept"
+                and impact.get("state") == "pending"
+                and impact.get("target_topic_id") == request["actor_topic_id"]
+                and all(
+                    isinstance(impact.get(field), str) and impact[field]
+                    for field in ("impact_id", "source_topic_id", "handoff_id")
+                )
+                and any(
+                    dependency.get("dependent_topic_id") == request["actor_topic_id"]
+                    and dependency.get("prerequisite_topic_id") == impact["source_topic_id"]
+                    and dependency.get("relation_state") == "active"
+                    and dependency.get("gate_state") == "closed"
+                    for dependency in records["Topic Dependencies"]
+                )
+            )
+        if not child_result_impact_acceptance:
+            apply_gate_policy(records, "discussion-update", request["actor_topic_id"])
         active_write = _active_pending_write(records)
         if active_write is not None:
             raise ProtocolError(
@@ -1129,6 +1121,15 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             idempotency_key=request["idempotency_key"],
         )
         next_revision = ledger_revision + 1
+        invalidated_dependencies: list[str] = []
+        if mutation.get("type") == "resolve-impact" and mutation.get("action") in {"adjust", "replace", "discard"}:
+            invalidated_dependencies = apply_gate_policy(
+                next_records, "decision-impact", request["actor_topic_id"], reclose={
+                    "changed_decision_ids": {mutation["decision_id"]},
+                    "cause": {"decision_id": mutation["decision_id"], "action": mutation["action"], "topic_update_id": f"DW-{uuid.UUID(request['idempotency_key']).hex}"},
+                    "ledger_revision": next_revision,
+                },
+            )
         next_topic_revision = topic_revision + 1
         next_snapshot = _topic_snapshot(next_records, request["actor_topic_id"])
         manifest = _parse_frontmatter(
@@ -1140,68 +1141,41 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             topic_id=request["actor_topic_id"], root_slug=manifest["root_slug"],
             topic_revision=next_topic_revision, snapshot=next_snapshot,
         )
-        write_id = f"DW-{uuid.UUID(request['idempotency_key']).hex}"
-        payload_path = ledger_path.parent / "pending-writes" / f"{write_id}.payload"
-        _mkdirs(payload_path.parent, [])
-        owned_payload_paths = {
-            Path(item["payload_path"]) for item in records["Pending Document Writes"]
-        }
-        observed_payload_paths = {
-            item for item in payload_path.parent.iterdir() if item.is_file()
-        }
-        orphan_payload_paths = observed_payload_paths - owned_payload_paths
-        recovered_orphan = False
-        if orphan_payload_paths:
-            if orphan_payload_paths != {payload_path}:
-                raise ProtocolError(
-                    "orphaned_document_write",
-                    "an unrelated orphan payload must be recovered by its exact request",
-                )
-            orphan_bytes = _require_regular_nosymlink(
-                payload_path, "orphan pending document payload"
-            )
-            if orphan_bytes != after_bytes or _sha256(orphan_bytes) != _sha256(after_bytes):
-                raise ProtocolError(
-                    "document_write_orphan_conflict",
-                    "the deterministic orphan payload does not match this typed request",
-                )
-            recovered_orphan = True
-        else:
-            _write_new_file(payload_path, after_bytes, [])
-        payload_path.chmod(0o400)
-        write_record = {
-            "document_write_id": write_id,
-            "topic_id": request["actor_topic_id"],
-            "owner_ref": owner_ref,
-            "topic_path": str(topic_path),
-            "payload_path": str(payload_path),
-            "before_sha256": _sha256(current_bytes),
-            "after_sha256": _sha256(after_bytes),
-            "state": "confirmed-but-pending",
-        }
-        next_records["Pending Document Writes"].append(write_record)
+        write_record, recovered_orphan = stage_pending_document_write(
+            next_records,
+            ledger_path=ledger_path,
+            topic_path=topic_path,
+            topic_id=request["actor_topic_id"],
+            owner_ref=owner_ref,
+            idempotency_key=request["idempotency_key"],
+            before=current_bytes,
+            after=after_bytes,
+            recover_exact_orphan=True,
+        )
         next_topic_record = _record_by_id(next_records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         next_topic_record["record_revision"] = next_topic_revision
         result = {
             "ok": True, "state": "confirmed-but-pending", "idempotent_replay": False,
             "project_id": request["project_id"], "tree_id": request["tree_id"], "topic_id": request["actor_topic_id"],
             "ledger_revision": next_revision, "record_revision": next_topic_revision,
-            "document_write_id": write_id, "payload_path": str(payload_path),
+            "document_write_id": write_record["document_write_id"],
+            "payload_path": write_record["payload_path"],
             "before_sha256": write_record["before_sha256"], "after_sha256": write_record["after_sha256"],
             "recovered_orphan": recovered_orphan,
             **mutation_result,
+            "invalidated_dependency_ids": invalidated_dependencies,
         }
         _append_event(next_records, request, revision=next_revision, event_type="topic-update-prepared", result=result)
         frontmatter["ledger_revision"] = str(next_revision)
         frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
         if os.environ.get("CODEX_DISCUSSION_TEST_FAILPOINT") == "topic-update-ledger-replace":
             raise OSError("injected topic update ledger replace failure")
-        _atomic_replace(ledger_path, _render_records_ledger(frontmatter, next_records))
+        _persist_ledger(ledger_path, frontmatter, next_records)
         return result
 
 
 def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
-    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request)
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, allow_tree_topic=True)
     _expect_keys(
         request,
         {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key", "document_write_id"},
@@ -1215,7 +1189,7 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
         if replay is not None:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        _verify_topic_path_authority(topic_record, topic_path)
+        topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(
             records,
@@ -1257,7 +1231,7 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
         _append_event(records, request, revision=next_revision, event_type="document-write-completed", result=result)
         frontmatter["ledger_revision"] = str(next_revision)
         frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
-        _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
+        _persist_ledger(ledger_path, frontmatter, records)
         return result
 
 
@@ -1589,8 +1563,7 @@ def _document_context_replay_response(
     except (KeyError, TypeError, ValueError) as error:
         raise ProtocolError("state_corrupt", "ledger revision is invalid") from error
     if (
-        not isinstance(topic_revision, int)
-        or isinstance(topic_revision, bool)
+        type(topic_revision) is not int
         or topic_revision < 1
         or topic_revision > ledger_revision
     ):
@@ -1757,7 +1730,7 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("invalid_request", "verified result has an invalid shape")
         result_id = _expect_string(item["result_id"], "verified result_id", max_bytes=64)
         phase = item["phase"]
-        if not isinstance(phase, int) or isinstance(phase, bool) or phase not in range(5):
+        if type(phase) is not int or phase not in range(5):
             raise ProtocolError(
                 "invalid_request",
                 "verified result phase must be an integer from 0 through 4",
@@ -1928,7 +1901,7 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
-    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, query=True)
+    project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, query=True, allow_tree_topic=True)
     allowed = {"protocol_version", "operation", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref"}
     _expect_keys(request, allowed, f"{request['operation']} request")
     with lock_path.open("a+b") as lock_stream:
@@ -1939,8 +1912,9 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
         checkpoints = _validate_checkpoints(project, records)
         handoff_count = _validate_handoffs(records)
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
-        _verify_topic_path_authority(topic_record, topic_path)
+        topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
         snapshot = _topic_snapshot(records, request["actor_topic_id"])
+        gate_state = derived_gate(records, request["actor_topic_id"])
         active_question_record = _single_active_question_record(
             records,
             topic_id=request["actor_topic_id"],
@@ -1961,7 +1935,12 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
             ),
             "checkpoint_count": len(checkpoints), "handoff_count": handoff_count,
             "active_question": active_question_record[1] if active_question_record else None,
-            "pending_document_writes": pending, "checkpoints": checkpoints, **snapshot,
+            "pending_document_writes": pending, "checkpoints": checkpoints,
+            "derived_gate_state": gate_state,
+            "current_authority_candidates": current_topic_authorities(
+                records, request["actor_topic_id"]
+            ),
+            "topic_dependencies": [dict(item) for item in records["Topic Dependencies"] if item["dependent_topic_id"] == request["actor_topic_id"]], **snapshot,
         }
 
 
@@ -2008,6 +1987,9 @@ def _build_operation_registry() -> OperationRegistry:
             ("checkpoint-gc-confirm", _checkpoint_gc_confirm),
             ("reconcile-checkpoint-gc", _reconcile_checkpoint_gc),
             ("prepare-handoff", _prepare_handoff),
+            ("update-topic-dependency", update_topic_dependency),
+            ("evaluate-topic-gate", evaluate_topic_gate),
+            ("release-topic-gate", release_topic_gate),
             ("bind-handoff", _bind_handoff),
             ("accept-handoff", _accept_handoff),
             ("authorize-handoff-discussion", _authorize_handoff_discussion),

@@ -29,9 +29,13 @@ LEDGER_SECTION_NAMES = (
     "Pending Document Writes",
     "Impacts",
     "Relations and Coverage",
+    "Topic Dependencies",
     "Dependencies and Active Implementations",
     "Conversation Bindings",
     "Recent Events",
+)
+LEGACY_LEDGER_SECTION_NAMES = tuple(
+    name for name in LEDGER_SECTION_NAMES if name != "Topic Dependencies"
 )
 
 
@@ -256,6 +260,85 @@ def _require_regular_nosymlink(path: Path, label: str) -> bytes:
         raise ProtocolError("state_corrupt", f"cannot read {label}", cause=str(error)) from error
 
 
+def _mkdirs(path: Path, created_directories: list[Path]) -> None:
+    """Create a storage directory only beneath verified non-symlink parents."""
+    missing: list[Path] = []
+    cursor = path
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor = cursor.parent
+    try:
+        cursor_stat = os.lstat(cursor)
+    except OSError as error:
+        raise ProtocolError(
+            "invalid_storage_path",
+            f"cannot inspect required storage path component: {cursor}",
+            cause=str(error),
+        ) from error
+    if not stat.S_ISDIR(cursor_stat.st_mode):
+        raise ProtocolError(
+            "invalid_storage_path",
+            f"required directory parent is not a directory: {cursor}",
+        )
+    existing = cursor
+    while existing != existing.parent:
+        existing_stat = os.lstat(existing)
+        if stat.S_ISLNK(existing_stat.st_mode):
+            raise ProtocolError(
+                "invalid_storage_path",
+                f"storage path contains a symbolic-link component: {existing}",
+            )
+        existing = existing.parent
+    for directory in reversed(missing):
+        directory.mkdir()
+        created_directories.append(directory)
+
+
+def _write_new_file(path: Path, data: bytes, created_files: list[Path]) -> None:
+    """Durably create, but never replace, one regular file."""
+    if path.exists():
+        raise ProtocolError("initialization_conflict", f"refusing to replace existing path: {path}")
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError as error:
+            raise ProtocolError(
+                "initialization_conflict", f"refusing to replace existing path: {path}"
+            ) from error
+        created_files.append(path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _read_regular_nosymlink_or_none(path: Path, label: str) -> bytes | None:
+    """Return secure artifact bytes, treating an unavailable artifact as absent."""
+    try:
+        return _require_regular_nosymlink(path, label)
+    except ProtocolError:
+        return None
+
+
 def _verify_ledger_digest(data: bytes) -> tuple[dict[str, str], str]:
     try:
         text = data.decode("utf-8")
@@ -279,15 +362,15 @@ def _verify_ledger_digest(data: bytes) -> tuple[dict[str, str], str]:
     return frontmatter, text
 
 
-def _ledger_sections(text: str) -> dict[str, str]:
+def _ledger_sections(text: str, section_names: tuple[str, ...] = LEDGER_SECTION_NAMES) -> dict[str, str]:
     sections: dict[str, str] = {}
-    for index, name in enumerate(LEDGER_SECTION_NAMES):
+    for index, name in enumerate(section_names):
         marker = f"## {name}\n\n"
         if text.count(marker) != 1:
             raise ProtocolError("state_corrupt", f"ledger section {name!r} is missing or duplicated")
         start = text.index(marker) + len(marker)
-        if index + 1 < len(LEDGER_SECTION_NAMES):
-            next_marker = f"\n## {LEDGER_SECTION_NAMES[index + 1]}\n\n"
+        if index + 1 < len(section_names):
+            next_marker = f"\n## {section_names[index + 1]}\n\n"
             try:
                 end = text.index(next_marker, start)
             except ValueError as error:
@@ -403,7 +486,8 @@ def _render_records_ledger(
     frontmatter: dict[str, str], records: dict[str, list[dict[str, Any]]]
 ) -> bytes:
     body_lines = ["# Design Discussion Ledger", ""]
-    for name in LEDGER_SECTION_NAMES:
+    section_names = LEDGER_SECTION_NAMES if frontmatter.get("schema_version") == "3" else LEGACY_LEDGER_SECTION_NAMES
+    for name in section_names:
         body_lines.extend([f"## {name}", "", _yaml_record_block(records[name]), ""])
     body = "\n".join(body_lines)
     schema_version = frontmatter["schema_version"]
@@ -412,16 +496,17 @@ def _render_records_ledger(
         f"project_id: {frontmatter['project_id']}",
         f"tree_id: {frontmatter['tree_id']}",
     ]
-    if schema_version == "2":
+    if schema_version == "2" or (
+        schema_version == "3" and "creation_idempotency_key" in frontmatter
+    ):
         _validate_creation_receipt(frontmatter)
-        frontmatter_lines.extend(
-            [
-                "creation_idempotency_key: "
-                f"{json.dumps(frontmatter['creation_idempotency_key'])}",
-                "creation_fingerprint: "
-                f"{json.dumps(frontmatter['creation_fingerprint'])}",
-            ]
-        )
+        frontmatter_lines.extend([
+            "creation_idempotency_key: " f"{json.dumps(frontmatter['creation_idempotency_key'])}",
+            "creation_fingerprint: " f"{json.dumps(frontmatter['creation_fingerprint'])}",
+        ])
+    elif schema_version == "3":
+        if "creation_fingerprint" in frontmatter:
+            raise ProtocolError("state_corrupt", "ledger creation receipt is incomplete")
     elif schema_version == "1":
         if (
             "creation_idempotency_key" in frontmatter
@@ -478,6 +563,10 @@ def _hydrate_legacy_creation_receipt(
     if schema_version == "2":
         _validate_creation_receipt(frontmatter)
         return
+    if schema_version == "3":
+        if "creation_idempotency_key" in frontmatter or "creation_fingerprint" in frontmatter:
+            _validate_creation_receipt(frontmatter)
+        return
     if schema_version != "1":
         raise ProtocolError("state_corrupt", "ledger schema_version is unsupported")
     if has_key or has_fingerprint:
@@ -519,6 +608,8 @@ def _is_exact_creation_replay(
 ) -> bool:
     if frontmatter.get("schema_version") == "1":
         return False
+    if "creation_idempotency_key" not in frontmatter:
+        return False
     stored_key, stored_fingerprint = _validate_creation_receipt(frontmatter)
     if stored_key != idempotency_key:
         return False
@@ -534,11 +625,18 @@ def _load_records(ledger_path: Path) -> tuple[dict[str, str], dict[str, list[dic
     frontmatter, text = _verify_ledger_digest(
         _require_regular_nosymlink(ledger_path, "ledger")
     )
-    sections = _ledger_sections(text)
-    records = {
-        name: _parse_record_section(sections[name], name) for name in LEDGER_SECTION_NAMES
-    }
+    schema_version = frontmatter.get("schema_version")
+    if schema_version not in {"1", "2", "3"}:
+        raise ProtocolError("state_corrupt", "ledger schema_version is unsupported")
+    section_names = LEDGER_SECTION_NAMES if schema_version == "3" else LEGACY_LEDGER_SECTION_NAMES
+    sections = _ledger_sections(text, section_names)
+    records = {name: _parse_record_section(sections[name], name) for name in section_names}
+    if schema_version != "3":
+        records["Topic Dependencies"] = []
     _hydrate_legacy_creation_receipt(frontmatter, records)
+    # Keep corruption fail-closed before any operation can observe ledger state.
+    from .topic_dependency_schema import validate_dependency_records
+    validate_dependency_records(records, ProtocolError)
     return frontmatter, records
 
 
@@ -887,14 +985,34 @@ def _write_ledger_transaction(
     )
     frontmatter["ledger_revision"] = str(ledger_revision)
     frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
+    _persist_ledger(ledger_path, frontmatter, records)
+
+
+def _persist_ledger(
+    ledger_path: Path,
+    frontmatter: dict[str, str],
+    records: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Serialize every committed ledger mutation at the current schema boundary."""
+    frontmatter["schema_version"] = "3"
     _atomic_replace(ledger_path, _render_records_ledger(frontmatter, records))
 
 
 def _validate_revisions(
     request: dict[str, Any], frontmatter: dict[str, str], topic_record: dict[str, Any]
 ) -> tuple[int, int]:
-    ledger_revision = int(frontmatter["ledger_revision"])
-    topic_revision = int(topic_record["record_revision"])
+    try:
+        ledger_revision = int(frontmatter["ledger_revision"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ProtocolError("state_corrupt", "ledger revision is invalid") from error
+    if type(topic_record.get("record_revision")) is not int:
+        raise ProtocolError("state_corrupt", "topic record revision is invalid")
+    topic_revision = topic_record["record_revision"]
+    if (
+        type(request.get("expected_ledger_revision")) is not int
+        or type(request.get("expected_topic_revision")) is not int
+    ):
+        raise ProtocolError("invalid_request", "expected revisions must be integers")
     if request["expected_ledger_revision"] != ledger_revision:
         raise ProtocolError(
             "ledger_revision_conflict",

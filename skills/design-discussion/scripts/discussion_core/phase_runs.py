@@ -7,6 +7,7 @@ from pathlib import Path
 import uuid
 from typing import Any
 
+from .checkpoint_authority import CheckpointAuthorityCorrupt, checkpoint_artifact_fields
 from .checkpoints import _checkpoint_data, _completed_checkpoint
 from .state import (
     ProtocolError,
@@ -30,6 +31,10 @@ from .state import (
     _verify_topic_owner,
     _write_ledger_transaction,
 )
+from .topic_dependencies import (
+    apply_gate_policy, reclose_stale_topic_gates,
+)
+from .topic_dependency_schema import decision_authority
 
 
 PHASE_ROUTES = {(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)}
@@ -197,7 +202,10 @@ def _verify_wrapper_checkpoint_current(
     ]
     if not completed_sources or completed_sources[-1]["checkpoint_id"] != checkpoint["checkpoint_id"]:
         raise ProtocolError("phase_checkpoint_invalid", "wrapper checkpoint is no longer the latest source")
-    document_digests = json.loads(checkpoint["document_digests_json"])
+    try:
+        _, _, document_digests = checkpoint_artifact_fields(checkpoint)
+    except CheckpointAuthorityCorrupt as error:
+        raise ProtocolError("state_corrupt", "checkpoint artifact fields are corrupt") from error
     if _sha256(_require_regular_nosymlink(topic_path, "topic document")) not in document_digests.values():
         raise ProtocolError("phase_source_drift", "topic document differs from the frozen checkpoint")
 
@@ -412,7 +420,7 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
     )[:4]
     from_phase = request["from_phase"]
     to_phase = request["to_phase"]
-    if not isinstance(from_phase, int) or not isinstance(to_phase, int):
+    if type(from_phase) is not int or type(to_phase) is not int:
         raise ProtocolError("invalid_request", "phase values must be integers")
     route = (from_phase, to_phase)
     if route not in PHASE_ROUTES:
@@ -450,6 +458,9 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        apply_gate_policy(
+            records, "phase-transition", request["actor_topic_id"], phase=from_phase
+        )
         if topic.get("current_phase") != from_phase:
             raise ProtocolError("phase_route_conflict", "route source phase does not match current topic phase")
         if _pending_topic_impacts(records, request["actor_topic_id"]):
@@ -596,6 +607,10 @@ def _prepare_no_code_integration_run(request: dict[str, Any]) -> dict[str, Any]:
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
         from_phase = topic.get("current_phase")
+        if from_phase == 1:
+            apply_gate_policy(
+                records, "phase-transition", request["actor_topic_id"], phase=from_phase
+            )
         if from_phase not in {1, 2}:
             raise ProtocolError(
                 "phase_route_conflict",
@@ -822,6 +837,10 @@ def _claim_phase_carrier(request: dict[str, Any]) -> dict[str, Any]:
         record = _phase_record(records, request["phase_run_id"])
         data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
+        apply_gate_policy(
+            records, "phase-transition", request["actor_topic_id"],
+            phase=data.get("from_phase"),
+        )
         attempt = _phase_attempt(data, request["attempt_id"])
         if data.get("wrapper_integration") is not True:
             raise ProtocolError("phase_identity_conflict", "carrier claims apply only to wrapper Phase Runs")
@@ -908,7 +927,7 @@ def _authoritative_phase_evidence(
                 [
                     item
                     for item in records["Relations and Coverage"]
-                    if topic_id
+                    if item.get("relation_type") == "absorbs" and topic_id
                     in {item.get("source_topic_id"), item.get("target_topic_id")}
                 ]
             ).encode("utf-8")
@@ -935,7 +954,7 @@ def _prepare_phase_run(request: dict[str, Any]) -> dict[str, Any]:
     ledger_path, topic_path, lock_path, owner_ref = _phase_request_context(
         request, {"from_phase", "to_phase", "route", "carrier_kind"}
     )[:4]
-    if not isinstance(request["from_phase"], int) or not isinstance(request["to_phase"], int):
+    if type(request["from_phase"]) is not int or type(request["to_phase"]) is not int:
         raise ProtocolError("invalid_request", "phase values must be integers")
     route = (request["from_phase"], request["to_phase"])
     if route not in PHASE_ROUTES:
@@ -958,6 +977,9 @@ def _prepare_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        apply_gate_policy(
+            records, "phase-transition", request["actor_topic_id"], phase=route[0]
+        )
         if topic.get("current_phase") != request["from_phase"]:
             raise ProtocolError("phase_route_conflict", "route source phase does not match current topic phase")
         active_runs = [
@@ -1066,6 +1088,10 @@ def _retry_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         record = _phase_record(records, request["phase_run_id"])
         data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
+        apply_gate_policy(
+            records, "phase-transition", request["actor_topic_id"],
+            phase=data.get("from_phase"),
+        )
         prior = _phase_attempt(data, request["prior_attempt_id"])
         if data.get("state") != "failed" or prior["state"] != "failed" or prior is not data["attempts"][-1]:
             raise ProtocolError("phase_reconciliation_required", "only an explicitly failed attempt can be retried")
@@ -1213,6 +1239,11 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
         record = _phase_record(records, request["phase_run_id"])
         data = _phase_data(record)
         _verify_phase_source(data, request["actor_topic_id"])
+        if target in {"ready", "active"}:
+            apply_gate_policy(
+                records, "phase-transition", request["actor_topic_id"],
+                phase=data.get("from_phase"),
+            )
         attempt = _phase_attempt(data, request["attempt_id"])
         if target == "ready":
             if data["state"] != "setup-pending" or attempt["state"] != "setup-pending":
@@ -1527,6 +1558,10 @@ def _finalize_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             for item in _topic_snapshot(records, request["actor_topic_id"])["decisions"]
             if item.get("state") != "discarded"
         )
+        decision_authority_pairs, _, _ = decision_authority(
+            _topic_snapshot(records, request["actor_topic_id"])["decisions"],
+            relevant_decision_ids=set(affected_decision_ids),
+        )
         phase_result_data = {
             "result_id": result_id,
             "phase_run_id": data["run_id"],
@@ -1534,6 +1569,7 @@ def _finalize_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             "from_phase": data["from_phase"],
             "to_phase": data["to_phase"],
             "affected_decision_ids": affected_decision_ids,
+            "decision_authority": decision_authority_pairs,
             "evidence": data["evidence"],
         }
         if data.get("implementation_mode") is not None:
@@ -1702,6 +1738,22 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
             topic,
         )
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        changed = {decision_id for decision_id, action in review.items() if action != "keep"}
+        invalidated_results = {
+            _json_field(record, "data_json", "phase result").get("result_id")
+            for record in records["Phase Results"]
+            if record.get("result_kind") == "phase-result" and record.get("state") == "completed"
+            and _json_field(record, "data_json", "phase result").get("topic_id") == request["actor_topic_id"]
+        }
+        if changed or invalidated_results:
+            apply_gate_policy(
+                records, "phase-reopen", request["actor_topic_id"], reclose={
+                    "changed_decision_ids": changed,
+                    "cause": {"kind": "phase-reopen", "reopen_id": request["idempotency_key"], "affected_decision_ids": sorted(changed), "invalidated_result_ids": sorted(item for item in invalidated_results if isinstance(item, str))},
+                    "ledger_revision": ledger_revision + 1,
+                    "invalidated_authority_ids": {item for item in invalidated_results if isinstance(item, str)},
+                },
+            )
         if topic.get("current_phase") == 0:
             raise ProtocolError("phase_route_conflict", "topic is already in phase 0")
         active_runs = [
@@ -1767,8 +1819,9 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
         for item in records["Pending Items"]:
             if item.get("item_kind") == "decision" and item.get("item_id") in review:
                 decision = _json_field(item, "data_json", "decision")
-                decision["reopen_review"] = review[item["item_id"]]
-                item["data_json"] = _canonical_json(decision)
+                if review[item["item_id"]] != "keep":
+                    decision["reopen_review"] = review[item["item_id"]]
+                    item["data_json"] = _canonical_json(decision)
         review_pending_result_ids = []
         for result_record, result_data in review_pending_results:
             result_record["state"] = "review-pending"
@@ -1781,6 +1834,17 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
         topic["phase_state"] = "active"
         topic["record_revision"] = int(topic["record_revision"]) + 1
         next_revision = ledger_revision + 1
+        reclosed_dependency_ids = reclose_stale_topic_gates(
+            records, dependent_topic_id=request["actor_topic_id"],
+            cause={
+                "kind": "phase-reopen", "reopen_id": request["idempotency_key"],
+                "affected_decision_ids": sorted(changed),
+                "invalidated_result_ids": sorted(
+                    item for item in invalidated_results if isinstance(item, str)
+                ),
+            },
+            ledger_revision=next_revision,
+        )
         result = {
             "ok": True,
             "state": "reopened",
@@ -1793,6 +1857,7 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
             "current_phase": 0,
             "affected_decision_ids": sorted(authoritative_affected),
             "review_pending_result_ids": sorted(review_pending_result_ids),
+            "reclosed_dependency_ids": reclosed_dependency_ids,
         }
         _write_ledger_transaction(
             ledger_path,

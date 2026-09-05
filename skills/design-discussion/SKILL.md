@@ -95,7 +95,10 @@ question, idea, impact and document-write identities come from the protocol;
 do not construct or rewrite them in prose.
 
 An inserted idea suspends the active question. After the idea is understood,
-explicitly resolve that question as `resume`, `adjust` or `invalidate`. A
+explicitly resolve that question as `resume`, `adjust` or `invalidate`. When a
+child handoff is prepared before that resolution, include the exact
+`suspended_question_resolution` in the handoff proposal so it freezes and
+applies before any initial dependency can close the source gate. A
 changed direction first lists affected decision identities, then confirms one
 `keep`, `adjust`, `replace` or `discard` action per impact. Never batch several
 affected decisions into one resolution.
@@ -148,6 +151,8 @@ Read the applicable reference only when the action is requested:
 
 - [references/child-topic-protocol.md](references/child-topic-protocol.md) for
   child topics or continuation;
+- [references/split-gate-contract.md](references/split-gate-contract.md) for
+  a Phase-0/1 split proposal or a requirements gate;
 - [references/lifecycle-integration.md](references/lifecycle-integration.md)
   for routing into stages 1–4;
 - [references/templates.md](references/templates.md) for stable topic and
@@ -162,6 +167,14 @@ separate exact task-creation confirmation, create and bind one real Codex task,
 enforce first-turn acceptance and later-turn authorization, then route the
 scoped result or impacts back to the parent. Do not replace this sequence with
 bootstrap or an informal prompt-only handoff.
+
+## Proactive topic split and requirements gates
+
+For the shared split and gate sequence, read
+[references/split-gate-contract.md](references/split-gate-contract.md). Keep
+the stage-specific direction below when acting in `0讨论`: use the proposal to
+preserve the active exploratory question, and return to that question only
+through its existing resume, adjust, or invalidate action after a split.
 
 ## Judge maturity
 
