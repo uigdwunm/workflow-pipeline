@@ -14,14 +14,14 @@ from .topic_dependency_gates import (
     require_open_gate,
 )
 from .topic_dependency_lifecycle import (
-    prepare_initial_dependencies, reclose_directly_affected,
+    prepare_initial_dependencies, reclose_directly_affected, reclose_stale_topic_gates,
     update_topic_dependency,
 )
 
 __all__ = [
     "apply_gate_policy", "derived_gate", "evaluate_topic_gate", "freeze_authority_selection",
     "has_current_authority", "current_topic_authorities", "prepare_initial_dependencies",
-    "reclose_directly_affected", "release_child_result_dependencies",
+"reclose_directly_affected", "reclose_stale_topic_gates", "release_child_result_dependencies",
     "release_topic_gate", "require_open_gate",
     "retained_checkpoint_identities",
     "update_topic_dependency",

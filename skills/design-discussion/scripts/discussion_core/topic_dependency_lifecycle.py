@@ -16,9 +16,13 @@ from .state import (
     _verify_topic_owner, _write_ledger_transaction,
 )
 from .topic_dependency_schema import (
-    DEPENDENCY_AUTHORITY_KINDS, canonical_object, validate_dependency_records,
+    DEPENDENCY_AUTHORITY_KINDS, authority_descriptor, canonical_object,
+    validate_dependency_records,
 )
-from .topic_dependency_authority import published_stage_entry_authority
+from .topic_dependency_authority import (
+    authority_candidates, normalize_authority_selection,
+    published_stage_entry_authority,
+)
 
 
 def _state_corrupt(code: str, message: str) -> None:
@@ -112,6 +116,49 @@ def reclose_directly_affected(
             })
             closed.append(dependency["dependency_id"])
     return sorted(closed)
+
+
+def reclose_stale_topic_gates(
+    records: dict[str, list[dict[str, Any]]], *, dependent_topic_id: str,
+    cause: dict[str, Any], ledger_revision: int,
+) -> list[str]:
+    """Reclose this topic's open gates when their frozen authority is stale."""
+    reclosed: list[str] = []
+    for dependency in records["Topic Dependencies"]:
+        if (
+            dependency.get("dependent_topic_id") != dependent_topic_id
+            or dependency.get("relation_state") != "active"
+            or dependency.get("gate_state") != "open"
+        ):
+            continue
+        basis = canonical_object(
+            dependency["accepted_basis_json"],
+            "topic dependency accepted_basis_json", _state_corrupt,
+        )
+        try:
+            descriptor = authority_descriptor(dependency["requirement_kind"])
+            selection = descriptor.selection_from_basis(basis)
+            _, chosen = normalize_authority_selection(
+                authority_candidates(records, dependency),
+                dependency["requirement_kind"], selection.get("authority_id"),
+                selection["decision_ids"],
+            )
+            if chosen != basis.get("decision_authority"):
+                raise ProtocolError(
+                    "topic_dependency_evidence_unavailable",
+                    "selected dependency evidence is not current",
+                )
+        except ProtocolError as error:
+            if error.code != "topic_dependency_evidence_unavailable":
+                raise
+            dependency["gate_state"] = "closed"
+            dependency["record_revision"] += 1
+            dependency["gate_reason_json"] = _canonical_json({
+                **cause, "kind": "direct-upstream-invalidation",
+                "ledger_revision": ledger_revision,
+            })
+            reclosed.append(dependency["dependency_id"])
+    return sorted(reclosed)
 
 
 def request_context(request: dict[str, Any], extra: set[str], *, query: bool = False):

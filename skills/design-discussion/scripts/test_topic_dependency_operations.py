@@ -2,23 +2,192 @@
 
 from pathlib import Path
 import sys
+import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 import discussion_protocol as PROTOCOL
 from test_discussion_protocol import hashlib, json, os, subprocess, uuid, ThreadPoolExecutor
-from test_topic_dependency_support import TopicDependencyScenarioTest, add_topic
+from test_topic_dependency_support import TopicDependencyScenarioMixin, add_topic
 
 
-class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
+class TopicDependencyOperationCliTests(TopicDependencyScenarioMixin, unittest.TestCase):
+    def test_ticket07_phase_two_reopen_recloses_stale_own_gate_via_cli(self) -> None:
+        project = self.make_project("ticket07-reopen-stale-own-gate", git=False)
+        topic = self.bootstrap_topic(project)
+        root_decision, revision, topic_revision = self.complete_update(
+            project, topic, ledger_revision=1, topic_revision=1, mutation={
+                "type": "confirm-decision", "summary": "Keep the root API.",
+                "rationale": "The reopen review is authoritative.",
+            },
+        )
+        child = self.prepare_child_handoff(
+            topic, ledger_revision=revision, topic_revision=topic_revision,
+            initial_dependencies=[{
+                "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+                "requirement_kind": "confirmed-decision",
+                "requirement_summary": "The child decision is required before Phase 2.",
+            }],
+        )
+        revision += 1
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        child_decision = {
+            "decision_id": "D-child", "summary": "Use typed requests.",
+            "rationale": "Initially authoritative.", "state": "confirmed",
+            "evolution": "confirmed",
+        }
+        records["Pending Items"].append({
+            "item_id": "D-child", "item_kind": "decision",
+            "topic_id": child["target_topic_id"],
+            "data_json": PROTOCOL._canonical_json(child_decision),
+        })
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        dependency_id = child["initial_dependencies"][0]["dependency_id"]
+        code, evaluation, stderr = self.run_cli(self.evolution_request(
+            topic, operation="evaluate-topic-gate", basis_selection=[{
+                "dependency_id": dependency_id, "decision_ids": ["D-child"],
+            }],
+        ))
+        self.assertEqual(code, 0, stderr)
+        code, _, stderr = self.run_cli(self.evolution_request(
+            topic, operation="release-topic-gate", expected_revision=revision,
+            expected_topic_revision=topic_revision, release_set=evaluation["release_set"],
+            release_set_sha256=evaluation["release_set_sha256"],
+        ))
+        self.assertEqual(code, 0, stderr)
+        revision += 1
+        _, revision, topic_revision = self.complete_current_topic_phase(
+            topic, ledger_revision=revision, topic_revision=topic_revision,
+            from_phase=0, to_phase=1,
+        )
+        _, revision, topic_revision = self.complete_current_topic_phase(
+            topic, ledger_revision=revision, topic_revision=topic_revision,
+            from_phase=1, to_phase=2,
+        )
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        child_record = next(item for item in records["Pending Items"] if item["item_id"] == "D-child")
+        changed_child = json.loads(child_record["data_json"])
+        changed_child["summary"] = "Use a revised typed request model."
+        changed_child["evolution"] = "adjusted upstream while dependent was in Phase 2"
+        child_record["data_json"] = PROTOCOL._canonical_json(changed_child)
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before_reopen = ledger.read_bytes()
+        invalid = self.phase_request(
+            topic, "reopen-phase", revision, topic_revision=topic_revision,
+            affected_decision_ids=[], review={},
+            reason="An incomplete review cannot change the reopened gate.",
+        )
+        code, rejected, _ = self.run_cli(invalid)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "phase_reopen_review_required")
+        self.assertEqual(ledger.read_bytes(), before_reopen)
+        reopen = self.phase_request(
+            topic, "reopen-phase", revision, topic_revision=topic_revision,
+            affected_decision_ids=[root_decision["decision_id"]],
+            review={root_decision["decision_id"]: "keep"},
+            reason="The Phase 2 topic must recheck its prerequisite on reopen.",
+        )
+        code, reopened, stderr = self.run_cli(reopen)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(reopened["reclosed_dependency_ids"], [dependency_id])
+        code, current, stderr = self.run_cli(self.evolution_request(topic, operation="read-topic"))
+        self.assertEqual(code, 0, stderr)
+        dependency = next(item for item in current["topic_dependencies"]
+                          if item["dependency_id"] == dependency_id)
+        self.assertEqual(dependency["gate_state"], "closed")
+
+    def test_ticket07_keep_impact_preserves_open_authority_basis_via_cli(self) -> None:
+        project = self.make_project("ticket07-keep-impact-authority", git=False)
+        topic = self.bootstrap_topic(project)
+        handoff = self.prepare_child_handoff(topic, initial_dependencies=[{
+            "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+            "requirement_kind": "confirmed-decision",
+            "requirement_summary": "The child decision must remain authoritative.",
+        }])
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        child_decision = {
+            "decision_id": "D-child", "summary": "Use typed requests.",
+            "rationale": "It gates the parent.", "state": "confirmed",
+            "evolution": "confirmed",
+        }
+        root_decision = {
+            "decision_id": "D-root", "summary": "Keep the deployment model.",
+            "rationale": "The impact only records review.", "state": "confirmed",
+            "evolution": "confirmed",
+        }
+        records["Pending Items"].extend([
+            {"item_id": "D-child", "item_kind": "decision",
+             "topic_id": handoff["target_topic_id"],
+             "data_json": PROTOCOL._canonical_json(child_decision)},
+            {"item_id": "D-root", "item_kind": "decision",
+             "topic_id": topic["topic_id"],
+             "data_json": PROTOCOL._canonical_json(root_decision)},
+        ])
+        impact_id = "IMP-" + uuid.uuid4().hex
+        records["Impacts"].append({
+            "impact_id": impact_id, "topic_id": topic["topic_id"],
+            "data_json": PROTOCOL._canonical_json({
+                "impact_id": impact_id, "decision_id": "D-root",
+                "direction": "Reconsider deployment.", "state": "pending", "action": None,
+            }),
+        })
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        dependency_id = handoff["initial_dependencies"][0]["dependency_id"]
+        code, evaluation, stderr = self.run_cli(self.evolution_request(
+            topic, operation="evaluate-topic-gate", basis_selection=[{
+                "dependency_id": dependency_id, "decision_ids": ["D-child"],
+            }],
+        ))
+        self.assertEqual(code, 0, stderr)
+        code, _, stderr = self.run_cli(self.evolution_request(
+            topic, operation="release-topic-gate", expected_revision=2,
+            expected_topic_revision=1, release_set=evaluation["release_set"],
+            release_set_sha256=evaluation["release_set_sha256"],
+        ))
+        self.assertEqual(code, 0, stderr)
+        _, before_records = PROTOCOL._load_records(ledger)
+        basis_before = next(item["accepted_basis_json"] for item in before_records["Topic Dependencies"]
+                            if item["dependency_id"] == dependency_id)
+        decision_before = next(item["data_json"] for item in before_records["Pending Items"]
+                               if item["item_id"] == "D-root")
+        keep = self.evolution_request(
+            topic, operation="prepare-topic-update", expected_revision=3,
+            expected_topic_revision=1, mutation={
+                "type": "resolve-impact", "impact_id": impact_id,
+                "decision_id": "D-root", "action": "keep",
+                "summary": "Keep records the review without changing authority.",
+            },
+        )
+        code, prepared, stderr = self.run_cli(keep)
+        self.assertEqual(code, 0, stderr)
+        code, _, stderr = self.run_cli(self.evolution_request(
+            topic, operation="apply-document-write", expected_revision=4,
+            expected_topic_revision=2, document_write_id=prepared["document_write_id"],
+        ))
+        self.assertEqual(code, 0, stderr)
+        _, after_records = PROTOCOL._load_records(ledger)
+        self.assertEqual(
+            next(item["accepted_basis_json"] for item in after_records["Topic Dependencies"]
+                 if item["dependency_id"] == dependency_id), basis_before,
+        )
+        self.assertEqual(
+            next(item["data_json"] for item in after_records["Pending Items"]
+                 if item["item_id"] == "D-root"), decision_before,
+        )
+        code, current, stderr = self.run_cli(self.evolution_request(topic, operation="read-topic"))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(current["derived_gate_state"], "open")
+
     def test_ticket07_closed_gate_blocks_decision_impact_resolution_via_cli(self) -> None:
         for action in ("adjust", "replace", "discard"):
-            with self.fixture.subTest(action=action):
-                project = self.fixture.make_project(
+            with self.subTest(action=action):
+                project = self.make_project(
                     f"ticket07-closed-impact-{action}", git=False,
                 )
-                topic = self.fixture.bootstrap_topic(project)
-                self.fixture.prepare_child_handoff(topic, initial_dependencies=[{
+                topic = self.bootstrap_topic(project)
+                self.prepare_child_handoff(topic, initial_dependencies=[{
                     "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
                     "requirement_kind": "confirmed-decision",
                     "requirement_summary": "The child authority is required first.",
@@ -46,7 +215,7 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
                 })
                 ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
                 before = ledger.read_bytes()
-                request = self.fixture.evolution_request(
+                request = self.evolution_request(
                     topic, operation="prepare-topic-update", expected_revision=2,
                     expected_topic_revision=1, mutation={
                         "type": "resolve-impact", "impact_id": impact_id,
@@ -54,32 +223,32 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
                         "summary": f"{action} requires the gate to be open.",
                     },
                 )
-                code, rejected, _ = self.fixture.run_cli(request)
-                self.fixture.assertEqual(code, 1)
-                self.fixture.assertEqual(rejected["error"]["code"], "topic_gate_closed")
-                self.fixture.assertEqual(ledger.read_bytes(), before)
+                code, rejected, _ = self.run_cli(request)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "topic_gate_closed")
+                self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_source_initial_dependency_rejects_published_authority_via_cli(self) -> None:
         for phase in (0, 1):
-            with self.fixture.subTest(phase=phase):
-                project = self.fixture.make_project(
+            with self.subTest(phase=phase):
+                project = self.make_project(
                     f"ticket07-source-initial-published-{phase}", git=False,
                 )
-                topic = self.fixture.bootstrap_topic(project)
+                topic = self.bootstrap_topic(project)
                 ledger_revision = 1
                 topic_revision = 1
                 if phase == 1:
-                    _, ledger_revision, topic_revision = self.fixture.complete_current_topic_phase(
+                    _, ledger_revision, topic_revision = self.complete_current_topic_phase(
                         topic, ledger_revision=ledger_revision,
                         topic_revision=topic_revision, from_phase=0, to_phase=1,
                     )
-                self.fixture.publish_non_git_stage_entry_checkpoint(
+                self.publish_non_git_stage_entry_checkpoint(
                     topic, ledger_revision=ledger_revision, topic_revision=topic_revision,
                 )
                 ledger_revision += 2
                 ledger = Path(str(topic["ledger_path"]))
                 before = ledger.read_bytes()
-                request = self.fixture.handoff_request(
+                request = self.handoff_request(
                     topic, operation="prepare-handoff", ledger_revision=ledger_revision,
                     topic_revision=topic_revision, handoff_kind="child",
                     target_slug="published-source", scope=["api"],
@@ -97,88 +266,88 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
                         "requirement_summary": "The child must provide the decision.",
                     }],
                 )
-                code, rejected, _ = self.fixture.run_cli(request)
-                self.fixture.assertEqual(code, 1)
-                self.fixture.assertEqual(
+                code, rejected, _ = self.run_cli(request)
+                self.assertEqual(code, 1)
+                self.assertEqual(
                     rejected["error"]["code"],
                     "topic_dependency_published_authority_conflict",
                 )
-                self.fixture.assertEqual(rejected["error"]["context"]["phase"], phase)
-                self.fixture.assertEqual(ledger.read_bytes(), before)
+                self.assertEqual(rejected["error"]["context"]["phase"], phase)
+                self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_revision_booleans_are_rejected_in_request_and_ledger_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-exact-integers", git=False)
-        topic = self.fixture.bootstrap_topic(project)
+        project = self.make_project("ticket07-exact-integers", git=False)
+        topic = self.bootstrap_topic(project)
         ledger = Path(str(topic["ledger_path"]))
         before = ledger.read_bytes()
         for field in ("expected_ledger_revision", "expected_topic_revision"):
             with self.subTest(request_field=field):
-                request = self.fixture.evolution_request(
+                request = self.evolution_request(
                     topic, operation="prepare-topic-update", mutation={
                         "type": "confirm-decision", "summary": "Typed revision.",
                         "rationale": "Boolean revisions are invalid.",
                     }, expected_revision=1, expected_topic_revision=1,
                 )
                 request[field] = True
-                code, rejected, _ = self.fixture.run_cli(request)
-                self.fixture.assertEqual(code, 1)
-                self.fixture.assertEqual(rejected["error"]["code"], "invalid_request")
-                self.fixture.assertEqual(ledger.read_bytes(), before)
+                code, rejected, _ = self.run_cli(request)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "invalid_request")
+                self.assertEqual(ledger.read_bytes(), before)
         frontmatter, records = PROTOCOL._load_records(ledger)
         records["Current Topics"][0]["record_revision"] = True
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         corrupted = ledger.read_bytes()
-        code, rejected, _ = self.fixture.run_cli(self.fixture.evolution_request(
+        code, rejected, _ = self.run_cli(self.evolution_request(
             topic, operation="prepare-topic-update", expected_revision=1,
             expected_topic_revision=1, mutation={
                 "type": "confirm-decision", "summary": "Never written.",
                 "rationale": "Persisted boolean is invalid.",
             },
         ))
-        self.fixture.assertEqual(code, 1)
-        self.fixture.assertEqual(rejected["error"]["code"], "state_corrupt")
-        self.fixture.assertEqual(ledger.read_bytes(), corrupted)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "state_corrupt")
+        self.assertEqual(ledger.read_bytes(), corrupted)
 
     def test_ticket07_reopen_retired_phase0_authority_allows_dependency_changes_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-reopen-retired-checkpoint", git=False)
-        topic = self.fixture.bootstrap_topic(project)
-        decision, revision, topic_revision = self.fixture.complete_update(
+        project = self.make_project("ticket07-reopen-retired-checkpoint", git=False)
+        topic = self.bootstrap_topic(project)
+        decision, revision, topic_revision = self.complete_update(
             project, topic, ledger_revision=1, topic_revision=1,
             mutation={
                 "type": "confirm-decision", "summary": "Keep the API.",
                 "rationale": "The Phase 0 authority is explicit.",
             },
         )
-        self.fixture.publish_non_git_stage_entry_checkpoint(
+        self.publish_non_git_stage_entry_checkpoint(
             topic, ledger_revision=revision, topic_revision=topic_revision,
         )
         revision += 2
-        _, revision, topic_revision = self.fixture.complete_current_topic_phase(
+        _, revision, topic_revision = self.complete_current_topic_phase(
             topic, ledger_revision=revision, topic_revision=topic_revision,
             from_phase=0, to_phase=1,
         )
-        code, reopened, stderr = self.fixture.run_cli(self.fixture.phase_request(
+        code, reopened, stderr = self.run_cli(self.phase_request(
             topic, "reopen-phase", revision, topic_revision=topic_revision,
             affected_decision_ids=[decision["decision_id"]],
             review={decision["decision_id"]: "keep"},
             reason="Reopen Phase 0 with the old checkpoint retired.",
         ))
-        self.fixture.assertEqual(code, 0, stderr)
+        self.assertEqual(code, 0, stderr)
         ledger = Path(str(topic["ledger_path"]))
         frontmatter, records = PROTOCOL._load_records(ledger)
         prerequisite_id = "topic-" + uuid.uuid4().hex
         add_topic(records, topic_id=prerequisite_id, root_slug="prerequisite",
             parent_topic_id=topic["topic_id"])
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
-        code, created, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+        code, created, stderr = self.run_cli(self.evolution_request(
             topic, operation="update-topic-dependency",
             expected_revision=reopened["ledger_revision"],
             expected_topic_revision=reopened["record_revision"], action="create",
             prerequisite_topic_id=prerequisite_id, requirement_kind="confirmed-decision",
             requirement_summary="A fresh Phase 0 gate.",
         ))
-        self.fixture.assertEqual(code, 0, stderr)
-        code, replaced, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+        self.assertEqual(code, 0, stderr)
+        code, replaced, stderr = self.run_cli(self.evolution_request(
             topic, operation="update-topic-dependency",
             expected_revision=created["ledger_revision"],
             expected_topic_revision=reopened["record_revision"], action="replace",
@@ -186,16 +355,16 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
             prerequisite_topic_id=prerequisite_id, requirement_kind="phase-1-result",
             requirement_summary="A replacement gate after reopen.",
         ))
-        self.fixture.assertEqual(code, 0, stderr)
-        self.fixture.assertEqual(replaced["state"], "replace")
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(replaced["state"], "replace")
 
     def test_ticket07_malformed_dependency_discriminators_fail_stably_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-malformed-discriminators", git=False)
-        topic = self.fixture.bootstrap_topic(project)
+        project = self.make_project("ticket07-malformed-discriminators", git=False)
+        topic = self.bootstrap_topic(project)
         ledger = Path(str(topic["ledger_path"]))
         before = ledger.read_bytes()
         for endpoint, prerequisite in (([], "target"), ({}, "target"), ("source", []), ("source", {})):
-            request = self.fixture.handoff_request(
+            request = self.handoff_request(
                 topic, operation="prepare-handoff", ledger_revision=1,
                 initial_dependencies=[{
                     "dependent_endpoint": endpoint,
@@ -204,12 +373,12 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
                     "requirement_summary": "Bounded.",
                 }],
             )
-            code, rejected, _ = self.fixture.run_cli(request)
-            self.fixture.assertEqual(code, 1)
-            self.fixture.assertEqual(rejected["error"]["code"], "invalid_request")
-            self.fixture.assertEqual(ledger.read_bytes(), before)
-        prepared, child_ref = self.fixture.activate_child_handoff(topic)
-        submit = self.fixture.handoff_request(
+            code, rejected, _ = self.run_cli(request)
+            self.assertEqual(code, 1)
+            self.assertEqual(rejected["error"]["code"], "invalid_request")
+            self.assertEqual(ledger.read_bytes(), before)
+        prepared, child_ref = self.activate_child_handoff(topic)
+        submit = self.handoff_request(
             topic, operation="submit-child-result", ledger_revision=5,
             owner_ref=child_ref, handoff_id=prepared["handoff_id"],
             attempt_id=prepared["attempt_id"], result_scope=["api"], summary="Typed.",
@@ -218,34 +387,34 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
         )
         submit["actor_topic_id"] = prepared["target_topic_id"]
         before = ledger.read_bytes()
-        code, rejected, _ = self.fixture.run_cli(submit)
-        self.fixture.assertEqual(code, 1)
-        self.fixture.assertEqual(rejected["error"]["code"], "invalid_request")
-        self.fixture.assertEqual(ledger.read_bytes(), before)
+        code, rejected, _ = self.run_cli(submit)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "invalid_request")
+        self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_published_authority_blocks_dependency_create_and_replace_via_cli(self) -> None:
         """A published Phase-0/1 authority must be explicitly reopened first."""
         for authority_phase in (0, 1):
-            with self.fixture.subTest(authority_phase=authority_phase):
-                project = self.fixture.make_project(
+            with self.subTest(authority_phase=authority_phase):
+                project = self.make_project(
                     f"ticket07-published-authority-{authority_phase}", git=False,
                 )
-                topic = self.fixture.bootstrap_topic(project)
+                topic = self.bootstrap_topic(project)
                 if authority_phase == 0:
-                    self.fixture.publish_non_git_stage_entry_checkpoint(
+                    self.publish_non_git_stage_entry_checkpoint(
                         topic, ledger_revision=1,
                     )
                 else:
-                    _, revision, topic_revision = self.fixture.complete_update(
+                    _, revision, topic_revision = self.complete_update(
                         project, topic, ledger_revision=1, topic_revision=1,
                         mutation={"type": "confirm-decision", "summary": "Current.",
                                   "rationale": "Current."},
                     )
-                    _, revision, topic_revision = self.fixture.complete_current_topic_phase(
+                    _, revision, topic_revision = self.complete_current_topic_phase(
                         topic, ledger_revision=revision, topic_revision=topic_revision,
                         from_phase=0, to_phase=1,
                     )
-                    self.fixture.publish_non_git_stage_entry_checkpoint(
+                    self.publish_non_git_stage_entry_checkpoint(
                         topic, ledger_revision=revision, topic_revision=topic_revision,
                     )
                 ledger = Path(str(topic["ledger_path"]))
@@ -263,18 +432,18 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
                 ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
                 revision = int(frontmatter["ledger_revision"])
                 before = ledger.read_bytes()
-                create = self.fixture.evolution_request(
+                create = self.evolution_request(
                     topic, operation="update-topic-dependency", expected_revision=revision,
                     expected_topic_revision=topic_record["record_revision"], action="create",
                     prerequisite_topic_id=prerequisite_id,
                     requirement_kind="confirmed-decision", requirement_summary="A new gate.",
                 )
-                code, rejected, _ = self.fixture.run_cli(create)
-                self.fixture.assertEqual(code, 1)
-                self.fixture.assertEqual(rejected["error"]["code"],
+                code, rejected, _ = self.run_cli(create)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"],
                                          "topic_dependency_published_authority_conflict")
-                self.fixture.assertEqual(rejected["error"]["context"]["phase"], authority_phase)
-                self.fixture.assertEqual(ledger.read_bytes(), before)
+                self.assertEqual(rejected["error"]["context"]["phase"], authority_phase)
+                self.assertEqual(ledger.read_bytes(), before)
                 records["Topic Dependencies"].append({
                     "dependency_id": "DEP-" + uuid.uuid4().hex, "record_revision": 1,
                     "dependent_topic_id": topic["topic_id"],
@@ -290,24 +459,24 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
                 })
                 ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
                 before = ledger.read_bytes()
-                replace = self.fixture.evolution_request(
+                replace = self.evolution_request(
                     topic, operation="update-topic-dependency", expected_revision=revision,
                     expected_topic_revision=topic_record["record_revision"], action="replace",
                     dependency_id=records["Topic Dependencies"][-1]["dependency_id"],
                     expected_dependency_revision=1, prerequisite_topic_id=prerequisite_id,
                     requirement_kind="phase-1-result", requirement_summary="Replacement.",
                 )
-                code, rejected, _ = self.fixture.run_cli(replace)
-                self.fixture.assertEqual(code, 1)
-                self.fixture.assertEqual(rejected["error"]["code"],
+                code, rejected, _ = self.run_cli(replace)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"],
                                          "topic_dependency_published_authority_conflict")
-                self.fixture.assertEqual(ledger.read_bytes(), before)
+                self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_nested_authority_selection_is_bounded_and_sorted_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-nested-authority-bounds", git=False)
-        topic = self.fixture.bootstrap_topic(project)
-        prepared, child_ref = self.fixture.activate_child_handoff(topic)
-        request = self.fixture.handoff_request(
+        project = self.make_project("ticket07-nested-authority-bounds", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared, child_ref = self.activate_child_handoff(topic)
+        request = self.handoff_request(
             topic, operation="submit-child-result", ledger_revision=5, owner_ref=child_ref,
             handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
             result_scope=["api"], summary="Bounded authority.", authority_selection={
@@ -318,15 +487,15 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
         request["actor_topic_id"] = prepared["target_topic_id"]
         ledger = Path(str(topic["ledger_path"]))
         before = ledger.read_bytes()
-        code, rejected, _ = self.fixture.run_cli(request)
-        self.fixture.assertEqual(code, 1)
-        self.fixture.assertEqual(rejected["error"]["code"], "invalid_request")
-        self.fixture.assertEqual(ledger.read_bytes(), before)
+        code, rejected, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "invalid_request")
+        self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_gate_selection_requires_exact_closed_dependency_set_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-exact-gate-selection", git=False)
-        topic = self.fixture.bootstrap_topic(project)
-        prepared = self.fixture.prepare_child_handoff(topic, initial_dependencies=[{
+        project = self.make_project("ticket07-exact-gate-selection", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic, initial_dependencies=[{
             "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
             "requirement_kind": "confirmed-decision", "requirement_summary": "The child selects the API.",
         }])
@@ -338,16 +507,16 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
             [{"dependency_id": "DEP-" + "f" * 32, "decision_ids": []}],
             [{"dependency_id": dependency_id, "decision_ids": []}] * 2,
         ):
-            code, rejected, _ = self.fixture.run_cli(self.fixture.evolution_request(
+            code, rejected, _ = self.run_cli(self.evolution_request(
                 topic, operation="evaluate-topic-gate", basis_selection=selection
             ))
-            self.fixture.assertEqual(code, 1)
-            self.fixture.assertEqual(rejected["error"]["code"], "invalid_request")
-            self.fixture.assertEqual(ledger.read_bytes(), before)
+            self.assertEqual(code, 1)
+            self.assertEqual(rejected["error"]["code"], "invalid_request")
+            self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_active_closed_dependency_limit_is_atomic_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-active-closed-dependency-limit", git=False)
-        topic = self.fixture.bootstrap_topic(project)
+        project = self.make_project("ticket07-active-closed-dependency-limit", git=False)
+        topic = self.bootstrap_topic(project)
         ledger = Path(str(topic["ledger_path"]))
         frontmatter, records = PROTOCOL._load_records(ledger)
         reason = PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})
@@ -366,23 +535,23 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
             records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 2, "dependent_topic_id": str(topic["topic_id"]), "prerequisite_topic_id": prerequisite_id, "requirement_kind": "confirmed-decision", "requirement_summary": "A bounded prerequisite.", "relation_state": "active", "gate_state": "open", "accepted_basis_json": PROTOCOL._canonical_json(basis), "gate_reason_json": PROTOCOL._canonical_json({"kind": "atomic-release", "release_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         before = ledger.read_bytes()
-        request = self.fixture.evolution_request(topic, operation="update-topic-dependency", expected_revision=1, expected_topic_revision=1, action="create", prerequisite_topic_id=prerequisite_ids[64], requirement_kind="confirmed-decision", requirement_summary="The sixty-fifth prerequisite.")
-        code, rejected, _ = self.fixture.run_cli(request)
-        self.fixture.assertEqual(code, 1)
-        self.fixture.assertEqual(rejected["error"]["code"], "invalid_request")
-        self.fixture.assertEqual(ledger.read_bytes(), before)
+        request = self.evolution_request(topic, operation="update-topic-dependency", expected_revision=1, expected_topic_revision=1, action="create", prerequisite_topic_id=prerequisite_ids[64], requirement_kind="confirmed-decision", requirement_summary="The sixty-fifth prerequisite.")
+        code, rejected, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "invalid_request")
+        self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_corrupt_persisted_authorities_fail_closed_via_cli(self) -> None:
         for authority_kind in ("checkpoint", "phase-result"):
-            with self.fixture.subTest(authority_kind=authority_kind):
-                project = self.fixture.make_project(f"ticket07-corrupt-{authority_kind}", git=False)
-                topic = self.fixture.bootstrap_topic(project)
+            with self.subTest(authority_kind=authority_kind):
+                project = self.make_project(f"ticket07-corrupt-{authority_kind}", git=False)
+                topic = self.bootstrap_topic(project)
                 if authority_kind == "checkpoint":
-                    published = self.fixture.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
+                    published = self.publish_non_git_stage_entry_checkpoint(topic, ledger_revision=1)
                     dependency_kind, authority_id, revision = "phase-0-checkpoint", published["checkpoint_id"], 3
                 else:
-                    decision, revision, topic_revision = self.fixture.complete_update(project, topic, ledger_revision=1, topic_revision=1, mutation={"type": "confirm-decision", "summary": "Current.", "rationale": "Current."})
-                    completed, revision, _ = self.fixture.complete_current_topic_phase(topic, ledger_revision=revision, topic_revision=topic_revision, from_phase=0, to_phase=1)
+                    decision, revision, topic_revision = self.complete_update(project, topic, ledger_revision=1, topic_revision=1, mutation={"type": "confirm-decision", "summary": "Current.", "rationale": "Current."})
+                    completed, revision, _ = self.complete_current_topic_phase(topic, ledger_revision=revision, topic_revision=topic_revision, from_phase=0, to_phase=1)
                     dependency_kind, authority_id = "phase-1-result", completed["phase_result_id"]
                 ledger = Path(str(topic["ledger_path"]))
                 frontmatter, records = PROTOCOL._load_records(ledger)
@@ -394,18 +563,18 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
                 target["data_json"] = "not-canonical-json"
                 ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
                 before = ledger.read_bytes()
-                request = self.fixture.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": authority_id, "decision_ids": []}])
+                request = self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": authority_id, "decision_ids": []}])
                 request["actor_topic_id"] = dependent_id
                 request["actor_conversation_ref"] = "codex-thread:dependent"
-                code, rejected, _ = self.fixture.run_cli(request)
-                self.fixture.assertEqual(code, 1)
-                self.fixture.assertEqual(rejected["error"]["code"], "state_corrupt")
-                self.fixture.assertEqual(ledger.read_bytes(), before)
+                code, rejected, _ = self.run_cli(request)
+                self.assertEqual(code, 1)
+                self.assertEqual(rejected["error"]["code"], "state_corrupt")
+                self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_forged_child_basis_authority_mismatch_fails_closed_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-forged-child-basis", git=False)
-        topic = self.fixture.bootstrap_topic(project)
-        prepared, child_ref = self.fixture.activate_child_handoff(topic, initial_dependencies=[{
+        project = self.make_project("ticket07-forged-child-basis", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared, child_ref = self.activate_child_handoff(topic, initial_dependencies=[{
             "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
             "requirement_kind": "confirmed-decision", "requirement_summary": "The child selects the API.",
         }])
@@ -414,16 +583,16 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
         decision = {"decision_id": "D-child", "summary": "Current.", "rationale": "Current.", "state": "confirmed", "evolution": "confirmed"}
         records["Pending Items"].append({"item_id": "D-child", "item_kind": "decision", "topic_id": prepared["target_topic_id"], "data_json": PROTOCOL._canonical_json(decision)})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
-        submit = self.fixture.handoff_request(topic, operation="submit-child-result", ledger_revision=5, owner_ref=child_ref, handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"], result_scope=["api"], summary="Current.", authority_selection={"authority_kind": "confirmed-decision", "authority_identity": None, "decision_ids": ["D-child"]})
+        submit = self.handoff_request(topic, operation="submit-child-result", ledger_revision=5, owner_ref=child_ref, handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"], result_scope=["api"], summary="Current.", authority_selection={"authority_kind": "confirmed-decision", "authority_identity": None, "decision_ids": ["D-child"]})
         submit["actor_topic_id"] = prepared["target_topic_id"]
-        code, claimed, stderr = self.fixture.run_cli(submit)
-        self.fixture.assertEqual(code, 0, stderr)
-        self.fixture.assertEqual(claimed["frozen_authority"]["decision_ids"], ["D-child"])
+        code, claimed, stderr = self.run_cli(submit)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(claimed["frozen_authority"]["decision_ids"], ["D-child"])
         release = {"dependency_id": prepared["initial_dependencies"][0]["dependency_id"], "authority_kind": "confirmed-decision", "authority_identity": None, "decision_ids": ["D-child"]}
-        absorb = self.fixture.handoff_request(topic, operation="record-child-result", ledger_revision=6, handoff_id=prepared["handoff_id"], child_result_id=claimed["child_result_id"], effect="absorb", dependency_releases=[release])
-        code, absorbed, stderr = self.fixture.run_cli(absorb)
-        self.fixture.assertEqual(code, 0, stderr)
-        self.fixture.assertEqual(absorbed["frozen_authority"], claimed["frozen_authority"])
+        absorb = self.handoff_request(topic, operation="record-child-result", ledger_revision=6, handoff_id=prepared["handoff_id"], child_result_id=claimed["child_result_id"], effect="absorb", dependency_releases=[release])
+        code, absorbed, stderr = self.run_cli(absorb)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(absorbed["frozen_authority"], claimed["frozen_authority"])
         frontmatter, records = PROTOCOL._load_records(ledger)
         child = next(item for item in records["Phase Results"] if item["result_id"] == claimed["child_result_id"])
         frozen = json.loads(str(child["authority_json"]))
@@ -431,69 +600,69 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
         child["authority_json"] = PROTOCOL._canonical_json(frozen)
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         before = ledger.read_bytes()
-        code, rejected, _ = self.fixture.run_cli(self.fixture.evolution_request(topic, operation="read-topic"))
-        self.fixture.assertEqual(code, 1)
-        self.fixture.assertEqual(rejected["error"]["code"], "state_corrupt")
-        self.fixture.assertEqual(ledger.read_bytes(), before)
+        code, rejected, _ = self.run_cli(self.evolution_request(topic, operation="read-topic"))
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "state_corrupt")
+        self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_concurrent_dependency_updates_commit_once_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-concurrent-dependency-updates", git=False)
-        topic = self.fixture.bootstrap_topic(project)
-        child = self.fixture.prepare_child_handoff(topic)
-        code, created, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+        project = self.make_project("ticket07-concurrent-dependency-updates", git=False)
+        topic = self.bootstrap_topic(project)
+        child = self.prepare_child_handoff(topic)
+        code, created, stderr = self.run_cli(self.evolution_request(
             topic, operation="update-topic-dependency", expected_revision=2,
             expected_topic_revision=1, action="create",
             prerequisite_topic_id=child["target_topic_id"],
             requirement_kind="confirmed-decision", requirement_summary="The child selects the API.",
         ))
-        self.fixture.assertEqual(code, 0, stderr)
-        replace = self.fixture.evolution_request(
+        self.assertEqual(code, 0, stderr)
+        replace = self.evolution_request(
             topic, operation="update-topic-dependency", expected_revision=3,
             expected_topic_revision=1, action="replace",
             dependency_id=created["dependency_id"], expected_dependency_revision=1,
             prerequisite_topic_id=child["target_topic_id"],
             requirement_kind="phase-1-result", requirement_summary="The child completes Phase 1.",
         )
-        cancel = self.fixture.evolution_request(
+        cancel = self.evolution_request(
             topic, operation="update-topic-dependency", expected_revision=3,
             expected_topic_revision=1, action="cancel",
             dependency_id=created["dependency_id"], expected_dependency_revision=1,
         )
 
         def invoke(request: dict[str, object]) -> tuple[int, dict[str, object], str]:
-            return self.fixture.run_cli(request)
+            return self.run_cli(request)
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             outcomes = list(executor.map(invoke, (replace, cancel)))
         successful = [response for code, response, _ in outcomes if code == 0]
         conflicted = [response for code, response, _ in outcomes if code == 1]
-        self.fixture.assertEqual(len(successful), 1)
-        self.fixture.assertEqual(len(conflicted), 1)
-        self.fixture.assertEqual(conflicted[0]["error"]["code"], "ledger_revision_conflict")
+        self.assertEqual(len(successful), 1)
+        self.assertEqual(len(conflicted), 1)
+        self.assertEqual(conflicted[0]["error"]["code"], "ledger_revision_conflict")
         ledger = Path(str(topic["ledger_path"]))
         _, records = PROTOCOL._load_records(ledger)
         dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == created["dependency_id"])
-        self.fixture.assertEqual(int(PROTOCOL._load_records(ledger)[0]["ledger_revision"]), 4)
-        self.fixture.assertEqual(dependency["record_revision"], 2)
-        self.fixture.assertIn(dependency["relation_state"], {"active", "cancelled"})
-        self.fixture.assertEqual(len([event for event in records["Recent Events"] if event["event_type"].startswith("topic-dependency-")]), 2)
+        self.assertEqual(int(PROTOCOL._load_records(ledger)[0]["ledger_revision"]), 4)
+        self.assertEqual(dependency["record_revision"], 2)
+        self.assertIn(dependency["relation_state"], {"active", "cancelled"})
+        self.assertEqual(len([event for event in records["Recent Events"] if event["event_type"].startswith("topic-dependency-")]), 2)
 
     def test_ticket07_injected_dependency_update_is_atomic_via_cli(self) -> None:
         for action in ("create", "replace", "cancel"):
-            with self.fixture.subTest(action=action):
-                project = self.fixture.make_project(f"ticket07-dependency-{action}-fault", git=False)
-                topic = self.fixture.bootstrap_topic(project)
-                child = self.fixture.prepare_child_handoff(topic)
+            with self.subTest(action=action):
+                project = self.make_project(f"ticket07-dependency-{action}-fault", git=False)
+                topic = self.bootstrap_topic(project)
+                child = self.prepare_child_handoff(topic)
                 created = None
                 if action != "create":
-                    code, created, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+                    code, created, stderr = self.run_cli(self.evolution_request(
                         topic, operation="update-topic-dependency", expected_revision=2,
                         expected_topic_revision=1, action="create",
                         prerequisite_topic_id=child["target_topic_id"],
                         requirement_kind="confirmed-decision", requirement_summary="The child selects the API.",
                     ))
-                    self.fixture.assertEqual(code, 0, stderr)
-                request = self.fixture.evolution_request(
+                    self.assertEqual(code, 0, stderr)
+                request = self.evolution_request(
                     topic, operation="update-topic-dependency",
                     expected_revision=2 if action == "create" else 3,
                     expected_topic_revision=1, action=action,
@@ -501,72 +670,72 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
                 )
                 ledger = Path(str(topic["ledger_path"]))
                 before = ledger.read_bytes()
-                code, failed, _ = self.fixture.run_cli(request, failpoint="topic-dependency-before-ledger-write")
-                self.fixture.assertEqual(code, 1)
-                self.fixture.assertEqual(failed["error"]["code"], "injected_failure")
-                self.fixture.assertEqual(ledger.read_bytes(), before)
-                code, completed, stderr = self.fixture.run_cli(request)
-                self.fixture.assertEqual(code, 0, stderr)
-                code, replay, stderr = self.fixture.run_cli(request)
-                self.fixture.assertEqual(code, 0, stderr)
-                self.fixture.assertTrue(replay["idempotent_replay"])
-                self.fixture.assertEqual(replay["dependency_id"], completed["dependency_id"])
+                code, failed, _ = self.run_cli(request, failpoint="topic-dependency-before-ledger-write")
+                self.assertEqual(code, 1)
+                self.assertEqual(failed["error"]["code"], "injected_failure")
+                self.assertEqual(ledger.read_bytes(), before)
+                code, completed, stderr = self.run_cli(request)
+                self.assertEqual(code, 0, stderr)
+                code, replay, stderr = self.run_cli(request)
+                self.assertEqual(code, 0, stderr)
+                self.assertTrue(replay["idempotent_replay"])
+                self.assertEqual(replay["dependency_id"], completed["dependency_id"])
 
     def test_ticket07_dependency_update_reasons_keep_exact_operation_ids_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-dependency-operation-identities", git=False)
-        topic = self.fixture.bootstrap_topic(project)
-        child = self.fixture.prepare_child_handoff(topic)
+        project = self.make_project("ticket07-dependency-operation-identities", git=False)
+        topic = self.bootstrap_topic(project)
+        child = self.prepare_child_handoff(topic)
         ledger = Path(str(topic["ledger_path"]))
-        create = self.fixture.evolution_request(topic, operation="update-topic-dependency", expected_revision=2, expected_topic_revision=1, action="create", prerequisite_topic_id=child["target_topic_id"], requirement_kind="confirmed-decision", requirement_summary="The child selects the API.")
-        code, created, stderr = self.fixture.run_cli(create)
-        self.fixture.assertEqual(code, 0, stderr)
-        replace = self.fixture.evolution_request(topic, operation="update-topic-dependency", expected_revision=3, expected_topic_revision=1, action="replace", dependency_id=created["dependency_id"], expected_dependency_revision=1, prerequisite_topic_id=child["target_topic_id"], requirement_kind="phase-1-result", requirement_summary="The child completes Phase 1.")
-        code, _, stderr = self.fixture.run_cli(replace)
-        self.fixture.assertEqual(code, 0, stderr)
-        cancel = self.fixture.evolution_request(topic, operation="update-topic-dependency", expected_revision=4, expected_topic_revision=1, action="cancel", dependency_id=created["dependency_id"], expected_dependency_revision=2)
-        code, _, stderr = self.fixture.run_cli(cancel)
-        self.fixture.assertEqual(code, 0, stderr)
+        create = self.evolution_request(topic, operation="update-topic-dependency", expected_revision=2, expected_topic_revision=1, action="create", prerequisite_topic_id=child["target_topic_id"], requirement_kind="confirmed-decision", requirement_summary="The child selects the API.")
+        code, created, stderr = self.run_cli(create)
+        self.assertEqual(code, 0, stderr)
+        replace = self.evolution_request(topic, operation="update-topic-dependency", expected_revision=3, expected_topic_revision=1, action="replace", dependency_id=created["dependency_id"], expected_dependency_revision=1, prerequisite_topic_id=child["target_topic_id"], requirement_kind="phase-1-result", requirement_summary="The child completes Phase 1.")
+        code, _, stderr = self.run_cli(replace)
+        self.assertEqual(code, 0, stderr)
+        cancel = self.evolution_request(topic, operation="update-topic-dependency", expected_revision=4, expected_topic_revision=1, action="cancel", dependency_id=created["dependency_id"], expected_dependency_revision=2)
+        code, _, stderr = self.run_cli(cancel)
+        self.assertEqual(code, 0, stderr)
         _, records = PROTOCOL._load_records(ledger)
         dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == created["dependency_id"])
         reason = json.loads(str(dependency["gate_reason_json"]))
-        self.fixture.assertEqual(reason["kind"], "explicit-cancel")
-        self.fixture.assertEqual(reason["dependency_update_id"], cancel["idempotency_key"])
-        self.fixture.assertNotEqual(reason["dependency_update_id"], str(dependency["record_revision"]))
+        self.assertEqual(reason["kind"], "explicit-cancel")
+        self.assertEqual(reason["dependency_update_id"], cancel["idempotency_key"])
+        self.assertNotEqual(reason["dependency_update_id"], str(dependency["record_revision"]))
         before = ledger.read_bytes()
-        code, replay, stderr = self.fixture.run_cli(cancel)
-        self.fixture.assertEqual(code, 0, stderr)
-        self.fixture.assertTrue(replay["idempotent_replay"])
-        self.fixture.assertEqual(ledger.read_bytes(), before)
+        code, replay, stderr = self.run_cli(cancel)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_direct_release_reason_keeps_exact_operation_id_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-direct-release-identity", git=False)
-        topic = self.fixture.bootstrap_topic(project)
-        child = self.fixture.prepare_child_handoff(topic, initial_dependencies=[{"dependent_endpoint": "source", "prerequisite_topic_ref": "target", "requirement_kind": "confirmed-decision", "requirement_summary": "The child selects the API."}])
+        project = self.make_project("ticket07-direct-release-identity", git=False)
+        topic = self.bootstrap_topic(project)
+        child = self.prepare_child_handoff(topic, initial_dependencies=[{"dependent_endpoint": "source", "prerequisite_topic_ref": "target", "requirement_kind": "confirmed-decision", "requirement_summary": "The child selects the API."}])
         ledger = Path(str(topic["ledger_path"]))
         frontmatter, records = PROTOCOL._load_records(ledger)
         decision = {"decision_id": "D-child", "summary": "Use typed requests.", "rationale": "Current.", "state": "confirmed", "evolution": "confirmed"}
         records["Pending Items"].append({"item_id": "D-child", "item_kind": "decision", "topic_id": child["target_topic_id"], "data_json": PROTOCOL._canonical_json(decision)})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
         dependency_id = child["initial_dependencies"][0]["dependency_id"]
-        code, evaluation, stderr = self.fixture.run_cli(self.fixture.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "decision_ids": ["D-child"]}]))
-        self.fixture.assertEqual(code, 0, stderr)
-        release = self.fixture.evolution_request(topic, operation="release-topic-gate", expected_revision=2, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"])
-        code, _, stderr = self.fixture.run_cli(release)
-        self.fixture.assertEqual(code, 0, stderr)
+        code, evaluation, stderr = self.run_cli(self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "decision_ids": ["D-child"]}]))
+        self.assertEqual(code, 0, stderr)
+        release = self.evolution_request(topic, operation="release-topic-gate", expected_revision=2, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"])
+        code, _, stderr = self.run_cli(release)
+        self.assertEqual(code, 0, stderr)
         _, records = PROTOCOL._load_records(ledger)
         dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == dependency_id)
-        self.fixture.assertEqual(json.loads(str(dependency["gate_reason_json"]))["release_id"], release["idempotency_key"])
+        self.assertEqual(json.loads(str(dependency["gate_reason_json"]))["release_id"], release["idempotency_key"])
         before = ledger.read_bytes()
-        code, replay, stderr = self.fixture.run_cli(release)
-        self.fixture.assertEqual(code, 0, stderr)
-        self.fixture.assertTrue(replay["idempotent_replay"])
-        self.fixture.assertEqual(ledger.read_bytes(), before)
+        code, replay, stderr = self.run_cli(release)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_reopen_reason_keeps_exact_result_and_operation_ids_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-reopen-operation-identity", git=False)
-        topic = self.fixture.bootstrap_topic(project)
-        decision, ledger_revision, topic_revision = self.fixture.complete_update(project, topic, ledger_revision=1, topic_revision=1, mutation={"type": "confirm-decision", "summary": "Keep the API.", "rationale": "Phase 1 depends on it."})
-        completed, ledger_revision, topic_revision = self.fixture.complete_current_topic_phase(topic, ledger_revision=ledger_revision, topic_revision=topic_revision, from_phase=0, to_phase=1)
+        project = self.make_project("ticket07-reopen-operation-identity", git=False)
+        topic = self.bootstrap_topic(project)
+        decision, ledger_revision, topic_revision = self.complete_update(project, topic, ledger_revision=1, topic_revision=1, mutation={"type": "confirm-decision", "summary": "Keep the API.", "rationale": "Phase 1 depends on it."})
+        completed, ledger_revision, topic_revision = self.complete_current_topic_phase(topic, ledger_revision=ledger_revision, topic_revision=topic_revision, from_phase=0, to_phase=1)
         ledger = Path(str(topic["ledger_path"]))
         b_id = "topic-" + "e" * 32
         frontmatter, records = PROTOCOL._load_records(ledger)
@@ -575,30 +744,30 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
         dependency_id = "DEP-" + "d" * 32
         records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": b_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-1-result", "requirement_summary": "The Phase 1 result remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
-        code, evaluation, stderr = self.fixture.run_cli({**self.fixture.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
-        self.fixture.assertEqual(code, 0, stderr)
-        code, _, stderr = self.fixture.run_cli({**self.fixture.evolution_request(topic, operation="release-topic-gate", expected_revision=ledger_revision, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
-        self.fixture.assertEqual(code, 0, stderr)
-        reopen = self.fixture.phase_request(topic, "reopen-phase", ledger_revision + 1, topic_revision=topic_revision, affected_decision_ids=[decision["decision_id"]], review={decision["decision_id"]: "adjust"}, reason="The API changed.")
-        code, reopened, stderr = self.fixture.run_cli(reopen)
-        self.fixture.assertEqual(code, 0, stderr)
+        code, evaluation, stderr = self.run_cli({**self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
+        self.assertEqual(code, 0, stderr)
+        code, _, stderr = self.run_cli({**self.evolution_request(topic, operation="release-topic-gate", expected_revision=ledger_revision, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
+        self.assertEqual(code, 0, stderr)
+        reopen = self.phase_request(topic, "reopen-phase", ledger_revision + 1, topic_revision=topic_revision, affected_decision_ids=[decision["decision_id"]], review={decision["decision_id"]: "adjust"}, reason="The API changed.")
+        code, reopened, stderr = self.run_cli(reopen)
+        self.assertEqual(code, 0, stderr)
         _, records = PROTOCOL._load_records(ledger)
         dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == dependency_id)
         reason = json.loads(str(dependency["gate_reason_json"]))
-        self.fixture.assertEqual(reason["reopen_id"], reopen["idempotency_key"])
-        self.fixture.assertEqual(reason["invalidated_result_ids"], [completed["phase_result_id"]])
-        self.fixture.assertEqual(reason["affected_decision_ids"], [decision["decision_id"]])
+        self.assertEqual(reason["reopen_id"], reopen["idempotency_key"])
+        self.assertEqual(reason["invalidated_result_ids"], [completed["phase_result_id"]])
+        self.assertEqual(reason["affected_decision_ids"], [decision["decision_id"]])
         before = ledger.read_bytes()
-        code, replay, stderr = self.fixture.run_cli(reopen)
-        self.fixture.assertEqual(code, 0, stderr)
-        self.fixture.assertTrue(replay["idempotent_replay"])
-        self.fixture.assertEqual(ledger.read_bytes(), before)
+        code, replay, stderr = self.run_cli(reopen)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_reopen_all_keep_recloses_result_gate_via_cli(self) -> None:
-        project = self.fixture.make_project("ticket07-reopen-all-keep", git=False)
-        topic = self.fixture.bootstrap_topic(project)
-        decision, revision, topic_revision = self.fixture.complete_update(project, topic, ledger_revision=1, topic_revision=1, mutation={"type": "confirm-decision", "summary": "Keep the API.", "rationale": "Phase 1 depends on it."})
-        completed, revision, topic_revision = self.fixture.complete_current_topic_phase(topic, ledger_revision=revision, topic_revision=topic_revision, from_phase=0, to_phase=1)
+        project = self.make_project("ticket07-reopen-all-keep", git=False)
+        topic = self.bootstrap_topic(project)
+        decision, revision, topic_revision = self.complete_update(project, topic, ledger_revision=1, topic_revision=1, mutation={"type": "confirm-decision", "summary": "Keep the API.", "rationale": "Phase 1 depends on it."})
+        completed, revision, topic_revision = self.complete_current_topic_phase(topic, ledger_revision=revision, topic_revision=topic_revision, from_phase=0, to_phase=1)
         ledger = Path(str(topic["ledger_path"]))
         b_id = "topic-" + "f" * 32
         frontmatter, records = PROTOCOL._load_records(ledger)
@@ -607,23 +776,35 @@ class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
         dependency_id = "DEP-" + "e" * 32
         records["Topic Dependencies"].append({"dependency_id": dependency_id, "record_revision": 1, "dependent_topic_id": b_id, "prerequisite_topic_id": str(topic["topic_id"]), "requirement_kind": "phase-1-result", "requirement_summary": "The Phase 1 result remains current.", "relation_state": "active", "gate_state": "closed", "accepted_basis_json": None, "gate_reason_json": PROTOCOL._canonical_json({"kind": "explicit-create", "dependency_update_id": "00000000-0000-4000-8000-000000000000", "ledger_revision": 1})})
         ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
-        code, evaluation, stderr = self.fixture.run_cli({**self.fixture.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
-        self.fixture.assertEqual(code, 0, stderr)
-        code, _, stderr = self.fixture.run_cli({**self.fixture.evolution_request(topic, operation="release-topic-gate", expected_revision=revision, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
-        self.fixture.assertEqual(code, 0, stderr)
-        reopen = self.fixture.phase_request(topic, "reopen-phase", revision + 1, topic_revision=topic_revision, affected_decision_ids=[decision["decision_id"]], review={decision["decision_id"]: "keep"}, reason="Re-evaluate the completed result.")
-        code, _, stderr = self.fixture.run_cli(reopen)
-        self.fixture.assertEqual(code, 0, stderr)
+        code, evaluation, stderr = self.run_cli({**self.evolution_request(topic, operation="evaluate-topic-gate", basis_selection=[{"dependency_id": dependency_id, "authority_id": completed["phase_result_id"], "decision_ids": [decision["decision_id"]]}]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
+        self.assertEqual(code, 0, stderr)
+        code, _, stderr = self.run_cli({**self.evolution_request(topic, operation="release-topic-gate", expected_revision=revision, expected_topic_revision=1, release_set=evaluation["release_set"], release_set_sha256=evaluation["release_set_sha256"]), "actor_topic_id": b_id, "actor_conversation_ref": "codex-thread:dependent"})
+        self.assertEqual(code, 0, stderr)
+        decision_before = next(
+            item["data_json"] for item in PROTOCOL._load_records(ledger)[1]["Pending Items"]
+            if item.get("item_id") == decision["decision_id"]
+        )
+        reopen = self.phase_request(topic, "reopen-phase", revision + 1, topic_revision=topic_revision, affected_decision_ids=[decision["decision_id"]], review={decision["decision_id"]: "keep"}, reason="Re-evaluate the completed result.")
+        code, _, stderr = self.run_cli(reopen)
+        self.assertEqual(code, 0, stderr)
         _, records = PROTOCOL._load_records(ledger)
         dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == dependency_id)
         reason = json.loads(str(dependency["gate_reason_json"]))
-        self.fixture.assertEqual(dependency["gate_state"], "closed")
-        self.fixture.assertEqual(reason["reopen_id"], reopen["idempotency_key"])
-        self.fixture.assertEqual(reason["invalidated_result_ids"], [completed["phase_result_id"]])
-        self.fixture.assertEqual(reason["affected_decision_ids"], [])
-        self.fixture.assertEqual(next(item for item in records["Current Topics"] if item["topic_id"] == b_id)["phase_state"], "active")
+        self.assertEqual(dependency["gate_state"], "closed")
+        self.assertEqual(reason["reopen_id"], reopen["idempotency_key"])
+        self.assertEqual(reason["invalidated_result_ids"], [completed["phase_result_id"]])
+        self.assertEqual(reason["affected_decision_ids"], [])
+        self.assertEqual(next(item for item in records["Current Topics"] if item["topic_id"] == b_id)["phase_state"], "active")
+        self.assertEqual(
+            next(item["data_json"] for item in records["Pending Items"]
+                 if item.get("item_id") == decision["decision_id"]),
+            decision_before,
+        )
+        code, current, stderr = self.run_cli(self.evolution_request(topic, operation="read-topic"))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(current["current_phase"], 0)
         before = ledger.read_bytes()
-        code, replay, stderr = self.fixture.run_cli(reopen)
-        self.fixture.assertEqual(code, 0, stderr)
-        self.fixture.assertTrue(replay["idempotent_replay"])
-        self.fixture.assertEqual(ledger.read_bytes(), before)
+        code, replay, stderr = self.run_cli(reopen)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(ledger.read_bytes(), before)

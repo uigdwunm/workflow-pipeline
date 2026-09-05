@@ -1092,8 +1092,6 @@ def _apply_mutation_to_records(
         elif action == "discard":
             decision["state"] = "discarded"
             decision["evolution"] = f"discarded: {summary}"
-        else:
-            decision["evolution"] = f"kept: {summary}"
         decision_record["data_json"] = _canonical_json(decision)
         result.update({"impact_id": impact["impact_id"], "decision_id": decision["decision_id"], "impact_action": action})
     return result

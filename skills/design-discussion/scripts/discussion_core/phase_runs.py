@@ -32,7 +32,7 @@ from .state import (
     _write_ledger_transaction,
 )
 from .topic_dependencies import (
-    apply_gate_policy,
+    apply_gate_policy, reclose_stale_topic_gates,
 )
 from .topic_dependency_schema import decision_authority
 
@@ -1819,8 +1819,9 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
         for item in records["Pending Items"]:
             if item.get("item_kind") == "decision" and item.get("item_id") in review:
                 decision = _json_field(item, "data_json", "decision")
-                decision["reopen_review"] = review[item["item_id"]]
-                item["data_json"] = _canonical_json(decision)
+                if review[item["item_id"]] != "keep":
+                    decision["reopen_review"] = review[item["item_id"]]
+                    item["data_json"] = _canonical_json(decision)
         review_pending_result_ids = []
         for result_record, result_data in review_pending_results:
             result_record["state"] = "review-pending"
@@ -1833,6 +1834,17 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
         topic["phase_state"] = "active"
         topic["record_revision"] = int(topic["record_revision"]) + 1
         next_revision = ledger_revision + 1
+        reclosed_dependency_ids = reclose_stale_topic_gates(
+            records, dependent_topic_id=request["actor_topic_id"],
+            cause={
+                "kind": "phase-reopen", "reopen_id": request["idempotency_key"],
+                "affected_decision_ids": sorted(changed),
+                "invalidated_result_ids": sorted(
+                    item for item in invalidated_results if isinstance(item, str)
+                ),
+            },
+            ledger_revision=next_revision,
+        )
         result = {
             "ok": True,
             "state": "reopened",
@@ -1845,6 +1857,7 @@ def _reopen_phase(request: dict[str, Any]) -> dict[str, Any]:
             "current_phase": 0,
             "affected_decision_ids": sorted(authoritative_affected),
             "review_pending_result_ids": sorted(review_pending_result_ids),
+            "reclosed_dependency_ids": reclosed_dependency_ids,
         }
         _write_ledger_transaction(
             ledger_path,

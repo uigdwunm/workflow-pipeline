@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
-import unittest
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -50,14 +49,23 @@ def add_closed_dependency(
     })
 
 
-class TopicDependencyScenarioTest(unittest.TestCase):
-    """Shared isolated legacy fixture for focused CLI test bodies."""
+class TopicDependencyScenarioMixin:
+    """Expose the protocol scenario helpers directly to dependency test cases."""
 
     def setUp(self) -> None:
+        super().setUp()
         from test_discussion_protocol import DiscussionProtocolEvolutionTests
-        fixture_class = DiscussionProtocolEvolutionTests
-        self.fixture = fixture_class("runTest")
-        self.fixture.setUp()
+        self._protocol_scenario = DiscussionProtocolEvolutionTests("runTest")
+        self._protocol_scenario.setUp()
 
     def tearDown(self) -> None:
-        self.fixture.tearDown()
+        try:
+            self._protocol_scenario.tearDown()
+        finally:
+            super().tearDown()
+
+    def __getattr__(self, name: str) -> Any:
+        scenario = self.__dict__.get("_protocol_scenario")
+        if scenario is None:
+            raise AttributeError(name)
+        return getattr(scenario, name)
