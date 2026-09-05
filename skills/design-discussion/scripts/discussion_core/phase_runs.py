@@ -420,7 +420,7 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
     )[:4]
     from_phase = request["from_phase"]
     to_phase = request["to_phase"]
-    if not isinstance(from_phase, int) or not isinstance(to_phase, int):
+    if type(from_phase) is not int or type(to_phase) is not int:
         raise ProtocolError("invalid_request", "phase values must be integers")
     route = (from_phase, to_phase)
     if route not in PHASE_ROUTES:
@@ -954,7 +954,7 @@ def _prepare_phase_run(request: dict[str, Any]) -> dict[str, Any]:
     ledger_path, topic_path, lock_path, owner_ref = _phase_request_context(
         request, {"from_phase", "to_phase", "route", "carrier_kind"}
     )[:4]
-    if not isinstance(request["from_phase"], int) or not isinstance(request["to_phase"], int):
+    if type(request["from_phase"]) is not int or type(request["to_phase"]) is not int:
         raise ProtocolError("invalid_request", "phase values must be integers")
     route = (request["from_phase"], request["to_phase"])
     if route not in PHASE_ROUTES:

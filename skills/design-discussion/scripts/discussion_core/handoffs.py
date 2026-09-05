@@ -551,7 +551,7 @@ def _authorize_handoff_discussion(request: dict[str, Any]) -> dict[str, Any]:
         request, {"handoff_id", "attempt_id", "turn_number"}
     )
     turn_number = request["turn_number"]
-    if not isinstance(turn_number, int) or isinstance(turn_number, bool):
+    if type(turn_number) is not int:
         raise ProtocolError("invalid_request", "turn_number must be an integer")
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)

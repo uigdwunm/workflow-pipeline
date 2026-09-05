@@ -11,7 +11,7 @@ from .topic_dependency_authority import (
 )
 from .topic_dependency_gates import (
     apply_gate_policy, derived_gate, evaluate_topic_gate, release_topic_gate,
-    require_open_gate, require_open_gate_for_phase_transition,
+    require_open_gate,
 )
 from .topic_dependency_lifecycle import (
     prepare_initial_dependencies, reclose_directly_affected,
@@ -23,6 +23,6 @@ __all__ = [
     "has_current_authority", "current_topic_authorities", "prepare_initial_dependencies",
     "reclose_directly_affected", "release_child_result_dependencies",
     "release_topic_gate", "require_open_gate",
-    "require_open_gate_for_phase_transition", "retained_checkpoint_identities",
+    "retained_checkpoint_identities",
     "update_topic_dependency",
 ]

@@ -385,17 +385,6 @@ def _git(project: Path, arguments: list[str], *, input_bytes: bytes | None = Non
     return completed.stdout
 
 
-def _git_object_type(project: Path, object_id: str) -> str | None:
-    completed = subprocess.run(
-        ["git", "cat-file", "-t", object_id],
-        cwd=project,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    return completed.stdout.strip() if completed.returncode == 0 else None
-
-
 def _verify_git_base(project: Path, base_ref: str) -> str:
     completed = subprocess.run(
         ["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"],
@@ -407,20 +396,6 @@ def _verify_git_base(project: Path, base_ref: str) -> str:
     if completed.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40,64}", completed.stdout.strip()):
         raise ProtocolError("checkpoint_base_invalid", "checkpoint base_ref must resolve to a commit")
     return completed.stdout.strip()
-
-
-def _tree_entries(project: Path, tree_id: str) -> dict[str, tuple[str, str]]:
-    output = _git(project, ["ls-tree", "-rz", tree_id])
-    entries: dict[str, tuple[str, str]] = {}
-    for raw in output.split(b"\0"):
-        if not raw:
-            continue
-        metadata, path_bytes = raw.split(b"\t", 1)
-        mode, object_type, object_id = metadata.decode("ascii").split(" ")
-        if object_type not in {"blob", "commit", "tree"}:
-            raise ProtocolError("checkpoint_history_mismatch", "Git tree contains an unsupported object")
-        entries[path_bytes.decode("utf-8")] = (mode, object_id)
-    return entries
 
 
 def _create_checkpoint_tree(

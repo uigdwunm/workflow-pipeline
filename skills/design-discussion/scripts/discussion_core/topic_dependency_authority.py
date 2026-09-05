@@ -377,8 +377,11 @@ def freeze_authority_selection(
             records["Current Topics"], "topic_id", topic_id, "topic_id"
         )["current_phase"],
     }
-    if candidate.get("authority") is not None:
-        frozen["authority"] = candidate["authority"]
+    authority = parsed.descriptor.authority_for_selection(
+        candidate, frozen["decision_authority"]
+    )
+    if authority is not None:
+        frozen["authority"] = authority
     return frozen
 
 

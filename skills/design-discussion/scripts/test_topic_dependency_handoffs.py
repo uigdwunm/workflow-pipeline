@@ -11,6 +11,42 @@ from test_topic_dependency_support import TopicDependencyScenarioTest
 
 
 class TopicDependencyHandoffCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_confirmed_child_result_freezes_only_selected_decisions_via_cli(self) -> None:
+        project = self.fixture.make_project("ticket07-confirmed-narrow-child", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        prepared, child_ref = self.fixture.activate_child_handoff(topic)
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        for decision_id in ("D-first", "D-second"):
+            decision = {
+                "decision_id": decision_id, "summary": decision_id, "rationale": "Current.",
+                "state": "confirmed", "evolution": "confirmed",
+            }
+            records["Pending Items"].append({
+                "item_id": decision_id, "item_kind": "decision",
+                "topic_id": prepared["target_topic_id"],
+                "data_json": PROTOCOL._canonical_json(decision),
+            })
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        request = self.fixture.handoff_request(
+            topic, operation="submit-child-result", ledger_revision=5, owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+            result_scope=["api"], summary="First decision.", authority_selection={
+                "authority_kind": "confirmed-decision", "authority_identity": None,
+                "decision_ids": ["D-first"],
+            },
+        )
+        request["actor_topic_id"] = prepared["target_topic_id"]
+        code, claimed, stderr = self.fixture.run_cli(request)
+        self.fixture.assertEqual(code, 0, stderr)
+        frozen = claimed["frozen_authority"]
+        pairs = frozen["decision_authority"]
+        self.fixture.assertEqual([pair["decision_id"] for pair in pairs], ["D-first"])
+        self.fixture.assertEqual(
+            frozen["authority"]["decision_set_digest"],
+            hashlib.sha256(PROTOCOL._canonical_json(pairs).encode("utf-8")).hexdigest(),
+        )
+
     def test_ticket07_pending_child_impact_blocks_gate_until_acceptance_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-impact-gate", git=False)
         topic = self.fixture.bootstrap_topic(project)

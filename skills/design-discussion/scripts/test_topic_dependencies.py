@@ -134,6 +134,47 @@ class TopicDependencyCliTests(TopicDependencyScenarioTest):
         ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
         self._assert_stale_release(topic, ledger, evaluation, expected_revision=2)
 
+    def test_ticket07_confirmed_gate_release_persists_only_selected_decisions_via_cli(self) -> None:
+        protocol = importlib.import_module("discussion_protocol")
+        project = self.fixture.make_project("ticket07-confirmed-narrow-release", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        child = self.fixture.prepare_child_handoff(topic, initial_dependencies=[{
+            "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+            "requirement_kind": "confirmed-decision", "requirement_summary": "One child decision is enough.",
+        }])
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = protocol._load_records(ledger)
+        for decision_id in ("D-first", "D-second"):
+            decision = {
+                "decision_id": decision_id, "summary": decision_id, "rationale": "Current.",
+                "state": "confirmed", "evolution": "confirmed",
+            }
+            records["Pending Items"].append({
+                "item_id": decision_id, "item_kind": "decision",
+                "topic_id": child["target_topic_id"], "data_json": protocol._canonical_json(decision),
+            })
+        ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
+        dependency_id = child["initial_dependencies"][0]["dependency_id"]
+        code, evaluation, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="evaluate-topic-gate", basis_selection=[{
+                "dependency_id": dependency_id, "decision_ids": ["D-first"],
+            }],
+        ))
+        self.assertEqual(code, 0, stderr)
+        code, released, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="release-topic-gate", expected_revision=2,
+            expected_topic_revision=1, release_set=evaluation["release_set"],
+            release_set_sha256=evaluation["release_set_sha256"],
+        ))
+        self.assertEqual(code, 0, stderr)
+        basis = released["accepted_bases"][0]["basis"]
+        pairs = [{"decision_id": "D-first", "sha256": basis["decision_authority"][0]["sha256"]}]
+        self.assertEqual(basis["decision_authority"], pairs)
+        self.assertEqual(
+            basis["authority"]["decision_set_digest"],
+            hashlib.sha256(protocol._canonical_json(pairs).encode("utf-8")).hexdigest(),
+        )
+
     def test_ticket07_tampered_confirmed_basis_digest_fails_closed_via_cli(self) -> None:
         for historical in (False, True):
             with self.subTest(historical=historical):
@@ -172,6 +213,59 @@ class TopicDependencyCliTests(TopicDependencyScenarioTest):
                 self.assertEqual(code, 1)
                 self.assertEqual(rejected["error"]["code"], "state_corrupt")
                 self.assertEqual(ledger.read_bytes(), before)
+
+    def test_ticket07_reclosed_drifted_basis_can_be_replaced_but_not_tampered_via_cli(self) -> None:
+        topic, child, ledger, evaluation = self._evaluated_confirmed_dependency(
+            "ticket07-historical-basis-after-drift"
+        )
+        dependency_id = evaluation["release_set"][0]["dependency_id"]
+        code, _, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="release-topic-gate", expected_revision=2,
+            expected_topic_revision=1, release_set=evaluation["release_set"],
+            release_set_sha256=evaluation["release_set_sha256"],
+        ))
+        self.assertEqual(code, 0, stderr)
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == dependency_id)
+        dependency["gate_state"] = "closed"
+        dependency["record_revision"] = 3
+        dependency["gate_reason_json"] = PROTOCOL._canonical_json({
+            "kind": "direct-upstream-invalidation", "ledger_revision": 3,
+            "topic_update_id": "DW-" + "a" * 32, "decision_id": "D-child", "action": "replace",
+        })
+        decision_record = next(item for item in records["Pending Items"] if item["item_id"] == "D-child")
+        decision = json.loads(str(decision_record["data_json"]))
+        decision["summary"] = "The upstream authority changed after reclosure."
+        decision_record["data_json"] = PROTOCOL._canonical_json(decision)
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        code, replaced, stderr = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="update-topic-dependency", expected_revision=3,
+            expected_topic_revision=1, action="replace", dependency_id=dependency_id,
+            expected_dependency_revision=3, prerequisite_topic_id=child["target_topic_id"],
+            requirement_kind="phase-1-result", requirement_summary="Audit the prior basis only.",
+        ))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(replaced["state"], "replace")
+        code, reread, stderr = self.fixture.run_cli(
+            self.fixture.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(code, 0, stderr)
+        historical = next(item for item in reread["topic_dependencies"] if item["dependency_id"] == dependency_id)
+        basis = json.loads(str(historical["accepted_basis_json"]))
+        self.assertEqual(basis["prerequisite_topic_id"], child["target_topic_id"])
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        dependency = next(item for item in records["Topic Dependencies"] if item["dependency_id"] == dependency_id)
+        basis = json.loads(str(dependency["accepted_basis_json"]))
+        basis["authority"]["decision_set_digest"] = "f" * 64
+        dependency["accepted_basis_json"] = PROTOCOL._canonical_json(basis)
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before = ledger.read_bytes()
+        code, rejected, _ = self.fixture.run_cli(
+            self.fixture.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "state_corrupt")
+        self.assertEqual(ledger.read_bytes(), before)
 
     def test_ticket07_phase2_dependency_history_is_immutable_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-phase2-cutoff", git=False)

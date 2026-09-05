@@ -109,19 +109,6 @@ def require_open_gate(records: dict[str, list[dict[str, Any]]], topic_id: str) -
         )
 
 
-def require_open_gate_for_phase_transition(
-    records: dict[str, list[dict[str, Any]]], topic_id: str, from_phase: Any,
-) -> None:
-    """Apply the requirements-gate boundary to a Phase-0/1 transition point.
-
-    Phase Run owners call this instead of deciding locally which transitions are
-    gate-bound.  Phase 2+ deliberately remains outside this requirements-only
-    domain, including recovery for an already active run.
-    """
-    if from_phase in {0, 1}:
-        require_open_gate(records, topic_id)
-
-
 def _closed(records: dict[str, list[dict[str, Any]]], topic_id: str) -> list[dict[str, Any]]:
     return sorted((item for item in records["Topic Dependencies"] if item["dependent_topic_id"] == topic_id and item["relation_state"] == "active" and item["gate_state"] == "closed"), key=lambda item: item["dependency_id"])
 
@@ -266,7 +253,7 @@ def _release_selection_from_basis(item: dict[str, Any]) -> dict[str, Any]:
         not isinstance(item, dict)
         or set(item) != {"dependency_id", "record_revision", "basis"}
         or not isinstance(item["dependency_id"], str)
-        or not isinstance(item["record_revision"], int)
+        or type(item["record_revision"]) is not int
         or not isinstance(item["basis"], dict)
     ):
         raise ProtocolError("invalid_request", "release_set is invalid")

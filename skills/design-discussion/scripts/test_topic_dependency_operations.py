@@ -11,6 +11,39 @@ from test_topic_dependency_support import TopicDependencyScenarioTest, add_topic
 
 
 class TopicDependencyOperationCliTests(TopicDependencyScenarioTest):
+    def test_ticket07_revision_booleans_are_rejected_in_request_and_ledger_via_cli(self) -> None:
+        project = self.fixture.make_project("ticket07-exact-integers", git=False)
+        topic = self.fixture.bootstrap_topic(project)
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        for field in ("expected_ledger_revision", "expected_topic_revision"):
+            with self.subTest(request_field=field):
+                request = self.fixture.evolution_request(
+                    topic, operation="prepare-topic-update", mutation={
+                        "type": "confirm-decision", "summary": "Typed revision.",
+                        "rationale": "Boolean revisions are invalid.",
+                    }, expected_revision=1, expected_topic_revision=1,
+                )
+                request[field] = True
+                code, rejected, _ = self.fixture.run_cli(request)
+                self.fixture.assertEqual(code, 1)
+                self.fixture.assertEqual(rejected["error"]["code"], "invalid_request")
+                self.fixture.assertEqual(ledger.read_bytes(), before)
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        records["Current Topics"][0]["record_revision"] = True
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        corrupted = ledger.read_bytes()
+        code, rejected, _ = self.fixture.run_cli(self.fixture.evolution_request(
+            topic, operation="prepare-topic-update", expected_revision=1,
+            expected_topic_revision=1, mutation={
+                "type": "confirm-decision", "summary": "Never written.",
+                "rationale": "Persisted boolean is invalid.",
+            },
+        ))
+        self.fixture.assertEqual(code, 1)
+        self.fixture.assertEqual(rejected["error"]["code"], "state_corrupt")
+        self.fixture.assertEqual(ledger.read_bytes(), corrupted)
+
     def test_ticket07_reopen_retired_phase0_authority_allows_dependency_changes_via_cli(self) -> None:
         project = self.fixture.make_project("ticket07-reopen-retired-checkpoint", git=False)
         topic = self.fixture.bootstrap_topic(project)

@@ -252,8 +252,7 @@ def _unexpected_error_context(request: Any) -> dict[str, Any]:
 
 def _expect_integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     if (
-        not isinstance(value, int)
-        or isinstance(value, bool)
+        type(value) is not int
         or value < minimum
         or value > maximum
     ):
@@ -565,8 +564,7 @@ def _existing_response(
             raise ProtocolError("state_corrupt", "project root topic identity is invalid")
         record_revision = topic_record.get("record_revision")
         if (
-            not isinstance(record_revision, int)
-            or isinstance(record_revision, bool)
+            type(record_revision) is not int
             or record_revision < 1
             or record_revision > ledger_revision
         ):
@@ -1631,8 +1629,7 @@ def _document_context_replay_response(
     except (KeyError, TypeError, ValueError) as error:
         raise ProtocolError("state_corrupt", "ledger revision is invalid") from error
     if (
-        not isinstance(topic_revision, int)
-        or isinstance(topic_revision, bool)
+        type(topic_revision) is not int
         or topic_revision < 1
         or topic_revision > ledger_revision
     ):
@@ -1799,7 +1796,7 @@ def _initialize_document_context(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("invalid_request", "verified result has an invalid shape")
         result_id = _expect_string(item["result_id"], "verified result_id", max_bytes=64)
         phase = item["phase"]
-        if not isinstance(phase, int) or isinstance(phase, bool) or phase not in range(5):
+        if type(phase) is not int or phase not in range(5):
             raise ProtocolError(
                 "invalid_request",
                 "verified result phase must be an integer from 0 through 4",

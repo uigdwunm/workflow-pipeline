@@ -922,8 +922,18 @@ def _persist_ledger(
 def _validate_revisions(
     request: dict[str, Any], frontmatter: dict[str, str], topic_record: dict[str, Any]
 ) -> tuple[int, int]:
-    ledger_revision = int(frontmatter["ledger_revision"])
-    topic_revision = int(topic_record["record_revision"])
+    try:
+        ledger_revision = int(frontmatter["ledger_revision"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ProtocolError("state_corrupt", "ledger revision is invalid") from error
+    if type(topic_record.get("record_revision")) is not int:
+        raise ProtocolError("state_corrupt", "topic record revision is invalid")
+    topic_revision = topic_record["record_revision"]
+    if (
+        type(request.get("expected_ledger_revision")) is not int
+        or type(request.get("expected_topic_revision")) is not int
+    ):
+        raise ProtocolError("invalid_request", "expected revisions must be integers")
     if request["expected_ledger_revision"] != ledger_revision:
         raise ProtocolError(
             "ledger_revision_conflict",

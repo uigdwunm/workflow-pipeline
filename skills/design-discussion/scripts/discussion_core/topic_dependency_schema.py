@@ -17,6 +17,7 @@ class AuthorityDescriptor:
     identity_field: str | None
     requires_decisions: bool
     authority_is_valid: Callable[[Any, list[dict[str, str]]], bool]
+    authority_for_selection: Callable[[dict[str, Any], list[dict[str, str]]], dict[str, Any] | None]
     retained_provenance_is_valid: Callable[
         [dict[str, list[dict[str, Any]]], str, dict[str, Any], list[dict[str, str]], Callable[[str, str], None]],
         None,
@@ -75,8 +76,9 @@ class AuthorityDescriptor:
         }
         if child_result_id is not None:
             basis["child_result_id"] = child_result_id
-        if candidate.get("authority") is not None:
-            basis["authority"] = candidate["authority"]
+        authority = self.authority_for_selection(candidate, decision_authority)
+        if authority is not None:
+            basis["authority"] = authority
         return basis
 
 
@@ -245,7 +247,7 @@ def _decision_pairs(value: Any) -> bool:
 def _gate_reason(value: Any, error: Callable[[str, str], None]) -> None:
     reason = canonical_object(value, "topic dependency gate_reason_json", error)
     kind = reason.get("kind")
-    if not isinstance(reason.get("ledger_revision"), int) or reason["ledger_revision"] < 1:
+    if type(reason.get("ledger_revision")) is not int or reason["ledger_revision"] < 1:
         error("state_corrupt", "topic dependency gate reason revision is invalid")
     exact: dict[str, set[str]] = {
         "initial-handoff": {"kind", "handoff_id", "ledger_revision"},
@@ -403,6 +405,19 @@ def _confirmed_authority_is_valid(
     )
 
 
+def _confirmed_authority_for_selection(
+    candidate: dict[str, Any], decisions: list[dict[str, str]],
+) -> dict[str, Any]:
+    return {"decision_set_digest": decision_pair_digest(decisions)}
+
+
+def _candidate_authority_for_selection(
+    candidate: dict[str, Any], decisions: list[dict[str, str]],
+) -> dict[str, Any] | None:
+    authority = candidate.get("authority")
+    return authority if isinstance(authority, dict) else None
+
+
 def _checkpoint_authority_is_valid(
     authority: Any, decisions: list[dict[str, str]],
 ) -> bool:
@@ -412,7 +427,7 @@ def _checkpoint_authority_is_valid(
             "checkpoint_id", "record_revision", "published_identity", "decision_digest",
         }
         and _identity(authority["checkpoint_id"], "CP")
-        and isinstance(authority["record_revision"], int)
+        and type(authority["record_revision"]) is int
         and authority["record_revision"] >= 1
         and isinstance(authority["published_identity"], str)
         and isinstance(authority["decision_digest"], str)
@@ -429,7 +444,7 @@ def _phase_result_authority_is_valid(
             "result_id", "record_revision", "state", "phase_run_id", "affected_decision_ids",
         }
         and _identity(authority["result_id"], "PH")
-        and isinstance(authority["record_revision"], int)
+        and type(authority["record_revision"]) is int
         and authority["record_revision"] >= 1
         and authority["state"] == "completed"
         and isinstance(authority["phase_run_id"], str)
@@ -440,15 +455,18 @@ def _phase_result_authority_is_valid(
 AUTHORITY_DESCRIPTORS.update({
     "confirmed-decision": AuthorityDescriptor(
         "confirmed-decision", "confirmed", None, True,
-        _confirmed_authority_is_valid, _validate_confirmed_decision_provenance,
+        _confirmed_authority_is_valid, _confirmed_authority_for_selection,
+        _validate_confirmed_decision_provenance,
     ),
     "phase-0-checkpoint": AuthorityDescriptor(
         "phase-0-checkpoint", "checkpoint", "checkpoint_id", False,
-        _checkpoint_authority_is_valid, _validate_checkpoint_provenance,
+        _checkpoint_authority_is_valid, _candidate_authority_for_selection,
+        _validate_checkpoint_provenance,
     ),
     "phase-1-result": AuthorityDescriptor(
         "phase-1-result", "phase_result", "result_id", False,
-        _phase_result_authority_is_valid, _validate_phase_result_provenance,
+        _phase_result_authority_is_valid, _candidate_authority_for_selection,
+        _validate_phase_result_provenance,
     ),
 })
 
@@ -483,7 +501,7 @@ def validate_dependency_records(
         if not _identity(dep_id, "DEP") or dep_id in seen_ids:
             error("state_corrupt", "topic dependency identity is invalid or duplicated")
         seen_ids.add(dep_id)
-        if not isinstance(item["record_revision"], int) or item["record_revision"] < 1:
+        if type(item["record_revision"]) is not int or item["record_revision"] < 1:
             error("state_corrupt", "topic dependency revision is invalid")
         dependent, prerequisite = item["dependent_topic_id"], item["prerequisite_topic_id"]
         if dependent not in topics or prerequisite not in topics or dependent == prerequisite:
@@ -531,13 +549,11 @@ def validate_dependency_records(
             )
             if descriptor is None or not descriptor.validate_authority(authority, decisions):
                 error("state_corrupt", "topic dependency authority is incoherent")
-            if historical_replace:
-                # Retained replace evidence is historical, not current, but
-                # still has to resolve exactly against its frozen provenance.
-                _validate_ordinary_basis(records, {
-                    **item, "prerequisite_topic_id": basis["prerequisite_topic_id"],
-                    "requirement_kind": authority_kind,
-                }, basis, decisions, authority, error)
+            if historical_replace and (
+                basis["prerequisite_topic_id"] not in topics
+                or authority_kind not in DEPENDENCY_AUTHORITY_KINDS
+            ):
+                error("state_corrupt", "historical topic dependency basis endpoints are invalid")
             # A currently enforcing open gate must resolve current authority.
             # Closed/cancelled/Phase-2 records retain historical evidence even
             # after a legitimate invalidation changes the source decisions.
