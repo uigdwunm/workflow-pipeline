@@ -14,11 +14,11 @@ The optional discussion stage and the four established stages invoke other Skill
 
 Install all five Skills together so optional discovery and cross-stage transitions remain available.
 
-`guided-implementation` also owns the shared `thread-settings-v4` runtime and
+`guided-implementation` also owns the shared `thread-settings-v5` runtime and
 protocol used by `design-discussion`, `problem-framing`, `solution-design` and
 `guided-implementation`. Install or update all five Skills from the same
 workflow-pipeline version. A missing resolver or a protocol version other than
-`thread-settings-v4` is a fail-closed `workflow_runtime_version_mismatch`; a
+`thread-settings-v5` is a fail-closed `workflow_runtime_version_mismatch`; a
 caller must stop at its stable recovery point instead of guessing settings or
 using a different installed copy.
 

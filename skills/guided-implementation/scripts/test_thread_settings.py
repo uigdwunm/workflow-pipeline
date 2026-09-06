@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sqlite3
+from unittest.mock import patch
 import subprocess
 import sys
 import tempfile
@@ -105,6 +107,90 @@ class ThreadSettingsTests(unittest.TestCase):
             contents += trailing_fragment
         path.write_text(contents)
         return path
+
+    def make_index(self, root, path):
+        database = root.parent / "state_5.sqlite"
+        with sqlite3.connect(database) as connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, rollout_path TEXT)")
+            connection.execute("INSERT OR REPLACE INTO threads VALUES (?, ?)", (self.thread_id, str(path)))
+        return database
+
+    def test_index_selects_active_null_root_not_newest_filename(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory) / "sessions"
+            self.make_rollout(root, paginated=True, timestamp="2026-08-06T23-59-59")
+            active = self.make_rollout(root, paginated=True, segment_id=self.first_segment_id,
+                                       contexts=[("gpt-6-astra", "medium", "active-turn")])
+            self.make_index(root, active)
+            result = MODULE.resolve_current_thread_settings(root, environ={"CODEX_THREAD_ID": self.thread_id})
+            self.assertEqual(result["turn_id"], "active-turn")
+            self.assertEqual(result["model"], "gpt-6-astra")
+
+    def test_index_invalid_bindings_do_not_fall_back(self):
+        for variant in ("missing", "outside", "wrong-id", "symlink", "no-context"):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+                root = Path(directory) / "sessions"
+                canonical = self.make_rollout(root)
+                active = canonical
+                if variant == "missing": active = canonical.with_name("missing.jsonl")
+                if variant == "outside": active = root.parent / canonical.name
+                if variant == "wrong-id": active = self.make_rollout(root, thread_id=self.parent_thread_id)
+                if variant == "symlink":
+                    active = canonical.with_name(canonical.name.replace("19-51-38", "20-51-38"))
+                    active.symlink_to(canonical)
+                if variant == "no-context":
+                    active = self.make_rollout(root, paginated=True, segment_id=self.first_segment_id, contexts=[])
+                self.make_index(root, active)
+                with self.assertRaises((MODULE.SettingsError, OSError)):
+                    MODULE.resolve_thread_settings(self.thread_id, root)
+
+    def test_index_errors_are_not_treated_as_absent_database(self):
+        for variant in ("missing-row", "corrupt", "symlink"):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+                root = Path(directory) / "sessions"
+                active = self.make_rollout(root)
+                database = self.make_index(root, active)
+                if variant == "missing-row":
+                    with sqlite3.connect(database) as connection:
+                        connection.execute("DELETE FROM threads")
+                elif variant == "corrupt": database.write_text("not sqlite")
+                else:
+                    target = database.with_suffix(".backup")
+                    database.rename(target)
+                    database.symlink_to(target)
+                with self.assertRaises(MODULE.SettingsError):
+                    MODULE.resolve_thread_settings(self.thread_id, root)
+
+    def test_indexed_subagent_identity_and_verify(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory) / "sessions"
+            active = self.make_rollout(root, paginated=True, segment_id=self.first_segment_id,
+                session_lineage_id=self.parent_thread_id,
+                source={"subagent": {"thread_spawn": {"parent_thread_id": self.parent_thread_id}}})
+            self.make_index(root, active)
+            environment = {"CODEX_THREAD_ID": self.thread_id, "CODEX_SESSION_ID": self.parent_thread_id}
+            for model, status in (("gpt-5.6-sol", "match"), ("gpt-6-astra", "changed")):
+                result = MODULE.verify_current_thread_settings(root=root, environ=environment,
+                    expected_model=model, expected_reasoning_effort="high")
+                self.assertEqual(result["status"], status)
+            environment["CODEX_SESSION_ID"] = self.thread_id
+            with self.assertRaisesRegex(MODULE.SettingsError, "lineage conflict"):
+                MODULE.resolve_current_thread_settings(root, environ=environment)
+
+    def test_index_binding_change_during_read_is_rejected(self):
+        with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
+            root = Path(directory) / "sessions"
+            active = self.make_rollout(root)
+            other = self.make_rollout(root, paginated=True, segment_id=self.first_segment_id)
+            self.make_index(root, active)
+            original = MODULE._read_rollout
+            def changed(*args):
+                result = original(*args)
+                self.make_index(root, other)
+                return result
+            with patch.object(MODULE, "_read_rollout", side_effect=changed):
+                with self.assertRaisesRegex(MODULE.SettingsError, "binding changed"):
+                    MODULE.resolve_thread_settings(self.thread_id, root)
 
     def test_resolve_uses_latest_paginated_rollout_context(self):
         with tempfile.TemporaryDirectory(dir=TEMPORARY_ROOT) as directory:
@@ -221,7 +307,7 @@ class ThreadSettingsTests(unittest.TestCase):
         self.assertEqual(
             result,
             {
-                "protocol": "thread-settings-v4",
+                "protocol": "thread-settings-v5",
                 "source": "codex-rollout-latest-turn-context",
                 "thread_id": self.thread_id,
                 "model": "gpt-5.6-sol",
@@ -541,7 +627,7 @@ class ThreadSettingsTests(unittest.TestCase):
                 env=environment,
             )
         self.assertEqual(version.returncode, 0)
-        self.assertEqual(version.stdout.strip(), "thread-settings-v4")
+        self.assertEqual(version.stdout.strip(), "thread-settings-v5")
         self.assertEqual(changed.returncode, 2)
         self.assertEqual(json.loads(changed.stdout)["status"], "changed")
 
@@ -572,7 +658,7 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
         for path, operations in consumers.items():
             with self.subTest(path=path):
                 protocol = self.read(path)
-                self.assertIn("thread-settings-v4", protocol)
+                self.assertIn("thread-settings-v5", protocol)
                 self.assertIn("thread-settings-protocol.md", protocol)
                 for operation in operations:
                     self.assertIn(operation, protocol)
@@ -595,7 +681,7 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
 
     def test_dependency_contract_requires_one_workflow_version(self):
         contract = self.read("docs/dependencies.md")
-        self.assertIn("thread-settings-v4", contract)
+        self.assertIn("thread-settings-v5", contract)
         self.assertIn("workflow_runtime_version_mismatch", contract)
         self.assertRegex(contract, r"same\s+workflow-pipeline version")
 

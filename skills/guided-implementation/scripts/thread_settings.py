@@ -8,12 +8,14 @@ import json
 import os
 import re
 import stat
+import sqlite3
+from contextlib import closing
 import sys
 from pathlib import Path
 from typing import Mapping, NamedTuple
 
 
-PROTOCOL_VERSION = "thread-settings-v4"
+PROTOCOL_VERSION = "thread-settings-v5"
 _CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 SESSIONS_ROOT = Path(
     os.environ.get("CODEX_SESSIONS_ROOT", _CODEX_HOME / "sessions")
@@ -325,9 +327,88 @@ def _latest_paginated_rollout(
     return latest
 
 
+def _indexed_rollout_path(thread_id: str, root: Path) -> Path | None:
+    """Use Codex's exact-thread index, never filename chronology, to select a page."""
+    database = root.parent / "state_5.sqlite"
+    parent_fd = _open_root(database.parent)
+    try:
+        try:
+            before = os.stat(database.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(before.st_mode):
+            raise SettingsError("state database is not a regular file")
+        try:
+            with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=1)) as connection:
+                rows = connection.execute(
+                    "SELECT rollout_path FROM threads WHERE id = ?", (thread_id,)
+                ).fetchmany(2)
+        except sqlite3.Error as exc:
+            raise SettingsError("state database binding is unavailable") from exc
+        after = os.stat(database.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise SettingsError("state database identity changed")
+    finally:
+        os.close(parent_fd)
+    if len(rows) != 1 or not isinstance(rows[0][0], str) or not rows[0][0]:
+        raise SettingsError("state database has no unique thread binding")
+    path = Path(rows[0][0])
+    if not path.is_absolute() or ".." in path.parts:
+        raise SettingsError("indexed rollout path is invalid")
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise SettingsError("indexed rollout is outside sessions root") from exc
+    if len(relative.parts) != 4 or not all(
+        pattern.fullmatch(part) for pattern, part in
+        zip((YEAR_RE, MONTH_RE, DAY_RE), relative.parts[:3])
+    ):
+        raise SettingsError("indexed rollout path is invalid")
+    return path
+
+
+def _read_indexed_rollout(thread_id: str, root: Path, path: Path) -> RolloutFacts:
+    match = re.fullmatch(
+        rf"rollout-[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}-[0-9]{{2}}-[0-9]{{2}}-{thread_id}"
+        rf"(?:_(?P<segment>{THREAD_ID_PATTERN}))?\.jsonl", path.name,
+    )
+    if match is None:
+        raise SettingsError("indexed rollout filename does not match thread")
+    parent_fd = _open_root(path.parent)
+    try:
+        before = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode):
+            raise SettingsError("rollout is not a regular file")
+        fd = os.open(path.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+        try:
+            opened = os.fstat(fd)
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise SettingsError("rollout identity changed")
+            parsed = _read_rollout(RolloutCandidate(fd, match.group("segment")), thread_id)
+            after = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+            if (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino):
+                raise SettingsError("rollout identity changed")
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent_fd)
+    if _indexed_rollout_path(thread_id, root) != path:
+        raise SettingsError("active rollout binding changed during settings read")
+    if parsed.latest is None:
+        raise SettingsError("active rollout has no complete turn_context settings")
+    return RolloutFacts(
+        thread_id=thread_id, session_lineage_id=parsed.lineage_state[1],
+        source_kind=parsed.source_state[0], parent_thread_id=parsed.source_state[1],
+        **parsed.latest,
+    )
+
+
 def _read_rollout_facts(thread_id: str, root: Path) -> RolloutFacts:
     if not THREAD_ID_RE.fullmatch(thread_id):
         raise SettingsError("thread id is not a canonical lowercase UUID")
+    indexed = _indexed_rollout_path(thread_id, root)
+    if indexed is not None:
+        return _read_indexed_rollout(thread_id, root, indexed)
     candidates = _matching_rollouts(thread_id, root)
     canonical_candidates = [
         candidate for candidate in candidates if candidate.segment_id is None

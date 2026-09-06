@@ -4,7 +4,7 @@ The dedicated task accepts the verified Flow Worktree binding inherited from
 Stage 2 or created by a qualified standalone Stage-3 entry. It must run
 `verify-worktree` against its actual working directory before editing.
 
-Before editing, run the executable `thread-settings-v4` verification:
+Before editing, run the executable `thread-settings-v5` verification:
 
 ```text
 python3 <guided-implementation-skill-root>/scripts/thread_settings.py verify \

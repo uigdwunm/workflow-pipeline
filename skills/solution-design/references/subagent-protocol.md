@@ -56,10 +56,13 @@ pre-launch anomaly, recommends returning to `$problem-framing`, and stops.
 Read
 `<guided-implementation-skill-root>/references/thread-settings-protocol.md`
 completely. For current-task inheritance, require
-`thread-settings-v4` and use `resolve --current`. Require the returned pair to
+`thread-settings-v5` and use `resolve --current`. Require the returned pair to
 be advertised by the current native-subagent adapter. A user-requested explicit
 supported pair uses source `user-requested-override` and never claims
-current-task inheritance. An unavailable current Adapter, settings receipt,
+current-task inheritance. For native subagents, inherited settings are disclosure
+and confirmation facts: omit native model and effort overrides so the runtime
+inherits them. Pass explicit overrides only when the user requested them and
+the adapter supports them. An unavailable current Adapter, settings receipt,
 unsupported pair, or runtime-version mismatch emits the fixed pre-launch anomaly
 block and stops.
 

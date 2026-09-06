@@ -7,7 +7,7 @@ Codex task's model and reasoning effort. The canonical implementation is:
 <guided-implementation-skill-root>/scripts/thread_settings.py
 ```
 
-Require `protocol-version` to return exactly `thread-settings-v4`. A missing
+Require `protocol-version` to return exactly `thread-settings-v5`. A missing
 script or different version is `workflow_runtime_version_mismatch`: stop and
 ask the user to install the same workflow-pipeline version for all five Skills.
 Never fall back to defaults, task titles, summaries, ordering, or an unresolved
@@ -31,25 +31,34 @@ python3 <guided-implementation-skill-root>/scripts/thread_settings.py resolve \
 ```
 
 Run the command unchanged. `--current` reads the existing `CODEX_THREAD_ID`
-as the current thread identity and binds each canonical or paginated rollout
-filename plus `session_meta.id` to it. Paginated rollouts must form one verified
-`history_base` chain rooted at the canonical rollout without a filename segment
-suffix. That root's node ID is the current thread ID; every suffixed segment
-must link to it or a preceding suffixed segment. A missing canonical root,
-missing link, branch, duplicate segment or identity conflict fails closed. It
-separately treats `CODEX_SESSION_ID`, when present, as the session-lineage
-identity and requires it to match
-`session_meta.session_id`. A root task requires its lineage ID to equal its
-current thread ID. A native subagent instead requires a distinct lineage ID
-and a canonical, distinct
+as the current thread identity. The resolver first reads `threads.rollout_path`
+for that exact ID from `state_5.sqlite` alongside the sessions root, using a
+read-only SQLite connection. This index selects the active rollout, including a
+suffixed paginated file with `history_base: null`; filename timestamps and other
+pages do not select settings. Validate the indexed path beneath the sessions
+root, the filename thread ID, the regular file and directory identities, and
+`session_meta.id`. Read the latest complete `turn_context` in that file and
+recheck the index binding after reading. An absent row, invalid database or
+path, changed binding, or active page without complete settings fails closed;
+never fall back to an older page after an index error.
+
+Only when the state database is absent, use the existing filesystem path:
+one canonical rollout, or one verified `history_base` chain rooted at that
+canonical file. Multiple null roots without an index remain ambiguous.
+`CODEX_SESSIONS_ROOT`, when configured, also determines the adjacent state
+index location; never mix a custom sessions root with another home's index.
+
+Separately treat `CODEX_SESSION_ID`, when present, as the session-lineage
+identity and require it to match `session_meta.session_id`. A root task requires
+its lineage ID to equal its current thread ID. A native subagent instead
+requires a distinct lineage ID and a canonical, distinct
 `source.subagent.thread_spawn.parent_thread_id`. Never set or override either
-environment variable for the command. On any missing, conflicting, ambiguous,
-or unsupported runtime fact, stop at the caller's stable recovery point. Do
-not assume that a child task's lineage ID and current thread ID are equal.
+environment variable for the command. On missing, conflicting, ambiguous or
+unsupported runtime facts, stop at the caller's stable recovery point.
 
 A successful resolution returns only `protocol`, `source`, `thread_id`,
 `model`, `reasoning_effort`, and `turn_id`. The implementation safely opens the
-verified rollout or paginated rollout chain below the configured Codex sessions
+index-bound active rollout or verified filesystem rollout chain below the configured Codex sessions
 root and never returns message content or another rollout field. The caller separately requires the
 resolved model/effort pair to be advertised by the exact `create_thread` or
 `spawn_agent` capability it will use.
@@ -78,3 +87,11 @@ Continuous mode resolves immediately before disclosure and performs the exact
 launch in the same turn. A user-requested explicit override is recorded as
 `user-requested-override`, must be supported by the target capability, and does
 not claim current-task inheritance.
+
+## Runtime evidence
+
+The index lookup follows Codex's `find_rollout_path_by_id` in
+[the state runtime](https://github.com/openai/codex/blob/main/codex-rs/state/src/runtime/threads.rs).
+The state_5 layout and null-root active pages were checked against the local
+runtime on 2026-09-06. This is a versioned local adapter, not a guarantee that
+private storage schemas remain stable; an incompatible schema fails closed.
