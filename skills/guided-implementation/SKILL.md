@@ -145,6 +145,17 @@ work.
 - When Tickets are present, read each completely, topologically sort `Blocked
   by`, preserve source document order among simultaneously ready Tickets, and
   implement them in that order.
+- Before implementing remaining Tickets or sibling paths, start TDD with one
+  representative observable behavior through the changed internal boundary and
+  its production caller wiring. Read the Spec's owner, Interface, call-chain,
+  and Testing Decisions; write the smallest failing test at that boundary and
+  make it pass with the minimal in-scope implementation. Only then expand the
+  proven pattern to equivalent in-scope paths. The changed boundary and caller
+  path may not be replaced by a mock, stub, fake, or in-memory substitute;
+  doubles remain allowed only for external or downstream dependencies beyond
+  that boundary. If no executable seam can exercise it, report an
+  implementation-authority/testing-seam gap before coding instead of bypassing
+  the boundary.
 - Work only inside the verified worktree. Invoke the complete native
   `$implement` workflow, including `$tdd`, focused and full checks, typecheck,
   lint or build where applicable, and commit a clean candidate.
@@ -162,6 +173,18 @@ work.
   to the originating task before the affected edit, and let that task obtain
   the user's explicit decision. Review or test remediation returns to the same
   dedicated task and worktree.
+- If the same failure mechanism recurs after a fix, a same-class regression
+  appears in another affected path, or successive review/test outcomes
+  overturn the same implementation approach, the Originating Task marks the
+  continuation diagnosis-first and carries the prior candidate/finding
+  identities. Before another edit, the task compares the prior failure and
+  fix, explains why the mechanism remained, names the minimal effective
+  validation at the real boundary, and inspects affected sibling paths. It
+  then validates, repairs in scope, and reruns affected and full checks in the
+  same task and Flow Worktree. Scope or plan gaps use the existing authority or
+  anomaly path; ordinary defects continue here. No diagnostic document, fixed
+  remediation-round gate, automatic replacement, or new Workflow Stage is
+  added.
 - Local stage entry grants no push, pull request, deployment, release, tracker or
   other remote write. Each such action requires separate explicit authority.
 - The Originating Task owns `$code-review` and candidate acceptance. Its Spec

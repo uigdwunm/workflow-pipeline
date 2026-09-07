@@ -20,6 +20,22 @@ dependency or cycle stops for correction. For a standalone flow, read the exact
 request and fixed implementation brief from the launch prompt and preserve them
 unchanged.
 
+Before implementing the remaining Tickets or sibling paths, start TDD with one
+representative vertical slice. Read the Spec's owner, Interface, real
+production call-chain, and Testing Decisions; choose an observable behavior
+that crosses the changed internal boundary through the production caller
+wiring; write the smallest failing test at that boundary; and make it pass with
+the minimal in-scope implementation. Only after that slice passes may the task
+expand the same pattern to equivalent in-scope paths.
+
+The changed boundary and its production caller path may not be replaced by a
+mock, stub, fake, or in-memory substitute. Doubles remain allowed for external
+systems or dependencies downstream of the chosen boundary when the Spec's seam
+requires variability. If the repository has no executable seam that exercises
+the changed boundary, report an implementation-authority/testing-seam gap to
+the originating task before coding; do not bypass the boundary to obtain a
+green test.
+
 Treat those accepted planning sources or the fixed standalone brief, together
 with the launch prompt's exact authority boundaries, as the complete scope.
 Build a robust solution inside that scope; the goal is not merely the smallest
@@ -81,6 +97,17 @@ and candidate acceptance; Stage 4 owns integration. The authoritative review con
 [originating-task-protocol.md](originating-task-protocol.md).
 
 Return review or test remediation to the same implementation task and worktree.
+When the Originating Task identifies the same failure mechanism after a fix, a
+same-class regression in another affected path, or successive review/test
+outcomes overturning the same implementation approach, the continuation is
+diagnosis-first and carries the trigger plus the prior candidate/finding
+identities. Before editing, provide execution evidence comparing the prior
+failure and fix, explaining why the fix missed the mechanism, naming the
+minimal effective validation at the affected real boundary, and listing the
+inspected sibling paths with applicability. Run that focused validation, then
+repair in scope and rerun affected and full checks in this same worktree.
+If diagnosis exposes an insufficient scope or plan, stop for the existing
+implementation-authority/anomaly decision; ordinary defects continue here.
 The dedicated task reports an unexpected material implementation-authority gap
 to the originating task before the affected change and never asks the user directly.
 It performs no push, pull request, deployment, release, tracker write or other

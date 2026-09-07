@@ -124,6 +124,15 @@ technical choices that repository evidence can resolve without changing the
 confirmed boundary. If implementation would still need the user to choose a
 material outcome, the solution is not complete.
 
+Before the existing solution review or direct publication seam, the
+`solution_designer` performs the bounded change-contract preflight in
+`references/design-readiness.md`: trace each affected entrypoint through the
+real production call chain and record the interface, state, ordering,
+governing specification, evidence, and any in-scope contradiction resolution
+in the Spec's existing decisions. A contradiction that would change the
+accepted requirement, target, permissions, or published plan uses the existing
+`SOLUTION_DESIGN_ANOMALY` contract.
+
 ## Track the flow mode
 
 Use `逐阶段确认` for an explicit invocation, a phase-0 discussion route, or an
@@ -186,6 +195,9 @@ the same child, worktree, branch, and exact planning commit preserved. A
 post-publication `integration_unverified` result preserves the published Git
 state and must not call `publish-planning` again. Do not create a replacement.
 Do not add checks for pre-existing or duplicate planning files.
+Carry the compact `变更契约预检` field from the child's completion evidence,
+pointing to the Spec's preflight and real call-chain section, through the
+existing handoff; it is not a separate artifact or gate.
 
 In stepwise mode, show the fixed success footer from `references/templates.md`.
 An unambiguous affirmation enters `$guided-implementation`. A clear request to

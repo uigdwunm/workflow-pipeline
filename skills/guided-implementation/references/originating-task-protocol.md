@@ -111,6 +111,30 @@ source path, the same Dedicated Implementation Task merges that target, runs
 affected and full checks, and commits a replacement candidate. The Originating
 Task then establishes its exact replacement fixed point and reruns both axes.
 
+## Diagnosis-first remediation
+
+Mark the next remediation as diagnosis-first when any observable trigger is
+present: the same failure mechanism is reported again after a fix; a
+same-class regression appears in another affected path; or successive
+review/test outcomes overturn the same implementation approach. Continue to the
+same Dedicated Implementation Task and Flow Worktree, carrying the trigger and
+the prior candidate and finding identities in the request.
+
+Before another edit, require execution evidence that: (a) compares the prior
+failure and fix side by side; (b) explains why that fix did not address the
+mechanism; (c) identifies the smallest effective validation at the affected
+real boundary; and (d) lists the affected sibling paths inspected and whether
+the mechanism applies to each. The task then runs that focused validation,
+repairs in scope, reruns the affected and full checks, and commits the
+replacement candidate as usual.
+
+If diagnosis shows that the accepted scope or plan is insufficient, stop
+through the existing implementation-authority or anomaly decision before
+changing code. An ordinary technical defect continues in the same task and
+worktree. Do not create a diagnostic document, impose a fixed remediation
+round gate, or spawn an automatic replacement; the stalled-task replacement
+exception above remains limited to terminal no-progress results.
+
 ## Retain and hand off
 
 After accepting the exact candidate, verify that it is still the clean Flow

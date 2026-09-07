@@ -15,9 +15,18 @@ TEMPLATES = (SKILL_ROOT / "references" / "templates.md").read_text(
     encoding="utf-8"
 )
 READINESS_PATH = SKILL_ROOT / "references" / "design-readiness.md"
+GUIDED_ROOT = SKILL_ROOT.parent / "guided-implementation"
+GUIDED_SKILL = (GUIDED_ROOT / "SKILL.md").read_text(encoding="utf-8")
+GUIDED_EXECUTION = (
+    GUIDED_ROOT / "references" / "execution-protocol.md"
+).read_text(encoding="utf-8")
+GUIDED_ORIGINATING = (
+    GUIDED_ROOT / "references" / "originating-task-protocol.md"
+).read_text(encoding="utf-8")
 
 EVIDENCE_FIELDS = (
     "方案就绪检查：",
+    "变更契约预检：",
     "模块与 Interface：",
     "决策覆盖：",
     "状态覆盖：",
@@ -34,7 +43,131 @@ def section(document: str, heading: str, next_heading: str | None = None) -> str
     return document[start:end]
 
 
+def compact(document: str) -> str:
+    return " ".join(document.split())
+
+
 class SolutionDesignContractTests(unittest.TestCase):
+    def test_change_contract_preflight_covers_real_contract_dimensions_before_review(self) -> None:
+        readiness = READINESS_PATH.read_text(encoding="utf-8")
+        preflight = section(readiness, "## Bounded change-contract preflight", "## Spec readiness")
+        compact = " ".join(preflight.split())
+        for obligation in (
+            "affected entrypoint",
+            "production callers",
+            "owning module",
+            "interface",
+            "inputs",
+            "outputs",
+            "failures",
+            "dependency seam",
+            "persistence owner",
+            "transitions",
+            "retry or recovery",
+            "call-sequence",
+            "governing requirement",
+            "real production call chain",
+            "contradiction",
+            "SOLUTION_DESIGN_ANOMALY",
+        ):
+            self.assertIn(obligation, compact)
+
+        protocol = section(
+            PROTOCOL,
+            "## Stepwise review flow",
+            "## Continuous exception-only flow",
+        )
+        self.assertLess(
+            protocol.index("bounded change-contract preflight"),
+            protocol.index("SOLUTION_REVIEW_REQUIRED"),
+        )
+
+    def test_preflight_completion_evidence_is_compact_and_not_a_new_artifact(self) -> None:
+        for document in (SKILL, PROTOCOL, TEMPLATES):
+            self.assertIn("变更契约预检", document)
+        self.assertIn(
+            "not a new readiness artifact",
+            " ".join(READINESS_PATH.read_text(encoding="utf-8").split()),
+        )
+        self.assertNotIn("CHANGE_CONTRACT_REVIEW_REQUIRED", PROTOCOL)
+
+    def test_first_tdd_slice_crosses_the_real_changed_boundary_before_expansion(self) -> None:
+        for document in (GUIDED_SKILL, GUIDED_EXECUTION):
+            normalized = compact(document)
+            self.assertIn("representative", normalized)
+            self.assertIn("changed internal boundary", normalized)
+            self.assertIn("production caller", normalized)
+            self.assertIn("smallest failing test", normalized)
+            self.assertTrue(
+                "Only then" in normalized
+                or "Only after that slice passes" in normalized
+            )
+
+        execution = compact(
+            section(GUIDED_EXECUTION, "Before implementing the remaining Tickets")
+        )
+        self.assertLess(
+            execution.index("smallest failing test"),
+            execution.index("expand the same pattern"),
+        )
+
+    def test_boundary_doubles_are_prohibited_but_downstream_doubles_remain_allowed(self) -> None:
+        for document in (GUIDED_SKILL, GUIDED_EXECUTION):
+            for forbidden in ("mock", "stub", "fake", "in-memory substitute"):
+                self.assertIn(forbidden, document)
+            self.assertIn("external", document)
+            self.assertIn("downstream", document)
+            self.assertIn("implementation-authority/testing-seam gap", document)
+            self.assertTrue(
+                "do not bypass" in document or "instead of bypassing" in document
+            )
+
+    def test_repeated_mechanisms_require_diagnosis_evidence_before_another_fix(self) -> None:
+        for document in (GUIDED_SKILL, GUIDED_EXECUTION, GUIDED_ORIGINATING):
+            normalized = compact(document)
+            for trigger in (
+                "same failure mechanism",
+                "same-class regression",
+                "successive review/test outcomes",
+            ):
+                self.assertIn(trigger, normalized)
+            self.assertIn("prior failure", normalized)
+            self.assertIn("why", normalized)
+            self.assertTrue(
+                "minimal effective validation" in normalized
+                or "smallest effective validation" in normalized
+            )
+            self.assertIn("sibling paths", normalized)
+
+        diagnosis = compact(
+            section(
+                GUIDED_ORIGINATING,
+                "## Diagnosis-first remediation",
+                "## Retain and hand off",
+            )
+        )
+        self.assertLess(
+            diagnosis.index("Before another edit"),
+            diagnosis.index("repairs in scope"),
+        )
+        self.assertIn("prior candidate and finding identities", diagnosis)
+        self.assertIn("same Dedicated Implementation Task", diagnosis)
+        self.assertIn("Flow Worktree", diagnosis)
+
+    def test_scope_gaps_and_stalled_replacement_remain_distinct(self) -> None:
+        self.assertIn("implementation-authority or anomaly decision", GUIDED_ORIGINATING)
+        normalized = compact(GUIDED_SKILL + GUIDED_EXECUTION + GUIDED_ORIGINATING)
+        self.assertIn("stalled-task replacement", normalized)
+        self.assertIn("exception above", normalized)
+        for prohibition in (
+            "fixed remediation round gate",
+            "automatic replacement",
+            "new Workflow Stage",
+            "diagnostic document",
+        ):
+            self.assertIn(prohibition, normalized)
+        self.assertNotIn("automatic replacement agent", normalized)
+
     def test_readiness_reference_is_reached_by_the_child_before_native_spec_work(self) -> None:
         self.assertTrue(READINESS_PATH.is_file())
         self.assertIn(

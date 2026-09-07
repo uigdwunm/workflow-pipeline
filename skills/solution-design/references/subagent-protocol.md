@@ -149,7 +149,11 @@ drafting state to its final published state.
 ## Stepwise review flow
 
 The child runs `$to-spec` until the native testing-seam and solution review
-point, then completes **Spec readiness** from `design-readiness.md`. It repairs
+point, then performs the bounded change-contract preflight and completes
+**Spec readiness** from `design-readiness.md`. The preflight traces affected
+entrypoints through their real production callers and records interface,
+state, ordering, governing specification, call-chain evidence, and any
+contradiction resolution in the Spec's existing decisions. It repairs
 the draft inside the accepted scope before it returns
 `SOLUTION_REVIEW_REQUIRED` instead of addressing the user.
 It must include the exact candidate Spec, decisions, ADRs, scope, target, and a
@@ -187,6 +191,8 @@ standard stage-2 decisions and native review questions on the frozen target.
 The child must:
 
 - answer the `$to-spec` testing-seam question using its best judgment;
+- perform the bounded change-contract preflight through the real production
+  call chain and record its evidence in the Spec;
 - complete **Spec readiness** and repair in-scope draft gaps before publication;
 - choose the solution without `SOLUTION_REVIEW_REQUIRED`;
 - decide whether Tickets are useful;
@@ -323,7 +329,8 @@ selected native publication and required local stage-owned commit work. The
 message must name requirement source, Spec, ADRs, Tickets, planning commit,
 the complete `本地规划路径` manifest, publication result, implementation basis,
 flow mode, Flow Worktree binding, workspace state, and every fixed
-readiness-evidence field. Completion requires the child to report a clean Flow
+readiness-evidence field, including the compact `变更契约预检` pointer to the
+Spec's preflight and real call-chain section. Completion requires the child to report a clean Flow
 Worktree with stage-owned planning paths committed. Any different state is an
 anomaly, including in continuous mode.
 

@@ -4,6 +4,36 @@ The same `solution_designer` that drafts the Spec owns these checks. They are
 part of stage-2 design work, not a separate review, message, agent, artifact, or
 user checkpoint.
 
+## Bounded change-contract preflight
+
+Before the existing Spec readiness check, perform a bounded preflight for each
+material changed behavior. Record one concise inventory in the Spec's existing
+`Implementation Decisions` or `Testing Decisions` section. The inventory must
+identify:
+
+- each affected entrypoint and its current production callers;
+- the owning module and the public or internal interface, including inputs,
+  outputs, failures, and the dependency seam;
+- relevant state, its persistence owner, transitions, and retry or recovery
+  behavior;
+- ordering or call-sequence assumptions that can change the outcome;
+- the governing requirement or Spec statement, together with repository
+  evidence from the real production call chain; and
+- every contradiction found and the in-scope decision that resolves it.
+
+Inspect the implementation and existing tests needed to establish that
+inventory before solution review or direct publication. Repair a missing or
+contradictory fact in the same Spec when the frozen requirement and scope allow
+it. If resolving it would change the accepted requirement, target, permissions,
+or published plan, stop through the existing `SOLUTION_DESIGN_ANOMALY`
+contract. A one-module change with no shared policy may mark the state,
+ordering, or decision dimensions not applicable only with a concrete reason;
+the interface and real production call-chain evidence are always required.
+
+Completion evidence points to the Spec section containing this preflight and
+its call-chain evidence. This is a compact handoff field, not a new readiness
+artifact or review gate.
+
 ## Spec readiness
 
 Complete this check after drafting the Spec and before the existing solution
