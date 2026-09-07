@@ -204,6 +204,7 @@ Flow Worktree：<exact binding>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
 方案就绪检查：<通过；evidence summary>
+变更契约预检：<Spec preflight/call-chain section and evidence>
 模块与 Interface：<owning modules and boundaries | evidence-based not applicable>
 决策覆盖：<precedence and material branches | evidence-based not applicable>
 状态覆盖：<states, transitions and recovery | evidence-based not applicable>
@@ -237,6 +238,7 @@ Flow Worktree：<exact retained binding at planning merge commit>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
 方案就绪检查：<通过；evidence summary>
+变更契约预检：<Spec preflight/call-chain section and evidence>
 模块与 Interface：<owning modules and boundaries | evidence-based not applicable>
 决策覆盖：<precedence and material branches | evidence-based not applicable>
 状态覆盖：<states, transitions and recovery | evidence-based not applicable>
@@ -282,6 +284,7 @@ Flow Worktree：<exact retained binding at planning merge commit>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<child-reported Testing Decisions or exact Spec section>
 方案就绪检查：<通过；child-reported evidence summary>
+变更契约预检：<child-reported Spec preflight/call-chain section and evidence>
 模块与 Interface：<child-reported owning modules and boundaries | evidence-based not applicable>
 决策覆盖：<child-reported precedence and material branches | evidence-based not applicable>
 状态覆盖：<child-reported states, transitions and recovery | evidence-based not applicable>
