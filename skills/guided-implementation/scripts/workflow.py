@@ -441,7 +441,7 @@ def _is_git_sha(value: object) -> bool:
 
 
 def _artifact_path(record_path: Path, stage: str, turn: int) -> Path:
-    return record_path.parent / f"{record_path.stem}.{stage}.turn-{turn}.json"
+    return record_path.parent / f"{record_path.name}.{stage}.turn-{turn}.json"
 
 
 def _mark_failure(

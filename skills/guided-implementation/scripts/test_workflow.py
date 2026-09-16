@@ -46,6 +46,7 @@ if mode == 'turn-failed':
     print(json.dumps({'type': 'turn.failed'})); sys.exit(0)
 if mode != 'no-completion': print(json.dumps({'type': 'turn.completed'}))
 if mode == 'malformed': open(out, 'w').write('{')
+elif mode == 'no-result': sys.exit(0)
 elif mode in ('needs-input', 'no-session-needs-input') and stage == 'stage2' and not resume:
     json.dump({'result': 'needs_input', 'artifacts': [], 'evidence': [], 'handoff_json': '{}', 'question': 'choose a value', 'message': '', 'needs_input_kind': 'user_decision'}, open(out, 'w'))
 elif mode == 'technical-error':
@@ -125,7 +126,8 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(state["status"], "completed")
         self.assertEqual(state["sessions"], {stage: f"{stage}-session" for stage in ("stage2", "stage3", "stage4")})
         self.assertEqual(state["stage_results"]["stage2"]["artifacts"], ["stage2-artifact"])
-        self.assertTrue(all(self.record.parent.glob("run.stage*.turn-1.json")))
+        outputs = list(self.record.parent.glob("run.json.stage*.turn-1.json"))
+        self.assertEqual(len(outputs), 3)
         fixture = json.loads(self.fixture_state.read_text())
         self.assertIn("explicit CLI Stage-2 carrier", fixture["prompts"]["stage2"])
         self.assertIn("independent Standards and Spec review roles", fixture["prompts"]["stage3"])
@@ -201,8 +203,27 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(failed.returncode, 1)
         state = self.state()
         self.assertEqual((state["status"], state["launch"]["turn"]), ("failed", 2))
-        self.assertTrue((self.record.parent / "run.stage2.turn-1.json").is_file())
-        self.assertFalse((self.record.parent / "run.stage2.turn-2.json").exists())
+        self.assertTrue((self.record.parent / "run.json.stage2.turn-1.json").is_file())
+        self.assertFalse((self.record.parent / "run.json.stage2.turn-2.json").exists())
+
+    def test_same_stem_different_record_cannot_read_another_runs_result(self) -> None:
+        first = self.invoke("start", str(self.confirmed))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_output = self.record.parent / "run.json.stage2.turn-1.json"
+        first_bytes = first_output.read_bytes()
+        second_record = self.record.parent / "run.state"
+        second_confirmed = self.root / "confirmed-second.json"
+        second = self.confirmed_input()
+        second["run_record"] = str(second_record)
+        second_confirmed.write_text(json.dumps(second), encoding="utf-8")
+
+        failed = self.invoke("start", str(second_confirmed), mode="no-result")
+
+        self.assertEqual(failed.returncode, 1)
+        self.assertEqual(first_output.read_bytes(), first_bytes)
+        self.assertEqual(self.state()["status"], "completed")
+        second_state = json.loads(second_record.read_text(encoding="utf-8"))
+        self.assertEqual(second_state["status"], "failed")
 
     def test_malformed_result_and_turn_failed_preserve_known_session(self) -> None:
         malformed = self.invoke("start", str(self.confirmed), mode="malformed")
