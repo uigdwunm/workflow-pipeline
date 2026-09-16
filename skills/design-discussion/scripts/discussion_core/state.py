@@ -824,14 +824,39 @@ def _verify_topic_owner(
     owner_ref: str,
     *,
     allow_active_grilling: bool = False,
+    operation: str | None = None,
 ) -> None:
     active = [
         record
         for record in records["Conversation Bindings"]
         if record.get("topic_id") == topic_id and record.get("binding_state") == "active"
     ]
+    writers = []
+    for record in records["Phase Runs"]:
+        if record.get("run_kind") != "discussion-handoff":
+            continue
+        data = _json_field(record, "data_json", "handoff")
+        if data.get("kind") != "dedicated-stage" or data.get("target_topic_id") != topic_id:
+            continue
+        topic = _record_by_id(records["Current Topics"], "topic_id", topic_id, "topic_id")
+        if data.get("stage") != topic.get("current_phase"):
+            continue
+        writers.extend(a for a in data.get("attempts", []) if a.get("binding_eligible") and
+                       a.get("state") in {"bound-pending-acceptance", "accepted-awaiting-next-turn", "active"})
+    write_operations = {"prepare-topic-update", "apply-document-write", "prepare-checkpoint",
+                        "publish-git-checkpoint", "publish-non-git-checkpoint",
+                        "reconcile-git-checkpoint", "reconcile-non-git-checkpoint"}
     if len(active) == 1 and active[0].get("conversation_ref") == owner_ref:
+        if writers and operation in write_operations:
+            raise ProtocolError("document_ownership_conflict", "dedicated carrier holds document write authority")
         return
+    if len(writers) == 1 and writers[0].get("conversation_ref") == owner_ref:
+        permitted = {"accept-handoff", "authorize-handoff-discussion", "read-topic"}
+        if writers[0].get("state") == "active":
+            permitted |= write_operations
+        if operation in permitted:
+            return
+
     if not allow_active_grilling:
         raise ProtocolError(
             "document_ownership_conflict",

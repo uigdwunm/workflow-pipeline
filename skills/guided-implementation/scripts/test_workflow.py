@@ -61,6 +61,14 @@ else:
     if mode == 'foreign-binding': binding['repository'] = '/foreign'
     if mode == 'mutated-stage3-binding' and stage == 'stage3': binding['branch'] = 'codex/other'
     handoff = ({'binding': binding, 'planning_commit': 'b' * 40, 'allowed_paths': ['a'], 'protected_paths': []} if stage == 'stage2' else ({'binding': binding, 'candidate_commit': 'c' * 40, 'review': {'standards': 'accepted', 'spec': 'accepted'}, 'verification': ['full']} if stage == 'stage3' else {}))
+    handoff.update(controller_ref=payload.get('controller_ref', 'controller'), role_ref=stage + '-native')
+    handoff['control_checkpoint'] = {'controller_ref': handoff['controller_ref'], 'stage': int(stage[-1]), 'role_ref': stage + '-native', 'state': 'completed'}
+    if stage == 'stage3':
+        handoff['review'] = {axis: {'candidate': 'c' * 40, 'reviewer_ref': axis, 'status': 'accepted'} for axis in ('standards', 'spec')}
+        handoff['verification'] = {'candidate': 'c' * 40, 'checks': ['full']}
+    if stage == 'stage4':
+        handoff.update(binding=binding, candidate_commit='c' * 40, merge_commit='d' * 40, cleanup={'worktree_removed': True, 'branch_removed': True}, ancestor_verified=True)
+    if mode == 'wrong-controller': handoff['controller_ref'] = 'foreign'
     result = {'result': 'completed', 'artifacts': [stage + '-artifact'], 'evidence': [stage + '-evidence'], 'handoff_json': json.dumps(handoff if mode != 'missing-handoff' else {}), 'question': '', 'message': '', 'needs_input_kind': 'none'}
     json.dump(result, open(out, 'w'))
 """
@@ -86,11 +94,17 @@ class WorkflowCliTests(unittest.TestCase):
 
     def confirmed_input(self) -> dict[str, object]:
         return {
+            "controller_ref": "controller",
             "frozen_requirement": {"path": "/requirements/frozen.md", "commit": "a" * 40, "sha256": "b" * 64},
             "repository": str(self.repository), "worktree": str(self.worktree),
             "git_common_dir": str(self.repository / ".git"), "target_branch": "main",
             "authority_scope": {"allowed_paths": ["skills"]}, "run_record": str(self.record),
-            "stages": {stage: {"model": "gpt-5.6-terra", "reasoning_effort": "high"} for stage in ("stage2", "stage3", "stage4")},
+            "stages": {stage: {"model": "gpt-5.6-terra", "reasoning_effort": "high",
+                "selection_input": {"role": "scripted-carrier", "required_capability": 2,
+                    "supported": [{"model": "gpt-5.6-terra", "effort": "high", "capability": 3, "cost": None, "permission": "unchanged", "visible_identity": "unchanged"}],
+                    "user": {"model": "gpt-5.6-terra", "effort": "high"}, "frozen": None, "previous": None,
+                    "receipt": "current codex CLI adapter", "can_override": True, "inherited": None, "upgrade_attempted": False}}
+                for stage in ("stage2", "stage3", "stage4")},
         }
 
     def invoke(self, *arguments: str, mode: str = "success") -> subprocess.CompletedProcess[str]:
@@ -134,6 +148,20 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertIn("stage2-artifact", fixture["prompts"]["stage3"])
         self.assertIn('"flow_mode": "continuous_stage2_to_4"', fixture["prompts"]["stage2"])
         self.assertNotIn("--sandbox", fixture["commands"]["stage2"])
+
+    def test_unsupported_frozen_configuration_never_launches(self):
+        confirmed = self.confirmed_input()
+        confirmed['stages']['stage2']['selection_input']['supported'] = []
+        self.confirmed.write_text(json.dumps(confirmed))
+        completed = self.invoke('start', str(self.confirmed))
+        self.assertEqual(completed.returncode, 1)
+        self.assertFalse(self.fixture_state.exists())
+
+    def test_foreign_controller_handoff_does_not_advance(self):
+        completed = self.invoke("start", str(self.confirmed), mode="wrong-controller")
+        self.assertEqual(completed.returncode, 1)
+        self.assertEqual(json.loads(self.fixture_state.read_text())["stage2"], 1)
+        self.assertNotIn("stage3", json.loads(self.fixture_state.read_text()))
 
     def test_needs_input_resumes_the_same_stage_session(self) -> None:
         paused = self.invoke("start", str(self.confirmed), mode="needs-input")
@@ -371,7 +399,7 @@ class WorkflowCliTests(unittest.TestCase):
         valid = self.confirmed_input(); self.record.parent.mkdir()
         self.record.write_text(json.dumps({
             "version": 1, "confirmed": valid, "status": "active", "current_stage": "stage3", "sessions": {"stage2": "stage2-session"},
-            "stage_results": {"stage2": {"result": "completed", "artifacts": ["a"], "evidence": ["e"], "handoff": {"binding": {"base_commit": "a" * 40, "branch": "codex/flow", "git_common_dir": str((self.repository / ".git").resolve()), "repository": str(self.repository.resolve()), "target_branch": "main", "worktree": str(self.worktree.resolve())}, "planning_commit": "b" * 40, "allowed_paths": ["a"], "protected_paths": []}}},
+            "stage_results": {"stage2": {"result": "completed", "artifacts": ["a"], "evidence": ["e"], "handoff": {"controller_ref": "controller", "role_ref": "stage2-native", "control_checkpoint": {"controller_ref": "controller", "role_ref": "stage2-native", "stage": 2, "state": "completed"}, "binding": {"base_commit": "a" * 40, "branch": "codex/flow", "git_common_dir": str((self.repository / ".git").resolve()), "repository": str(self.repository.resolve()), "target_branch": "main", "worktree": str(self.worktree.resolve())}, "planning_commit": "b" * 40, "allowed_paths": ["a"], "protected_paths": []}}},
             "launch": {"stage": "stage3", "state": "prelaunch", "turn": 0}, "history": [],
         }), encoding="utf-8")
         completed = self.invoke("resume", str(self.record), "continue from checkpoint")

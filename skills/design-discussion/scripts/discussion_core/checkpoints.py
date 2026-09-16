@@ -678,7 +678,7 @@ def _prepare_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         if purpose == "stage-entry":
             apply_gate_policy(
                 records, "stage-entry-checkpoint", request["actor_topic_id"]
@@ -875,7 +875,7 @@ def _cancel_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record, checkpoint = _actor_checkpoint(
             records, request["checkpoint_id"], request["actor_topic_id"]
         )
@@ -928,7 +928,7 @@ def _publish_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record, checkpoint = _actor_checkpoint(
             records, request["checkpoint_id"], request["actor_topic_id"]
         )
@@ -1015,7 +1015,7 @@ def _record_checkpoint_outcome_unknown(request: dict[str, Any]) -> dict[str, Any
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record, checkpoint = _actor_checkpoint(
             records, request["checkpoint_id"], request["actor_topic_id"]
         )
@@ -1059,7 +1059,7 @@ def _reconcile_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record, checkpoint = _actor_checkpoint(
             records, request["checkpoint_id"], request["actor_topic_id"]
         )
@@ -1129,7 +1129,7 @@ def _publish_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         active_gc = _active_checkpoint_gc(records)
         if active_gc is not None:
             raise ProtocolError(
@@ -1214,7 +1214,7 @@ def _reconcile_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record, checkpoint = _actor_checkpoint(
             records, request["checkpoint_id"], request["actor_topic_id"]
         )
@@ -1292,7 +1292,7 @@ def _mark_checkpoint_broken(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record, checkpoint = _actor_checkpoint(
             records, request["checkpoint_id"], request["actor_topic_id"]
         )
@@ -1354,7 +1354,7 @@ def _repair_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record, checkpoint = _actor_checkpoint(
             records, request["checkpoint_id"], request["actor_topic_id"]
         )
@@ -1481,7 +1481,7 @@ def _checkpoint_gc_dry_run(request: dict[str, Any]) -> dict[str, Any]:
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)
         frontmatter, records = _load_records(ledger_path)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         active_gc = _active_checkpoint_gc(records)
         if active_gc is not None:
             raise ProtocolError(
@@ -1524,7 +1524,7 @@ def _checkpoint_gc_confirm(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         active_gc = _active_checkpoint_gc(records)
         if active_gc is not None:
             raise ProtocolError(
@@ -1631,7 +1631,7 @@ def _reconcile_checkpoint_gc(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record = _checkpoint_gc_record(
             records, _expect_string(request["gc_operation_id"], "gc_operation_id")
         )

@@ -212,8 +212,10 @@ def _verify_wrapper_checkpoint_current(
 
 def _verify_stage_one_checkpoint(
     records: dict[str, list[dict[str, Any]]], checkpoint: dict[str, Any]
-) -> str:
+) -> str | None:
     result_id = checkpoint.get("stage_entry_phase_result_id")
+    if checkpoint.get("stage_entry_phase") == 0 and result_id is None:
+        return None
     if checkpoint.get("stage_entry_phase") != 1 or not isinstance(result_id, str):
         raise ProtocolError(
             "phase_flow_mode_invalid",
@@ -270,6 +272,8 @@ def _verify_continuous_flow_authority(
             and authority.get("source_checkpoint_identity")
             == checkpoint.get("published_identity")
             and authority.get("confirmation_intent") == "continuous"
+            and authority.get("source_phase") == checkpoint.get("stage_entry_phase")
+            and authority.get("stages") == [2, 3, 4]
         ):
             matches.append(authority)
     if len(matches) != 1:
@@ -288,7 +292,7 @@ def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
             "source_checkpoint_identity",
             "phase_result_id",
             "confirmation_intent",
-            "user_reply",
+            "user_reply", "source_phase", "stages", "scope",
         },
     )[:4]
     user_reply = _expect_string(request["user_reply"], "user_reply", max_bytes=128)
@@ -300,9 +304,12 @@ def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
         "source_checkpoint_identity",
         max_bytes=128,
     )
-    requested_phase_result_id = _expect_string(
-        request["phase_result_id"], "phase_result_id", max_bytes=64
-    )
+    requested_phase_result_id = request["phase_result_id"]
+    if requested_phase_result_id is not None:
+        _expect_string(requested_phase_result_id, "phase_result_id", max_bytes=64)
+    if type(request["source_phase"]) is not int or request["source_phase"] not in {0, 1} or request["stages"] != [2, 3, 4]:
+        raise ProtocolError("phase_flow_mode_invalid", "continuous entry must disclose stages 2, 3, 4 from phase 0 or 1")
+    scope = _validated_string_list(request["scope"], "scope")
     if confirmation_intent != "continuous":
         raise ProtocolError(
             "phase_flow_mode_invalid",
@@ -319,11 +326,14 @@ def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        if topic.get("current_phase") != 1:
+        if topic.get("current_phase") != request["source_phase"]:
             raise ProtocolError(
                 "phase_flow_mode_invalid",
                 "continuous authorization is available only after stage 1",
             )
+        apply_gate_policy(records, "phase-transition", request["actor_topic_id"], phase=request["source_phase"])
+        if _pending_topic_impacts(records, request["actor_topic_id"]):
+            raise ProtocolError("phase_impact_drift", "pending impacts block continuous authorization")
         checkpoint = _completed_checkpoint(records, request["source_checkpoint_id"])
         if (
             checkpoint.get("topic_id") != request["actor_topic_id"]
@@ -366,6 +376,9 @@ def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
         authorization_id = f"CF-{uuid.UUID(request['idempotency_key']).hex}"
         authority = {
             "authorization_id": authorization_id,
+            "source_phase": request["source_phase"], "stages": [2, 3, 4],
+            "controller_ref": owner_ref, "scope": scope,
+            "scope_digest": _sha256(_canonical_json(scope).encode("utf-8")),
             "topic_id": request["actor_topic_id"],
             "phase_result_id": phase_result_id,
             "source_checkpoint_id": checkpoint["checkpoint_id"],
@@ -436,7 +449,7 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
     if flow_mode not in {"stepwise", "continuous"}:
         raise ProtocolError("phase_flow_mode_invalid", "flow_mode is unsupported")
     if flow_mode == "continuous" and (
-        from_phase != 1 or flow_source != "successful-stage-1-footer"
+        from_phase not in {0, 1} or flow_source != f"successful-stage-{from_phase}-footer"
     ):
         raise ProtocolError(
             "phase_flow_mode_invalid",
@@ -477,6 +490,8 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         continuous_authority = None
         if flow_mode == "continuous":
             continuous_authority = _verify_continuous_flow_authority(records, checkpoint)
+            if continuous_authority.get("source_phase") != from_phase or continuous_authority.get("controller_ref") != owner_ref or continuous_authority.get("scope") != scope:
+                raise ProtocolError("phase_flow_mode_invalid", "continuous authority controller, source or scope changed")
         active_runs = [
             item for item in records["Phase Runs"]
             if item.get("run_kind") == "phase-run"

@@ -21,6 +21,8 @@ import tempfile
 import time
 from typing import Any
 
+from workflow_control import ControlError, validate_review, select_configuration
+
 
 STAGES = ("stage2", "stage3", "stage4")
 SCHEMA_PATH = Path(__file__).with_name("workflow_stage_result.schema.json").resolve()
@@ -95,11 +97,13 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
 def validate_confirmed(raw: dict[str, Any]) -> dict[str, Any]:
     required = {
         "frozen_requirement", "repository", "worktree", "git_common_dir",
-        "target_branch", "authority_scope", "run_record", "stages",
+        "target_branch", "authority_scope", "run_record", "stages", "controller_ref",
     }
     missing = sorted(required - raw.keys())
     if missing:
         raise WorkflowError("confirmed input missing: " + ", ".join(missing))
+    if not isinstance(raw["controller_ref"], str) or not raw["controller_ref"].strip():
+        raise WorkflowError("controller_ref must be authenticated and nonempty")
     requirement = raw["frozen_requirement"]
     if not isinstance(requirement, dict):
         raise WorkflowError("frozen_requirement must be an object")
@@ -133,8 +137,16 @@ def validate_confirmed(raw: dict[str, Any]) -> dict[str, Any]:
         model, effort = settings.get("model"), settings.get("reasoning_effort")
         if not isinstance(model, str) or not model or not isinstance(effort, str) or not effort:
             raise WorkflowError(f"stages.{stage} requires model and reasoning_effort")
-        normalized_stages[stage] = {"model": model, "reasoning_effort": effort}
+        try:
+            selection = select_configuration(settings.get("selection_input"))
+        except ControlError as error:
+            raise WorkflowError(f"{stage} configuration: {error}") from error
+        if selection["needs_decision"] or (selection["model"], selection["effort"]) != (model, effort):
+            raise WorkflowError(f"{stage} configuration requires a new controller decision")
+        normalized_stages[stage] = {"model": model, "reasoning_effort": effort,
+                                    "selection_input": settings["selection_input"], "selection": selection}
     return {
+        "controller_ref": raw["controller_ref"],
         "frozen_requirement": {"path": str(requirement_path), "commit": commit, "sha256": digest},
         "repository": str(repository), "worktree": str(worktree),
         "git_common_dir": str(git_common_dir), "target_branch": raw["target_branch"],
@@ -181,7 +193,7 @@ def _validate_record(state: dict[str, Any]) -> dict[str, Any]:
         raise WorkflowError("invalid run record current_stage")
     if not isinstance(state.get("sessions"), dict) or not isinstance(state.get("stage_results"), dict):
         raise WorkflowError("invalid run record state")
-    for stage in ("stage2", "stage3"):
+    for stage in STAGES:
         result = state["stage_results"].get(stage)
         if result is not None:
             if not isinstance(result, dict) or result.get("result") != "completed":
@@ -212,13 +224,15 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         ),
         "stage3": (
             "You are the Stage-3 Originating Task / stage carrier, not the implementation executor. Follow the "
-            "exact guided-implementation Skill and retain its internal dedicated implementation executor plus "
+            "exact guided-implementation Skill and dispatch exactly one native Implementation Dispatcher, with no visible implementation task, plus "
             "independent Standards and Spec review roles."
         ),
-        "stage4": "You are the Stage-4 executor. Follow the exact change-closure Skill and its retained-worktree protocol.",
+        "stage4": "You are the Stage-4 carrier delegated by the Workflow Controller. Dispatch exactly one native Closure Agent and verify its publication and cleanup. Return implementation defects to the controller for Stage 3.",
     }[stage]
     payload = {
         "stage": stage,
+        "controller_ref": confirmed["controller_ref"],
+        "control_checkpoint": prior.get("stage3", prior.get("stage2", {})).get("handoff", {}).get("control_checkpoint"),
         "frozen_requirement": confirmed["frozen_requirement"],
         "repository": confirmed["repository"],
         "worktree": confirmed["worktree"],
@@ -382,17 +396,23 @@ def _read_stage_result(path: Path, stage: str) -> dict[str, Any]:
 
 
 def _require_handoff(stage: str, result: dict[str, Any]) -> None:
-    if stage == "stage4":
-        return
     handoff = result.get("handoff")
     if not isinstance(handoff, dict):
         raise WorkflowError(f"{stage} completed result requires a structured handoff")
-    if stage == "stage2":
+    if stage == "stage4":
+        required = {"binding", "candidate_commit", "merge_commit", "cleanup", "ancestor_verified"}
+    elif stage == "stage2":
         required = {"binding", "planning_commit", "allowed_paths", "protected_paths"}
     else:
         required = {"binding", "candidate_commit", "review", "verification"}
+    required |= {"controller_ref", "role_ref", "control_checkpoint"}
     if not required <= set(handoff):
         raise WorkflowError(f"{stage} handoff missing: " + ", ".join(sorted(required - set(handoff))))
+    checkpoint = handoff["control_checkpoint"]
+    if not isinstance(checkpoint, dict) or checkpoint != {"controller_ref": handoff["controller_ref"], "stage": int(stage[-1]), "role_ref": handoff["role_ref"], "state": "completed"}:
+        raise WorkflowError("handoff control checkpoint does not bind controller and role")
+    if not isinstance(handoff["role_ref"], str) or not handoff["role_ref"]:
+        raise WorkflowError("handoff native role identity is missing")
     if not isinstance(handoff["binding"], dict) or not handoff["binding"]:
         raise WorkflowError(f"{stage} handoff.binding must be an object")
     binding = handoff["binding"]
@@ -405,7 +425,14 @@ def _require_handoff(stage: str, result: dict[str, Any]) -> None:
         _string_list(handoff["allowed_paths"], "stage2 handoff.allowed_paths")
         if not isinstance(handoff["protected_paths"], list) or not all(isinstance(item, str) for item in handoff["protected_paths"]):
             raise WorkflowError("stage2 handoff.protected_paths must be a string list")
+    elif stage == "stage4":
+        if not _is_git_sha(handoff["candidate_commit"]) or not _is_git_sha(handoff["merge_commit"]) or handoff["ancestor_verified"] is not True or handoff["cleanup"] != {"worktree_removed": True, "branch_removed": True}:
+            raise WorkflowError("stage4 publication or cleanup is incomplete")
     else:
+        try:
+            validate_review(handoff["candidate_commit"], handoff["review"], handoff["verification"], handoff["role_ref"])
+        except ControlError as error:
+            raise WorkflowError(str(error)) from error
         if not _is_git_sha(handoff["candidate_commit"]):
             raise WorkflowError("stage3 handoff.candidate_commit must be a string")
         if not isinstance(handoff["review"], dict) or not handoff["review"]:
@@ -420,12 +447,14 @@ def _validate_handoff_continuity(
     confirmed: dict[str, Any],
     stage2_result: dict[str, Any] | None,
 ) -> None:
+    if result["handoff"]["controller_ref"] != confirmed["controller_ref"]:
+        raise WorkflowError("handoff controller differs from confirmed controller")
     binding = result["handoff"]["binding"]
     immutable_fields = ("repository", "worktree", "git_common_dir", "target_branch")
     for field in immutable_fields:
         if binding[field] != confirmed[field]:
             raise WorkflowError(f"{stage} handoff.binding.{field} differs from confirmed input")
-    if stage == "stage3":
+    if stage in {"stage3", "stage4"}:
         if not isinstance(stage2_result, dict):
             raise WorkflowError("stage3 handoff requires the prior stage2 handoff")
         prior_binding = stage2_result.get("handoff", {}).get("binding")
@@ -549,7 +578,7 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
             _atomic_save(record_path, state)
             print(json.dumps({"status": "needs_input", "run_record": str(record_path), "question": result["question"]}))
             return 0
-        if stage != "stage4":
+        if result["result"] == "completed":
             try:
                 _validate_handoff_continuity(
                     stage, result, state["confirmed"], state["stage_results"].get("stage2")
@@ -557,6 +586,9 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
             except WorkflowError as exc:
                 _mark_failure(state, record_path, "handoff_validation_error", str(exc), False)
                 raise
+        if stage == "stage4" and result["handoff"]["candidate_commit"] != state["stage_results"]["stage3"]["handoff"]["candidate_commit"]:
+            _mark_failure(state, record_path, "handoff_validation_error", "closure candidate changed", False)
+            raise WorkflowError("closure candidate differs from accepted stage3 candidate")
         state["stage_results"][stage] = result
         print(json.dumps({"event": "stage.completed", "stage": stage}), flush=True)
         index = STAGES.index(stage)
