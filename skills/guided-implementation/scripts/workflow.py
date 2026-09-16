@@ -187,6 +187,9 @@ def _validate_record(state: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(result, dict) or result.get("result") != "completed":
                 raise WorkflowError(f"invalid {stage} result in run record")
             _require_handoff(stage, result)
+            _validate_handoff_continuity(
+                stage, result, confirmed, state["stage_results"].get("stage2")
+            )
     state["confirmed"] = confirmed
     return state
 
@@ -329,8 +332,13 @@ def _run_process(command: list[str], cwd: Path, on_line: Any, diagnostic_path: P
         returncode = process.wait()
         if returncode:
             raise WorkflowError(f"executor exited with status {returncode}; diagnostics: {diagnostic_path}")
-    except BaseException:
-        _terminate_process_group(process)
+    except BaseException as interrupted:
+        try:
+            _terminate_process_group(process)
+        except UncertainExecutorError:
+            if isinstance(interrupted, KeyboardInterrupt):
+                raise interrupted
+            raise
         raise
     finally:
         process.stdout.close()
@@ -408,6 +416,28 @@ def _require_handoff(stage: str, result: dict[str, Any]) -> None:
             raise WorkflowError("stage3 handoff.verification must be useful evidence")
 
 
+def _validate_handoff_continuity(
+    stage: str,
+    result: dict[str, Any],
+    confirmed: dict[str, Any],
+    stage2_result: dict[str, Any] | None,
+) -> None:
+    binding = result["handoff"]["binding"]
+    immutable_fields = ("repository", "worktree", "git_common_dir", "target_branch")
+    for field in immutable_fields:
+        if binding[field] != confirmed[field]:
+            raise WorkflowError(f"{stage} handoff.binding.{field} differs from confirmed input")
+    if stage == "stage3":
+        if not isinstance(stage2_result, dict):
+            raise WorkflowError("stage3 handoff requires the prior stage2 handoff")
+        prior_binding = stage2_result.get("handoff", {}).get("binding")
+        if not isinstance(prior_binding, dict):
+            raise WorkflowError("stage3 handoff requires a valid prior stage2 binding")
+        binding_fields = ("base_commit", "branch", "git_common_dir", "repository", "target_branch", "worktree")
+        if any(binding[field] != prior_binding.get(field) for field in binding_fields):
+            raise WorkflowError("stage3 handoff.binding differs from the stage2 binding")
+
+
 def _is_git_sha(value: object) -> bool:
     return isinstance(value, str) and len(value) == 40 and all(character in "0123456789abcdef" for character in value)
 
@@ -479,6 +509,8 @@ def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, contin
             raise WorkflowError(f"executor emitted turn.failed; diagnostics: {diagnostic}")
         if not turn_completed:
             raise WorkflowError(f"executor did not emit turn.completed; diagnostics: {diagnostic}")
+        if not isinstance(state["sessions"].get(stage), str):
+            raise WorkflowError(f"executor did not report thread.started; diagnostics: {diagnostic}")
         result = _read_stage_result(output, stage)
     except KeyboardInterrupt:
         _mark_failure(state, record_path, "interrupted", "runner interrupted", stage not in state["sessions"])
@@ -514,6 +546,14 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
             _atomic_save(record_path, state)
             print(json.dumps({"status": "needs_input", "run_record": str(record_path), "question": result["question"]}))
             return 0
+        if stage != "stage4":
+            try:
+                _validate_handoff_continuity(
+                    stage, result, state["confirmed"], state["stage_results"].get("stage2")
+                )
+            except WorkflowError as exc:
+                _mark_failure(state, record_path, "handoff_validation_error", str(exc), False)
+                raise
         state["stage_results"][stage] = result
         print(json.dumps({"event": "stage.completed", "stage": stage}), flush=True)
         index = STAGES.index(stage)
@@ -585,11 +625,23 @@ def main(argv: list[str] | None = None) -> int:
     resume_parser.add_argument("run_record", type=Path)
     resume_parser.add_argument("user_answer")
     args = parser.parse_args(argv)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def interrupt_on_sigterm(signum: int, frame: object) -> None:
+        del signum, frame
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupt_on_sigterm)
     try:
         return start(args.confirmed_input) if args.command == "start" else resume(args.run_record, args.user_answer)
     except WorkflowError as exc:
         print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print(json.dumps({"status": "error", "error": "runner interrupted"}), file=sys.stderr)
+        return 1
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

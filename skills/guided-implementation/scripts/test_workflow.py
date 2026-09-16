@@ -15,7 +15,8 @@ SCRIPT = Path(__file__).with_name("workflow.py")
 FIXTURE = """#!/usr/bin/env python3
 import json, os, signal, subprocess, sys, time
 prompt = sys.argv[-1]
-stage = json.loads(prompt.rsplit('\\n', 1)[1])['stage']
+payload = json.loads(prompt.rsplit('\\n', 1)[1])
+stage = payload['stage']
 out = sys.argv[sys.argv.index('-o') + 1]
 resume = sys.argv[2] == 'resume'
 state_path = os.environ['FIXTURE_STATE']
@@ -38,22 +39,25 @@ if mode in ('interrupt', 'interrupt-child'):
         state.setdefault('children', {})[stage] = child.pid
         json.dump(state, open(state_path, 'w'))
     time.sleep(10)
-print(json.dumps({'type': 'thread.started', 'thread_id': stage + '-session'}))
+if mode not in ('no-session-continue', 'no-session-needs-input'):
+    print(json.dumps({'type': 'thread.started', 'thread_id': stage + '-session'}))
 if mode == 'turn-failed':
     print(json.dumps({'type': 'turn.failed'})); sys.exit(0)
 if mode != 'no-completion': print(json.dumps({'type': 'turn.completed'}))
 if mode == 'malformed': open(out, 'w').write('{')
-elif mode == 'needs-input' and stage == 'stage2' and not resume:
+elif mode in ('needs-input', 'no-session-needs-input') and stage == 'stage2' and not resume:
     json.dump({'result': 'needs_input', 'artifacts': [], 'evidence': [], 'handoff_json': '{}', 'question': 'choose a value', 'message': '', 'needs_input_kind': 'user_decision'}, open(out, 'w'))
 elif mode == 'technical-error':
     json.dump({'result': 'needs_input', 'artifacts': [], 'evidence': [], 'handoff_json': '{}', 'question': 'Git metadata write denied', 'message': '', 'needs_input_kind': 'technical_error'}, open(out, 'w'))
 else:
     if mode == 'hold' and resume: time.sleep(1)
-    if mode in ('continue', 'stale') and stage == 'stage2' and state[stage] == 1:
+    if mode in ('continue', 'stale', 'no-session-continue') and stage == 'stage2' and state[stage] == 1:
         json.dump({'result': 'continue', 'artifacts': [], 'evidence': [], 'handoff_json': '{}', 'question': '', 'message': 'remaining work', 'needs_input_kind': 'none'}, open(out, 'w'))
         sys.exit(0)
     if mode == 'stale' and stage == 'stage2': sys.exit(0)
-    binding = {'base_commit': 'a' * 40, 'branch': 'codex/flow', 'git_common_dir': '/repo/.git', 'repository': '/repo', 'target_branch': 'main', 'worktree': '/flow'}
+    binding = {'base_commit': 'a' * 40, 'branch': 'codex/flow', 'git_common_dir': payload['git_common_dir'], 'repository': payload['repository'], 'target_branch': payload['target_branch'], 'worktree': payload['worktree']}
+    if mode == 'foreign-binding': binding['repository'] = '/foreign'
+    if mode == 'mutated-stage3-binding' and stage == 'stage3': binding['branch'] = 'codex/other'
     handoff = ({'binding': binding, 'planning_commit': 'b' * 40, 'allowed_paths': ['a'], 'protected_paths': []} if stage == 'stage2' else ({'binding': binding, 'candidate_commit': 'c' * 40, 'review': {'standards': 'accepted', 'spec': 'accepted'}, 'verification': ['full']} if stage == 'stage3' else {}))
     result = {'result': 'completed', 'artifacts': [stage + '-artifact'], 'evidence': [stage + '-evidence'], 'handoff_json': json.dumps(handoff if mode != 'missing-handoff' else {}), 'question': '', 'message': '', 'needs_input_kind': 'none'}
     json.dump(result, open(out, 'w'))
@@ -151,6 +155,30 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(fixture["commands"]["stage2"][1:3], ["exec", "resume"])
         self.assertEqual(self.state()["status"], "completed")
 
+    def test_continue_or_needs_input_without_thread_identity_stops_once(self) -> None:
+        for mode in ("no-session-continue", "no-session-needs-input"):
+            with self.subTest(mode=mode):
+                failed = self.invoke("start", str(self.confirmed), mode=mode)
+                self.assertEqual(failed.returncode, 1)
+                state = self.state()
+                self.assertEqual((state["status"], state["sessions"]), ("interrupted", {}))
+                self.assertNotIn("pending_input", state)
+                fixture = json.loads(self.fixture_state.read_text())
+                self.assertEqual(fixture["stage2"], 1)
+                self.assertNotIn("stage3", fixture)
+                self.record.unlink(); self.fixture_state.unlink()
+
+    def test_handoffs_must_preserve_confirmed_and_stage_two_binding(self) -> None:
+        foreign = self.invoke("start", str(self.confirmed), mode="foreign-binding")
+        self.assertEqual(foreign.returncode, 1)
+        self.assertIn("differs from confirmed input", self.state()["error"]["detail"])
+        self.assertNotIn("stage3", json.loads(self.fixture_state.read_text()))
+        self.record.unlink(); self.fixture_state.unlink()
+        mutated = self.invoke("start", str(self.confirmed), mode="mutated-stage3-binding")
+        self.assertEqual(mutated.returncode, 1)
+        self.assertIn("differs from the stage2 binding", self.state()["error"]["detail"])
+        self.assertNotIn("stage4", json.loads(self.fixture_state.read_text()))
+
     def test_stale_prior_turn_output_is_not_accepted_after_continue(self) -> None:
         failed = self.invoke("start", str(self.confirmed), mode="stale")
         self.assertEqual(failed.returncode, 1)
@@ -227,12 +255,41 @@ class WorkflowCliTests(unittest.TestCase):
         while not self.fixture_state.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         deadline = time.monotonic() + 3
-        while "children" not in json.loads(self.fixture_state.read_text()) and time.monotonic() < deadline:
+        fixture = {}
+        while "children" not in fixture and time.monotonic() < deadline:
+            try:
+                fixture = json.loads(self.fixture_state.read_text())
+            except json.JSONDecodeError:
+                fixture = {}
             time.sleep(0.05)
-        child = json.loads(self.fixture_state.read_text())["children"]["stage2"]
+        child = fixture["children"]["stage2"]
         runner.send_signal(signal.SIGINT)
         _, stderr = runner.communicate(timeout=10)
         self.assertEqual(runner.returncode, 1, stderr)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child, 0)
+
+    def test_sigterm_reaps_a_term_resistant_descendant_and_records_interruption(self) -> None:
+        environment = {**os.environ, "CODEX_BIN": str(self.fixture), "FIXTURE_STATE": str(self.fixture_state), "FIXTURE_MODE": "interrupt-child"}
+        runner = subprocess.Popen([sys.executable, str(SCRIPT), "start", str(self.confirmed)], env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + 3
+        while not self.fixture_state.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        deadline = time.monotonic() + 3
+        fixture = {}
+        while "children" not in fixture and time.monotonic() < deadline:
+            try:
+                fixture = json.loads(self.fixture_state.read_text())
+            except json.JSONDecodeError:
+                fixture = {}
+            time.sleep(0.05)
+        child = fixture["children"]["stage2"]
+        runner.send_signal(signal.SIGTERM)
+        _, stderr = runner.communicate(timeout=10)
+        self.assertEqual(runner.returncode, 1, stderr)
+        state = self.state()
+        self.assertEqual((state["status"], state["launch"]["state"]), ("interrupted", "uncertain"))
+        self.assertEqual(state["error"]["code"], "interrupted")
         with self.assertRaises(ProcessLookupError):
             os.kill(child, 0)
 
@@ -244,7 +301,7 @@ class WorkflowCliTests(unittest.TestCase):
         valid = self.confirmed_input(); self.record.parent.mkdir()
         self.record.write_text(json.dumps({
             "version": 1, "confirmed": valid, "status": "active", "current_stage": "stage3", "sessions": {"stage2": "stage2-session"},
-            "stage_results": {"stage2": {"result": "completed", "artifacts": ["a"], "evidence": ["e"], "handoff": {"binding": {"base_commit": "a" * 40, "branch": "codex/flow", "git_common_dir": "/repo/.git", "repository": "/repo", "target_branch": "main", "worktree": "/flow"}, "planning_commit": "b" * 40, "allowed_paths": ["a"], "protected_paths": []}}},
+            "stage_results": {"stage2": {"result": "completed", "artifacts": ["a"], "evidence": ["e"], "handoff": {"binding": {"base_commit": "a" * 40, "branch": "codex/flow", "git_common_dir": str((self.repository / ".git").resolve()), "repository": str(self.repository.resolve()), "target_branch": "main", "worktree": str(self.worktree.resolve())}, "planning_commit": "b" * 40, "allowed_paths": ["a"], "protected_paths": []}}},
             "launch": {"stage": "stage3", "state": "prelaunch", "turn": 0}, "history": [],
         }), encoding="utf-8")
         completed = self.invoke("resume", str(self.record), "continue from checkpoint")
