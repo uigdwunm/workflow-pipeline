@@ -87,6 +87,29 @@ class DedicatedStageTests(DiscussionProtocolScenarioFixture, DiscussionProtocolT
         self.assertEqual(prepared['control']['effects'], [])
         self.assertEqual(prepared['control']['context']['controller_ref'], 'discussion-task')
 
+        code, update, err = self.run_cli(self.evolution_request(topic, operation='prepare-topic-update',
+            expected_revision=2, expected_topic_revision=1,
+            mutation={'type': 'confirm-decision', 'summary': 'New requirement', 'rationale': 'User correction'}))
+        self.assertEqual(code, 0, (update, err))
+        code, applied, err = self.run_cli(self.evolution_request(topic, operation='apply-document-write',
+            expected_revision=3, expected_topic_revision=2, document_write_id=update['document_write_id']))
+        self.assertEqual(code, 0, (applied, err))
+        before = Path(topic['ledger_path']).read_bytes()
+        code, stale, err = self.run_cli(self.evolution_request(topic, operation='workflow-control',
+            expected_revision=4, expected_topic_revision=2, action='decide',
+            evidence={'plan_id': prepared['control']['plan']['plan_id'], 'intent': 'confirm'}))
+        self.assertEqual(code, 1, (stale, err))
+        self.assertEqual(Path(topic['ledger_path']).read_bytes(), before)
+        code, refreshed, err = self.run_cli(self.evolution_request(topic, operation='workflow-control',
+            expected_revision=4, expected_topic_revision=2, action='prepare', evidence=request['evidence']))
+        self.assertEqual(code, 0, (refreshed, err))
+        self.assertNotEqual(refreshed['control']['plan']['plan_id'], prepared['control']['plan']['plan_id'])
+        code, decided, err = self.run_cli(self.evolution_request(topic, operation='workflow-control',
+            expected_revision=5, expected_topic_revision=2, action='decide',
+            evidence={'plan_id': refreshed['control']['plan']['plan_id'], 'intent': 'confirm'}))
+        self.assertEqual(code, 0, (decided, err))
+        self.assertEqual(decided['control']['effects'][0]['operation'], 'create_thread')
+
     def test_closed_gate_blocks_control_preparation_without_mutation(self):
         topic = self.bootstrap_topic(self.make_project('control-gate', git=False))
         self.prepare_child_handoff(topic, initial_dependencies=[{

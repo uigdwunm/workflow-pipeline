@@ -64,7 +64,9 @@ def workflow_control(request):
                 context['preference']['stage_current'] = False
                 context['carrier'] = None
                 context['handoff_progress'] = None
-            if context['handoff_progress'] is None:
+            if context['handoff_progress'] is None or context['handoff_progress'].get('state') == 'prepared':
+                # Before confirmation compare the frozen plan to live document facts.
+                # Completed deliveries retain their authenticated immutable receipt.
                 context['requirement_identity'] = identity
         else:
             record = {'result_id': 'WC-' + request['actor_topic_id'], 'result_kind': 'workflow-control',

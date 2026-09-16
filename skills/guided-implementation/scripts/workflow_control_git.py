@@ -60,6 +60,40 @@ def implementation_hash(repository, relative):
     return hashlib.sha256(target.read_bytes()).hexdigest()
 
 
+def file_fingerprint(repository, relative):
+    content = implementation_hash(repository, relative)
+    if content is None:
+        return None
+    mode = (repository / relative).stat().st_mode & 0o777
+    return hashlib.sha256(json.dumps([content, mode]).encode()).hexdigest()
+
+
+def execution_delta(repository, progress, execution, *, accepting=False):
+    require('git_snapshot' in execution, 'execution has no verified Git allocation snapshot')
+    before = execution['git_snapshot']
+    current = snapshot(repository)
+    require(all(current[k] == before[k] for k in ('head', 'branch', 'index_hash')), 'executor changed Git HEAD, branch or index')
+    actual = {p: file_fingerprint(repository, p) for p in progress['allowed_paths']}
+    changed = {p: value for p, value in actual.items() if value != before['files'][p]}
+    own = {p: value for p, value in changed.items() if p in execution['paths']}
+    pending = set()
+    for p in set(changed) - set(own):
+        owners = [peer for peer in progress['executions'] if peer is not execution and
+                  p in peer['paths'] and peer['agent_ref'] is not None and
+                  'git_snapshot' in peer and peer['git_snapshot']['files'][p] != actual[p]]
+        proven = [peer for peer in owners if peer['stopped'] and peer['state'] in {'received', 'accepted'} and
+                  p in peer.get('git_result_snapshot', {}) and peer['git_result_snapshot'][p] == actual[p]]
+        if proven:
+            continue
+        active = [peer for peer in owners if peer['state'] == 'assigned' and not peer['stopped']]
+        require(active, 'full allocation delta contains unassigned or unverified changes: ' + p)
+        require(not accepting, 'parallel changes require matching stopped peer evidence before acceptance: ' + p)
+        pending.update(peer['agent_ref'] for peer in active)
+    if accepting:
+        require(own == execution.get('git_result_snapshot'), 'received execution bytes or modes changed before acceptance')
+    return own, sorted(pending)
+
+
 def changed_paths(repository, baseline):
     tracked = git(repository, 'diff', '--name-only', '-z', commit(baseline)).decode().split('\0')
     untracked = git(repository, 'ls-files', '--others', '--exclude-standard', '-z').decode().split('\0')
@@ -117,22 +151,19 @@ def verified_transition(payload):
         require(set(changed_paths(repository, payload['baseline'])) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
     if action == 'plan-execution':
         before = snapshot(repository)
-        before['files'] = {p: implementation_hash(repository, p) for p in evidence['paths']}
+        before['files'] = {p: file_fingerprint(repository, p) for p in progress['allowed_paths']}
     if action == 'execution-result':
-        executions = [e for e in progress['executions'] if e['agent_ref'] == evidence['agent_ref']]
-        require(len(executions) == 1 and 'git_snapshot' in executions[0], 'execution has no verified Git allocation snapshot')
-        execution = executions[0]
-        before = execution['git_snapshot']
-        current = snapshot(repository)
-        require(all(current[k] == before[k] for k in ('head', 'branch', 'index_hash')), 'executor changed Git HEAD, branch or index')
-        actual = {p: implementation_hash(repository, p) for p in execution['paths']}
-        evidence['file_hashes'] = {p: h for p, h in actual.items() if h != before['files'][p]}
-        evidence['changed_paths'] = sorted(evidence['file_hashes'])
+        execution = execution_record(progress, evidence['agent_ref'])
+        result_snapshot, pending_peers = execution_delta(repository, progress, execution)
+        actual_hashes = {p: implementation_hash(repository, p) for p in result_snapshot}
+        require(set(evidence['changed_paths']) == set(actual_hashes) and evidence['file_hashes'] == actual_hashes,
+                'reported changes must exactly match the actual allocation delta')
         evidence['git_unchanged'] = True
     if action in {'accept-execution', 'recover-dispatch'}:
         evidence['file_hashes'] = {p: implementation_hash(repository, p) for p in progress['allowed_paths']}
         if action == 'accept-execution':
             execution = execution_record(progress, evidence['agent_ref'])
+            execution_delta(repository, progress, execution, accepting=True)
             evidence['file_hashes'] = {p: evidence['file_hashes'][p] for p in execution['file_hashes']}
     if action == 'candidate':
         require(not git(repository, 'status', '--porcelain'), 'candidate working tree is dirty')
@@ -144,6 +175,10 @@ def verified_transition(payload):
     if action in {'start-dispatch', 'start-closure'}:
         git(repository, 'merge-base', '--is-ancestor', commit(payload['baseline']), 'HEAD')
         result['context']['handoff_progress']['git_baseline_commit'] = payload['baseline']
+    if action == 'execution-result':
+        recorded = execution_record(result['context']['handoff_progress'], evidence['agent_ref'])
+        recorded['git_result_snapshot'] = result_snapshot
+        result['pending_peer_refs'] = pending_peers
     if action == 'plan-execution':
         result['context']['handoff_progress']['executions'][-1]['git_snapshot'] = before
     return result

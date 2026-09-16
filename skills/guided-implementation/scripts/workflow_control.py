@@ -128,7 +128,7 @@ def validate_progress(progress):
         require(isinstance(progress['executions'], list), 'executions must be a list')
         for execution in progress['executions']:
             required = {'task_id', 'paths', 'read_only', 'behavior', 'tests', 'git_operations', 'configuration', 'agent_ref', 'state', 'stopped', 'file_hashes', 'allocation_digest'}
-            require(isinstance(execution, dict) and required <= set(execution) <= required | {'git_snapshot'}, 'invalid execution envelope fields')
+            require(isinstance(execution, dict) and required <= set(execution) <= required | {'git_snapshot', 'git_result_snapshot'}, 'invalid execution envelope fields')
             require(execution['state'] in {'dispatch-pending', 'assigned', 'received', 'accepted', 'cancelled'} and type(execution['stopped']) is bool, 'invalid execution state')
             validate_selection(execution['configuration'])
             text(execution['task_id']); text(execution['behavior']); text(execution['allocation_digest'])
@@ -137,7 +137,10 @@ def validate_progress(progress):
             if 'git_snapshot' in execution:
                 keys(execution['git_snapshot'], {'head', 'branch', 'index_hash', 'files'})
                 hashes(execution['git_snapshot']['files'])
-                require(set(execution['git_snapshot']['files']) == set(execution['paths']), 'allocation snapshot paths mismatch')
+                require(set(execution['git_snapshot']['files']) == set(progress['allowed_paths']), 'allocation snapshot must cover full implementation scope')
+            if 'git_result_snapshot' in execution:
+                hashes(execution['git_result_snapshot'])
+                require(set(execution['git_result_snapshot']) == set(execution['file_hashes']), 'received snapshot paths mismatch')
             paths(execution['paths']); paths(execution['read_only'], empty=True); hashes(execution['file_hashes'])
     elif 'closure_paths' in progress:
         allowed = {'state', 'candidate', 'dispatcher_ref', 'review', 'verification', 'binding', 'implementation_paths', 'closure_paths', 'protected_paths', 'configuration', 'merge', 'problem', 'git_baseline_commit'}
