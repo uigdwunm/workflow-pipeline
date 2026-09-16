@@ -342,6 +342,12 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, source_topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         if kind == "dedicated-stage":
+            for prior_record in records["Phase Runs"]:
+                if prior_record.get("run_kind") != "discussion-handoff":
+                    continue
+                prior = _handoff_data(prior_record)
+                if prior.get("kind") == "dedicated-stage" and prior.get("target_topic_id") == request["actor_topic_id"] and prior.get("stage") == request["stage"] and any(a.get("binding_eligible") for a in prior["attempts"]):
+                    raise ProtocolError("document_ownership_conflict", "same-stage dedicated attempt already exists")
             if type(request["stage"]) is not int or request["stage"] not in {0, 1} or request["stage"] != source_topic["current_phase"]:
                 raise ProtocolError("invalid_request", "dedicated stage must match current requirements phase")
         if kind in {"child", "dedicated-stage"}:
@@ -619,6 +625,17 @@ def _bind_handoff(request: dict[str, Any]) -> dict[str, Any]:
         elif handoff["kind"] == "dedicated-stage":
             if len(active) != 1 or active[0].get("conversation_ref") != owner_ref or conversation_ref == owner_ref:
                 raise ProtocolError("handoff_identity_conflict", "dedicated stage requires its unchanged controller")
+            for prior_binding in records["Conversation Bindings"]:
+                if prior_binding.get("topic_id") == handoff["target_topic_id"] and prior_binding.get("binding_state") == "carrier":
+                    prior_record = _handoff_record(records, prior_binding["handoff_id"])
+                    prior = _handoff_data(prior_record)
+                    if prior.get("stage") != handoff["stage"]:
+                        prior_binding["binding_state"] = "superseded"
+                        prior["state"] = "superseded"
+                        prior_attempt = _handoff_attempt(prior, prior_binding["attempt_id"])
+                        prior_attempt.update(state="superseded", binding_eligible=False)
+                        prior["record_revision"] += 1
+                        _store_handoff(prior_record, prior)
             if any(r.get("topic_id") == handoff["target_topic_id"] and r.get("binding_state") == "carrier" for r in records["Conversation Bindings"]):
                 raise ProtocolError("document_ownership_conflict", "dedicated writer already exists")
             apply_gate_policy(records, "prepare-handoff", request["actor_topic_id"])
@@ -774,11 +791,17 @@ def _transition_handoff_attempt(
             "failed": {"setup-pending", "outcome-unknown"},
             "cancelled": {"setup-pending", "outcome-unknown", "failed"},
         }[target_state]
+        if handoff["kind"] == "dedicated-stage" and target_state in {"failed", "cancelled"}:
+            allowed_states |= {"bound-pending-acceptance", "accepted-awaiting-next-turn", "active"}
         if attempt["state"] not in allowed_states:
             raise ProtocolError("handoff_attempt_state_conflict", "attempt cannot enter requested state")
         attempt.update({"state": target_state, "reason": reason})
         if target_state in {"failed", "cancelled"}:
             attempt["binding_eligible"] = False
+            if handoff["kind"] == "dedicated-stage":
+                for binding in records["Conversation Bindings"]:
+                    if binding.get("handoff_id") == handoff["handoff_id"] and binding.get("attempt_id") == attempt["attempt_id"]:
+                        binding["binding_state"] = "superseded"
         handoff["state"] = target_state
         handoff["record_revision"] += 1
         _store_handoff(record, handoff)
@@ -826,6 +849,15 @@ def _retry_handoff(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("handoff_attempt_state_conflict", "attempt is not terminal or uncertain")
         if not forced and prior["state"] != "failed":
             raise ProtocolError("handoff_reconciliation_required", "retry requires explicit failure or user authorization")
+        if handoff.get("kind") == "dedicated-stage":
+            if handoff["stage"] != topic_record["current_phase"]:
+                raise ProtocolError("handoff_attempt_state_conflict", "dedicated stage is no longer current")
+            for other_record in records["Phase Runs"]:
+                if other_record is record or other_record.get("run_kind") != "discussion-handoff":
+                    continue
+                other = _handoff_data(other_record)
+                if other.get("kind") == "dedicated-stage" and other.get("target_topic_id") == request["actor_topic_id"] and other.get("stage") == handoff["stage"] and any(a.get("binding_eligible") for a in other["attempts"]):
+                    raise ProtocolError("document_ownership_conflict", "same-stage dedicated attempt already exists")
         prior["binding_eligible"] = False
         number = len(handoff["attempts"]) + 1
         attempt_id = _handoff_attempt_id(handoff["handoff_id"], number)

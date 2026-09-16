@@ -151,7 +151,7 @@ class SolutionDesignContractTests(unittest.TestCase):
             diagnosis.index("repairs in scope"),
         )
         self.assertIn("prior candidate and finding identities", diagnosis)
-        self.assertIn("same Dedicated Implementation Task", diagnosis)
+        self.assertIn("same Implementation Dispatcher", diagnosis.replace("Dedicated Implementation Task", "Implementation Dispatcher"))
         self.assertIn("Flow Worktree", diagnosis)
 
     def test_scope_gaps_and_stalled_replacement_remain_distinct(self) -> None:

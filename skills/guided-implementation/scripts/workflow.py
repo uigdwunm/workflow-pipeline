@@ -21,7 +21,7 @@ import tempfile
 import time
 from typing import Any
 
-from workflow_control import ControlError, validate_review, select_configuration
+from workflow_control import ControlError, validate_review, select_configuration, paths
 
 
 STAGES = ("stage2", "stage3", "stage4")
@@ -202,6 +202,8 @@ def _validate_record(state: dict[str, Any]) -> dict[str, Any]:
             _validate_handoff_continuity(
                 stage, result, confirmed, state["stage_results"].get("stage2")
             )
+    if "stage4" in state["stage_results"]:
+        _validate_closure_scope(state["stage_results"]["stage4"], state["stage_results"].get("stage3"))
     state["confirmed"] = confirmed
     return state
 
@@ -262,6 +264,13 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "only for a genuine user decision; report technical failure with needs_input_kind technical_error and the exact "
         "issue, which stops the runner without asking for authorization. completed and continue use needs_input_kind none. "
         "continue means remaining work must continue in this same session.\n"
+        "Every completed handoff includes controller_ref from the frozen payload, actual native role_ref, and "
+        "control_checkpoint with exactly controller_ref, stage (integer), role_ref, state completed, role_kind. "
+        "role_kind is solution-designer / implementation-dispatcher / closure-agent for stages 2 / 3 / 4. "
+        "Stage 3 carries exact implementation_paths, closure_paths, protected_paths; review standards/spec each "
+        "has candidate, reviewer_ref, status accepted; verification has candidate and nonempty checks. "
+        "Stage 4 carries changed_paths, the same accepted candidate_commit and binding, merge_commit, "
+        "ancestor_verified and cleanup worktree_removed/branch_removed facts. Partial cleanup is not completed.\n"
         + json.dumps(payload, sort_keys=True)
     )
 
@@ -400,21 +409,27 @@ def _require_handoff(stage: str, result: dict[str, Any]) -> None:
     if not isinstance(handoff, dict):
         raise WorkflowError(f"{stage} completed result requires a structured handoff")
     if stage == "stage4":
-        required = {"binding", "candidate_commit", "merge_commit", "cleanup", "ancestor_verified"}
+        required = {"binding", "candidate_commit", "merge_commit", "cleanup", "ancestor_verified", "changed_paths"}
     elif stage == "stage2":
         required = {"binding", "planning_commit", "allowed_paths", "protected_paths"}
     else:
-        required = {"binding", "candidate_commit", "review", "verification"}
+        required = {"binding", "candidate_commit", "review", "verification", "implementation_paths", "closure_paths", "protected_paths"}
     required |= {"controller_ref", "role_ref", "control_checkpoint"}
     if not required <= set(handoff):
         raise WorkflowError(f"{stage} handoff missing: " + ", ".join(sorted(required - set(handoff))))
     checkpoint = handoff["control_checkpoint"]
-    if not isinstance(checkpoint, dict) or checkpoint != {"controller_ref": handoff["controller_ref"], "stage": int(stage[-1]), "role_ref": handoff["role_ref"], "state": "completed"}:
+    if not isinstance(checkpoint, dict) or checkpoint != {"controller_ref": handoff["controller_ref"], "stage": int(stage[-1]), "role_ref": handoff["role_ref"], "state": "completed", "role_kind": {"stage2": "solution-designer", "stage3": "implementation-dispatcher", "stage4": "closure-agent"}[stage]}:
         raise WorkflowError("handoff control checkpoint does not bind controller and role")
     if not isinstance(handoff["role_ref"], str) or not handoff["role_ref"]:
         raise WorkflowError("handoff native role identity is missing")
     if not isinstance(handoff["binding"], dict) or not handoff["binding"]:
         raise WorkflowError(f"{stage} handoff.binding must be an object")
+    try:
+        for field in ("implementation_paths", "closure_paths", "protected_paths", "allowed_paths", "changed_paths"):
+            if field in handoff:
+                paths(handoff[field], empty=field in {"closure_paths", "protected_paths"})
+    except ControlError as error:
+        raise WorkflowError(str(error)) from error
     binding = handoff["binding"]
     binding_fields = {"base_commit", "branch", "git_common_dir", "repository", "target_branch", "worktree"}
     if not binding_fields <= set(binding) or not all(isinstance(binding[field], str) and binding[field] for field in binding_fields):
@@ -463,6 +478,17 @@ def _validate_handoff_continuity(
         binding_fields = ("base_commit", "branch", "git_common_dir", "repository", "target_branch", "worktree")
         if any(binding[field] != prior_binding.get(field) for field in binding_fields):
             raise WorkflowError("stage3 handoff.binding differs from the stage2 binding")
+
+
+def _validate_closure_scope(result, stage3_result):
+    if not isinstance(stage3_result, dict) or not isinstance(stage3_result.get("handoff"), dict):
+        raise WorkflowError("closure requires accepted stage3 handoff")
+    accepted = stage3_result["handoff"]
+    actual = result["handoff"]
+    if actual["candidate_commit"] != accepted["candidate_commit"]:
+        raise WorkflowError("closure candidate differs from accepted stage3 candidate")
+    if not set(actual["changed_paths"]) <= set(accepted["implementation_paths"] + accepted["closure_paths"]):
+        raise WorkflowError("closure changed paths escape accepted scope")
 
 
 def _is_git_sha(value: object) -> bool:
@@ -586,9 +612,12 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
             except WorkflowError as exc:
                 _mark_failure(state, record_path, "handoff_validation_error", str(exc), False)
                 raise
-        if stage == "stage4" and result["handoff"]["candidate_commit"] != state["stage_results"]["stage3"]["handoff"]["candidate_commit"]:
-            _mark_failure(state, record_path, "handoff_validation_error", "closure candidate changed", False)
-            raise WorkflowError("closure candidate differs from accepted stage3 candidate")
+        if stage == "stage4":
+            try:
+                _validate_closure_scope(result, state["stage_results"].get("stage3"))
+            except WorkflowError as error:
+                _mark_failure(state, record_path, "handoff_validation_error", str(error), False)
+                raise
         state["stage_results"][stage] = result
         print(json.dumps({"event": "stage.completed", "stage": stage}), flush=True)
         index = STAGES.index(stage)

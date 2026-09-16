@@ -17,6 +17,10 @@ class WorkflowControlTests(unittest.TestCase):
         self.assertTrue(result.stdout, result.stderr)
         return json.loads(result.stdout)
 
+    def binding(self):
+        return {'repository': '/tmp/repository', 'worktree': '/tmp/flow', 'git_common_dir': '/tmp/repository/.git',
+                'branch': 'codex/flow', 'target_branch': 'main', 'base_commit': 'a' * 40}
+
     def configuration(self, role='dedicated-discussion'):
         return {'role': role, 'required_capability': 2,
                 'supported': [{'model': 'supported', 'effort': 'high', 'capability': 3,
@@ -63,7 +67,7 @@ class WorkflowControlTests(unittest.TestCase):
     def bound(self):
         prepared = self.call('prepare', {'target': 'local', 'project': 'project', 'title': 'Discuss',
             'missing_context': [], 'configuration': self.configuration(),
-            'next_step': 'stage2', 'archive_ref': 'old', 'gate_open': True})
+            'next_step': 'stage2', 'archive_ref': None, 'gate_open': True})
         confirmed = self.call('decide', {'plan_id': prepared['plan']['plan_id'], 'intent': 'confirm'}, prepared['context'])
         return self.call('creation-result', {'status': 'ready', 'ref': 'old',
             'attempt': confirmed['context']['carrier']['attempt']}, confirmed['context'])['context']
@@ -71,8 +75,8 @@ class WorkflowControlTests(unittest.TestCase):
     def test_accept_then_successor_ready_then_archive_and_reconcile(self):
         ctx = self.bound()
         delivery = {'delivery_id': 'delivery', 'source_ref': 'old', 'attempt': ctx['carrier']['attempt'],
-                    'requirement_identity': ctx['requirement_identity'], 'commit': 'b' * 40,
-                    'verified_commit_hash': 'a' * 64}
+                    'requirement_identity': {**ctx['requirement_identity'], 'version': 2, 'sha256': 'f' * 64}, 'commit': 'b' * 40,
+                    'verified_commit_hash': 'f' * 64}
         received = self.call('receive', delivery, ctx)
         self.assertTrue(received['ok'])
         self.assertFalse(self.call('archive', {}, received['context'])['ok'])
@@ -82,7 +86,7 @@ class WorkflowControlTests(unittest.TestCase):
         self.assertTrue(replay['acknowledged'])
         ready = self.call('successor-ready', {'ref': 'successor', 'stage': 2,
             'input_digest': received['delivery_digest'], 'role': 'solution-designer',
-            'binding_verified': True, 'activated': False, 'confirmed': True}, accepted['context'])
+            'binding_verified': True, 'activated': False, 'confirmed': True, 'archive_ref': 'old'}, accepted['context'])
         self.assertTrue(ready['ok'])
         archive = self.call('archive', {}, ready['context'])
         self.assertEqual(archive['effects'], [{'operation': 'archive', 'ref': 'old'}])
@@ -95,19 +99,31 @@ class WorkflowControlTests(unittest.TestCase):
     def test_single_dispatcher_exact_files_and_stopped_writer_recovery(self):
         ctx = self.context()
         ctx['stage'] = 3
-        started = self.call('start-dispatch', {'binding': {'worktree': '/tmp/flow', 'branch': 'codex/flow'},
+        started = self.call('start-dispatch', {'binding': self.binding(),
             'binding_verified': True, 'allowed_paths': ['src/a.py', 'src/b.py'], 'protected_paths': ['docs/draft.md'],
             'authority_digest': 'c' * 64, 'testing_basis': 'real CLI', 'configuration': self.configuration('implementation-dispatcher')}, ctx)
         self.assertTrue(started['ok'])
         self.assertFalse(self.call('start-dispatch', {}, started['context'])['ok'])
         bound = self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']}, started['context'])
-        envelope = {'agent_ref': 'executor-a', 'task_id': 'a', 'paths': ['src/a.py'],
-                    'read_only': ['src/b.py'], 'behavior': 'behavior a', 'tests': ['CLI test'], 'git_operations': []}
-        assigned = self.call('assign', envelope, bound['context'])
+        envelope = {'task_id': 'a', 'paths': ['src/a.py'],
+                    'read_only': ['src/b.py'], 'behavior': 'behavior a', 'tests': ['CLI test'], 'git_operations': [],
+                    'configuration': self.configuration('execution-agent')}
+        planned = self.call('plan-execution', envelope, bound['context'])
+        self.assertTrue(planned['ok'])
+        premature = self.call('execution-result', {'agent_ref': None, 'stopped': True,
+            'changed_paths': [], 'file_hashes': {}, 'tests': ['passed'], 'git_unchanged': True}, planned['context'])
+        self.assertFalse(premature['ok'])
+        unknown = self.call('execution-dispatch-result', {'task_id': 'a', 'allocation_digest': planned['allocation_digest'], 'status': 'unknown'}, planned['context'])
+        self.assertTrue(unknown['ok'])
+        self.assertEqual(unknown['effects'][0]['operation'], 'read-native-state')
+        cancelled = self.call('execution-dispatch-result', {'task_id': 'a', 'allocation_digest': planned['allocation_digest'], 'status': 'not-created'}, unknown['context'])
+        self.assertTrue(cancelled['ok'])
+        self.assertTrue(cancelled['context']['handoff_progress']['executions'][0]['stopped'])
+        self.assertFalse(self.call('assign', {'agent_ref': 'late', 'task_id': 'a', 'allocation_digest': planned['allocation_digest']}, cancelled['context'])['ok'])
+        assigned = self.call('assign', {'agent_ref': 'executor-a', 'task_id': 'a', 'allocation_digest': planned['allocation_digest']}, planned['context'])
         self.assertTrue(assigned['ok'])
-        envelope['agent_ref'] = 'executor-b'
         envelope['task_id'] = 'b'
-        self.assertFalse(self.call('assign', envelope, assigned['context'])['ok'])
+        self.assertFalse(self.call('plan-execution', envelope, assigned['context'])['ok'])
         self.assertFalse(self.call('recover-dispatch', {'stopped_refs': ['dispatcher'], 'file_hashes': {},
             'replacement_ref': 'replacement'}, assigned['context'])['ok'])
         stopped = self.call('execution-result', {'agent_ref': 'executor-a', 'stopped': True,
@@ -142,8 +158,10 @@ class WorkflowControlTests(unittest.TestCase):
         evidence = {'candidate': candidate, 'dispatcher_ref': 'dispatcher',
             'review': {axis: {'candidate': candidate, 'reviewer_ref': axis, 'status': 'accepted'} for axis in ('standards', 'spec')},
             'verification': {'candidate': candidate, 'checks': ['full suite']},
-            'binding': {'worktree': '/tmp/flow'}, 'implementation_paths': ['src/a.py'],
+            'binding': self.binding(), 'implementation_paths': ['src/a.py'],
             'closure_paths': ['README.md'], 'protected_paths': ['docs/draft.md'], 'configuration': self.configuration('closure-agent')}
+        bad = {**evidence, 'closure_paths': ['src/repair.py']}
+        self.assertFalse(self.call('start-closure', bad, ctx)['ok'])
         started = self.call('start-closure', evidence, ctx)
         self.assertTrue(started['ok'])
         self.assertEqual(started['effects'][0]['role'], 'closure-agent')
@@ -172,8 +190,22 @@ class WorkflowControlTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertIsNone(result['plan'])
         self.assertEqual(result['effects'], [])
+        chosen = self.call('choose-dedicated', {'intent': 'explicit-dedicated'}, ctx)
+        self.assertTrue(chosen['ok'])
+        self.assertEqual(self.call('prepare', evidence, chosen['context'])['plan']['task_count'], 1)
         evidence['gate_open'] = False
         self.assertFalse(self.call('prepare', evidence, ctx)['ok'])
+
+    def test_nested_unknown_fields_and_malformed_roles_are_rejected(self):
+        import copy
+        ctx = self.bound()
+        cases = []
+        for container in ('carrier', 'requirement_identity', 'preference', 'handoff_progress'):
+            changed = copy.deepcopy(ctx); changed[container]['unexpected'] = True; cases.append(changed)
+        changed = copy.deepcopy(ctx); changed['carrier']['kind'] = 'self-appointed-controller'; cases.append(changed)
+        for invalid in cases:
+            with self.subTest(context=invalid):
+                self.assertFalse(self.call('cancel', {}, invalid)['ok'])
 
     def test_role_selection_preserves_confirmed_and_bounds_upgrade(self):
         cheap = {'model': 'small', 'effort': 'high', 'capability': 1, 'cost': 1, 'permission': 'same', 'visible_identity': 'same'}
@@ -190,8 +222,35 @@ class WorkflowControlTests(unittest.TestCase):
         evidence['previous'] = cheap
         evidence['supported'] = [strong]
         upgraded = self.call('select-configuration', evidence)
+        self.assertFalse(upgraded['ok'])
+        evidence['supported'][0]['cost'] = 2
+        upgraded = self.call('select-configuration', evidence)
         self.assertTrue(upgraded['selection']['needs_decision'])
         evidence['upgrade_attempted'] = True
+        self.assertFalse(self.call('select-configuration', evidence)['ok'])
+
+    def test_json_duplicate_keys_and_invalid_previous_configuration_fail_closed(self):
+        raw = '{"schema_version":1,"schema_version":1,"action":"cancel","actor_ref":"controller","context":' + json.dumps(self.bound()) + ',"evidence":{}}'
+        result = subprocess.run([sys.executable, str(CLI)], input=raw, text=True, capture_output=True)
+        self.assertFalse(json.loads(result.stdout)['ok'])
+        for previous in ([], {'model': 'supported'}, {**self.configuration()['supported'][0], 'extra': True}):
+            evidence = self.configuration(); evidence['previous'] = previous
+            self.assertFalse(self.call('select-configuration', evidence)['ok'])
+
+    def test_text_only_adapter_evidence_never_invents_scores_or_prices(self):
+        evidence = self.configuration()
+        evidence['required_capability'] = None
+        evidence['supported'][0]['capability'] = None
+        evidence['supported'][0]['cost'] = None
+        selected = self.call('select-configuration', evidence)
+        self.assertTrue(selected['ok'])
+        self.assertEqual(selected['selection']['source'], 'user')
+        evidence['user'] = None
+        evidence['inherited'] = {'model': 'supported', 'effort': 'high'}
+        selected = self.call('select-configuration', evidence)
+        self.assertTrue(selected['ok'])
+        self.assertEqual(selected['selection']['source'], 'inherited')
+        evidence['inherited'] = None
         self.assertFalse(self.call('select-configuration', evidence)['ok'])
 
 if __name__ == '__main__':

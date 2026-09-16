@@ -254,6 +254,7 @@ def _verify_continuous_flow_authority(
     records: dict[str, list[dict[str, Any]]],
     checkpoint: dict[str, Any],
     authorization_id: str | None = None,
+    scope: list[str] | None = None,
 ) -> dict[str, Any]:
     result_id = _verify_stage_one_checkpoint(records, checkpoint)
     matches = []
@@ -281,7 +282,19 @@ def _verify_continuous_flow_authority(
             "phase_flow_mode_invalid",
             "continuous mode requires one exact successful-footer authorization",
         )
-    return matches[0]
+    authority = matches[0]
+    topic_id = checkpoint.get("topic_id")
+    topic = _record_by_id(records["Current Topics"], "topic_id", topic_id, "topic_id")
+    active = [b for b in records["Conversation Bindings"] if b.get("topic_id") == topic_id and b.get("binding_state") == "active"]
+    if (len(active) != 1 or authority.get("controller_ref") != active[0].get("conversation_ref")
+            or authority.get("source_phase") != topic.get("current_phase")
+            or authority.get("scope_digest") != _sha256(_canonical_json(authority.get("scope")).encode("utf-8"))
+            or scope is not None and authority.get("scope") != scope):
+        raise ProtocolError("phase_flow_mode_invalid", "continuous controller, source phase or scope changed")
+    apply_gate_policy(records, "phase-transition", topic_id, phase=authority["source_phase"])
+    if _pending_topic_impacts(records, topic_id):
+        raise ProtocolError("phase_impact_drift", "pending impacts block continuous execution")
+    return authority
 
 
 def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
@@ -352,6 +365,8 @@ def _authorize_continuous_flow(request: dict[str, Any]) -> dict[str, Any]:
             },
             topic_path,
         )
+        if checkpoint.get("stage_entry_phase") != request["source_phase"]:
+            raise ProtocolError("phase_flow_mode_invalid", "checkpoint belongs to a different source phase")
         phase_result_id = _verify_stage_one_checkpoint(records, checkpoint)
         if requested_phase_result_id != phase_result_id:
             raise ProtocolError(
@@ -489,7 +504,7 @@ def _prepare_wrapper_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         _verify_wrapper_checkpoint_current(records, checkpoint_data, topic_path)
         continuous_authority = None
         if flow_mode == "continuous":
-            continuous_authority = _verify_continuous_flow_authority(records, checkpoint)
+            continuous_authority = _verify_continuous_flow_authority(records, checkpoint, scope=scope)
             if continuous_authority.get("source_phase") != from_phase or continuous_authority.get("controller_ref") != owner_ref or continuous_authority.get("scope") != scope:
                 raise ProtocolError("phase_flow_mode_invalid", "continuous authority controller, source or scope changed")
         active_runs = [
@@ -1277,6 +1292,11 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                 raise ProtocolError("phase_identity_conflict", "ready carrier identity does not match the caller")
             _phase_check_evidence(data, supplied_evidence)
             _phase_check_evidence(data, _authoritative_phase_evidence(topic_path, records, topic))
+            if data.get("wrapper_integration") is True:
+                _verify_wrapper_checkpoint_current(records, data, topic_path)
+                if data.get("flow_mode") == "continuous":
+                    _verify_continuous_flow_authority(records, _completed_checkpoint(records, data["source_checkpoint_id"]),
+                                                      data.get("continuous_authorization_id"), scope=data["scope"])
             attempt["state"] = "ready"
             data["state"] = "ready"
         elif target == "active":
@@ -1290,7 +1310,7 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                     _verify_continuous_flow_authority(
                         records,
                         _completed_checkpoint(records, data["source_checkpoint_id"]),
-                        data.get("continuous_authorization_id"),
+                        data.get("continuous_authorization_id"), scope=data["scope"],
                     )
             attempt["state"] = "active"
             data["state"] = "active"

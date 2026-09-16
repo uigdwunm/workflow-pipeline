@@ -62,12 +62,17 @@ else:
     if mode == 'mutated-stage3-binding' and stage == 'stage3': binding['branch'] = 'codex/other'
     handoff = ({'binding': binding, 'planning_commit': 'b' * 40, 'allowed_paths': ['a'], 'protected_paths': []} if stage == 'stage2' else ({'binding': binding, 'candidate_commit': 'c' * 40, 'review': {'standards': 'accepted', 'spec': 'accepted'}, 'verification': ['full']} if stage == 'stage3' else {}))
     handoff.update(controller_ref=payload.get('controller_ref', 'controller'), role_ref=stage + '-native')
-    handoff['control_checkpoint'] = {'controller_ref': handoff['controller_ref'], 'stage': int(stage[-1]), 'role_ref': stage + '-native', 'state': 'completed'}
+    handoff['control_checkpoint'] = {'controller_ref': handoff['controller_ref'], 'stage': int(stage[-1]), 'role_ref': stage + '-native', 'state': 'completed', 'role_kind': {'stage2': 'solution-designer', 'stage3': 'implementation-dispatcher', 'stage4': 'closure-agent'}[stage]}
     if stage == 'stage3':
+        handoff.update(implementation_paths=['a'], closure_paths=['README.md'], protected_paths=[])
         handoff['review'] = {axis: {'candidate': 'c' * 40, 'reviewer_ref': axis, 'status': 'accepted'} for axis in ('standards', 'spec')}
         handoff['verification'] = {'candidate': 'c' * 40, 'checks': ['full']}
     if stage == 'stage4':
-        handoff.update(binding=binding, candidate_commit='c' * 40, merge_commit='d' * 40, cleanup={'worktree_removed': True, 'branch_removed': True}, ancestor_verified=True)
+        handoff.update(binding=binding, candidate_commit='c' * 40, merge_commit='d' * 40, cleanup={'worktree_removed': True, 'branch_removed': True}, ancestor_verified=True, changed_paths=['a', 'README.md'])
+    if mode == 'wrong-role': handoff['control_checkpoint']['role_kind'] = 'execution-agent'
+    if mode == 'wrong-review' and stage == 'stage3': handoff['review']['spec']['candidate'] = 'f' * 40
+    if mode == 'partial-cleanup' and stage == 'stage4': handoff['cleanup']['worktree_removed'] = False
+    if mode == 'changed-closure-code' and stage == 'stage4': handoff['changed_paths'] = ['unauthorized.py']
     if mode == 'wrong-controller': handoff['controller_ref'] = 'foreign'
     result = {'result': 'completed', 'artifacts': [stage + '-artifact'], 'evidence': [stage + '-evidence'], 'handoff_json': json.dumps(handoff if mode != 'missing-handoff' else {}), 'question': '', 'message': '', 'needs_input_kind': 'none'}
     json.dump(result, open(out, 'w'))
@@ -156,6 +161,17 @@ class WorkflowCliTests(unittest.TestCase):
         completed = self.invoke('start', str(self.confirmed))
         self.assertEqual(completed.returncode, 1)
         self.assertFalse(self.fixture_state.exists())
+
+    def test_invalid_role_review_or_cleanup_never_completes(self):
+        for mode in ('wrong-role', 'wrong-review', 'partial-cleanup', 'changed-closure-code'):
+            with self.subTest(mode=mode):
+                if self.record.exists(): self.record.unlink()
+                if self.fixture_state.exists(): self.fixture_state.unlink()
+                result = self.invoke('start', str(self.confirmed), mode=mode)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertNotEqual(self.state()['status'], 'completed')
+                expected_stage = {'wrong-role': 'stage2', 'wrong-review': 'stage3', 'partial-cleanup': 'stage4', 'changed-closure-code': 'stage4'}[mode]
+                self.assertEqual(self.state()['current_stage'], expected_stage)
 
     def test_foreign_controller_handoff_does_not_advance(self):
         completed = self.invoke("start", str(self.confirmed), mode="wrong-controller")
@@ -399,7 +415,7 @@ class WorkflowCliTests(unittest.TestCase):
         valid = self.confirmed_input(); self.record.parent.mkdir()
         self.record.write_text(json.dumps({
             "version": 1, "confirmed": valid, "status": "active", "current_stage": "stage3", "sessions": {"stage2": "stage2-session"},
-            "stage_results": {"stage2": {"result": "completed", "artifacts": ["a"], "evidence": ["e"], "handoff": {"controller_ref": "controller", "role_ref": "stage2-native", "control_checkpoint": {"controller_ref": "controller", "role_ref": "stage2-native", "stage": 2, "state": "completed"}, "binding": {"base_commit": "a" * 40, "branch": "codex/flow", "git_common_dir": str((self.repository / ".git").resolve()), "repository": str(self.repository.resolve()), "target_branch": "main", "worktree": str(self.worktree.resolve())}, "planning_commit": "b" * 40, "allowed_paths": ["a"], "protected_paths": []}}},
+            "stage_results": {"stage2": {"result": "completed", "artifacts": ["a"], "evidence": ["e"], "handoff": {"controller_ref": "controller", "role_ref": "stage2-native", "control_checkpoint": {"controller_ref": "controller", "role_ref": "stage2-native", "role_kind": "solution-designer", "stage": 2, "state": "completed"}, "binding": {"base_commit": "a" * 40, "branch": "codex/flow", "git_common_dir": str((self.repository / ".git").resolve()), "repository": str(self.repository.resolve()), "target_branch": "main", "worktree": str(self.worktree.resolve())}, "planning_commit": "b" * 40, "allowed_paths": ["a"], "protected_paths": []}}},
             "launch": {"stage": "stage3", "state": "prelaunch", "turn": 0}, "history": [],
         }), encoding="utf-8")
         completed = self.invoke("resume", str(self.record), "continue from checkpoint")
