@@ -95,3 +95,5 @@ The index lookup follows Codex's `find_rollout_path_by_id` in
 The state_5 layout and null-root active pages were checked against the local
 runtime on 2026-09-06. This is a versioned local adapter, not a guarantee that
 private storage schemas remain stable; an incompatible schema fails closed.
+
+Use the shared select-configuration contract for dedicated 0/1, designer, dispatcher, execution and closure roles. This resolver remains read-only. Current supported tool evidence, explicit user/frozen choice and known cost determine the selection; unknown cost is never cheaper. No override means actual inheritance. Record ordinary execution settings without another prompt.

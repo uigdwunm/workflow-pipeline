@@ -59,9 +59,8 @@ its fixed implementation brief, and does not read, mutate, or advance the
 discussion lifecycle. Pending impacts, non-latest checkpoints or any evidence
 drift stop preparation or activation.
 
-Continuous flow has one origin: a clear natural-language request for continuous
-remaining execution on a successful phase-1 footer, normalized as
-`confirmation_intent: continuous`. Phase 0 never propagates continuous mode.
+Continuous flow requires a clear natural-language request for continuous
+remaining execution, normalized as `confirmation_intent: continuous`. Phase 0 and Phase 1 may authorize continuous stages [2,3,4] using source_phase, exact scope and the latest published checkpoint; Phase 0 uses phase_result_id null.
 Interpret confirmation through
 [`confirmation-contract.md`](confirmation-contract.md); external authority
 boundaries remain unchanged.

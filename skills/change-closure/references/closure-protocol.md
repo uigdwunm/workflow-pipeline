@@ -11,7 +11,7 @@ has not published or cleaned it. Its clean Flow Worktree and Git binding are the
 authoritative execution state. Closure-document changes are additional commits
 in that same worktree. `complete-worktree` integrates the final combined
 candidate and cleans the Flow Worktree in one operation. A later target change
-yields `target_changed`; the same Dedicated Implementation Task integrates the
+yields `target_changed`; the same Implementation Dispatcher integrates the
 new target and reruns affected/full checks, the Originating Task reruns both
 review axes, and Stage 4 rechecks closure-owned documents before retrying.
 
@@ -35,3 +35,5 @@ recover only the remaining Phase Run calls after a discussion-ledger failure
 and never repeat the Git closure. A verified documentation merge with cleanup
 remaining is likewise cleaned rather than merged again. Explicit user
 cancellation cancels the active Phase Run and leaves the topic at phase 3.
+
+The Closure Agent writes only the supplied documentation scope. The Workflow Controller uses workflow_control_git.py to verify candidate ancestry, changed paths and actual worktree/branch cleanup. Code defects return to stage 3. Partial cleanup retains the verified merge and uses cleanup-only, never another publication.

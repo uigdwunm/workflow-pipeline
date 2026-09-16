@@ -1,16 +1,17 @@
-# Dedicated Worktree Execution Protocol
+# Native Implementation Dispatcher Protocol
 
-The dedicated task accepts the verified Flow Worktree binding inherited from
+The dispatcher accepts the verified Flow Worktree binding inherited from
 Stage 2 or created by a qualified standalone Stage-3 entry. It must run
 `verify-worktree` against its actual working directory before editing.
 
-Before editing, run the executable `thread-settings-v5` verification:
+Verify the selected configuration receipt against current adapter evidence.
+When a current runtime identity is resolvable, run the executable `thread-settings-v5` verification:
 
 ```text
 python3 <guided-implementation-skill-root>/scripts/thread_settings.py verify \
   --current \
-  --model gpt-5.6-terra \
-  --reasoning-effort high
+  --model <selected-model> \
+  --reasoning-effort <selected-effort>
 ```
 
 Require exit `0` and `status: match`. For an inherited flow, read every planning
@@ -89,7 +90,7 @@ Before reporting a `candidate`:
 4. disclose remaining risks; and
 5. retain the verified worktree for remediation.
 
-The Dedicated Implementation Task must not dispatch Standards or Spec review
+The Implementation Dispatcher must not dispatch Standards or Spec review
 agents or receive the parent Session or CLI. It owns Ticket-ordered
 implementation, TDD, focused/full validation, candidate commits, risk
 reporting, and remediation only. The Originating Task owns `$code-review`,
@@ -108,7 +109,7 @@ inspected sibling paths with applicability. Run that focused validation, then
 repair in scope and rerun affected and full checks in this same worktree.
 If diagnosis exposes an insufficient scope or plan, stop for the existing
 implementation-authority/anomaly decision; ordinary defects continue here.
-The dedicated task reports an unexpected material implementation-authority gap
+The dispatcher reports an unexpected material implementation-authority gap
 to the originating task before the affected change and never asks the user directly.
 It performs no push, pull request, deployment, release, tracker write or other
 remote mutation without separate explicit authority.
@@ -119,6 +120,10 @@ report the replacement candidate. The authoritative role contract determines
 the Originating Task's review action. A changed planning source, material
 semantic conflict, or standalone-brief conflict stops for user direction.
 
-The dedicated task never updates the target branch and never removes the Flow
+The dispatcher never updates the target branch and never removes the Flow
 Worktree or branch. It returns the clean accepted candidate in that retained
 worktree for Stage 4.
+
+Execution Agents use plan-execution before native spawn and assign after the actual
+receipt as specified in [workflow-control-protocol.md](workflow-control-protocol.md).
+They have no Git mutation authority; the dispatcher integrates verified bytes.

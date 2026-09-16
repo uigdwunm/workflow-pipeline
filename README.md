@@ -9,7 +9,7 @@
 4. **4归档 — `$change-closure`**：继续复用 Flow Worktree，对齐归档文档，统一合并实现与归档并清理。
 
 五个 Skill 必须以同一版本安装。跨阶段继承模型与推理强度时统一使用
-`guided-implementation` 提供的 `thread-settings-v4` 只读协议；协议缺失或
+`guided-implementation` 提供的 `thread-settings-v5` 只读协议；协议缺失或
 版本不一致会停止流程，不会猜测默认值。
 
 这些 Skill 来自一个真实使用中的工作流，重点是阶段边界、Git worktree 隔离、并发合并校验，以及让文档与实现各自拥有明确的写入权限。
@@ -87,3 +87,5 @@ $problem-framing 帮我明确这次需求
 ## 许可证
 
 [MIT](LICENSE)
+
+Workflow Controller retains confirmation, routing and acceptance. Dedicated Discussion Task and Dedicated Problem Framing Task are visible 0/1 carriers. solution-designer, Implementation Dispatcher, Execution Agent and Closure Agent are native roles. See [Workflow Control Protocol](skills/guided-implementation/references/workflow-control-protocol.md).

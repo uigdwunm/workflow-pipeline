@@ -152,3 +152,5 @@ handoff until current authority is resolved.
 
 At every recovery step, reread `read-handoff` and use the returned ledger and
 record revisions. Reusing an idempotency key is valid only for an exact replay.
+
+The child is one independent Workflow Controller. It inherits no parent preference or continuous authorization. Its first turn only accepts the handoff; a closed gate blocks preparation, creation, writes and entry until a later user-triggered continuation rechecks dependencies.

@@ -1,7 +1,6 @@
 # Originating Task Protocol
 
-The originating task binds the Flow Worktree, keeps at most one active Dedicated
-Implementation Task, independently reviews its committed candidate, and passes
+The originating task binds the Flow Worktree, keeps at most one active Implementation Dispatcher, independently reviews its committed candidate, and passes
 the retained flow to Stage 4. It does not implement code.
 
 ## Launch
@@ -18,10 +17,9 @@ standalone base and scope base, and use no planning source or protected source
 unless the brief explicitly identifies one. The explicit invocation authorizes
 only this bounded local implementation flow.
 
-Launch one task in the verified inherited or standalone Flow Worktree. Launch
-the implementation task with the fixed pair
-`model: gpt-5.6-terra` and `thinking: high`; pass `model` and `thinking`
-explicitly after verifying the current runtime supports that pair. Include the
+Launch one native Implementation Dispatcher in the verified Flow Worktree. Use
+start-dispatch with current select-configuration evidence, disclose configuration
+and reason, then dispatcher-bound with the actual native receipt. Include the
 complete planning sources and dependency-ordered Tickets or the fixed
 standalone brief, testing basis, flow mode, confirmed implementation scope,
 existing-behavior changes, required collateral
@@ -48,11 +46,10 @@ classifies the result:
 - `no-progress`: planned work remains, no specific blocker was reported, and
   the exact HEAD and clean worktree are unchanged.
 
-Route a `candidate` to Accept. Continue a `checkpoint` in the same Dedicated
-Implementation Task and worktree from the exact current HEAD and remaining
+Route a `candidate` to Accept. Continue a `checkpoint` in the same Implementation Dispatcher and worktree from the exact current HEAD and remaining
 scope; this is ordinary continuation, not recovery. Route a material `blocked`
 decision to the user and return an ordinary technical condition within the
-confirmed scope to the same Dedicated Implementation Task.
+confirmed scope to the same Implementation Dispatcher.
 
 For `no-progress`, send one corrective continuation to the same task. Name the
 next dependency-ready Ticket or exact remaining implementation slice and state
@@ -60,7 +57,7 @@ that its prior terminal result did not satisfy Stage 3. If the next result is
 again `no-progress`, classify that executor as stalled; do not keep issuing
 continuations to it.
 
-Maintain at most one active Dedicated Implementation Task. Before proposing a
+Maintain at most one active Implementation Dispatcher. Before proposing a
 successor for a stalled executor, require its terminal result, stop tracking it,
 reverify the same Worktree Binding and current verified clean HEAD, and confirm
 that no protected source changed. Emit:
@@ -69,7 +66,7 @@ that no protected source changed. Emit:
 流程异常：需要用户决策
 异常类型：实现任务无进展
 当前阶段：3实现
-原专用任务：<exact task identity>
+原调度者：<exact task identity>
 当前检查点：<verified clean HEAD>
 已完成：<committed scope>
 未完成：<remaining scope>
@@ -100,14 +97,13 @@ separately. Do not accept a candidate until both axes correspond to that exact
 fixed point and candidate commit and have no unresolved actionable findings.
 Reject an unplanned feature, behavior change, deletion, replacement, side
 effect, or optional adjacent improvement even when its tests pass.
-Return every actionable test or review finding to the same Dedicated
-Implementation Task and verified worktree; the originating task does not edit
+Return every actionable test or review finding to the same Implementation Dispatcher and verified worktree; the originating task does not edit
 the implementation or create a replacement for ordinary remediation. Any
 replacement candidate invalidates both review results. The Originating Task
 reruns both axes against that replacement candidate before accepting it. Only
 the Originating Task accepts the candidate; Stage 4 integrates it. Route only a material
 unresolved decision to the user. If the target advanced without changing a
-source path, the same Dedicated Implementation Task merges that target, runs
+source path, the same Implementation Dispatcher merges that target, runs
 affected and full checks, and commits a replacement candidate. The Originating
 Task then establishes its exact replacement fixed point and reruns both axes.
 
@@ -117,7 +113,7 @@ Mark the next remediation as diagnosis-first when any observable trigger is
 present: the same failure mechanism is reported again after a fix; a
 same-class regression appears in another affected path; or successive
 review/test outcomes overturn the same implementation approach. Continue to the
-same Dedicated Implementation Task and Flow Worktree, carrying the trigger and
+same Implementation Dispatcher and Flow Worktree, carrying the trigger and
 the prior candidate and finding identities in the request.
 
 Before another edit, require execution evidence that: (a) compares the prior
