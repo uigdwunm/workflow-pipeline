@@ -31,6 +31,42 @@ carrier calls `phase-ready`; the source calls `phase-activate`; the carrier
 calls `claim-phase-completion`; and the source calls `complete-phase-run` then
 `finalize-phase-run`. Keep those actor boundaries separate.
 
+For dedicated Stage 1, route by the verified source phase. At phase 0, prepare
+only the `0→1` wrapper, then the Workflow Control plan. The source binds the
+actual created task through `authorize-phase-carrier` before `creation-result`;
+claim/ready/activate follows. At phase 1, use `dedicated-stage(stage=1)` followed
+by plan/confirmation, bind/creation-result and `accept-handoff`; successful
+acceptance grants immediate work without another Phase Run or later-turn step.
+Same-type Stage-0 dedicated acceptance behaves identically. Ordinary child and
+continuation handoffs retain first-turn acceptance and later-turn authorization.
+
+For mutable `0→1` wrappers, `evidence` and source checkpoint identity are frozen
+inputs. Activation initializes `working_evidence`; only verified DW preparation
+and application advance it. Each DW binds its exact run/attempt and expected
+before/after evidence. A file-written/ledger-uncommitted failure replays the
+same DW. External edits or unrelated evidence drift require reconciliation;
+never refresh hashes to bless them. Apply a pending DW to finish consistency
+even if its mutation closed the gate; subsequent work still requires open gates.
+
+After user completion confirmation, finish DW/impacts and commit the actual
+output. Read `working_evidence` from `read-phase-run` and use it for
+`claim-phase-completion`, which freezes `output_evidence` and stops writes.
+When a dedicated Workflow Control plan exists, the controller must first
+`receive` and `accept` its authenticated Git delivery, then call
+`complete-phase-run` and `finalize-phase-run` with `output_evidence`.
+Only finalization advances `current_phase` to 1. Its Phase Result preserves
+input and output evidence separately; later stage-entry checkpoints use the
+actual output and new topic revision. Identical accepted deliveries remain ACKs.
+Same-stage receive also stops new requirement writes, but needs no finalization.
+Other Phase Run routes retain their existing frozen-input checks.
+
+The controller cannot prepare/apply requirement writes while a dedicated
+carrier holds them. A wrapper waits through ready; revoked, completion-claimed
+or delivery-frozen carriers cannot start new writes. Before activation, settle
+pending DW and require any previous dedicated writer's accepted result.
+An accepted Stage-0 task awaiting archive uses the bounded successor slot in
+[Workflow Control](../../guided-implementation/references/workflow-control-protocol.md).
+
 For Stage 4 attached by the exact successful Stage-3 handoff, the source and
 carrier are the same current task. After the Stage-4 entry confirmation and
 before closure work, call `read-topic` with the handed-off identity and binding.

@@ -12,6 +12,7 @@ from .checkpoints import _checkpoint_data, _completed_checkpoint
 from .state import (
     ProtocolError,
     SHA256_RE,
+    _active_pending_write,
     _canonical_json,
     _evolution_paths,
     _expect_keys,
@@ -93,6 +94,15 @@ def _phase_data(record: dict[str, Any]) -> dict[str, Any]:
     for index, attempt in enumerate(attempts, start=1):
         if attempt.get("attempt_number") != index or attempt.get("attempt_id") != f"PA-{data['run_id'][3:]}-{index}":
             raise ProtocolError("state_corrupt", "Phase Run attempt identities are not monotonic")
+        for field in ("working_evidence", "output_evidence"):
+            if field in attempt:
+                value = attempt[field]
+                if (not isinstance(value, dict) or set(value) != set(PHASE_DRIFT_CODES)
+                        or any(not isinstance(v, str) or not SHA256_RE.fullmatch(v) for v in value.values())):
+                    raise ProtocolError("state_corrupt", f"Phase Run {field} is invalid")
+        if _mutable_requirement_run(data) and attempt.get("state") in {"active", "completion-claimed", "completion-pending", "completed"}:
+            if "working_evidence" not in attempt or (attempt["state"] != "active" and "output_evidence" not in attempt):
+                raise ProtocolError("state_corrupt", "mutable requirement phase evidence is missing")
         if attempt.get("state") not in PHASE_ATTEMPT_STATES:
             raise ProtocolError("state_corrupt", "Phase Run attempt has an unsupported state")
     return data
@@ -980,6 +990,107 @@ def _authoritative_phase_evidence(
     return dimensions
 
 
+def _mutable_requirement_run(data: dict[str, Any]) -> bool:
+    return (data.get("wrapper_integration") is True and data.get("from_phase") == 0
+            and data.get("to_phase") == 1
+            and data.get("carrier_kind") in {"current-problem-framing", "dedicated-grilling"})
+
+
+def _require_requirement_settled(records: dict[str, list[dict[str, Any]]], topic_id: str) -> None:
+    if _active_pending_write(records) is not None:
+        raise ProtocolError("document_write_reconciliation_required", "pending document write must be reconciled")
+    if _pending_topic_impacts(records, topic_id):
+        raise ProtocolError("phase_impact_drift", "pending impacts block requirement completion")
+    apply_gate_policy(records, "phase-transition", topic_id, phase=0)
+
+
+def _requirement_write_evidence(
+    records: dict[str, list[dict[str, Any]]], next_records: dict[str, list[dict[str, Any]]],
+    topic: dict[str, Any], topic_path: Path, after_bytes: bytes,
+) -> dict[str, Any] | None:
+    matches = []
+    for record in records["Phase Runs"]:
+        if record.get("run_kind") != "phase-run":
+            continue
+        data = _phase_data(record)
+        if _mutable_requirement_run(data) and data["source_topic_id"] == topic["topic_id"] and data["state"] == "active":
+            matches.extend((data, a) for a in data["attempts"] if a["state"] == "active" and a.get("authorization") is True)
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ProtocolError("document_ownership_conflict", "multiple active requirement phases")
+    data, attempt = matches[0]
+    before = _authoritative_phase_evidence(topic_path, records, topic)
+    _phase_check_evidence({"evidence": attempt["working_evidence"]}, before)
+    after = _authoritative_phase_evidence(topic_path, next_records, topic)
+    after["source"] = _sha256(after_bytes)
+    return {"phase_run_id": data["run_id"], "attempt_id": attempt["attempt_id"],
+            "before": before, "after": after}
+
+
+def _apply_requirement_write_evidence(
+    records: dict[str, list[dict[str, Any]]], topic: dict[str, Any],
+    topic_path: Path, write: dict[str, Any],
+) -> None:
+    if "phase_evidence_json" not in write:
+        return
+    bound = _json_field(write, "phase_evidence_json", "document write phase evidence")
+    record = _phase_record(records, bound["phase_run_id"])
+    data = _phase_data(record)
+    attempt = _phase_attempt(data, bound["attempt_id"])
+    if (data["source_topic_id"] != topic["topic_id"] or not _mutable_requirement_run(data)
+            or data["state"] != "active" or attempt["state"] != "active"
+            or attempt.get("authorization") is not True or attempt.get("carrier_ref") != write["owner_ref"]):
+        raise ProtocolError("phase_identity_conflict", "document write phase authority changed")
+    _phase_check_evidence({"evidence": bound["before"]}, attempt["working_evidence"])
+    actual = _authoritative_phase_evidence(topic_path, records, topic)
+    if actual["source"] not in {write["before_sha256"], write["after_sha256"]}:
+        raise ProtocolError("phase_source_drift", "document changed outside the pending write")
+    actual["source"] = write["after_sha256"]
+    _phase_check_evidence({"evidence": bound["after"]}, actual)
+    attempt["working_evidence"] = bound["after"]
+    data["record_revision"] += 1
+    _store_phase(record, data)
+
+
+def _freeze_requirement_output(
+    records: dict[str, list[dict[str, Any]]], topic: dict[str, Any], topic_path: Path,
+    attempt: dict[str, Any], supplied: dict[str, str],
+) -> None:
+    _require_requirement_settled(records, topic["topic_id"])
+    working = attempt.get("working_evidence")
+    if working is None:
+        raise ProtocolError("phase_completion_not_claimed", "requirement execution has no verified working evidence")
+    _phase_check_evidence({"evidence": working}, supplied)
+    _phase_check_evidence({"evidence": working}, _authoritative_phase_evidence(topic_path, records, topic))
+    attempt["output_evidence"] = dict(working)
+
+
+def _check_completion_evidence(
+    data: dict[str, Any], attempt: dict[str, Any], supplied: dict[str, str], topic_path: Path,
+    records: dict[str, list[dict[str, Any]]], topic: dict[str, Any],
+) -> None:
+    frozen = data
+    if _mutable_requirement_run(data):
+        _require_requirement_settled(records, topic["topic_id"])
+        if attempt.get("authorization") is not True or not attempt.get("output_evidence"):
+            raise ProtocolError("phase_authorization_required", "no authorized frozen output")
+        frozen = {"evidence": attempt["output_evidence"]}
+        for record in records["Phase Results"]:
+            if record.get("result_kind") != "workflow-control" or record.get("topic_id") != topic["topic_id"]:
+                continue
+            context = _json_field(record, "data_json", "workflow control")
+            for slot in (context, context.get("successor_control")):
+                progress = (slot or {}).get("handoff_progress") or {}
+                authority = progress.get("plan", {}).get("entry_authority", {})
+                if authority.get("run_id") == data["run_id"] and authority.get("attempt_id") == attempt["attempt_id"]:
+                    if (progress.get("state") not in {"result-accepted", "successor-ready", "archive-pending", "archived"}
+                            or progress.get("delivery", {}).get("requirement_identity", {}).get("sha256") != attempt["output_evidence"]["source"]):
+                        raise ProtocolError("phase_completion_not_claimed", "controller must accept the frozen output delivery before completion")
+    _phase_check_evidence(frozen, supplied)
+    _phase_check_evidence(frozen, _authoritative_phase_evidence(topic_path, records, topic))
+
+
 def _prepare_phase_run(request: dict[str, Any]) -> dict[str, Any]:
     ledger_path, topic_path, lock_path, owner_ref = _phase_request_context(
         request, {"from_phase", "to_phase", "route", "carrier_kind"}
@@ -1206,8 +1317,11 @@ def _reconcile_phase_run(request: dict[str, Any]) -> dict[str, Any]:
                     "phase_authorization_required",
                     "an unauthorized unknown outcome cannot be completed",
                 )
-            _phase_check_evidence(data, _phase_evidence(request, required=True))
-            _phase_check_evidence(data, _authoritative_phase_evidence(topic_path, records, topic))
+            if _mutable_requirement_run(data):
+                _freeze_requirement_output(records, topic, topic_path, attempt, _phase_evidence(request, required=True))
+            else:
+                _phase_check_evidence(data, _phase_evidence(request, required=True))
+                _phase_check_evidence(data, _authoritative_phase_evidence(topic_path, records, topic))
             attempt["state"] = "completion-claimed"
             data["state"] = "completion-claimed"
         else:
@@ -1312,6 +1426,23 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
                         _completed_checkpoint(records, data["source_checkpoint_id"]),
                         data.get("continuous_authorization_id"), scope=data["scope"],
                     )
+            if _mutable_requirement_run(data):
+                _require_requirement_settled(records, topic["topic_id"])
+                for prior_record in records["Phase Runs"]:
+                    if prior_record.get("run_kind") != "discussion-handoff":
+                        continue
+                    prior = _json_field(prior_record, "data_json", "handoff")
+                    if prior.get("kind") != "dedicated-stage" or prior.get("target_topic_id") != topic["topic_id"]:
+                        continue
+                    for old in prior["attempts"]:
+                        if old.get("binding_eligible"):
+                            if not old.get("delivery_accepted"):
+                                raise ProtocolError("document_ownership_conflict", "previous dedicated carrier has not delivered an accepted result")
+                            old["binding_eligible"] = False
+                    prior["record_revision"] += 1
+                    prior_record["record_revision"] = prior["record_revision"]
+                    prior_record["data_json"] = _canonical_json(prior)
+                attempt["working_evidence"] = dict(data["evidence"])
             attempt["state"] = "active"
             data["state"] = "active"
         else:
@@ -1341,7 +1472,10 @@ def _transition_phase_attempt(request: dict[str, Any], target: str, event_type: 
             if target == "completion-claimed" and owner_ref != attempt.get("carrier_ref"):
                 raise ProtocolError("phase_identity_conflict", "completion caller is not the ready carrier")
             if target == "completion-claimed":
-                _phase_check_evidence(data, supplied_evidence)
+                if _mutable_requirement_run(data):
+                    _freeze_requirement_output(records, topic, topic_path, attempt, supplied_evidence)
+                else:
+                    _phase_check_evidence(data, supplied_evidence)
             attempt["state"] = target
             attempt["reason"] = request.get("reason")
             data["state"] = target
@@ -1522,8 +1656,7 @@ def _complete_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         attempt = _phase_attempt(data, request["attempt_id"])
         if data["state"] != "completion-claimed" or attempt["state"] != "completion-claimed":
             raise ProtocolError("phase_completion_not_claimed", "completion must be claimed before acceptance")
-        _phase_check_evidence(data, supplied_evidence)
-        _phase_check_evidence(data, _authoritative_phase_evidence(topic_path, records, topic))
+        _check_completion_evidence(data, attempt, supplied_evidence, topic_path, records, topic)
         attempt["state"] = "completion-pending"
         data["state"] = "completion-pending"
         data["record_revision"] += 1
@@ -1579,8 +1712,7 @@ def _finalize_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         attempt = _phase_attempt(data, request["attempt_id"])
         if data["state"] != "completion-pending" or attempt["state"] != "completion-pending":
             raise ProtocolError("phase_run_state_conflict", "only completion-pending Phase Runs can be finalized")
-        _phase_check_evidence(data, supplied_evidence)
-        _phase_check_evidence(data, _authoritative_phase_evidence(topic_path, records, topic))
+        _check_completion_evidence(data, attempt, supplied_evidence, topic_path, records, topic)
         attempt["state"] = "completed"
         data["state"] = "completed"
         data["record_revision"] += 1
@@ -1607,6 +1739,8 @@ def _finalize_phase_run(request: dict[str, Any]) -> dict[str, Any]:
             "decision_authority": decision_authority_pairs,
             "evidence": data["evidence"],
         }
+        if _mutable_requirement_run(data):
+            phase_result_data["output_evidence"] = attempt["output_evidence"]
         if data.get("implementation_mode") is not None:
             phase_result_data.update(
                 {

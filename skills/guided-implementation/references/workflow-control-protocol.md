@@ -9,7 +9,7 @@ is one independent Workflow Controller and inherits no preferences or authority.
 `workflow_control.py` accepts bounded strict JSON with schema_version=1, action,
 actor_ref, context and evidence. Context contains schema_version, controller_ref,
 topic_ref, stage, carrier, preference, flow_authority, requirement_identity and
-handoff_progress. The caller authenticates actor_ref and persists the returned
+handoff_progress, plus at most one optional successor_control slot. The caller authenticates actor_ref and persists the returned
 context in the existing conversation or runner. No new registry or monitor exists.
 Effects are plans, never tool receipts. Use actual native/task identities and
 termination evidence; reconcile unknown outcomes before retry.
@@ -19,24 +19,29 @@ envelope `{repository:<absolute cwd>,baseline:<frozen commit>,request:<request>}
 It verifies actual binding, diff, file bytes, index, commits, publication ancestry
 and cleanup. Self-reported verified_commit_hash or clean booleans are insufficient.
 The attached `discussion_protocol.py workflow-control` uses the existing mutation
-envelope plus action/evidence, checks real gate and handoff, and verifies Git receive.
+envelope plus action/evidence, derives the exact entry authority from the ledger,
+checks its gate/binding, and verifies Git receive.
 dedicated-stage permits only current-stage 0/1 requirement writing and bounded split
 proposals. It does not replace the active controller Conversation Binding. Cancellation
 revokes its write authority; next-stage rebinding supersedes the previous carrier.
 
 Create or inherit one requirement document before substantive questions. `prepare`
 freezes target, project, title, missing_context, configuration, next_step, archive_ref
-(null before creation), gate_open and plan_id without creating a task. Disclose stage,
+(null before creation), gate_open, entry_authority and plan_id without creating a task. Disclose stage,
 controller, document path/hash/version, exact target/title, task_count=1, missing
 context and configuration reason/receipt. One combined confirmation covers stage entry
 and task creation; no preliminary migration offer. `decide` takes plan_id and intent
 confirm, stage-current, topic-current or cancel. Refusal reuses the document and
 suppresses repeated offers for that scope. choose-dedicated is an explicit new choice.
-A dedicated carrier never recursively creates another. A child first accepts its
-handoff; a closed gate blocks preparation, creation, writes and progression until
+A dedicated carrier never recursively creates another. Dedicated-stage acceptance
+at phase 0 or 1 becomes active immediately after baseline, identity, pending-DW
+and gate checks; child/continuation keeps later-turn authorization. A closed
+gate blocks preparation, creation, writes and progression until
 a later user-triggered continuation rechecks dependencies.
 
-creation-result binds current attempt and only an actual ready task ref. Pending
+creation-result binds current plan attempt and only an actual ready task ref.
+The attached caller first authorizes the exact wrapper carrier or binds the
+exact dedicated-stage handoff; creation-result authenticates that prior binding. Pending
 client IDs are unusable; cancelled or obsolete attempts cannot accept late results.
 receive takes delivery_id, source_ref, attempt, requirement_identity, commit and
 verified_commit_hash. Verify actual commit:path and current file. The frozen launch
@@ -48,6 +53,52 @@ confirmed and archive_ref. Verify frozen input and binding and attached source
 activation before archive. Phase advancement retains the pending old carrier and
 accepted delivery. archive-result has ref/status; unknown/requested means readback
 before mutation. Archive failure never restarts a successor already ready.
+
+## Entry authority and bounded successor control
+
+`prepare` freezes one typed `entry_authority` in the plan digest:
+
+- Standalone: `{kind: "standalone"}` with no discussion identity.
+- Attached: exactly `kind`, `project_id`, `tree_id`, `topic_id`, `controller_ref`,
+  `source_phase`, `stage`, `run_id` and `attempt_id`. `kind=dedicated-stage`
+  names the handoff and eligible attempt, with source_phase=stage in {0,1}.
+  `kind=wrapper-phase-run` names the `0→1` dedicated-grilling run and attempt,
+  with source_phase=0 and stage=1.
+
+The discussion adapter requires one eligible source. Prepare the handoff or
+wrapper before its control plan. Execution `stage` selects the role and is not
+overwritten by the topic's `current_phase`; that phase remains 0 throughout
+wrapper Stage-1 work. A replacement attempt requires a fresh plan. Read current
+binding/state before each action.
+
+`receive` authenticates the exact plan source and attempt, same-path nonregressed
+version and actual Git commit/hash. Same-stage requires its active handoff;
+wrapper requires authorized completion-claimed/completion-pending/completed
+output. Pending DW blocks delivery. Same-stage receipt freezes requirement
+writes; wrapper claim already froze them. Accept before wrapper complete/finalize.
+Finalization's topic revision increment preserves the receipt. `cancel` revokes
+only the plan-bound attempt, never historical siblings or a newer retry;
+received/accepted results cannot be cancelled through this action.
+
+For an accepted dedicated Stage 0 still awaiting archive, prepare its `0→1`
+Stage-1 plan in one `successor_control` context inside the existing checkpoint.
+The root retains the old result and archive evidence; the successor keeps its
+own plan, binding and delivery. No nested successor, queue or registry exists.
+With two slots, select by exact `plan_id` / `attempt` or `delivery_digest` /
+`input_digest`. For actions without such a field (including cancel, archive,
+archive-result or choose-dedicated), add `control_plan_id` to evidence. Ambiguous
+or conflicting selectors fail; task recency is not a selector.
+
+After claim/ready and real source activation, use the old delivery's digest for
+`successor-ready`, then archive the frozen old task. Only an actual
+`archive-result(status=archived)` promotes the successor to the root. Unknown or
+failed archive retains both slots and prevents further successor dispatch;
+recover archive without recreating the active task. Cancelling the pending
+successor preserves the old accepted result; a verified replacement authority
+can reuse the bounded slot after cancellation/failure. With no old dedicated
+carrier, use the normal single context.
+
+## Downstream execution
 
 Continuous 0/1 authorization freezes source_phase, stages=[2,3,4], exact scope,
 controller and latest published stage-entry checkpoint. Phase 0 has phase_result_id
@@ -108,7 +159,9 @@ cannot bind a released allocation. Never treat an empty ref as stopped proof.
 
 Before deciding a prepared plan, the attached caller compares its frozen identity
 against the current document path, bytes and revision. A changed document invalidates
-confirmation without creating a task; a new prepare freezes the updated identity.
+confirmation without creating a task. Retire a stale same-stage handoff and
+prepare a fresh handoff baseline before preparing a new plan; do not reuse its
+old payload or authorize a replacement attempt with the old plan.
 This prospective check never replaces an already authenticated delivery receipt;
 identical accepted receipts remain ACK-only after later phase/document changes.
 

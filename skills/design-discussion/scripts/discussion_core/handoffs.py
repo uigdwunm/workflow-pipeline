@@ -12,6 +12,8 @@ from .state import (
     ProtocolError,
     ROOT_SLUG_RE,
     SHA256_RE,
+    _active_pending_write,
+    _requirement_phase_attempts,
     _canonical_json,
     _evolution_paths,
     _expect_keys,
@@ -342,6 +344,10 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, source_topic)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         if kind == "dedicated-stage":
+            if _requirement_phase_attempts(records, request["actor_topic_id"]):
+                raise ProtocolError("document_ownership_conflict", "a requirement phase already owns this document")
+            if _active_pending_write(records) is not None:
+                raise ProtocolError("document_write_reconciliation_required", "complete the pending document write before transferring authority")
             for prior_record in records["Phase Runs"]:
                 if prior_record.get("run_kind") != "discussion-handoff":
                     continue
@@ -374,7 +380,10 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             "record_revision": 1,
             "state": "setup-pending",
             "kind": kind,
-            **({"stage": request["stage"], "controller_ref": owner_ref} if kind == "dedicated-stage" else {}),
+            **({"stage": request["stage"], "controller_ref": owner_ref,
+                "requirement_baseline": {"revision": topic_revision,
+                    "sha256": _sha256(_require_regular_nosymlink(topic_path, "topic document"))}}
+                if kind == "dedicated-stage" else {}),
             "project_id": request["project_id"],
             "tree_id": request["tree_id"],
             "source_topic_id": request["actor_topic_id"],
@@ -623,6 +632,8 @@ def _bind_handoff(request: dict[str, Any]) -> dict[str, Any]:
             relation["state"] = "active"
             relation["continuation_of"] = superseded
         elif handoff["kind"] == "dedicated-stage":
+            if _active_pending_write(records) is not None or _requirement_phase_attempts(records, handoff["target_topic_id"]):
+                raise ProtocolError("document_ownership_conflict", "pending write or phase carrier prevents handoff binding")
             if len(active) != 1 or active[0].get("conversation_ref") != owner_ref or conversation_ref == owner_ref:
                 raise ProtocolError("handoff_identity_conflict", "dedicated stage requires its unchanged controller")
             for prior_binding in records["Conversation Bindings"]:
@@ -700,14 +711,29 @@ def _accept_handoff(request: dict[str, Any]) -> dict[str, Any]:
             or request["source_reference_sha256"] != handoff["authoritative_references_sha256"]
         ):
             raise ProtocolError("handoff_identity_conflict", "handoff payload or source digest verification failed")
-        attempt.update({"state": "accepted-awaiting-next-turn", "accepted_turn": 1})
-        handoff["state"] = "accepted-awaiting-next-turn"
+        dedicated = handoff["kind"] == "dedicated-stage"
+        if dedicated:
+            apply_gate_policy(records, "authorize-handoff-discussion", request["actor_topic_id"])
+            if _active_pending_write(records) is not None:
+                raise ProtocolError("document_write_reconciliation_required", "complete the pending document write before accepting")
+            project = Path(request["project_path"])
+            document = project / topic_record["topic_document_path"]
+            if handoff["stage"] != topic_record["current_phase"] or handoff["requirement_baseline"] != {
+                "revision": topic_revision,
+                "sha256": _sha256(_require_regular_nosymlink(document, "topic document")),
+            }:
+                raise ProtocolError("phase_source_drift", "dedicated requirement baseline changed")
+            if not attempt.get("binding_eligible") or sum(bool(a.get("binding_eligible")) for a in handoff["attempts"]) != 1:
+                raise ProtocolError("handoff_identity_conflict", "dedicated attempt is not uniquely eligible")
+        state = "active" if dedicated else "accepted-awaiting-next-turn"
+        attempt.update({"state": state, "accepted_turn": 1})
+        handoff["state"] = state
         handoff["record_revision"] += 1
         _store_handoff(record, handoff)
         next_revision = ledger_revision + 1
         result = {
             **_handoff_result(request, handoff, attempt, ledger_revision=next_revision, topic_revision=topic_revision),
-            "substantive_discussion_allowed": False,
+            "substantive_discussion_allowed": dedicated,
         }
         _write_ledger_transaction(
             ledger_path, frontmatter, records, request,
