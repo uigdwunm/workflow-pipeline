@@ -253,5 +253,56 @@ class WorkflowControlTests(unittest.TestCase):
         evidence['inherited'] = None
         self.assertFalse(self.call('select-configuration', evidence)['ok'])
 
+    def successor_controls(self):
+        context = self.context()
+        context['topic_ref'] = 'topic'
+        authority = {'kind': 'dedicated-stage', 'project_id': 'project', 'tree_id': 'tree',
+            'topic_id': 'topic', 'controller_ref': 'controller', 'source_phase': 0, 'stage': 0,
+            'run_id': 'handoff', 'attempt_id': 'handoff-attempt'}
+        evidence = {'target': 'local', 'project': 'project', 'title': 'Discuss',
+            'missing_context': [], 'configuration': self.configuration(), 'next_step': 'frame',
+            'archive_ref': None, 'gate_open': True, 'entry_authority': authority}
+        prepared = self.call('prepare', evidence, context)
+        decided = self.call('decide', {'plan_id': prepared['plan']['plan_id'], 'intent': 'confirm'}, prepared['context'])
+        bound = self.call('creation-result', {'status': 'ready', 'ref': 'previous',
+            'attempt': prepared['plan']['plan_id']}, decided['context'])
+        delivery = {'delivery_id': 'previous-result', 'source_ref': 'previous', 'attempt': prepared['plan']['plan_id'],
+            'requirement_identity': context['requirement_identity'], 'commit': 'a' * 40, 'verified_commit_hash': 'a' * 64}
+        received = self.call('receive', delivery, bound['context'])
+        accepted = self.call('accept', {'delivery_digest': received['delivery_digest']}, received['context'])
+        successor_evidence = {**evidence, 'configuration': self.configuration('dedicated-problem-framing'),
+            'entry_authority': {**authority, 'kind': 'wrapper-phase-run', 'stage': 1,
+                'run_id': 'phase-run', 'attempt_id': 'phase-attempt'}}
+        successor = self.call('prepare', successor_evidence, accepted['context'])
+        self.assertTrue(successor['ok'], successor)
+        return successor, successor_evidence
+
+    def test_successor_slot_is_bounded_and_cancel_preserves_predecessor(self):
+        import copy
+        result, evidence = self.successor_controls()
+        context = result['context']
+        predecessor = copy.deepcopy(context['handoff_progress'])
+        self.assertFalse(self.call('prepare', evidence, context)['ok'])
+        self.assertFalse(self.call('cancel', {}, context)['ok'])
+        cancelled = self.call('cancel', {'control_plan_id': result['plan']['plan_id']}, context)
+        self.assertTrue(cancelled['ok'], cancelled)
+        self.assertEqual(cancelled['context']['handoff_progress'], predecessor)
+        self.assertEqual(cancelled['context']['successor_control']['handoff_progress']['state'], 'cancelled')
+        malformed = copy.deepcopy(context)
+        malformed['successor_control']['successor_control'] = self.context()
+        self.assertFalse(self.call('cancel', {'control_plan_id': result['plan']['plan_id']}, malformed)['ok'])
+        wrong = self.call('decide', {'plan_id': 'wrong', 'intent': 'confirm'}, context)
+        self.assertFalse(wrong['ok'])
+
+    def test_entry_authority_is_typed_and_part_of_plan_digest(self):
+        import copy
+        result, _ = self.successor_controls()
+        changed = copy.deepcopy(result['context'])
+        changed['successor_control']['handoff_progress']['plan']['entry_authority']['attempt_id'] = 'replacement'
+        self.assertFalse(self.call('decide', {'plan_id': result['plan']['plan_id'], 'intent': 'confirm'}, changed)['ok'])
+        changed = copy.deepcopy(result['context'])
+        changed['successor_control']['handoff_progress']['plan']['entry_authority']['stage'] = True
+        self.assertFalse(self.call('decide', {'plan_id': result['plan']['plan_id'], 'intent': 'confirm'}, changed)['ok'])
+
 if __name__ == '__main__':
     unittest.main()

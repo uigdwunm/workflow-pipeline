@@ -818,6 +818,23 @@ def _verify_topic_path_authority(
     return _record_topic_document_path(project, document_record)
 
 
+def _requirement_phase_attempts(
+    records: dict[str, list[dict[str, Any]]], topic_id: str
+) -> list[dict[str, Any]]:
+    phase_writers = []
+    for record in records["Phase Runs"]:
+        if record.get("run_kind") != "phase-run":
+            continue
+        data = _json_field(record, "data_json", "phase run")
+        if (data.get("wrapper_integration") is True
+                and data.get("carrier_kind") in {"dedicated-grilling", "current-problem-framing"}
+                and data.get("source_topic_id") == topic_id):
+            phase_writers.extend(a for a in data.get("attempts", [])
+                if a.get("authorization") is True and a.get("claimed") is True
+                and a.get("state") in {"active", "completion-claimed", "completion-pending", "outcome-unknown"})
+    return phase_writers
+
+
 def _verify_topic_owner(
     records: dict[str, list[dict[str, Any]]],
     topic_id: str,
@@ -846,43 +863,31 @@ def _verify_topic_owner(
     write_operations = {"prepare-topic-update", "apply-document-write", "prepare-checkpoint",
                         "publish-git-checkpoint", "publish-non-git-checkpoint",
                         "reconcile-git-checkpoint", "reconcile-non-git-checkpoint"}
+    phase_writers = _requirement_phase_attempts(records, topic_id)
+    requirement_ops = {"prepare-topic-update", "apply-document-write"}
     if len(active) == 1 and active[0].get("conversation_ref") == owner_ref:
         if writers and operation in write_operations:
             raise ProtocolError("document_ownership_conflict", "dedicated carrier holds document write authority")
+        if phase_writers and operation in requirement_ops:
+            if len(phase_writers) != 1 or phase_writers[0].get("carrier_ref") != owner_ref or phase_writers[0]["state"] != "active":
+                raise ProtocolError("document_ownership_conflict", "phase carrier holds or has frozen requirement write authority")
         return
-    if len(writers) == 1 and writers[0].get("conversation_ref") == owner_ref:
+    if len(writers) == 1 and not phase_writers and writers[0].get("conversation_ref") == owner_ref:
         permitted = {"accept-handoff", "authorize-handoff-discussion", "read-topic"}
         if writers[0].get("state") == "active":
             permitted |= write_operations
+            if writers[0].get("delivery_frozen"):
+                permitted -= requirement_ops
         if operation in permitted:
             return
-
-    if not allow_active_grilling:
-        raise ProtocolError(
-            "document_ownership_conflict",
-            "the caller is not the active document owner for this topic",
-        )
-    active_grilling_carriers = []
-    for record in records["Phase Runs"]:
-        if record.get("run_kind") != "phase-run" or record.get("state") != "active":
-            continue
-        data = _json_field(record, "data_json", "phase run")
-        if (
-            data.get("wrapper_integration") is True
-            and data.get("carrier_kind") == "dedicated-grilling"
-            and data.get("source_topic_id") == topic_id
-        ):
-            active_grilling_carriers.extend(
-                attempt.get("carrier_ref")
-                for attempt in data.get("attempts", [])
-                if attempt.get("state") == "active" and attempt.get("claimed") is True
-            )
-    if active_grilling_carriers == [owner_ref]:
+    if operation == "read-topic" and any(a.get("carrier_ref") == owner_ref for a in phase_writers):
         return
-    raise ProtocolError(
-        "document_ownership_conflict",
-        "the caller is not the active document owner for this topic",
-    )
+    if (allow_active_grilling and not writers and len(phase_writers) == 1
+            and phase_writers[0].get("carrier_ref") == owner_ref
+            and phase_writers[0]["state"] == "active"
+            and operation in requirement_ops | {"read-topic"}):
+        return
+    raise ProtocolError("document_ownership_conflict", "the caller is not the active document owner for this topic")
 
 
 def _active_pending_write(records: dict[str, list[dict[str, Any]]]) -> dict[str, Any] | None:

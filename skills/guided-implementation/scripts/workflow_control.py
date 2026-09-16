@@ -115,6 +115,24 @@ def validate_selection(value):
         require(value[field] is None or type(value[field]) in {int, float} and math.isfinite(value[field]) and value[field] >= 0, 'invalid selection evidence')
 
 
+def validate_entry_authority(authority):
+    require(isinstance(authority, dict), 'entry authority must be an object')
+    kind = authority.get('kind')
+    if kind == 'standalone':
+        keys(authority, {'kind'})
+        return
+    require(kind in {'dedicated-stage', 'wrapper-phase-run'}, 'invalid entry authority kind')
+    keys(authority, {'kind', 'project_id', 'tree_id', 'topic_id', 'controller_ref',
+                     'source_phase', 'stage', 'run_id', 'attempt_id'})
+    for field in ('project_id', 'tree_id', 'topic_id', 'controller_ref', 'run_id', 'attempt_id'):
+        text(authority[field])
+    require(type(authority['source_phase']) is int and type(authority['stage']) is int,
+            'entry phases must be integers')
+    require((authority['source_phase'], authority['stage']) == (0, 1) if kind == 'wrapper-phase-run'
+            else authority['source_phase'] == authority['stage'] and authority['stage'] in {0, 1},
+            'entry authority route mismatch')
+
+
 def validate_progress(progress):
     require(isinstance(progress, dict), 'invalid control checkpoint')
     state = progress.get('state')
@@ -151,14 +169,20 @@ def validate_progress(progress):
         allowed = {'state', 'plan', 'decision', 'creation_status', 'delivery', 'delivery_digest', 'successor', 'archive_ref', 'archive_status'}
         require(state in {'prepared', 'creation-pending', 'current-task', 'cancelled', 'creation-failed', 'carrier-bound', 'result-received', 'result-accepted', 'successor-ready', 'archive-pending', 'archived'}, 'invalid dedicated state')
         plan = progress.get('plan')
-        keys(plan, {'target', 'project', 'title', 'missing_context', 'configuration', 'next_step', 'archive_ref', 'gate_open', 'stage', 'controller_ref', 'topic_ref', 'requirement_identity', 'task_count', 'plan_id'})
+        keys(plan, {'target', 'project', 'title', 'missing_context', 'configuration', 'next_step', 'archive_ref', 'gate_open', 'stage', 'controller_ref', 'topic_ref', 'requirement_identity', 'task_count', 'plan_id', 'entry_authority'})
+        validate_entry_authority(plan['entry_authority'])
         validate_selection(plan['configuration'])
         require(type(plan['task_count']) is int and plan['task_count'] == 1 and plan['plan_id'] == digest({k: v for k, v in plan.items() if k != 'plan_id'}), 'prepared plan digest changed')
     require(set(progress) <= allowed, 'unknown checkpoint fields')
 
 
 def validate_context(context):
-    keys(context, CONTEXT_FIELDS)
+    require(isinstance(context, dict) and CONTEXT_FIELDS <= set(context) <= CONTEXT_FIELDS | {'successor_control'}, 'invalid context fields')
+    if context.get('successor_control') is not None:
+        successor = context['successor_control']
+        require(isinstance(successor, dict) and 'successor_control' not in successor, 'only one successor slot allowed')
+        validate_context(successor)
+        require(successor['controller_ref'] == context['controller_ref'] and successor['topic_ref'] == context['topic_ref'], 'successor controller/topic mismatch')
     require(type(context['schema_version']) is int and context['schema_version'] == 1, 'unsupported control schema')
     text(context['controller_ref'])
     if context['topic_ref'] is not None:
@@ -248,7 +272,7 @@ def select_configuration(evidence):
             'disclose': evidence['role'] != 'execution-agent', 'upgrade_attempted': source == 'role' and evidence['frozen'] is not None}
 
 
-def transition(request: dict[str, Any]) -> dict[str, Any]:
+def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     keys(request, {'schema_version', 'action', 'actor_ref', 'context', 'evidence'})
     require(type(request['schema_version']) is int and request['schema_version'] == 1, 'unsupported request schema')
     context = copy.deepcopy(request['context'])
@@ -270,7 +294,12 @@ def transition(request: dict[str, Any]) -> dict[str, Any]:
         return {'ok': True, 'context': context, 'effects': [], 'selection': select_configuration(evidence)}
     if action == 'prepare':
         keys(evidence, {'target', 'project', 'title', 'missing_context', 'configuration',
-                        'next_step', 'archive_ref', 'gate_open'})
+                        'next_step', 'archive_ref', 'gate_open'} | ({'entry_authority'} if 'entry_authority' in evidence else set()))
+        authority = evidence.get('entry_authority', {'kind': 'standalone'})
+        validate_entry_authority(authority)
+        require(authority['kind'] != 'standalone' or context['topic_ref'] is None, 'attached plan requires exact entry authority')
+        if authority['kind'] != 'standalone':
+            require(authority['controller_ref'] == context['controller_ref'] and authority['topic_id'] == context['topic_ref'] and authority['stage'] == context['stage'], 'entry authority context mismatch')
         require(context['stage'] in {0, 1}, 'dedicated preparation requires stage 0 or 1')
         require(evidence['gate_open'] is True, 'topic gate is closed')
         for field in ('target', 'project', 'title', 'next_step'):
@@ -281,7 +310,7 @@ def transition(request: dict[str, Any]) -> dict[str, Any]:
             return {'ok': True, 'context': context, 'plan': None, 'effects': []}
         plan = {**evidence, 'stage': context['stage'], 'controller_ref': context['controller_ref'],
                 'topic_ref': context['topic_ref'], 'requirement_identity': context['requirement_identity'],
-                'task_count': 1}
+                'task_count': 1, 'entry_authority': authority}
         plan['plan_id'] = digest(plan)
         context['handoff_progress'] = {'state': 'prepared', 'plan': plan}
         return {'ok': True, 'context': context, 'plan': plan, 'effects': []}
@@ -518,6 +547,8 @@ def transition(request: dict[str, Any]) -> dict[str, Any]:
     elif action == 'cancel':
         keys(evidence, set())
         require(progress is not None, 'no attempt to cancel')
+        if 'plan' in progress:
+            require(progress['state'] in {'prepared', 'creation-pending', 'carrier-bound', 'creation-failed', 'cancelled'}, 'received results cannot be cancelled')
         progress['state'] = 'cancelled'
         if 'executions' in progress:
             effects = [({'operation': 'stop-native', 'ref': e['agent_ref']} if e['agent_ref'] is not None else {'operation': 'read-native-state', 'task_id': e['task_id'], 'allocation_digest': e['allocation_digest']}) for e in progress['executions'] if not e['stopped']]
@@ -537,6 +568,69 @@ def transition(request: dict[str, Any]) -> dict[str, Any]:
     else:
         raise ControlError('unknown action')
     return {'ok': True, 'context': context, 'effects': effects}
+
+
+def selected_control(context, evidence):
+    """Select a bounded slot using an exact plan or delivery identity."""
+    successor = context.get('successor_control')
+    if successor is None:
+        selected = context
+    else:
+        identities = {text(evidence[k]) for k in ('control_plan_id', 'plan_id', 'attempt', 'delivery_digest', 'input_digest') if k in evidence}
+        matches = []
+        for slot in (context, successor):
+            progress = slot.get('handoff_progress') or {}
+            known = {progress.get('plan', {}).get('plan_id'), progress.get('delivery_digest')} - {None}
+            if identities & known:
+                matches.append(slot)
+        require(len(matches) == 1, 'two control slots require an exact plan or delivery identity')
+        selected = matches[0]
+    if 'control_plan_id' in evidence:
+        require((selected.get('handoff_progress') or {}).get('plan', {}).get('plan_id') == evidence['control_plan_id'], 'wrong control slot identity')
+    return selected
+
+
+def transition(request: dict[str, Any]) -> dict[str, Any]:
+    keys(request, {'schema_version', 'action', 'actor_ref', 'context', 'evidence'})
+    context = copy.deepcopy(request['context'])
+    validate_context(context)
+    evidence = copy.deepcopy(request['evidence'])
+    require(isinstance(evidence, dict), 'evidence must be an object')
+    action = request['action']
+    authority = evidence.get('entry_authority') if action == 'prepare' else None
+    if authority is not None:
+        validate_entry_authority(authority)
+    progress = context.get('handoff_progress') or {}
+    successor_prepare = (authority is not None and authority['kind'] != 'standalone'
+        and authority['stage'] != context['stage'] and context['carrier'] is not None)
+    if successor_prepare:
+        require(authority['kind'] == 'wrapper-phase-run' and context['stage'] == 0
+                and progress.get('state') == 'result-accepted', 'predecessor must be accepted before successor preparation')
+        existing = context.get('successor_control')
+        if existing is not None:
+            old = existing.get('handoff_progress') or {}
+            stopped = old.get('state') in {'cancelled', 'creation-failed'} or (not old and existing['carrier'] is None)
+            require(stopped and old.get('plan', {}).get('entry_authority') != authority, 'successor slot already occupied')
+        selected = {k: copy.deepcopy(v) for k, v in context.items() if k != 'successor_control'}
+        selected.update(stage=authority['stage'], carrier=None, handoff_progress=None,
+            preference={'topic_current': context['preference']['topic_current'], 'stage_current': False})
+        context['successor_control'] = selected
+    else:
+        selected = selected_control(context, evidence)
+    evidence.pop('control_plan_id', None)
+    # A child transition sees a single slot, never a recursively routable context.
+    single = {k: v for k, v in selected.items() if k != 'successor_control'}
+    result = _transition_single({**request, 'context': single, 'evidence': evidence})
+    if selected is context:
+        successor = context.get('successor_control')
+        context = result['context']
+        if successor is not None:
+            context['successor_control'] = successor
+            if action == 'archive-result' and evidence.get('status') == 'archived':
+                context = successor
+    else:
+        context['successor_control'] = result['context']
+    return {**result, 'context': context}
 
 
 def main():

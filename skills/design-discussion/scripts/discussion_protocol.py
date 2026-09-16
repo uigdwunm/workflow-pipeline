@@ -92,6 +92,8 @@ from discussion_core.question_resolution import (
     stage_pending_document_write,
 )
 from discussion_core.phase_runs import (
+    _requirement_write_evidence,
+    _apply_requirement_write_evidence,
     _authorize_continuous_flow,
     _authorize_phase_carrier,
     _claim_phase_carrier,
@@ -1147,6 +1149,7 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             topic_id=request["actor_topic_id"], root_slug=manifest["root_slug"],
             topic_revision=next_topic_revision, snapshot=next_snapshot,
         )
+        phase_evidence = _requirement_write_evidence(records, next_records, topic_record, topic_path, after_bytes)
         write_record, recovered_orphan = stage_pending_document_write(
             next_records,
             ledger_path=ledger_path,
@@ -1158,6 +1161,8 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             after=after_bytes,
             recover_exact_orphan=True,
         )
+        if phase_evidence is not None:
+            write_record["phase_evidence_json"] = _canonical_json(phase_evidence)
         next_topic_record = _record_by_id(next_records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         next_topic_record["record_revision"] = next_topic_revision
         result = {
@@ -1216,6 +1221,7 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
         payload = _require_regular_nosymlink(payload_path, "pending document payload")
         if _sha256(payload) != write["after_sha256"]:
             raise ProtocolError("document_write_payload_damaged", "pending document payload digest does not match")
+        _apply_requirement_write_evidence(records, topic_record, topic_path, write)
         current = _require_regular_nosymlink(topic_path, "topic document")
         current_digest = _sha256(current)
         if current_digest == write["before_sha256"]:
@@ -1225,6 +1231,7 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
         verified = _require_regular_nosymlink(topic_path, "topic document")
         if _sha256(verified) != write["after_sha256"] or verified != payload:
             raise ProtocolError("document_write_verification_failed", "topic document did not verify after apply")
+        _inject_failure("document-write-before-ledger-persist")
         next_revision = ledger_revision + 1
         next_topic_revision = topic_revision
         write["state"] = "completed"
