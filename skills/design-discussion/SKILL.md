@@ -187,4 +187,16 @@ exceptions, unresolved questions and next-stage inputs. Never infer maturity
 from turn count or document length. Offer a later lifecycle route only when the
 relevant protocol operation exists and its prerequisites are verified.
 
-Prepare one dedicated-stage plan before combined confirmation; a bound carrier does not replace the controller.
+For a same-stage dedicated discussion, prepare `dedicated-stage(stage=0)`
+before the Workflow Control plan and combined confirmation. Bind the actual
+created task before `creation-result`. With the same baseline, no pending DW
+and an open gate, `accept-handoff` returns `active` and permits work immediately;
+`authorize-handoff-discussion` remains only for ordinary child/continuation
+handoffs. A bound carrier does not replace the controller.
+
+To enter dedicated Stage 1 from phase 0, use the `0→1` wrapper sequence in
+[references/lifecycle-integration.md](references/lifecycle-integration.md).
+If the old Stage-0 carrier already delivered an accepted result, retain its
+control checkpoint while preparing the single successor slot. Activation
+transfers exclusive requirement write authority; archive the old task only
+after verified takeover. Resolve pending DW before any transfer.

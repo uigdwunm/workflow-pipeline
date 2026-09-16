@@ -52,24 +52,35 @@ and record the current task as its sole write owner. On `ambiguous`, stop before
 write rather than risk creating a second requirement authority. Stop on a strong
 identity conflict; do not ask the user to choose an internal identity.
 
-In an attached context, 0 and 1 own one requirement document: the existing
-`docs/discussions/<root-slug>/topic.md`. Do not create a problem-framing draft
-or migrate that document to another path. The active topic conversation may
-run 1 directly. When a dedicated grilling carrier is needed, the source topic
-must first publish the latest effective `stage-entry` checkpoint and prepare a
-`0->1` wrapper Phase Run with carrier kind `dedicated-grilling`. The carrier
-must verify that exact checkpoint identity, claim its authorized `PA-*`, report
-ready, and wait. It may ask questions or prepare a shared-topic write only
-after the source topic rechecks evidence and activates the run. While active,
-all durable requirement updates still use the topic's immutable `DW-*` payload;
-the dedicated carrier never owns a second draft.
+In an attached context, 0 and 1 share the existing
+`docs/discussions/<root-slug>/topic.md`. Select the entry from the verified
+`current_phase`, then follow
+[the dedicated entry sequence](references/dedicated-grilling-protocol.md#source-task-prepare-and-create):
+
+- From phase 0, use one `0->1` wrapper Phase Run, with
+  `dedicated-grilling` for a dedicated task or `current-problem-framing` for
+  the current task. Publish the latest stage-entry checkpoint first. A dedicated
+  task claims its authorized `PA-*`, reports ready and waits for source activation.
+  Execution is Stage 1 while `current_phase` remains 0 until finalization.
+- At phase 1, a dedicated transfer uses `dedicated-stage(stage=1)`.
+  Its verified `accept-handoff` grants immediate requirement work when the
+  gate is open; no wrapper or later-turn authorization is needed.
+- Standalone entry keeps its authenticated task identity and sole draft
+  `write_owner`, with no discussion ledger operations.
+
+Attached carriers write only the existing topic document through `DW-*` after
+activation or acceptance. They create neither a second draft nor standalone
+metadata in the topic document. The controller keeps coordination and intake;
+while a carrier holds requirement write authority, the controller cannot also
+prepare or apply requirement writes. Use the lifecycle reference for frozen
+input, working/output evidence and completion order.
 
 Before routing from 0 or 1, resolve every pending impact and publish the latest
 effective 0/1 checkpoint. Use `prepare-wrapper-phase-run`, not the generic
 Phase Run operation. Phase 1 routes only to Phase 2. A continuous request from 0 or 1 freezes the current checkpoint, source_phase and exact stages [2,3,4] scope.
 
-Apply the shared split/gate contract above in Phase 1. A dedicated grilling
-carrier may return only a bounded split proposal to its Phase Source Task; it
+Apply the shared split/gate contract above in Phase 1. A dedicated grilling carrier
+may return only a bounded split proposal to its Phase Source Task; it
 must never prepare, release, or change Topic Dependencies. The source topic
 retains both confirmations and resumes Phase-1 questioning only after the
 shared gate sequence permits substantive work.
@@ -106,7 +117,7 @@ a magic reply string.
 
 ## Choose the context path
 
-The Workflow Controller first prepares the one requirement document and a dedicated-stage plan. Disclose missing context, identity and configuration in one combined stage-entry/task-creation confirmation. There is no preliminary migration offer. Stage-current or topic-current refusal reuses this document and suppresses repeated offers. A dedicated carrier never recursively creates another. Read dedicated-grilling-protocol.md for authentication before binding or intake.
+The Workflow Controller first resolves the one requirement document and the exact entry authority, then prepares its dedicated-task plan. Disclose missing context, identity and configuration in one combined stage-entry/task-creation confirmation. There is no preliminary migration offer. Stage-current or topic-current refusal reuses this document and suppresses repeated offers. A dedicated carrier never recursively creates another. Read [dedicated-grilling-protocol.md](references/dedicated-grilling-protocol.md) before preparing an attached authority, binding or intake.
 
 ## Load repository rules only when needed
 
@@ -233,7 +244,7 @@ completely. Perform only the specified mechanical identity, commit, path, hash,
 completion-marker, user-confirmation, and documentation-aware checks. Do not
 semantically re-review the grilling result.
 
-After receive/accept, show the dedicated success footer. A stepwise or continuous
+After receive/accept, finalize an attached 0→1 wrapper and verify `current_phase: 1` before showing the dedicated success footer. A same-stage transfer has no wrapper to finalize. A stepwise or continuous
 confirmation enters solution-design using the accepted result. Keep the old carrier
 available until successor-ready verifies input/binding and applicable source
 activation; then archive the frozen old task. Archive failure recovers archive only.
