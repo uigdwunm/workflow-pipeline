@@ -16,6 +16,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from discussion_core import OperationRegistry, RequestContext
+from discussion_core.workflow_control import workflow_control
 
 from discussion_core.state import (
     IDENTITY_RE,
@@ -1062,7 +1063,12 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
             request["actor_topic_id"],
             owner_ref,
             allow_active_grilling=True,
+            operation=request["operation"],
         )
+        active_controller = next((b.get("conversation_ref") for b in records["Conversation Bindings"]
+                                  if b.get("topic_id") == request["actor_topic_id"] and b.get("binding_state") == "active"), None)
+        if owner_ref != active_controller and mutation["type"] == "resolve-impact":
+            raise ProtocolError("document_ownership_conflict", "dedicated carriers cannot accept impacts or release gates")
         child_result_impact_acceptance = False
         if mutation["type"] == "resolve-impact":
             impact_record = _record_by_id(
@@ -1196,6 +1202,7 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
             request["actor_topic_id"],
             owner_ref,
             allow_active_grilling=True,
+            operation=request["operation"],
         )
         write = _record_by_id(records["Pending Document Writes"], "document_write_id", request["document_write_id"], "document_write_id")
         if write["owner_ref"] != owner_ref or write["state"] != "confirmed-but-pending":
@@ -1907,7 +1914,7 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
     with lock_path.open("a+b") as lock_stream:
         _flock_with_timeout(lock_stream)
         frontmatter, records = _load_records(ledger_path)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         _validate_pending_writes(ledger_path, records)
         checkpoints = _validate_checkpoints(project, records)
         handoff_count = _validate_handoffs(records)
@@ -1950,6 +1957,7 @@ def _build_operation_registry() -> OperationRegistry:
     return OperationRegistry(
         [
             ("bootstrap", _bootstrap),
+            ("workflow-control", workflow_control),
             ("discover-context", _discover_context),
             ("initialize-document-context", _initialize_document_context),
             ("prepare-phase-run", _prepare_phase_run),

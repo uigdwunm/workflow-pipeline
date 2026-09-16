@@ -76,3 +76,5 @@ protocol, or imply that the consultation will persist.
 The headings are stable; content changes only through the authorized protocol
 operations. `Decision Evolution` stays empty unless one concise change note is
 needed to prevent a likely misunderstanding; it is not an audit log.
+
+The created child is one independent Workflow Controller, with fresh preferences and no inherited continuous scope. A closed gate blocks substantive work. For 0/1 dedicated work disclose the prepared plan: stage, controller_ref, project, target, title, document path/hash/version, missing_context, configuration reason/receipt, task_count=1, next_step, archive_ref and plan_id. Confirm once; stage-current/topic-current keeps the document.

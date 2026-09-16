@@ -19,31 +19,15 @@ IDs, hashes, model settings, and actions. Interpret replies through
 确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
 
-## Long-context migration offer
-
-```text
-上下文迁移：建议创建专用拷问任务
-本次目标：<goal>
-判断依据：<compacted, unavailable, unrelated, or widely distributed context facts>
-拟整理内容：<target-specific context categories>
-拟排除内容：<unrelated history and non-transferable authority>
-执行环境：同一项目的 `local` 环境；不创建 worktree
-原任务行为：创建后停止；不等待、不轮询、不监督
-确认事项：把当前 1拷问迁移到专用任务，并在最终创建确认前不创建新任务
-确认范围：
-1. 读取并整理当前任务中与本次目标相关的上下文
-2. 继续迭代当前任务已经创建或继承的唯一需求草案；不创建第二份草案
-影响目标：<goal>
-当前依据：<current task title, project, repository, and context disclosure>
-确认后结果：当前草案完成迁移准备并展示新任务创建确认；尚不创建新任务
-修改方式：说明需要调整的迁移范围；如不迁移，直接说明在当前任务继续
-确认方式：明确同意上述单一待执行事项；如需调整可直接说明
-```
-
 ## Dedicated-task creation confirmation
 
 ```text
-确认事项：创建专用 1拷问任务
+确认事项：进入 1拷问并按已准备计划创建一个专用任务
+plan_id：<frozen plan>
+controller_ref：<authenticated controller>
+missing_context：<prepared missing context>
+task_count：1
+archive_ref：null（创建前）
 本次拷问目标：<goal>
 草案文件：<absolute path>
 草案存储：repository-document-zone
@@ -52,9 +36,9 @@ IDs, hashes, model settings, and actions. Interpret replies through
 目标项目：projectId=<id>; path=<absolute path>; repository=<identity>
 执行环境：`local`（不创建 worktree，不 fork 原任务）
 目标模型：<exact model id>
-模型来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
+模型来源：<selection source: user | confirmed | role | inherited; current adapter receipt>
 推理强度：<exact reasoning effort>
-强度来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
+强度来源：<selection source: user | confirmed | role | inherited; current adapter receipt>
 新任务标题：<title>
 初始提示词：
 ---
@@ -62,10 +46,10 @@ IDs, hashes, model settings, and actions. Interpret replies through
 ---
 确认范围：
 1. 使用以上标题、提示词、项目、`local` 环境、模型和推理强度创建一个新任务
-2. 创建成功后让原任务停止工作；专用任务在首次实质更新草案前记录自身身份
+2. 创建成功后由总控保留接收、确认与归档职责；专用任务在首次实质更新草案前记录自身身份
 影响目标：<goal>
 当前依据：草案=<absolute path>; 存储=repository-document-zone; sha256=<sha256>; 原任务=<threadId>; 配置=<model>/<effort>; 设置证据=<source and source turn id>
-确认后结果：出现一个仅用于本次拷问的专用任务；原任务不等待其结果
+确认后结果：出现一个仅用于本次拷问的专用任务；总控保留接收和接管职责
 修改方式：说明要修改的目标、草案、标题、提示词、项目、模型或推理强度
 确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
@@ -117,7 +101,7 @@ not from the draft or child task.
 草案文件：<absolute path>
 草案存储：repository-document-zone
 初始草案 SHA-256：<confirmed sha256>
-原任务状态：已停止；不等待、不轮询、不监督
+总控状态：等待认证交付，保留控制权
 下一步：进入上述专用任务完成本次拷问
 ```
 
@@ -152,9 +136,9 @@ dedicated_task:
   host_id: <null until migration>
   title: <null until migration>
 model: <model id>
-model_source: <codex-rollout-latest-turn-context | user-requested-override>
+model_source: <user | confirmed | role | inherited>
 reasoning_effort: <effort>
-reasoning_effort_source: <codex-rollout-latest-turn-context | user-requested-override>
+reasoning_effort_source: <user | confirmed | role | inherited>
 settings_source_thread_id: <original task id>
 settings_source_turn_id: <turn id | null>
 context_disclosure:
@@ -306,9 +290,9 @@ Matt 原生动作：publish Spec; review and publish Tickets when needed; apply 
 下一阶段：`$solution-design`（2方案）
 进入条件：已满足
 交接来源：上述草案文件
-确认事项：归档专用拷问任务并进入 2方案
+确认事项：用已接受结果进入 2方案，验证接管后归档当前专用任务
 确认方式：明确同意上述单一待执行事项；如需调整可直接说明
-流程模式：可明确要求归档专用任务、进入 2方案，并在无需用户决策时自动顺序执行剩余阶段
+流程模式：可明确要求进入 2方案并在接管后归档专用任务，并在无需用户决策时自动顺序执行剩余阶段
 ```
 
 ## Failure checkpoint
@@ -328,9 +312,9 @@ Matt 原生动作：publish Spec; review and publish Tickets when needed; apply 
 恢复方式：修复条件后明确要求重试；也可使用 `$problem-framing 重试`
 ```
 
-## Post-archive stage-2 handoff
+## Accepted-result stage-2 handoff
 
-Emit this only inside the original task after `set_thread_archived` succeeds.
+Emit this inside the Workflow Controller after receive/accept and successor confirmation, before archiving the old carrier.
 It is the authenticated in-turn invocation input for `$solution-design`, not a
 new user confirmation block.
 
@@ -338,7 +322,10 @@ new user confirmation block.
 $solution-design
 阶段来源：`$problem-framing` 专用任务交付
 本次目标：<goal>
-专用任务归档：完成
+专用任务归档：待接管后执行
+controller_ref：<authenticated controller>
+accepted delivery digest：<digest>
+ready/activation evidence：<verified successor evidence | pending>
 专用任务：threadId=<trusted child id>; hostId=<trusted child host>
 交付检查：通过
 交付 ID：<canonical delivery id>
@@ -355,3 +342,7 @@ Matt 原生动作：publish Spec; review and publish Tickets when needed; apply 
 阶段授权：进入 2方案 仅授权在上述精确目标执行标准 Matt 原生动作
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
 ```
+
+Configuration disclosure includes the select-configuration reason and current
+adapter receipt. Unsupported user settings do not silently fall back. Unknown
+capability/cost remains null; do not invent scores or prices to populate a template.

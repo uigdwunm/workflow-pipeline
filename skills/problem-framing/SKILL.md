@@ -10,6 +10,8 @@ Use Matt Pocock's discussion Skills for the questioning itself. Do not choose
 the engineering implementation or write implementation code in this stage.
 This restriction never permits deferring an unresolved behavior contract.
 
+Read [Workflow Control Protocol](../guided-implementation/references/workflow-control-protocol.md) before role preparation or transition. This stage uses Dedicated Problem Framing Task and preserves the Workflow Controller.
+
 ## Foreground runner boundary
 
 The foreground Stage 2→3→4 runner at
@@ -64,9 +66,7 @@ the dedicated carrier never owns a second draft.
 
 Before routing from 0 or 1, resolve every pending impact and publish the latest
 effective 0/1 checkpoint. Use `prepare-wrapper-phase-run`, not the generic
-Phase Run operation. Phase 1 routes only to Phase 2. A natural-language request
-for continuous execution can be selected only from the successful stage-1
-footer; a stage-0 route is always stepwise.
+Phase Run operation. Phase 1 routes only to Phase 2. A continuous request from 0 or 1 freezes the current checkpoint, source_phase and exact stages [2,3,4] scope.
 
 Apply the shared split/gate contract above in Phase 1. A dedicated grilling
 carrier may return only a bounded split proposal to its Phase Source Task; it
@@ -106,34 +106,7 @@ a magic reply string.
 
 ## Choose the context path
 
-Before starting the Matt flow, assess the available task history for the current
-target. Recommend a dedicated task when any of these materially threatens
-reasoning quality or context completeness:
-
-- earlier history has already been compacted, summarized, or made unavailable;
-- substantial unrelated discussion surrounds the target-relevant context; or
-- the relevant facts and decisions are spread across enough history that
-  continuing would risk omission or degraded questioning.
-
-Do not use a numeric token guess as the sole reason and do not recommend a new
-task merely because the target is difficult.
-
-Do not assess or offer migration until the target is identified well enough to
-separate relevant context from unrelated history. If it is not, ask the entry
-question first, then create the requirement document before the first
-substantive question. Populate the migration offer from currently available task,
-project, and repository context. For a value that is not yet available, state
-`未解析（创建确认前解析）` instead of guessing; freeze every exact identity before
-the later task-creation confirmation.
-
-- If the context is still coherent and focused, continue in the current task
-  with the standalone document already created for this target.
-- If it is long or mixed, show the fixed migration offer from
-  [references/templates.md](references/templates.md).
-- If the user declines, continue in the current task with the same document.
-- If the user clearly confirms the pending migration action, read
-  [references/dedicated-grilling-protocol.md](references/dedicated-grilling-protocol.md)
-  completely and follow its source-task protocol.
+The Workflow Controller first prepares the one requirement document and a dedicated-stage plan. Disclose missing context, identity and configuration in one combined stage-entry/task-creation confirmation. There is no preliminary migration offer. Stage-current or topic-current refusal reuses this document and suppresses repeated offers. A dedicated carrier never recursively creates another. Read dedicated-grilling-protocol.md for authentication before binding or intake.
 
 ## Load repository rules only when needed
 
@@ -260,9 +233,10 @@ completely. Perform only the specified mechanical identity, commit, path, hash,
 completion-marker, user-confirmation, and documentation-aware checks. Do not
 semantically re-review the grilling result.
 
-After successful intake, show the dedicated success footer. Handle its reply in
-this Skill; do not let `$solution-design` activate directly from the pre-archive
-footer. An unambiguous affirmation archives the dedicated grilling task and
-enters `$solution-design` in stepwise mode. A clear request for continuous
-remaining execution archives it and enters `$solution-design` with continuous
-mode. A dedicated-task delivery always routes to Phase 2.
+After receive/accept, show the dedicated success footer. A stepwise or continuous
+confirmation enters solution-design using the accepted result. Keep the old carrier
+available until successor-ready verifies input/binding and applicable source
+activation; then archive the frozen old task. Archive failure recovers archive only.
+A dedicated-task delivery always routes to Phase 2.
+
+After accepted delivery, successor-ready proves takeover before archive.

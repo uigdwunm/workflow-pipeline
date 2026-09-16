@@ -1,6 +1,6 @@
 ---
 name: solution-design
-description: Use when the user explicitly invokes $solution-design with a committed Phase-1 requirement draft, unambiguously confirms a valid Phase-1 handoff, enters from an authenticated dedicated-grilling handoff, replies to this Skill's launch/review/anomaly block, or continues from a verified continuous-flow handoff. Create one Flow Worktree, orchestrate one context-isolated solution-designer subagent, and publish planning artifacts from that frozen draft for Stage 3.
+description: Use when the user explicitly invokes $solution-design with one committed, frozen Phase-0/1 requirement document, unambiguously confirms a valid Phase-0/1 handoff, enters from an authenticated dedicated-grilling handoff, replies to this Skill's launch/review/anomaly block, or continues from a verified continuous-flow handoff. Create one Flow Worktree, orchestrate one context-isolated solution-designer subagent, and publish planning artifacts from that frozen draft for Stage 3.
 ---
 
 # 2方案
@@ -23,6 +23,8 @@ and require the frozen document defined by
 The child reads
 [references/design-readiness.md](references/design-readiness.md) before native
 Spec synthesis and applies it at the existing review or publication seams.
+
+Read [Workflow Control Protocol](../guided-implementation/references/workflow-control-protocol.md) before role preparation or transition. This stage uses solution-designer and preserves the Workflow Controller.
 
 ## Select the runtime role
 
@@ -66,10 +68,11 @@ review confirmation defaults.
 Enter from exactly one route:
 
 - an explicit `$solution-design` invocation;
+- a verified mature Stage-0 requirement handoff with current checkpoint and explicit stage-2 or continuous authorization;
 - a stable current-task `$problem-framing` success footer selecting this stage,
   followed by an unambiguous stepwise or continuous confirmation;
-- the authenticated post-archive handoff from `$problem-framing` containing the
-  absolute draft, commit, hash, delivery ID, archived child identity, project,
+- the authenticated accepted-result handoff from `$problem-framing` containing the
+  absolute draft, commit, hash, delivery ID, trusted child identity pending archive, project,
   repository, planning target, authority, and flow mode;
 - this Skill's immediately preceding launch, review, or anomaly block; or
 - the trusted non-root runtime receiving a valid
@@ -83,9 +86,9 @@ modification request.
 
 ## Establish the requirement source
 
-Mechanically require one committed, frozen Phase-1 requirement draft by path,
+Mechanically require one committed, frozen 0/1 requirement document by path,
 commit, and SHA-256. For a dedicated-task delivery, also require the
-authenticated post-archive handoff. Read the immutable draft as the complete
+authenticated accepted-result handoff. Read the immutable draft as the complete
 requirement source; do not re-audit the grilling, supplement it from chat
 history, modify it, or create a second requirement or solution draft.
 
@@ -236,3 +239,5 @@ stage-3 transition.
 Use the anomaly protocol for execution failures, unexpected
 workspace state, and recovery decisions. Never repeat completed design, review,
 or publication work.
+
+An authenticated accepted result handoff retains the old carrier until successor readiness and attached activation; the controller then archives it.

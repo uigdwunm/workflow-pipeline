@@ -46,7 +46,7 @@ from .question_resolution import (
 )
 
 
-HANDOFF_KINDS = {"child", "continuation"}
+HANDOFF_KINDS = {"child", "continuation", "dedicated-stage"}
 HANDOFF_WORK_SNAPSHOT_FIELDS = {
     "goal",
     "confirmed_decisions",
@@ -283,6 +283,8 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             "expected_topic_revision", "idempotency_key", "handoff_kind", "target_slug",
             "scope", "work_snapshot", "authoritative_references",
         }
+    if request.get("handoff_kind") == "dedicated-stage":
+        allowed.add("stage")
     if "initial_dependencies" in request:
         allowed.add("initial_dependencies")
     if "suspended_question_resolution" in request:
@@ -338,8 +340,17 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id"
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, source_topic)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
-        if kind == "child":
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
+        if kind == "dedicated-stage":
+            for prior_record in records["Phase Runs"]:
+                if prior_record.get("run_kind") != "discussion-handoff":
+                    continue
+                prior = _handoff_data(prior_record)
+                if prior.get("kind") == "dedicated-stage" and prior.get("target_topic_id") == request["actor_topic_id"] and prior.get("stage") == request["stage"] and any(a.get("binding_eligible") for a in prior["attempts"]):
+                    raise ProtocolError("document_ownership_conflict", "same-stage dedicated attempt already exists")
+            if type(request["stage"]) is not int or request["stage"] not in {0, 1} or request["stage"] != source_topic["current_phase"]:
+                raise ProtocolError("invalid_request", "dedicated stage must match current requirements phase")
+        if kind in {"child", "dedicated-stage"}:
             apply_gate_policy(records, "prepare-handoff", request["actor_topic_id"])
         suspended_question_resolution = (
             _freeze_suspended_question_resolution(
@@ -355,7 +366,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             source_topic["record_revision"] = resolved_topic_revision
         document_write = None
         target_topic_id = (
-            request["actor_topic_id"] if kind == "continuation" else f"topic-{uuid.UUID(request['idempotency_key']).hex}"
+            request["actor_topic_id"] if kind in {"continuation", "dedicated-stage"} else f"topic-{uuid.UUID(request['idempotency_key']).hex}"
         )
         attempt_id = _handoff_attempt_id(handoff_id, 1)
         handoff = {
@@ -363,6 +374,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
             "record_revision": 1,
             "state": "setup-pending",
             "kind": kind,
+            **({"stage": request["stage"], "controller_ref": owner_ref} if kind == "dedicated-stage" else {}),
             "project_id": request["project_id"],
             "tree_id": request["tree_id"],
             "source_topic_id": request["actor_topic_id"],
@@ -431,7 +443,7 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
                 records, request=request, target_topic_id=target_topic_id,
                 handoff_id=handoff_id, ledger_revision=ledger_revision + 1,
             )
-        else:
+        elif kind == "continuation":
             records["Relations and Coverage"].append(
                 {
                     "relation_id": f"REL-{handoff_id[2:]}",
@@ -442,6 +454,8 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
                     "handoff_id": handoff_id,
                 }
             )
+            initial_dependencies = []
+        if kind == "dedicated-stage":
             initial_dependencies = []
         # The bound task sees resolved endpoints and record identities, never
         # the caller's source/target aliases.  Bind the payload after that
@@ -547,7 +561,7 @@ def _bind_handoff(request: dict[str, Any]) -> dict[str, Any]:
             records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id"
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, source_topic)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         if handoff["source_topic_id"] != request["actor_topic_id"]:
@@ -608,13 +622,30 @@ def _bind_handoff(request: dict[str, Any]) -> dict[str, Any]:
             )
             relation["state"] = "active"
             relation["continuation_of"] = superseded
+        elif handoff["kind"] == "dedicated-stage":
+            if len(active) != 1 or active[0].get("conversation_ref") != owner_ref or conversation_ref == owner_ref:
+                raise ProtocolError("handoff_identity_conflict", "dedicated stage requires its unchanged controller")
+            for prior_binding in records["Conversation Bindings"]:
+                if prior_binding.get("topic_id") == handoff["target_topic_id"] and prior_binding.get("binding_state") == "carrier":
+                    prior_record = _handoff_record(records, prior_binding["handoff_id"])
+                    prior = _handoff_data(prior_record)
+                    if prior.get("stage") != handoff["stage"]:
+                        prior_binding["binding_state"] = "superseded"
+                        prior["state"] = "superseded"
+                        prior_attempt = _handoff_attempt(prior, prior_binding["attempt_id"])
+                        prior_attempt.update(state="superseded", binding_eligible=False)
+                        prior["record_revision"] += 1
+                        _store_handoff(prior_record, prior)
+            if any(r.get("topic_id") == handoff["target_topic_id"] and r.get("binding_state") == "carrier" for r in records["Conversation Bindings"]):
+                raise ProtocolError("document_ownership_conflict", "dedicated writer already exists")
+            apply_gate_policy(records, "prepare-handoff", request["actor_topic_id"])
         elif active:
             raise ProtocolError("handoff_attempt_state_conflict", "child topic already has an active binding")
         records["Conversation Bindings"].append(
             {
                 "topic_id": handoff["target_topic_id"],
                 "conversation_ref": conversation_ref,
-                "binding_state": "active",
+                "binding_state": "carrier" if handoff["kind"] == "dedicated-stage" else "active",
                 "record_revision": 1,
                 "handoff_id": handoff["handoff_id"],
                 "attempt_id": attempt["attempt_id"],
@@ -628,7 +659,7 @@ def _bind_handoff(request: dict[str, Any]) -> dict[str, Any]:
         result = {
             **_handoff_result(request, handoff, attempt, ledger_revision=next_revision, topic_revision=topic_revision),
             "conversation_ref": conversation_ref,
-            "active_conversation_ref": conversation_ref,
+            "active_conversation_ref": owner_ref if handoff["kind"] == "dedicated-stage" else conversation_ref,
             "superseded_conversation_ref": superseded,
         }
         _inject_failure("handoff-before-binding-ledger-write")
@@ -656,7 +687,7 @@ def _accept_handoff(request: dict[str, Any]) -> dict[str, Any]:
             records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id"
         )
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         attempt = _handoff_attempt(handoff, request["attempt_id"])
@@ -700,7 +731,7 @@ def _authorize_handoff_discussion(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         apply_gate_policy(
             records, "authorize-handoff-discussion", request["actor_topic_id"]
         )
@@ -749,7 +780,7 @@ def _transition_handoff_attempt(
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         if handoff["source_topic_id"] != request["actor_topic_id"]:
@@ -760,11 +791,17 @@ def _transition_handoff_attempt(
             "failed": {"setup-pending", "outcome-unknown"},
             "cancelled": {"setup-pending", "outcome-unknown", "failed"},
         }[target_state]
+        if handoff["kind"] == "dedicated-stage" and target_state in {"failed", "cancelled"}:
+            allowed_states |= {"bound-pending-acceptance", "accepted-awaiting-next-turn", "active"}
         if attempt["state"] not in allowed_states:
             raise ProtocolError("handoff_attempt_state_conflict", "attempt cannot enter requested state")
         attempt.update({"state": target_state, "reason": reason})
         if target_state in {"failed", "cancelled"}:
             attempt["binding_eligible"] = False
+            if handoff["kind"] == "dedicated-stage":
+                for binding in records["Conversation Bindings"]:
+                    if binding.get("handoff_id") == handoff["handoff_id"] and binding.get("attempt_id") == attempt["attempt_id"]:
+                        binding["binding_state"] = "superseded"
         handoff["state"] = target_state
         handoff["record_revision"] += 1
         _store_handoff(record, handoff)
@@ -798,7 +835,7 @@ def _retry_handoff(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         if handoff["source_topic_id"] != request["actor_topic_id"]:
@@ -812,6 +849,15 @@ def _retry_handoff(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("handoff_attempt_state_conflict", "attempt is not terminal or uncertain")
         if not forced and prior["state"] != "failed":
             raise ProtocolError("handoff_reconciliation_required", "retry requires explicit failure or user authorization")
+        if handoff.get("kind") == "dedicated-stage":
+            if handoff["stage"] != topic_record["current_phase"]:
+                raise ProtocolError("handoff_attempt_state_conflict", "dedicated stage is no longer current")
+            for other_record in records["Phase Runs"]:
+                if other_record is record or other_record.get("run_kind") != "discussion-handoff":
+                    continue
+                other = _handoff_data(other_record)
+                if other.get("kind") == "dedicated-stage" and other.get("target_topic_id") == request["actor_topic_id"] and other.get("stage") == handoff["stage"] and any(a.get("binding_eligible") for a in other["attempts"]):
+                    raise ProtocolError("document_ownership_conflict", "same-stage dedicated attempt already exists")
         prior["binding_eligible"] = False
         number = len(handoff["attempts"]) + 1
         attempt_id = _handoff_attempt_id(handoff["handoff_id"], number)
@@ -858,7 +904,7 @@ def _reconcile_handoff_attempt(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         attempt = _handoff_attempt(handoff, request["attempt_id"])
@@ -896,7 +942,7 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         if (
@@ -991,7 +1037,7 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
-        _verify_topic_owner(records, request["actor_topic_id"], owner_ref)
+        _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
         if effect == "absorb" and request.get("dependency_releases", []) and topic_record.get("current_phase") not in {0, 1}:
             raise ProtocolError(
                 "topic_dependency_phase_conflict",
@@ -1104,7 +1150,7 @@ def _read_handoff(request: dict[str, Any]) -> dict[str, Any]:
             binding for binding in records["Conversation Bindings"]
             if binding.get("topic_id") == request["actor_topic_id"]
             and binding.get("conversation_ref") == owner_ref
-            and binding.get("binding_state") in {"active", "superseded"}
+            and binding.get("binding_state") in {"active", "superseded", "carrier"}
         ]
         if len(authorized_bindings) != 1:
             raise ProtocolError(
@@ -1180,7 +1226,7 @@ def _validate_handoffs(records: dict[str, list[dict[str, Any]]]) -> int:
                 and binding.get("handoff_id") == handoff["handoff_id"]
                 and binding.get("attempt_id") == bound_attempt["attempt_id"]
                 and binding.get("conversation_ref") == bound_attempt["conversation_ref"]
-                and binding.get("binding_state") in {"active", "superseded"}
+                and binding.get("binding_state") in {"active", "superseded", "carrier"}
             ]
             if len(attempt_bindings) != 1:
                 raise ProtocolError(
@@ -1194,7 +1240,7 @@ def _validate_handoffs(records: dict[str, list[dict[str, Any]]]) -> int:
                 and binding.get("topic_id") == handoff["target_topic_id"]
                 and binding.get("handoff_id") == handoff["handoff_id"]
                 and binding.get("attempt_id") == current["attempt_id"]
-                and binding.get("binding_state") == "active"
+                and binding.get("binding_state") == ("carrier" if handoff["kind"] == "dedicated-stage" else "active")
             ]
             if len(current_bindings) != 1:
                 raise ProtocolError("state_corrupt", "current handoff does not own its active binding")

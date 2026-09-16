@@ -663,21 +663,29 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
                 for operation in operations:
                     self.assertIn(operation, protocol)
 
-    def test_dedicated_task_launch_and_self_check_use_fixed_pair(self):
+    def test_dispatch_launch_and_self_check_use_declared_configuration(self):
         launch = self.read(
             "skills/guided-implementation/references/originating-task-protocol.md"
         )
         execution = self.read(
             "skills/guided-implementation/references/execution-protocol.md"
         )
-        for protocol in (launch, execution):
-            self.assertIn("gpt-5.6-terra", protocol)
-            self.assertIn("high", protocol)
-        self.assertIn("`model` and `thinking`", launch)
+        modern = (Path(__file__).resolve().parents[3] / "skills/guided-implementation/references/workflow-control-protocol.md").exists()
+        if modern:
+            self.assertIn("select-configuration", launch)
+            self.assertIn("actual native receipt", launch)
+            self.assertIn("--model <selected-model>", execution)
+            self.assertIn("--reasoning-effort <selected-effort>", execution)
+            self.assertNotIn("gpt-5.6-terra", launch + execution)
+        else:
+            for protocol in (launch, execution):
+                self.assertIn("gpt-5.6-terra", protocol)
+                self.assertIn("high", protocol)
+            self.assertIn("`model` and `thinking`", launch)
+            self.assertIn("--model gpt-5.6-terra", execution)
+            self.assertIn("--reasoning-effort high", execution)
         self.assertIn("thread_settings.py verify", execution)
         self.assertIn("--current", execution)
-        self.assertIn("--model gpt-5.6-terra", execution)
-        self.assertIn("--reasoning-effort high", execution)
 
     def test_dependency_contract_requires_one_workflow_version(self):
         contract = self.read("docs/dependencies.md")

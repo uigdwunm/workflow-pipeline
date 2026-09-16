@@ -252,6 +252,7 @@ class DiscussionProtocolBootstrapTests(DiscussionProtocolTestSupport):
             names,
             (
                 "bootstrap",
+                "workflow-control",
                 "discover-context",
                 "initialize-document-context",
                 "prepare-phase-run",
@@ -1714,6 +1715,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolScenarioFixture, Discus
                 phase_result_id=phase_result_id,
                 confirmation_intent=confirmation_intent,
                 user_reply=user_reply,
+                source_phase=1, stages=[2, 3, 4], scope=["repository"],
             )
         )
 
@@ -2062,6 +2064,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolScenarioFixture, Discus
             phase_result_id=stage_one_result["phase_result_id"],
             confirmation_intent="continuous",
             user_reply="按这个做，后续阶段自动执行",
+            source_phase=1, stages=[2, 3, 4], scope=["repository"],
         )
         foreign["actor_conversation_ref"] = "codex-thread:not-source-owner"
         code, rejected, _ = self.run_cli(foreign)

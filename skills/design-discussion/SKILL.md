@@ -14,6 +14,10 @@ before creating or changing the requirement document, and use
 [`confirmation-contract.md`](references/confirmation-contract.md) whenever a
 workflow action needs user confirmation.
 
+Read [Workflow Control Protocol](../guided-implementation/references/workflow-control-protocol.md) before role preparation or transition. This stage uses Workflow Controller and preserves the Workflow Controller.
+
+An authenticated Dedicated Discussion Task with its accepted dedicated-stage binding works only on the shared requirement under that binding. It does not bootstrap a second topic, create another dedicated task, or become the Workflow Controller. It returns the committed requirement and any information-only split proposal to its frozen controller.
+
 ## Select the mode
 
 Enter persistent mode only for one of these explicit signals:
@@ -182,3 +186,5 @@ Judge maturity from goal, scope, user scenarios, behavior, constraints,
 exceptions, unresolved questions and next-stage inputs. Never infer maturity
 from turn count or document length. Offer a later lifecycle route only when the
 relevant protocol operation exists and its prerequisites are verified.
+
+Prepare one dedicated-stage plan before combined confirmation; a bound carrier does not replace the controller.

@@ -295,6 +295,7 @@ def validate(repository: Path) -> dict[str, object]:
     for orphan in sorted(reference_files - reachable):
         issues.append({"code": "unreachable-progressive-reference", "path": relative(orphan, repository)})
 
+    issues.extend(validate_workflow_control_docs(repository))
     issues.sort(key=lambda issue: json.dumps(issue, sort_keys=True))
     return {
         "state": "valid" if not issues else "invalid",
@@ -303,6 +304,46 @@ def validate(repository: Path) -> dict[str, object]:
         "test_count": len(discover_tests(repository)),
         "issues": issues,
     }
+
+
+WORKFLOW_CONTROL_REFERENCE = "skills/guided-implementation/references/workflow-control-protocol.md"
+WORKFLOW_CONTROL_MARKERS = {
+    "CONTEXT.md": ("Workflow Controller", "Implementation Dispatcher", "Execution Agent", "Closure Agent"),
+    "README.md": ("Workflow Controller", "thread-settings-v5"),
+    "skills/design-discussion/SKILL.md": ("workflow-control-protocol.md", "dedicated-stage"),
+    "skills/problem-framing/SKILL.md": ("workflow-control-protocol.md", "successor-ready"),
+    "skills/solution-design/SKILL.md": ("workflow-control-protocol.md", "accepted result handoff"),
+    "skills/guided-implementation/SKILL.md": ("workflow-control-protocol.md", "Implementation Dispatcher"),
+    "skills/change-closure/SKILL.md": ("workflow-control-protocol.md", "Closure Agent"),
+    WORKFLOW_CONTROL_REFERENCE: ("schema_version", "controller_ref", "plan-execution", "workflow_control_git.py", "cleanup-only", "select-configuration"),
+}
+
+
+def validate_workflow_control_docs(repository: Path) -> list[dict[str, str]]:
+    """Validate the published role contract once closure installs its authority.
+
+    The Stage-3 tree still carries its previous documentation contract. A
+    temporary final-doc tree and the Stage-4 publication install the reference
+    atomically, at which point every role consumer must satisfy this contract.
+    """
+    if not (repository / WORKFLOW_CONTROL_REFERENCE).is_file():
+        return []
+    issues = []
+    for relative_path, markers in WORKFLOW_CONTROL_MARKERS.items():
+        target = repository / relative_path
+        text = target.read_text(encoding="utf-8") if target.is_file() else ""
+        for marker in markers:
+            if marker not in text:
+                issues.append({"code": "workflow-control-contract", "path": relative_path, "marker": marker})
+    obsolete = ("post-archive", "Post-archive", "Dedicated Implementation Task", "gpt-5.6-terra",
+                "Phase 0 never propagates continuous mode", "a stage-0 route is always stepwise",
+                "原任务状态：已停止", "原任务行为：创建后停止", "原任务不等待其结果")
+    for target in (repository / "skills").rglob("*.md"):
+        text = target.read_text(encoding="utf-8")
+        for marker in obsolete:
+            if marker in text:
+                issues.append({"code": "obsolete-workflow-role", "path": relative(target, repository), "marker": marker})
+    return issues
 
 
 def main() -> int:

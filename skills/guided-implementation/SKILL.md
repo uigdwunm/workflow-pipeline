@@ -1,6 +1,6 @@
 ---
 name: guided-implementation
-description: Use when the user explicitly invokes $guided-implementation with a self-contained implementation request, unambiguously confirms a valid $solution-design handoff or Stage-3 recovery action, continues from its verified continuous-flow handoff, retries a retained worktree, or the originating task receives a dedicated implementation task result. Create or reuse one verified Flow Worktree, run native $implement and $tdd there, review the committed candidate, and retain it for stage 4.
+description: Use when the user explicitly invokes $guided-implementation with a self-contained implementation request, unambiguously confirms a valid $solution-design handoff or Stage-3 recovery action, continues from its verified continuous-flow handoff, retries a retained worktree, or the originating task receives a native implementation dispatcher result. Create or reuse one verified Flow Worktree, run native $implement and $tdd there, review the committed candidate, and retain it for stage 4.
 ---
 
 # 3实现
@@ -14,6 +14,10 @@ corresponding action. Read
 immediately before resolving task settings.
 Interpret user replies through
 [`../design-discussion/references/confirmation-contract.md`](../design-discussion/references/confirmation-contract.md).
+
+Read [Workflow Control Protocol](references/workflow-control-protocol.md) before role preparation or transition. This stage uses Implementation Dispatcher and preserves the Workflow Controller.
+
+An authenticated non-root native implementation-dispatcher with the complete bound Stage-3 envelope follows execution-protocol.md directly. It never creates another dispatcher or a visible implementation task. Only the Workflow Controller performs the launch and independent review portions below; the dispatcher may allocate ordinary Execution Agents under the shared exact-file contract.
 
 ## Entry
 
@@ -52,7 +56,7 @@ with its complete frozen payload: requirement path/commit/hash, target
 repository and retained Flow Worktree binding, authority scope, prior stage
 artifacts, and explicit model and reasoning effort. This is a continuous
 carrier entry, not an implied user decision or inherited desktop setting. The
-carrier follows this Skill's normal dedicated implementation executor and the
+carrier follows this Skill's normal native Implementation Dispatcher and the
 Originating Task's independent Standards and Spec review roles. It returns a
 structured `completed`, `continue`, or `needs_input` outcome to the runner;
 the runner owns the session identity, checkpoints and progress stream. On
@@ -84,7 +88,7 @@ may resolve ordinary technical details; they may not supply a missing product,
 scope, behavior, architecture, compatibility, data, or testing decision.
 
 Enter standalone only when the brief is self-contained and no material decision
-remains. Preserve the exact request and fixed brief in the dedicated task launch
+remains. Preserve the exact request and fixed brief in the dispatcher launch
 and both review axes; they are the complete implementation authority. Create no
 requirement, Spec, ADR, or Ticket merely to satisfy this route.
 
@@ -162,10 +166,10 @@ claim, queue entry, or mutable run record.
 An inherited entry must reuse its Flow Worktree. An invalid claimed binding
 must not silently become a standalone entry or create a replacement.
 
-Keep at most one active dedicated implementation task. Launch the initial task
+Keep at most one active native implementation dispatcher. Launch the initial task
 in the returned worktree and pass the binding, inherited planning sources and
 ordered Tickets or the fixed standalone brief, testing basis, flow mode and
-exact authority boundaries in its prompt. The dedicated task must call
+exact authority boundaries in its prompt. The dispatcher must call
 `verify-worktree` with its actual platform working directory before substantive
 work.
 
@@ -188,7 +192,7 @@ work.
 - Work only inside the verified worktree. Invoke the complete native
   `$implement` workflow, including `$tdd`, focused and full checks, typecheck,
   lint or build where applicable, and commit a clean candidate.
-- The Dedicated Implementation Task must not dispatch Standards or Spec review
+- The Implementation Dispatcher must not dispatch Standards or Spec review
   agents or receive the parent Session or CLI. It reports the exact candidate
   commit, changed paths, focused and full checks, remaining risks, and any
   remediation candidate commits from the same verified worktree.
@@ -196,12 +200,12 @@ work.
   tests and required implementation artifacts. Report exact documentation paths
   and required updates as `待归档文档`; Stage 4 owns those edits and commits.
 - Do not modify committed planning-source paths. A standalone flow has none.
-- The dedicated task never asks the user directly. It resolves ordinary
+- The dispatcher never asks the user directly. It resolves ordinary
   technical details from the confirmed sources and repository conventions. An
   unexpected material decision is an implementation-authority gap: return it
   to the originating task before the affected edit, and let that task obtain
   the user's explicit decision. Review or test remediation returns to the same
-  dedicated task and worktree.
+  dispatcher and worktree.
 - If the same failure mechanism recurs after a fix, a same-class regression
   appears in another affected path, or successive review/test outcomes
   overturn the same implementation approach, the Originating Task marks the
@@ -222,7 +226,7 @@ work.
   integration and cleanup. The candidate, review, and remediation
   contract is authoritative in
   [references/originating-task-protocol.md](references/originating-task-protocol.md).
-- A dedicated task result ends one execution turn, not Stage 3. The Originating
+- A dispatcher result ends one execution turn, not Stage 3. The Originating
   Task applies the result-intake classifications and continuation rules in the
   authoritative originating-task protocol before review or recovery.
 
@@ -243,7 +247,7 @@ and review evidence to Stage 4. Stage 4 owns the final publication and cleanup.
 
 For a Stage-3 failure with the worktree retained, emit the retained-worktree
 footer from `worktree-execution.md` with recovery command
-`$guided-implementation 重试`. A stalled dedicated task awaiting replacement
+`$guided-implementation 重试`. A stalled dispatcher awaiting replacement
 uses the decision block in `originating-task-protocol.md` instead. A successful
 Stage-3 handoff is not a failure and uses the success footer below.
 
@@ -252,7 +256,7 @@ After success, emit a complete Stage-4 handoff:
 ```text
 实现结果：成功
 合并结果：待 4归档统一完成
-专用任务：<thread id and host id>
+原生调度者：<exact native agent id>
 目标仓库：<absolute repository path>
 目标分支：<target branch>
 实现依据：<committed source paths and commit | fixed standalone implementation brief>

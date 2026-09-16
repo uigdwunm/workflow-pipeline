@@ -15,10 +15,10 @@ through
 规划载体：<exact target>
 业务角色：solution_designer
 派发方式：<current native-subagent orchestration adapter>
-目标模型：<primary thread exact model>
-模型来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
-推理强度：<primary thread exact reasoning effort>
-强度来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
+目标模型：<selected supported model>
+模型来源：<selection source: user | confirmed | role | inherited; current adapter receipt>
+推理强度：<selected supported reasoning effort>
+强度来源：<selection source: user | confirmed | role | inherited; current adapter receipt>
 上下文方式：隔离上下文；不继承历史；仅读取需求来源和明确交接材料
 执行环境：新建 Flow Worktree
 Worktree：确认后调用 `start-worktree` 创建；路径=<canonical path>; 分支=<branch>
@@ -46,10 +46,10 @@ before child launch.
 规划载体：<exact target>
 业务角色：solution_designer
 派发方式：<current native-subagent orchestration adapter>
-目标模型：<primary thread exact model>
-模型来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
-推理强度：<primary thread exact reasoning effort>
-强度来源：<codex-rollout-latest-turn-context: threadId=<id>; turnId=<id> | user-requested-override>
+目标模型：<selected supported model>
+模型来源：<selection source: user | confirmed | role | inherited; current adapter receipt>
+推理强度：<selected supported reasoning effort>
+强度来源：<selection source: user | confirmed | role | inherited; current adapter receipt>
 上下文方式：隔离上下文；不继承历史；仅读取需求来源和明确交接材料
 执行环境：已创建 Flow Worktree
 Worktree：路径=<canonical path>; 分支=<branch>; 绑定=<exact binding>
@@ -76,7 +76,7 @@ $solution-design
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
 规划载体：<exact target>
-任务设置：model=<exact model>; reasoning_effort=<exact effort>; source=<resolution receipt source and turn id | user-requested-override>; context=isolated
+任务设置：model=<exact model>; reasoning_effort=<exact effort>; source=<selection source and current adapter receipt>; context=isolated
 Flow Worktree：<exact binding returned by start-worktree>
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
 工作区要求：在首次写入前以实际工作目录调用 `verify-worktree`；所有本地规划写入和提交只在该 Flow Worktree 内完成。
@@ -341,3 +341,7 @@ Matt 原生发布：Spec=<child-reported path or URL>; Tickets=<child-reported p
 确认事项：按上述建议恢复
 确认方式：明确同意上述单一待执行事项；如需调整可直接说明
 ```
+
+Configuration disclosure includes the select-configuration reason and current
+adapter receipt. Unsupported user settings do not silently fall back. Unknown
+capability/cost remains null; do not invent scores or prices to populate a template.

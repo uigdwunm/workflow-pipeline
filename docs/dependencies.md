@@ -81,3 +81,5 @@ simplification cannot silently leave a declared dependency unused.
 The thread-settings protocol performs its own exact runtime-version check at
 the point of use. The filesystem approximation does not replace that check and
 does not authorize mixing internal Skills from different releases.
+
+All stage roles consume the shared select-configuration adapter evidence. thread-settings-v5 remains a read-only resolver/verification source. This change adds no external dependency.

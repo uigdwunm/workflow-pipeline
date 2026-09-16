@@ -13,6 +13,10 @@ Before verifying, creating, completing, or recovering a Flow Worktree, also read
 Interpret user replies through
 [`../design-discussion/references/confirmation-contract.md`](../design-discussion/references/confirmation-contract.md).
 
+Read [Workflow Control Protocol](../guided-implementation/references/workflow-control-protocol.md) before role preparation or transition. This stage uses Closure Agent and preserves the Workflow Controller.
+
+An authenticated non-root native closure-agent receiving the complete start-closure envelope executes the supplied closure actions in the inherited Flow Worktree and returns closure-result. It never launches another Closure Agent or asks for repeated stage entry. Only the Workflow Controller performs dispatch, binds the actual identity and accepts the result; the child reports implementation problems back to that controller.
+
 ## Enter
 
 For a Stage-3 transition, require the exact repository, target branch, accepted
@@ -119,3 +123,5 @@ or blocker. Emit the success footer only after the recheck passes.
 讨论阶段：<current_phase 4 | standalone>
 远程操作：<performed actions | none>
 ```
+
+The Workflow Controller delegates to one native Closure Agent through start-closure and binds actual ref/attempt. It supplies exact candidate, review, verification, binding and documentation scope. Code defects return to stage 3; published merge recovery uses cleanup-only.

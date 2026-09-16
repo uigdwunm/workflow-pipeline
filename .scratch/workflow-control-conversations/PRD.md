@@ -1,6 +1,7 @@
 # 五阶段总控对话与执行边界
 
 Status: ready-for-agent
+Lifecycle: completed
 
 需求权威：冻结的「总控对话与五阶段调度流程」草案，提交 `030ee5327eb0ccf20b9098dfe18dd67c9524b743`，SHA-256 `e5c1367ee0660b5975ad85d62e74f5b62fdd1b987183b8841b3157bbf95cd708`。D1–D10 是行为边界；本 Spec 不增加需求。方案模式：连续执行后续全部流程。
 

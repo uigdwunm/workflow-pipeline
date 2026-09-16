@@ -97,15 +97,29 @@ _Avoid_: Carrier without a Phase Run context, Phase Source Task
 The Stage 3 Codex task that owns user decisions, supervises isolated execution,
 and accepts the implementation candidate for handoff to Stage 4. It does not
 implement the change or perform final publication.
-_Avoid_: Dedicated Implementation Task
+_Avoid_: Implementation Dispatcher
 
-**Dedicated Implementation Task**:
-The Stage 3 Codex task that implements and tests the change in its verified Flow
-Worktree and produces the candidate. It does not accept or publish the
-candidate.
-_Avoid_: Originating Task
+**Implementation Dispatcher**:
+The unique native Stage 3 child that implements, delegates exact nonoverlapping
+file assignments, integrates Git and produces a verified candidate in the one Flow
+Worktree. It does not own user decisions, independent review or publication.
+_Avoid_: Workflow Controller, Execution Agent
+
+**Execution Agent**:
+A native implementation child with an exact file allocation, behavioral target,
+testing requirement and no Git mutation authority. It stops and returns bytes for
+dispatcher acceptance.
+_Avoid_: Implementation Dispatcher
+
+**Closure Agent**:
+The native Stage 4 child receiving the accepted candidate, review, verification,
+binding and exact documentation scope. It publishes and cleans up; implementation
+problems return to Stage 3.
+_Avoid_: Workflow Controller
 
 **Worktree Binding**:
 The verified Git identity that ties one Flow Worktree to its repository, branch,
 target, and committed ancestry across Stage handoffs and retries.
 _Avoid_: Conversation Binding
+
+Workflow Controller retains confirmation, routing and acceptance. Dedicated Discussion Task and Dedicated Problem Framing Task are visible 0/1 carriers. solution-designer, Implementation Dispatcher, Execution Agent and Closure Agent are native roles. See [Workflow Control Protocol](skills/guided-implementation/references/workflow-control-protocol.md).

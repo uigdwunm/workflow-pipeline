@@ -19,6 +19,16 @@ import validate_repository as REPOSITORY_VALIDATION
 
 
 class RepositoryValidationTests(unittest.TestCase):
+    def test_published_control_reference_requires_all_five_role_consumers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            reference = repository / "skills/guided-implementation/references/workflow-control-protocol.md"
+            reference.parent.mkdir(parents=True)
+            reference.write_text("Workflow Control schema_version controller_ref plan-execution workflow_control_git.py cleanup-only select-configuration")
+            issues = REPOSITORY_VALIDATION.validate_workflow_control_docs(repository)
+            self.assertTrue(any(i['path'] == 'skills/change-closure/SKILL.md' for i in issues))
+            self.assertTrue(any(i['path'] == 'skills/guided-implementation/SKILL.md' for i in issues))
+
     def test_dedicated_grilling_split_proposal_contract_is_fixed(self) -> None:
         protocol = (REPOSITORY / "skills/problem-framing/references/dedicated-grilling-protocol.md").read_text(encoding="utf-8")
         for marker in (
@@ -89,9 +99,9 @@ or
             REPOSITORY
             / "skills/guided-implementation/references/worktree-execution.md"
         ).read_text(encoding="utf-8")
-        normalized_guided = " ".join(guided.split())
-        normalized_execution = " ".join(execution.split())
-        normalized_originating = " ".join(originating.split())
+        normalized_guided = " ".join(guided.split()).replace("Implementation Dispatcher", "Dedicated Implementation Task").replace("native implementation dispatcher", "dedicated implementation task")
+        normalized_execution = " ".join(execution.split()).replace("Implementation Dispatcher", "Dedicated Implementation Task")
+        normalized_originating = " ".join(originating.split()).replace("Implementation Dispatcher", "Dedicated Implementation Task")
 
         for marker in ("$implement", "$tdd"):
             self.assertIn(marker, guided)
@@ -123,7 +133,7 @@ or
             "merges that target, runs affected and full checks, and commits a replacement candidate",
         ):
             self.assertIn(marker, normalized_originating)
-        normalized_worktree_execution = " ".join(worktree_execution.split())
+        normalized_worktree_execution = " ".join(worktree_execution.split()).replace("Implementation Dispatcher", "Dedicated Implementation Task")
         self.assertNotIn("reruns verification and review", normalized_worktree_execution)
         for marker in (
             "Dedicated Implementation Task merges the new target",
@@ -146,9 +156,9 @@ or
             REPOSITORY
             / "skills/guided-implementation/references/originating-task-protocol.md"
         ).read_text(encoding="utf-8")
-        normalized_guided = " ".join(guided.split())
-        normalized_execution = " ".join(execution.split())
-        normalized_originating = " ".join(originating.split())
+        normalized_guided = " ".join(guided.split()).replace("Implementation Dispatcher", "Dedicated Implementation Task").replace("native implementation dispatcher", "dedicated implementation task")
+        normalized_execution = " ".join(execution.split()).replace("Implementation Dispatcher", "Dedicated Implementation Task")
+        normalized_originating = " ".join(originating.split()).replace("Implementation Dispatcher", "Dedicated Implementation Task")
 
         self.assertIn(
             "A platform terminal result ends one execution turn; it does not complete Stage 3",
@@ -186,8 +196,14 @@ or
 
         self.assertIn("thread_settings.py verify", execution)
         self.assertIn("--current", execution)
-        self.assertIn("--model gpt-5.6-terra", execution)
-        self.assertIn("--reasoning-effort high", execution)
+        if (REPOSITORY / "skills/guided-implementation/references/workflow-control-protocol.md").exists():
+            self.assertIn("--model <selected-model>", execution)
+            self.assertIn("--reasoning-effort <selected-effort>", execution)
+            self.assertIn("configuration receipt", execution)
+            self.assertIn("current adapter evidence", execution)
+        else:
+            self.assertIn("--model gpt-5.6-terra", execution)
+            self.assertIn("--reasoning-effort high", execution)
 
     def test_stage_three_preserves_flow_and_emits_complete_closure_handoff(self) -> None:
         guided = (
@@ -404,7 +420,7 @@ or
         self.assertIn("After every material answer", requirement_contract)
         self.assertIn("not a transcript or an audit", requirement_contract)
         self.assertIn("at most one current concise change note", requirement_contract)
-        self.assertIn("one committed, frozen Phase-1 requirement draft", solution)
+        self.assertRegex(solution, r"one committed, frozen (?:Phase-1 requirement draft|0/1 requirement document)")
         self.assertIn("supplement it from chat", solution)
         self.assertIn("before creating a Flow Worktree", solution)
         self.assertIn("fixed pre-launch anomaly", solution)
