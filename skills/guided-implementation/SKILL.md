@@ -1,6 +1,6 @@
 ---
 name: guided-implementation
-description: Use when the user explicitly invokes $guided-implementation with a self-contained implementation request, unambiguously confirms a valid $solution-design handoff or Stage-3 recovery action, continues from its verified continuous-flow handoff, retries a retained worktree, or the originating task receives a native implementation dispatcher result. Create or reuse one verified Flow Worktree, run native $implement and $tdd there, review the committed candidate, and retain it for stage 4.
+description: Use when the user explicitly invokes $guided-implementation, clearly asks to begin 3实现, with a self-contained implementation request, unambiguously confirms a valid $solution-design handoff or Stage-3 recovery action, continues from its verified continuous-flow handoff, retries a retained worktree, or the originating task receives a native implementation dispatcher result. Create or reuse one verified Flow Worktree, run native $implement and $tdd there, review the committed candidate, and retain it for stage 4.
 ---
 
 # 3实现

@@ -69,7 +69,7 @@ $solution-design
 业务角色：solution_designer
 角色说明：你是本次 2方案 的唯一阶段负责人；主 agent只负责用户决策和阶段编排。
 本次目标：<goal>
-需求来源类型：immutable-problem-framing-draft
+需求来源类型：<immutable-problem-framing-draft | immutable-conversation-snapshot>
 需求草案：<absolute path>
 草案提交：<commit>
 草案 SHA-256：<hash>
@@ -81,8 +81,8 @@ Flow Worktree：<exact binding returned by start-worktree>
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
 工作区要求：在首次写入前以实际工作目录调用 `verify-worktree`；所有本地规划写入和提交只在该 Flow Worktree 内完成。
 允许动作：完整执行 $to-spec、必要 ADR、$ask-matt、$to-tickets、精确目标原生发布；只写入并提交本阶段拥有的本地规划文档。
-禁止动作：修改实现代码、创建 PR、部署、发布版本、改变规划目标、进入 3实现、修改 1拷问草案或处理无关任务。
-文档权威：1拷问草案拥有需求；CONTEXT.md 拥有术语；ADR 拥有难逆决策；Spec 拥有实施方案与测试决策；Tickets 拥有实施切片和阻塞关系。不要创建单独的 2方案草案。
+禁止动作：修改实现代码、创建 PR、部署、发布版本、改变规划目标、进入 3实现、修改冻结需求文档或处理无关任务。
+文档权威：冻结需求文档拥有需求；CONTEXT.md 拥有术语；ADR 拥有难逆决策；Spec 拥有实施方案与测试决策；Tickets 拥有实施切片和阻塞关系。不要创建单独的 2方案草案。
 逐阶段模式：在方案审阅和 Tickets 审阅点返回固定 review 消息并停止，收到匹配 ID 的 PARENT_DECISION 后继续。
 连续模式：此前的 执行后续全部流程 是标准方案选择和原生审阅问题的预授权；不发出 review 消息；仍完成方案就绪检查、原生发布和规划提交，通过后直接交付。
 范围扩展：认为需求边界外的改动是形成完整方案的必要条件时，按 $solution-design 的 visible-scope 规则返回 SOLUTION_DESIGN_ANOMALY，并等待用户明确决定。
@@ -307,6 +307,11 @@ Matt 原生发布：Spec=<child-reported path or URL>; Tickets=<child-reported p
 ```
 
 ## Pre-launch anomaly
+
+A direct conversation entry prepares its snapshot before this gate. Missing
+conversation decisions use targeted questions; snapshot write/commit failures
+name their local recovery step. Invalid existing handoffs require source-owner
+repair and never silently switch to conversation input.
 
 ```text
 流程异常：需要用户决策

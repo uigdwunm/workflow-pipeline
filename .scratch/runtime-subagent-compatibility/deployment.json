@@ -1,0 +1,125 @@
+{
+  "backup": "/Users/zhaolaiyuan/.codex/backups/workflow-runtime-20260906T031807Z",
+  "installed_settings": {
+    "model": "gpt-6-astra",
+    "protocol": "thread-settings-v5",
+    "reasoning_effort": "medium"
+  },
+  "native_install": [
+    {
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "Added plugin `subagent-governance` from marketplace `personal`.\nInstalled plugin root: /Users/zhaolaiyuan/.codex/plugins/cache/personal/subagent-governance/0.4.0+codex.20260906031301\n"
+    }
+  ],
+  "plugin": {
+    "cache_parent": "/Users/zhaolaiyuan/.codex/plugins/cache/personal/subagent-governance",
+    "codex_registration_checked": false,
+    "execute": true,
+    "expected_head": "d570e527b247ed41642d604a8937e800399b3f38",
+    "expected_version": "0.4.0+codex.20260906031301",
+    "failed_stage": null,
+    "hook_trust_checked": false,
+    "previous_cache_restored": true,
+    "recovered_interrupted_transaction": false,
+    "removed_cache_entries": [
+      "0.4.0+codex.20260826100408"
+    ],
+    "retained_previous_bundle_digest": "342b6e5b7321b16630c2a6cc4a700803ae69bf8770bd1c5c669ced8e53cc6089",
+    "retained_previous_version": "0.4.0+codex.20260826140009",
+    "source_bundle_digest": "4a0b9290ab36b5628aa23b67490d662e7f58866cc0aafce3ff1ed1f0f07f9c74",
+    "source_root": "/Users/zhaolaiyuan/workspace/subagent-governance",
+    "stable_bundle_digest": "4a0b9290ab36b5628aa23b67490d662e7f58866cc0aafce3ff1ed1f0f07f9c74",
+    "stable_root": "/Users/zhaolaiyuan/plugins/subagent-governance",
+    "state": "deploy_succeeded",
+    "target_cache_digest": "4a0b9290ab36b5628aa23b67490d662e7f58866cc0aafce3ff1ed1f0f07f9c74",
+    "transaction_parent": "/Users/zhaolaiyuan/.codex/plugin-deployments/subagent-governance",
+    "warnings": [
+      "codex_registration_not_checked",
+      "hook_trust_not_checked"
+    ]
+  },
+  "plugin_commit": "d570e527b247ed41642d604a8937e800399b3f38",
+  "plugin_version": "0.4.0+codex.20260906031301",
+  "real_runtime_validation": "pending_restart_new_task",
+  "state": "installed_pending_restart_validation",
+  "tests": {
+    "plugin_full": 98,
+    "settings_focused": 30,
+    "workflow_full": 281
+  },
+  "workflow_commit": "809f8ffaee6185e902e0f606d9a0e6cbb65e0fa1",
+  "workflow_manifests": {
+    "change-closure": {
+      "SKILL.md": "171e04e5e0338d968f69b8aa398cb7e3fd38ce156ea5067ada9a16cf3569c5e2",
+      "agents/openai.yaml": "2c95e13ad06e3808610e696c7e629773b6c1acd2436adef5ec72960c7d8a5803",
+      "references/closure-actions.md": "9fc34595b85143bc887f3632cb95ceb9490f685735e581fc513ed764cb5ec537",
+      "references/closure-protocol.md": "ad603acd7cc59f97ca8d7a7d88856b3b143b1ab47c7a07cf64cbbe2983ba2f0f"
+    },
+    "design-discussion": {
+      "SKILL.md": "be9916f1e27f911441b69019f128d68fd6cfa7a32ed8f59b51126dc656ab2fdb",
+      "agents/openai.yaml": "c7705c63df38163edfe8dadc960db72beedccc5ab3c475799175c8701a3ed85a",
+      "references/checkpoint-protocol.md": "2f08123a10047db90a53e884abbc321c4f57383bab1ebb546fd932a99d68f2d6",
+      "references/child-topic-protocol.md": "ac96e1711e7ea7d2f79bffae7ffc83056afa68e4c5a5bf7b527aeb150d7b4e21",
+      "references/confirmation-contract.md": "4ab9109abb1cfbb9c62f4315e33f1b3f3c3f927c81eacbbc43c50bd58c3cc54f",
+      "references/ledger-protocol.md": "aec7a490a7b87b8e3c2ec511392323b25c6eda794d67805e0216c0d64207ca39",
+      "references/lifecycle-integration.md": "0f14e0813186d3ea9f0bd873f29cab5331c64114bd12494e072870ddb6b51c4e",
+      "references/requirement-document-contract.md": "c77583ba6e75305b6a01cee469864be7a123c4f4ebc6dbd95b4c1d4bfc2a548a",
+      "references/split-gate-contract.md": "1b30df7eeae407a3516f7cb66242a6a532871426453b0f3aa5317899e63c2f35",
+      "references/templates.md": "e4d2e91cc193390ded4a3a07717862f3b7dc0bca3cd3f4af950671adbc5621ff",
+      "references/topic-document-protocol.md": "71ebc2484c06c212da78e60bb855293d4ebf767e31ad0db3cddeb84835067b0d",
+      "scripts/discussion_core/__init__.py": "c4eda8b1e0da0e08283d3cc595017dad047c15a3475224b3435808c575c89e3a",
+      "scripts/discussion_core/checkpoint_authority.py": "84fa5b1b51b273e109e1dcc51f9e50d90a7f7936d8ac9c138f51cda7177b0ff7",
+      "scripts/discussion_core/checkpoints.py": "fa1874af8f48eac6fe5c2314ad6f03b88eb2dff20483de161e03517c11dc45cb",
+      "scripts/discussion_core/handoffs.py": "706277ab03344a6828dc20f696cff4251061b7371fc95829447902bc51077cfa",
+      "scripts/discussion_core/phase_runs.py": "57d3fc012d3d63ce5c1d597c55c0573eb1177a7f993a42e5bace7481e6bbe95a",
+      "scripts/discussion_core/question_resolution.py": "b5948c185a0384ce436043ac18a74186cbef39fb5fcd51f776120aedbca020fe",
+      "scripts/discussion_core/registry.py": "ed4edc7e763f5230834b841baf67fcb26f8a607643e086d20c8051a7cbeae9a1",
+      "scripts/discussion_core/request.py": "7fdc8d87fcc64d99ab565e0c3c2af252329b6aeeb560a8dc27533549f3899c5d",
+      "scripts/discussion_core/state.py": "5bd87e95695b6e57c5fb76f4d03ac971c86d4710e9cc88d70acda5887f149c03",
+      "scripts/discussion_core/topic_dependencies.py": "61546c29b42f6fbc3419a25c92c5d2dfb9c4fc28ff6eddf14d4d59fb9145f9d5",
+      "scripts/discussion_core/topic_dependency_authority.py": "6a4cf6528bea7d53a6bf768499d7043d1067dd8d928f971c7ef3e518a6adb9e9",
+      "scripts/discussion_core/topic_dependency_gates.py": "f5d57d60979de9f7b93adb55ec87ac5004aea98b989d417596d7d97bb3c92155",
+      "scripts/discussion_core/topic_dependency_lifecycle.py": "f70dc2651eb1bd5ff3ed1cd26f0bb9355103261906bf25528dd78530e3218189",
+      "scripts/discussion_core/topic_dependency_schema.py": "0a93d0c3eb79be4c72313489d67c62f59c0dbbe38bb6e2f0a84ff388fdae4284",
+      "scripts/discussion_protocol.py": "a52db61f98dcb074947e1a048e91ea2b4bc931349f74bb29794f7a623651a3f0",
+      "scripts/test_discussion_protocol.py": "75c1dfa1fd88f916d7898293da7c499840261b8d910e431cff6307d94fca940b",
+      "scripts/test_repository_validation.py": "0230284a81667e35558804eab3db631c3d2a742c6384703c674cbe880ea68cc9",
+      "scripts/test_topic_dependencies.py": "0b5dd93599323a675374658002c840dcc14cfb4d3748d41899086c602a5cb649",
+      "scripts/test_topic_dependency_checkpoint.py": "2ba2cc6734c6f845ea619865781c44aa65f0cdc8bd87c5bf1f384b3e859efa20",
+      "scripts/test_topic_dependency_handoffs.py": "d16d2d5453b89ceee40fc77ed5fb98ad768c791173618818135d2824617f57f8",
+      "scripts/test_topic_dependency_operations.py": "903c7bdcadb93bb6cf74aa6909761cf776cea1e840adf82257f1864c7019e022",
+      "scripts/test_topic_dependency_phase_gates.py": "44f71b1f3101878c4c99b961d99c3881bc93fdb2cf518009b3a88aa329df9a79",
+      "scripts/test_topic_dependency_support.py": "727779b2b9207fe4f9dced40f92fc1234fb884ca1d432878764a1ff808411ab3"
+    },
+    "guided-implementation": {
+      "SKILL.md": "9433de8339bcab65d3673d0abb116818d4d83f84ec280305e7a4bd61271eb3a9",
+      "agents/openai.yaml": "d853803987787d430c89772799ea2505fe7b334eb1f6ccaf86e5b2a29886114c",
+      "references/execution-protocol.md": "0fe36dba19238cbe8886a91ef530d650231c71344affd8722685326527d49ec6",
+      "references/originating-task-protocol.md": "614dc5c03ea00051fd50f48f68050e821ef8c71ed8955b1c1ee1f85f4530d150",
+      "references/thread-settings-protocol.md": "b47c66cbaa83b858a28404350a2abe51488a6601868c00ef9094a49785d49dde",
+      "references/worktree-execution.md": "c97c1daf127c4471dc8e16e6d17ccaf0a85329833def870c0696bb65125111da",
+      "scripts/supervision_core/__init__.py": "37656844829cbf229efa93d7aca300969b37d9a7fda235b3df14b338d1e5cb53",
+      "scripts/supervision_core/commands.py": "7fa72714c4c95354af850f04f68bd98103e1f6a5556af8db3d67c4d3e8455fa3",
+      "scripts/supervision_protocol.py": "ead35718dc287327330932778676f447c3a34875d515335bc1db7f4897a59215",
+      "scripts/test_supervision_protocol.py": "62a33a2a9bbfd0f5d383378b2210ad44569ec79a2fde1ac281c5d499aa78c5a1",
+      "scripts/test_thread_settings.py": "037ff5de220828b4a308a6ac1309d6868c566b39ca3aaecc3e1e62d21ce655a7",
+      "scripts/thread_settings.py": "97397e51ccf05dbc1feb0cf89a56c1c05820bbff964b87fba1e49295b7ccadee"
+    },
+    "problem-framing": {
+      "SKILL.md": "759b30e6b128b104692628865fd865f4e3c4e71aec8911004eb95ce236a44501",
+      "agents/openai.yaml": "a3f94ea7d0912d41d65025310c614238255934707103d3c8c41256d8d40bf9a6",
+      "references/dedicated-grilling-protocol.md": "70c1df951d1574a9bfde608e6ac8e90b7314438576d69030824d1cdf72494079",
+      "references/repository-and-recovery.md": "97a94741bd0183ad600dceb7a63505eccfaabedf850506f856f2ec7908286673",
+      "references/templates.md": "fab2517fc9a14d0ebe50dd96512af2eeb66f079b9eddc9dbc79d20e0c3b7321b"
+    },
+    "solution-design": {
+      "SKILL.md": "b6f3198b666c5b8c92ef724159f2721538673b2c590ba5fe3a2eb249401ef26e",
+      "agents/openai.yaml": "3221997962f6e363ac91a919561ea0298474c2b114e81db114a1e318f3d191c7",
+      "references/design-readiness.md": "09d92a3caad3e80162ead41b048c612cb611a47a16d2050b757397f784c0402f",
+      "references/subagent-protocol.md": "a2fcf9d0d1b0c7ee22f06b233a908e538d40d0e48a07bda56b5039d9112bb844",
+      "references/templates.md": "2aa5addd94ca03e687e2d66c9282e5106934b9514e25d9f9ba286edbf8a719bd",
+      "scripts/test_solution_design_contract.py": "86f59242768ba893a2874cb039148a953fe47a0978782ec28ce385d6242b5f9a"
+    }
+  }
+}

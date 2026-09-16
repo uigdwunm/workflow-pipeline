@@ -10,7 +10,10 @@ operations. Do not simulate lifecycle operations with direct ledger edits.
 Later integration may attach only from authenticated handoff or phase evidence,
 an active binding, an exact design document or stable footer, and finally a
 read-only locate operation. `none` and `ambiguous` remain zero-write standalone
-paths. Legal forward transitions are `0→1`, `0→2`, `1→2`, `2→3` and
+paths with respect to discussion state. Standalone Stage 2 may prepare its own
+conversation snapshot under
+[the conversation-source contract](../../solution-design/references/conversation-source.md)
+without creating or advancing a Discussion Topic. Legal forward transitions are `0→1`, `0→2`, `1→2`, `2→3` and
 `3→4`; returning to phase 0 requires explicit reopen and affected-decision
 review.
 

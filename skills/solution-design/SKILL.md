@@ -1,13 +1,13 @@
 ---
 name: solution-design
-description: Use when the user explicitly invokes $solution-design with one committed, frozen Phase-0/1 requirement document, unambiguously confirms a valid Phase-0/1 handoff, enters from an authenticated dedicated-grilling handoff, replies to this Skill's launch/review/anomaly block, or continues from a verified continuous-flow handoff. Create one Flow Worktree, orchestrate one context-isolated solution-designer subagent, and publish planning artifacts from that frozen draft for Stage 3.
+description: Use when the user invokes $solution-design or asks to begin 2方案 or 2提案 from the current conversation, supplies a frozen requirement document, confirms a valid stage handoff, or resumes this stage. Freeze confirmed conversation requirements when needed, then orchestrate one context-isolated solution-designer in one Flow Worktree and publish planning artifacts for Stage 3.
 ---
 
 # 2方案
 
 Turn an accepted requirement source into the published planning artifacts that
 `3实现` will execute. Use one context-isolated subagent as the stage owner. Keep
-the primary agent responsible only for launch disclosure, user decisions,
+the primary agent responsible for conversation-source preparation, launch disclosure, user decisions,
 trusted child identity, anomaly routing, completion intake, and stage entry.
 
 Read
@@ -67,7 +67,8 @@ review confirmation defaults.
 
 Enter from exactly one route:
 
-- an explicit `$solution-design` invocation;
+- an explicit `$solution-design` invocation or clear request to begin 2方案 or
+  2提案, including a request to use the current conversation;
 - a verified mature Stage-0 requirement handoff with current checkpoint and explicit stage-2 or continuous authorization;
 - a stable current-task `$problem-framing` success footer selecting this stage,
   followed by an unambiguous stepwise or continuous confirmation;
@@ -86,22 +87,28 @@ modification request.
 
 ## Establish the requirement source
 
-Mechanically require one committed, frozen 0/1 requirement document by path,
-commit, and SHA-256. For a dedicated-task delivery, also require the
-authenticated accepted-result handoff. Read the immutable draft as the complete
-requirement source; do not re-audit the grilling, supplement it from chat
-history, modify it, or create a second requirement or solution draft.
+Select the source before creating a Flow Worktree or launching the child:
 
-Verify this source before creating a Flow Worktree or launching the child. A
-missing path, commit, hash, committed file, or matching document state emits
-the fixed pre-launch anomaly from `references/templates.md`, recommends
-returning to `$problem-framing` to create or repair the frozen draft, and stops.
-Confirmation of that anomaly may correct the disclosed source identity; it
-never turns conversation history into a requirement source or authorizes
-Phase-1 work inside this stage.
+When no document or stage handoff is claimed and no discussion is attached,
+an explicit request to enter this stage uses the current conversation by default.
 
-If a correction changes goal, scope, constraints, or acceptance conditions,
-keep it in `$problem-framing`; do not silently absorb it as solution design.
+- For an explicit standalone invocation using the current conversation, the
+  primary prepares a frozen snapshot under
+  [references/conversation-source.md](references/conversation-source.md).
+  A pre-existing document and completion of stages 0/1 are not entry conditions.
+- For an existing document or stage handoff, verify its path, commit and SHA-256;
+  dedicated deliveries also require their authenticated accepted-result handoff.
+  A missing or mismatched claimed source uses the pre-launch anomaly; repair
+  that source rather than silently replacing it with conversation content.
+- A verified discussion attachment retains the checkpoint route below. Do not
+  bypass its pending impacts or source authority with a standalone snapshot.
+
+After preparation, the immutable document is the child's complete requirement
+source. The child neither supplements it from chat nor creates another draft.
+Material corrections to a conversation snapshot return to the primary under
+`references/conversation-source.md`; corrections to a 0/1 source return to its
+source owner. An ordinary design choice inside the accepted boundary remains
+stage-2 work.
 
 For a verified discussion context, use the latest completed `stage-entry`
 checkpoint from phase 0 or 1 as the immutable requirement source. The source
@@ -190,8 +197,8 @@ semantic role `solution_designer`, the disclosed model and effort, and the
 canonical bootstrap payload. The applicable dispatch path owns the outer prompt
 and native task name. The trusted child owns native Spec/ADR/Tickets work and
 exact-target publication; the primary owns identity, user decisions, anomaly
-routing and mechanical intake. Neither role implements code or changes the
-accepted requirement source.
+routing and mechanical intake. Neither role implements code. After source preparation, both roles preserve the
+accepted requirement source until an explicit source correction.
 
 Before the child launch, the primary calls `start-worktree` once and discloses
 the returned Flow Worktree binding. The child runs in that worktree, verifies

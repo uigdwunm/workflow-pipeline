@@ -1,8 +1,12 @@
 # Requirement Document Contract
 
 Phases 0 and 1 always own exactly one mutable requirement document for the
-current target. Phase 2 consumes one committed, frozen version of that document
-as its only requirement source. Phase 3 consumes only the planning artifacts
+current target. Phase 2 consumes one committed, frozen requirement document
+as its only child requirement source. An explicit standalone Stage-2 request
+may instead have its primary freeze confirmed conversation requirements under
+[the conversation-source contract](../../solution-design/references/conversation-source.md),
+without performing phases 0/1. Attached discussion sources retain this contract.
+Phase 3 consumes only the planning artifacts
 published by Phase 2.
 
 ## Resolve one document
@@ -62,7 +66,8 @@ same document identity and current bytes.
 Phase 1 completes only after the document is internally consistent, contains no
 unresolved question that could materially change Phase-2 output, passes the
 repository-aware checks, is committed, and is frozen by path, commit, and
-SHA-256. Phase 2 may not supplement it from chat history, guess a missing
-requirement, or create a second requirement draft. A material requirement gap
-returns to Phase 1, which reopens and updates the same document; prior Phase-2
+SHA-256. The Phase-2 child may not supplement its frozen source from chat
+history, guess a missing requirement, or create a second requirement draft.
+For a Phase-1 source, a material requirement gap returns to Phase 1, which
+reopens and updates the same document; prior Phase-2
 planning is then stale and must be regenerated.
