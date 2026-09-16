@@ -332,12 +332,10 @@ def _run_process(command: list[str], cwd: Path, on_line: Any, diagnostic_path: P
         returncode = process.wait()
         if returncode:
             raise WorkflowError(f"executor exited with status {returncode}; diagnostics: {diagnostic_path}")
-    except BaseException as interrupted:
+    except BaseException:
         try:
             _terminate_process_group(process)
         except UncertainExecutorError:
-            if isinstance(interrupted, KeyboardInterrupt):
-                raise interrupted
             raise
         raise
     finally:
@@ -517,8 +515,13 @@ def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, contin
         raise WorkflowError("runner interrupted")
     except WorkflowError as exc:
         uncertain = stage not in state["sessions"] or isinstance(exc, UncertainExecutorError)
+        detail = str(exc)
+        code = "executor_error"
+        if isinstance(exc, UncertainExecutorError):
+            code = "interrupted"
+            detail = f"{detail}; diagnostics: {diagnostic}"
         _mark_failure(
-            state, record_path, "executor_error", str(exc), uncertain,
+            state, record_path, code, detail, uncertain,
             recoverable=isinstance(exc, RecoverableStageError),
         )
         raise

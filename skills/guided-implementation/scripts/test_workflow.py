@@ -38,8 +38,9 @@ if mode in ('interrupt', 'interrupt-child'):
         child = subprocess.Popen([sys.executable, '-c', 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(10)'])
         state.setdefault('children', {})[stage] = child.pid
         json.dump(state, open(state_path, 'w'))
+    print(json.dumps({'type': 'thread.started', 'thread_id': stage + '-session'}), flush=True)
     time.sleep(10)
-if mode not in ('no-session-continue', 'no-session-needs-input'):
+if mode not in ('interrupt', 'interrupt-child', 'no-session-continue', 'no-session-needs-input'):
     print(json.dumps({'type': 'thread.started', 'thread_id': stage + '-session'}))
 if mode == 'turn-failed':
     print(json.dumps({'type': 'turn.failed'})); sys.exit(0)
@@ -100,6 +101,22 @@ class WorkflowCliTests(unittest.TestCase):
 
     def state(self) -> dict[str, object]:
         return json.loads(self.record.read_text(encoding="utf-8"))
+
+    def wait_for_thread_started(self, runner: subprocess.Popen[str]) -> None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                state = self.state()
+            except (FileNotFoundError, json.JSONDecodeError):
+                time.sleep(0.05)
+                continue
+            if state.get("launch", {}).get("state") == "launched" and state.get("sessions", {}).get("stage2"):
+                return
+            if runner.poll() is not None:
+                stderr = runner.stderr.read() if runner.stderr is not None else ""
+                self.fail(f"runner exited before thread.started: {stderr}")
+            time.sleep(0.05)
+        self.fail("runner did not persist thread.started before signal")
 
     def test_start_runs_the_three_stages_and_forwards_artifacts(self) -> None:
         completed = self.invoke("start", str(self.confirmed))
@@ -235,10 +252,7 @@ class WorkflowCliTests(unittest.TestCase):
     def test_interrupt_terminates_the_launched_process_group(self) -> None:
         environment = {**os.environ, "CODEX_BIN": str(self.fixture), "FIXTURE_STATE": str(self.fixture_state), "FIXTURE_MODE": "interrupt"}
         runner = subprocess.Popen([sys.executable, str(SCRIPT), "start", str(self.confirmed)], env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        deadline = time.monotonic() + 3
-        while not self.fixture_state.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertTrue(self.fixture_state.exists())
+        self.wait_for_thread_started(runner)
         runner.send_signal(signal.SIGINT)
         _, stderr = runner.communicate(timeout=10)
         self.assertEqual(runner.returncode, 1, stderr)
@@ -251,9 +265,7 @@ class WorkflowCliTests(unittest.TestCase):
     def test_interrupt_reaps_a_term_resistant_descendant(self) -> None:
         environment = {**os.environ, "CODEX_BIN": str(self.fixture), "FIXTURE_STATE": str(self.fixture_state), "FIXTURE_MODE": "interrupt-child"}
         runner = subprocess.Popen([sys.executable, str(SCRIPT), "start", str(self.confirmed)], env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        deadline = time.monotonic() + 3
-        while not self.fixture_state.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        self.wait_for_thread_started(runner)
         deadline = time.monotonic() + 3
         fixture = {}
         while "children" not in fixture and time.monotonic() < deadline:
@@ -272,9 +284,7 @@ class WorkflowCliTests(unittest.TestCase):
     def test_sigterm_reaps_a_term_resistant_descendant_and_records_interruption(self) -> None:
         environment = {**os.environ, "CODEX_BIN": str(self.fixture), "FIXTURE_STATE": str(self.fixture_state), "FIXTURE_MODE": "interrupt-child"}
         runner = subprocess.Popen([sys.executable, str(SCRIPT), "start", str(self.confirmed)], env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        deadline = time.monotonic() + 3
-        while not self.fixture_state.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        self.wait_for_thread_started(runner)
         deadline = time.monotonic() + 3
         fixture = {}
         while "children" not in fixture and time.monotonic() < deadline:
@@ -292,6 +302,45 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(state["error"]["code"], "interrupted")
         with self.assertRaises(ProcessLookupError):
             os.kill(child, 0)
+
+    def test_known_session_cleanup_uncertainty_is_persisted_as_interrupted(self) -> None:
+        shim = self.root / "shim"
+        shim.mkdir()
+        (shim / "sitecustomize.py").write_text(
+            "import os, signal, sys\n"
+            "if sys.argv and sys.argv[0].endswith('workflow.py'):\n"
+            "    original = os.killpg\n"
+            "    def killpg(group, value):\n"
+            "        if value == signal.SIGKILL:\n"
+            "            return None\n"
+            "        return original(group, value)\n"
+            "    os.killpg = killpg\n",
+            encoding="utf-8",
+        )
+        environment = {
+            **os.environ, "CODEX_BIN": str(self.fixture), "FIXTURE_STATE": str(self.fixture_state),
+            "FIXTURE_MODE": "interrupt-child", "PYTHONPATH": str(shim),
+        }
+        runner = subprocess.Popen([sys.executable, str(SCRIPT), "start", str(self.confirmed)], env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.wait_for_thread_started(runner)
+        fixture = json.loads(self.fixture_state.read_text())
+        child = fixture["children"]["stage2"]
+        try:
+            runner.send_signal(signal.SIGTERM)
+            self.assertEqual(runner.wait(timeout=15), 1)
+            state = self.state()
+            self.assertEqual((state["status"], state["launch"]["state"]), ("interrupted", "uncertain"))
+            self.assertEqual(state["error"]["code"], "interrupted")
+            self.assertIn("diagnostics:", state["error"]["detail"])
+        finally:
+            try:
+                os.kill(child, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if runner.stdout is not None:
+                runner.stdout.close()
+            if runner.stderr is not None:
+                runner.stderr.close()
 
     def test_bad_input_does_not_create_record_and_safe_checkpoint_restarts(self) -> None:
         bad = self.confirmed_input(); bad["run_record"] = str(self.repository / "run.json")
