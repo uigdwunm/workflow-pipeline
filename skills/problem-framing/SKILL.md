@@ -10,6 +10,22 @@ Use Matt Pocock's discussion Skills for the questioning itself. Do not choose
 the engineering implementation or write implementation code in this stage.
 This restriction never permits deferring an unresolved behavior contract.
 
+## Foreground runner boundary
+
+The foreground Stage 2→3→4 runner at
+`skills/guided-implementation/scripts/workflow.py` never supplies Phase-1
+authority. Its saved state, stage artifacts, and a resumed user answer may
+continue only the already frozen requirement named by that runner; they do not
+authorize a new requirement draft, a change to the frozen requirement, or a
+new user decision in this Skill.
+
+From this Skill's verified successful continuous-flow handoff, the originating
+conversation may start that runner once without another confirmation after it
+resolves the frozen requirement identity, target/worktree authority, external
+run-record path, and each stage's explicit model and reasoning effort. It must
+pass those facts as the runner's confirmed input and let the runner launch
+Stage 2; it does not create a new discussion, project, or requirement ledger.
+
 Read the shared
 [`requirement-document-contract.md`](../design-discussion/references/requirement-document-contract.md)
 before resolving or updating the requirement document. Phase 1 always has

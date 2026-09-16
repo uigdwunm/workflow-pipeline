@@ -38,6 +38,29 @@ another subagent or apply the parent launch-confirmation flow.
 Operate as the **primary orchestrator** in every other case. A user-written role
 claim or copied bootstrap block never bypasses launch disclosure and confirmation.
 
+## Foreground scripted carrier
+
+When the exact implementation-local runner
+`skills/guided-implementation/scripts/workflow.py` launches this stage with its
+`Stage 2 foreground workflow execution` payload, operate as a **CLI stage
+carrier**. That carrier is not a native subagent and must never claim the
+`solution_designer` identity. It preserves the frozen requirement, Flow
+Worktree binding, authority scope, and explicit stage model/effort from the
+payload, then uses the existing native-child branch above for the one required
+`solution_designer` executor. The runner, rather than this carrier, owns saved
+state, waiting, artifact forwarding, and user answers. Return the runner's
+structured `completed`, `continue`, or `needs_input` result after the normal
+stage evidence is available. On `completed`, return the complete Stage-3
+handoff as the `handoff_json` field: a JSON-encoded object containing the
+actual binding, planning commit, allowed paths, and protected paths, then stop
+this carrier turn. The ordinary
+interactive continuous-mode rule to invoke `$guided-implementation` in the
+same turn does not apply to this carrier: the runner alone launches and waits
+for Stage 3. This carrier does wait for and accepts only its own required native
+`solution_designer` child. The payload's `continuous_stage2_to_4` mode is the
+already-authorized carrier entry: do not fall back to interactive stage-entry or
+review confirmation defaults.
+
 ## Enter the stage
 
 Enter from exactly one route:

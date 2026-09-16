@@ -40,6 +40,17 @@ the same task after this Skill's immediately preceding retained-worktree footer.
 current Git state, then continue that Flow Worktree and the same active
 Phase Run attempt without creating a replacement.
 
+## Foreground scripted carrier
+
+The implementation-local foreground runner at
+`skills/guided-implementation/scripts/workflow.py` may invoke Stage 4 with the
+complete retained-worktree handoff, prior artifacts, exact authority scope, and
+explicit stage model and reasoning effort. It remains the owner of session
+launch/wait/checkpoint state outside the disposable Flow Worktree. Return a
+structured `completed`, `continue`, or `needs_input` outcome only after this
+Skill's normal verification and cleanup contract; a CLI exit alone never proves
+closure complete.
+
 ## Update documents
 
 For an inherited flow, read closure-owned documents in the verified Flow

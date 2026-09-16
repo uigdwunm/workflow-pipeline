@@ -44,6 +44,35 @@ Interpret user replies through
 - The originating task supervises and reviews. It never edits implementation
   files.
 
+## Foreground scripted carrier
+
+The implementation-local foreground runner at
+`skills/guided-implementation/scripts/workflow.py` may launch Stage 3 only
+with its complete frozen payload: requirement path/commit/hash, target
+repository and retained Flow Worktree binding, authority scope, prior stage
+artifacts, and explicit model and reasoning effort. This is a continuous
+carrier entry, not an implied user decision or inherited desktop setting. The
+carrier follows this Skill's normal dedicated implementation executor and the
+Originating Task's independent Standards and Spec review roles. It returns a
+structured `completed`, `continue`, or `needs_input` outcome to the runner;
+the runner owns the session identity, checkpoints and progress stream. On
+`completed`, return the complete Stage-4 handoff in the `handoff_json` field: a
+JSON-encoded object containing the exact binding, accepted candidate, and both
+review and verification evidence, then
+stop this carrier turn. The ordinary interactive continuous-mode rule to invoke
+`$change-closure` in the same turn does not apply to this carrier, so Stage 4
+cannot be run twice by the carrier and runner.
+
+The payload's `continuous_stage2_to_4` mode is the already-authorized carrier
+entry. It preserves the payload's explicit model/effort pair for the carrier;
+the dedicated native executor still follows the existing task-settings protocol.
+Do not fall back to interactive stage-entry confirmations.
+
+The runner leaves the user's existing `codex exec` approval and sandbox policy
+in effect. It does not force a narrower sandbox that can prevent the existing
+Flow Worktree protocol from updating Git metadata, and it does not add a bypass
+flag.
+
 ## Establish standalone authority
 
 For an explicit invocation without a Phase-2 handoff, inspect the repository
