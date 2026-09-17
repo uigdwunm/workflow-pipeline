@@ -2,7 +2,7 @@
 """Read-only current-registry resolution and immutable workflow package identity.
 
 The invoking host/controller authenticates the registry snapshot. Filesystem
-candidates are diagnostics only; this CLI cannot attest host registration.
+candidates are diagnostics only; registry_query obtains host evidence directly.
 """
 from __future__ import annotations
 import errno
@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import re
 import sys
+from host_skill_registry import RegistryError, query_registry
 
 STAGES = ('design-discussion', 'problem-framing', 'solution-design', 'guided-implementation', 'change-closure')
 ACTIONS = {
@@ -189,6 +190,8 @@ def resolve_skill(name, registry, roots):
 def preflight(request):
     if not isinstance(request, dict):
         raise PreflightError('invalid_request', 'one request object required')
+    if 'registry' in request and 'registry_query' in request:
+        raise PreflightError('invalid_request', 'supply registry or registry_query, never both')
     operation = request.get('operation', 'preflight')
     if operation == 'verify':
         return {'ok': True, 'identity': verify_identity(request.get('identity'))}
@@ -224,9 +227,22 @@ def preflight(request):
             'skills': {name: diagnostic_candidates(name, roots) for name in names}}
     if operation != 'preflight':
         raise PreflightError('invalid_request', 'unknown preflight operation')
+    if 'registry_query' in request:
+        try:
+            registry = query_registry(request['registry_query'])
+        except RegistryError as exc:
+            raise PreflightError(exc.code, str(exc), **exc.details) from exc
     packages, external, diagnostics = {}, {}, {}
     for name in names:
-        entry, candidates = resolve_skill(name, registry, roots)
+        try:
+            entry, candidates = resolve_skill(name, registry, roots)
+        except PreflightError as exc:
+            if 'registry_query' in request and exc.code == 'skill_not_active':
+                disabled = any(e['name'] == name for e in registry['entries'])
+                raise PreflightError('skill_disabled' if disabled else 'skill_not_registered',
+                    'Skill is disabled in the host registry' if disabled else 'Skill is absent from the host registry',
+                    **exc.details) from exc
+            raise
         diagnostics[name] = candidates
         if name in STAGES:
             try:
