@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "8c52ad97456da7b9aa4658fb6677732f1abd3d425511bc7155c7a48c9b062eb6",
+  "bundle_digest": "5a328ab45aaeb013cbfc5adac1ad68e5baf9bfd0c4e1da2c16763f907c654ab7",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -146,11 +146,11 @@
     },
     "scripts/host_skill_registry.py": {
       "mode": "0644",
-      "sha256": "27539816448833bde60bea619d2f9622459c6b59fc63402d537c54b82d18a8c0"
+      "sha256": "61fc2fc0cf9670734426fc1dffe6f1b41d3b973a6dbf0d33f92088da0ebf1b37"
     },
     "scripts/skill_preflight.py": {
       "mode": "0644",
-      "sha256": "8d6833dcc7a3903051b87ff95a4cbe7da7755580263e693a7cd0a263865718f8"
+      "sha256": "b0b919c2a612378d22a1871969557a57623751aa3687a7270df415b8ec2ffc66"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",
