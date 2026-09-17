@@ -125,6 +125,17 @@ class PreflightBoundaryTests(unittest.TestCase):
                 finally:
                     if kind=='permission':entry.chmod(0o644)
 
+    def test_nonregular_manifest_is_a_structured_package_error(self):
+        manifest=self.packages/'change-closure/package.json'
+        original=manifest.read_bytes()
+        manifest.unlink();manifest.mkdir()
+        try:
+            response=self.call(3,'entry',[self.own(3),self.own(4)],target_stages=[4])
+            self.assertEqual(response['error']['code'],'invalid_package')
+            self.assertEqual(response['error']['required_skill'],'change-closure')
+        finally:
+            manifest.rmdir();manifest.write_bytes(original)
+
     def test_manifest_shape_and_compatibility_are_verified_before_target_entry(self):
         import copy
         stage=4;manifest=self.packages/self.names[stage]/'package.json';original=manifest.read_bytes()

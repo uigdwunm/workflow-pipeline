@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "4f12c0ef6230f2fd836c0a353b31406f25ab1896c5af84631020f8261bc87fd5",
+  "bundle_digest": "eff803b64caa8ca0971210a2b4fa762d65a3c63dc5e6ec6ea832713e9d0af333",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -155,7 +155,7 @@
     },
     "scripts/skill_preflight.py": {
       "mode": "0644",
-      "sha256": "09f764935b7b47e9a6be717cbe905813c47f0c1dafc7c00aea29e096aa3a323e"
+      "sha256": "2f1a07a4ca0be140a64f09156b17d283183dee8d03de7417ba471c5887fdbd43"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",

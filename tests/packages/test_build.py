@@ -38,6 +38,19 @@ class PackageBuildTests(unittest.TestCase):
             self.assertNotEqual(broken.returncode, 0)
             self.assertIn('undeclared_runtime_dependency', broken.stderr)
 
+    def test_committed_release_rebuilds_from_clean_archive(self):
+        import io
+        import tarfile
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve()
+            archive=subprocess.check_output(['git','-C',str(ROOT),'-c','tar.umask=0022','archive','--format=tar','HEAD'])
+            with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+                tar.extractall(root)
+            result=subprocess.run([sys.executable,str(root/'scripts/build_skills.py'),'--check'],
+                cwd=root,capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(len(list(root.rglob('SKILL.md'))),5)
+
     def test_shared_changes_propagate_and_release_links_cannot_escape(self):
         import shutil
         with tempfile.TemporaryDirectory() as temporary:
@@ -56,7 +69,7 @@ class PackageBuildTests(unittest.TestCase):
             changed=digests()
             self.assertEqual({name for name in original if original[name]!=changed[name]},{'guided-implementation'})
             shared=fixture/'src/shared/references/package-execution.md'
-            shared.write_text(shared.read_text()+'\nShared release clarification.\n')
+            shared.write_text(shared.read_text()+'\nShared release clarification. [External documentation](https://example.com/skills/reference/).\n')
             self.assertEqual(build().returncode,0)
             self.assertTrue(all(digests()[name]!=changed[name] for name in changed))
             target=output/'design-discussion/SKILL.md';external=root/'external';external.write_bytes(target.read_bytes())
@@ -72,6 +85,13 @@ class PackageBuildTests(unittest.TestCase):
             code=fixture/'src/shared/scripts/discussion_protocol.py'
             code.write_text(code.read_text()+"\n__import__('unlisted_dynamic_module')\n")
             self.assertNotEqual(build().returncode,0)
+            configuration=fixture/'build/skill-packages.json'
+            data=json.loads(configuration.read_text())
+            data['packages']['unexpected-sixth']=data['packages']['design-discussion']
+            configuration.write_text(json.dumps(data))
+            failure=build()
+            self.assertNotEqual(failure.returncode,0)
+            self.assertIn('exactly the five workflow packages',failure.stderr)
 
     def test_five_isolated_packages_execute_discussion_and_git_protocols(self):
         for package in ('design-discussion','problem-framing','solution-design','guided-implementation','change-closure'):

@@ -15,6 +15,7 @@ import sysconfig
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = re.compile(r'\{\{resource:([^}]+)\}\}')
+PACKAGES = ('design-discussion', 'problem-framing', 'solution-design', 'guided-implementation', 'change-closure')
 
 
 def canonical(value):
@@ -64,7 +65,7 @@ def validate_files(files):
                             raise ValueError(f'undeclared runtime resource {target}: {path}')
         if path.endswith('.md'):
             text = data.decode()
-            if '{{' in text or 'skills/' in text:
+            if '{{' in text or re.search(r'(?<![\w/])skills/(?:design-discussion|problem-framing|solution-design|guided-implementation|change-closure)/', text):
                 raise ValueError(f'unresolved or cross-package resource: {path}')
             for link in re.findall(r'\]\(([^)]+)\)', text):
                 if '://' in link or link.startswith('mailto:'):
@@ -86,6 +87,10 @@ def validate_files(files):
 
 def build(output, selected=None, root=ROOT):
     config = json.loads((root / 'build/skill-packages.json').read_text())
+    if set(config['packages']) != set(PACKAGES):
+        raise ValueError('release must declare exactly the five workflow packages')
+    if any(config['packages'][name]['stage'] != stage for stage, name in enumerate(PACKAGES)):
+        raise ValueError('package name and stage must match the fixed workflow mapping')
     resources = config['resources']
     runtime = ast.parse((root / 'src/shared/scripts/skill_preflight.py').read_text())
     actions = next(ast.literal_eval(node.value) for node in runtime.body
@@ -132,6 +137,8 @@ def build(output, selected=None, root=ROOT):
                 raise ValueError(f'output collision: {target}')
             files[target] = data
         validate_files(files)
+        if 'SKILL.md' not in files or not re.search(rb'^name:\s*' + name.encode() + rb'\s*$', files['SKILL.md'], re.MULTILINE):
+            raise ValueError(f'package must contain its own named entry: {name}')
         table = {path: {'sha256': hashlib.sha256(data).hexdigest(), 'mode': '0644'} for path, data in sorted(files.items())}
         manifest = {key: config[key] for key in ('format_version','release','source_revision','compatibility_key')}
         manifest.update(name=name, stage=package['stage'], resources=sorted(visited), files=table,
@@ -157,7 +164,7 @@ def snapshot(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, default=ROOT / 'skills')
-    parser.add_argument('--package', choices=['design-discussion','problem-framing','solution-design','guided-implementation','change-closure'])
+    parser.add_argument('--package', choices=PACKAGES)
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
     if args.check:

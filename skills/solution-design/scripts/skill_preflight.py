@@ -71,7 +71,7 @@ def package_identity(value, name=None):
         manifest_path = root / 'package.json'
         if not manifest_path.exists():
             raise PreflightError('incompatible_package', 'target has no self-contained package manifest')
-        if manifest_path.is_symlink():
+        if manifest_path.is_symlink() or not manifest_path.is_file():
             raise PreflightError('invalid_package', 'manifest must be a package-local regular file')
         manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
         if not isinstance(manifest, dict) or type(manifest.get('format_version')) is not int or manifest['format_version'] != 1:
@@ -120,6 +120,8 @@ def package_identity(value, name=None):
         raise PreflightError('package_unavailable', 'package manifest or resource is missing') from exc
     except PermissionError as exc:
         raise PreflightError('package_unavailable', 'package manifest or resource is unreadable') from exc
+    except OSError as exc:
+        raise PreflightError('package_unavailable', 'package resource cannot be opened') from exc
     except (KeyError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
         raise PreflightError('invalid_package', 'invalid package manifest or entry') from exc
 
