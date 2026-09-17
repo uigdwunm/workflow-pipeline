@@ -68,14 +68,20 @@ def prepared(request):
             "role_mismatch", "dispatcher may only allocate execution agents")
     context = request["control"]["context"]
     control.validate_context(context)
-    require(context["stage"] == saved["stage"] and context["requirement_identity"] == saved["requirement_identity"],
+    selected = context
+    if saved["stage"] < 2:
+        plan_id = saved["authorization"].get("control_plan_id")
+        require(plan_id is not None or context.get("successor_control") is None,
+                "plan_ambiguous", "two control slots require the handoff's exact control_plan_id")
+        selector = {"control_plan_id": plan_id} if plan_id is not None else {}
+        selected = control.selected_control(context, selector)
+    require(selected["stage"] == saved["stage"] and selected["requirement_identity"] == saved["requirement_identity"],
             "source_changed", "control stage or requirement differs from the prepared input")
     require(context["controller_ref"] == saved["controller_ref"], "identity_mismatch", "control owner differs")
     role, scope = saved["role"], saved["scope"]
     if saved["stage"] < 2:
         # User choice and attached entry authority are prepared/decided by the
         # existing controller UI before this mechanical launch boundary.
-        selected = control.selected_control(context, {"attempt": (context.get("carrier") or {}).get("attempt")})
         progress = selected["handoff_progress"]
         require(progress and progress["state"] == "creation-pending" and selected["carrier"]["ref"] is None,
                 "authorization_missing", "a confirmed dedicated plan is required before launch")
@@ -144,14 +150,17 @@ def record_for(request):
     return record
 
 
-def matching(record, context):
+def matching(record, context, *, reconcile_unbound=False):
     launch = record["request"]
     selected = control.selected_control(context, {"attempt": launch["attempt"]})
     if launch["role"] == "execution-agent":
         progress = selected["handoff_progress"] or {}
         matches = [item for item in progress.get("executions", []) if item["allocation_digest"] == launch["attempt"]]
-        require(len(matches) == 1 and progress["state"] == "implementing", "attempt_mismatch", "allocation is no longer eligible")
+        require(len(matches) == 1, "attempt_mismatch", "allocation is no longer eligible")
         item = matches[0]
+        cancelled_lookup = (reconcile_unbound and progress["state"] == "cancelled" and item["agent_ref"] is None
+                            and (item["state"] == "dispatch-pending" or item["state"] == "cancelled" and item["stopped"] is True))
+        require(progress["state"] == "implementing" or cancelled_lookup, "attempt_mismatch", "allocation is no longer eligible")
         return item["agent_ref"], item["state"], item
     carrier = selected["carrier"]
     require(carrier is not None and carrier["attempt"] == launch["attempt"], "attempt_mismatch", "checkpoint belongs to another attempt")
@@ -240,7 +249,15 @@ def bound(request):
     require(receipt["status"] in {"ready", "pending", "unknown", "not-created"}, "invalid_request", "unknown launch outcome")
     require((receipt["status"] == "ready") == (receipt["ref"] is not None), "identity_mismatch", "only ready results carry usable identities")
     require(receipt["status"] != "ready" or receipt["pending_id"] is None, "identity_mismatch", "pending identity cannot be bound")
-    known, state, item = matching(record, request["control"]["context"])
+    reconcile_unbound = (request["operation"] == "reconcile" and record["request"]["role"] == "execution-agent"
+                         and receipt["status"] in {"unknown", "pending", "not-created"})
+    known, state, item = matching(record, request["control"]["context"], reconcile_unbound=reconcile_unbound)
+    if reconcile_unbound and receipt["status"] == "not-created" and known is None and state == "cancelled" and item["stopped"] is True:
+        record["status"] = "not-created"
+        if receipt not in record["receipts"]:
+            record["receipts"].append(copy.deepcopy(receipt))
+        return {"status": "not-created", "record": handoff.seal(record), "acknowledged": True,
+                "checkpoint": {"context": request["control"]["context"], "discussion_receipt": None}, "downstream_ready": False}
     if receipt in record["receipts"]:
         require(known == receipt["ref"] or known is None, "identity_mismatch", "replayed receipt conflicts with checkpoint")
         return {"status": record["status"], "record": request["record"], "acknowledged": True, "downstream_ready": False}

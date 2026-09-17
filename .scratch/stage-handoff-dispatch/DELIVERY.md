@@ -80,3 +80,35 @@ Stage-2 wrapper 边界在代码中核验 exact run/attempt/source checkpoint，�
 最终 `bash scripts/validate.sh` 通过：424 项测试，5 个有效 Skill 包，仓库验证
 `state=valid`、`issues=[]`、22 个测试文件。生成包一致性和 `git diff --check`
 均通过。新增 transfer 测试共 19 项（包含 Git/非 Git 两种 ledger 绑定场景）。
+
+## 固定提交审查后的三项修复
+
+协调任务对 `9d34a983781eeb112246b21106b7d367f1440a01` 的 Standards/Spec 审查
+提出三项 P1 覆盖遗漏。先新增三项真实行为回归，在未修代码时分别观察到
+allocation is no longer eligible、write scope overlaps protected paths、
+control stage or requirement differs 三个预期失败，再修复 B 层。
+
+1. 取消后的未绑定 allocation：仅 reconcile 精确 lookup 的 unknown/pending/
+   not-created 可继续；已证明未创建的分配释放并可重放 ACK。父 dispatcher 保持
+   cancelled，late ready 仍拒绝，后续 recover-dispatch 仍必须证明旧 writer 停止。
+   对应 test_cancelled_dispatcher_can_reconcile_unbound_allocation_before_recovery。
+2. 双 slot 派发：authorization.control_plan_id 绑定已确认的精确 plan，先选择
+   slot，再核验阶段/需求/配置和 reservation。完整 ledger context 与旧任务接受/
+   归档时序不变。真实 ledger 测试覆盖 B prepare、pending bind、精确 lookup、丢失
+   响应、错误/缺失 selector、旧 attempt 和取消后的迟到回执。
+   对应 test_successor_dispatch_uses_real_ledger_slot_without_promoting_old_carrier。
+3. 阶段文档权限：Stage 3 的 protected_paths 继续包含规划文档，closure_paths
+   只是未来授权；Stage 2→3 不扩张该清单。Stage 4 仅可移除已授权 closure_paths
+   的保护，冻结需求永不移除。Stage-3 render 的下游投影按此生成 Stage-4 保护范围，
+   embedded accepted_transfer 保留原实施只读范围。真实 Git 链路证明实施修改已提交
+   Spec 会拒收；合法收尾 Spec 更新可发布/清理并 receive/accept；冻结需求、实现
+   代码和未授权 ADR 改动都拒收。
+   对应 test_planning_read_only_in_implementation_but_authorized_for_closure。
+
+修复仅改 B 的核验/投影、合同和测试，未改 A、C runner 或 D 发布/清理实现。
+双 slot 消费者需要传入从原 ledger plan 取得的 control_plan_id；单 slot 可省略。
+真实宿主现场未验证项、独立 Stage1→2 交付 producer 和 merge 证明边界不变。
+修复后定向套件 23 项：22 项通过，1 项因非 Git 不适用 Git wrapper 场景跳过；
+该场景已在 Git ledger fixture 中真实执行。修复后 `bash scripts/validate.sh`
+完整通过：428 项中 427 项成功、1 项上述适用性跳过；5 个 Skill 包有效，仓库
+`state=valid`、`issues=[]`。生成包一致性及暂存差异检查通过。精确修复提交由交付回复记录。

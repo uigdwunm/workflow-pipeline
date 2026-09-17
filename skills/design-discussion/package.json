@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "42d6da1b43ca5abc9751f39bf58be96e0ee80fd17913847da0b4ce263122c5ee",
+  "bundle_digest": "aa809de78dd694ed4eeaf46345ba0dfcdfbfa00ff3bf18873543fd33f5ffcd36",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -97,7 +97,7 @@
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
-      "sha256": "749e7610958aa6d1a23a1b585358baa1e8c030632eeb6335b910dd0bfa8f6405"
+      "sha256": "2b6e1301696d4cf61c7179d9264d5943a87b9cd055bdbd29a83c5e4a1df33239"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -185,11 +185,11 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "80e64302cda6e2906151327a515dd28578c51e7af69c71d2c9b24a3290d4441f"
+      "sha256": "28bb0f05639ddaf4918ab1b20faa36ce717cb70583602a559cb5902445f48ce9"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "6066fc306804b1f265cf116744c0f726f4e4b23ca6d83c33b67bd4b23b0e3858"
+      "sha256": "b1fed273aae35d346bd8e6c78f3b516b2436fabe0646e90c8c1121feb4f3c74f"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",

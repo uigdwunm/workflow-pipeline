@@ -103,13 +103,15 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
     def complete_design(self):
         started = self.launch()
         bound = self.call("bind", started["record"], receipt=self.receipt(started["record"]))
-        (self.flow / "docs/spec.md").write_text("approved plan\n")
-        self.flow_git("add", "docs/spec.md"); self.flow_git("commit", "-qm", "planning")
+        planning_paths = self.input["scope"]["owned_paths"]
+        for path in planning_paths:
+            (self.flow / path).write_text("approved plan\n")
+        self.flow_git("add", *planning_paths); self.flow_git("commit", "-qm", "planning")
         planning = self.flow_git("rev-parse", "HEAD")
         supervision.publish_planning({"binding": self.binding, "planning_commit": planning,
-                                      "allowed_paths": ["docs/spec.md"], "protected_paths": [self.requirement_path]})
-        payload = {"artifacts": ["docs/spec.md"], "checks": ["design review"], "planning_commit": planning,
-                   "planning_merge_commit": self.flow_git("rev-parse", "HEAD"), "planning_paths": ["docs/spec.md"]}
+                                      "allowed_paths": planning_paths, "protected_paths": [self.requirement_path]})
+        payload = {"artifacts": planning_paths, "checks": ["design review"], "planning_commit": planning,
+                   "planning_merge_commit": self.flow_git("rev-parse", "HEAD"), "planning_paths": planning_paths}
         message = {"delivery_id": "design-1", "status": "completed", "payload": payload}
         received = self.call("receive", bound["record"], receipt=self.receipt(bound["record"], "stopped", "result"), result=message)
         return self.call("accept", received["record"], decision={"reference": "review:accepted", "delivery_digest": received["record"]["delivery"]["digest"]})
@@ -317,6 +319,115 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.assertFalse(accepted["downstream_ready"])
         self.assertEqual(self.context["handoff_progress"]["executions"][0]["state"], "accepted")
 
+    def test_cancelled_dispatcher_can_reconcile_unbound_allocation_before_recovery(self):
+        self.context = self.context_for(3)
+        parent = self.launch(self.input_for(3))
+        self.call("bind", parent["record"], receipt=self.receipt(parent["record"], ref="native:dispatcher"))
+        execution = self.input_for(3)
+        execution.update(role="execution-agent", configuration=configuration("execution-agent"))
+        pending = self.launch(execution)["record"]
+        self.context = control.transition({"schema_version": 1, "actor_ref": "task", "context": self.context,
+                                           "action": "cancel", "evidence": {}})["context"]
+        unknown = self.call("reconcile", pending, receipt=self.receipt(pending, "unknown", "lookup", None))
+        self.assertEqual(self.context["handoff_progress"]["executions"][0]["state"], "dispatch-pending")
+        self.assert_code("attempt_mismatch", lambda: self.call("reconcile", unknown["record"], receipt=self.receipt(pending, "ready", "lookup", "late")))
+        done = self.call("reconcile", unknown["record"], receipt=self.receipt(pending, "not-created", "lookup", None))
+        self.assertEqual(self.context["handoff_progress"]["state"], "cancelled")
+        self.assertTrue(self.context["handoff_progress"]["executions"][0]["stopped"])
+        self.assertTrue(self.call("reconcile", pending, receipt=self.receipt(pending, "not-created", "lookup", None))["acknowledged"])
+        self.assert_code("attempt_mismatch", lambda: self.call("reconcile", done["record"], receipt=self.receipt(pending, "ready", "lookup", "late")))
+        import workflow_control_git
+        def recover(stopped):
+            return workflow_control_git.verified_transition({"repository": str(self.flow), "baseline": execution["scope"]["baseline"],
+                "request": {"schema_version": 1, "actor_ref": "task", "context": self.context, "action": "recover-dispatch",
+                            "evidence": {"stopped_refs": stopped, "file_hashes": {}, "replacement_ref": "native:replacement"}}})
+        with self.assertRaises(control.ControlError):
+            recover([])
+        self.assertEqual(recover(["native:dispatcher"])["context"]["handoff_progress"]["state"], "implementing")
+
+    def test_planning_read_only_in_implementation_but_authorized_for_closure(self):
+        self.input["scope"]["owned_paths"] = ["docs/adr.md", "docs/spec.md"]
+        self.input["scope"]["closure_paths"] = ["docs/spec.md"]
+        self.input["authorization"]["scope_digest"] = entry.digest(self.input["scope"])
+        design = self.complete_design()["accepted"]
+        implementation = self.input_for(3, design)
+        implementation["scope"]["closure_paths"] = ["docs/spec.md"]
+        implementation["scope"]["protected_paths"] = sorted([self.requirement_path, "docs/adr.md", "docs/spec.md"])
+        implementation["authorization"]["scope_digest"] = entry.digest(implementation["scope"])
+        self.context = self.context_for(3)
+        launched = self.launch(implementation)
+        bound = self.call("bind", launched["record"], receipt=self.receipt(launched["record"], ref="native:dispatcher"))
+        (self.flow / "impl.py").write_text("print('done')\n")
+        self.flow_git("add", "impl.py"); self.flow_git("commit", "-qm", "implementation")
+        candidate = self.flow_git("rev-parse", "HEAD")
+        payload = {"artifacts": ["impl.py"], "checks": ["CLI passed"], "candidate_commit": candidate,
+                   "review": {axis: {"candidate": candidate, "reviewer_ref": axis, "status": "accepted"} for axis in ("standards", "spec")},
+                   "verification": {"candidate": candidate, "checks": ["CLI passed"]}}
+        # A planning write cannot be accepted as an implementation result.
+        (self.flow / "docs/spec.md").write_text("unauthorized implementation edit\n")
+        self.flow_git("add", "docs/spec.md"); self.flow_git("commit", "-qm", "invalid implementation planning edit")
+        bad = copy.deepcopy(payload)
+        bad["candidate_commit"] = self.flow_git("rev-parse", "HEAD")
+        bad["verification"]["candidate"] = bad["candidate_commit"]
+        for axis in bad["review"].values():
+            axis["candidate"] = bad["candidate_commit"]
+        self.assert_code("invalid_scope", lambda: self.call("receive", bound["record"],
+            receipt=self.receipt(bound["record"], "stopped", "result", "native:dispatcher"),
+            result={"delivery_id": "invalid-implementation", "status": "completed", "payload": bad}))
+        self.flow_git("restore", "--source", candidate, "docs/spec.md")
+        self.flow_git("add", "docs/spec.md"); self.flow_git("commit", "-qm", "restore read-only planning source")
+        candidate = self.flow_git("rev-parse", "HEAD")
+        payload["candidate_commit"] = payload["verification"]["candidate"] = candidate
+        for axis in payload["review"].values():
+            axis["candidate"] = candidate
+        received = self.call("receive", bound["record"], receipt=self.receipt(bound["record"], "stopped", "result", "native:dispatcher"),
+                             result={"delivery_id": "implementation", "status": "completed", "payload": payload})
+        accepted = self.call("accept", received["record"], decision={"reference": "accepted", "delivery_digest": received["record"]["delivery"]["digest"]})["accepted"]
+        self.assertIn("docs/spec.md", accepted["handoff"]["scope"]["protected_paths"])
+        self.assertEqual(handoff.render(accepted)["payload"]["protected_paths"], sorted([self.requirement_path, "docs/adr.md"]))
+        closure = self.input_for(4, accepted)
+        closure["scope"].update(owned_paths=["docs/spec.md"], closure_paths=["docs/spec.md"], protected_paths=sorted([self.requirement_path, "docs/adr.md"]))
+        closure["authorization"]["scope_digest"] = entry.digest(closure["scope"])
+        for changed in ([self.requirement_path], ["other.md"]):
+            bad = copy.deepcopy(closure)
+            bad["scope"]["closure_paths"] = changed
+            bad["authorization"]["scope_digest"] = entry.digest(bad["scope"])
+            with self.assertRaises(entry.PreparationError):
+                handoff.handle(bad)
+        bad = copy.deepcopy(closure)
+        bad["scope"]["protected_paths"] = [self.requirement_path]
+        bad["authorization"]["scope_digest"] = entry.digest(bad["scope"])
+        self.assert_code("scope_changed", lambda: handoff.handle(bad))
+        self.context = self.context_for(4)
+        launched = self.launch(closure)
+        bound = self.call("bind", launched["record"], receipt=self.receipt(launched["record"], ref="native:closure"))
+        target_before = self.git("rev-parse", "HEAD")
+        for forbidden in (self.requirement_path, "impl.py", "docs/adr.md"):
+            # Simulate a faulty publisher in this disposable Git fixture. B
+            # must reject the real out-of-scope merge, even with a stopped ref.
+            (self.flow / forbidden).write_text("out of scope\n")
+            self.flow_git("add", forbidden); self.flow_git("commit", "-qm", "invalid closure")
+            self.git("merge", "--ff-only", self.binding["branch"])
+            wrong_result = {"artifacts": [forbidden], "checks": ["claimed"], "candidate_commit": candidate,
+                            "merge_commit": self.git("rev-parse", "HEAD"), "changed_paths": [forbidden],
+                            "cleanup": {"worktree_removed": True, "branch_removed": True}}
+            self.assert_code("invalid_scope", lambda: self.call("receive", bound["record"],
+                receipt=self.receipt(bound["record"], "stopped", "result", "native:closure"),
+                result={"delivery_id": "bad-closure", "status": "completed", "payload": wrong_result}))
+            self.git("reset", "--hard", target_before)
+            self.flow_git("reset", "--hard", candidate)
+        (self.flow / "docs/spec.md").write_text("approved plan\nImplementation completed.\n")
+        self.flow_git("add", "docs/spec.md"); self.flow_git("commit", "-qm", "close authorized spec")
+        supervision.complete_worktree({"binding": self.binding, "candidate_commit": self.flow_git("rev-parse", "HEAD"),
+                    "expected_target_head": self.git("rev-parse", "HEAD"), "scope_base_commit": closure["scope"]["baseline"],
+                    "allowed_paths": ["docs/spec.md", "impl.py"], "protected_paths": closure["scope"]["protected_paths"]})
+        payload = {"artifacts": ["docs/spec.md"], "checks": ["publication verified"], "candidate_commit": candidate,
+                   "merge_commit": self.git("rev-parse", "HEAD"), "changed_paths": ["docs/spec.md", "impl.py"],
+                   "cleanup": {"worktree_removed": True, "branch_removed": True}}
+        received = self.call("receive", bound["record"], receipt=self.receipt(bound["record"], "stopped", "result", "native:closure"),
+                             result={"delivery_id": "closure", "status": "completed", "payload": payload})
+        self.assertTrue(self.call("accept", received["record"], decision={"reference": "closed", "delivery_digest": received["record"]["delivery"]["digest"]})["downstream_ready"])
+
 
 class AttachedTransferTests(test_entry_prepare.EntrySupport):
     NON_GIT = False
@@ -398,6 +509,83 @@ class AttachedTransferTests(test_entry_prepare.EntrySupport):
         self.assert_code("attempt_mismatch", lambda: dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "reconcile",
                          "record": record, "control": stale, "receipt": receipt}))
         self.assertEqual(before, self.ledger.read_bytes())
+
+    def test_successor_dispatch_uses_real_ledger_slot_without_promoting_old_carrier(self):
+        if self.NON_GIT:
+            self.skipTest("wrapper transfer uses a Git stage-entry checkpoint")
+        path = self.input["scope"]["owned_paths"][0]
+        self.git("add", "-f", path); self.git("commit", "-qm", "stage zero input")
+        old = self.read()["workflow_control"]
+        old_plan = old["handoff_progress"]["plan"]["plan_id"]
+        self.mutate("bind-handoff", handoff_id=self.original["handoff_id"], attempt_id=self.original["attempt_id"], conversation_ref="previous",
+                    verified_identity={"project_id": self.attachment["project_id"], "tree_id": self.attachment["tree_id"],
+                       "topic_id": self.attachment["actor_topic_id"], "handoff_id": self.original["handoff_id"],
+                       "attempt_id": self.original["attempt_id"], "payload_sha256": self.original["payload_sha256"]})
+        self.mutate("workflow-control", action="creation-result", evidence={"status": "ready", "ref": "previous", "attempt": old_plan})
+        def carrier(operation, **values):
+            return discussion_protocol.handle({**self.envelope(), "actor_conversation_ref": "previous", "operation": operation, **values})
+        carrier("accept-handoff", handoff_id=self.original["handoff_id"], attempt_id=self.original["attempt_id"],
+                payload_sha256=self.original["payload_sha256"], source_reference_sha256=self.original["authoritative_references_sha256"], turn_number=1)
+        old_delivery = self.mutate("workflow-control", action="receive", evidence={"delivery_id": "previous-result", "source_ref": "previous",
+            "attempt": old_plan, "commit": self.git("rev-parse", "HEAD"), "requirement_identity": old["requirement_identity"],
+            "verified_commit_hash": old["requirement_identity"]["sha256"]})["control"]
+        self.mutate("workflow-control", action="accept", evidence={"delivery_digest": old_delivery["delivery_digest"]})
+        cp = carrier("prepare-checkpoint", purpose="stage-entry", base_ref="HEAD")
+        carrier("publish-git-checkpoint", checkpoint_id=cp["checkpoint_id"], expected_checkpoint_revision=cp["checkpoint_record_revision"])
+        self.mutate("prepare-wrapper-phase-run", from_phase=0, to_phase=1, route="0->1", carrier_kind="dedicated-grilling",
+                    source_checkpoint_id=cp["checkpoint_id"], flow_mode="stepwise", flow_mode_source="explicit-stage-confirmation", scope=["requirements"])
+        plan = self.mutate("workflow-control", action="prepare", evidence={"target": "local", "project": self.attachment["project_id"],
+                "title": "Frame", "missing_context": [], "configuration": configuration("dedicated-problem-framing"),
+                "next_step": "stage2", "archive_ref": None, "gate_open": True})["control"]["plan"]
+        self.mutate("workflow-control", action="decide", evidence={"plan_id": plan["plan_id"], "intent": "confirm"})
+        self.request["stage"] = 1
+        self.input.update(stage=1, role="dedicated-problem-framing", entry=copy.deepcopy(self.request), expected_entry=entry.resolve(self.request),
+                          configuration=configuration("dedicated-problem-framing"))
+        ambiguous = handoff.handle(self.input)
+        before = self.ledger.read_bytes()
+        self.assert_code("plan_ambiguous", lambda: dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "prepare", "handoff": ambiguous, "control": self.port()}))
+        self.assertEqual(before, self.ledger.read_bytes())
+        wrong = copy.deepcopy(self.input)
+        wrong["authorization"]["control_plan_id"] = old_plan
+        self.assert_code("source_changed", lambda: dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "prepare", "handoff": handoff.handle(wrong), "control": self.port()}))
+        self.assertEqual(before, self.ledger.read_bytes())
+        wrong["authorization"]["control_plan_id"] = "unknown-plan"
+        with self.assertRaises(control.ControlError):
+            dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "prepare", "handoff": handoff.handle(wrong), "control": self.port()})
+        self.assertEqual(before, self.ledger.read_bytes())
+        self.input["authorization"]["control_plan_id"] = plan["plan_id"]
+        saved = handoff.handle(self.input)
+        launched = dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "prepare", "handoff": saved, "control": self.port()})
+        record = launched["record"]
+        self.assertEqual(record["request"]["attempt"], plan["plan_id"])
+        self.assertEqual(self.read()["workflow_control"]["carrier"]["ref"], "previous")
+        receipt = {"adapter": "fixture", "receipt_ref": "pending", "request_digest": record["request"]["digest"],
+                "attempt": plan["plan_id"], "role": "dedicated-problem-framing", "event": "create", "status": "pending",
+                "ref": None, "pending_id": "client-1", "configuration": None, "raw": {"clientThreadId": "client-1"}}
+        pending = dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "bind", "record": record, "control": self.port(), "receipt": receipt})
+        ready_receipt = {**receipt, "event": "lookup", "status": "ready", "ref": "successor", "pending_id": None,
+                         "configuration": {"model": "fixture-model", "effort": "high"}, "receipt_ref": "ready", "raw": {"threadId": "successor"}}
+        before = self.ledger.read_bytes()
+        self.assert_code("identity_mismatch", lambda: dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "reconcile",
+            "record": pending["record"], "control": self.port(), "receipt": {**ready_receipt, "attempt": old_plan}}))
+        self.assertEqual(before, self.ledger.read_bytes())
+        ready = dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "reconcile", "record": pending["record"], "control": self.port(), "receipt": ready_receipt})
+        actual = self.read()["workflow_control"]
+        self.assertEqual(actual["stage"], 0)
+        self.assertEqual(actual["carrier"]["ref"], "previous")
+        self.assertEqual(actual["handoff_progress"]["state"], "result-accepted")
+        self.assertEqual(actual["successor_control"]["carrier"]["ref"], "successor")
+        self.assertFalse(ready["downstream_ready"])
+        before = self.ledger.read_bytes()
+        recovered = dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "reconcile", "record": pending["record"], "control": self.port(), "receipt": ready_receipt})
+        self.assertTrue(recovered["acknowledged"])
+        self.assertEqual(before, self.ledger.read_bytes())
+        self.mutate("workflow-control", action="cancel", evidence={"control_plan_id": plan["plan_id"]})
+        before = self.ledger.read_bytes()
+        self.assert_code("attempt_mismatch", lambda: dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "reconcile",
+            "record": ready["record"], "control": self.port(), "receipt": {**ready_receipt, "receipt_ref": "late", "ref": "late-successor"}}))
+        self.assertEqual(before, self.ledger.read_bytes())
+        self.assertEqual(self.read()["workflow_control"]["handoff_progress"]["state"], "result-accepted")
 
 
 class NonGitAttachedTransferTests(AttachedTransferTests):

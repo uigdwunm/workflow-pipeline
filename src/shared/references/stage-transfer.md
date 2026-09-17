@@ -70,9 +70,21 @@ the saved controller decision binds it, not a new permission token. Completion
 criteria and constraints are nonempty text lists. Path lists are sorted, unique
 exact repository-relative files; directories must be expanded and new files named.
 Baseline is current downstream HEAD, except Stage 4 retains the accepted Stage-3
-scope baseline and separately checks its candidate against current HEAD. Protected paths cannot overlap write paths;
-implementation and closure ownership cannot overlap. Frozen requirements must be
-protected. Do not derive authorized scope from observed diff contents.
+scope baseline and separately checks its candidate against current HEAD. Protected
+paths cannot overlap current write paths; implementation and closure ownership
+cannot overlap. At Stage 3, closure_paths is a future authorization, not a write
+allocation: planning documents remain protected during implementation even when
+listed for later closure. Stage 2→3 preserves that approved closure list. Stage 4
+may remove only those previously approved closure paths from inherited protection;
+all other protected paths remain protected. Frozen requirements can never be
+closure-owned. Do not derive authorized scope from observed diff contents.
+
+For dedicated dispatch with two control slots, authorization also requires
+`control_plan_id` from the exact confirmed ledger plan. B selects that slot before
+checking stage, requirement, configuration or reservation, while passing the full
+context to the ledger. Missing/ambiguous/wrong selection does not promote the
+successor, replace the predecessor, or archive anything. A single-slot caller may
+also pin control_plan_id; omitting it retains the existing single-slot interface.
 
 For attached stages 2–4, authorization additionally requires
 `phase:{run_id,attempt_id}` from the original Phase Run. B reads that exact run:
@@ -97,6 +109,9 @@ and text. For stages 2–4 it additionally returns the existing runner-compatibl
 stage_result (including handoff_json and control_checkpoint), avoiding manual
 footer/hash/identity reconstruction. Rendering historical acceptance does not
 replace a successor's freshness verification.
+The Stage-3 completion projection's protected_paths is prepared for Stage 4:
+it excludes only the already-approved closure_paths. Its embedded accepted_transfer
+keeps the full Stage-3 protected scope for implementation intake/acceptance checks.
 
 ## Separate requirement delivery producer
 
@@ -162,6 +177,12 @@ Unknown/pending outcomes retain the attempt. Exact host lookup is required;
 if unavailable, remain unknown. Never select a candidate by title, recency,
 timestamp or child text. Not-created cancels only the pending attempt/allocation;
 late receipts cannot revive it. Identical replay ACKs, conflicting content fails.
+After dispatcher cancellation, reconcile still accepts exact lookup evidence for
+an unbound execution allocation: unknown/pending retains it; not-created releases
+it through the existing execution-dispatch-result transition. A repeated proven
+release ACKs, including after a lost response. Late ready cannot bind or revive
+the cancelled allocation. The dispatcher remains cancelled; recovery still needs
+the existing proof that every old writer stopped.
 Save a known identity even if source later drifts; it is not permission to work
 on stale input. Replacement authorization stays with the controller.
 

@@ -291,11 +291,15 @@ def prepare(request):
     root = current["repository"]["root"]
     for field in ("owned_paths", "protected_paths", "implementation_paths", "closure_paths"):
         paths(scope[field], root)
-    require(not set(scope["protected_paths"]) & set(scope["owned_paths"] + scope["implementation_paths"] + scope["closure_paths"]),
+    active_writes = scope["owned_paths"] + scope["implementation_paths"]
+    if stage != 3:
+        active_writes += scope["closure_paths"]
+    require(not set(scope["protected_paths"]) & set(active_writes),
             "invalid_scope", "write scope overlaps protected paths")
     require(not set(scope["implementation_paths"]) & set(scope["closure_paths"]), "invalid_scope", "implementation and closure ownership overlap")
     identity, source_commit = source(current, request["requirement"], stage)
     if stage >= 2:
+        require(identity["path"] not in scope["closure_paths"], "invalid_scope", "frozen requirement is never closure-owned")
         if stage == 2:
             require(all(Path(p).suffix.lower() in {".md", ".mdx", ".rst", ".adoc", ".asciidoc", ".org", ".txt"}
                         or Path(p).name.lower() in {"readme", "changelog", "authors", "maintainers"} for p in scope["owned_paths"]),
@@ -312,7 +316,10 @@ def prepare(request):
         require(request["binding"] is None and request["delivery"] is None, "invalid_request", "dedicated discussion preparation has no Flow Worktree delivery")
         delivered = None
     authority = request["authorization"]
-    entry.fields(authority, {"reference", "flow_mode", "scope_digest"}, {"phase"})
+    entry.fields(authority, {"reference", "flow_mode", "scope_digest"}, {"phase", "control_plan_id"})
+    if "control_plan_id" in authority:
+        require(stage < 2, "invalid_request", "control_plan_id selects a dedicated plan only")
+        entry.nonempty(authority["control_plan_id"])
     entry.nonempty(authority["reference"])
     require(authority["flow_mode"] in {"stepwise", "continuous"} and authority["scope_digest"] == entry.digest(scope),
             "authorization_changed", "authorization must bind the exact scope and flow mode")
@@ -339,6 +346,9 @@ def prepare(request):
             protected = set(old["scope"]["protected_paths"])
             if old["stage"] == 2:
                 protected.update(prior["payload"]["planning_paths"])
+                require(scope["closure_paths"] == old["scope"]["closure_paths"], "scope_changed", "retain the predecessor's authorized closure scope")
+            if stage == 4:
+                protected -= set(old["scope"]["closure_paths"])
             require(protected <= set(scope["protected_paths"]), "scope_changed", "successor must protect inherited planning and source paths")
             require(set(scope["implementation_paths"]) <= set(old["scope"]["implementation_paths"]),
                     "scope_changed", "implementation scope exceeds the accepted predecessor")
@@ -378,6 +388,9 @@ def render(saved):
             projection.update(allowed_paths=original["scope"]["implementation_paths"], protected_paths=original["scope"]["protected_paths"])
         elif stage == 3:
             projection.update({k: original["scope"][k] for k in ("implementation_paths", "closure_paths", "protected_paths")})
+            # This projection is the Stage-4 input. The accepted transfer above
+            # retains Stage-3 read-only protection for implementation verification.
+            projection["protected_paths"] = sorted(set(original["scope"]["protected_paths"]) - set(original["scope"]["closure_paths"]))
         elif stage == 4:
             projection["ancestor_verified"] = True
         text = json.dumps(projection, ensure_ascii=False, sort_keys=True, indent=2)
