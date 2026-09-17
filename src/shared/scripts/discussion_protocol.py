@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import uuid
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).parent))
 from discussion_core import OperationRegistry, RequestContext
 from discussion_core.workflow_control import workflow_control
 

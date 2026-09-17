@@ -1,5 +1,7 @@
 # Originating Task Protocol
 
+Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
+
 The originating task binds the Flow Worktree, keeps at most one active Implementation Dispatcher, independently reviews its committed candidate, and passes
 the retained flow to Stage 4. It does not implement code.
 

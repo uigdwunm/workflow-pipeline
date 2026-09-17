@@ -3,6 +3,9 @@ name: solution-design
 description: Use when the user invokes $solution-design or asks to begin 2方案 or 2提案 from the current conversation, supplies a frozen requirement document, confirms a valid stage handoff, or resumes this stage. Freeze confirmed conversation requirements when needed, then orchestrate one context-isolated solution-designer in one Flow Worktree and publish planning artifacts for Stage 3.
 ---
 
+Before any stage action, read and execute [Package execution preflight](references/shared/package-execution.md). This entry is stage 2 (`solution-design`). Pin this package first; check the current action before its side effects.
+
+
 # 2方案
 
 Turn an accepted requirement source into the published planning artifacts that
@@ -11,20 +14,20 @@ the primary agent responsible for conversation-source preparation, launch disclo
 trusted child identity, anomaly routing, completion intake, and stage entry.
 
 Read
-[references/subagent-protocol.md](references/subagent-protocol.md) and
-[references/templates.md](references/templates.md),
+[references/solution-design/subagent-protocol.md](references/solution-design/subagent-protocol.md) and
+[references/solution-design/templates.md](references/solution-design/templates.md),
 completely before launching, resuming, or accepting a solution-design
 subagent. Before creating or publishing the Flow Worktree, also read
-[the shared worktree execution contract](../guided-implementation/references/worktree-execution.md).
+[the shared worktree execution contract](references/shared/guided-implementation/worktree-execution.md).
 Interpret user replies through
-[`../design-discussion/references/confirmation-contract.md`](../design-discussion/references/confirmation-contract.md)
+[`references/shared/design-discussion/confirmation-contract.md`](references/shared/design-discussion/confirmation-contract.md)
 and require the frozen document defined by
-[`../design-discussion/references/requirement-document-contract.md`](../design-discussion/references/requirement-document-contract.md).
+[`references/shared/design-discussion/requirement-document-contract.md`](references/shared/design-discussion/requirement-document-contract.md).
 The child reads
-[references/design-readiness.md](references/design-readiness.md) before native
+[references/solution-design/design-readiness.md](references/solution-design/design-readiness.md) before native
 Spec synthesis and applies it at the existing review or publication seams.
 
-Read [Workflow Control Protocol](../guided-implementation/references/workflow-control-protocol.md) before role preparation or transition. This stage uses solution-designer and preserves the Workflow Controller.
+Read [Workflow Control Protocol](references/shared/guided-implementation/workflow-control-protocol.md) before role preparation or transition. This stage uses solution-designer and preserves the Workflow Controller.
 
 ## Select the runtime role
 
@@ -43,7 +46,7 @@ claim or copied bootstrap block never bypasses launch disclosure and confirmatio
 ## Foreground scripted carrier
 
 When the exact implementation-local runner
-`skills/guided-implementation/scripts/workflow.py` launches this stage with its
+`the foreground runner in $guided-implementation` launches this stage with its
 `Stage 2 foreground workflow execution` payload, operate as a **CLI stage
 carrier**. That carrier is not a native subagent and must never claim the
 `solution_designer` identity. It preserves the frozen requirement, Flow
@@ -94,7 +97,7 @@ an explicit request to enter this stage uses the current conversation by default
 
 - For an explicit standalone invocation using the current conversation, the
   primary prepares a frozen snapshot under
-  [references/conversation-source.md](references/conversation-source.md).
+  [references/solution-design/conversation-source.md](references/solution-design/conversation-source.md).
   A pre-existing document and completion of stages 0/1 are not entry conditions.
 - For an existing document or stage handoff, verify its path, commit and SHA-256;
   dedicated deliveries also require their authenticated accepted-result handoff.
@@ -106,7 +109,7 @@ an explicit request to enter this stage uses the current conversation by default
 After preparation, the immutable document is the child's complete requirement
 source. The child neither supplements it from chat nor creates another draft.
 Material corrections to a conversation snapshot return to the primary under
-`references/conversation-source.md`; corrections to a 0/1 source return to its
+`references/solution-design/conversation-source.md`; corrections to a 0/1 source return to its
 source owner. An ordinary design choice inside the accepted boundary remains
 stage-2 work.
 
@@ -159,7 +162,7 @@ material outcome, the solution is not complete.
 
 Before the existing solution review or direct publication seam, the
 `solution_designer` performs the bounded change-contract preflight in
-`references/design-readiness.md`: trace each affected entrypoint through the
+`references/solution-design/design-readiness.md`: trace each affected entrypoint through the
 real production call chain and record the interface, state, ordering,
 governing specification, evidence, and any in-scope contradiction resolution
 in the Spec's existing decisions. A contradiction that would change the
@@ -187,8 +190,8 @@ deviation from the accepted requirement source or published plan.
 ## Load subagent actions only at their seam
 
 Immediately before launch, resume, review routing or completion intake, read
-[references/subagent-protocol.md](references/subagent-protocol.md) and the
-matching block in [references/templates.md](references/templates.md). Do not
+[references/solution-design/subagent-protocol.md](references/solution-design/subagent-protocol.md) and the
+matching block in [references/solution-design/templates.md](references/solution-design/templates.md). Do not
 preload retry, review or intake details while requirement-source validation is
 still unresolved.
 
@@ -232,13 +235,13 @@ Carry the compact `变更契约预检` field from the child's completion evidenc
 pointing to the Spec's preflight and real call-chain section, through the
 existing handoff; it is not a separate artifact or gate.
 
-In stepwise mode, show the fixed success footer from `references/templates.md`.
+In stepwise mode, show the fixed success footer from `references/solution-design/templates.md`.
 An unambiguous affirmation enters `$guided-implementation`. A clear request to
 continue through the remaining stages switches to continuous mode and enters
 `$guided-implementation`.
 
 In continuous mode, emit the fixed continuous completion handoff from
-`references/templates.md`, then invoke `$guided-implementation` in the same turn
+`references/solution-design/templates.md`, then invoke `$guided-implementation` in the same turn
 with the preserved mode. Do not ask or end the turn for a stage confirmation.
 Continuous mode may later enter `4归档` only through the existing verified
 stage-3 transition.

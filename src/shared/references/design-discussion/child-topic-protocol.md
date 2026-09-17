@@ -1,5 +1,7 @@
 # Child Topic and Continuation Protocol
 
+Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
+
 Read this reference only when the user asks to split a mature topic or continue
 an unavailable conversation. This is the action authority for the Codex task
 seam; do not duplicate its sequence in the root Skill.

@@ -11,8 +11,8 @@ import stat
 import sqlite3
 from contextlib import closing
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from typing import Mapping, NamedTuple
 
 

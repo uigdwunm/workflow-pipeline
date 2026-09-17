@@ -134,15 +134,15 @@
     },
     "problem-framing/references/dedicated-grilling-protocol.md": {
       "source": "src/stages/problem-framing/references/dedicated-grilling-protocol.md",
-      "output": "references/problem-framing/references/dedicated-grilling-protocol.md"
+      "output": "references/problem-framing/dedicated-grilling-protocol.md"
     },
     "problem-framing/references/repository-and-recovery.md": {
       "source": "src/stages/problem-framing/references/repository-and-recovery.md",
-      "output": "references/problem-framing/references/repository-and-recovery.md"
+      "output": "references/problem-framing/repository-and-recovery.md"
     },
     "problem-framing/references/templates.md": {
       "source": "src/stages/problem-framing/references/templates.md",
-      "output": "references/problem-framing/references/templates.md"
+      "output": "references/problem-framing/templates.md"
     },
     "solution-design/SKILL.md": {
       "source": "src/stages/solution-design/SKILL.md.in",
@@ -154,19 +154,19 @@
     },
     "solution-design/references/conversation-source.md": {
       "source": "src/stages/solution-design/references/conversation-source.md",
-      "output": "references/solution-design/references/conversation-source.md"
+      "output": "references/solution-design/conversation-source.md"
     },
     "solution-design/references/design-readiness.md": {
       "source": "src/stages/solution-design/references/design-readiness.md",
-      "output": "references/solution-design/references/design-readiness.md"
+      "output": "references/solution-design/design-readiness.md"
     },
     "solution-design/references/subagent-protocol.md": {
       "source": "src/stages/solution-design/references/subagent-protocol.md",
-      "output": "references/solution-design/references/subagent-protocol.md"
+      "output": "references/solution-design/subagent-protocol.md"
     },
     "solution-design/references/templates.md": {
       "source": "src/stages/solution-design/references/templates.md",
-      "output": "references/solution-design/references/templates.md"
+      "output": "references/solution-design/templates.md"
     },
     "guided-implementation/SKILL.md": {
       "source": "src/stages/guided-implementation/SKILL.md.in",
@@ -238,15 +238,23 @@
     },
     "change-closure/references/closure-actions.md": {
       "source": "src/stages/change-closure/references/closure-actions.md",
-      "output": "references/change-closure/references/closure-actions.md"
+      "output": "references/change-closure/closure-actions.md"
     },
     "change-closure/references/closure-protocol.md": {
       "source": "src/stages/change-closure/references/closure-protocol.md",
-      "output": "references/change-closure/references/closure-protocol.md"
+      "output": "references/change-closure/closure-protocol.md"
     },
     "shared/scripts/skill_preflight.py": {
       "source": "src/shared/scripts/skill_preflight.py",
       "output": "scripts/skill_preflight.py"
+    },
+    "shared/references/package-execution.md": {
+      "source": "src/shared/references/package-execution.md",
+      "output": "references/shared/package-execution.md"
+    },
+    "shared/LICENSE": {
+      "source": "src/shared/LICENSE",
+      "output": "LICENSE"
     }
   },
   "packages": {
@@ -286,9 +294,12 @@
         "guided-implementation/scripts/thread_settings.py",
         "guided-implementation/scripts/workflow_control.py",
         "guided-implementation/scripts/workflow_control_git.py",
-        "shared/scripts/skill_preflight.py"
+        "shared/scripts/skill_preflight.py",
+        "shared/LICENSE"
       ],
-      "external_actions": {}
+      "external_actions": {
+        "discuss": []
+      }
     },
     "problem-framing": {
       "stage": 1,
@@ -320,9 +331,19 @@
         "problem-framing/references/dedicated-grilling-protocol.md",
         "problem-framing/references/repository-and-recovery.md",
         "problem-framing/references/templates.md",
-        "shared/scripts/skill_preflight.py"
+        "shared/scripts/skill_preflight.py",
+        "shared/LICENSE"
       ],
-      "external_actions": {}
+      "external_actions": {
+        "route": [
+          "ask-matt"
+        ],
+        "grill-with-docs": [
+          "grill-with-docs",
+          "grilling",
+          "domain-modeling"
+        ]
+      }
     },
     "solution-design": {
       "stage": 2,
@@ -355,9 +376,23 @@
         "solution-design/references/design-readiness.md",
         "solution-design/references/subagent-protocol.md",
         "solution-design/references/templates.md",
-        "shared/scripts/skill_preflight.py"
+        "shared/scripts/skill_preflight.py",
+        "shared/LICENSE"
       ],
-      "external_actions": {}
+      "external_actions": {
+        "spec": [
+          "to-spec"
+        ],
+        "decide-tickets": [
+          "ask-matt"
+        ],
+        "tickets": [
+          "to-tickets"
+        ],
+        "adr": [
+          "domain-modeling"
+        ]
+      }
     },
     "guided-implementation": {
       "stage": 3,
@@ -393,9 +428,19 @@
         "guided-implementation/scripts/workflow_control.py",
         "guided-implementation/scripts/workflow_control_git.py",
         "guided-implementation/scripts/workflow_stage_result.schema.json",
-        "shared/scripts/skill_preflight.py"
+        "shared/scripts/skill_preflight.py",
+        "shared/LICENSE"
       ],
-      "external_actions": {}
+      "external_actions": {
+        "dispatch": [
+          "implement",
+          "tdd",
+          "code-review"
+        ],
+        "review": [
+          "code-review"
+        ]
+      }
     },
     "change-closure": {
       "stage": 4,
@@ -426,9 +471,14 @@
         "guided-implementation/scripts/thread_settings.py",
         "guided-implementation/scripts/workflow_control.py",
         "guided-implementation/scripts/workflow_control_git.py",
-        "shared/scripts/skill_preflight.py"
+        "shared/scripts/skill_preflight.py",
+        "shared/LICENSE"
       ],
-      "external_actions": {}
+      "external_actions": {
+        "route": [
+          "ask-matt"
+        ]
+      }
     }
   }
 }

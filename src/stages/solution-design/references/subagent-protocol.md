@@ -1,5 +1,7 @@
 # Solution-Design Subagent Protocol
 
+Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
+
 Read this file completely before launching, resuming, or accepting the stage-2
 subagent.
 
@@ -54,7 +56,7 @@ a snapshot preparation failure recovers at its failed local operation.
 
 ## Launch and model inheritance
 
-Read workflow-control-protocol.md and thread-settings-protocol.md. Use select-configuration with current native adapter evidence for solution-designer. Preserve explicit user and supported frozen settings. Without overrides use actual runtime inheritance and never claim an unverified model. Disclose the pair, reason and receipt. The adapter owns concrete argument support and identity.
+Read [Workflow Control]({{resource:guided-implementation/references/workflow-control-protocol.md}}) and [thread settings]({{resource:guided-implementation/references/thread-settings-protocol.md}}). Use select-configuration with current native adapter evidence for solution-designer. Preserve explicit user and supported frozen settings. Without overrides use actual runtime inheritance and never claim an unverified model. Disclose the pair, reason and receipt. The adapter owns concrete argument support and identity.
 
 Build the canonical child payload from `{{resource:solution-design/references/templates.md}}`. It contains
 the semantic role, requirement source, project and repository, planning target,
@@ -120,7 +122,7 @@ The child is the complete stage owner. It must:
 11. Finish with exactly one terminal review, anomaly, or completion message.
 
 Before invoking `$to-spec`, `$ask-matt`, or `$to-tickets`, read that Skill's
-complete `SKILL.md` through the selected project's registered Skill link. Treat
+complete `SKILL.md` at the inherited, verified canonical package entry. Treat
 a missing, mismatched, or cross-project resolution as an anomaly. Do not
 reconstruct or approximate native behavior from this protocol.
 
@@ -354,4 +356,4 @@ result. If the user explicitly stops recovery, report that decision through the
 same adapter. The adapter owns any native interruption and terminal bookkeeping;
 a review or recoverable anomaly remains resumable stage state.
 
-When the tool exposes a resolvable task identity, use thread-settings-v5 resolve --current and verify --current as defined in thread-settings-protocol.md. Otherwise use actual adapter inheritance evidence without inventing a settings receipt.
+When the tool exposes a resolvable task identity, use thread-settings-v5 resolve --current and verify --current as defined in [the local settings protocol]({{resource:guided-implementation/references/thread-settings-protocol.md}}). Otherwise use actual adapter inheritance evidence without inventing a settings receipt.

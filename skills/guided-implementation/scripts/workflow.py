@@ -17,11 +17,13 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tempfile
 import time
 from typing import Any
 
 from workflow_control import ControlError, validate_review, select_configuration, paths
+from skill_preflight import PreflightError, package_identity, preflight, verify_identity
 
 
 STAGES = ("stage2", "stage3", "stage4")
@@ -94,7 +96,7 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
     return parsed
 
 
-def validate_confirmed(raw: dict[str, Any]) -> dict[str, Any]:
+def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[str, Any]:
     required = {
         "frozen_requirement", "repository", "worktree", "git_common_dir",
         "target_branch", "authority_scope", "run_record", "stages", "controller_ref",
@@ -145,12 +147,34 @@ def validate_confirmed(raw: dict[str, Any]) -> dict[str, Any]:
             raise WorkflowError(f"{stage} configuration requires a new controller decision")
         normalized_stages[stage] = {"model": model, "reasoning_effort": effort,
                                     "selection_input": settings["selection_input"], "selection": selection}
+    try:
+        runner = package_identity(str(Path(__file__).resolve().parents[1] / 'SKILL.md'), 'guided-implementation')
+        if restoring:
+            packages = raw.get('packages')
+            if not isinstance(packages, dict) or set(packages) != {'runner', *STAGES}:
+                raise WorkflowError('invalid fixed package identities')
+            for identity in packages.values():
+                verify_identity(identity)
+            for stage, name in zip(STAGES, ('solution-design', 'guided-implementation', 'change-closure')):
+                if packages[stage]['name'] != name or packages[stage]['compatibility_key'] != runner['compatibility_key']:
+                    raise WorkflowError('incompatible_package: fixed stage identity has wrong role or protocol key')
+            if packages['runner'] != runner or packages['stage3'] != runner:
+                raise WorkflowError('package_changed: resume with the original runner package')
+        else:
+            resolved = preflight({'stage':3, 'action':'entry', 'target_stages':[2,4], 'registry':raw.get('registry')})
+            packages = {'runner': runner, **{stage:resolved['packages'][name] for stage,name in zip(STAGES,
+                ('solution-design','guided-implementation','change-closure'))}}
+            if packages['stage3'] != runner:
+                raise WorkflowError('package_changed: invoke the registered Stage-3 runner')
+    except PreflightError as exc:
+        raise WorkflowError(f'{exc.code}: {exc}') from exc
     return {
         "controller_ref": raw["controller_ref"],
         "frozen_requirement": {"path": str(requirement_path), "commit": commit, "sha256": digest},
         "repository": str(repository), "worktree": str(worktree),
         "git_common_dir": str(git_common_dir), "target_branch": raw["target_branch"],
         "authority_scope": authority, "run_record": str(record_path), "stages": normalized_stages,
+        "packages": packages,
     }
 
 
@@ -172,7 +196,7 @@ def _atomic_save(path: Path, state: dict[str, Any]) -> None:
 
 def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "confirmed": confirmed,
         "status": "active",
         "current_stage": "stage2",
@@ -184,9 +208,11 @@ def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_record(state: dict[str, Any]) -> dict[str, Any]:
-    if state.get("version") != 1:
+    if state.get("version") == 1:
+        raise WorkflowError('legacy_run_requires_original_runtime: use the retained original runner and installation tree; record is unchanged')
+    if state.get("version") != 2:
         raise WorkflowError("unsupported run record version")
-    confirmed = validate_confirmed(state.get("confirmed") if isinstance(state.get("confirmed"), dict) else {})
+    confirmed = validate_confirmed(state.get("confirmed") if isinstance(state.get("confirmed"), dict) else {}, restoring=True)
     if state.get("status") not in {"active", "needs_input", "completed", "failed", "interrupted"}:
         raise WorkflowError("invalid run record status")
     if state.get("current_stage") not in STAGES:
@@ -246,11 +272,8 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "prior_stage_results": prior,
         "user_answer": answer,
         "continuing_same_session": continuing,
-        "skill_paths": {
-            "stage2": str(Path(__file__).parents[2] / "solution-design" / "SKILL.md"),
-            "stage3": str(Path(__file__).parents[1] / "SKILL.md"),
-            "stage4": str(Path(__file__).parents[2] / "change-closure" / "SKILL.md"),
-        },
+        "skill_paths": {name: confirmed['packages'][name]['entry'] for name in STAGES},
+        "package_identities": confirmed['packages'],
     }
     return (
         f"Stage {stage[-1]} foreground workflow execution. {role}\n"
@@ -513,6 +536,11 @@ def _mark_failure(
 def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, continuing: bool) -> dict[str, Any]:
     stage = state["current_stage"]
     confirmed = state["confirmed"]
+    try:
+        verify_identity(confirmed['packages']['runner'])
+        verify_identity(confirmed['packages'][stage])
+    except PreflightError as exc:
+        raise WorkflowError(f'{exc.code}: {exc}; retained checkpoint, no executor launched') from exc
     turn = int(state["launch"].get("turn", 0)) + 1
     output = _artifact_path(record_path, stage, turn)
     diagnostic = output.with_suffix(".events.jsonl")
@@ -653,7 +681,6 @@ def resume(record_path: Path, answer: str) -> int:
     if not answer.strip():
         raise WorkflowError("user_answer must not be empty")
     record_path = _absolute_path(str(record_path), "run_record")
-    state = _validate_record(_read_json(record_path, "run record"))
     with RunLock(record_path):
         state = _validate_record(_read_json(record_path, "run record"))
         status = state["status"]

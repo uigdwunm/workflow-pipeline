@@ -3,6 +3,9 @@ name: solution-design
 description: Use when the user invokes $solution-design or asks to begin 2方案 or 2提案 from the current conversation, supplies a frozen requirement document, confirms a valid stage handoff, or resumes this stage. Freeze confirmed conversation requirements when needed, then orchestrate one context-isolated solution-designer in one Flow Worktree and publish planning artifacts for Stage 3.
 ---
 
+Before any stage action, read and execute [Package execution preflight]({{resource:shared/references/package-execution.md}}). This entry is stage 2 (`solution-design`). Pin this package first; check the current action before its side effects.
+
+
 # 2方案
 
 Turn an accepted requirement source into the published planning artifacts that

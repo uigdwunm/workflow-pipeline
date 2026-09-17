@@ -3,6 +3,9 @@ name: change-closure
 description: Use when the user explicitly invokes $change-closure (4归档), confirms entry from a successful $guided-implementation footer, automatically continues from a verified continuous-flow footer, or invokes $change-closure 重试 in the same task after this Skill's retained-worktree footer. Reuse the inherited Flow Worktree, commit closure-owned planning updates there, then publish implementation and closure together and clean the flow; standalone closure creates a short-lived documentation worktree only when needed.
 ---
 
+Before any stage action, read and execute [Package execution preflight]({{resource:shared/references/package-execution.md}}). This entry is stage 4 (`change-closure`). Pin this package first; check the current action before its side effects.
+
+
 # 4归档
 
 Stage 4 never repairs implementation code. Read

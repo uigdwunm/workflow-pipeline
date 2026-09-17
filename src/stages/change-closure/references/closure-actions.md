@@ -1,7 +1,7 @@
 # Closure Actions
 
 1. For an attached discussion, enter the topic-local Stage-4 route in
-   [`lifecycle-integration.md`]({{resource:design-discussion/references/lifecycle-integration.md}})
+   [`{{resource:design-discussion/references/lifecycle-integration.md}}`]({{resource:design-discussion/references/lifecycle-integration.md}})
    before closure work. Standalone closure skips this step.
 2. For an inherited flow, call `verify-worktree` and verify the accepted
    implementation candidate as its clean `HEAD`; for standalone closure, read

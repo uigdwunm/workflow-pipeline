@@ -3,21 +3,24 @@ name: guided-implementation
 description: Use when the user explicitly invokes $guided-implementation, clearly asks to begin 3实现, with a self-contained implementation request, unambiguously confirms a valid $solution-design handoff or Stage-3 recovery action, continues from its verified continuous-flow handoff, retries a retained worktree, or the originating task receives a native implementation dispatcher result. Create or reuse one verified Flow Worktree, run native $implement and $tdd there, review the committed candidate, and retain it for stage 4.
 ---
 
+Before any stage action, read and execute [Package execution preflight](references/shared/package-execution.md). This entry is stage 3 (`guided-implementation`). Pin this package first; check the current action before its side effects.
+
+
 # 3实现
 
 Every implementation uses one Flow Worktree and branch. Read
-[references/worktree-execution.md](references/worktree-execution.md),
-[references/originating-task-protocol.md](references/originating-task-protocol.md), and
-[references/execution-protocol.md](references/execution-protocol.md) before the
+[references/shared/guided-implementation/worktree-execution.md](references/shared/guided-implementation/worktree-execution.md),
+[references/shared/guided-implementation/originating-task-protocol.md](references/shared/guided-implementation/originating-task-protocol.md), and
+[references/shared/guided-implementation/execution-protocol.md](references/shared/guided-implementation/execution-protocol.md) before the
 corresponding action. Read
-[references/thread-settings-protocol.md](references/thread-settings-protocol.md)
+[references/shared/guided-implementation/thread-settings-protocol.md](references/shared/guided-implementation/thread-settings-protocol.md)
 immediately before resolving task settings.
 Interpret user replies through
-[`../design-discussion/references/confirmation-contract.md`](../design-discussion/references/confirmation-contract.md).
+[`references/shared/design-discussion/confirmation-contract.md`](references/shared/design-discussion/confirmation-contract.md).
 
-Read [Workflow Control Protocol](references/workflow-control-protocol.md) before role preparation or transition. This stage uses Implementation Dispatcher and preserves the Workflow Controller.
+Read [Workflow Control Protocol](references/shared/guided-implementation/workflow-control-protocol.md) before role preparation or transition. This stage uses Implementation Dispatcher and preserves the Workflow Controller.
 
-An authenticated non-root native implementation-dispatcher with the complete bound Stage-3 envelope follows execution-protocol.md directly. It never creates another dispatcher or a visible implementation task. Only the Workflow Controller performs the launch and independent review portions below; the dispatcher may allocate ordinary Execution Agents under the shared exact-file contract.
+An authenticated non-root native implementation-dispatcher with the complete bound Stage-3 envelope follows references/shared/guided-implementation/execution-protocol.md directly. It never creates another dispatcher or a visible implementation task. Only the Workflow Controller performs the launch and independent review portions below; the dispatcher may allocate ordinary Execution Agents under the shared exact-file contract.
 
 ## Entry
 
@@ -51,7 +54,7 @@ An authenticated non-root native implementation-dispatcher with the complete bou
 ## Foreground scripted carrier
 
 The implementation-local foreground runner at
-`skills/guided-implementation/scripts/workflow.py` may launch Stage 3 only
+`scripts/workflow.py` may launch Stage 3 only
 with its complete frozen payload: requirement path/commit/hash, target
 repository and retained Flow Worktree binding, authority scope, prior stage
 artifacts, and explicit model and reasoning effort. This is a continuous
@@ -140,7 +143,7 @@ completion.
 ## Attach a discussion Phase Run when present
 
 When entry carries one exact discussion topic and Phase Run, read
-[`../design-discussion/references/lifecycle-integration.md`](../design-discussion/references/lifecycle-integration.md)
+[`references/shared/design-discussion/lifecycle-integration.md`](references/shared/design-discussion/lifecycle-integration.md)
 and preserve its actor boundary. The Stage-3 carrier verifies the checkpoint,
 calls `claim-phase-carrier` and `phase-ready`, and waits for source-side
 `phase-activate` before substantive work. After an accepted candidate in the
@@ -225,7 +228,7 @@ work.
   fixed implementation brief for a standalone flow. Stage 4 owns final
   integration and cleanup. The candidate, review, and remediation
   contract is authoritative in
-  [references/originating-task-protocol.md](references/originating-task-protocol.md).
+  [references/shared/guided-implementation/originating-task-protocol.md](references/shared/guided-implementation/originating-task-protocol.md).
 - A dispatcher result ends one execution turn, not Stage 3. The Originating
   Task applies the result-intake classifications and continuation rules in the
   authoritative originating-task protocol before review or recovery.
@@ -246,9 +249,9 @@ requirement-source paths,
 and review evidence to Stage 4. Stage 4 owns the final publication and cleanup.
 
 For a Stage-3 failure with the worktree retained, emit the retained-worktree
-footer from `worktree-execution.md` with recovery command
+footer from `references/shared/guided-implementation/worktree-execution.md` with recovery command
 `$guided-implementation 重试`. A stalled dispatcher awaiting replacement
-uses the decision block in `originating-task-protocol.md` instead. A successful
+uses the decision block in `references/shared/guided-implementation/originating-task-protocol.md` instead. A successful
 Stage-3 handoff is not a failure and uses the success footer below.
 
 After success, emit a complete Stage-4 handoff:
@@ -275,7 +278,7 @@ Flow Worktree：<exact retained binding>
 讨论版本：<ledger revision and topic revision at current_phase 3 | none>
 远程操作：<separately authorized results | none>
 下一阶段：`$change-closure`（4归档）
-进入条件：已满足
+进入条件：<已满足 | 后继不可用：具体依赖错误；当前阶段已完成>
 继续方式：逐阶段确认时明确同意上述单一待执行事项；连续执行后续全部流程时同一轮立即进入 4归档
 ```
 

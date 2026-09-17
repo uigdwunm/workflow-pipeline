@@ -1,0 +1,205 @@
+{
+  "bundle_digest": "8ca003878bb54089d1d9425201626796f3d8c88f4d7ad7109fcc5d47e63d9739",
+  "compatibility_key": {
+    "control": 1,
+    "discussion_request": 1,
+    "handoff": "workflow-controller-v1",
+    "ledger_read": [
+      1,
+      2,
+      3
+    ],
+    "ledger_write": 3,
+    "supervision": "flow-worktree-v1",
+    "thread_settings": "thread-settings-v5"
+  },
+  "external_actions": {
+    "route": [
+      "ask-matt"
+    ]
+  },
+  "files": {
+    "LICENSE": {
+      "mode": "0644",
+      "sha256": "53ba2caa7c1cbf067d95fae4a3c73a0d7ec4758ad9851d6fc530e88dc526c6f2"
+    },
+    "SKILL.md": {
+      "mode": "0644",
+      "sha256": "0f98d6a3c1947be05273db01c69d05ae0b82c5e2703372f591cbfcae600a7300"
+    },
+    "agents/openai.yaml": {
+      "mode": "0644",
+      "sha256": "2c95e13ad06e3808610e696c7e629773b6c1acd2436adef5ec72960c7d8a5803"
+    },
+    "references/change-closure/closure-actions.md": {
+      "mode": "0644",
+      "sha256": "6261ebcd3e4baadb9ca51bed93fb24a8796f4f387316360c3f5e094dbab8d6ac"
+    },
+    "references/change-closure/closure-protocol.md": {
+      "mode": "0644",
+      "sha256": "3fb4242b08260b1a17ad412df57610dfbd64dcee05a353b44b02e7815b2ea3d3"
+    },
+    "references/shared/design-discussion/confirmation-contract.md": {
+      "mode": "0644",
+      "sha256": "4ab9109abb1cfbb9c62f4315e33f1b3f3c3f927c81eacbbc43c50bd58c3cc54f"
+    },
+    "references/shared/design-discussion/ledger-protocol.md": {
+      "mode": "0644",
+      "sha256": "aec7a490a7b87b8e3c2ec511392323b25c6eda794d67805e0216c0d64207ca39"
+    },
+    "references/shared/design-discussion/lifecycle-integration.md": {
+      "mode": "0644",
+      "sha256": "124b42b44171f7adcdc67a390c12f3112d29969cbca447fa432e75e38f44d0e4"
+    },
+    "references/shared/guided-implementation/workflow-control-protocol.md": {
+      "mode": "0644",
+      "sha256": "e33d90854e7ee938841b02203f4f80bb06af0f72a7d820dde711e49b3ed1473c"
+    },
+    "references/shared/guided-implementation/worktree-execution.md": {
+      "mode": "0644",
+      "sha256": "b2fd85bf74b5e3cb5e09fea6366cab9d436dd633d0e23909213ca8cf69ae6948"
+    },
+    "references/shared/package-execution.md": {
+      "mode": "0644",
+      "sha256": "3a3cb9f7836cdc5d4f8e50c2bbb3521db4f24a8291fbeaad4fca5bf67dac281f"
+    },
+    "references/solution-design/conversation-source.md": {
+      "mode": "0644",
+      "sha256": "889f1f9d8d9b058c3adba995aeed0d563a17cee30822f955ef9bcfec6a466272"
+    },
+    "scripts/discussion_core/__init__.py": {
+      "mode": "0644",
+      "sha256": "c4eda8b1e0da0e08283d3cc595017dad047c15a3475224b3435808c575c89e3a"
+    },
+    "scripts/discussion_core/checkpoint_authority.py": {
+      "mode": "0644",
+      "sha256": "84fa5b1b51b273e109e1dcc51f9e50d90a7f7936d8ac9c138f51cda7177b0ff7"
+    },
+    "scripts/discussion_core/checkpoints.py": {
+      "mode": "0644",
+      "sha256": "74f5909a9c31626ee746c1706a53114fbc6888986723f458edfd5ec8a26766ec"
+    },
+    "scripts/discussion_core/handoffs.py": {
+      "mode": "0644",
+      "sha256": "51d304d4a3e02903572953ecac3441cfdcd076bc60fd4c4c5cae957d2a425a19"
+    },
+    "scripts/discussion_core/phase_runs.py": {
+      "mode": "0644",
+      "sha256": "3f705103a3a380306c5445aadbd65e2d32910fb584f8b1329a321b20cb4aef06"
+    },
+    "scripts/discussion_core/question_resolution.py": {
+      "mode": "0644",
+      "sha256": "b5948c185a0384ce436043ac18a74186cbef39fb5fcd51f776120aedbca020fe"
+    },
+    "scripts/discussion_core/registry.py": {
+      "mode": "0644",
+      "sha256": "ed4edc7e763f5230834b841baf67fcb26f8a607643e086d20c8051a7cbeae9a1"
+    },
+    "scripts/discussion_core/request.py": {
+      "mode": "0644",
+      "sha256": "7fdc8d87fcc64d99ab565e0c3c2af252329b6aeeb560a8dc27533549f3899c5d"
+    },
+    "scripts/discussion_core/state.py": {
+      "mode": "0644",
+      "sha256": "6ba0386342e8b97f103cf8128e78a959e4a8e6054a5286054e97ed11efb7ee40"
+    },
+    "scripts/discussion_core/topic_dependencies.py": {
+      "mode": "0644",
+      "sha256": "61546c29b42f6fbc3419a25c92c5d2dfb9c4fc28ff6eddf14d4d59fb9145f9d5"
+    },
+    "scripts/discussion_core/topic_dependency_authority.py": {
+      "mode": "0644",
+      "sha256": "6a4cf6528bea7d53a6bf768499d7043d1067dd8d928f971c7ef3e518a6adb9e9"
+    },
+    "scripts/discussion_core/topic_dependency_gates.py": {
+      "mode": "0644",
+      "sha256": "f5d57d60979de9f7b93adb55ec87ac5004aea98b989d417596d7d97bb3c92155"
+    },
+    "scripts/discussion_core/topic_dependency_lifecycle.py": {
+      "mode": "0644",
+      "sha256": "f70dc2651eb1bd5ff3ed1cd26f0bb9355103261906bf25528dd78530e3218189"
+    },
+    "scripts/discussion_core/topic_dependency_schema.py": {
+      "mode": "0644",
+      "sha256": "0a93d0c3eb79be4c72313489d67c62f59c0dbbe38bb6e2f0a84ff388fdae4284"
+    },
+    "scripts/discussion_core/workflow_control.py": {
+      "mode": "0644",
+      "sha256": "1426feeec000bf3ce0585fedd1b3f46a675113561d2e65015f6336944ae8c5b2"
+    },
+    "scripts/discussion_protocol.py": {
+      "mode": "0644",
+      "sha256": "c37f905bb051d75e3e58b49dad6fb3e52eade0cdc69c644211d870094a1bac46"
+    },
+    "scripts/skill_preflight.py": {
+      "mode": "0644",
+      "sha256": "09f764935b7b47e9a6be717cbe905813c47f0c1dafc7c00aea29e096aa3a323e"
+    },
+    "scripts/supervision_core/__init__.py": {
+      "mode": "0644",
+      "sha256": "37656844829cbf229efa93d7aca300969b37d9a7fda235b3df14b338d1e5cb53"
+    },
+    "scripts/supervision_core/commands.py": {
+      "mode": "0644",
+      "sha256": "7fa72714c4c95354af850f04f68bd98103e1f6a5556af8db3d67c4d3e8455fa3"
+    },
+    "scripts/supervision_protocol.py": {
+      "mode": "0644",
+      "sha256": "9eb44a1309a325b80c250ad21127495ca635a49d033b3858b3f2d8848011f627"
+    },
+    "scripts/thread_settings.py": {
+      "mode": "0644",
+      "sha256": "1ae50dbb2cd97d1c7c94b3866b8a7d061415af10832b5e0298faed64cb45a895"
+    },
+    "scripts/workflow_control.py": {
+      "mode": "0644",
+      "sha256": "081ee83708465f757ff94306554993fc3758115423f5da094efed64b93f026e5"
+    },
+    "scripts/workflow_control_git.py": {
+      "mode": "0644",
+      "sha256": "0c56d9b00eb4a88cc3ba692f19d2549088b784991867886e982fcc17ae044097"
+    }
+  },
+  "format_version": 1,
+  "name": "change-closure",
+  "release": "1.0.0",
+  "resources": [
+    "change-closure/SKILL.md",
+    "change-closure/agents/openai.yaml",
+    "change-closure/references/closure-actions.md",
+    "change-closure/references/closure-protocol.md",
+    "design-discussion/references/confirmation-contract.md",
+    "design-discussion/references/ledger-protocol.md",
+    "design-discussion/references/lifecycle-integration.md",
+    "design-discussion/scripts/discussion_core/__init__.py",
+    "design-discussion/scripts/discussion_core/checkpoint_authority.py",
+    "design-discussion/scripts/discussion_core/checkpoints.py",
+    "design-discussion/scripts/discussion_core/handoffs.py",
+    "design-discussion/scripts/discussion_core/phase_runs.py",
+    "design-discussion/scripts/discussion_core/question_resolution.py",
+    "design-discussion/scripts/discussion_core/registry.py",
+    "design-discussion/scripts/discussion_core/request.py",
+    "design-discussion/scripts/discussion_core/state.py",
+    "design-discussion/scripts/discussion_core/topic_dependencies.py",
+    "design-discussion/scripts/discussion_core/topic_dependency_authority.py",
+    "design-discussion/scripts/discussion_core/topic_dependency_gates.py",
+    "design-discussion/scripts/discussion_core/topic_dependency_lifecycle.py",
+    "design-discussion/scripts/discussion_core/topic_dependency_schema.py",
+    "design-discussion/scripts/discussion_core/workflow_control.py",
+    "design-discussion/scripts/discussion_protocol.py",
+    "guided-implementation/references/workflow-control-protocol.md",
+    "guided-implementation/references/worktree-execution.md",
+    "guided-implementation/scripts/supervision_core/__init__.py",
+    "guided-implementation/scripts/supervision_core/commands.py",
+    "guided-implementation/scripts/supervision_protocol.py",
+    "guided-implementation/scripts/thread_settings.py",
+    "guided-implementation/scripts/workflow_control.py",
+    "guided-implementation/scripts/workflow_control_git.py",
+    "shared/LICENSE",
+    "shared/references/package-execution.md",
+    "shared/scripts/skill_preflight.py",
+    "solution-design/references/conversation-source.md"
+  ],
+  "source_revision": "self-contained-v1",
+  "stage": 4
+}

@@ -38,12 +38,52 @@ class PackageBuildTests(unittest.TestCase):
             self.assertNotEqual(broken.returncode, 0)
             self.assertIn('undeclared_runtime_dependency', broken.stderr)
 
-    def test_isolated_discussion_bootstrap_and_read(self):
+    def test_shared_changes_propagate_and_release_links_cannot_escape(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve();fixture=root/'source'
+            for directory in ('src','build','scripts'):
+                shutil.copytree(ROOT/directory,fixture/directory)
+            command=[sys.executable,str(fixture/'scripts/build_skills.py')]
+            output=root/'release'
+            def build():return subprocess.run(command+['--output',str(output)],capture_output=True,text=True)
+            def digests():return {p.parent.name:json.loads(p.read_text())['bundle_digest'] for p in output.glob('*/package.json')}
+            self.assertEqual(build().returncode,0)
+            original=digests()
+            local=fixture/'src/stages/guided-implementation/scripts/workflow.py'
+            local.write_text(local.read_text()+'\n# scoped release change\n')
+            self.assertEqual(build().returncode,0)
+            changed=digests()
+            self.assertEqual({name for name in original if original[name]!=changed[name]},{'guided-implementation'})
+            shared=fixture/'src/shared/references/package-execution.md'
+            shared.write_text(shared.read_text()+'\nShared release clarification.\n')
+            self.assertEqual(build().returncode,0)
+            self.assertTrue(all(digests()[name]!=changed[name] for name in changed))
+            target=output/'design-discussion/SKILL.md';external=root/'external';external.write_bytes(target.read_bytes())
+            target.unlink();target.symlink_to(external)
+            result=subprocess.run(command+['--output',str(output),'--check'],capture_output=True,text=True)
+            self.assertNotEqual(result.returncode,0,'symlink drift must fail even when bytes match')
+            for invalid in ('[bad](missing.md)', '[bad](#unknown-anchor)', '`scripts/missing.py`', '{{resource:missing}}'):
+                with self.subTest(invalid=invalid):
+                    source=fixture/'src/stages/design-discussion/SKILL.md.in';before=source.read_text()
+                    source.write_text(before+'\n'+invalid+'\n')
+                    self.assertNotEqual(build().returncode,0)
+                    source.write_text(before)
+            code=fixture/'src/shared/scripts/discussion_protocol.py'
+            code.write_text(code.read_text()+"\n__import__('unlisted_dynamic_module')\n")
+            self.assertNotEqual(build().returncode,0)
+
+    def test_five_isolated_packages_execute_discussion_and_git_protocols(self):
+        for package in ('design-discussion','problem-framing','solution-design','guided-implementation','change-closure'):
+            with self.subTest(package=package):
+                self.exercise_package(package)
+
+    def exercise_package(self, package):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             output = root / 'installed'
             built = subprocess.run([sys.executable, str(ROOT / 'scripts/build_skills.py'),
-                '--output', str(output), '--package', 'design-discussion'], capture_output=True, text=True)
+                '--output', str(output), '--package', package], capture_output=True, text=True)
             self.assertEqual(built.returncode, 0, built.stderr)
             project = root / '项目 with spaces'
             project.mkdir()
@@ -51,7 +91,7 @@ class PackageBuildTests(unittest.TestCase):
             environment = dict(os.environ)
             environment.pop('PYTHONPATH', None)
             def call(request):
-                result = subprocess.run([sys.executable, '-I', str(output / 'design-discussion/scripts/discussion_protocol.py')],
+                result = subprocess.run([sys.executable, '-I', str(output / package / 'scripts/discussion_protocol.py')],
                     input=json.dumps(request), capture_output=True, text=True, cwd=project, env=environment)
                 self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
                 return json.loads(result.stdout)
@@ -80,7 +120,7 @@ class PackageBuildTests(unittest.TestCase):
                 'user.email=test@example.com', 'commit', '-qm', 'Initial'], check=True)
             branch = subprocess.check_output(['git','-C',str(project),'branch','--show-current'], text=True).strip()
             def supervise(operation, request):
-                result = subprocess.run([sys.executable, '-I', str(output / 'design-discussion/scripts/supervision_protocol.py'), operation],
+                result = subprocess.run([sys.executable, '-I', str(output / package / 'scripts/supervision_protocol.py'), operation],
                     input=json.dumps(request), capture_output=True, text=True, cwd=project, env=environment)
                 self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
                 return json.loads(result.stdout)

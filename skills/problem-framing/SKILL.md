@@ -3,6 +3,9 @@ name: problem-framing
 description: Use when the user explicitly invokes $problem-framing, clearly asks to begin 1拷问, or unambiguously accepts the immediately preceding proposal to begin it; also use for this Skill's retry, confirmation, workspace-decision, or verified dedicated-delivery continuations. Always create or inherit exactly one requirement document, keep it current throughout questioning, and commit and freeze it before handing it to $solution-design.
 ---
 
+Before any stage action, read and execute [Package execution preflight](references/shared/package-execution.md). This entry is stage 1 (`problem-framing`). Pin this package first; check the current action before its side effects.
+
+
 # 1拷问
 
 Turn the user's target into a shared, implementation-relevant understanding.
@@ -10,12 +13,12 @@ Use Matt Pocock's discussion Skills for the questioning itself. Do not choose
 the engineering implementation or write implementation code in this stage.
 This restriction never permits deferring an unresolved behavior contract.
 
-Read [Workflow Control Protocol](../guided-implementation/references/workflow-control-protocol.md) before role preparation or transition. This stage uses Dedicated Problem Framing Task and preserves the Workflow Controller.
+Read [Workflow Control Protocol](references/shared/guided-implementation/workflow-control-protocol.md) before role preparation or transition. This stage uses Dedicated Problem Framing Task and preserves the Workflow Controller.
 
 ## Foreground runner boundary
 
 The foreground Stage 2→3→4 runner at
-`skills/guided-implementation/scripts/workflow.py` never supplies Phase-1
+`the foreground runner in $guided-implementation` never supplies Phase-1
 authority. Its saved state, stage artifacts, and a resumed user answer may
 continue only the already frozen requirement named by that runner; they do not
 authorize a new requirement draft, a change to the frozen requirement, or a
@@ -29,24 +32,24 @@ pass those facts as the runner's confirmed input and let the runner launch
 Stage 2; it does not create a new discussion, project, or requirement ledger.
 
 Read the shared
-[`requirement-document-contract.md`](../design-discussion/references/requirement-document-contract.md)
+[`references/shared/design-discussion/requirement-document-contract.md`](references/shared/design-discussion/requirement-document-contract.md)
 before resolving or updating the requirement document. Phase 1 always has
 exactly one such document and always hands it to Phase 2.
 
 For a split proposal or a requirements gate, also read the shared
-[`split-gate-contract.md`](../design-discussion/references/split-gate-contract.md).
+[`references/shared/design-discussion/split-gate-contract.md`](references/shared/design-discussion/split-gate-contract.md).
 Keep the Phase-1-specific direction below when applying it.
 
 ## Attach a verified discussion source
 
 At entry, apply the discovery order in
-[`../design-discussion/references/lifecycle-integration.md`](../design-discussion/references/lifecycle-integration.md).
+[`references/shared/design-discussion/lifecycle-integration.md`](references/shared/design-discussion/lifecycle-integration.md).
 Only attach when authenticated phase or handoff evidence, the active binding,
 the exact topic document or stable footer, and read-only `discover-context`
 resolve one `ledger` or authorized `document_only` context. On `none`, make no
 discussion-protocol write and create one standalone Phase-1 requirement
 document before the first substantive question. Use the draft schema in
-[references/templates.md](references/templates.md), resolve an unused path from
+[references/problem-framing/templates.md](references/problem-framing/templates.md), resolve an unused path from
 the repository convention or `docs/problem-framing/<yyyy-mm-dd>-<short-target>.md`,
 and record the current task as its sole write owner. On `ambiguous`, stop before a
 write rather than risk creating a second requirement authority. Stop on a strong
@@ -55,7 +58,7 @@ identity conflict; do not ask the user to choose an internal identity.
 In an attached context, 0 and 1 share the existing
 `docs/discussions/<root-slug>/topic.md`. Select the entry from the verified
 `current_phase`, then follow
-[the dedicated entry sequence](references/dedicated-grilling-protocol.md#source-task-prepare-and-create):
+[the dedicated entry sequence](references/problem-framing/dedicated-grilling-protocol.md#source-task-prepare-and-create):
 
 - From phase 0, use one `0->1` wrapper Phase Run, with
   `dedicated-grilling` for a dedicated task or `current-problem-framing` for
@@ -95,7 +98,7 @@ shared gate sequence permits substantive work.
   pending-planning-commit footer.
 - Accept `$problem-framing 接收拷问交付` only as the first line of a dedicated
   delivery payload defined in
-  [references/dedicated-grilling-protocol.md](references/dedicated-grilling-protocol.md).
+  [references/problem-framing/dedicated-grilling-protocol.md](references/problem-framing/dedicated-grilling-protocol.md).
 - Treat replies to this Skill's immediately preceding confirmation or workspace
   decision block as continuations of that exact block. They never authorize an
   unlisted action or another stage.
@@ -109,21 +112,21 @@ shared gate sequence permits substantive work.
 ## Use contextual confirmation
 
 For every action that requires confirmation, use the fixed block in
-[references/templates.md](references/templates.md) and interpret the reply
+[references/problem-framing/templates.md](references/problem-framing/templates.md) and interpret the reply
 through the shared
-[`confirmation-contract.md`](../design-discussion/references/confirmation-contract.md).
+[`references/shared/design-discussion/confirmation-contract.md`](references/shared/design-discussion/confirmation-contract.md).
 Bind authority to the disclosed pending action and normalized intent, never to
 a magic reply string.
 
 ## Choose the context path
 
-The Workflow Controller first resolves the one requirement document and the exact entry authority, then prepares its dedicated-task plan. Disclose missing context, identity and configuration in one combined stage-entry/task-creation confirmation. There is no preliminary migration offer. Stage-current or topic-current refusal reuses this document and suppresses repeated offers. A dedicated carrier never recursively creates another. Read [dedicated-grilling-protocol.md](references/dedicated-grilling-protocol.md) before preparing an attached authority, binding or intake.
+The Workflow Controller first resolves the one requirement document and the exact entry authority, then prepares its dedicated-task plan. Disclose missing context, identity and configuration in one combined stage-entry/task-creation confirmation. There is no preliminary migration offer. Stage-current or topic-current refusal reuses this document and suppresses repeated offers. A dedicated carrier never recursively creates another. Read [references/problem-framing/dedicated-grilling-protocol.md](references/problem-framing/dedicated-grilling-protocol.md) before preparing an attached authority, binding or intake.
 
 ## Load repository rules only when needed
 
 Before repository inspection, the first documentation write or commit, any
 workspace decision, or a mechanical retry, read
-[references/repository-and-recovery.md](references/repository-and-recovery.md).
+[references/problem-framing/repository-and-recovery.md](references/problem-framing/repository-and-recovery.md).
 Do not preload it for a current-task question that needs no repository action.
 
 ## Run the discussion flow
@@ -191,7 +194,7 @@ when it prevents likely misunderstanding; otherwise remove obsolete history.
 ## Commit and recover through the routed reference
 
 After shared understanding, follow the exact stage-owned commit, workspace and
-retry rules in `references/repository-and-recovery.md`. The explicit invocation
+retry rules in `references/problem-framing/repository-and-recovery.md`. The explicit invocation
 authorizes only that bounded local documentation commit; it never widens into
 implementation or destructive cleanup.
 
@@ -219,7 +222,7 @@ short conclusion and this stable footer:
 Matt 原生动作：publish Spec; review and publish Tickets when needed; apply native labels and blocking links
 阶段授权：entering 2方案 authorizes only those standard actions on that exact target
 下一阶段：`$solution-design`（2方案）
-进入条件：已满足
+进入条件：<已满足 | 后继不可用：具体依赖错误；当前阶段已完成>
 交接来源：上述已提交并冻结的需求草案
 确认事项：进入 2方案
 确认方式：明确同意上述单一待执行事项；如需调整可直接说明

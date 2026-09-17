@@ -1,5 +1,7 @@
 # Native Implementation Dispatcher Protocol
 
+Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
+
 The dispatcher accepts the verified Flow Worktree binding inherited from
 Stage 2 or created by a qualified standalone Stage-3 entry. It must run
 `verify-worktree` against its actual working directory before editing.

@@ -3,17 +3,20 @@ name: change-closure
 description: Use when the user explicitly invokes $change-closure (4归档), confirms entry from a successful $guided-implementation footer, automatically continues from a verified continuous-flow footer, or invokes $change-closure 重试 in the same task after this Skill's retained-worktree footer. Reuse the inherited Flow Worktree, commit closure-owned planning updates there, then publish implementation and closure together and clean the flow; standalone closure creates a short-lived documentation worktree only when needed.
 ---
 
+Before any stage action, read and execute [Package execution preflight](references/shared/package-execution.md). This entry is stage 4 (`change-closure`). Pin this package first; check the current action before its side effects.
+
+
 # 4归档
 
 Stage 4 never repairs implementation code. Read
-[references/closure-actions.md](references/closure-actions.md) and
-[references/closure-protocol.md](references/closure-protocol.md) before acting.
+[references/change-closure/closure-actions.md](references/change-closure/closure-actions.md) and
+[references/change-closure/closure-protocol.md](references/change-closure/closure-protocol.md) before acting.
 Before verifying, creating, completing, or recovering a Flow Worktree, also read
-[the shared worktree execution contract](../guided-implementation/references/worktree-execution.md).
+[the shared worktree execution contract](references/shared/guided-implementation/worktree-execution.md).
 Interpret user replies through
-[`../design-discussion/references/confirmation-contract.md`](../design-discussion/references/confirmation-contract.md).
+[`references/shared/design-discussion/confirmation-contract.md`](references/shared/design-discussion/confirmation-contract.md).
 
-Read [Workflow Control Protocol](../guided-implementation/references/workflow-control-protocol.md) before role preparation or transition. This stage uses Closure Agent and preserves the Workflow Controller.
+Read [Workflow Control Protocol](references/shared/guided-implementation/workflow-control-protocol.md) before role preparation or transition. This stage uses Closure Agent and preserves the Workflow Controller.
 
 An authenticated non-root native closure-agent receiving the complete start-closure envelope executes the supplied closure actions in the inherited Flow Worktree and returns closure-result. It never launches another Closure Agent or asks for repeated stage entry. Only the Workflow Controller performs dispatch, binds the actual identity and accepts the result; the child reports implementation problems back to that controller.
 
@@ -34,7 +37,7 @@ entry. A material condition modifies the pending action instead of confirming it
 
 If that handoff carries `讨论上下文：attached`, require its exact discussion
 identity, actor binding, phase-3 result id and ledger/topic revisions. Read
-[`../design-discussion/references/lifecycle-integration.md`](../design-discussion/references/lifecycle-integration.md)
+[`references/shared/design-discussion/lifecycle-integration.md`](references/shared/design-discussion/lifecycle-integration.md)
 and execute its topic-local Stage-4 route around the ordinary closure work.
 Standalone Stage-4 entry performs no discussion discovery or protocol calls.
 It claims no inherited implementation candidate or Flow Worktree.
@@ -47,7 +50,7 @@ Phase Run attempt without creating a replacement.
 ## Foreground scripted carrier
 
 The implementation-local foreground runner at
-`skills/guided-implementation/scripts/workflow.py` may invoke Stage 4 with the
+`the foreground runner in $guided-implementation` may invoke Stage 4 with the
 complete retained-worktree handoff, prior artifacts, exact authority scope, and
 explicit stage model and reasoning effort. It remains the owner of session
 launch/wait/checkpoint state outside the disposable Flow Worktree. Return a

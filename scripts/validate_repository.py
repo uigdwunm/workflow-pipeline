@@ -114,7 +114,7 @@ def relative(path: Path, repository: Path) -> str:
 def discover_tests(repository: Path) -> list[Path]:
     return sorted(
         path.resolve()
-        for path in (repository / "skills").rglob("test_*.py")
+        for path in (repository / "tests").rglob("test_*.py")
         if path.is_file()
     )
 
@@ -142,6 +142,13 @@ def is_documentation_path(path: str) -> bool:
     if not parts:
         return False
     name = parts[-1]
+    product_names = {'design-discussion', 'problem-framing', 'solution-design', 'guided-implementation', 'change-closure'}
+    if len(parts) >= 3 and parts[0] == 'skills' and parts[1] in product_names and (parts[2] in {'references','scripts','agents'} or name == 'skill.md'):
+        return False
+    if len(parts) >= 4 and parts[:3] == ('src','shared','references'):
+        return False
+    if len(parts) >= 4 and parts[:2] == ('src','stages') and parts[2] in product_names:
+        return False
     if ".github" in parts and any(
         part in {"issue_template", "pull_request_template"} for part in parts
     ):
@@ -197,10 +204,16 @@ def validate_implementation_range(repository: Path, revision_range: str) -> dict
 def referenced_markdown(source: Path) -> list[Path]:
     text = source.read_text(encoding="utf-8")
     targets: list[Path] = []
-    for match in MARKDOWN_REFERENCE_PATTERN.finditer(text):
-        reference = Path(match.group("path"))
-        base = source.parent.parent if source.parent.name == "references" and reference.parts[0] == "references" else source.parent
-        targets.append((base / reference).resolve())
+    for link in re.findall(r'\]\(([^)]+)\)', text):
+        if '://' in link or link.startswith('#'):
+            continue
+        target = link.split('#')[0]
+        if target.endswith('.md'):
+            targets.append((source.parent / target).resolve())
+    for target in re.findall(r'`([^`\s]+\.md)`', text):
+        resolved = (source.parent / target).resolve()
+        if resolved.is_file():
+            targets.append(resolved)
     return targets
 
 
@@ -270,7 +283,7 @@ def validate(repository: Path) -> dict[str, object]:
         if dependency not in registered_names:
             issues.append({"code": "unregistered-dependency", "dependency": dependency})
 
-    reference_files = {path.resolve() for path in skills_root.glob("*/references/*.md")}
+    reference_files = {path.resolve() for path in skills_root.rglob("references/**/*.md")}
     reachable: set[Path] = set()
     pending = [path.resolve() for path in skill_files]
     visited: set[Path] = set()
@@ -306,7 +319,7 @@ def validate(repository: Path) -> dict[str, object]:
     }
 
 
-WORKFLOW_CONTROL_REFERENCE = "skills/guided-implementation/references/workflow-control-protocol.md"
+WORKFLOW_CONTROL_REFERENCE = "skills/guided-implementation/references/shared/guided-implementation/workflow-control-protocol.md"
 WORKFLOW_CONTROL_MARKERS = {
     "CONTEXT.md": ("Workflow Controller", "Implementation Dispatcher", "Execution Agent", "Closure Agent"),
     "README.md": ("Workflow Controller", "thread-settings-v5"),

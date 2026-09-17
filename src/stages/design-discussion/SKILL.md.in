@@ -3,15 +3,18 @@ name: design-discussion
 description: Use when the user explicitly invokes $design-discussion, says 0讨论, or clearly asks to begin a sustained design discussion whose state must persist across conversations. Initialize and verify one durable root topic before asking the first substantive question, then guide the discussion one question at a time. Do not initialize for ordinary design consultation, incidental wording, or exploratory questions that do not explicitly request persistence.
 ---
 
+Before any stage action, read and execute [Package execution preflight]({{resource:shared/references/package-execution.md}}). This entry is stage 0 (`design-discussion`). Pin this package first; check the current action before its side effects.
+
+
 # 0讨论
 
 Maintain a durable, document-driven design discussion while keeping ordinary
 consultation stateless.
 
 Read the shared
-[`requirement-document-contract.md`]({{resource:design-discussion/references/requirement-document-contract.md}})
+[`{{resource:design-discussion/references/requirement-document-contract.md}}`]({{resource:design-discussion/references/requirement-document-contract.md}})
 before creating or changing the requirement document, and use
-[`confirmation-contract.md`]({{resource:design-discussion/references/confirmation-contract.md}}) whenever a
+[`{{resource:design-discussion/references/confirmation-contract.md}}`]({{resource:design-discussion/references/confirmation-contract.md}}) whenever a
 workflow action needs user confirmation.
 
 Read [Workflow Control Protocol]({{resource:guided-implementation/references/workflow-control-protocol.md}}) before role preparation or transition. This stage uses Workflow Controller and preserves the Workflow Controller.

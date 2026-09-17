@@ -64,7 +64,7 @@ def validate_files(files):
                             raise ValueError(f'undeclared runtime resource {target}: {path}')
         if path.endswith('.md'):
             text = data.decode()
-            if '{{resource:' in text or 'skills/' in text:
+            if '{{' in text or 'skills/' in text:
                 raise ValueError(f'unresolved or cross-package resource: {path}')
             for link in re.findall(r'\]\(([^)]+)\)', text):
                 if '://' in link or link.startswith('mailto:'):
@@ -78,14 +78,21 @@ def validate_files(files):
                     slugs = {re.sub(r'[^\w -]', '', h.lower()).replace(' ', '-') for h in headings}
                     if anchor not in slugs:
                         raise ValueError(f'missing anchor {link}: {path}')
-            for script in re.findall(r'<skill-root>/(scripts/[\w./-]+)', text):
-                if script not in files:
-                    raise ValueError(f'missing command resource {script}: {path}')
+            for prefix, script in re.findall(r'((?:\.\./)*)(scripts/[\w./-]+\.(?:py|json))', text):
+                resolved = os.path.normpath(str(Path(path).parent / (prefix + script))) if prefix else script
+                if resolved not in files:
+                    raise ValueError(f'missing command resource {prefix + script}: {path}')
 
 
 def build(output, selected=None, root=ROOT):
     config = json.loads((root / 'build/skill-packages.json').read_text())
     resources = config['resources']
+    runtime = ast.parse((root / 'src/shared/scripts/skill_preflight.py').read_text())
+    actions = next(ast.literal_eval(node.value) for node in runtime.body
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == 'ACTIONS' for target in node.targets))
+    for package in config['packages'].values():
+        if package['external_actions'] != actions[package['stage']]:
+            raise ValueError('declared external actions differ from preflight runtime')
     for name, package in config['packages'].items():
         if selected and name != selected:
             continue
@@ -101,7 +108,8 @@ def build(output, selected=None, root=ROOT):
                 raise ValueError(f'undeclared resource: {key}')
             resource = resources[key]
             source = root / resource['source']
-            if source.is_symlink() or not source.is_file() or not source.resolve().is_relative_to(root.resolve()):
+            if (any(part.is_symlink() for part in [source, *source.parents] if part != root and root in part.parents)
+                or not source.is_file() or not source.resolve().is_relative_to(root.resolve())):
                 raise ValueError(f'invalid resource: {key}')
             target = resource['output']
             if Path(target).is_absolute() or '..' in Path(target).parts:
@@ -140,6 +148,8 @@ def build(output, selected=None, root=ROOT):
 
 
 def snapshot(path):
+    if any(p.is_symlink() for p in path.rglob('*')):
+        raise ValueError('generated package contains a symlink')
     return {str(p.relative_to(path)): (p.read_bytes(), p.stat().st_mode & 0o777)
         for p in path.rglob('*') if p.is_file() and '__pycache__' not in p.parts}
 

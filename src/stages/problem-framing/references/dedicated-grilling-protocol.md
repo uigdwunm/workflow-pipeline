@@ -1,5 +1,7 @@
 # Dedicated Grilling Protocol
 
+Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
+
 Read this file completely when the user accepts context migration, when running
 inside the dedicated grilling task, or when the original task receives a
 delivery.
@@ -295,4 +297,4 @@ completed questioning.
 For any failure, write the fixed failure checkpoint from `{{resource:problem-framing/references/templates.md}}` and
 resume only from `恢复后继续位置`.
 
-When the tool exposes a resolvable task identity, use thread-settings-v5 resolve --thread-id and verify --thread-id as defined in thread-settings-protocol.md. Otherwise use actual adapter inheritance evidence without inventing a settings receipt.
+When the tool exposes a resolvable task identity, use thread-settings-v5 resolve --thread-id and verify --thread-id as defined in [the local settings protocol]({{resource:guided-implementation/references/thread-settings-protocol.md}}). Otherwise use actual adapter inheritance evidence without inventing a settings receipt.
