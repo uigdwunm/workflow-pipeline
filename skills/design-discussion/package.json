@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "db26004b8719ea352283da5bf53a0b7d63024e8b406eb77a19331eace1018217",
+  "bundle_digest": "a4d4e1786c17d2843df2146ddd84398f683e027737cc98fa72312315b3f57f46",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -83,7 +83,7 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "d9189715c5b3210230a0d752665dc166bd994b0491e5511ac68e115d7dfbf2be"
+      "sha256": "52268159769e4d3599da85b69e1bc861bcd72df3858387775f9ccdf5ed0d0c38"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -153,9 +153,13 @@
       "mode": "0644",
       "sha256": "c37f905bb051d75e3e58b49dad6fb3e52eade0cdc69c644211d870094a1bac46"
     },
+    "scripts/host_skill_registry.py": {
+      "mode": "0644",
+      "sha256": "27539816448833bde60bea619d2f9622459c6b59fc63402d537c54b82d18a8c0"
+    },
     "scripts/skill_preflight.py": {
       "mode": "0644",
-      "sha256": "1f317163a7ae6841793e80aeaf707afe47434dc3139c55db77759aed80533d48"
+      "sha256": "8d6833dcc7a3903051b87ff95a4cbe7da7755580263e693a7cd0a263865718f8"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",
@@ -225,6 +229,7 @@
     "problem-framing/references/templates.md",
     "shared/LICENSE",
     "shared/references/package-execution.md",
+    "shared/scripts/host_skill_registry.py",
     "shared/scripts/skill_preflight.py",
     "solution-design/references/conversation-source.md"
   ],

@@ -1,19 +1,30 @@
 # Package execution and action preflight
 
-Before this stage's first side effect, resolve this entry from the current
-host's effective Skills list. Invoke this package's
+Before this stage's first side effect, query the host's complete current Skill
+registry for this task's project working directory. Invoke this package's
 `<skill-root>/scripts/skill_preflight.py` with one JSON object on stdin:
 
 ```json
-{"stage":0,"action":"entry","registry":{"source":"host-current-skills","entries":[{"name":"design-discussion","entry":"<absolute registered SKILL.md>","source":"<host registration source>"}]}}
+{"stage":0,"action":"entry","registry_query":{"cwd":"<absolute task project working directory>"}}
 ```
 
-Replace stage/name/path with this stage's actual registration. Include the exact
-current effective entries needed by the action, including external Matt Skills.
-A controller may pass its authenticated current snapshot using
-`controller-current-skills`; user text asserting registration is not evidence.
-Every native child checks its own current Skills list before its action.
-Filesystem `diagnose` output is never proof that an Agent can invoke a Skill.
+Replace stage and action with the current operation. The query uses the installed
+Codex executable (`CODEX_BIN` when supplied, otherwise `codex` on PATH) and its
+read-only `skills/list` interface with a forced refresh. Use the actual task's
+project context, including for each native child; do not substitute another
+project merely because it exposes a missing dependency.
+
+The prompt's Available skills list is not a complete registry. An enabled Skill
+with `allow_implicit_invocation: false` can be absent from that list and still
+be invoked explicitly by this workflow. Never construct registration evidence
+from the prompt list or change that policy to make a dependency appear.
+
+A trusted controller may instead supply a complete current host snapshot in
+`registry`, with source `host-current-skills` or `controller-current-skills`
+and exact name, entry, source and enabled fields. Do not combine `registry`
+with `registry_query`. User assertions and filesystem `diagnose` output are not
+registration evidence. A failed host query stops with its actual error; never
+fall back to a partial prompt list or filesystem candidates.
 
 Require `ok:true`. Save the returned own package identity in the existing
 conversation checkpoint; use its canonical `root` as `<skill-root>`. Before each

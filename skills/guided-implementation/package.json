@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "e4af5e8058deedd20c356142635911eec06f9452467a941f7b38f2e7821b6611",
+  "bundle_digest": "8e8fd7a7fdfc6ed1abf8d52c0e4e5185c1dbd89b74e891aa969b23f737f14f89",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -70,7 +70,7 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "d9189715c5b3210230a0d752665dc166bd994b0491e5511ac68e115d7dfbf2be"
+      "sha256": "52268159769e4d3599da85b69e1bc861bcd72df3858387775f9ccdf5ed0d0c38"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -140,9 +140,13 @@
       "mode": "0644",
       "sha256": "c37f905bb051d75e3e58b49dad6fb3e52eade0cdc69c644211d870094a1bac46"
     },
+    "scripts/host_skill_registry.py": {
+      "mode": "0644",
+      "sha256": "27539816448833bde60bea619d2f9622459c6b59fc63402d537c54b82d18a8c0"
+    },
     "scripts/skill_preflight.py": {
       "mode": "0644",
-      "sha256": "1f317163a7ae6841793e80aeaf707afe47434dc3139c55db77759aed80533d48"
+      "sha256": "8d6833dcc7a3903051b87ff95a4cbe7da7755580263e693a7cd0a263865718f8"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",
@@ -217,6 +221,7 @@
     "guided-implementation/scripts/workflow_stage_result.schema.json",
     "shared/LICENSE",
     "shared/references/package-execution.md",
+    "shared/scripts/host_skill_registry.py",
     "shared/scripts/skill_preflight.py",
     "solution-design/references/conversation-source.md"
   ],
