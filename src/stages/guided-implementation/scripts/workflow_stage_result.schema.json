@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["result", "artifacts", "evidence", "handoff_json", "question", "message", "needs_input_kind"],
+  "properties": {
+    "result": {"type": "string", "enum": ["completed", "continue", "needs_input"]},
+    "artifacts": {"type": "array", "items": {"type": "string"}},
+    "evidence": {"type": "array", "items": {"type": "string"}},
+    "handoff_json": {"type": "string"},
+    "question": {"type": "string"},
+    "message": {"type": "string"},
+    "needs_input_kind": {"type": "string", "enum": ["none", "user_decision", "technical_error"]}
+  }
+}
