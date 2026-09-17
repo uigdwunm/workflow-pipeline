@@ -13,9 +13,10 @@ MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 
 
 class RegistryError(ValueError):
-    def __init__(self, code, message):
+    def __init__(self, code, message, **details):
         super().__init__(message)
         self.code = code
+        self.details = details
 
 
 def query_registry(query):
@@ -71,7 +72,10 @@ def query_registry(query):
                     if type(message.get('id')) is not int or message['id'] != request_id:
                         raise RegistryError('invalid_registry', 'Codex app-server returned an unexpected response id')
                     if 'error' in message:
-                        raise RegistryError('registry_rpc_error', 'Codex app-server rejected the registry request')
+                        error = message['error']
+                        code = error.get('code') if isinstance(error, dict) else None
+                        details = {'rpc_code': code} if type(code) is int and -(2 ** 31) <= code < 2 ** 31 else {}
+                        raise RegistryError('registry_rpc_error', 'Codex app-server rejected the registry request', **details)
                     if not isinstance(message.get('result'), dict):
                         raise RegistryError('invalid_registry', 'Codex app-server response has no result object')
                     return message['result']
@@ -103,7 +107,17 @@ def query_registry(query):
         or not isinstance(data[0].get('errors'), list)):
         raise RegistryError('invalid_registry', 'Skills registry must return exactly the requested cwd, skills and errors')
     if data[0]['errors']:
-        raise RegistryError('registry_load_failed', 'Codex reported Skill loading errors for the requested cwd')
+        paths = []
+        for error in data[0]['errors']:
+            path = error.get('path') if isinstance(error, dict) else None
+            # Preserve only short absolute paths, never arbitrary host messages or data.
+            if (isinstance(path, str) and path.isprintable() and len(path.encode('utf-8')) <= 1024
+                and Path(path).is_absolute() and path not in paths):
+                paths.append(path)
+                if len(paths) == 8:
+                    break
+        raise RegistryError('registry_load_failed', 'Codex reported Skill loading errors for the requested cwd',
+            error_count=len(data[0]['errors']), error_paths=paths)
     entries = []
     for skill in data[0]['skills']:
         if (not isinstance(skill, dict) or not isinstance(skill.get('name'), str) or not skill['name']

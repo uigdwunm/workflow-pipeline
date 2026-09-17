@@ -231,7 +231,7 @@ def preflight(request):
         try:
             registry = query_registry(request['registry_query'])
         except RegistryError as exc:
-            raise PreflightError(exc.code, str(exc)) from exc
+            raise PreflightError(exc.code, str(exc), **exc.details) from exc
     packages, external, diagnostics = {}, {}, {}
     for name in names:
         try:

@@ -95,6 +95,28 @@ time.sleep(30)
                 self.query({'result':data})
             self.assertEqual(error.exception.code, code)
 
+    def test_host_errors_preserve_only_bounded_structured_diagnostics(self):
+        secret = 'PRIVATE_ERROR_PAYLOAD'
+        data = self.data()
+        paths = [str(self.root / ('broken-' + str(i)) / 'SKILL.md') for i in range(12)]
+        data['data'][0]['errors'] = [
+            {'path': 'relative/' + secret, 'message': secret},
+            {'path': '/' + 'x' * 2048, 'message': secret},
+            {'path': '/bad\npath', 'message': secret},
+            {'message': secret},
+        ] + [{'path': path, 'message': secret, 'data': {'token': secret}} for path in paths]
+        with self.assertRaises(PreflightError) as error:
+            self.query({'result': data})
+        self.assertEqual(error.exception.code, 'registry_load_failed')
+        self.assertEqual(error.exception.details, {'error_count': 16, 'error_paths': paths[:8]})
+        self.assertNotIn(secret, str(error.exception) + json.dumps(error.exception.details))
+        for code in (-32602, True, secret, 2 ** 80):
+            with self.subTest(code=code), self.assertRaises(PreflightError) as error:
+                self.query({'error': {'code': code, 'message': secret, 'data': {'token': secret}}})
+            self.assertEqual(error.exception.code, 'registry_rpc_error')
+            self.assertEqual(error.exception.details, {'rpc_code': -32602} if type(code) is int and code == -32602 else {})
+            self.assertNotIn(secret, str(error.exception) + json.dumps(error.exception.details))
+
     def test_transport_failures_are_bounded_and_structured(self):
         import host_skill_registry
         for mode, code in [('timeout','registry_timeout'), ('overflow','registry_output_limit'),
