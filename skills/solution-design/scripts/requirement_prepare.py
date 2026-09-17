@@ -74,6 +74,10 @@ def bind(current, original):
     for key in ("root", "git_common_dir", "branch", "kind"):
         entry.require(current["repository"].get(key) == original["repository"].get(key), "repository_changed", "repository binding changed")
     entry.require(current["requirement"].get("kind") == original["requirement"].get("kind"), "source_changed", "requirement source changed")
+    selected = current["requirement"].get("path")
+    previous = original["requirement"].get("path")
+    entry.require(selected is None or previous is None or selected == previous,
+                  "source_changed", "explicit requirement source path changed")
     for key in ("thread_id", "model", "reasoning_effort"):
         entry.require(current["configuration"][key] == original["configuration"][key], "configuration_changed", "preparation configuration changed")
     entry.require(set(current["packages"]) == set(original["packages"]), "package_changed", "package route changed")
@@ -182,7 +186,13 @@ def validate_intent(current, intent, purpose):
     validate_seal(intent)
     entry.require(intent.get("protocol") == PROTOCOL and intent.get("kind") == "intent" and intent.get("purpose") == purpose,
                   "invalid_intent", "wrong preparation intent")
+    entry.require(isinstance(intent.get("operation_id"), str) and len(intent["operation_id"]) == 36
+                  and str(uuid.UUID(intent["operation_id"])) == intent["operation_id"]
+                  and uuid.UUID(intent["operation_id"]).version == 4,
+                  "invalid_intent", "original UUIDv4 operation identity required")
     bind(current, intent["entry"])
+    entry.require(current["requirement"].get("path") in (None, intent["path"]),
+                  "source_changed", "current explicit source differs from the intent document")
     root = standalone(current)
     entry.require(str(entry.document_path(root, intent["path"])) == intent["absolute_path"], "source_changed", "document path changed")
     return root
@@ -254,7 +264,35 @@ def prior_freeze_commits(root, intent):
     return [commit.decode() for commit in candidates.splitlines() if commit_matches(root, commit.decode(), intent)]
 
 
-def frozen_result(current, root, intent, commit):
+def verified_commit_evidence(root, intent, commit):
+    if intent.get("reuse_commit"):
+        entry.require(commit == intent["baseline"], "commit_unverified", "reused commit differs from baseline")
+        for path, expected in intent["hashes"].items():
+            entry.require(sha(entry.git(root, "show", commit + ":" + path).stdout) == expected
+                          and entry.git_text(root, "ls-tree", commit, "--", path).startswith("100644 "),
+                          "commit_unverified", "reused commit does not match frozen intent")
+    else:
+        entry.require(commit_matches(root, commit, intent), "commit_unverified", "commit does not match frozen intent")
+    path = intent["path"]
+    return {"kind": "verified-requirement-commit", "operation_id": intent["operation_id"],
+            "intent_digest": intent["digest"], "commit": commit, "baseline": intent["baseline"],
+            "path": path, "blob": entry.git_text(root, "rev-parse", commit + ":" + path),
+            "sha256": intent["hashes"][path], "downstream_ready": False}
+
+
+def frozen_result(current, root, intent, commit, *, command_succeeded=True):
+    # Record only object evidence reverified here, before mutable workspace checks.
+    # This is deliberately not the successful frozen receipt or its digest.
+    evidence = verified_commit_evidence(root, intent, commit)
+    try:
+        entry.require(command_succeeded, "commit_outcome_unknown", "commit exists but command failed; reconcile the same intent")
+        return complete_frozen_result(current, root, intent, commit)
+    except entry.ERROR_TYPES as error:
+        raise entry.PreparationError(getattr(error, "code", "preparation_failed"), entry.error_message(error),
+                                     completed_evidence=[evidence]) from error
+
+
+def complete_frozen_result(current, root, intent, commit):
     for path, expected in intent["hashes"].items():
         entry.require(sha(entry.read_document(root, path)) == expected, "document_changed", "committed source differs from work document")
     entry.require(unrelated(root, intent["paths"]) == intent["unrelated"], "workspace_changed", "unrelated workspace or index changed; preserve and reconcile")
@@ -278,7 +316,9 @@ def freeze(current, intent, reconcile=False):
     matches = prior_freeze_commits(root, intent)
     entry.require(len(matches) <= 1, "commit_ambiguous", "multiple commits match the original freeze intent")
     if matches:
-        entry.require(matches == [head], "commit_detached", "matching freeze commit exists off HEAD; restore original lineage before retry")
+        if matches != [head]:
+            raise entry.PreparationError("commit_detached", "matching freeze commit exists off HEAD; restore original lineage before retry",
+                                         completed_evidence=[verified_commit_evidence(root, intent, matches[0])])
         return frozen_result(current, root, intent, head)
     if head != intent["baseline"]:
         entry.require(commit_matches(root, head, intent), "head_changed", "HEAD is not the original baseline or matching freeze commit")
@@ -300,8 +340,7 @@ def freeze(current, intent, reconcile=False):
     result = entry.git(root, "commit", "--only", "-m", message, "--", *intent["paths"], check=False)
     head = entry.git_text(root, "rev-parse", "HEAD")
     entry.require(commit_matches(root, head, intent), "commit_unverified", "freeze commit failed or differs from prepared intent; reconcile before retry")
-    entry.require(result.returncode == 0, "commit_outcome_unknown", "commit exists but command failed; reconcile the same intent")
-    return frozen_result(current, root, intent, head)
+    return frozen_result(current, root, intent, head, command_succeeded=result.returncode == 0)
 
 
 def verify(current, evidence):
@@ -463,6 +502,7 @@ def handle(request):
         return verify(current, request["evidence"])
     entry.fields(request, {"protocol", "operation", "entry", "intent"})
     standalone(current)
+    validate_intent(current, request["intent"], request["intent"].get("purpose"))
     # Share the existing repository publication lock; this is not a new state
     # store. Native/user Git writers still require the existing sole-writer rule.
     lock_path = Path(current["repository"]["git_common_dir"]) / PUBLICATION_LOCK_FILENAME

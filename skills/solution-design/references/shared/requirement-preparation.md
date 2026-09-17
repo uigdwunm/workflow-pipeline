@@ -70,6 +70,10 @@ Retain the original intent and all successful writes. Reconcile accepts that sam
 intent. A matching write is reused; a conflicting write stops. A matching freeze
 commit is reused; an unperformed freeze returns prepared. Changed HEAD, ownership,
 document bytes or unrelated workspace evidence stops without reset/stash/cleanup.
+write, freeze and reconcile require any current explicit source.path to match
+the saved intent's path before file/index/commit mutation. An initial entry may
+omit source.path; specifying that same document later remains valid. Omitting a
+path never selects a different document: the retained intent remains authoritative.
 The script does not repeat semantic questioning or move Stage 2 back to Stage 1.
 If a matching commit exists off HEAD, reconciliation reports commit_detached and
 preserves both objects and workspace. The controller must restore the original
@@ -79,6 +83,17 @@ matching commits are ambiguous and stop.
 Hooks and filters remain enabled. A failed hook may leave the exact owned files
 staged; retry reuses them. Filters changing the frozen bytes fail verification.
 A successful commit with subsequent file drift is retained but not handed off.
+When a commit is fully verified against the intent but subsequent checks fail,
+error.completed_evidence contains one record with kind=verified-requirement-commit,
+operation_id, intent_digest, commit, baseline, path, blob, sha256 and
+downstream_ready=false. This bounded record proves the Git object, not a matching
+workspace, final freeze success or launch permission. It has no requirement_identity
+or successful receipt digest. The response remains ok=false with no result.
+The same intent's reconcile returns this evidence again while drift persists;
+after the source owner reconciles the workspace it can return the existing commit
+as a successful frozen receipt without another commit. Before a verified commit
+exists, completed_evidence is empty; that does not assert that no staging or other
+partial effect occurred. Never infer success from an empty or partial error record.
 Do not run concurrent external Git writers: the existing publication lock serializes
 participating adapters, not arbitrary user commands or hooks. On unexpected changes
 preserve the scene and use the controller's existing anomaly recovery.

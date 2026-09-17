@@ -2,8 +2,12 @@
 
 Use `scripts/entry_prepare.py` from this stage's pinned package. Send one bounded
 JSON object on stdin; success is `{ok:true,result:<complete evidence>}`. Failures
-have `ok:false,error:{code,message,operation,recovery}` and exit 1. A digest detects
+have `ok:false,error:{code,message,operation,completed_evidence,recovery}` and exit 1. A digest detects
 changed data; it is not authentication or permission.
+completed_evidence is an array of verified partial operations, empty when no such
+evidence is available. It never substitutes for the successful result. Dependency
+and OS exception text is not returned verbatim; malformed operations are reported
+as null rather than echoing arbitrary request data.
 
 ## Host boundary
 
@@ -65,8 +69,12 @@ runtime task (for example a native carrier's tool ref); it is never inferred fro
 task recency. Without it, only the current thread ID or its codex-thread: form is
 accepted as a discussion actor. Optional host.supported_configurations is a nonempty array of exact
 `{model,reasoning_effort}` pairs. Roles are controller; dedicated-discussion at 0;
-dedicated-problem-framing at 1; solution-designer at 2; implementation-dispatcher,
+dedicated-problem-framing at 1; solution-designer or scripted-carrier at 2; implementation-dispatcher,
 execution-agent or scripted-carrier at 3; closure-agent or scripted-carrier at 4.
+The Stage-2 foreground CLI carrier uses scripted-carrier, not controller or the
+native solution-designer identity. A scripted carrier must name its authenticated
+launch source and external controller; neither may identify the current carrier.
+It retains the runner's authority and does not gain controller permissions.
 
 Source kinds:
 

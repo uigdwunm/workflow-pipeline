@@ -1,12 +1,15 @@
 """Exact documentation commits, dirty index preservation and same-intent retry."""
 import copy
 import hashlib
+import io
+import json
 import os
 import uuid
 from pathlib import Path
 import sys
 import tempfile
 from unittest.mock import patch
+from contextlib import redirect_stdout
 
 sys.path.insert(0, str(Path(__file__).parent))
 import test_entry_prepare
@@ -16,6 +19,95 @@ import discussion_protocol
 
 
 class RequirementTests(test_entry_prepare.EntrySupport):
+    def cli_call(self, operation, **arguments):
+        request = {'protocol': requirement.PROTOCOL, 'operation': operation, 'entry': self.request, **arguments}
+        output = io.StringIO()
+        with patch.object(sys, 'stdin', io.TextIOWrapper(io.BytesIO(json.dumps(request).encode()))), redirect_stdout(output):
+            code = entry.cli(requirement.handle)
+        return code, json.loads(output.getvalue())
+
+    def test_changed_explicit_source_rejects_old_write_before_side_effects(self):
+        self.request['source']['path'] = 'docs/a.md'
+        intent = self.call('prepare', purpose='write', path='docs/a.md', version=1, authorization='confirmed', content='A')
+        self.request['source']['path'] = 'docs/b.md'
+        head = self.git('rev-parse', 'HEAD')
+        index = self.git('ls-files', '--stage')
+        for operation in ('write', 'reconcile'):
+            with self.subTest(operation=operation):
+                self.assert_code('source_changed', lambda: self.call(operation, intent=intent))
+                self.assertFalse((self.root / 'docs/a.md').exists())
+                self.assertFalse((self.root / 'docs/b.md').exists())
+                self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+                self.assertEqual(self.git('ls-files', '--stage'), index)
+        self.request['source']['path'] = 'docs/a.md'
+        self.assertEqual(self.call('reconcile', intent=intent)['path'], 'docs/a.md')
+
+    def test_changed_explicit_source_rejects_old_freeze_and_reconcile(self):
+        # Initial entry may omit path; later explicit selection must match A.
+        _, receipt = self.create()
+        intent = self.freeze_intent(receipt)
+        self.request['source']['path'] = 'docs/b.md'
+        before = (self.git('rev-parse', 'HEAD'), self.git('ls-files', '--stage'), (self.root / receipt['path']).read_bytes())
+        for operation in ('freeze', 'reconcile'):
+            with self.subTest(operation=operation):
+                self.assert_code('source_changed', lambda: self.call(operation, intent=intent))
+                self.assertEqual((self.git('rev-parse', 'HEAD'), self.git('ls-files', '--stage'),
+                                  (self.root / receipt['path']).read_bytes()), before)
+        self.request['source']['path'] = receipt['path']
+        frozen = self.call('freeze', intent=intent)
+        self.assertEqual(self.call('reconcile', intent=intent)['commit'], frozen['commit'])
+
+    def test_cli_precommit_failure_has_no_verified_commit_evidence(self):
+        _, receipt = self.create()
+        intent = self.freeze_intent(receipt)
+        hook = self.root / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\necho SECRET_HOOK_TEXT >&2\nexit 1\n')
+        hook.chmod(0o755)
+        code, response = self.cli_call('freeze', intent=intent)
+        self.assertEqual(code, 1)
+        self.assertFalse(response['ok'])
+        self.assertNotIn('result', response)
+        self.assertEqual(response['error']['completed_evidence'], [])
+        self.assertNotIn('SECRET_HOOK_TEXT', json.dumps(response))
+        self.assertEqual(self.git('rev-list', '--count', 'HEAD'), '1')
+
+    def test_cli_postcommit_failure_reports_verified_partial_commit_and_recovers(self):
+        _, receipt = self.create()
+        original = (self.root / receipt['path']).read_bytes()
+        intent = self.freeze_intent(receipt)
+        hook = self.root / '.git/hooks/post-commit'
+        hook.write_text('#!/bin/sh\nprintf changed > docs/requirements/a.md\n')
+        hook.chmod(0o755)
+        for operation in ('freeze', 'reconcile'):
+            code, response = self.cli_call(operation, intent=intent)
+            self.assertEqual(code, 1)
+            self.assertFalse(response['ok'])
+            self.assertNotIn('result', response)
+            error = response['error']
+            self.assertEqual(error['operation'], operation)
+            self.assertEqual(error['code'], 'document_changed')
+            self.assertEqual(len(error['completed_evidence']), 1)
+            partial = error['completed_evidence'][0]
+            self.assertEqual(partial['kind'], 'verified-requirement-commit')
+            self.assertEqual(partial['commit'], self.git('rev-parse', 'HEAD'))
+            self.assertEqual(partial['intent_digest'], intent['digest'])
+            self.assertEqual(partial['sha256'], hashlib.sha256(original).hexdigest())
+            self.assertFalse(partial['downstream_ready'])
+            self.assertNotIn('requirement_identity', partial)
+            self.assertNotIn('digest', partial)
+            self.assertEqual(self.git('rev-list', '--count', 'HEAD'), '2')
+        (self.root / receipt['path']).write_bytes(original)
+        code, response = self.cli_call('reconcile', intent=intent)
+        self.assertEqual(code, 0)
+        self.assertEqual(response['result']['commit'], partial['commit'])
+        self.assertEqual(self.git('rev-list', '--count', 'HEAD'), '2')
+
+    def test_cli_does_not_expose_arbitrary_exception_text(self):
+        with patch.object(requirement, 'handle', side_effect=OSError('SECRET_EXTERNAL_ERROR')):
+            code, response = self.cli_call('freeze', intent={})
+        self.assertEqual(code, 1)
+        self.assertNotIn('SECRET_EXTERNAL_ERROR', json.dumps(response))
+
     def call(self, operation, **arguments):
         return requirement.handle({"protocol": requirement.PROTOCOL, "operation": operation,
                                    "entry": self.request, **arguments})

@@ -21,9 +21,20 @@ MAX_BYTES = 2 * 1024 * 1024
 
 
 class PreparationError(ValueError):
-    def __init__(self, code, message):
+    def __init__(self, code, message, *, completed_evidence=()):
         super().__init__(message)
         self.code = code
+        self.completed_evidence = list(completed_evidence)
+
+
+ERROR_TYPES = (PreparationError, thread_settings.SettingsError, skill_preflight.PreflightError,
+               discussion_protocol.ProtocolError, SupervisionError, OSError, ValueError, KeyError, TypeError)
+
+
+def error_message(error):
+    # Only this adapter's deliberately bounded messages are public. Dependency
+    # and OS exceptions may contain document contents, hook output or secrets.
+    return str(error)[:1024] if isinstance(error, PreparationError) else "Preparation failed; retain the original checkpoint and reconcile."
 
 
 def require(condition, code, message):
@@ -157,7 +168,7 @@ def resolve(request):
     stage = request["stage"]
     require(type(stage) is int and stage in range(5), "invalid_stage", "stage must be 0 through 4")
     roles = ({"controller", "dedicated-discussion"}, {"controller", "dedicated-problem-framing"},
-             {"controller", "solution-designer"}, {"controller", "implementation-dispatcher", "execution-agent", "scripted-carrier"},
+             {"controller", "solution-designer", "scripted-carrier"}, {"controller", "implementation-dispatcher", "execution-agent", "scripted-carrier"},
              {"controller", "closure-agent", "scripted-carrier"})
     require(host["role"] in roles[stage], "role_mismatch", "role is not valid for this stage")
     actor_refs = {settings["thread_id"], "codex-thread:" + settings["thread_id"], host.get("actor_ref", settings["thread_id"])}
@@ -165,6 +176,9 @@ def resolve(request):
             "identity_mismatch", "controller must be the current task")
     require(host["role"] == "controller" or host["source_ref"] is not None,
             "identity_unavailable", "carrier needs authenticated source receipt")
+    if host["role"] == "scripted-carrier":
+        require(host["controller_ref"] not in actor_refs and host["source_ref"] not in actor_refs,
+                "identity_mismatch", "scripted carrier must retain its external controller and launch source")
     if "supported_configurations" in host:
         supported = host["supported_configurations"]
         require(isinstance(supported, list) and bool(supported), "configuration_unavailable", "target tool configurations required")
@@ -261,10 +275,13 @@ def cli(handler):
     try:
         request = decode(sys.stdin.buffer.read(MAX_BYTES + 1))
         response = {"ok": True, "result": handler(request)}
-    except (PreparationError, thread_settings.SettingsError, skill_preflight.PreflightError,
-            discussion_protocol.ProtocolError, SupervisionError, OSError, ValueError, KeyError, TypeError) as error:
+    except ERROR_TYPES as error:
+        operation = request.get("operation") if isinstance(request, dict) else None
+        if not isinstance(operation, str) or operation not in {"resolve", "verify", "prepare", "write", "freeze", "reconcile"}:
+            operation = None
         response = {"ok": False, "error": {"code": getattr(error, "code", "preparation_failed"),
-                    "message": str(error)[:1024], "operation": request.get("operation") if isinstance(request, dict) else None,
+                    "message": error_message(error), "operation": operation,
+                    "completed_evidence": error.completed_evidence if isinstance(error, PreparationError) else [],
                     "recovery": "Retain the original checkpoint and document; reconcile the same operation before retry."}}
     print(json.dumps(response, ensure_ascii=False, sort_keys=True))
     return 0 if response["ok"] else 1

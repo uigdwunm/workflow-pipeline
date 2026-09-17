@@ -49,6 +49,22 @@ class EntrySupport(unittest.TestCase):
 
 
 class EntryTests(EntrySupport):
+    def test_stage2_scripted_carrier_keeps_distinct_controller_and_source(self):
+        self.request.update(stage=2, source={'kind': 'frozen'})
+        self.request['host'].update(role='scripted-carrier', controller_ref='controller', source_ref='runner')
+        observed = entry.resolve(self.request)
+        self.assertEqual(observed['actor']['role'], 'scripted-carrier')
+        self.assertEqual(observed['actor']['controller_ref'], 'controller')
+        for changes, code in (({'source_ref': None}, 'identity_unavailable'),
+                              ({'controller_ref': 'task'}, 'identity_mismatch'),
+                              ({'source_ref': 'task'}, 'identity_mismatch'),
+                              ({'thread_id': 'other'}, 'identity_mismatch'),
+                              ({'role': 'dedicated-discussion'}, 'role_mismatch')):
+            request = copy.deepcopy(self.request)
+            request['host'].update(changes)
+            with self.subTest(changes=changes):
+                self.assert_code(code, lambda: entry.resolve(request))
+
     def test_collects_actual_repository_and_rechecks_settings_without_freezing_turn(self):
         result = entry.resolve(self.request)
         self.assertEqual(result["repository"]["head"], self.git("rev-parse", "HEAD"))
