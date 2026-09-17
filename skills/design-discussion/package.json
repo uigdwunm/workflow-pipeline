@@ -184,7 +184,7 @@
   },
   "format_version": 1,
   "name": "design-discussion",
-  "release": "1.0.0",
+  "release": "1.1.0",
   "resources": [
     "design-discussion/SKILL.md",
     "design-discussion/agents/openai.yaml",
@@ -228,6 +228,6 @@
     "shared/scripts/skill_preflight.py",
     "solution-design/references/conversation-source.md"
   ],
-  "source_revision": "self-contained-v1",
+  "source_revision": "workflow-pipeline-v1.1.0",
   "stage": 0
 }

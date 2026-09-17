@@ -466,7 +466,7 @@ or
         self.assertIn("never asks the user directly", guided)
         self.assertIn("separate explicit authority", guided)
         self.assertIn(
-            "| `code-review` | stage 3 | Independently review the implementation |",
+            "| 3 `review` | `code-review` |",
             dependencies,
         )
 

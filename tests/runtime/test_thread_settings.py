@@ -687,11 +687,13 @@ class ThreadSettingsProtocolTests(unittest.TestCase):
         self.assertIn("thread_settings.py verify", execution)
         self.assertIn("--current", execution)
 
-    def test_dependency_contract_requires_one_workflow_version(self):
+    def test_dependency_contract_requires_package_local_protocol_compatibility(self):
         contract = self.read("docs/dependencies.md")
         self.assertIn("thread-settings-v5", contract)
-        self.assertIn("workflow_runtime_version_mismatch", contract)
-        self.assertRegex(contract, r"same\s+workflow-pipeline version")
+        self.assertIn("scripts are package-local", contract)
+        self.assertIn("exactly equal compatibility key", contract)
+        self.assertIn("Release versions need not match", contract)
+        self.assertNotRegex(contract, r"Install or update all five Skills.*same")
 
 
 if __name__ == "__main__":

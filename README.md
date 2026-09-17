@@ -1,6 +1,8 @@
 # Workflow Pipeline
 
-一套面向 Codex 的工程工作流。可选的持久化设计讨论位于既有四阶段之前；没有唯一、可验证讨论上下文时，1—4 保持原有流程：
+当前版本：**v1.1.0** · [更新日志](CHANGELOG.md) · [发布说明](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v1.1.0)
+
+五个可独立安装、按需组合的 Codex 工程工作流 Skill，覆盖讨论、需求、方案、实现与归档。可选的持久化设计讨论位于既有四阶段之前；没有唯一、可验证讨论上下文时，1—4 保持原有流程：
 
 0. **0讨论 — `$design-discussion`（可选）**：为需要跨对话延续的设计讨论维护可验证话题、文档与检查点。
 1. **1拷问 — `$problem-framing`**：创建或继承唯一需求草案，通过追问持续更新并冻结目标、范围、行为契约与验收条件。
@@ -89,7 +91,7 @@ $problem-framing 帮我明确这次需求
 
 该命令校验生成漂移、五包入口/引用/资源闭包，运行 `tests/runtime` 与 `tests/packages` 的源测试和五包快速验证。开发编辑 `src/` 与 `build/skill-packages.json`，再运行 `python3 scripts/build_skills.py`；不要手改 `skills/` 生成副本。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-本次接受候选通过 368 项自动测试及双轴审查；`skills@1.6.0` 在临时项目的发现与五次单包安装通过。T13/T14 真实宿主 Agent 单包、组合及附着讨论恢复验收尚未执行，不以脚本测试或临时安装替代。`python3 scripts/field_acceptance.py` 输出现场步骤与证据表；安装同步需单独授权，本次未改用户安装。
+v1.1.0 的独立安装实现通过 368 项自动测试及双轴审查；`skills@1.6.0` 在临时项目的发现与五次单包安装通过。T13/T14 真实宿主 Agent 单包、组合及附着讨论恢复验收尚未执行，不以脚本测试或临时安装替代。`python3 scripts/field_acceptance.py` 输出现场步骤与证据表；安装同步需单独授权，本次未改用户安装。
 
 ## 许可证
 

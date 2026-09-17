@@ -175,7 +175,7 @@
   },
   "format_version": 1,
   "name": "solution-design",
-  "release": "1.0.0",
+  "release": "1.1.0",
   "resources": [
     "design-discussion/references/confirmation-contract.md",
     "design-discussion/references/requirement-document-contract.md",
@@ -214,6 +214,6 @@
     "solution-design/references/subagent-protocol.md",
     "solution-design/references/templates.md"
   ],
-  "source_revision": "self-contained-v1",
+  "source_revision": "workflow-pipeline-v1.1.0",
   "stage": 2
 }
