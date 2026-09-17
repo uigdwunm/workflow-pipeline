@@ -4,16 +4,21 @@
 
 **Blocked by:** 01 — 从单一源码生成可独立运行的讨论包；02 — 按当前动作核验已注册依赖并识别合法链接。
 
-**Status:** ready-for-agent
+**Status:** implemented — archived
 
 **Spec:** 独立安装 PRD，D1–D4、D6；AC1–AC4、AC6；T2–T8。
 
-- [ ] 五个入口和所有引用/模板/inline 脚本命令均生成本包资源定位；不复制其他阶段入口或 Matt 内容。
-- [ ] 五包 manifest 及闭包均完整；不同包导入不依赖当前工作目录、源码、兄弟包或其他进程缓存。
-- [ ] 五次单包隔离运行实际 JSON CLI 和关键 Git/ledger 路径；包源码不可达，测试保留原业务约束。
-- [ ] standalone Stage 2 仍发布规划并保留 Flow Worktree；standalone Stage 3 仍受完整请求入口门控且只交付候选；Stage 4 独立/继承路线照旧。
-- [ ] 单阶段成功且后继缺失时返回真实成果、准确目标名和保留恢复证据，不代做后继、不声称全流程完成。
-- [ ] 附着阶段均携带完整 discussion 协议并访问原 canonical root；没有唯一讨论身份时不建另一份 ledger。
-- [ ] 原有角色/权限/需求冻结/审查合同不因模板搬迁丢失；测试明确禁止 Stage 3 调 complete-worktree。
+- [x] 五个入口和所有引用/模板/inline 脚本命令均生成本包资源定位；不复制其他阶段入口或 Matt 内容。
+- [x] 五包 manifest 及闭包均完整；不同包导入不依赖当前工作目录、源码、兄弟包或其他进程缓存。
+- [x] 五次单包隔离运行实际 JSON CLI 和关键 Git/ledger 路径；包源码不可达，测试保留原业务约束。
+- [x] standalone Stage 2 仍发布规划并保留 Flow Worktree；standalone Stage 3 仍受完整请求入口门控且只交付候选；Stage 4 独立/继承路线照旧。
+- [x] 单阶段成功且后继缺失时返回真实成果、准确目标名和保留恢复证据，不代做后继、不声称全流程完成。
+- [x] 附着阶段均携带完整 discussion 协议并访问原 canonical root；没有唯一讨论身份时不建另一份 ledger。
+- [x] 原有角色/权限/需求冻结/审查合同不因模板搬迁丢失；测试明确禁止 Stage 3 调 complete-worktree。
 
 **实施边界：** 本片完成生成包行为；最终唯一仓库发布面切换和旧源入口删除在 05。不要提前把临时生成入口纳入仓库发现。
+
+
+## 交付与验证
+
+接受候选 `e8f9a55309766d8436696957c9451e9f62f8940a` 完成此切片；前置切片均已完成。368 项源/包测试、五包 quick validation、仓库校验与两轴审查通过。统一证据及 AC 映射见 [PRD 归档记录](../PRD.md#归档记录)。
