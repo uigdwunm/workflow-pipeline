@@ -5,3 +5,5 @@ __pycache__/
 .coverage
 .agents/
 .codegraph/
+/scripts/deploy_local.py
+/scripts/test_deploy_local.py
