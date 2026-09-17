@@ -14,7 +14,8 @@
     "control": 1,
     "supervision": "flow-worktree-v1",
     "thread_settings": "thread-settings-v5",
-    "preparation": "workflow-preparation-v1"
+    "preparation": "workflow-preparation-v1",
+    "stage_transfer": "workflow-stage-transfer-v1"
   },
   "resources": {
     "design-discussion/SKILL.md": {
@@ -276,6 +277,18 @@
     "shared/references/requirement-preparation.md": {
       "source": "src/shared/references/requirement-preparation.md",
       "output": "references/shared/requirement-preparation.md"
+    },
+    "shared/scripts/stage_handoff.py": {
+      "source": "src/shared/scripts/stage_handoff.py",
+      "output": "scripts/stage_handoff.py"
+    },
+    "shared/scripts/stage_dispatch.py": {
+      "source": "src/shared/scripts/stage_dispatch.py",
+      "output": "scripts/stage_dispatch.py"
+    },
+    "shared/references/stage-transfer.md": {
+      "source": "src/shared/references/stage-transfer.md",
+      "output": "references/shared/stage-transfer.md"
     }
   },
   "packages": {
@@ -321,7 +334,10 @@
         "shared/scripts/entry_prepare.py",
         "shared/scripts/requirement_prepare.py",
         "shared/references/entry-preparation.md",
-        "shared/references/requirement-preparation.md"
+        "shared/references/requirement-preparation.md",
+        "shared/scripts/stage_handoff.py",
+        "shared/scripts/stage_dispatch.py",
+        "shared/references/stage-transfer.md"
       ],
       "external_actions": {
         "discuss": []
@@ -363,7 +379,10 @@
         "shared/scripts/entry_prepare.py",
         "shared/scripts/requirement_prepare.py",
         "shared/references/entry-preparation.md",
-        "shared/references/requirement-preparation.md"
+        "shared/references/requirement-preparation.md",
+        "shared/scripts/stage_handoff.py",
+        "shared/scripts/stage_dispatch.py",
+        "shared/references/stage-transfer.md"
       ],
       "external_actions": {
         "route": [
@@ -413,7 +432,10 @@
         "shared/scripts/entry_prepare.py",
         "shared/scripts/requirement_prepare.py",
         "shared/references/entry-preparation.md",
-        "shared/references/requirement-preparation.md"
+        "shared/references/requirement-preparation.md",
+        "shared/scripts/stage_handoff.py",
+        "shared/scripts/stage_dispatch.py",
+        "shared/references/stage-transfer.md"
       ],
       "external_actions": {
         "spec": [
@@ -470,7 +492,10 @@
         "shared/scripts/entry_prepare.py",
         "shared/scripts/requirement_prepare.py",
         "shared/references/entry-preparation.md",
-        "shared/references/requirement-preparation.md"
+        "shared/references/requirement-preparation.md",
+        "shared/scripts/stage_handoff.py",
+        "shared/scripts/stage_dispatch.py",
+        "shared/references/stage-transfer.md"
       ],
       "external_actions": {
         "dispatch": [
@@ -518,7 +543,10 @@
         "shared/scripts/entry_prepare.py",
         "shared/scripts/requirement_prepare.py",
         "shared/references/entry-preparation.md",
-        "shared/references/requirement-preparation.md"
+        "shared/references/requirement-preparation.md",
+        "shared/scripts/stage_handoff.py",
+        "shared/scripts/stage_dispatch.py",
+        "shared/references/stage-transfer.md"
       ],
       "external_actions": {
         "route": [

@@ -84,7 +84,7 @@ def workflow_control(request):
         if not isinstance(request['evidence'], dict):
             raise ProtocolError('invalid_request', 'control evidence must be an object')
         evidence = dict(request['evidence'])
-        if action in {'prepare', 'decide', 'standalone-entry', 'choose-dedicated'}:
+        if action in {'prepare', 'decide', 'reserve-launch', 'standalone-entry', 'choose-dedicated'}:
             apply_gate_policy(records, 'prepare-handoff', request['actor_topic_id'])
         matches = [r for r in records['Phase Results'] if r.get('result_kind') == 'workflow-control'
                    and r.get('topic_id') == request['actor_topic_id']]
@@ -174,7 +174,13 @@ def workflow_control(request):
                 apply_gate_policy(records, 'authorize-handoff-discussion', topic['topic_id'])
                 if evidence.get('requirement_identity') != identity:
                     raise ProtocolError('phase_source_drift', 'delivery version differs from current topic document')
-                _git.verify_delivery(project, evidence['commit'], evidence)
+                if evidence['commit'] is None:
+                    probe = _git.subprocess.run(['git', '-C', str(project), 'rev-parse', '--show-toplevel'], capture_output=True)
+                    if selected['stage'] != 0 or probe.returncode == 0:
+                        raise ProtocolError('invalid_request', 'snapshot-only delivery requires non-Git Stage 0')
+                    evidence['verified_commit_hash'] = identity['sha256']
+                else:
+                    _git.verify_delivery(project, evidence['commit'], evidence)
             control = _control.transition({'schema_version': 1, 'actor_ref': owner_ref,
                 'context': context, 'action': action, 'evidence': evidence})
         except _control.ControlError as error:

@@ -138,7 +138,13 @@ def validate_progress(progress):
     state = progress.get('state')
     if 'configuration' in progress:
         validate_selection(progress['configuration'])
-    if 'executions' in progress:
+    if 'design_input' in progress:
+        allowed = {'state', 'design_input', 'binding', 'allowed_paths', 'protected_paths', 'configuration', 'result_digest', 'git_baseline_commit'}
+        require(state in {'designer-pending', 'designing', 'design-received', 'design-accepted', 'cancelled'}, 'invalid designer state')
+        text(progress['design_input'])
+        validate_binding(progress['binding'])
+        paths(progress['allowed_paths']); paths(progress['protected_paths'], empty=True)
+    elif 'executions' in progress:
         allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit'}
         require(state in {'dispatcher-pending', 'implementing', 'candidate', 'cancelled'}, 'invalid dispatcher state')
         validate_binding(progress['binding'])
@@ -173,7 +179,9 @@ def validate_progress(progress):
         validate_entry_authority(plan['entry_authority'])
         validate_selection(plan['configuration'])
         require(type(plan['task_count']) is int and plan['task_count'] == 1 and plan['plan_id'] == digest({k: v for k, v in plan.items() if k != 'plan_id'}), 'prepared plan digest changed')
-    require(set(progress) <= allowed, 'unknown checkpoint fields')
+    if 'launch_input' in progress:
+        text(progress['launch_input'])
+    require(set(progress) <= allowed | {'launch_input'}, 'unknown checkpoint fields')
 
 
 def validate_context(context):
@@ -193,7 +201,7 @@ def validate_context(context):
     require(all(type(v) is bool for v in context['preference'].values()), 'invalid preference')
     if context['carrier'] is not None:
         keys(context['carrier'], {'kind', 'ref', 'attempt'})
-        require(context['carrier']['kind'] in {'dedicated-stage', 'implementation-dispatcher', 'closure-agent'}, 'invalid carrier kind')
+        require(context['carrier']['kind'] in {'dedicated-stage', 'solution-designer', 'implementation-dispatcher', 'closure-agent'}, 'invalid carrier kind')
         text(context['carrier']['attempt'])
         if context['carrier']['ref'] is not None:
             text(context['carrier']['ref'])
@@ -281,9 +289,9 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     action, evidence = request['action'], copy.deepcopy(request['evidence'])
     require(isinstance(action, str), 'action must be a string')
     require(isinstance(evidence, dict), 'evidence must be an object')
-    if action in {'prepare', 'start-dispatch', 'start-closure', 'plan-execution'} and 'configuration' in evidence:
+    if action in {'prepare', 'start-design', 'start-dispatch', 'start-closure', 'plan-execution'} and 'configuration' in evidence:
         expected_role = {'prepare': 'dedicated-discussion' if context['stage'] == 0 else 'dedicated-problem-framing',
-                         'start-dispatch': 'implementation-dispatcher', 'start-closure': 'closure-agent', 'plan-execution': 'execution-agent'}[action]
+                         'start-design': 'solution-designer', 'start-dispatch': 'implementation-dispatcher', 'start-closure': 'closure-agent', 'plan-execution': 'execution-agent'}[action]
         require(isinstance(evidence['configuration'], dict), 'configuration selection input must be an object')
         require(evidence['configuration'].get('role') == expected_role, 'configuration role mismatch')
         evidence['configuration'] = select_configuration(evidence['configuration'])
@@ -333,6 +341,48 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             else:
                 context['preference']['topic_current' if intent == 'topic-current' else 'stage_current'] = True
                 progress['state'] = 'current-task'
+    elif action == 'reserve-launch':
+        keys(evidence, {'attempt', 'input_digest'})
+        require(progress and progress['state'] == 'creation-pending' and context['carrier']['ref'] is None and
+                context['carrier']['attempt'] == evidence['attempt'], 'dedicated launch is not pending')
+        text(evidence['input_digest'])
+        if 'launch_input' in progress:
+            require(progress['launch_input'] == evidence['input_digest'], 'reserved launch input changed')
+            return {'ok': True, 'context': context, 'effects': [], 'acknowledged': True}
+        progress['launch_input'] = evidence['input_digest']
+    elif action == 'start-design':
+        keys(evidence, {'design_input', 'binding', 'allowed_paths', 'protected_paths', 'configuration'})
+        require(context['stage'] == 2 and progress is None and context['carrier'] is None, 'only one solution designer')
+        validate_binding(evidence['binding'])
+        text(evidence['design_input'])
+        require(not set(paths(evidence['allowed_paths'])) & set(paths(evidence['protected_paths'], empty=True)), 'protected design scope overlap')
+        attempt = digest(evidence)
+        context['carrier'] = {'kind': 'solution-designer', 'ref': None, 'attempt': attempt}
+        context['handoff_progress'] = {**evidence, 'state': 'designer-pending'}
+        return {'ok': True, 'context': context, 'attempt': attempt,
+                'effects': [{'operation': 'spawn_native', 'role': 'solution-designer', 'configuration': evidence['configuration']}]}
+    elif action == 'designer-bound':
+        keys(evidence, {'ref', 'attempt'})
+        require(progress and progress['state'] == 'designer-pending' and evidence['attempt'] == context['carrier']['attempt'], 'wrong designer attempt')
+        context['carrier']['ref'] = text(evidence['ref'])
+        progress['state'] = 'designing'
+    elif action in {'design-result', 'accept-design'}:
+        keys(evidence, {'ref', 'result_digest'})
+        require(progress and 'design_input' in progress and evidence['ref'] == context['carrier']['ref'], 'wrong designer identity')
+        text(evidence['result_digest'])
+        require(progress['state'] in ({'designing', 'design-received'} if action == 'design-result' else {'design-received', 'design-accepted'}), 'wrong designer result state')
+        require('result_digest' not in progress or progress['result_digest'] == evidence['result_digest'], 'designer delivery cannot be replaced')
+        progress.update(state='design-received' if action == 'design-result' else 'design-accepted', result_digest=evidence['result_digest'])
+    elif action == 'native-dispatch-result':
+        keys(evidence, {'attempt', 'status'})
+        require(context['carrier'] is not None and context['carrier']['kind'] in {'solution-designer', 'implementation-dispatcher', 'closure-agent'} and
+                context['carrier']['ref'] is None and context['carrier']['attempt'] == evidence['attempt'] and
+                progress['state'] in {'designer-pending', 'dispatcher-pending', 'closure-pending'}, 'native attempt is no longer pending')
+        require(evidence['status'] in {'unknown', 'not-created'}, 'invalid native creation outcome')
+        if evidence['status'] == 'not-created':
+            progress['state'] = 'cancelled'
+        else:
+            effects = [{'operation': 'read-native-state', 'attempt': evidence['attempt']}]
     elif action == 'start-closure':
         keys(evidence, {'candidate', 'dispatcher_ref', 'review', 'verification', 'binding',
                         'implementation_paths', 'closure_paths', 'protected_paths', 'configuration'})
@@ -496,7 +546,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         keys(completed, {'path', 'sha256', 'version'})
         require(completed['path'] == context['requirement_identity']['path'] and type(completed['version']) is int and
                 completed['version'] >= context['requirement_identity']['version'], 'delivery document path or version regressed')
-        require(re.fullmatch('[0-9a-f]{40}', evidence['commit']) and
+        snapshot_only = evidence['commit'] is None and context['stage'] == 0 and context['topic_ref'] is not None
+        require((snapshot_only or isinstance(evidence['commit'], str) and re.fullmatch('[0-9a-f]{40}', evidence['commit'])) and
                 evidence['verified_commit_hash'] == completed['sha256'], 'delivery commit/hash not verified')
         text(evidence['delivery_id'])
         delivery_digest = digest(evidence)

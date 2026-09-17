@@ -6,6 +6,8 @@ description: Use when the user explicitly invokes $change-closure (4归档), con
 Before any stage action, read and execute [Package execution preflight](references/shared/package-execution.md). This entry is stage 4 (`change-closure`). Pin this package first; check the current action before its side effects.
 
 
+Read [Stage transfer and dispatch](references/shared/stage-transfer.md) before building handoffs, dispatching a dedicated/native role, or accepting its result. Keep the existing semantic and authorization gates; the host executes tools and authenticates receipts.
+
 # 4归档
 
 Stage 4 never repairs implementation code. Read

@@ -264,8 +264,9 @@ Matt 原生发布：Spec=<verified path or URL>; Tickets=<verified paths or URLs
 ## Continuous completion handoff
 
 Emit this complete block and invoke `$guided-implementation` in the same turn.
-Every value comes from the trusted child's structurally complete terminal
-message; do not independently revalidate the reported facts.
+Render mechanical fields from the accepted Stage Transfer result. Preserve the
+trusted child's semantic evidence, and verify native identity, Git publication,
+protected source and worktree facts through the adapter before consumption.
 
 ```text
 阶段结果：方案完成
@@ -299,7 +300,7 @@ Matt 原生发布：Spec=<child-reported path or URL>; Tickets=<child-reported p
 阶段授权：已用于 2方案标准原生动作；不延续至 3实现或 4归档
 扩展远程操作：<未授权且未执行 | exact separately authorized actions and child-reported results>
 工作区状态：Flow Worktree 干净并停留在方案合并提交；主检出区原有改动保持不变
-完成依据：可信 solution_designer 的结构完整终态消息；连续模式未独立复查实际状态
+完成依据：可信 solution_designer 的结构完整终态消息及 Stage Transfer 已核验的身份、Git、路径与工作区事实
 流程模式：连续执行后续全部流程
 下一阶段：`$guided-implementation`（3实现）
 进入条件：已满足

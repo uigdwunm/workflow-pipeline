@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "d1c48b97d6a7bab7ad8185d111efbd4b3d32660cb9a0c03fd0fb948e5f6bd7b4",
+  "bundle_digest": "46a608b9981d873c762415077f548ff305dfcd437e01dd8084ce9138a360f4ca",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -11,6 +11,7 @@
     ],
     "ledger_write": 3,
     "preparation": "workflow-preparation-v1",
+    "stage_transfer": "workflow-stage-transfer-v1",
     "supervision": "flow-worktree-v1",
     "thread_settings": "thread-settings-v5"
   },
@@ -35,7 +36,7 @@
     },
     "SKILL.md": {
       "mode": "0644",
-      "sha256": "06a13f861922bcd3b1d956a61e40894db9ffd35c5b14a782459c96dc5c937ad8"
+      "sha256": "70e5c67528460bfd95da997796c25816181a6569a0213fbd6000943f551bb1f4"
     },
     "agents/openai.yaml": {
       "mode": "0644",
@@ -73,6 +74,10 @@
       "mode": "0644",
       "sha256": "a8182bdc72c8b21ee6efc3ef5d5c4628f592d479deddc8811d433ead9cb17071"
     },
+    "references/shared/stage-transfer.md": {
+      "mode": "0644",
+      "sha256": "749e7610958aa6d1a23a1b585358baa1e8c030632eeb6335b910dd0bfa8f6405"
+    },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
       "sha256": "4cfd480a5cbb47f12f173e1f0326ac8e7e86d618b93818e8d1c108faf8d52706"
@@ -83,11 +88,11 @@
     },
     "references/solution-design/subagent-protocol.md": {
       "mode": "0644",
-      "sha256": "abfb16896f11165284bdd3ace76033e5f6b20980b098904b031f89d4f8f475e6"
+      "sha256": "2961135773d72af5402e52b669fb24366d867fd2bdabc6e0f3d9be394aab542b"
     },
     "references/solution-design/templates.md": {
       "mode": "0644",
-      "sha256": "507229d1c3c588d5a2f3289334f4e974290c55fe78d4d7bd3dae92e4ce44417b"
+      "sha256": "0bbd0731cc8f3a121dae97a9f5496642404b443eff85b3dfe71389b9cf7dc7db"
     },
     "scripts/discussion_core/__init__.py": {
       "mode": "0644",
@@ -147,11 +152,11 @@
     },
     "scripts/discussion_core/workflow_control.py": {
       "mode": "0644",
-      "sha256": "1426feeec000bf3ce0585fedd1b3f46a675113561d2e65015f6336944ae8c5b2"
+      "sha256": "90e4103289ab070d6869619595d33cd7eb18ebbb4c2ab1bb2934bf50e83b954b"
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
-      "sha256": "c37f905bb051d75e3e58b49dad6fb3e52eade0cdc69c644211d870094a1bac46"
+      "sha256": "528ce7361bc1e4169e299abe1e6f77478268c5a0d32d83d0b0475d5a6710eb37"
     },
     "scripts/entry_prepare.py": {
       "mode": "0644",
@@ -168,6 +173,14 @@
     "scripts/skill_preflight.py": {
       "mode": "0644",
       "sha256": "b0b919c2a612378d22a1871969557a57623751aa3687a7270df415b8ec2ffc66"
+    },
+    "scripts/stage_dispatch.py": {
+      "mode": "0644",
+      "sha256": "80e64302cda6e2906151327a515dd28578c51e7af69c71d2c9b24a3290d4441f"
+    },
+    "scripts/stage_handoff.py": {
+      "mode": "0644",
+      "sha256": "6066fc306804b1f265cf116744c0f726f4e4b23ca6d83c33b67bd4b23b0e3858"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",
@@ -187,11 +200,11 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "081ee83708465f757ff94306554993fc3758115423f5da094efed64b93f026e5"
+      "sha256": "968683ba98e12de8fce5553c7387df5090f3e34f96c8796f987cc837d03b33a1"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "0c56d9b00eb4a88cc3ba692f19d2549088b784991867886e982fcc17ae044097"
+      "sha256": "1b43ab6c61d23c96843704039f360079183935523414e95b967f28c9676ba814"
     }
   },
   "format_version": 1,
@@ -229,10 +242,13 @@
     "shared/references/entry-preparation.md",
     "shared/references/package-execution.md",
     "shared/references/requirement-preparation.md",
+    "shared/references/stage-transfer.md",
     "shared/scripts/entry_prepare.py",
     "shared/scripts/host_skill_registry.py",
     "shared/scripts/requirement_prepare.py",
     "shared/scripts/skill_preflight.py",
+    "shared/scripts/stage_dispatch.py",
+    "shared/scripts/stage_handoff.py",
     "solution-design/SKILL.md",
     "solution-design/agents/openai.yaml",
     "solution-design/references/conversation-source.md",

@@ -1,0 +1,208 @@
+# Stage transfer and dispatch
+
+Use the pinned `scripts/stage_handoff.py` and `scripts/stage_dispatch.py`.
+Both take one bounded strict JSON object on stdin. Protocol is
+`workflow-stage-transfer-v1`. Success is `{ok:true,result:...}` (exit 0);
+failure is `{ok:false,error:{code,operation,message,downstream_ready:false,
+completed_evidence,recovery}}` (exit 1). A digest detects changes, never
+authenticates a caller, receipt, user decision or semantic conclusion.
+
+## Fixed sequence and owners
+
+Read the complete [entry contract]({{resource:shared/references/entry-preparation.md}})
+and [requirement contract]({{resource:shared/references/requirement-preparation.md}}).
+The controller retains semantic decisions and acceptance. A scripted carrier
+retains its external controller; a dispatcher may prepare only its authorized
+execution allocations. 0/1 dedicated tasks stay user-visible tasks; downstream
+native roles stay native. Never replace a native child with a task or CLI carrier.
+
+1. Obtain A entry/requirement evidence and finish existing confirmation. For
+   dedicated 0/1, the existing Workflow Control prepare/decide sequence supplies
+   the confirmed plan. Attached discussion retains its original ledger authority.
+2. Resolve the actual downstream Flow Worktree once with the existing protocol.
+   Call handoff `prepare`, save the whole result, and `verify` before consumption.
+3. Dispatch `prepare` returns a record, checkpoint and exact host_call. Save the
+   record and checkpoint together before invoking any host tool. Serialize through
+   the checkpoint owner's existing lock, not a new transport registry.
+4. The host verifies target tool configuration and the saved handoff, invokes the
+   exact request once, and saves the original response before dispatch `bind`.
+5. `reconcile` processes an exact host lookup; `receive` verifies bound results;
+   `accept` records the controller's existing decision. Save returned objects.
+   C owns waits, continuation, mode decisions, phase activation and route advance.
+
+Python never invokes an unavailable native tool. The current native orchestration
+adapter owns argument mapping, actual identity, stopped-writer observations and
+governance disclosures/bookkeeping. Its private schema/version/session is not
+copied into B. Effects and host_call are plans, never execution receipts.
+
+Stage 2's pre-publication child completion is a planning candidate. Its existing
+stage owner publishes once, retains that receipt, then submits completed transfer
+evidence. B verifies planning/publication commits, local paths and the retained
+flow. It does not publish, re-review prose, certify test execution or validate
+remote Matt artifact URLs. Stage 4 publication/cleanup stay D-owned.
+
+The existing foreground runner loop/schema remains C-owned; C consumes B's
+portable result objects. Old records are not upgraded. Qualified standalone
+implementation without an A requirement keeps its existing standalone-entry
+gate/control path; never invent a requirement or attachment to fit B.
+
+## Handoff requests
+
+`prepare` requires exactly:
+
+| Field | Source/meaning |
+| --- | --- |
+| protocol, operation | Protocol above; prepare |
+| entry, expected_entry | A resolve request and complete current result |
+| stage, role | 0–4 and existing role; stage 3 also allows execution-agent |
+| requirement | Complete successful A document/frozen/attached result |
+| predecessor | Null for independent entry, otherwise full B accepted result |
+| target | Exact `{repository,branch}` |
+| delivery | Null for source already on target, otherwise proof below |
+| binding | Null at 0/1; actual Flow Worktree binding downstream |
+| scope | `{baseline,owned_paths,protected_paths,implementation_paths,closure_paths}` |
+| authorization | `{reference,flow_mode,scope_digest}` from confirmed checkpoint |
+| configuration | Existing select-configuration input for the actual target role |
+| semantic | `{objective,testing_basis,completion_criteria,constraints}` |
+
+Flow mode is stepwise or continuous. Scope digest uses entry_prepare.digest;
+the saved controller decision binds it, not a new permission token. Completion
+criteria and constraints are nonempty text lists. Path lists are sorted, unique
+exact repository-relative files; directories must be expanded and new files named.
+Baseline is current downstream HEAD, except Stage 4 retains the accepted Stage-3
+scope baseline and separately checks its candidate against current HEAD. Protected paths cannot overlap write paths;
+implementation and closure ownership cannot overlap. Frozen requirements must be
+protected. Do not derive authorized scope from observed diff contents.
+
+For attached stages 2–4, authorization additionally requires
+`phase:{run_id,attempt_id}` from the original Phase Run. B reads that exact run:
+Stage 2 must name its wrapper's source checkpoint; later stages must already
+belong to the authorized active current carrier. Native Stage-2 binding authorizes
+that precise returned designer in the existing wrapper, without claim/ready or
+activation. Those original carrier/source steps remain mandatory before work.
+
+Attached 0/1 may use requirement:null: current A entry/read-topic supplies the
+mutable document identity, not phase activation or completion. Downstream work
+requires a successful frozen Git source. Non-Git Stage 0 keeps snapshot authority.
+
+The sealed stage-input retains the whole request, controller_ref,
+requirement_identity, source_commit, delivery_facts and selection.
+`verify` and `render` take exactly `{protocol,operation,handoff}`. Verify checks
+current facts without replacing pins or authorization. Render returns payload
+and readable JSON text; it does not revalidate or authorize execution. Embed this
+unchanged machine payload in the existing role-specific bootstrap instructions;
+preserve the complete role protocol and semantic readiness evidence.
+Render also accepts a complete B accepted result and returns a completion payload
+and text. For stages 2–4 it additionally returns the existing runner-compatible
+stage_result (including handoff_json and control_checkpoint), avoiding manual
+footer/hash/identity reconstruction. Rendering historical acceptance does not
+replace a successor's freshness verification.
+
+## Separate requirement delivery producer
+
+B never merges, cherry-picks or copies requirements. It checks target Git objects
+and actual receiver bytes. A partial completed_evidence is never a frozen source.
+A discussion CP alone is not target-branch delivery.
+
+If source and delivery commits differ, proof is exactly `{commit,paths,receipt}`
+from the authenticated delivery owner. The reachable delivery commit must have
+one parent, change only those Markdown paths, include the requirement, and match
+the source commit for every listed document. B preserves both commits and calls
+A's target-side verification. Merge-based delivery requires a separately reviewed
+proof contract; matching requirement bytes alone is insufficient. This defines
+a receiver interface for the independent delivery task, not its implementation
+or a mandate to choose an integration algorithm.
+
+Missing delivery blocks downstream readiness. Recheck after worktree creation
+to detect target movement. Unrelated primary-checkout modifications are preserved
+and are not an obstacle to read-only delivery verification.
+
+## Dispatch control and receipts
+
+Prepare takes `{protocol,operation,handoff,control}`. Other operations take
+`{protocol,operation,record,control}` plus the fields below. Control is exactly
+`{context,discussion}`. Context is the existing current control checkpoint.
+Discussion is null for conversation/runner execution control; attached dedicated
+0/1 must supply its saved mutation envelope without operation/action:
+protocol_version, project_path, project_id, tree_id, actor_topic_id,
+actor_conversation_ref, expected_ledger_revision, expected_topic_revision,
+idempotency_key. Persist this exact intent before its mutation.
+
+B uses the original discussion adapter. `read-topic.workflow_control` exposes
+its authoritative readback, and topic_document_path supplies the document path.
+No second ledger exists. A repeated dedicated reservation returns unknown without
+host_call: recover the saved request and inspect the exact attempt before launch.
+
+Bind/reconcile add receipt with exactly:
+
+```text
+{adapter,receipt_ref,request_digest,attempt,role,event,status,ref,pending_id,configuration,raw}
+```
+
+Raw retains the original tool response. Event is create for bind, lookup for
+reconcile, result for receive. Creation status is ready, pending, unknown or
+not-created. Only ready carries ref, and it cannot also carry pending_id.
+For a resolved identity, configuration is the host-verified `{model,effort}` and
+must match the frozen selection; unresolved identities use null. Review and test
+references must come from the controller's actual verified evidence, not child
+assertions that independent reviewers existed or checks passed.
+Transport failure without proof of non-creation is unknown. The trusted host
+authenticates the request/response relationship before calling Python; JSON,
+hashes, receipt strings and self-reported booleans cannot establish it. This CLI
+is a trusted-controller boundary, not an authenticator for untrusted receipts.
+
+Attached ready 0/1 binding reads the exact handoff/wrapper attempt, applies
+bind-handoff or authorize-phase-carrier if unbound, then records creation-result.
+It does not claim/accept the handoff on behalf of the child or activate a phase.
+The carrier retains its own claim/ready obligations. A binding failure preserves
+the host creation and completed binding receipts in error.completed_evidence,
+always downstream_ready=false. Reconcile this attempt; never recreate the task.
+
+Unknown/pending outcomes retain the attempt. Exact host lookup is required;
+if unavailable, remain unknown. Never select a candidate by title, recency,
+timestamp or child text. Not-created cancels only the pending attempt/allocation;
+late receipts cannot revive it. Identical replay ACKs, conflicting content fails.
+Save a known identity even if source later drifts; it is not permission to work
+on stale input. Replacement authorization stays with the controller.
+
+## Results and acceptance
+
+Receive adds receipt and `result={delivery_id,status,payload}`. Business status
+is completed, continue, needs_input or technical_error. Completed requires host
+status stopped according to the adapter's stopped-writer contract, not idle or
+single-turn completion. The host must reconcile/stop writers before reporting it.
+Noncompleted observations retain the same bound attempt.
+
+Completed payloads are strict:
+
+| Stage/role | Fields |
+| --- | --- |
+| 0/1 | artifacts, checks, requirement (successful A result), delivery (proof or null) |
+| 2 | artifacts, checks, planning_commit, planning_merge_commit, planning_paths |
+| 3 dispatcher | artifacts, checks, candidate_commit, review, verification |
+| execution-agent | changed_paths, file_hashes, tests |
+| 4 | artifacts, checks, candidate_commit, merge_commit, changed_paths, cleanup |
+
+Artifacts/checks are nonempty text lists, not proof that commands ran. Review uses
+the existing two-independent-reviewer schema on the exact candidate. Execution
+results use actual allocation snapshots and peer attribution checks. Stage 1
+completion requires target delivery. Stage 4 cleanup is verified from Git and
+resources; partial cleanup preserves publication and does not permit republishing.
+
+Accept adds `decision={reference,delivery_digest}` from the controller's confirmed
+checkpoint. Received Git facts are checked again. Only the sealed accepted result
+can be a successor predecessor. Allocation acceptance is not stage completion.
+Accepted replay ACKs without mutation; prospective consumption separately checks
+freshness. B never dispatches a successor, archives tasks or runs a recovery loop.
+
+## Compatibility and verification
+
+Packages add stage_transfer=workflow-stage-transfer-v1 to their exact compatibility
+key. Old runs keep original pinned runtime/records; no migration. Full A evidence
+stays outside strict control context. Only necessary design and launch transitions
+extend the existing control checkpoint.
+
+Real Git/A/ledger tests validate local evidence. Fixture host responses validate
+the adapter contract, not actual native tool behavior. Real creation, asynchronous
+ready resolution, stopped-writer proof and lost-response lookup need separate
+field acceptance. Do not launch business tasks just to manufacture that evidence.

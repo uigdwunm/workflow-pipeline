@@ -58,7 +58,8 @@ a snapshot preparation failure recovers at its failed local operation.
 
 Read [Workflow Control](../shared/guided-implementation/workflow-control-protocol.md) and [thread settings](../shared/guided-implementation/thread-settings-protocol.md). Use select-configuration with current native adapter evidence for solution-designer. Preserve explicit user and supported frozen settings. Without overrides use actual runtime inheritance and never claim an unverified model. Disclose the pair, reason and receipt. The adapter owns concrete argument support and identity.
 
-Build the canonical child payload from `templates.md`. It contains
+Use Stage Transfer prepare/verify/render and dispatch prepare to build the
+canonical child payload from `templates.md`. It contains
 the semantic role, requirement source, project and repository, planning target,
 Flow Worktree binding, permissions, settings and flow mode. Keep it bounded to
 those stage facts and do not carry conversation history.
@@ -338,9 +339,10 @@ orchestration adapter.
 - **Continuous:** require the saved child identity, exact message type, protocol
   version, flow mode, all fixed completion fields including the same path
   manifest, and child-reported documentation-aware clean state. Do not
-  independently validate artifact, publication, commit, workspace, semantic,
-  or quality claims. Missing or inconsistent schema is an orchestration
-  anomaly; reported facts are otherwise trusted.
+  re-review semantic or quality decisions. Use Stage Transfer to independently
+  verify native identity, local paths, publication commits, protected source and
+  worktree facts before stage acceptance. Missing or inconsistent evidence is
+  an orchestration anomaly.
 
 Process each trusted child completion once. Pass its `本地规划路径` unchanged as
 `allowed_paths` and the frozen requirement-source paths as `protected_paths`,
