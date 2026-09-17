@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "97965587f916c3d2bc0c12e5a69876ea48de7b58066c8aa42fbfd6c27e1fe1a9",
+  "bundle_digest": "d3fad9d0add0797435a6de855d1175b073cce27c5417a67b9a33c44683ae93a6",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -10,6 +10,7 @@
       3
     ],
     "ledger_write": 3,
+    "preparation": "workflow-preparation-v1",
     "supervision": "flow-worktree-v1",
     "thread_settings": "thread-settings-v5"
   },
@@ -48,6 +49,10 @@
       "mode": "0644",
       "sha256": "124b42b44171f7adcdc67a390c12f3112d29969cbca447fa432e75e38f44d0e4"
     },
+    "references/shared/entry-preparation.md": {
+      "mode": "0644",
+      "sha256": "1a2abce5aa020723f892207128d80bcecd55fb7c69058d4605b038ea8e27a490"
+    },
     "references/shared/guided-implementation/execution-protocol.md": {
       "mode": "0644",
       "sha256": "c540a64505626e062a221e837ef6f679867c28e0beec4f6a28118c0150318e2c"
@@ -70,11 +75,15 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "52268159769e4d3599da85b69e1bc861bcd72df3858387775f9ccdf5ed0d0c38"
+      "sha256": "0edd12546ba0da19002deec3c7d137c7123f6f31ec507f3d6559176be5da0ab9"
+    },
+    "references/shared/requirement-preparation.md": {
+      "mode": "0644",
+      "sha256": "a8182bdc72c8b21ee6efc3ef5d5c4628f592d479deddc8811d433ead9cb17071"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
-      "sha256": "889f1f9d8d9b058c3adba995aeed0d563a17cee30822f955ef9bcfec6a466272"
+      "sha256": "4cfd480a5cbb47f12f173e1f0326ac8e7e86d618b93818e8d1c108faf8d52706"
     },
     "scripts/discussion_core/__init__.py": {
       "mode": "0644",
@@ -140,9 +149,17 @@
       "mode": "0644",
       "sha256": "c37f905bb051d75e3e58b49dad6fb3e52eade0cdc69c644211d870094a1bac46"
     },
+    "scripts/entry_prepare.py": {
+      "mode": "0644",
+      "sha256": "8ba123e5ceaad6662846cd39da25df54ff61fa5cd382b6642184f4e07acace77"
+    },
     "scripts/host_skill_registry.py": {
       "mode": "0644",
       "sha256": "61fc2fc0cf9670734426fc1dffe6f1b41d3b973a6dbf0d33f92088da0ebf1b37"
+    },
+    "scripts/requirement_prepare.py": {
+      "mode": "0644",
+      "sha256": "3ab1fe10bf2594b5fcf0a156d0b3f0cb216d730147ee81477b00aadcac3aba61"
     },
     "scripts/skill_preflight.py": {
       "mode": "0644",
@@ -220,8 +237,12 @@
     "guided-implementation/scripts/workflow_control_git.py",
     "guided-implementation/scripts/workflow_stage_result.schema.json",
     "shared/LICENSE",
+    "shared/references/entry-preparation.md",
     "shared/references/package-execution.md",
+    "shared/references/requirement-preparation.md",
+    "shared/scripts/entry_prepare.py",
     "shared/scripts/host_skill_registry.py",
+    "shared/scripts/requirement_prepare.py",
     "shared/scripts/skill_preflight.py",
     "solution-design/references/conversation-source.md"
   ],

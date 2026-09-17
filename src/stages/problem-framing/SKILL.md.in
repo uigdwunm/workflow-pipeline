@@ -8,6 +8,11 @@ Before any stage action, read and execute [Package execution preflight]({{resour
 
 # 1拷问
 
+Use [requirement preparation]({{resource:shared/references/requirement-preparation.md}})
+for document creation/update, exact-path commit, byte verification and recovery.
+Persist its complete intent/receipt in the existing checkpoint. Keep semantic
+questioning, completion confirmation and dedicated-task authority unchanged.
+
 Turn the user's target into a shared, implementation-relevant understanding.
 Use Matt Pocock's discussion Skills for the questioning itself. Do not choose
 the engineering implementation or write implementation code in this stage.

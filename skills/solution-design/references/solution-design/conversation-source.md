@@ -21,6 +21,12 @@ Ordinary implementation design choices belong in the Spec, not this snapshot.
 
 ## Save and freeze
 
+Execute the steps below through the
+[requirement adapter](../shared/requirement-preparation.md):
+prepare/write the snapshot, save its receipt in the existing checkpoint, then
+prepare/freeze its exact bytes. Use reconcile with the original intent after
+uncertain outcomes. Do not manually assemble commit/hash evidence.
+
 An explicit request to enter Stage 2 authorizes this bounded local preparation:
 
 1. Resolve the target repository and planning target. Use the repository's

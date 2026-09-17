@@ -1,5 +1,11 @@
 # Requirement Document Contract
 
+Use [requirement preparation](../requirement-preparation.md)
+for mechanical document writes, exact commits and frozen evidence. Agents retain
+semantic readiness and user decisions. Attached sources use the original DW/CP
+authority through that adapter; standalone sources use the existing conversation
+checkpoint. Never construct a second requirement authority for an attached topic.
+
 Phases 0 and 1 always own exactly one mutable requirement document for the
 current target. Phase 2 consumes one committed, frozen requirement document
 as its only child requirement source. An explicit standalone Stage-2 request

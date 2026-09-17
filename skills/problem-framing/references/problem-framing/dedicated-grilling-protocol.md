@@ -172,6 +172,12 @@ an unambiguous confirmation of an unchanged block authorizes finalization.
 
 ## Dedicated task: finalize and deliver
 
+The [requirement adapter](../shared/requirement-preparation.md)
+executes the mechanical write/freeze steps under the existing completion
+confirmation. Standalone commits preserve unrelated index/worktree changes.
+Attached sources retain their original DW/CP route and authority. Delivery IDs,
+carrier binding, phase completion and result acceptance remain owned here.
+
 After completion confirmation:
 
 1. Record `阶段结果：拷问完成`, the user confirmation and final native-document

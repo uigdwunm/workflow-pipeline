@@ -80,6 +80,53 @@ class PreflightBoundaryTests(unittest.TestCase):
         path.write_text('---\nname: '+name+'\ndescription: external test fixture\n---\n')
         return {'name':name,'entry':str(path),'source':'project'}
 
+    def test_preparation_clis_freeze_conversation_with_real_runtime_and_packages(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repository = root / 'repo'
+            repository.mkdir()
+            def git(*args):
+                return subprocess.run(['git', '-C', str(repository), *args], check=True, capture_output=True, text=True).stdout.strip()
+            git('init', '-q', '-b', 'main')
+            git('config', 'user.name', 'Fixture')
+            git('config', 'user.email', 'fixture@example.invalid')
+            git('commit', '--allow-empty', '-qm', 'baseline')
+            thread = '019fd6ea-2afb-73e0-810c-0bb2636aeaae'
+            sessions = root / 'sessions'
+            page = sessions / '2026/08/06' / ('rollout-2026-08-06T19-51-38-' + thread + '.jsonl')
+            page.parent.mkdir(parents=True)
+            page.write_text('\n'.join(json.dumps(row) for row in [
+                {'type': 'session_meta', 'payload': {'id': thread, 'session_id': thread, 'source': 'vscode'}},
+                {'type': 'turn_context', 'payload': {'model': 'fixture-model', 'effort': 'high', 'turn_id': 'turn-1'}}]) + '\n')
+            env = {**os.environ, 'CODEX_THREAD_ID': thread, 'CODEX_SESSION_ID': thread, 'CODEX_SESSIONS_ROOT': str(sessions)}
+            own = self.own(2)
+            source = {'protocol': 'workflow-entry-v1', 'operation': 'resolve', 'stage': 2, 'action': 'entry',
+                'host': {'project_path': str(repository), 'project_id': 'project', 'thread_id': thread,
+                         'controller_ref': thread, 'role': 'controller', 'source_ref': None, 'receipt': 'tool:fixture'},
+                'source': {'kind': 'conversation'}, 'target': {'kind': 'planning', 'repository': str(repository), 'branch': 'main'},
+                'registry': {'source': 'host-current-skills', 'entries': [own]}}
+            script = self.packages / 'solution-design/scripts/requirement_prepare.py'
+            def call(operation, **fields):
+                response = subprocess.run([sys.executable, str(script)], cwd=repository, env=env,
+                    input=json.dumps({'protocol': 'requirement-freeze-v1', 'operation': operation, 'entry': source, **fields}),
+                    capture_output=True, text=True)
+                self.assertEqual(response.returncode, 0, response.stdout + response.stderr)
+                return json.loads(response.stdout)['result']
+            intent = call('prepare', purpose='write', path='docs/requirements/source.md', version=1,
+                          authorization='explicit Stage 2 request', content='Confirmed goal and acceptance.\n')
+            receipt = call('write', intent=intent)
+            frozen_intent = call('prepare', purpose='freeze', path=receipt['path'], version=1,
+                                 authorization='explicit Stage 2 request', previous=receipt)
+            frozen = call('freeze', intent=frozen_intent)
+            self.assertEqual(frozen['commit'], git('rev-parse', 'HEAD'))
+            self.assertEqual(call('reconcile', intent=frozen_intent)['commit'], frozen['commit'])
+            self.assertEqual(git('status', '--porcelain'), '')
+            for package in self.names:
+                manifest = json.loads((self.packages / package / 'package.json').read_text())
+                self.assertEqual(manifest['compatibility_key']['preparation'], 'workflow-preparation-v1')
+                self.assertIn('scripts/entry_prepare.py', manifest['files'])
+                self.assertIn('scripts/requirement_prepare.py', manifest['files'])
+
     def test_action_dependencies_are_checked_only_when_selected(self):
         cases = [(0,'discuss',[]),(1,'route',['ask-matt']),
             (1,'grill-with-docs',['grill-with-docs','grilling','domain-modeling']),

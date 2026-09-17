@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "8816a8c36c83dae14936c084c64c03fa0f485a51f130582cfdc278869c3ddef9",
+  "bundle_digest": "d190a4143f9e7478153784500251effeaba1c110f3619d982ab6e9de9177c0c0",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -10,6 +10,7 @@
       3
     ],
     "ledger_write": 3,
+    "preparation": "workflow-preparation-v1",
     "supervision": "flow-worktree-v1",
     "thread_settings": "thread-settings-v5"
   },
@@ -31,7 +32,7 @@
     },
     "references/problem-framing/dedicated-grilling-protocol.md": {
       "mode": "0644",
-      "sha256": "bf40a770156950f1cd7e5fb57544893b491db5c475bec647f781e234660172b3"
+      "sha256": "55e2205b7e5cc0f3c2c1b7a4a5bfb527d1eee303faaa495d2c4a8d8dd04dca61"
     },
     "references/problem-framing/templates.md": {
       "mode": "0644",
@@ -59,7 +60,7 @@
     },
     "references/shared/design-discussion/requirement-document-contract.md": {
       "mode": "0644",
-      "sha256": "3027512ee08edacfe5ce0eb6b4f3aef36eaa6eda8ff052825262b2169fc85475"
+      "sha256": "0156624cbaf9979a360d8ab602be978eba958fac8ba83b71fcab26db4ceddac0"
     },
     "references/shared/design-discussion/split-gate-contract.md": {
       "mode": "0644",
@@ -73,6 +74,10 @@
       "mode": "0644",
       "sha256": "71ebc2484c06c212da78e60bb855293d4ebf767e31ad0db3cddeb84835067b0d"
     },
+    "references/shared/entry-preparation.md": {
+      "mode": "0644",
+      "sha256": "1a2abce5aa020723f892207128d80bcecd55fb7c69058d4605b038ea8e27a490"
+    },
     "references/shared/guided-implementation/thread-settings-protocol.md": {
       "mode": "0644",
       "sha256": "e2bc6c671018800c0d50a6dfc7ddcedf3fd14bc2582f80987e5de2d7eeda86f6"
@@ -83,11 +88,15 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "52268159769e4d3599da85b69e1bc861bcd72df3858387775f9ccdf5ed0d0c38"
+      "sha256": "0edd12546ba0da19002deec3c7d137c7123f6f31ec507f3d6559176be5da0ab9"
+    },
+    "references/shared/requirement-preparation.md": {
+      "mode": "0644",
+      "sha256": "a8182bdc72c8b21ee6efc3ef5d5c4628f592d479deddc8811d433ead9cb17071"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
-      "sha256": "889f1f9d8d9b058c3adba995aeed0d563a17cee30822f955ef9bcfec6a466272"
+      "sha256": "4cfd480a5cbb47f12f173e1f0326ac8e7e86d618b93818e8d1c108faf8d52706"
     },
     "scripts/discussion_core/__init__.py": {
       "mode": "0644",
@@ -153,9 +162,17 @@
       "mode": "0644",
       "sha256": "c37f905bb051d75e3e58b49dad6fb3e52eade0cdc69c644211d870094a1bac46"
     },
+    "scripts/entry_prepare.py": {
+      "mode": "0644",
+      "sha256": "8ba123e5ceaad6662846cd39da25df54ff61fa5cd382b6642184f4e07acace77"
+    },
     "scripts/host_skill_registry.py": {
       "mode": "0644",
       "sha256": "61fc2fc0cf9670734426fc1dffe6f1b41d3b973a6dbf0d33f92088da0ebf1b37"
+    },
+    "scripts/requirement_prepare.py": {
+      "mode": "0644",
+      "sha256": "3ab1fe10bf2594b5fcf0a156d0b3f0cb216d730147ee81477b00aadcac3aba61"
     },
     "scripts/skill_preflight.py": {
       "mode": "0644",
@@ -228,8 +245,12 @@
     "problem-framing/references/dedicated-grilling-protocol.md",
     "problem-framing/references/templates.md",
     "shared/LICENSE",
+    "shared/references/entry-preparation.md",
     "shared/references/package-execution.md",
+    "shared/references/requirement-preparation.md",
+    "shared/scripts/entry_prepare.py",
     "shared/scripts/host_skill_registry.py",
+    "shared/scripts/requirement_prepare.py",
     "shared/scripts/skill_preflight.py",
     "solution-design/references/conversation-source.md"
   ],
