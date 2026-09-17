@@ -31,6 +31,10 @@ json.dump(state, open(state_path, 'w'))
 mode = os.environ.get('FIXTURE_MODE', 'success')
 if mode == 'package-change' and stage == 'stage3':
     open(payload['skill_paths']['stage4'], 'a').write('changed by fault injection')
+if mode == 'registry-remove' and stage == 'stage3':
+    current = json.load(open(payload['registry_input']))
+    current['registry']['entries'] = current['registry']['entries'][:-1]
+    json.dump(current, open(payload['registry_input'], 'w'))
 if mode == 'nonzero': sys.exit(9)
 if mode == 'tail-error':
     print('x' * 70000)
@@ -143,6 +147,55 @@ class WorkflowCliTests(unittest.TestCase):
                 self.fail(f"runner exited before thread.started: {stderr}")
             time.sleep(0.05)
         self.fail("runner did not persist thread.started before signal")
+
+    def test_resume_requires_current_registration(self):
+        result = self.invoke('start', str(self.confirmed), mode='needs-input')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = self.record.read_bytes()
+        counts = self.fixture_state.read_bytes()
+        current = self.confirmed_input()
+        current['registry']['entries'] = current['registry']['entries'][:-1]
+        self.confirmed.write_text(json.dumps(current))
+        rejected = self.invoke('resume', str(self.record), 'continue')
+        self.assertEqual(rejected.returncode, 1, rejected.stdout + rejected.stderr)
+        self.assertIn('skill_not_active', rejected.stderr)
+        self.assertEqual(self.record.read_bytes(), saved)
+        self.assertEqual(self.fixture_state.read_bytes(), counts)
+        self.confirmed.write_text(json.dumps(self.confirmed_input()))
+        resumed = self.invoke('resume', str(self.record), 'continue')
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+
+    def test_handoff_rechecks_current_registration_and_preserves_results(self):
+        result = self.invoke('start', str(self.confirmed), mode='registry-remove')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('skill_not_active', result.stderr)
+        saved = self.state()
+        self.assertEqual(set(saved['stage_results']), {'stage2', 'stage3'})
+        self.assertNotIn('stage4', saved['sessions'])
+        refreshed = self.root / 'refreshed.json'
+        refreshed.write_text(json.dumps(self.confirmed_input()))
+        result = self.invoke('resume', str(self.record), 'continue', '--registry-input', str(refreshed))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.state()['stage_results']['stage3'], saved['stage_results']['stage3'])
+        counts = json.loads(self.fixture_state.read_text())
+        self.assertEqual([counts[s] for s in ('stage2', 'stage3', 'stage4')], [1, 1, 1])
+
+    def test_refreshed_registration_keeps_original_execution_identity(self):
+        result = self.invoke('start', str(self.confirmed), mode='needs-input')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pinned = self.state()['confirmed']['packages']['stage4']
+        replacement = self.root / 'compatible-closure'
+        shutil.copytree(Path(pinned['entry']).parent, replacement,
+                        ignore=shutil.ignore_patterns('__pycache__'))
+        current = self.confirmed_input()
+        current['registry']['entries'][-1]['entry'] = str(replacement / 'SKILL.md')
+        self.confirmed.write_text(json.dumps(current))
+        result = self.invoke('resume', str(self.record), 'continue')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.state()['confirmed']['packages']['stage4'], pinned)
+        counts = json.loads(self.fixture_state.read_text())
+        payload = json.loads(counts['prompts']['stage4'].splitlines()[-1])
+        self.assertEqual(payload['skill_paths']['stage4'], pinned['entry'])
 
     def test_missing_successor_prevents_new_run_and_changed_target_preserves_results(self):
         initial = self.confirmed_input()
@@ -466,6 +519,8 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(self.invoke("start", str(self.confirmed)).returncode, 1)
         self.assertFalse((self.repository / "run.json").exists())
         valid = self.confirmed_input(); self.record.parent.mkdir()
+        self.confirmed.write_text(json.dumps(valid))
+        valid['registry_input'] = str(self.confirmed.resolve())
         response = subprocess.run([sys.executable,str(SCRIPT.with_name('skill_preflight.py'))],
             input=json.dumps({'stage':3,'action':'entry','target_stages':[2,4],'registry':valid['registry']}),
             capture_output=True,text=True,check=True)

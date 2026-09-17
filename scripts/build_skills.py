@@ -30,6 +30,22 @@ def validate_files(files):
     standard.update({'__future__', 'typing'})
     modules = {p[len('scripts/'):-3].replace('/', '.').removesuffix('.__init__')
         for p in files if p.startswith('scripts/') and p.endswith('.py')}
+    exports = {}
+    for path, data in files.items():
+        if not path.startswith('scripts/') or not path.endswith('.py'):
+            continue
+        module = path[len('scripts/'):-3].replace('/', '.').removesuffix('.__init__')
+        names = set()
+        for node in ast.parse(data, filename=path).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                if not isinstance(node, ast.ImportFrom) or node.module is not None:
+                    names.update(alias.asname or alias.name.split('.')[0] for alias in node.names)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                names.update(target.id for expression in targets for target in ast.walk(expression) if isinstance(target, ast.Name))
+        exports[module] = names
     for path, data in files.items():
         if Path(path).name.startswith('test_') or ('SKILL.md' in path and path != 'SKILL.md'):
             raise ValueError(f'non-release resource: {path}')
@@ -56,6 +72,11 @@ def validate_files(files):
                 for imported in imports:
                     if imported not in modules and imported.split('.')[0] not in standard:
                         raise ValueError(f'undeclared import {imported}: {path}:{node.lineno}')
+                    if isinstance(node, ast.ImportFrom) and imported in modules:
+                        for alias in node.names:
+                            if (alias.name != '*' and alias.name not in exports[imported]
+                                and imported + '.' + alias.name not in modules):
+                                raise ValueError(f'undeclared import {imported}.{alias.name}: {path}:{node.lineno}')
             for node in ast.walk(tree):
                 if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                     and node.func.attr == 'with_name' and node.args and isinstance(node.args[0], ast.Constant)):

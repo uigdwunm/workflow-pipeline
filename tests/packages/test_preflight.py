@@ -125,6 +125,13 @@ class PreflightBoundaryTests(unittest.TestCase):
                 finally:
                     if kind=='permission':entry.chmod(0o644)
 
+    def test_registry_source_containers_return_structured_errors(self):
+        for source in ([], {}):
+            with self.subTest(source=source):
+                response=self.call(0,'entry',[self.own(0)],registry={'source':source,'entries':[self.own(0)]})
+                self.assertEqual(response['error']['code'],'registry_unavailable')
+                self.assertEqual(response['error']['required_skill'],'design-discussion')
+
     def test_nonregular_manifest_is_a_structured_package_error(self):
         manifest=self.packages/'change-closure/package.json'
         original=manifest.read_bytes()

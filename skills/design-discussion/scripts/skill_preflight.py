@@ -160,7 +160,8 @@ def resolve_skill(name, registry, roots):
     candidates = diagnostic_candidates(name, roots)
     details = {'required_skill': name, 'candidates': candidates,
         'recovery': 'Install or enable the named Skill, refresh the current task registry, and retry this action.'}
-    if not isinstance(registry, dict) or registry.get('source') not in {'host-current-skills','controller-current-skills'}:
+    if (not isinstance(registry, dict) or not isinstance(registry.get('source'), str)
+        or registry['source'] not in {'host-current-skills','controller-current-skills'}):
         raise PreflightError('registry_unavailable', 'current trusted host registry is required', **details)
     entries = registry.get('entries')
     if not isinstance(entries, list) or any(not isinstance(e, dict) for e in entries):

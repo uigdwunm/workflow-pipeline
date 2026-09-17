@@ -175,7 +175,20 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[
         "git_common_dir": str(git_common_dir), "target_branch": raw["target_branch"],
         "authority_scope": authority, "run_record": str(record_path), "stages": normalized_stages,
         "packages": packages,
+        "registry_input": str(_absolute_path(raw.get('registry_input'), 'registry_input')),
     }
+
+
+def _check_current_registry(confirmed: dict[str, Any], stages: list[int]) -> None:
+    current = _read_json(Path(confirmed['registry_input']), 'current registry input')
+    try:
+        resolved = preflight({'stage': 3, 'action': 'entry', 'target_stages': stages,
+                              'registry': current.get('registry')})
+        for identity in resolved['packages'].values():
+            if identity['compatibility_key'] != confirmed['packages']['runner']['compatibility_key']:
+                raise WorkflowError('incompatible_package: current registry protocols changed')
+    except PreflightError as exc:
+        raise WorkflowError(f'{exc.code}: {exc}; retained checkpoint, no executor launched') from exc
 
 
 def _atomic_save(path: Path, state: dict[str, Any]) -> None:
@@ -273,6 +286,7 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "user_answer": answer,
         "continuing_same_session": continuing,
         "skill_paths": {name: confirmed['packages'][name]['entry'] for name in STAGES},
+        "registry_input": confirmed['registry_input'],
         "package_identities": confirmed['packages'],
     }
     return (
@@ -536,6 +550,7 @@ def _mark_failure(
 def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, continuing: bool) -> dict[str, Any]:
     stage = state["current_stage"]
     confirmed = state["confirmed"]
+    _check_current_registry(confirmed, [int(stage[-1])])
     try:
         verify_identity(confirmed['packages']['runner'])
         verify_identity(confirmed['packages'][stage])
@@ -665,7 +680,9 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
 
 
 def start(confirmed_path: Path) -> int:
-    confirmed = validate_confirmed(_read_json(confirmed_path, "confirmed input"))
+    raw = _read_json(confirmed_path, "confirmed input")
+    raw['registry_input'] = str(confirmed_path.resolve())
+    confirmed = validate_confirmed(raw)
     record_path = Path(confirmed["run_record"])
     if record_path.exists():
         raise WorkflowError("run record already exists; use resume")
@@ -677,7 +694,7 @@ def start(confirmed_path: Path) -> int:
         return _advance(state, record_path)
 
 
-def resume(record_path: Path, answer: str) -> int:
+def resume(record_path: Path, answer: str, registry_input: Path | None = None) -> int:
     if not answer.strip():
         raise WorkflowError("user_answer must not be empty")
     record_path = _absolute_path(str(record_path), "run_record")
@@ -685,6 +702,9 @@ def resume(record_path: Path, answer: str) -> int:
         state = _validate_record(_read_json(record_path, "run record"))
         status = state["status"]
         stage = state["current_stage"]
+        if registry_input is not None:
+            state['confirmed']['registry_input'] = str(registry_input.resolve())
+        _check_current_registry(state['confirmed'], [int(value[-1]) for value in STAGES[STAGES.index(stage):]])
         safe_between_stages = status == "active" and state.get("launch", {}).get("state") == "prelaunch" and stage not in state["sessions"]
         if status == "needs_input":
             state["status"] = "active"
@@ -715,6 +735,7 @@ def main(argv: list[str] | None = None) -> int:
     resume_parser = subcommands.add_parser("resume", help="resume a saved needs_input checkpoint")
     resume_parser.add_argument("run_record", type=Path)
     resume_parser.add_argument("user_answer")
+    resume_parser.add_argument("--registry-input", type=Path, help="current controller input containing registry evidence")
     args = parser.parse_args(argv)
     previous_sigterm = signal.getsignal(signal.SIGTERM)
 
@@ -724,7 +745,7 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGTERM, interrupt_on_sigterm)
     try:
-        return start(args.confirmed_input) if args.command == "start" else resume(args.run_record, args.user_answer)
+        return start(args.confirmed_input) if args.command == "start" else resume(args.run_record, args.user_answer, args.registry_input)
     except WorkflowError as exc:
         print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
         return 1

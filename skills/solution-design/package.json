@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "f4589de836d8290b98a34fc261b9a2f20f63ff9361a80902711dcab607724e12",
+  "bundle_digest": "281a68b8ff860fff5210062b13509c3b70f410f01e8e2dfd2d287c94564b04aa",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -62,7 +62,7 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "3a3cb9f7836cdc5d4f8e50c2bbb3521db4f24a8291fbeaad4fca5bf67dac281f"
+      "sha256": "d9189715c5b3210230a0d752665dc166bd994b0491e5511ac68e115d7dfbf2be"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -146,7 +146,7 @@
     },
     "scripts/skill_preflight.py": {
       "mode": "0644",
-      "sha256": "2f1a07a4ca0be140a64f09156b17d283183dee8d03de7417ba471c5887fdbd43"
+      "sha256": "1f317163a7ae6841793e80aeaf707afe47434dc3139c55db77759aed80533d48"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",

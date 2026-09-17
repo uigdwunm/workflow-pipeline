@@ -38,6 +38,19 @@ class PackageBuildTests(unittest.TestCase):
             self.assertNotEqual(broken.returncode, 0)
             self.assertIn('undeclared_runtime_dependency', broken.stderr)
 
+    def test_relative_from_import_requires_declared_module_or_export(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve();fixture=root/'source'
+            for directory in ('src','build','scripts'):
+                shutil.copytree(ROOT/directory,fixture/directory)
+            source=fixture/'src/shared/scripts/discussion_core/__init__.py'
+            source.write_text(source.read_text()+'\nfrom . import missing_runtime\n')
+            result=subprocess.run([sys.executable,str(fixture/'scripts/build_skills.py'),'--output',str(root/'packages')],
+                capture_output=True,text=True)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('missing_runtime',result.stderr)
+
     def test_committed_release_rebuilds_from_clean_archive(self):
         import io
         import tarfile

@@ -73,6 +73,14 @@ activation and archive protocol is satisfied; installation never supplies author
 
 The foreground runner belongs only to Stage 3's package. Start requires a current
 registry snapshot and freezes runner plus Stage 2/3/4 identities in record version
-2. Resume retains the record lock, sessions and completed results. Version 1 records
+2. The runner pins the confirmed-input file as `registry_input`, rereads its current
+`registry` before every executor launch, and rechecks all remaining targets on
+resume. The trusted host/controller must refresh that evidence when registrations
+change; executor filesystem discovery is not registration evidence. To supply a
+new controller evidence file, use `resume <record> <answer> --registry-input <file>`;
+the file must contain the current `registry` object. This changes evidence only:
+execution retains the original package realpaths and identities. Missing,
+ambiguous or incompatible current targets block without launching an executor.
+Resume retains the record lock, sessions and completed results. Version 1 records
 are read-only: `legacy_run_requires_original_runtime` means use the retained original
 runner and installation tree; never guess identities or migrate/restart the run.
