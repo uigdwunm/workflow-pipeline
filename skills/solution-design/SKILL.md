@@ -8,6 +8,11 @@ Before any stage action, read and execute [Package execution preflight](referenc
 
 # 2方案
 
+Use [requirement preparation](references/shared/requirement-preparation.md)
+to prepare conversation snapshots or verify the exact existing frozen source.
+Pass its committed source identity into the existing Flow Worktree launch; this
+adapter does not create or activate the designer or publish planning artifacts.
+
 Turn an accepted requirement source into the published planning artifacts that
 `3实现` will execute. Use one context-isolated subagent as the stage owner. Keep
 the primary agent responsible for conversation-source preparation, launch disclosure, user decisions,

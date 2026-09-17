@@ -1,5 +1,12 @@
 # Package execution and action preflight
 
+Use the [entry adapter](entry-preparation.md) to
+collect repository, task, source, settings and action dependencies before this
+stage's first side effect. It invokes the preflight below rather than requiring
+the Agent to assemble its results. Requirement preparation uses the
+[requirement adapter](requirement-preparation.md).
+The direct preflight interface below remains supported for existing callers.
+
 Before this stage's first side effect, query the host's complete current Skill
 registry for this task's project working directory. Invoke this package's
 `<skill-root>/scripts/skill_preflight.py` with one JSON object on stdin:

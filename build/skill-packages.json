@@ -13,7 +13,8 @@
     "ledger_write": 3,
     "control": 1,
     "supervision": "flow-worktree-v1",
-    "thread_settings": "thread-settings-v5"
+    "thread_settings": "thread-settings-v5",
+    "preparation": "workflow-preparation-v1"
   },
   "resources": {
     "design-discussion/SKILL.md": {
@@ -259,6 +260,22 @@
     "shared/LICENSE": {
       "source": "src/shared/LICENSE",
       "output": "LICENSE"
+    },
+    "shared/scripts/entry_prepare.py": {
+      "source": "src/shared/scripts/entry_prepare.py",
+      "output": "scripts/entry_prepare.py"
+    },
+    "shared/scripts/requirement_prepare.py": {
+      "source": "src/shared/scripts/requirement_prepare.py",
+      "output": "scripts/requirement_prepare.py"
+    },
+    "shared/references/entry-preparation.md": {
+      "source": "src/shared/references/entry-preparation.md",
+      "output": "references/shared/entry-preparation.md"
+    },
+    "shared/references/requirement-preparation.md": {
+      "source": "src/shared/references/requirement-preparation.md",
+      "output": "references/shared/requirement-preparation.md"
     }
   },
   "packages": {
@@ -300,7 +317,11 @@
         "guided-implementation/scripts/workflow_control_git.py",
         "shared/scripts/skill_preflight.py",
         "shared/scripts/host_skill_registry.py",
-        "shared/LICENSE"
+        "shared/LICENSE",
+        "shared/scripts/entry_prepare.py",
+        "shared/scripts/requirement_prepare.py",
+        "shared/references/entry-preparation.md",
+        "shared/references/requirement-preparation.md"
       ],
       "external_actions": {
         "discuss": []
@@ -338,7 +359,11 @@
         "problem-framing/references/templates.md",
         "shared/scripts/skill_preflight.py",
         "shared/scripts/host_skill_registry.py",
-        "shared/LICENSE"
+        "shared/LICENSE",
+        "shared/scripts/entry_prepare.py",
+        "shared/scripts/requirement_prepare.py",
+        "shared/references/entry-preparation.md",
+        "shared/references/requirement-preparation.md"
       ],
       "external_actions": {
         "route": [
@@ -384,7 +409,11 @@
         "solution-design/references/templates.md",
         "shared/scripts/skill_preflight.py",
         "shared/scripts/host_skill_registry.py",
-        "shared/LICENSE"
+        "shared/LICENSE",
+        "shared/scripts/entry_prepare.py",
+        "shared/scripts/requirement_prepare.py",
+        "shared/references/entry-preparation.md",
+        "shared/references/requirement-preparation.md"
       ],
       "external_actions": {
         "spec": [
@@ -437,7 +466,11 @@
         "guided-implementation/scripts/workflow_stage_result.schema.json",
         "shared/scripts/skill_preflight.py",
         "shared/scripts/host_skill_registry.py",
-        "shared/LICENSE"
+        "shared/LICENSE",
+        "shared/scripts/entry_prepare.py",
+        "shared/scripts/requirement_prepare.py",
+        "shared/references/entry-preparation.md",
+        "shared/references/requirement-preparation.md"
       ],
       "external_actions": {
         "dispatch": [
@@ -481,7 +514,11 @@
         "guided-implementation/scripts/workflow_control_git.py",
         "shared/scripts/skill_preflight.py",
         "shared/scripts/host_skill_registry.py",
-        "shared/LICENSE"
+        "shared/LICENSE",
+        "shared/scripts/entry_prepare.py",
+        "shared/scripts/requirement_prepare.py",
+        "shared/references/entry-preparation.md",
+        "shared/references/requirement-preparation.md"
       ],
       "external_actions": {
         "route": [

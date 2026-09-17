@@ -4,11 +4,14 @@ Resolve the primary checkout before any documentation edit. Do not enter or
 modify another task's worktree. A planning-source commit made after an
 implementation starts is detected at integration and requires user direction.
 
-Edit only stage-owned paths. Before a planning commit, require the primary
-checkout and index to contain only those paths, compare the expected HEAD,
-stage exact pathspecs, commit, and verify the commit. Worktree implementation
-activity does not block planning commits because each run uses its committed
-base.
+Edit only stage-owned paths. Use the
+[requirement adapter](../shared/requirement-preparation.md)
+to compare the expected HEAD, commit exact stage-owned paths and verify committed
+bytes. Preserve unrelated staged, unstaged and untracked work; its mere presence
+does not block a documentation commit. A conflicting staged version of an owned
+path does block it. Worktree implementation activity does not block planning
+commits because each run uses its committed base. Other concurrent Git writers
+must remain stopped during the exact planning commit.
 
 Unknown user work uses the stable workspace-decision block. Never stash, clean,
 reset or overwrite it. Recovery revalidates exact bytes, branch, and HEAD
