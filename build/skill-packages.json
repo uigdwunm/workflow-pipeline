@@ -1,0 +1,484 @@
+{
+  "format_version": 1,
+  "release": "1.0.0",
+  "source_revision": "self-contained-v1",
+  "compatibility_key": {
+    "handoff": "workflow-controller-v1",
+    "discussion_request": 1,
+    "ledger_read": [
+      1,
+      2,
+      3
+    ],
+    "ledger_write": 3,
+    "control": 1,
+    "supervision": "flow-worktree-v1",
+    "thread_settings": "thread-settings-v5"
+  },
+  "resources": {
+    "design-discussion/SKILL.md": {
+      "source": "src/stages/design-discussion/SKILL.md.in",
+      "output": "SKILL.md"
+    },
+    "design-discussion/agents/openai.yaml": {
+      "source": "src/stages/design-discussion/agents/openai.yaml",
+      "output": "agents/openai.yaml"
+    },
+    "design-discussion/references/checkpoint-protocol.md": {
+      "source": "src/shared/references/design-discussion/checkpoint-protocol.md",
+      "output": "references/shared/design-discussion/checkpoint-protocol.md"
+    },
+    "design-discussion/references/child-topic-protocol.md": {
+      "source": "src/shared/references/design-discussion/child-topic-protocol.md",
+      "output": "references/shared/design-discussion/child-topic-protocol.md"
+    },
+    "design-discussion/references/confirmation-contract.md": {
+      "source": "src/shared/references/design-discussion/confirmation-contract.md",
+      "output": "references/shared/design-discussion/confirmation-contract.md"
+    },
+    "design-discussion/references/ledger-protocol.md": {
+      "source": "src/shared/references/design-discussion/ledger-protocol.md",
+      "output": "references/shared/design-discussion/ledger-protocol.md"
+    },
+    "design-discussion/references/lifecycle-integration.md": {
+      "source": "src/shared/references/design-discussion/lifecycle-integration.md",
+      "output": "references/shared/design-discussion/lifecycle-integration.md"
+    },
+    "design-discussion/references/requirement-document-contract.md": {
+      "source": "src/shared/references/design-discussion/requirement-document-contract.md",
+      "output": "references/shared/design-discussion/requirement-document-contract.md"
+    },
+    "design-discussion/references/split-gate-contract.md": {
+      "source": "src/shared/references/design-discussion/split-gate-contract.md",
+      "output": "references/shared/design-discussion/split-gate-contract.md"
+    },
+    "design-discussion/references/templates.md": {
+      "source": "src/shared/references/design-discussion/templates.md",
+      "output": "references/shared/design-discussion/templates.md"
+    },
+    "design-discussion/references/topic-document-protocol.md": {
+      "source": "src/shared/references/design-discussion/topic-document-protocol.md",
+      "output": "references/shared/design-discussion/topic-document-protocol.md"
+    },
+    "design-discussion/scripts/discussion_core/__init__.py": {
+      "source": "src/shared/scripts/discussion_core/__init__.py",
+      "output": "scripts/discussion_core/__init__.py"
+    },
+    "design-discussion/scripts/discussion_core/checkpoint_authority.py": {
+      "source": "src/shared/scripts/discussion_core/checkpoint_authority.py",
+      "output": "scripts/discussion_core/checkpoint_authority.py"
+    },
+    "design-discussion/scripts/discussion_core/checkpoints.py": {
+      "source": "src/shared/scripts/discussion_core/checkpoints.py",
+      "output": "scripts/discussion_core/checkpoints.py"
+    },
+    "design-discussion/scripts/discussion_core/handoffs.py": {
+      "source": "src/shared/scripts/discussion_core/handoffs.py",
+      "output": "scripts/discussion_core/handoffs.py"
+    },
+    "design-discussion/scripts/discussion_core/phase_runs.py": {
+      "source": "src/shared/scripts/discussion_core/phase_runs.py",
+      "output": "scripts/discussion_core/phase_runs.py"
+    },
+    "design-discussion/scripts/discussion_core/question_resolution.py": {
+      "source": "src/shared/scripts/discussion_core/question_resolution.py",
+      "output": "scripts/discussion_core/question_resolution.py"
+    },
+    "design-discussion/scripts/discussion_core/registry.py": {
+      "source": "src/shared/scripts/discussion_core/registry.py",
+      "output": "scripts/discussion_core/registry.py"
+    },
+    "design-discussion/scripts/discussion_core/request.py": {
+      "source": "src/shared/scripts/discussion_core/request.py",
+      "output": "scripts/discussion_core/request.py"
+    },
+    "design-discussion/scripts/discussion_core/state.py": {
+      "source": "src/shared/scripts/discussion_core/state.py",
+      "output": "scripts/discussion_core/state.py"
+    },
+    "design-discussion/scripts/discussion_core/topic_dependencies.py": {
+      "source": "src/shared/scripts/discussion_core/topic_dependencies.py",
+      "output": "scripts/discussion_core/topic_dependencies.py"
+    },
+    "design-discussion/scripts/discussion_core/topic_dependency_authority.py": {
+      "source": "src/shared/scripts/discussion_core/topic_dependency_authority.py",
+      "output": "scripts/discussion_core/topic_dependency_authority.py"
+    },
+    "design-discussion/scripts/discussion_core/topic_dependency_gates.py": {
+      "source": "src/shared/scripts/discussion_core/topic_dependency_gates.py",
+      "output": "scripts/discussion_core/topic_dependency_gates.py"
+    },
+    "design-discussion/scripts/discussion_core/topic_dependency_lifecycle.py": {
+      "source": "src/shared/scripts/discussion_core/topic_dependency_lifecycle.py",
+      "output": "scripts/discussion_core/topic_dependency_lifecycle.py"
+    },
+    "design-discussion/scripts/discussion_core/topic_dependency_schema.py": {
+      "source": "src/shared/scripts/discussion_core/topic_dependency_schema.py",
+      "output": "scripts/discussion_core/topic_dependency_schema.py"
+    },
+    "design-discussion/scripts/discussion_core/workflow_control.py": {
+      "source": "src/shared/scripts/discussion_core/workflow_control.py",
+      "output": "scripts/discussion_core/workflow_control.py"
+    },
+    "design-discussion/scripts/discussion_protocol.py": {
+      "source": "src/shared/scripts/discussion_protocol.py",
+      "output": "scripts/discussion_protocol.py"
+    },
+    "problem-framing/SKILL.md": {
+      "source": "src/stages/problem-framing/SKILL.md.in",
+      "output": "SKILL.md"
+    },
+    "problem-framing/agents/openai.yaml": {
+      "source": "src/stages/problem-framing/agents/openai.yaml",
+      "output": "agents/openai.yaml"
+    },
+    "problem-framing/references/dedicated-grilling-protocol.md": {
+      "source": "src/stages/problem-framing/references/dedicated-grilling-protocol.md",
+      "output": "references/problem-framing/dedicated-grilling-protocol.md"
+    },
+    "problem-framing/references/repository-and-recovery.md": {
+      "source": "src/stages/problem-framing/references/repository-and-recovery.md",
+      "output": "references/problem-framing/repository-and-recovery.md"
+    },
+    "problem-framing/references/templates.md": {
+      "source": "src/stages/problem-framing/references/templates.md",
+      "output": "references/problem-framing/templates.md"
+    },
+    "solution-design/SKILL.md": {
+      "source": "src/stages/solution-design/SKILL.md.in",
+      "output": "SKILL.md"
+    },
+    "solution-design/agents/openai.yaml": {
+      "source": "src/stages/solution-design/agents/openai.yaml",
+      "output": "agents/openai.yaml"
+    },
+    "solution-design/references/conversation-source.md": {
+      "source": "src/stages/solution-design/references/conversation-source.md",
+      "output": "references/solution-design/conversation-source.md"
+    },
+    "solution-design/references/design-readiness.md": {
+      "source": "src/stages/solution-design/references/design-readiness.md",
+      "output": "references/solution-design/design-readiness.md"
+    },
+    "solution-design/references/subagent-protocol.md": {
+      "source": "src/stages/solution-design/references/subagent-protocol.md",
+      "output": "references/solution-design/subagent-protocol.md"
+    },
+    "solution-design/references/templates.md": {
+      "source": "src/stages/solution-design/references/templates.md",
+      "output": "references/solution-design/templates.md"
+    },
+    "guided-implementation/SKILL.md": {
+      "source": "src/stages/guided-implementation/SKILL.md.in",
+      "output": "SKILL.md"
+    },
+    "guided-implementation/agents/openai.yaml": {
+      "source": "src/stages/guided-implementation/agents/openai.yaml",
+      "output": "agents/openai.yaml"
+    },
+    "guided-implementation/references/execution-protocol.md": {
+      "source": "src/shared/references/guided-implementation/execution-protocol.md",
+      "output": "references/shared/guided-implementation/execution-protocol.md"
+    },
+    "guided-implementation/references/originating-task-protocol.md": {
+      "source": "src/shared/references/guided-implementation/originating-task-protocol.md",
+      "output": "references/shared/guided-implementation/originating-task-protocol.md"
+    },
+    "guided-implementation/references/thread-settings-protocol.md": {
+      "source": "src/shared/references/guided-implementation/thread-settings-protocol.md",
+      "output": "references/shared/guided-implementation/thread-settings-protocol.md"
+    },
+    "guided-implementation/references/workflow-control-protocol.md": {
+      "source": "src/shared/references/guided-implementation/workflow-control-protocol.md",
+      "output": "references/shared/guided-implementation/workflow-control-protocol.md"
+    },
+    "guided-implementation/references/worktree-execution.md": {
+      "source": "src/shared/references/guided-implementation/worktree-execution.md",
+      "output": "references/shared/guided-implementation/worktree-execution.md"
+    },
+    "guided-implementation/scripts/supervision_core/__init__.py": {
+      "source": "src/shared/scripts/supervision_core/__init__.py",
+      "output": "scripts/supervision_core/__init__.py"
+    },
+    "guided-implementation/scripts/supervision_core/commands.py": {
+      "source": "src/shared/scripts/supervision_core/commands.py",
+      "output": "scripts/supervision_core/commands.py"
+    },
+    "guided-implementation/scripts/supervision_protocol.py": {
+      "source": "src/shared/scripts/supervision_protocol.py",
+      "output": "scripts/supervision_protocol.py"
+    },
+    "guided-implementation/scripts/thread_settings.py": {
+      "source": "src/shared/scripts/thread_settings.py",
+      "output": "scripts/thread_settings.py"
+    },
+    "guided-implementation/scripts/workflow.py": {
+      "source": "src/stages/guided-implementation/scripts/workflow.py",
+      "output": "scripts/workflow.py"
+    },
+    "guided-implementation/scripts/workflow_control.py": {
+      "source": "src/shared/scripts/workflow_control.py",
+      "output": "scripts/workflow_control.py"
+    },
+    "guided-implementation/scripts/workflow_control_git.py": {
+      "source": "src/shared/scripts/workflow_control_git.py",
+      "output": "scripts/workflow_control_git.py"
+    },
+    "guided-implementation/scripts/workflow_stage_result.schema.json": {
+      "source": "src/stages/guided-implementation/scripts/workflow_stage_result.schema.json",
+      "output": "scripts/workflow_stage_result.schema.json"
+    },
+    "change-closure/SKILL.md": {
+      "source": "src/stages/change-closure/SKILL.md.in",
+      "output": "SKILL.md"
+    },
+    "change-closure/agents/openai.yaml": {
+      "source": "src/stages/change-closure/agents/openai.yaml",
+      "output": "agents/openai.yaml"
+    },
+    "change-closure/references/closure-actions.md": {
+      "source": "src/stages/change-closure/references/closure-actions.md",
+      "output": "references/change-closure/closure-actions.md"
+    },
+    "change-closure/references/closure-protocol.md": {
+      "source": "src/stages/change-closure/references/closure-protocol.md",
+      "output": "references/change-closure/closure-protocol.md"
+    },
+    "shared/scripts/skill_preflight.py": {
+      "source": "src/shared/scripts/skill_preflight.py",
+      "output": "scripts/skill_preflight.py"
+    },
+    "shared/references/package-execution.md": {
+      "source": "src/shared/references/package-execution.md",
+      "output": "references/shared/package-execution.md"
+    },
+    "shared/LICENSE": {
+      "source": "src/shared/LICENSE",
+      "output": "LICENSE"
+    }
+  },
+  "packages": {
+    "design-discussion": {
+      "stage": 0,
+      "roots": [
+        "design-discussion/SKILL.md",
+        "design-discussion/agents/openai.yaml",
+        "design-discussion/references/checkpoint-protocol.md",
+        "design-discussion/references/child-topic-protocol.md",
+        "design-discussion/references/confirmation-contract.md",
+        "design-discussion/references/ledger-protocol.md",
+        "design-discussion/references/lifecycle-integration.md",
+        "design-discussion/references/requirement-document-contract.md",
+        "design-discussion/references/split-gate-contract.md",
+        "design-discussion/references/templates.md",
+        "design-discussion/references/topic-document-protocol.md",
+        "design-discussion/scripts/discussion_core/__init__.py",
+        "design-discussion/scripts/discussion_core/checkpoint_authority.py",
+        "design-discussion/scripts/discussion_core/checkpoints.py",
+        "design-discussion/scripts/discussion_core/handoffs.py",
+        "design-discussion/scripts/discussion_core/phase_runs.py",
+        "design-discussion/scripts/discussion_core/question_resolution.py",
+        "design-discussion/scripts/discussion_core/registry.py",
+        "design-discussion/scripts/discussion_core/request.py",
+        "design-discussion/scripts/discussion_core/state.py",
+        "design-discussion/scripts/discussion_core/topic_dependencies.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_authority.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_gates.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_lifecycle.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_schema.py",
+        "design-discussion/scripts/discussion_core/workflow_control.py",
+        "design-discussion/scripts/discussion_protocol.py",
+        "guided-implementation/scripts/supervision_core/__init__.py",
+        "guided-implementation/scripts/supervision_core/commands.py",
+        "guided-implementation/scripts/supervision_protocol.py",
+        "guided-implementation/scripts/thread_settings.py",
+        "guided-implementation/scripts/workflow_control.py",
+        "guided-implementation/scripts/workflow_control_git.py",
+        "shared/scripts/skill_preflight.py",
+        "shared/LICENSE"
+      ],
+      "external_actions": {
+        "discuss": []
+      }
+    },
+    "problem-framing": {
+      "stage": 1,
+      "roots": [
+        "design-discussion/scripts/discussion_core/__init__.py",
+        "design-discussion/scripts/discussion_core/checkpoint_authority.py",
+        "design-discussion/scripts/discussion_core/checkpoints.py",
+        "design-discussion/scripts/discussion_core/handoffs.py",
+        "design-discussion/scripts/discussion_core/phase_runs.py",
+        "design-discussion/scripts/discussion_core/question_resolution.py",
+        "design-discussion/scripts/discussion_core/registry.py",
+        "design-discussion/scripts/discussion_core/request.py",
+        "design-discussion/scripts/discussion_core/state.py",
+        "design-discussion/scripts/discussion_core/topic_dependencies.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_authority.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_gates.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_lifecycle.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_schema.py",
+        "design-discussion/scripts/discussion_core/workflow_control.py",
+        "design-discussion/scripts/discussion_protocol.py",
+        "guided-implementation/scripts/supervision_core/__init__.py",
+        "guided-implementation/scripts/supervision_core/commands.py",
+        "guided-implementation/scripts/supervision_protocol.py",
+        "guided-implementation/scripts/thread_settings.py",
+        "guided-implementation/scripts/workflow_control.py",
+        "guided-implementation/scripts/workflow_control_git.py",
+        "problem-framing/SKILL.md",
+        "problem-framing/agents/openai.yaml",
+        "problem-framing/references/dedicated-grilling-protocol.md",
+        "problem-framing/references/repository-and-recovery.md",
+        "problem-framing/references/templates.md",
+        "shared/scripts/skill_preflight.py",
+        "shared/LICENSE"
+      ],
+      "external_actions": {
+        "route": [
+          "ask-matt"
+        ],
+        "grill-with-docs": [
+          "grill-with-docs",
+          "grilling",
+          "domain-modeling"
+        ]
+      }
+    },
+    "solution-design": {
+      "stage": 2,
+      "roots": [
+        "design-discussion/scripts/discussion_core/__init__.py",
+        "design-discussion/scripts/discussion_core/checkpoint_authority.py",
+        "design-discussion/scripts/discussion_core/checkpoints.py",
+        "design-discussion/scripts/discussion_core/handoffs.py",
+        "design-discussion/scripts/discussion_core/phase_runs.py",
+        "design-discussion/scripts/discussion_core/question_resolution.py",
+        "design-discussion/scripts/discussion_core/registry.py",
+        "design-discussion/scripts/discussion_core/request.py",
+        "design-discussion/scripts/discussion_core/state.py",
+        "design-discussion/scripts/discussion_core/topic_dependencies.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_authority.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_gates.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_lifecycle.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_schema.py",
+        "design-discussion/scripts/discussion_core/workflow_control.py",
+        "design-discussion/scripts/discussion_protocol.py",
+        "guided-implementation/scripts/supervision_core/__init__.py",
+        "guided-implementation/scripts/supervision_core/commands.py",
+        "guided-implementation/scripts/supervision_protocol.py",
+        "guided-implementation/scripts/thread_settings.py",
+        "guided-implementation/scripts/workflow_control.py",
+        "guided-implementation/scripts/workflow_control_git.py",
+        "solution-design/SKILL.md",
+        "solution-design/agents/openai.yaml",
+        "solution-design/references/conversation-source.md",
+        "solution-design/references/design-readiness.md",
+        "solution-design/references/subagent-protocol.md",
+        "solution-design/references/templates.md",
+        "shared/scripts/skill_preflight.py",
+        "shared/LICENSE"
+      ],
+      "external_actions": {
+        "spec": [
+          "to-spec"
+        ],
+        "decide-tickets": [
+          "ask-matt"
+        ],
+        "tickets": [
+          "to-tickets"
+        ],
+        "adr": [
+          "domain-modeling"
+        ]
+      }
+    },
+    "guided-implementation": {
+      "stage": 3,
+      "roots": [
+        "design-discussion/scripts/discussion_core/__init__.py",
+        "design-discussion/scripts/discussion_core/checkpoint_authority.py",
+        "design-discussion/scripts/discussion_core/checkpoints.py",
+        "design-discussion/scripts/discussion_core/handoffs.py",
+        "design-discussion/scripts/discussion_core/phase_runs.py",
+        "design-discussion/scripts/discussion_core/question_resolution.py",
+        "design-discussion/scripts/discussion_core/registry.py",
+        "design-discussion/scripts/discussion_core/request.py",
+        "design-discussion/scripts/discussion_core/state.py",
+        "design-discussion/scripts/discussion_core/topic_dependencies.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_authority.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_gates.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_lifecycle.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_schema.py",
+        "design-discussion/scripts/discussion_core/workflow_control.py",
+        "design-discussion/scripts/discussion_protocol.py",
+        "guided-implementation/SKILL.md",
+        "guided-implementation/agents/openai.yaml",
+        "guided-implementation/references/execution-protocol.md",
+        "guided-implementation/references/originating-task-protocol.md",
+        "guided-implementation/references/thread-settings-protocol.md",
+        "guided-implementation/references/workflow-control-protocol.md",
+        "guided-implementation/references/worktree-execution.md",
+        "guided-implementation/scripts/supervision_core/__init__.py",
+        "guided-implementation/scripts/supervision_core/commands.py",
+        "guided-implementation/scripts/supervision_protocol.py",
+        "guided-implementation/scripts/thread_settings.py",
+        "guided-implementation/scripts/workflow.py",
+        "guided-implementation/scripts/workflow_control.py",
+        "guided-implementation/scripts/workflow_control_git.py",
+        "guided-implementation/scripts/workflow_stage_result.schema.json",
+        "shared/scripts/skill_preflight.py",
+        "shared/LICENSE"
+      ],
+      "external_actions": {
+        "dispatch": [
+          "implement",
+          "tdd",
+          "code-review"
+        ],
+        "review": [
+          "code-review"
+        ]
+      }
+    },
+    "change-closure": {
+      "stage": 4,
+      "roots": [
+        "change-closure/SKILL.md",
+        "change-closure/agents/openai.yaml",
+        "change-closure/references/closure-actions.md",
+        "change-closure/references/closure-protocol.md",
+        "design-discussion/scripts/discussion_core/__init__.py",
+        "design-discussion/scripts/discussion_core/checkpoint_authority.py",
+        "design-discussion/scripts/discussion_core/checkpoints.py",
+        "design-discussion/scripts/discussion_core/handoffs.py",
+        "design-discussion/scripts/discussion_core/phase_runs.py",
+        "design-discussion/scripts/discussion_core/question_resolution.py",
+        "design-discussion/scripts/discussion_core/registry.py",
+        "design-discussion/scripts/discussion_core/request.py",
+        "design-discussion/scripts/discussion_core/state.py",
+        "design-discussion/scripts/discussion_core/topic_dependencies.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_authority.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_gates.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_lifecycle.py",
+        "design-discussion/scripts/discussion_core/topic_dependency_schema.py",
+        "design-discussion/scripts/discussion_core/workflow_control.py",
+        "design-discussion/scripts/discussion_protocol.py",
+        "guided-implementation/scripts/supervision_core/__init__.py",
+        "guided-implementation/scripts/supervision_core/commands.py",
+        "guided-implementation/scripts/supervision_protocol.py",
+        "guided-implementation/scripts/thread_settings.py",
+        "guided-implementation/scripts/workflow_control.py",
+        "guided-implementation/scripts/workflow_control_git.py",
+        "shared/scripts/skill_preflight.py",
+        "shared/LICENSE"
+      ],
+      "external_actions": {
+        "route": [
+          "ask-matt"
+        ]
+      }
+    }
+  }
+}

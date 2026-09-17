@@ -1,0 +1,6 @@
+interface:
+  display_name: "4归档"
+  short_description: "Commit closure documents and safely finish implementation"
+  default_prompt: "Use $change-closure to reuse the inherited Flow Worktree, commit any closure-owned document updates there, integrate implementation and closure together, clean the flow, and report exact local and remote outcomes."
+policy:
+  allow_implicit_invocation: true

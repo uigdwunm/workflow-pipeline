@@ -3,18 +3,21 @@ name: design-discussion
 description: Use when the user explicitly invokes $design-discussion, says 0讨论, or clearly asks to begin a sustained design discussion whose state must persist across conversations. Initialize and verify one durable root topic before asking the first substantive question, then guide the discussion one question at a time. Do not initialize for ordinary design consultation, incidental wording, or exploratory questions that do not explicitly request persistence.
 ---
 
+Before any stage action, read and execute [Package execution preflight](references/shared/package-execution.md). This entry is stage 0 (`design-discussion`). Pin this package first; check the current action before its side effects.
+
+
 # 0讨论
 
 Maintain a durable, document-driven design discussion while keeping ordinary
 consultation stateless.
 
 Read the shared
-[`requirement-document-contract.md`](references/requirement-document-contract.md)
+[`references/shared/design-discussion/requirement-document-contract.md`](references/shared/design-discussion/requirement-document-contract.md)
 before creating or changing the requirement document, and use
-[`confirmation-contract.md`](references/confirmation-contract.md) whenever a
+[`references/shared/design-discussion/confirmation-contract.md`](references/shared/design-discussion/confirmation-contract.md) whenever a
 workflow action needs user confirmation.
 
-Read [Workflow Control Protocol](../guided-implementation/references/workflow-control-protocol.md) before role preparation or transition. This stage uses Workflow Controller and preserves the Workflow Controller.
+Read [Workflow Control Protocol](references/shared/guided-implementation/workflow-control-protocol.md) before role preparation or transition. This stage uses Workflow Controller and preserves the Workflow Controller.
 
 An authenticated Dedicated Discussion Task with its accepted dedicated-stage binding works only on the shared requirement under that binding. It does not bootstrap a second topic, create another dedicated task, or become the Workflow Controller. It returns the committed requirement and any information-only split proposal to its frozen controller.
 
@@ -63,9 +66,9 @@ incomplete response, invalid path or failed reread stops persistent discussion;
 do not claim that 0讨论 has started and do not ask a substantive design
 question.
 
-Read [references/ledger-protocol.md](references/ledger-protocol.md) when
+Read [references/shared/design-discussion/ledger-protocol.md](references/shared/design-discussion/ledger-protocol.md) when
 validating bootstrap state or interpreting protocol errors. Read
-[references/topic-document-protocol.md](references/topic-document-protocol.md)
+[references/shared/design-discussion/topic-document-protocol.md](references/shared/design-discussion/topic-document-protocol.md)
 before changing the shared topic document.
 
 ## Run the one-question loop
@@ -82,7 +85,7 @@ After verified bootstrap:
 If the user introduces a new idea, acknowledge it and suspend the current
 question. Do not silently preserve, replace or discard an earlier decision.
 For detailed document sections and confirmation boundaries, read
-[references/topic-document-protocol.md](references/topic-document-protocol.md).
+[references/shared/design-discussion/topic-document-protocol.md](references/shared/design-discussion/topic-document-protocol.md).
 
 For a substantive document update, call `prepare-topic-update` with the
 current ledger and topic revisions, the authenticated topic binding, a new
@@ -132,7 +135,7 @@ design question. Never edit or delete the payload to force recovery.
 ## Publish a verifiable checkpoint
 
 Before pausing, handing off, splitting a topic, or entering a later stage,
-read [references/checkpoint-protocol.md](references/checkpoint-protocol.md) and
+read [references/shared/design-discussion/checkpoint-protocol.md](references/shared/design-discussion/checkpoint-protocol.md) and
 publish one verified `CP-*`. `prepare-checkpoint` freezes the purpose, exact
 topic-document bytes and SHA-256, decision digest, sorted path set, base ref,
 resolved base commit for Git, and a new immutable identity. Do not reuse a
@@ -153,13 +156,13 @@ ledger revision returned by that dry run.
 
 Read the applicable reference only when the action is requested:
 
-- [references/child-topic-protocol.md](references/child-topic-protocol.md) for
+- [references/shared/design-discussion/child-topic-protocol.md](references/shared/design-discussion/child-topic-protocol.md) for
   child topics or continuation;
-- [references/split-gate-contract.md](references/split-gate-contract.md) for
+- [references/shared/design-discussion/split-gate-contract.md](references/shared/design-discussion/split-gate-contract.md) for
   a Phase-0/1 split proposal or a requirements gate;
-- [references/lifecycle-integration.md](references/lifecycle-integration.md)
+- [references/shared/design-discussion/lifecycle-integration.md](references/shared/design-discussion/lifecycle-integration.md)
   for routing into stages 1–4;
-- [references/templates.md](references/templates.md) for stable topic and
+- [references/shared/design-discussion/templates.md](references/shared/design-discussion/templates.md) for stable topic and
   interaction formats.
 
 If the required deterministic operation is unavailable, stop and state that
@@ -175,7 +178,7 @@ bootstrap or an informal prompt-only handoff.
 ## Proactive topic split and requirements gates
 
 For the shared split and gate sequence, read
-[references/split-gate-contract.md](references/split-gate-contract.md). Keep
+[references/shared/design-discussion/split-gate-contract.md](references/shared/design-discussion/split-gate-contract.md). Keep
 the stage-specific direction below when acting in `0讨论`: use the proposal to
 preserve the active exploratory question, and return to that question only
 through its existing resume, adjust, or invalidate action after a split.
@@ -195,7 +198,7 @@ and an open gate, `accept-handoff` returns `active` and permits work immediately
 handoffs. A bound carrier does not replace the controller.
 
 To enter dedicated Stage 1 from phase 0, use the `0→1` wrapper sequence in
-[references/lifecycle-integration.md](references/lifecycle-integration.md).
+[references/shared/design-discussion/lifecycle-integration.md](references/shared/design-discussion/lifecycle-integration.md).
 If the old Stage-0 carrier already delivered an accepted result, retain its
 control checkpoint while preparing the single successor slot. Activation
 transfers exclusive requirement write authority; archive the old task only

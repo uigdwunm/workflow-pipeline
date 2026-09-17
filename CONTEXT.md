@@ -122,4 +122,12 @@ The verified Git identity that ties one Flow Worktree to its repository, branch,
 target, and committed ancestry across Stage handoffs and retries.
 _Avoid_: Conversation Binding
 
-Workflow Controller retains confirmation, routing and acceptance. Dedicated Discussion Task and Dedicated Problem Framing Task are visible 0/1 carriers. solution-designer, Implementation Dispatcher, Execution Agent and Closure Agent are native roles. See [Workflow Control Protocol](skills/guided-implementation/references/workflow-control-protocol.md).
+Workflow Controller retains confirmation, routing and acceptance. Dedicated Discussion Task and Dedicated Problem Framing Task are visible 0/1 carriers. solution-designer, Implementation Dispatcher, Execution Agent and Closure Agent are native roles. See [Workflow Control Protocol](src/shared/references/guided-implementation/workflow-control-protocol.md).
+
+## Package execution
+
+**Skill Package**:
+One generated, independently installable Stage entry and its complete internal resource closure. Shared source lives under `src/shared/`; stage source lives under `src/stages/`. Generated copies share the existing project/Git-derived coordination state, not package-specific ledgers or locks.
+
+**Pinned Package Identity**:
+The verified real root, entry, bundle digest and exact protocol compatibility key retained by one run. Current effective registry evidence establishes callability; filesystem discovery only diagnoses candidates. Updating registration evidence does not replace the pinned execution identity. See [Package execution](src/shared/references/package-execution.md).

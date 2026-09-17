@@ -11,6 +11,8 @@ if [[ ! -f "$validator" ]]; then
   exit 1
 fi
 
+python3 "$repo_root/scripts/build_skills.py" --check
+
 for skill_dir in "$repo_root"/skills/*; do
   python3 "$validator" "$skill_dir"
 done

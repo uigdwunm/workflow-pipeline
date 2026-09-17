@@ -1,0 +1,192 @@
+"""Dependency-free verification of published checkpoint artifacts."""
+
+from __future__ import annotations
+
+import base64
+import json
+import subprocess
+from pathlib import Path
+from typing import Any, Callable
+
+
+class CheckpointAuthorityCorrupt(ValueError):
+    """Persisted checkpoint fields cannot be interpreted coherently."""
+
+
+def git_commit_metadata(raw: str) -> dict[str, Any]:
+    """Parse one Git commit once, rejecting ambiguous checkpoint trailers."""
+    try:
+        header, message = raw.split("\n\n", 1)
+    except ValueError as error:
+        raise CheckpointAuthorityCorrupt("checkpoint commit is malformed") from error
+    parents = [line.split(" ", 1)[1] for line in header.splitlines() if line.startswith("parent ")]
+    trees = [line.split(" ", 1)[1] for line in header.splitlines() if line.startswith("tree ")]
+    trailers: dict[str, str] = {}
+    for line in message.splitlines():
+        if ": " not in line:
+            continue
+        key, value = line.split(": ", 1)
+        if key.startswith("Codex-"):
+            if key in trailers:
+                raise CheckpointAuthorityCorrupt("checkpoint trailer is duplicated")
+            trailers[key] = value
+    return {"message": message, "parents": parents, "trailers": trailers,
+            "tree": trees[0] if len(trees) == 1 else None}
+
+
+def _persisted_json(value: Any, label: str) -> Any:
+    if not isinstance(value, str):
+        raise CheckpointAuthorityCorrupt(f"{label} is missing")
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise CheckpointAuthorityCorrupt(f"{label} is invalid") from error
+
+
+def checkpoint_artifact_fields(checkpoint: dict[str, Any]) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """Parse and validate the one persisted document/blob authority shape."""
+    paths = _persisted_json(checkpoint.get("paths_json"), "checkpoint paths_json")
+    blobs = _persisted_json(checkpoint.get("blob_ids_json"), "checkpoint blob_ids_json")
+    digests = _persisted_json(checkpoint.get("document_digests_json"), "checkpoint document_digests_json")
+    storage_kind = checkpoint.get("storage_kind")
+    if (
+        not isinstance(paths, list) or not paths or paths != sorted(paths)
+        or not all(isinstance(path, str) and path for path in paths)
+        or not isinstance(blobs, dict) or not isinstance(digests, dict)
+        or set(digests) != set(paths)
+        or not all(isinstance(value, str) and len(value) == 64 for value in digests.values())
+        or storage_kind not in {"git", "non-git"}
+        or (storage_kind == "git" and (
+            set(blobs) != set(paths)
+            or not all(isinstance(value, str) for value in blobs.values())
+        ))
+        or (storage_kind == "non-git" and blobs)
+    ):
+        raise CheckpointAuthorityCorrupt("checkpoint artifact fields are incoherent")
+    return paths, blobs, digests
+
+
+def checkpoint_trailers(checkpoint: dict[str, Any], digests: dict[str, str], paths: list[str]) -> dict[str, str]:
+    return {
+        "Codex-Discussion-Checkpoint": checkpoint["checkpoint_id"],
+        "Codex-Document-SHA256": digests[paths[0]],
+        "Codex-Discussion-Decision-SHA256": checkpoint["decision_digest"],
+        "Codex-Discussion-Paths-SHA256": checkpoint["path_set_digest"],
+    }
+
+
+def checkpoint_decision_fields(checkpoint: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+    """Parse the frozen decision descriptor shared by publication and gates."""
+    digests = _persisted_json(checkpoint.get("decision_digests_json"), "checkpoint decision_digests_json")
+    confirmed = _persisted_json(checkpoint.get("confirmed_decision_ids_json"), "checkpoint confirmed_decision_ids_json")
+    if (
+        not isinstance(digests, dict)
+        or not all(isinstance(key, str) and isinstance(value, str) and len(value) == 64 for key, value in digests.items())
+        or not isinstance(confirmed, list)
+        or not all(isinstance(item, str) and item for item in confirmed)
+        or confirmed != sorted(confirmed)
+        or len(set(confirmed)) != len(confirmed)
+        or any(item not in digests for item in confirmed)
+    ):
+        raise CheckpointAuthorityCorrupt("checkpoint decision fields are incoherent")
+    return digests, confirmed
+
+
+def git_checkpoint_matches(
+    checkpoint: dict[str, Any], commit_id: str, *, expected_parent: str | None,
+    git: Callable[..., bytes], sha256: Callable[[bytes], str],
+) -> dict[str, Any] | None:
+    """Verify one Git checkpoint commit's metadata, full tree, modes and blobs."""
+    if git("cat-file", "-t", commit_id).decode("ascii").strip() != "commit":
+        return None
+    metadata = git_commit_metadata(git("cat-file", "-p", commit_id).decode("utf-8"))
+    parent = expected_parent or checkpoint["base_commit"]
+    if metadata["parents"] != [parent]: return None
+    paths, blobs, digests = checkpoint_artifact_fields(checkpoint)
+    if metadata["trailers"] != checkpoint_trailers(checkpoint, digests, paths): return None
+    def entries(tree: str) -> dict[str, tuple[str, str]]:
+        result = {}
+        for raw in git("ls-tree", "-rz", tree).split(b"\0"):
+            if raw:
+                meta, path = raw.split(b"\t", 1)
+                mode, object_type, object_id = meta.decode("ascii").split(" ")
+                if object_type not in {"blob", "commit", "tree"}:
+                    raise CheckpointAuthorityCorrupt("Git tree contains unsupported object")
+                result[path.decode("utf-8")] = (mode, object_id)
+        return result
+    parent_tree = git("show", "-s", "--format=%T", parent).decode("ascii").strip()
+    expected = entries(parent_tree)
+    expected.update({path: ("100644", blobs[path]) for path in paths})
+    if metadata["tree"] is None or entries(metadata["tree"]) != expected: return None
+    if any(sha256(git("cat-file", "blob", blobs[path])) != digests[path] for path in paths): return None
+    return {"commit_id": commit_id, "tree_id": metadata["tree"]}
+
+
+def verify_artifact_integrity(
+    checkpoint: dict[str, Any], *, topic_path: Path,
+    sha256: Callable[[bytes], str], canonical_json: Callable[[Any], str],
+    read_regular: Callable[[Path, str], bytes | None],
+) -> dict[str, Any] | None:
+    """Verify immutable published bytes, returning unavailable for stale artifacts."""
+    try:
+        storage_kind = checkpoint.get("storage_kind")
+        if storage_kind == "git":
+            project = Path(subprocess.run(
+                ["git", "-C", str(topic_path.parent), "rev-parse", "--show-toplevel"],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            ).stdout.strip())
+            def git(*args: str) -> bytes:
+                return subprocess.run(["git", "-C", str(project), *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+            identity, ref = checkpoint["published_identity"], checkpoint["checkpoint_ref"]
+            if not isinstance(identity, str) or not isinstance(ref, str) or git("rev-parse", "--verify", ref).decode("ascii").strip() != identity or git("cat-file", "-t", identity).decode("ascii").strip() != "commit":
+                return None
+            if git_checkpoint_matches(
+                checkpoint, identity,
+                expected_parent=checkpoint.get("replacement_parent"),
+                git=git, sha256=sha256,
+            ) is None:
+                return None
+            _, _, digests = checkpoint_artifact_fields(checkpoint)
+            document_digests = digests
+        elif storage_kind == "non-git":
+            snapshot_bytes = read_regular(Path(checkpoint["snapshot_path"]), "checkpoint snapshot")
+            if snapshot_bytes is None:
+                return None
+            if sha256(snapshot_bytes) != checkpoint["published_identity"] or base64.b64decode(checkpoint["snapshot_bytes_b64"], validate=True) != snapshot_bytes:
+                return None
+            try:
+                snapshot = json.loads(snapshot_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return None
+            paths, _, digests = checkpoint_artifact_fields(checkpoint)
+            if not isinstance(snapshot, dict) or (canonical_json(snapshot) + "\n").encode("utf-8") != snapshot_bytes or snapshot.get("purpose") != "stage-entry" or snapshot.get("decision_digest") != checkpoint.get("decision_digest") or snapshot.get("document_digests") != digests or snapshot.get("paths") != paths or snapshot.get("path_set_digest") != checkpoint.get("path_set_digest"):
+                return None
+            documents = {path: base64.b64decode(value, validate=True) for path, value in snapshot.get("documents", {}).items() if isinstance(path, str) and isinstance(value, str)}
+            if set(documents) != set(snapshot["paths"]) or {path: sha256(value) for path, value in documents.items()} != snapshot["document_digests"]:
+                return None
+            document_digests = snapshot["document_digests"]
+        else:
+            return None
+        return {"published_identity": checkpoint["published_identity"], "document_digests": document_digests}
+    except CheckpointAuthorityCorrupt:
+        raise
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, subprocess.SubprocessError):
+        return None
+
+
+def current_checkpoint_artifact(
+    checkpoint: dict[str, Any], *, topic_path: Path,
+    sha256: Callable[[bytes], str], canonical_json: Callable[[Any], str],
+    read_regular: Callable[[Path, str], bytes | None],
+) -> dict[str, Any] | None:
+    """Return a usable authority only when immutable bytes and live document agree."""
+    artifact = verify_artifact_integrity(
+        checkpoint, topic_path=topic_path, sha256=sha256,
+        canonical_json=canonical_json, read_regular=read_regular,
+    )
+    if artifact is None:
+        return None
+    topic_bytes = read_regular(topic_path, "topic document")
+    if topic_bytes is None or sha256(topic_bytes) not in artifact["document_digests"].values():
+        return None
+    return artifact
