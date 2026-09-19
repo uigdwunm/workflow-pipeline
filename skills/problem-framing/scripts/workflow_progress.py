@@ -194,10 +194,12 @@ class Progress:
 
     def advance_stop(self, intent):
         s = self.state
-        if s["status"] in {"paused", "cancelled", "accepted"}:
+        if s["status"] in {"cancelled", "accepted"}:
             return _view(s, {"operation": "await-controller-recovery"} if s["status"] == "accepted" else None)
         if s.get("stop_requested") != intent:
             return self.suspend(cancel=intent == "cancelling")
+        if s["status"] == "paused":
+            return _view(s)
         if s["status"] != intent:
             s["status"] = intent
             self.save()

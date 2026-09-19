@@ -369,6 +369,76 @@ class ProgressTests(transfer.StageTransferTests):
             self.invoke("observe", self.observation("idle", "result"))
         self.assertEqual(self.state()["status"], "cancelled")
 
+    def paused_runner_cancel(self, saved_answer, recovery=None, stage=2):
+        answer = self.pending_business_answer(stage)
+        state = runner._new_state({})
+        state["current_stage"] = "stage" + str(stage)
+        state["launch"].update(state="completed_turn", turn=1)
+        runner._atomic_save(self.checkpoint, state)
+        with redirect_stdout(io.StringIO()):
+            runner.request_control(self.checkpoint, "pause")
+        if saved_answer:
+            self.invoke("decide", answer)
+        self.invoke("observe", self.observation("stopped", "result", ref="native:dispatcher" if stage == 3 else "native:designer"))
+        with redirect_stdout(io.StringIO()):
+            runner._advance(state, self.checkpoint)
+        self.assertEqual(progress.read_record(self.checkpoint)["status"], "paused")
+        stopped = copy.deepcopy(self.state()["observations"])
+        action = copy.deepcopy(self.state()["action"])
+        with patch.object(runner, "_invoke", side_effect=AssertionError("carrier reissued")), redirect_stdout(io.StringIO()):
+            if recovery:
+                # A crash after the runner stop request is durable, before C intake.
+                outer = progress.read_record(self.checkpoint)
+                outer["runner_request"] = {"operation": "cancel", "request_id": "durable-cancel"}
+                progress.atomic_save(self.checkpoint, outer)
+                self.invoke(recovery)
+            else:
+                runner.request_control(self.checkpoint, "cancel")
+            self.assertEqual(self.state()["status"], "cancelled")
+            for operation in ("cancel", "cancel", "pause"):
+                runner.request_control(self.checkpoint, operation)
+                for shared_operation in ("advance", "resume", "pause"):
+                    result = self.invoke(shared_operation)
+                    self.assertEqual(result["status"], "cancelled")
+                    self.assertIsNone(result["next_action"])
+                runner._advance(state, self.checkpoint)
+            # This fixture supplies real A/B control, but no CLI registry/model config.
+            with patch.object(runner, "validate_confirmed", return_value={}), self.assertRaisesRegex(
+                    runner.WorkflowError, "cancelled carrier requires exact stopped-writer reconciliation"):
+                runner.resume(self.checkpoint)
+        self.assertEqual(progress.read_record(self.checkpoint)["status"], "cancelled")
+        self.assertEqual(self.state()["stop_requested"], "cancelling")
+        self.assertEqual(self.state()["control"]["context"]["handoff_progress"]["state"], "cancelled")
+        self.assertTrue(self.state()["stopped"])
+        self.assertEqual(self.state()["observations"], stopped)
+        self.assertEqual(self.state()["action"], action)
+        if saved_answer:
+            self.assertEqual(self.state()["deferred_decisions"][answer["decision_id"]],
+                             {"decision": answer, "disposition": "cancelled"})
+            self.assertTrue(self.invoke("decide", answer)["acknowledged"])
+        else:
+            self.assertTrue(self.invoke("decide", answer)["decision_deferred"])
+        self.assertNotIn(answer["decision_id"], self.state().get("decisions", {}))
+        self.assertEqual(self.state()["status"], "cancelled")
+
+    def test_runner_cancel_upgrades_stopped_pause_without_answer(self):
+        self.paused_runner_cancel(False)
+
+    def test_runner_cancel_upgrades_stopped_pause_with_answer(self):
+        self.paused_runner_cancel(True)
+
+    def test_advance_recovers_saved_cancel_over_stopped_pause(self):
+        self.paused_runner_cancel(True, "advance")
+
+    def test_resume_recovers_saved_cancel_over_stopped_pause(self):
+        self.paused_runner_cancel(False, "resume")
+
+    def test_dispatcher_runner_cancel_upgrades_stopped_pause(self):
+        self.paused_runner_cancel(True, stage=3)
+
+    def test_dispatcher_resume_recovers_saved_cancel_over_stopped_pause(self):
+        self.paused_runner_cancel(False, "resume", stage=3)
+
     def test_runner_pause_waits_for_native_stopped_proof(self):
         self.begin()
         self.invoke("observe", self.observation())

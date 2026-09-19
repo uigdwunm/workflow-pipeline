@@ -1069,7 +1069,7 @@ def request_control(record_path, operation):
         progression.atomic_save(record_path, state)
     current = state.get(progression.KEY)
     result = None
-    if current and current["status"] not in {"accepted", "cancelled", "paused"}:
+    if current and current["status"] not in {"accepted", "cancelled"} and (operation == "cancel" or current["status"] != "paused"):
         result = progression.handle(record_path, {"protocol": progression.PROTOCOL, "operation": operation,
                                     "expected_revision": current["revision"]})
     print(json.dumps({"status": "pausing" if operation == "pause" else "cancelling", "progression": result}))

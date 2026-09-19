@@ -244,6 +244,11 @@ requests native-stop/reconciliation through C and terminates the known local
 CLI process group. Terminating that group does not prove native/remote writers
 stopped. Their original control recovery remains mandatory before resume.
 A later pause cannot override cancellation.
+A completed pause is still eligible for cancellation: the runner delivers that
+upgrade to C, and shared advance/resume recover a saved cancellation request
+before returning a paused result. The existing control cancellation uses retained
+stopped evidence and marks deferred answers as cancelled; no extra manual cancel
+or fabricated dispatcher recovery is needed to reach the cancelled state.
 The shared pause/cancel entrypoints enforce this same priority, including
 repeated requests and late observations. Only the existing controller recovery
 with stopped-writer evidence can restore cancelled authority. The outer runner
