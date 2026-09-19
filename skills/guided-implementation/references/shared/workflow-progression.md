@@ -17,6 +17,11 @@ still busy, checkpoint_write_pending stops advancement; resume merges a verified
 finished local turn into the original record, retaining current C-owned fields.
 An unfinished or mismatched receipt cannot authorize a relaunch. These files are
 transport evidence, not another control ledger or native stopped-writer proof.
+Live completion and receipt recovery use the same turn finalization: clear
+delivered `resume_progression`, `answer_pending_delivery` and
+`progression_response`, then consume the verified saved result before invoking
+another carrier. A queued `controller_decision` is removed only when C records
+that exact decision as consumed; transport completion alone cannot discard it.
 
 ## One mechanical path
 
@@ -130,6 +135,17 @@ implementation reviews, phase activation or acceptance. Changed requirements,
 targets, permissions and real semantic choices always return to the controller.
 For an in-stage decision send needs_input with its exact question; C creates
 the pending identity and retains it across resumed turns.
+
+Stop intent takes priority at advance and effect issuance, including a saved
+runner stop request before shared suspension. A valid reply during pause/cancel
+is retained in `deferred_decisions` and returns `decision_deferred`; it does not
+consume the pending matter or authorize continuation. Exact duplicate replies
+ACK, while stale or conflicting replies leave the stop state intact. After
+stopped proof, explicit resume may consume a paused reply in the original
+carrier context; continuation still requires a live host observation. Cancel
+marks saved replies as audit-only. Existing authorized controller recovery and
+a fresh decision reference are required to apply an answer after cancellation;
+replaying the saved answer cannot restore authority.
 
 Running, idle, turn completion, continue, needs_input, technical_error, received
 and accepted are distinct. A completed B delivery requires the host's actual

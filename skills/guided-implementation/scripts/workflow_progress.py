@@ -179,8 +179,41 @@ class Progress:
         self.outer[KEY] = self.state
         atomic_save(self.path, self.outer)
 
+    def stop_intent(self):
+        s = self.state
+        operation = self.outer.get("runner_request", {}).get("operation")
+        if operation == "cancel" or s.get("stop_requested") == "cancelling" or s["status"] in {"cancelling", "cancelled"}:
+            return "cancelling"
+        if operation == "pause" or s.get("stop_requested") == "pausing" or s["status"] in {"pausing", "paused"}:
+            return "pausing"
+        return None
+
+    def require_not_stopping(self):
+        require(self.stop_intent() is None, "progression_suspended",
+                "stop intent permits reconciliation and stopping, not new work or continuation")
+
+    def advance_stop(self, intent):
+        s = self.state
+        if s["status"] in {"paused", "cancelled", "accepted"}:
+            return _view(s, {"operation": "await-controller-recovery"} if s["status"] == "accepted" else None)
+        if s.get("stop_requested") != intent:
+            return self.suspend(cancel=intent == "cancelling")
+        if s["status"] != intent:
+            s["status"] = intent
+            self.save()
+        if s["step"] == "host-response":
+            return _view(s, {"operation": "lookup-exact-action", "action": s["action"],
+                             "request": s["dispatch"]["request"], "receipts": s["observations"]})
+        if intent == "cancelling" and s.get("stop_effects"):
+            return _view(s, {"operation": "reconcile-stopped-writers", "effects": s["stop_effects"]})
+        if s["dispatch"] and not s["stopped"] and self.bound_ref() is not None:
+            return self.effect("stop-host", {"subject": self.subject(), "ref": self.bound_ref()})
+        return _view(s)
+
     def effect(self, operation, payload):
         # An issued mutation is never reissued by advance. Exact lookup is safe.
+        if operation in {"invoke-host", "continue-host", "source-lifecycle", "carrier-lifecycle"}:
+            self.require_not_stopping()
         if operation == "continue-host" and self.state.get("closure_effects"):
             payload = {**payload, "remaining_actions": self.state["closure_effects"],
                        "publication_receipt": self.state["closure_receipt"]}
@@ -341,6 +374,9 @@ class Progress:
 
     def advance(self):
         s = self.state
+        intent = self.stop_intent()
+        if intent is not None:
+            return self.advance_stop(intent)
         if s["status"] == "accepted" and not s.get("phase_complete", True):
             return self.phase_action(completing=True)
         if s["status"] in {"blocked", "paused", "cancelled", "needs_input", "accepted"}:
@@ -575,6 +611,26 @@ class Progress:
             return _view(s, acknowledged=True)
         decision_matches(s.get("pending"), data)
         pending = s["pending"]
+        deferred = s.get("deferred_decisions", {}).get(data["decision_id"])
+        intent = self.stop_intent()
+        if deferred is not None:
+            if deferred["disposition"] == "cancelled" and intent is None:
+                if deferred["decision"] == data:
+                    return _view(s, acknowledged=True)
+                require(data["reference"] != deferred["decision"]["reference"], "decision_conflict",
+                        "cancelled input needs a fresh controller decision after authorized recovery")
+            else:
+                require(deferred["decision"] == data, "decision_conflict", "saved answer cannot be replaced")
+        if intent is not None:
+            disposition = "cancelled" if intent == "cancelling" else "paused"
+            saved = {"decision": copy.deepcopy(data), "disposition": disposition}
+            if deferred != saved:
+                s.setdefault("deferred_decisions", {})[data["decision_id"]] = saved
+                self.save()
+            # Recording a valid reply is not acceptance, continuation or resume.
+            result = self.advance_stop(intent)
+            result.update(decision_deferred=True, acknowledged=deferred == saved)
+            return result
         if pending["kind"] == "acceptance":
             require(data["answer"] == "accept", "decision_required", "acceptance requires the controller's accept decision")
             self.call("accept", decision={"reference": data["reference"], "delivery_digest": pending["subject"]["delivery_digest"]})
@@ -607,6 +663,7 @@ class Progress:
 
     def publication(self, data):
         entry.fields(data, {"candidate_commit", "reference"}, {"expected_target_head", "planning_paths"})
+        self.require_not_stopping()
         entry.nonempty(data["reference"])
         s = self.state
         require(s["stage"] in {2, 4} and s["dispatch"] is not None and s["dispatch"]["status"] == "bound" and
@@ -782,13 +839,13 @@ class Progress:
         return _view(self.state, action)
 
     def require_allocation_active(self):
-        require(self.state["status"] not in {"pausing", "paused", "cancelling", "cancelled"} and
-                self.state.get("stop_requested") not in {"pausing", "cancelling"} and
-                self.outer.get("runner_request", {}).get("operation") not in {"pause", "cancel"},
-                "progression_suspended", "pause/cancel prevents new allocation preparation or issue; reconcile existing allocations")
+        self.require_not_stopping()
 
     def suspend(self, cancel=False):
         s = self.state
+        if cancel:
+            for saved in s.get("deferred_decisions", {}).values():
+                saved["disposition"] = "cancelled"
         if s["status"] == "cancelled":
             if cancel and s.get("stop_requested") != "cancelling":
                 s["stop_requested"] = "cancelling"
@@ -823,6 +880,8 @@ class Progress:
 
     def resume(self):
         s = self.state
+        if self.outer.get("runner_request", {}).get("operation") in {"pause", "cancel"}:
+            return self.advance_stop(self.stop_intent())
         if s.get("recovery_action"):
             return _view(s)
         for identity, slot in s.get("allocations", {}).items():
@@ -847,6 +906,8 @@ class Progress:
         require(s["status"] not in {"cancelled", "cancelling"}, "attempt_ended", "cancelled writers require the existing controller recovery protocol")
         if s["status"] == "accepted":
             return _view(s, acknowledged=True)
+        if self.stop_intent() == "pausing" and s["status"] != "paused":
+            return self.advance_stop("pausing")
         require(s["status"] != "needs_input" or s["transaction"] is not None, "decision_required", "answer the exact pending matter")
         if s["transaction"] is not None:
             transaction = copy.deepcopy(s["transaction"])
@@ -876,6 +937,9 @@ class Progress:
             if s.get("pending") is not None:
                 s["status"] = "needs_input"
                 self.save()
+                deferred = s.get("deferred_decisions", {}).get(s["pending"]["decision_id"])
+                if deferred is not None and deferred["disposition"] == "paused":
+                    return self.decide(deferred["decision"])
                 return _view(s)
             if s.get("deferred_observation") is not None:
                 observed = s.pop("deferred_observation")
@@ -1015,7 +1079,8 @@ def handle(path, request):
         data = request.get("data", {})
         duplicate = owner.state is not None and ((operation == "observe" and
             owner.state["events"].get(data.get("event_id"), {}).get("applied")) or
-            (operation == "decide" and data.get("decision_id") in owner.state.get("decisions", {})))
+            (operation == "decide" and (data.get("decision_id") in owner.state.get("decisions", {}) or
+             owner.state.get("deferred_decisions", {}).get(data.get("decision_id"), {}).get("decision") == data)))
         require(actual == request["expected_revision"] or duplicate, "stale_checkpoint", "read the current checkpoint before changing it")
         if operation == "start":
             return owner.start(data)
@@ -1032,6 +1097,8 @@ def handle(path, request):
             if operation == "resume": return owner.resume()
             raise entry.PreparationError("invalid_operation", "unknown progression operation")
         except entry.ERROR_TYPES + (control.ControlError,) as error:
+            if operation == "decide" and owner.stop_intent() is not None and getattr(error, "code", None) in {"stale_decision", "decision_conflict", "invalid_request"}:
+                raise
             if owner.state["status"] in {"accepted", "cancelled"} or getattr(error, "code", None) == "progression_suspended":
                 raise
             return owner.block(error)

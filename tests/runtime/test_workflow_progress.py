@@ -196,6 +196,159 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.invoke("resume")["next_action"]["operation"], "wait-host")
         self.assertEqual(self.invoke("cancel")["status"], "cancelled")
 
+    def pending_business_answer(self, stage=2):
+        if stage == 3:
+            self.begin_dispatcher()
+        else:
+            self.begin()
+            self.invoke("observe", self.observation())
+        ref = "native:dispatcher" if stage == 3 else "native:designer"
+        result = self.invoke("observe", self.observation("idle", "result", {
+            "delivery_id": "question", "status": "needs_input", "payload": {"question": "Continue?"}}, ref=ref))
+        pending = result["pending"]
+        return {"decision_id": pending["decision_id"], "subject": pending["subject"],
+                "answer": "yes", "reference": "controller:answer"}
+
+    def test_business_answer_does_not_revoke_pause(self):
+        answer = self.pending_business_answer()
+        self.invoke("pause")
+        result = self.invoke("decide", answer)
+        self.assertEqual(result["status"], "pausing")
+        self.assertNotEqual((result.get("next_action") or {}).get("operation"), "continue-host")
+        self.assertEqual(self.state()["pending"]["decision_id"], answer["decision_id"])
+        self.assertNotIn(answer["decision_id"], self.state().get("decisions", {}))
+
+    def test_business_answer_does_not_revoke_cancellation(self):
+        answer = self.pending_business_answer()
+        self.invoke("cancel")
+        result = self.invoke("decide", answer)
+        self.assertEqual(result["status"], "cancelling")
+        self.assertNotEqual((result.get("next_action") or {}).get("operation"), "continue-host")
+        self.assertEqual(self.state()["stop_requested"], "cancelling")
+        self.assertNotIn(answer["decision_id"], self.state().get("decisions", {}))
+
+    def test_paused_answer_consumes_only_after_explicit_resume_and_live_observation(self):
+        answer = self.pending_business_answer()
+        self.invoke("pause")
+        before = self.state()["action"]
+        first = self.invoke("decide", answer)
+        self.assertTrue(first["decision_deferred"])
+        self.assertEqual(self.state()["action"], before)
+        self.assertTrue(self.invoke("decide", answer, revision=0)["acknowledged"])
+        self.assertEqual(self.invoke("resume")["status"], "pausing")
+        self.invoke("observe", self.observation("stopped", "result"))
+        self.assertEqual(self.invoke("decide", answer)["status"], "paused")
+        self.assertEqual(self.state()["deferred_decisions"][answer["decision_id"]]["decision"], answer)
+        resumed = self.invoke("resume")
+        self.assertEqual(resumed["next_action"]["operation"], "wait-host")
+        self.assertEqual(self.state()["decisions"][answer["decision_id"]], answer)
+        continued = self.invoke("observe", self.observation("idle", "result"))
+        self.assertEqual(continued["next_action"]["operation"], "continue-host")
+        action = self.state()["action"]
+        self.assertTrue(self.invoke("decide", answer, revision=0)["acknowledged"])
+        self.assertEqual(self.state()["action"], action)
+
+    def test_cancelled_answer_needs_controller_recovery_and_new_reference(self):
+        answer = self.pending_business_answer(stage=3)
+        self.invoke("pause")
+        self.invoke("decide", answer)
+        self.invoke("cancel")
+        self.assertEqual(self.state()["deferred_decisions"][answer["decision_id"]]["disposition"], "cancelled")
+        self.invoke("observe", self.observation("stopped", "result", ref="native:dispatcher"))
+        self.assertEqual(self.invoke("decide", answer)["status"], "cancelled")
+        self.assertEqual(self.invoke("resume")["status"], "cancelled")
+        self.assertNotIn(answer["decision_id"], self.state().get("decisions", {}))
+        self.invoke("control", {"action": "recover-dispatch", "evidence": {
+            "stopped_refs": ["native:dispatcher"], "file_hashes": {}, "replacement_ref": "native:replacement"},
+            "receipt": {"host": "fixture", "stopped": "native:dispatcher", "ready": "native:replacement"}})
+        replay = self.invoke("decide", answer)
+        self.assertTrue(replay["acknowledged"])
+        self.assertNotEqual((replay.get("next_action") or {}).get("operation"), "continue-host")
+        renewed = {**answer, "reference": "controller:renew-after-recovery"}
+        result = self.invoke("decide", renewed)
+        self.assertEqual(result["next_action"]["operation"], "continue-host")
+        self.assertEqual(result["next_action"]["payload"]["ref"], "native:replacement")
+        self.assertEqual(self.state()["deferred_decisions"][answer["decision_id"]]["decision"], answer)
+
+    def test_answer_after_stop_receipt_is_saved_without_consuming_pending(self):
+        answer = self.pending_business_answer()
+        self.invoke("pause")
+        self.invoke("observe", self.observation("stopped", "result"))
+        saved = self.invoke("decide", answer)
+        self.assertEqual(saved["status"], "paused")
+        wrong = {**answer, "decision_id": "old-matter"}
+        with self.assertRaises(transfer.entry.PreparationError): self.invoke("decide", wrong)
+        with self.assertRaises(transfer.entry.PreparationError): self.invoke("decide", {**answer, "answer": "changed"})
+        self.assertEqual(self.state()["status"], "paused")
+        self.assertEqual(self.state()["pending"]["decision_id"], answer["decision_id"])
+        self.assertEqual(self.invoke("resume")["next_action"]["operation"], "wait-host")
+
+    def test_stop_intent_guards_continue_and_effect_even_if_status_is_active(self):
+        self.begin()
+        self.invoke("observe", self.observation())
+        outer = progress.read_record(self.checkpoint)
+        state = outer[progress.KEY]
+        state.update(status="active", step="continue", stop_requested="cancelling")
+        progress.atomic_save(self.checkpoint, outer)
+        result = self.invoke("advance")
+        self.assertEqual(result["status"], "cancelling")
+        self.assertEqual(result["next_action"]["operation"], "stop-host")
+        owner = progress.Progress(self.checkpoint, progress.read_record(self.checkpoint))
+        for operation in ("invoke-host", "continue-host", "source-lifecycle", "carrier-lifecycle"):
+            with self.assertRaises(transfer.entry.PreparationError): owner.effect(operation, {})
+
+    def test_runner_stop_request_defers_reply_before_shared_suspend(self):
+        answer = self.pending_business_answer()
+        outer = progress.read_record(self.checkpoint)
+        outer["runner_request"] = {"operation": "pause", "request_id": "saved-request"}
+        progress.atomic_save(self.checkpoint, outer)
+        response = self.invoke("decide", answer)
+        self.assertEqual(response["status"], "pausing")
+        self.assertTrue(response["decision_deferred"])
+        self.invoke("observe", self.observation("stopped", "result"))
+        self.assertEqual(self.invoke("resume")["status"], "paused")
+        self.assertNotIn(answer["decision_id"], self.state().get("decisions", {}))
+
+    def test_finished_receipt_intake_precedes_recovery_flags(self):
+        for reason in ("technical", "pause", "consumed-decision"):
+            with self.subTest(reason=reason):
+                shared = {}
+                consumed = reason == "consumed-decision"
+                if consumed:
+                    self.checkpoint.unlink()
+                    queued = self.pending_business_answer()
+                    self.invoke("decide", queued)
+                    shared = progress.read_record(self.checkpoint)
+                else:
+                    queued = {"decision_id": "unconsumed", "subject": {"stage": 2}, "answer": "yes", "reference": "controller:input"}
+                state = runner._new_state({})
+                state.update(resume_progression=True, answer_pending_delivery="previous answer",
+                             progression_response={"saved": reason})
+                state["launch"] = {"stage": "stage2", "state": "launched", "turn": 1,
+                                   "request": ["fixture", reason], "invocation_id": reason}
+                state["controller_decision"] = queued
+                self.checkpoint = self.checkpoint.resolve()
+                progress.atomic_save(self.checkpoint, {**shared, **state, "workflow_requirements": {"keep": "C-owned"}})
+                result = {"result": "needs_input", "artifacts": [], "evidence": [], "handoff_json": "{}",
+                          "handoff": {}, "question": "Next choice?", "message": "", "needs_input_kind": "user_decision"}
+                receipt = {"run_record": str(self.checkpoint), "stage": "stage2", "turn": 1, "invocation_id": reason,
+                    "request_digest": transfer.entry.digest(state["launch"]["request"]), "outcome": "completed_turn",
+                    "events": [{"type": "thread.started", "thread_id": "carrier"}, {"type": "turn.completed"}], "result": result}
+                progress.atomic_save(runner._carrier_receipt_path(self.checkpoint, "stage2", 1), receipt)
+                runner._recover_carrier_receipt(state, self.checkpoint)
+                with patch.object(runner, "_invoke", side_effect=AssertionError("duplicate-carrier-invoke")) as invoked, redirect_stdout(io.StringIO()):
+                    self.assertEqual(runner._advance(state, self.checkpoint), 0)
+                self.assertEqual(invoked.call_count, 0)
+                self.assertEqual(state["status"], "needs_input")
+                if consumed:
+                    self.assertNotIn("controller_decision", state)
+                    self.assertEqual(progress.read_record(self.checkpoint)[progress.KEY], shared[progress.KEY])
+                else:
+                    self.assertEqual(state["controller_decision"], queued)
+                for key in ("resume_progression", "answer_pending_delivery", "progression_response"):
+                    self.assertNotIn(key, state)
+                self.assertEqual(progress.read_record(self.checkpoint)["workflow_requirements"], {"keep": "C-owned"})
+
     def test_cancellation_dominates_shared_pause_and_late_receipts(self):
         self.begin()
         self.invoke("observe", self.observation())

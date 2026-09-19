@@ -30,6 +30,7 @@ state.setdefault('commands', {})[stage] = sys.argv
 state.setdefault('pids', {})[stage] = os.getpid()
 json.dump(state, open(state_path, 'w'))
 mode = os.environ.get('FIXTURE_MODE', 'success')
+force_question = mode == 'checkpoint-lock-finish'
 if mode == 'checkpoint-lock':
     from pathlib import Path
     sys.path.insert(0, str(Path(payload['skill_paths']['stage2']).parent / 'scripts'))
@@ -80,7 +81,7 @@ if mode == 'turn-failed':
 if mode != 'no-completion': print(json.dumps({'type': 'turn.completed'}))
 if mode == 'malformed': open(out, 'w').write('{')
 elif mode == 'no-result': sys.exit(0)
-elif mode in ('needs-input', 'no-session-needs-input') and stage == 'stage2' and not resume:
+elif mode in ('needs-input', 'no-session-needs-input') and stage == 'stage2' and (not resume or force_question):
     json.dump({'result': 'needs_input', 'artifacts': [], 'evidence': [], 'handoff_json': '{}', 'question': 'choose a value', 'message': '', 'needs_input_kind': 'user_decision'}, open(out, 'w'))
 elif mode == 'technical-error':
     json.dump({'result': 'needs_input', 'artifacts': [], 'evidence': [], 'handoff_json': '{}', 'question': 'Git metadata write denied', 'message': '', 'needs_input_kind': 'technical_error'}, open(out, 'w'))
@@ -139,7 +140,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertTrue(state['workflow_requirements']['fixture']['retained'])
         self.assertEqual(json.loads(self.fixture_state.read_text())['stage2'], 1)
 
-    def test_checkpoint_timeout_recovers_finished_turn_without_relaunch(self):
+    def timeout_environment(self):
         shim = self.root / 'shim'
         shim.mkdir()
         (shim / 'sitecustomize.py').write_text(
@@ -161,9 +162,18 @@ class WorkflowCliTests(unittest.TestCase):
             "    Path(str(path) + '.fixture-held').write_text('held')\n"
             "    time.sleep(1)\n"
             "Path(str(path) + '.fixture-released').write_text('released')\n")
+        return {**os.environ, 'CODEX_BIN': str(self.fixture), 'FIXTURE_STATE': str(self.fixture_state),
+                'FIXTURE_MODE': 'checkpoint-lock-finish', 'FIXTURE_LOCK_HOLDER': str(locker), 'PYTHONPATH': str(shim)}
+
+    def wait_for_fixture_lock_release(self):
+        deadline = time.monotonic() + 5
+        while not Path(str(self.record) + '.fixture-released').exists():
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+
+    def test_checkpoint_timeout_recovers_finished_turn_without_relaunch(self):
         result = subprocess.run([sys.executable, str(SCRIPT), 'start', str(self.confirmed)],
-            env={**os.environ, 'CODEX_BIN': str(self.fixture), 'FIXTURE_STATE': str(self.fixture_state),
-                 'FIXTURE_MODE': 'checkpoint-lock-finish', 'FIXTURE_LOCK_HOLDER': str(locker), 'PYTHONPATH': str(shim)},
+            env=self.timeout_environment(),
             capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn('checkpoint_write_pending', result.stderr)
@@ -172,10 +182,7 @@ class WorkflowCliTests(unittest.TestCase):
         observed = json.loads(receipt.read_text())
         self.assertEqual(observed['outcome'], 'completed_turn')
         self.assertIn({'type': 'thread.started', 'thread_id': 'stage2-session'}, observed['events'])
-        deadline = time.monotonic() + 5
-        while not Path(str(self.record) + '.fixture-released').exists():
-            self.assertLess(time.monotonic(), deadline)
-            time.sleep(0.02)
+        self.wait_for_fixture_lock_release()
         receipt.write_text(json.dumps({**observed, 'invocation_id': 'stale-invocation'}))
         rejected = self.invoke('resume', str(self.record))
         self.assertEqual(rejected.returncode, 1)
@@ -188,6 +195,43 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(self.state()['sessions'], {'stage2': 'stage2-session'})
         self.assertTrue(self.state()['workflow_requirements']['fixture']['retained'])
         self.assertEqual(json.loads(self.fixture_state.read_text())['stage2'], 1)
+
+    def recovered_resume_with_lock_contention(self, reason):
+        mode = 'technical-error' if reason == 'technical' else 'needs-input'
+        first = self.invoke('start', str(self.confirmed), mode=mode)
+        self.assertEqual(first.returncode, 1 if reason == 'technical' else 0, first.stderr)
+        state = self.state()
+        queued = {'decision_id': 'unconsumed-input', 'subject': {'stage': 2}, 'answer': 'keep this input', 'reference': 'controller:original'}
+        state.update(resume_progression=True, controller_decision=queued,
+                     progression_response={'pending': reason}, answer_pending_delivery='original input')
+        self.record.write_text(json.dumps(state))
+        args = ['resume', str(self.record)]
+        if reason == 'pause':
+            self.assertEqual(self.invoke('pause', str(self.record)).returncode, 0)
+            args += ['the actual answer', '--decision-id', state['pending_input']['decision_id']]
+        result = subprocess.run([sys.executable, str(SCRIPT), *args], env=self.timeout_environment(),
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('checkpoint_write_pending', result.stderr)
+        self.assertTrue(self.state()['resume_progression'])
+        self.wait_for_fixture_lock_release()
+        recovered = self.invoke('resume', str(self.record))
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        saved = self.state()
+        self.assertEqual(saved['status'], 'needs_input')
+        self.assertEqual(saved['controller_decision'], queued)
+        self.assertTrue(saved['workflow_requirements']['fixture']['retained'])
+        for key in ('resume_progression', 'answer_pending_delivery', 'progression_response'):
+            self.assertNotIn(key, saved)
+        if reason == 'pause':
+            self.assertEqual(saved['answers'][state['pending_input']['decision_id']], 'the actual answer')
+        self.assertEqual(json.loads(self.fixture_state.read_text())['stage2'], 2)
+
+    def test_technical_resume_completion_timeout_does_not_repeat_carrier(self):
+        self.recovered_resume_with_lock_contention('technical')
+
+    def test_pause_reply_completion_timeout_does_not_repeat_carrier(self):
+        self.recovered_resume_with_lock_contention('pause')
 
     def confirmed_input(self) -> dict[str, object]:
         # Transport-only A boundary double. Successful business chains use real

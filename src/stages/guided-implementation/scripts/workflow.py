@@ -613,6 +613,24 @@ def _carrier_receipt_path(record_path, stage, turn):
     return _artifact_path(record_path, stage, turn).with_suffix(".carrier.json")
 
 
+def _finish_carrier_turn(state, result):
+    """Identical local-turn intake for live completion and receipt recovery."""
+    stage, turn = state["current_stage"], state["launch"]["turn"]
+    state["launch"]["state"] = "completed_turn"
+    state["status"] = "active"
+    state["turn_result"] = result
+    state.setdefault("carrier_turns", {})[stage + ":" + str(turn)] = {
+        **copy.deepcopy(state["launch"]), "result": copy.deepcopy(result)}
+    # These describe transport delivered to the finished invocation. A queued
+    # controller_decision is different: _atomic_save removes it only with C's
+    # exact consumption proof, otherwise the original user input remains saved.
+    for key in ("answer_pending_delivery", "progression_response", "resume_progression"):
+        state.pop(key, None)
+    event = {"event": "turn.completed", "stage": stage, "turn": turn}
+    if event not in state["history"]:
+        state["history"].append(event)
+
+
 def _recover_carrier_receipt(state, record_path):
     """Recover local transport facts, never native stopped/acceptance authority."""
     launch = state["launch"]
@@ -646,11 +664,7 @@ def _recover_carrier_receipt(state, record_path):
         raise WorkflowError("carrier receipt lacks successful local turn completion")
     # _invoke validated this result after the real process returned successfully.
     # Native execution/acceptance still passes the ordinary C/B intake below.
-    state["turn_result"] = receipt["result"]
-    state["launch"]["state"] = "completed_turn"
-    state["status"] = "active"
-    state.setdefault("carrier_turns", {})[state["current_stage"] + ":" + str(launch["turn"])] = {
-        **copy.deepcopy(state["launch"]), "result": copy.deepcopy(receipt["result"])}
+    _finish_carrier_turn(state, receipt["result"])
     _atomic_save(record_path, state)
 
 
@@ -768,13 +782,7 @@ def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, contin
             recoverable=isinstance(exc, RecoverableStageError),
         )
         raise
-    state["launch"]["state"] = "completed_turn"
-    state["turn_result"] = result
-    state.setdefault("carrier_turns", {})[stage + ":" + str(turn)] = {**copy.deepcopy(state["launch"]), "result": copy.deepcopy(result)}
-    state.pop("answer_pending_delivery", None)
-    state.pop("progression_response", None)
-    state.pop("resume_progression", None)
-    state["history"].append({"event": "turn.completed", "stage": stage, "turn": turn})
+    _finish_carrier_turn(state, result)
     receipt.update(outcome="completed_turn", result=result)
     progression.atomic_save(receipt_path, receipt)
     try:
@@ -820,7 +828,7 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
                 _atomic_save(record_path, state)
                 print(json.dumps({"status": "blocked", "run_record": str(record_path), "error": current_progress.get("error")}))
                 return 1
-            if current_progress["status"] == "needs_input" and state.get("controller_decision") is None:
+            if current_progress["status"] == "needs_input" and state.get("controller_decision") is None and state.get("turn_result") is None:
                 state["status"], state["pending_input"] = "needs_input", current_progress["pending"]
                 _atomic_save(record_path, state)
                 print(json.dumps({"status": "needs_input", "pending": state["pending_input"]}))
@@ -828,7 +836,9 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
             if current_progress["status"] == "accepted" and current_progress["phase_complete"]:
                 projected = stage_handoff.render(current_progress["accepted"])["stage_result"]
                 state["turn_result"] = {**projected, "handoff": json.loads(projected["handoff_json"])}
-        result = None if state.get("controller_decision") or state.get("resume_progression") else state.get("turn_result")
+        # A recorded turn is received before any later transport instruction.
+        # An unconsumed decision remains queued; it cannot make us run that turn again.
+        result = state.get("turn_result")
         if result is None:
             result = _invoke(state, record_path, resume_answer, stage in state["sessions"])
         resume_answer = None
