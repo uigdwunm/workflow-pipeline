@@ -273,8 +273,10 @@ Ticket, label, and blocking-link actions disclosed at launch. A changed target,
 non-native label, parent-issue modification, PR, deployment, release, or code
 write is an anomaly requiring new authority.
 
-After the child reports its clean planning commit, the primary calls
-`publish-planning`. The operation incorporates a newer non-conflicting target,
+After the child reports its clean planning commit and the host proves that writer
+stopped, the primary records C `publication_candidate` and its original readiness
+decision, then consumes C `publication`. C calls `publish-planning` and retains
+exact intent and intermediate facts. The operation incorporates a newer non-conflicting target,
 retries one target race, publishes the planning commit without a separate
 confirmation, and retains the Flow Worktree for Stage 3. A failure before the
 target merge restores the exact accepted planning commit. A real content

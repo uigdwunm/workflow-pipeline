@@ -105,6 +105,40 @@ replacement candidate. The Originating Task establishes the new review fixed
 point and reruns both Standards and Spec axes before retrying. There is no
 scheduler or queue.
 
+## Exact publication recovery (flow-worktree-v2)
+
+The stage owner uses workflow-progress-v2 for durable publication. The Python
+publishers accept a `record` callback that persists each immutable fact in the
+existing owner checkpoint before the next effect. A callback failure stops the
+operation; lost response recovery reads Git before deciding what remains. Raw
+publish commands are mechanical primitives, not an authorization or durability
+boundary; do not bypass C with them during a managed run.
+
+`reconcile-publication` reads `{operation,request,facts}` from stdin. `operation`
+is the original publish-planning or complete-worktree, `request` is unchanged,
+and `facts` is the exact saved ordered callback history. It does not mutate Git.
+Results distinguish not-published, prepared, flow-advance-pending,
+planning_published, cleanup-pending and completed. A matching publication requires
+its exact two parents, candidate tree and presence on the target's first-parent
+history; current target HEAD need not still be the merge. An uncertain result,
+unmatched ancestry or unfinished merge blocks retry.
+
+`cleanup-only` consumes the same transaction, requires a verified final
+publication, and removes only remaining unchanged resources. Resource device/inode,
+Git directory and branch ref/reflog evidence prevent deleting a replacement
+Worktree or a recreated/moved branch, including a recreated branch at the same
+commit. New files or changes are preserved. Cleanup uses non-forced worktree
+removal and `git branch -d`, never pruning, force deletion or resetting. Publication
+locks remain bounded and exclude cleanup; the original stopped-writer contract
+and fresh identity/content checks apply at cleanup. The lock coordinates these
+publishers, not arbitrary outside Git writers.
+
+C's `resume` invokes the same reconciler with a durable callback and the original
+readiness authority. Proven unissued/unpublished work may run; prepared work may
+finish its original merge; published work may only advance the planning Flow or
+clean the final Flow. Clearing a recorded operation or changing its candidate to
+force a retry is forbidden. V1 records are not migrated; run their original package.
+
 ## Retained-worktree recovery
 
 Use this footer only after independently verifying that no merge was published

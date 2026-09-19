@@ -28,7 +28,7 @@ import workflow_control as control
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v1"
+PROTOCOL = "workflow-progress-v2"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 require = entry.require
@@ -135,11 +135,21 @@ def _view(state, next_action=None, acknowledged=False):
         next_action = state["recovery_action"]
     if next_action is None and state["step"] == "host-response" and state.get("action"):
         next_action = {"operation": "lookup-exact-action", "action": state["action"]}
+    if next_action is None and state["step"] == "publication-ready":
+        ready = state["publication_candidate"]
+        data = {"candidate_commit": ready["payload"]["candidate_commit"], "reference": ready["decision"]["reference"]}
+        if state["stage"] == 4:
+            data["expected_target_head"] = ready["target_head"]
+        next_action = {"operation": "publication", "data": data}
+    if next_action is None and state["step"] == "publication-complete":
+        next_action = {"operation": "receive-publication", "data": {}}
     result = {"protocol": PROTOCOL, "revision": state["revision"], "status": state["status"],
               "step": state["step"], "pending": state.get("pending"), "next_action": next_action,
               "downstream_ready": state["status"] == "accepted" and state.get("phase_complete", True) and
                   bool((state.get("accepted") or {}).get("downstream_ready")), "acknowledged": acknowledged}
-    if state.get("accepted") is not None and state["accepted"]["downstream_ready"] and state.get("phase_complete", True):
+    if state["status"] == "accepted" and state.get("accepted") is not None and state["accepted"]["downstream_ready"] and state.get("phase_complete", True):
+        if state["stage"] == 4:
+            result["workflow_completion"] = verify_completion(state)
         result["completion"] = handoff.render(state["accepted"])
     elif state["status"] == "accepted" and not state.get("phase_complete", True) and next_action is None:
         result["next_action"] = {"operation": "complete-original-phase", "phase": state["handoff"]["authorization"].get("phase")}
@@ -167,6 +177,45 @@ def verify_phase_completed(state):
     run = result["phase_run"]
     require(run["state"] == "completed" and any(a["attempt_id"] == phase["attempt_id"] and a["state"] == "completed" for a in run["attempts"]),
             "phase_pending", "complete and finalize the original phase before advancing")
+
+
+def verify_completion(state):
+    """Re-read final Git, B/control acceptance and the original phase authority."""
+    validate_state(state)
+    require(state["stage"] == 4 and state["status"] == "accepted", "result_incomplete", "final B acceptance is required")
+    accepted = state["accepted"]
+    handoff.unseal(accepted)
+    require(state["dispatch"]["acceptance"] == accepted, "result_changed", "final acceptance differs from the original dispatch")
+    saved, payload = accepted["handoff"], accepted["payload"]
+    verify_phase_completed(state)
+    handoff.verify_result(4, payload, saved["binding"], saved["scope"], saved["binding"]["repository"], accepted["role_ref"])
+    owner = state["control"]["context"]["handoff_progress"]
+    require(owner["state"] == "completed" and owner["merge"] == payload["merge_commit"],
+            "control_pending", "original closure control has not completed")
+    publication = state.get("publication")
+    require(publication is not None and publication.get("result") is not None, "publication_pending", "original publication is not reconciled")
+    actual = supervision.reconcile_publication({key: publication[key] for key in ("operation", "request", "facts")})
+    require(actual["state"] == "completed" and actual["merge_commit"] == payload["merge_commit"] and
+            publication["completion_payload"] == payload, "publication_pending", "publication or cleanup differs from the accepted delivery")
+    # Historical worktrees are gone. Verify immutable predecessor links and their
+    # saved acceptances/phases, never demand the old worktree HEAD again.
+    previous = saved.get("predecessor")
+    while previous is not None:
+        handoff.unseal(previous)
+        prior = previous["handoff"]
+        matches = [item for item in state.get("history", []) if (item.get("accepted") or {}).get("digest") == previous["digest"]]
+        if matches:
+            require(len(matches) == 1 and matches[0]["status"] == "accepted", "result_changed", "ambiguous prior acceptance")
+            verify_phase_completed(matches[0])
+        elif prior["authorization"].get("phase") is not None:
+            verify_phase_completed({"handoff": prior})
+        if prior["stage"] == 2:
+            root = saved["binding"]["repository"]
+            handoff.ancestor(root, previous["payload"]["planning_commit"], previous["payload"]["planning_merge_commit"])
+            handoff.ancestor(root, previous["payload"]["planning_merge_commit"], payload["merge_commit"])
+        previous = prior.get("predecessor")
+    return {"completed": True, "merge_commit": payload["merge_commit"], "cleanup": actual["cleanup"],
+            "acceptance": accepted["digest"], "phase_complete": True}
 
 
 class Progress:
@@ -497,7 +546,7 @@ class Progress:
         return carrier["ref"]
 
     def observe(self, data):
-        entry.fields(data, {"event_id", "receipt"}, {"result", "action_id", "closure"})
+        entry.fields(data, {"event_id", "receipt"}, {"result", "action_id", "closure", "publication_candidate"})
         s, receipt = self.state, data["receipt"]
         entry.nonempty(data["event_id"])
         digest = entry.digest(data)
@@ -534,9 +583,19 @@ class Progress:
                     "invalid_result", "invalid host execution state")
             if s["status"] == "cancelled":
                 raise entry.PreparationError("attempt_ended", "cancelled attempt cannot accept late results")
+            if "publication_candidate" in data:
+                require("result" not in data and "closure" not in data, "invalid_result", "candidate readiness is separate from completed delivery")
+                self.publication_candidate(data["publication_candidate"], receipt)
+                s["events"][data["event_id"]]["applied"] = True
+                self.save()
+                return _view(s)
             if "closure" in data:
                 require(s["stage"] == 4, "invalid_result", "closure observation belongs to Stage 4")
                 publication = s.get("publication") or {}
+                if publication and data["closure"].get("implementation_problem") is not None:
+                    observed_publication = supervision.reconcile_publication(self.publication_transaction())
+                    require(observed_publication["state"] in {"not-published", "prepared"},
+                            "already_published", "published or uncertain actions cannot return to implementation")
                 known_merge = (publication.get("result") or {}).get("merge_commit") or (
                     ((publication.get("error") or {}).get("error") or {}).get("context") or {}).get("merge_commit")
                 require(not (known_merge and data["closure"].get("implementation_problem") is not None),
@@ -633,7 +692,11 @@ class Progress:
             result = self.advance_stop(intent)
             result.update(decision_deferred=True, acknowledged=deferred == saved)
             return result
-        if pending["kind"] == "acceptance":
+        if pending["kind"] == "publication-readiness":
+            require(data["answer"] == "accept", "decision_required", "original controller readiness acceptance required")
+            s["publication_candidate"]["decision"] = copy.deepcopy(data)
+            s["pending"], s["status"], s["step"] = None, "active", "publication-ready"
+        elif pending["kind"] == "acceptance":
             require(data["answer"] == "accept", "decision_required", "acceptance requires the controller's accept decision")
             self.call("accept", decision={"reference": data["reference"], "delivery_digest": pending["subject"]["delivery_digest"]})
             s["status"], s["step"] = "accepted", "accepted"
@@ -663,6 +726,164 @@ class Progress:
         s["stop_effects"] = [e for e in result["effects"] if not (s["stopped"] and e.get("ref") == self.bound_ref())]
         s["status"] = "cancelled" if not s["stop_effects"] else "cancelling"
 
+    def publication_candidate(self, data, receipt):
+        s, saved = self.state, self.state["handoff"]
+        self.require_not_stopping()
+        require(s["stage"] in {2, 4} and not s.get("publication"), "already_published", "reconcile the original publication")
+        entry.fields(data, {"candidate_commit", "artifacts", "checks"})
+        handoff.commit(data["candidate_commit"])
+        handoff.strings(data["artifacts"]); handoff.strings(data["checks"])
+        require(receipt["status"] == "stopped", "host_evidence_missing", "publication requires the original writer's stopped receipt")
+        self.verify_publication_authority(data["candidate_commit"], before=True)
+        s["publication_candidate"] = {"payload": copy.deepcopy(data), "receipt": copy.deepcopy(receipt),
+                                      "handoff_digest": saved["digest"], "decision": None,
+                                      "target_head": supervision._branch_oid(Path(saved["binding"]["repository"]), saved["binding"]["target_branch"])}
+        s["stopped"] = True
+        s["pending"] = pending_decision("publication-readiness", {**self.subject(), "candidate": entry.digest(data)},
+                                        "Record the original controller's candidate readiness decision")
+        s["status"], s["step"] = "needs_input", "publication-readiness"
+
+    def verify_publication_authority(self, candidate, *, before):
+        s, saved = self.state, self.state["handoff"]
+        handoff.unseal(saved)
+        control.validate_context(s["control"]["context"])
+        ref, state, owner = dispatch.matching(s["dispatch"], s["control"]["context"])
+        require(ref == self.bound_ref() and s["control"]["context"]["controller_ref"] == saved["controller_ref"] and
+                owner["binding"] == saved["binding"] and owner["git_baseline_commit"] == saved["scope"]["baseline"] and
+                s["control"]["context"]["requirement_identity"] == saved["requirement_identity"],
+                "authority_changed", "publication owner, baseline or binding changed")
+        require(state in ({"designing"} if s["stage"] == 2 else {"closing", "cleanup-pending", "completed"}),
+                "authority_changed", "publication control is no longer active")
+        for pin in s["packages"].values():
+            skill_preflight.verify_identity(pin)
+        # Never substitute another cwd for the pinned entry after removal.
+        if Path(saved["binding"]["worktree"]).exists():
+            current = handoff.refresh(saved["entry"], saved["expected_entry"], after_work=True)
+            identity, revision = handoff.source(current, saved["requirement"], s["stage"])
+            require(identity == saved["requirement_identity"] and revision == saved["source_commit"],
+                    "source_changed", "publication source changed")
+        handoff.phase_evidence(saved, receiving=True)
+        scope, binding = saved["scope"], saved["binding"]
+        root = binding["repository"]
+        if s["stage"] == 4:
+            predecessor = handoff.unseal(saved["predecessor"])
+            accepted = predecessor["payload"]["candidate_commit"]
+            require(owner["candidate"] == accepted and owner["closure_paths"] == scope["closure_paths"] and
+                    owner["implementation_paths"] == scope["implementation_paths"] and
+                    owner["protected_paths"] == scope["protected_paths"], "scope_changed", "closure authority changed")
+            control.validate_review(accepted, predecessor["payload"]["review"], predecessor["payload"]["verification"], predecessor["role_ref"])
+            handoff.ancestor(root, accepted, candidate)
+            changed = supervision._changed_paths(Path(root), accepted, candidate)
+            require(set(changed) <= set(scope["closure_paths"]), "scope_changed", "closure candidate changes implementation or unapproved documents")
+        else:
+            require(owner["allowed_paths"] == scope["owned_paths"] and owner["protected_paths"] == scope["protected_paths"],
+                    "scope_changed", "planning authority changed")
+        for relative in scope["protected_paths"]:
+            require(handoff.blob(root, scope["baseline"], relative) == handoff.blob(root, candidate, relative) and
+                    handoff.mode(root, scope["baseline"], relative) == handoff.mode(root, candidate, relative),
+                    "source_changed", "publication changed protected source")
+        if before:
+            report = supervision.verify_worktree({"binding": binding, "platform_cwd": binding["worktree"]})
+            require(report["current_commit"] == candidate and not supervision._full_status(Path(binding["worktree"])),
+                    "candidate_changed", "publication requires the exact clean candidate")
+
+    def publication_transaction(self):
+        publication = self.state["publication"]
+        return {key: copy.deepcopy(publication[key]) for key in ("operation", "request", "facts")}
+
+    def record_publication_fact(self, fact):
+        self.state["publication"]["facts"].append(copy.deepcopy(fact))
+        self.save()
+
+    def verify_publication_readiness(self):
+        s = self.state
+        ready = s.get("publication_candidate")
+        require(ready is not None and ready["decision"] is not None and ready["handoff_digest"] == s["handoff"]["digest"],
+                "candidate_not_accepted", "receive the stopped candidate and record its original readiness decision first")
+        dispatch.receipt_for(s["dispatch"], ready["receipt"], {"result"})
+        require(ready["receipt"]["status"] == "stopped" and ready["receipt"]["ref"] == self.bound_ref(),
+                "host_evidence_missing", "exact original writer stop proof required")
+        matching = [o["receipt"] for o in s["observations"] if o["receipt"].get("ref") == self.bound_ref()]
+        require(matching and matching[-1]["status"] == "stopped", "writer_active", "writer has resumed since readiness")
+        self.verify_publication_authority(ready["payload"]["candidate_commit"], before=False)
+        return ready
+
+    def publication_payload(self, result):
+        s, ready = self.state, self.state["publication_candidate"]["payload"]
+        payload = {key: copy.deepcopy(ready[key]) for key in ("artifacts", "checks")}
+        if s["stage"] == 2:
+            payload.update(planning_commit=ready["candidate_commit"], planning_merge_commit=result["merge_commit"],
+                           planning_paths=s["publication"]["request"]["allowed_paths"])
+        else:
+            binding, scope = s["handoff"]["binding"], s["handoff"]["scope"]
+            payload.update(candidate_commit=s["handoff"]["predecessor"]["payload"]["candidate_commit"],
+                           merge_commit=result["merge_commit"], cleanup=supervision._cleanup_facts(binding),
+                           changed_paths=supervision._changed_paths(Path(binding["repository"]), scope["baseline"], result["merge_commit"]))
+        return payload
+
+    def finish_publication(self, result):
+        s = self.state
+        s["publication"]["result"], s["publication"]["error"] = copy.deepcopy(result), None
+        s["publication"]["completion_payload"] = self.publication_payload(result)
+        if s["status"] == "blocked":
+            s["status"] = "active"
+            s.pop("error", None)
+        s["step"] = "publication-complete"
+        self.save()
+        return _view(s, {"operation": "publication-receipt", "publication": s["publication"]})
+
+    def reconcile_publication(self, *, resume=False):
+        s = self.state
+        require(s.get("publication") is not None, "publication_missing", "no original publication to reconcile")
+        if resume:
+            self.require_not_stopping()
+            self.verify_publication_readiness()
+        try:
+            result = supervision.reconcile_publication(self.publication_transaction(), resume=resume,
+                                                       record=self.record_publication_fact if resume else None)
+        except supervision.ProtocolError as error:
+            if not resume:
+                return _view(s, {"operation": "publication-observation", "result": supervision._error_response(error, "reconcile-publication")})
+            s["publication"]["error"] = supervision._error_response(error, "reconcile-publication")
+            self.save()
+            return self.block(entry.PreparationError(error.code, error.message))
+        if resume:
+            return self.finish_publication(result)
+        return _view(s, {"operation": "publication-observation", "result": result})
+
+    def receive_publication(self):
+        s = self.state
+        self.require_not_stopping()
+        require(s.get("publication") is not None and s["publication"].get("result") is not None,
+                "publication_pending", "reconcile publication before receiving it")
+        publication = s["publication"]
+        actual = supervision.reconcile_publication(self.publication_transaction())
+        require(actual["state"] in {"planning_published", "completed"} and
+                actual["merge_commit"] == publication["result"]["merge_commit"],
+                "publication_pending", "reverify the original publication before B intake")
+        message = {"delivery_id": "publication:" + entry.digest(publication["request"]),
+                   "status": "completed", "payload": publication["completion_payload"]}
+        if s["dispatch"].get("delivery") is not None:
+            require(s["dispatch"]["delivery"]["message"] == message, "delivery_conflict", "retain the original B delivery")
+            return _view(s, acknowledged=True)
+        # This is stage-owner composition, not a new host observation or a claim
+        # that the stopped child subsequently ran Git. Preserve both sources.
+        publication["intake"] = {"kind": "stage-owner-publication", "owner": s["handoff"]["expected_entry"]["actor"],
+                                 "native_candidate": copy.deepcopy(s["publication_candidate"]),
+                                 "git_facts": copy.deepcopy(actual), "result": copy.deepcopy(message)}
+        self.save()
+        transaction = s.get("transaction")
+        if transaction is not None:
+            require(transaction["operation"] == "receive" and transaction["result"] == message and
+                    transaction["receipt"] == s["publication_candidate"]["receipt"],
+                    "transaction_pending", "recover the original B operation first")
+            self.apply(dispatch.handle(copy.deepcopy(transaction)))
+        else:
+            self.call("receive", receipt=s["publication_candidate"]["receipt"], result=message)
+        s["step"] = "accepted" if s["dispatch"]["status"] == "accepted" else "received"
+        self.save()
+        return self.advance()
+
     def publication(self, data):
         entry.fields(data, {"candidate_commit", "reference"}, {"expected_target_head", "planning_paths"})
         self.require_not_stopping()
@@ -670,6 +891,9 @@ class Progress:
         s = self.state
         require(s["stage"] in {2, 4} and s["dispatch"] is not None and s["dispatch"]["status"] == "bound" and
                 s["status"] not in {"paused", "pausing", "cancelling", "cancelled"}, "authority_missing", "publication requires its active bound stage")
+        ready = self.verify_publication_readiness()
+        require(data["candidate_commit"] == ready["payload"]["candidate_commit"] and data["reference"] == ready["decision"]["reference"],
+                "candidate_changed", "publication must consume the original readiness decision")
         scope, binding = s["handoff"]["scope"], s["handoff"]["binding"]
         if s["stage"] == 2:
             paths = data.get("planning_paths", scope["owned_paths"])
@@ -679,6 +903,7 @@ class Progress:
                        "protected_paths": scope["protected_paths"]}
             operation = "publish-planning"
         else:
+            require(data.get("expected_target_head") == ready["target_head"], "target_changed", "retain the target bound to readiness")
             require(not (s["control"]["context"].get("handoff_progress") or {}).get("merge"),
                     "already_published", "published merge permits cleanup-only")
             request = {"binding": binding, "candidate_commit": data["candidate_commit"],
@@ -692,18 +917,16 @@ class Progress:
             return _view(s, {"operation": "publication-receipt" if existing.get("result") else "reconcile-publication",
                              "publication": existing}, acknowledged=True)
         s["publication"] = {"operation": operation, "request": request, "reference": data["reference"],
-                            "result": None, "error": None, "issued": True}
+                            "result": None, "error": None, "issued": True, "facts": []}
         self.save()
         try:
             # Existing primitives own Git behavior, locks, merge and cleanup.
-            result = (supervision.publish_planning if s["stage"] == 2 else supervision.complete_worktree)(request)
+            result = (supervision.publish_planning if s["stage"] == 2 else supervision.complete_worktree)(request, record=self.record_publication_fact)
         except supervision.ProtocolError as error:
             s["publication"]["error"] = supervision._error_response(error, operation)
             self.save()
             return self.block(entry.PreparationError(error.code, "publication requires original-protocol reconciliation; do not republish"))
-        s["publication"]["result"] = result
-        self.save()
-        return _view(s, {"operation": "publication-receipt", "publication": s["publication"]})
+        return self.finish_publication(result)
 
     def control_action(self, data):
         entry.fields(data, {"action", "evidence", "receipt"})
@@ -906,6 +1129,12 @@ class Progress:
             self.save()
             return self.advance()
         require(s["status"] not in {"cancelled", "cancelling"}, "attempt_ended", "cancelled writers require the existing controller recovery protocol")
+        if s["stage"] == 4 and s["status"] == "blocked" and s.get("blocked_from") == "accepted":
+            verify_completion({**s, "status": "accepted"})
+            s["status"] = "accepted"
+            s.pop("error", None)
+            self.save()
+            return _view(s, acknowledged=True)
         if s["status"] == "accepted":
             return _view(s, acknowledged=True)
         if self.stop_intent() == "pausing" and s["status"] != "paused":
@@ -913,6 +1142,9 @@ class Progress:
         require(s["status"] != "needs_input" or s["transaction"] is not None, "decision_required", "answer the exact pending matter")
         if s["transaction"] is not None:
             transaction = copy.deepcopy(s["transaction"])
+            intake = (s.get("publication") or {}).get("intake")
+            if transaction["operation"] == "receive" and intake is not None and transaction["result"] == intake["result"]:
+                return self.receive_publication()
             if transaction["operation"] in {"bind", "reconcile", "receive"}:
                 matches = [o for o in s["observations"] if o["receipt"] == transaction["receipt"]]
                 require(matches, "observation_missing", "recover the saved original host response")
@@ -951,10 +1183,17 @@ class Progress:
                 return self.observe(observed)
             # Stopped is not resumable. Host must first prove the same carrier can continue.
             s["step"] = s.get("suspended_step", "bound")
-            if s["dispatch"] and s["step"] not in {"launch", "prepare-dispatch", "received"}:
+            s["status"] = "active"
+            if s["dispatch"] and s["step"] not in {"launch", "prepare-dispatch", "received", "publication-ready", "publication-complete"} and not s.get("publication"):
                 s["step"] = "bound"
                 s["awaiting_resume"] = True
                 s["resume_intent"] = {"operation": "resume-original-paused-scope", "subject": self.subject()}
+        if s.get("publication") is not None and s["publication"].get("result") is None:
+            return self.reconcile_publication(resume=True)
+        if s["step"] == "publication-complete":
+            return self.receive_publication()
+        if s["step"] == "publication-ready":
+            return self.publication(_view(s)["next_action"]["data"])
         if s["step"] == "technical-error":
             s["step"] = "bound"
         if s["status"] != "accepted":
@@ -1092,6 +1331,12 @@ def handle(path, request):
             if operation == "observe": return owner.observe(data)
             if operation == "decide": return owner.decide(data)
             if operation == "publication": return owner.publication(data)
+            if operation == "reconcile-publication":
+                entry.fields(data, set())
+                return owner.reconcile_publication()
+            if operation == "receive-publication":
+                entry.fields(data, set())
+                return owner.receive_publication()
             if operation == "control": return owner.control_action(data)
             if operation == "allocation": return owner.allocation(data)
             if operation == "pause": return owner.suspend()

@@ -36,6 +36,13 @@ evidence. B verifies planning/publication commits, local paths and the retained
 flow. It does not publish, re-review prose, certify test execution or validate
 remote Matt artifact URLs. Stage 4 publication/cleanup stay D-owned.
 
+C's `receive-publication` is stage-owner composition: it preserves the original
+stopped native candidate and raw host receipt separately from the later verified
+Git publication/cleanup and original readiness decision. It is not a new native
+response. B's existing receive and Controller acceptance still apply. Stage 4 B
+`candidate_commit` is the accepted implementation, while D records the final
+closure-document tip separately. No Stage 1→2 delivery schema or permission changes.
+
 The existing foreground runner loop/schema remains C-owned; C consumes B's
 portable result objects. Old records are not upgraded. Qualified standalone
 implementation without an A requirement keeps its existing standalone-entry

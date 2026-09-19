@@ -28,7 +28,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v1","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v2","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -173,12 +173,61 @@ to accept implementation.
 
 ## Publication and lifecycle boundaries
 
+Before local Git publication, `observe` accepts `publication_candidate` with
+`{candidate_commit, artifacts, checks}` and the original native writer's exact
+authenticated `event=result,status=stopped` receipt. This is a candidate, not a
+completed B delivery. C checks the clean candidate, original scope, control,
+package/source identity and attempt. Stage 4 additionally proves the accepted
+implementation is its ancestor and the increment changes only closure_paths.
+The existing two-axis implementation review stays attached to the implementation
+commit; it is not silently transferred to new implementation bytes.
+
+C returns a `publication-readiness` pending decision naming the candidate digest,
+stage, handoff and attempt. The original Controller supplies `decide` with
+`answer=accept` and its existing readiness reference. The adapter authenticates
+that decision just as it authenticates other controller decisions. A string or
+digest is not permission. This records the existing review/authorization, not an
+additional user approval: continuous mode consumes its existing authorization,
+stepwise mode retains its existing review gates. Changed candidates invalidate
+readiness; resumed writers invalidate the stopped snapshot. Remote Matt artifact
+publication retains its original owner and rules.
+
 `publication`: data is `{candidate_commit, reference, planning_paths?, expected_target_head?}`.
-C saves the exact derived request before invoking the existing Stage-2
-publish-planning or Stage-4 complete-worktree primitive once. Repeated input
-returns its receipt or reconciliation requirement, never calls the publisher
-again. A changed candidate requires original-protocol recovery, not overwriting
-this transaction. This wrapper does not alter either Git implementation.
+C consumes the saved readiness decision, returns this exact next-action input,
+and saves the derived request before calling the existing Stage-2 publish-planning
+or Stage-4 complete-worktree primitive. Stage 4 retains the target observed at
+readiness. Supervision callbacks append refresh, prepared (exact target/candidate
+and resource identities), merged and cleanup facts to this same checkpoint before
+the next effect. No second journal, queue or run authority is created.
+
+Repeated publication input returns its saved receipt or reconciliation requirement.
+`reconcile-publication` with empty data inspects original Git facts without
+publishing, advancing the Flow or cleaning; it is available during pause/cancel.
+`resume` first reconciles the original action and may perform only its remaining
+authorized effects. Unknown outcomes never mean unpublished. Exact merge parents
+and tree, retained target ancestry and original scope establish publication;
+candidate ancestry alone does not. New target/candidate/permission conflicts stay
+blocked. Proven publication permits Flow advancement or cleanup, never republishing.
+Stop intent bars those writes until explicit authorized resume. No background retry
+is scheduled. The original error and ordered facts remain recovery evidence.
+
+`receive-publication` with empty data composes the completed B payload from the
+original native artifacts/checks and independently reverified publication/cleanup.
+It retains `publication.intake.kind=stage-owner-publication`, the composing entry
+actor, original candidate/stop/readiness records, Git facts and the exact B message.
+It does not add a host observation, alter raw receipt bytes, or claim the stopped
+child performed later Git actions. Stage 4's B `candidate_commit` remains the
+accepted implementation; the closure tip is separately recorded in publication.
+B receives and verifies this composed delivery, and the original Controller still
+accepts it before the original Phase Run is completed. Readiness is not final B
+acceptance. Interrupted intake replays its exact saved B/ledger envelope.
+
+Stage 4 completion and the runner's final/duplicate completed response recheck B
+acceptance, closure control, original Phase completion, precise publication and
+actual resource removal. Historical Stage-2 worktrees are not required to exist:
+their accepted predecessor links and committed ancestry are retained. An idle
+process, effect plan, missing result or publication-only receipt never establishes
+overall completion. Standalone stages have no synthetic discussion lifecycle.
 
 `control`: data is `{action,evidence,receipt}` for the original successor-ready,
 archive, archive-result, execution-result, accept-execution, execution-dispatch-result
@@ -212,9 +261,11 @@ explicit dependency; C cannot produce a merge proof or infer completion.
 
 ## Foreground carrier and compatibility
 
-New runner records are version 3 and pin workflow-progress-v1 packages. Version
-1/2 records require their retained original runtime; neither inspection through
-new mutation APIs nor registry refresh migrates or replaces them. Complete
+New runner records retain outer version 3 and pin workflow-progress-v2 /
+flow-worktree-v2 packages. A workflow-progress-v1 member is rejected by v2; retain
+its original runtime and pinned packages. Version 1/2 runner records likewise
+require their original runtime; neither new APIs nor registry refresh migrate
+or replace records. Complete
 registration is required for live actions. No installation is implied.
 
 Version-3 confirmed input retains the existing frozen_requirement display tuple

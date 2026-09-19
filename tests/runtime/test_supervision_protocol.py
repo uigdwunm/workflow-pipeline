@@ -155,7 +155,7 @@ class WorktreeProtocolTests(unittest.TestCase):
         self.assertTrue(failed_advance)
         return raised.exception
 
-    def test_public_interface_contains_only_the_four_worktree_operations(self) -> None:
+    def test_public_interface_contains_worktree_and_recovery_operations(self) -> None:
         self.assertEqual(
             PROTOCOL.COMMAND_REGISTRY.names,
             (
@@ -163,6 +163,8 @@ class WorktreeProtocolTests(unittest.TestCase):
                 "verify-worktree",
                 "publish-planning",
                 "complete-worktree",
+                "reconcile-publication",
+                "cleanup-only",
             ),
         )
         self.assertEqual(

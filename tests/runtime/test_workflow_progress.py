@@ -120,6 +120,15 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(result["next_action"]["operation"], "continue-host")
         self.assertTrue(self.invoke("decide", answer, revision=0)["acknowledged"])
 
+    def ready_publication(self, candidate, reference, role="native:designer"):
+        observed = self.observation("stopped", "result", ref=role)
+        observed["publication_candidate"] = {"candidate_commit": candidate, "artifacts": ["docs/spec.md" if role == "native:designer" else "impl.py"], "checks": ["design readiness" if role == "native:designer" else "publication verified"]}
+        response = self.invoke("observe", observed)
+        self.assertEqual(response["status"], "needs_input", response)
+        pending = response["pending"]
+        self.invoke("decide", {"decision_id": pending["decision_id"], "subject": pending["subject"],
+                               "answer": "accept", "reference": reference})
+
     def prepare_design_result(self, mode):
         self.begin(mode)
         self.invoke("observe", self.observation())
@@ -127,11 +136,81 @@ class ProgressTests(transfer.StageTransferTests):
         self.flow_git("add", "docs/spec.md")
         self.flow_git("commit", "-qm", "plan")
         planning = self.flow_git("rev-parse", "HEAD")
+        self.ready_publication(planning, "controller:planning-readiness")
         published = self.invoke("publication", {"candidate_commit": planning, "reference": "controller:planning-readiness"})
         self.assertTrue(published["next_action"]["publication"]["result"]["ok"], published)
         payload = {"artifacts": ["docs/spec.md"], "checks": ["design readiness"], "planning_commit": planning,
                    "planning_merge_commit": self.flow_git("rev-parse", "HEAD"), "planning_paths": ["docs/spec.md"]}
         return payload
+
+    def test_publication_requires_exact_readiness_and_stopped_writer(self):
+        self.begin("continuous")
+        self.invoke("observe", self.observation())
+        (self.flow / "docs/spec.md").write_text("approved design\n")
+        self.flow_git("add", "docs/spec.md")
+        self.flow_git("commit", "-qm", "plan")
+        candidate = self.flow_git("rev-parse", "HEAD")
+        request = {"candidate_commit": candidate, "reference": "original:review"}
+        result = self.invoke("publication", request)
+        self.assertEqual(result["error"]["code"], "candidate_not_accepted")
+        self.assertNotIn("publication", self.state())
+        observed = self.observation("idle", "result")
+        observed["publication_candidate"] = {"candidate_commit": candidate, "artifacts": ["docs/spec.md"], "checks": ["readiness"]}
+        result = self.invoke("observe", observed)
+        self.assertEqual(result["error"]["code"], "host_evidence_missing")
+        self.ready_publication(candidate, "original:review")
+        result = self.invoke("publication", {**request, "reference": "different:review"})
+        self.assertEqual(result["error"]["code"], "candidate_changed")
+        self.assertNotIn("publication", self.state())
+        self.assertEqual(self.invoke("publication", request)["next_action"]["operation"], "publication-receipt")
+        received = self.invoke("receive-publication")
+        self.assertEqual(received["pending"]["kind"], "acceptance")
+        self.assertEqual(self.state()["dispatch"]["delivery"]["message"]["payload"], self.state()["publication"]["completion_payload"])
+
+    def test_resume_reconciles_missing_publication_receipt_and_stop_blocks_writes(self):
+        self.begin("continuous")
+        self.invoke("observe", self.observation())
+        (self.flow / "docs/spec.md").write_text("approved design\n")
+        self.flow_git("add", "docs/spec.md")
+        self.flow_git("commit", "-qm", "plan")
+        candidate = self.flow_git("rev-parse", "HEAD")
+        self.ready_publication(candidate, "original:review")
+        original = transfer.supervision._merge_candidate_into_target
+        def crash(*args):
+            original(*args)
+            raise KeyboardInterrupt()
+        with patch.object(transfer.supervision, "_merge_candidate_into_target", side_effect=crash):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke("publication", {"candidate_commit": candidate, "reference": "original:review"})
+        merged = self.git("rev-parse", "HEAD")
+        self.assertEqual(self.invoke("pause")["status"], "paused")
+        observation = self.invoke("reconcile-publication")
+        self.assertEqual(observation["next_action"]["result"]["state"], "flow-advance-pending")
+        self.assertEqual(self.flow_git("rev-parse", "HEAD"), candidate)
+        with patch.object(transfer.supervision, "publish_planning", side_effect=AssertionError("republished")):
+            recovered = self.invoke("resume")
+        self.assertEqual(recovered["next_action"]["operation"], "publication-receipt")
+        self.assertEqual(self.flow_git("rev-parse", "HEAD"), merged)
+        self.assertEqual(self.invoke("resume")["pending"]["kind"], "acceptance")
+
+    def test_overall_completion_requires_original_publication_and_cleanup(self):
+        self.run_real_chain("continuous")
+        evidence = progress.verify_completion(self.state())
+        self.assertTrue(evidence["completed"])
+        broken = copy.deepcopy(self.state())
+        broken["publication"]["result"] = None
+        with self.assertRaises(transfer.entry.PreparationError):
+            progress.verify_completion(broken)
+        broken = copy.deepcopy(self.state())
+        broken["control"]["context"]["handoff_progress"]["state"] = "cleanup-pending"
+        with self.assertRaises(transfer.entry.PreparationError):
+            progress.verify_completion(broken)
+        self.assertFalse(self.flow.exists())
+        self.flow.mkdir()
+        (self.flow / "personal.txt").write_text("unrelated replacement")
+        with self.assertRaises(transfer.entry.PreparationError):
+            progress.verify_completion(self.state())
+        self.assertEqual((self.flow / "personal.txt").read_text(), "unrelated replacement")
 
     def finish_design(self, mode):
         payload = self.prepare_design_result(mode)
@@ -515,7 +594,7 @@ class ProgressTests(transfer.StageTransferTests):
 
     def test_completed_result_arriving_during_pause_is_consumed_on_resume(self):
         payload = self.prepare_design_result("stepwise")
-        self.assertEqual(self.invoke("pause")["status"], "pausing")
+        self.assertEqual(self.invoke("pause")["status"], "paused")
         observed = self.observation("stopped", "result", {"delivery_id": "design", "status": "completed", "payload": payload})
         self.assertEqual(self.invoke("observe", observed)["status"], "paused")
         self.assertIsNone(self.state()["dispatch"]["delivery"])
@@ -554,6 +633,7 @@ class ProgressTests(transfer.StageTransferTests):
                 "verification": {"candidate": candidate, "checks": ["behavior tested"]}}
         else:
             candidate = predecessor["payload"]["candidate_commit"]
+            self.ready_publication(candidate, "controller:closure", role)
             published = self.invoke("publication", {"candidate_commit": candidate,
                 "expected_target_head": self.git("rev-parse", "HEAD"), "reference": "controller:closure"})
             self.assertTrue(published["next_action"]["publication"]["result"]["ok"], published)
@@ -857,6 +937,7 @@ class ProgressTests(transfer.StageTransferTests):
         self.invoke("observe", self.observation(ref="native:closure"))
         candidate = predecessor["payload"]["candidate_commit"]
         request = {"candidate_commit": candidate, "expected_target_head": self.git("rev-parse", "HEAD"), "reference": "controller:close"}
+        self.ready_publication(candidate, "controller:close", "native:closure")
         original = transfer.supervision._run_git
 
         def fail_cleanup(repository, arguments, **kwargs):

@@ -353,6 +353,9 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "continue means remaining work must continue in this same session.\n"
         "B owns the complete handoff projection, exact native identity, scope, candidate, reviews and Git evidence. "
         "Partial cleanup is not completed; consume the retained cleanup-only action.\n"
+        "For publication, record the stopped native publication_candidate and original controller readiness through C; "
+        "consume publication, reconcile-publication/resume, then receive-publication. Preserve native and Git evidence "
+        "as separate sources; do not fabricate a new host completion. Final B acceptance and phase completion still apply.\n"
         "Use scripts/workflow_progress.py from the pinned stage package for A/B progression. "
         "Persist complete handoff, dispatch intent, raw host responses and controller acceptance in progression_checkpoint. "
         "The runner owns outer carrier fields: never overwrite the checkpoint yourself. Only C's adapter writes its member. "
@@ -889,6 +892,7 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
         print(json.dumps({"event": "stage.completed", "stage": stage}), flush=True)
         index = STAGES.index(stage)
         if index == len(STAGES) - 1:
+            state["completion_evidence"] = _verify_run_completion(record_path, state)
             state["status"] = "completed"
             state["history"].append({"event": "completed", "stage": stage})
             _atomic_save(record_path, state)
@@ -911,6 +915,20 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
         if state["status"] == "needs_input":
             print(json.dumps({"status": "needs_input", "pending": state["pending_input"]}))
             return 0
+
+
+def _verify_run_completion(record_path, state):
+    try:
+        entry_prepare.require(all(stage in state["stage_results"] for stage in STAGES),
+                              "result_incomplete", "every required stage must be accepted")
+        current = progression.read_record(record_path).get(progression.KEY)
+        result = progression.verify_completion(current)
+        expected = stage_handoff.render(current["accepted"])["stage_result"]
+        entry_prepare.require(all(state["stage_results"]["stage4"][key] == value for key, value in expected.items()),
+                              "result_changed", "final runner result differs from B acceptance")
+        return result
+    except entry_prepare.ERROR_TYPES as error:
+        raise WorkflowError("workflow completion unverified: " + entry_prepare.error_message(error)) from error
 
 
 def _accepted_stage(record_path, stage, result, confirmed):
@@ -958,6 +976,7 @@ def resume(record_path: Path, answer: str | None = None, registry_input: Path | 
         status = state["status"]
         stage = state["current_stage"]
         if status == "completed":
+            _verify_run_completion(record_path, state)
             print(json.dumps({"status": "completed", "run_record": str(record_path), "acknowledged": True}))
             return 0
         request = state.get("runner_request")
@@ -1055,7 +1074,13 @@ def request_control(record_path, operation):
         state = progression.read_record(record_path)
         if state.get("version") != 3:
             raise WorkflowError("legacy_run_requires_original_runtime: control requires the original version-3 record")
+        member = state.get(progression.KEY)
+        pin = state.get("confirmed", {}).get("packages", {}).get("runner")
+        if ((member is not None and member.get("protocol") != progression.PROTOCOL) or
+                (pin is not None and pin.get("compatibility_key", {}).get("workflow_progress") != progression.PROTOCOL)):
+            raise WorkflowError("legacy_run_requires_original_runtime: use the original pinned control runtime; record is unchanged")
         if state["status"] == "completed":
+            _verify_run_completion(record_path, state)
             print(json.dumps({"status": "completed", "acknowledged": True}))
             return 0
         if state.get("runner_request", {}).get("operation") == "cancel":
