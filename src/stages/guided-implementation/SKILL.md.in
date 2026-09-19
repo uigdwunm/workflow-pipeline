@@ -8,6 +8,8 @@ Before any stage action, read and execute [Package execution preflight]({{resour
 
 Read [Stage transfer and dispatch]({{resource:shared/references/stage-transfer.md}}) before building handoffs, dispatching a dedicated/native role, or accepting its result. Keep the existing semantic and authorization gates; the host executes tools and authenticates receipts.
 
+Read [Workflow progression]({{resource:shared/references/workflow-progression.md}}) at the A/B execution seam. Use its saved next_action and exact observations/decisions for preparation, dispatch, waiting, acceptance and recovery. Preserve this Skill's semantic gates and native/visible carrier identity.
+
 # 3实现
 
 Every implementation uses one Flow Worktree and branch. Read
@@ -59,8 +61,8 @@ The implementation-local foreground runner at
 `{{resource:guided-implementation/scripts/workflow.py}}` may launch Stage 3 only
 with its complete frozen payload: requirement path/commit/hash, target
 repository and retained Flow Worktree binding, authority scope, prior stage
-artifacts, and explicit model and reasoning effort. This is a continuous
-carrier entry, not an implied user decision or inherited desktop setting. The
+artifacts, and explicit model and reasoning effort. This is an explicitly configured
+carrier entry; retain its confirmed flow mode and pending decisions. The
 carrier follows this Skill's normal native Implementation Dispatcher and the
 Originating Task's independent Standards and Spec review roles. It returns a
 structured `completed`, `continue`, or `needs_input` outcome to the runner;
@@ -72,10 +74,10 @@ stop this carrier turn. The ordinary interactive continuous-mode rule to invoke
 `$change-closure` in the same turn does not apply to this carrier, so Stage 4
 cannot be run twice by the carrier and runner.
 
-The payload's `continuous_stage2_to_4` mode is the already-authorized carrier
+The payload's `flow_mode` field (`continuous` or `stepwise`) is the already-authorized carrier
 entry. It preserves the payload's explicit model/effort pair for the carrier;
 the dedicated native executor still follows the existing task-settings protocol.
-Do not fall back to interactive stage-entry confirmations.
+Use only the pending decisions selected by the shared progression contract.
 
 The runner leaves the user's existing `codex exec` approval and sandbox policy
 in effect. It does not force a narrower sandbox that can prevent the existing

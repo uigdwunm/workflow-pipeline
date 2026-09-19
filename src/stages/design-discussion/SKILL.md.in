@@ -8,6 +8,8 @@ Before any stage action, read and execute [Package execution preflight]({{resour
 
 Read [Stage transfer and dispatch]({{resource:shared/references/stage-transfer.md}}) before building handoffs, dispatching a dedicated/native role, or accepting its result. Keep the existing semantic and authorization gates; the host executes tools and authenticates receipts.
 
+Read [Workflow progression]({{resource:shared/references/workflow-progression.md}}) at the A/B execution seam. Use its saved next_action and exact observations/decisions for preparation, dispatch, waiting, acceptance and recovery. Preserve this Skill's semantic gates and native/visible carrier identity.
+
 # 0讨论
 
 Maintain a durable, document-driven design discussion while keeping ordinary
@@ -193,8 +195,9 @@ from turn count or document length. Offer a later lifecycle route only when the
 relevant protocol operation exists and its prerequisites are verified.
 
 For a same-stage dedicated discussion, prepare `dedicated-stage(stage=0)`
-before the Workflow Control plan and combined confirmation. Bind the actual
-created task before `creation-result`. With the same baseline, no pending DW
+before the Workflow Control plan and combined confirmation. Then use Workflow
+progression start/observe; C/B bind the actual created task before
+`creation-result`, without a second manual bind. With the same baseline, no pending DW
 and an open gate, `accept-handoff` returns `active` and permits work immediately;
 `authorize-handoff-discussion` remains only for ordinary child/continuation
 handoffs. A bound carrier does not replace the controller.

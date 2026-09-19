@@ -1,5 +1,7 @@
 # Originating Task Protocol
 
+Mechanical A/B execution uses [Workflow progression](../workflow-progression.md). Supply semantic decisions and authenticated raw host responses; the shared adapter retains intents, exact attempts, receipts and recovery steps. The role, review and authorization rules below remain binding.
+
 Before this role acts, execute [Package execution preflight](../package-execution.md) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
 The originating task binds the Flow Worktree, keeps at most one active Implementation Dispatcher, independently reviews its committed candidate, and passes
@@ -19,9 +21,11 @@ standalone base and scope base, and use no planning source or protected source
 unless the brief explicitly identifies one. The explicit invocation authorizes
 only this bounded local implementation flow.
 
-Launch one native Implementation Dispatcher in the verified Flow Worktree. Use
-start-dispatch with current select-configuration evidence, disclose configuration
-and reason, then dispatcher-bound with the actual native receipt. Include the
+Launch one native Implementation Dispatcher in the verified Flow Worktree. For
+an A/B handoff, use Workflow progression start and observe with the actual native receipt: they own
+start-dispatch and dispatcher-bound, so do not invoke those transitions again.
+The explicit standalone path without an A requirement retains those original
+control primitives. Disclose current select-configuration evidence and reason. Include the
 complete planning sources and dependency-ordered Tickets or the fixed
 standalone brief, testing basis, flow mode, confirmed implementation scope,
 existing-behavior changes, required collateral

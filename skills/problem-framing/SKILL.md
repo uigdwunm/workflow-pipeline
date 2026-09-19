@@ -8,6 +8,8 @@ Before any stage action, read and execute [Package execution preflight](referenc
 
 Read [Stage transfer and dispatch](references/shared/stage-transfer.md) before building handoffs, dispatching a dedicated/native role, or accepting its result. Keep the existing semantic and authorization gates; the host executes tools and authenticates receipts.
 
+Read [Workflow progression](references/shared/workflow-progression.md) at the A/B execution seam. Use its saved next_action and exact observations/decisions for preparation, dispatch, waiting, acceptance and recovery. Preserve this Skill's semantic gates and native/visible carrier identity.
+
 # 1拷问
 
 Use [requirement preparation](references/shared/requirement-preparation.md)

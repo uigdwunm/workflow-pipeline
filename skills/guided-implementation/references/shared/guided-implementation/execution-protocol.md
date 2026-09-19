@@ -1,5 +1,14 @@
 # Native Implementation Dispatcher Protocol
 
+Mechanical A/B execution uses [Workflow progression](../workflow-progression.md). Supply semantic decisions and authenticated raw host responses; the shared adapter retains intents, exact attempts, receipts and recovery steps. The role, review and authorization rules below remain binding.
+
+Use its allocation operation for ordinary Execution Agents, with the original
+checkpoint passed by the controller. Do not start a second workflow for each
+child or copy the dispatcher's control into another authoritative record.
+Allocation receipts and acceptance update the same control roster consumed by
+the originating task's candidate intake. Existing native governance still owns
+real launch, waits, stopped-writer proofs and interruption.
+
 Before this role acts, execute [Package execution preflight](../package-execution.md) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
 The dispatcher accepts the verified Flow Worktree binding inherited from

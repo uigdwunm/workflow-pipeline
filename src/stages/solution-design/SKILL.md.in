@@ -8,6 +8,8 @@ Before any stage action, read and execute [Package execution preflight]({{resour
 
 Read [Stage transfer and dispatch]({{resource:shared/references/stage-transfer.md}}) before building handoffs, dispatching a dedicated/native role, or accepting its result. Keep the existing semantic and authorization gates; the host executes tools and authenticates receipts.
 
+Read [Workflow progression]({{resource:shared/references/workflow-progression.md}}) at the A/B execution seam. Use its saved next_action and exact observations/decisions for preparation, dispatch, waiting, acceptance and recovery. Preserve this Skill's semantic gates and native/visible carrier identity.
+
 # 2方案
 
 Use [requirement preparation]({{resource:shared/references/requirement-preparation.md}})
@@ -69,7 +71,7 @@ this carrier turn. The ordinary
 interactive continuous-mode rule to invoke `$guided-implementation` in the
 same turn does not apply to this carrier: the runner alone launches and waits
 for Stage 3. This carrier does wait for and accepts only its own required native
-`solution_designer` child. The payload's `continuous_stage2_to_4` mode is the
+`solution_designer` child. The payload's `flow_mode` field (`continuous` or `stepwise`) is the
 already-authorized carrier entry: do not fall back to interactive stage-entry or
 review confirmation defaults.
 
@@ -227,9 +229,11 @@ anomaly checkpoint instead of improvising or spawning a replacement.
 
 After accepting the trusted child's clean planning commit, take the complete
 sorted repository-relative paths from its `本地规划路径` field and pass them
-unchanged as `allowed_paths` to `publish-planning`; pass the read-only
-requirement-source paths as `protected_paths`. A successful publication needs
-no user confirmation:
+unchanged as `planning_paths` to Workflow progression `publication`, together
+with the accepted planning commit and readiness reference. C derives protected
+paths and invokes the existing `publish-planning` primitive once. These planning
+paths reach the primitive unchanged as `allowed_paths`; the frozen requirement
+remains in `protected_paths`. A successful publication needs no user confirmation:
 it retains the Flow Worktree for Stage 3; record the planning merge commit and
 verify the Flow Worktree at that commit, then carry its exact binding into
 Stage 3. The protocol retries one target race itself. A `planning_conflict` or

@@ -7,7 +7,7 @@
     "result": {"type": "string", "enum": ["completed", "continue", "needs_input"]},
     "artifacts": {"type": "array", "items": {"type": "string"}},
     "evidence": {"type": "array", "items": {"type": "string"}},
-    "handoff_json": {"type": "string"},
+    "handoff_json": {"type": "string", "description": "For completed, use the exact completion.stage_result.handoff_json from the persisted workflow-progress-v1 acceptance. For needs_input, retain the exact pending matter. Never reconstruct B evidence."},
     "question": {"type": "string"},
     "message": {"type": "string"},
     "needs_input_kind": {"type": "string", "enum": ["none", "user_decision", "technical_error"]}

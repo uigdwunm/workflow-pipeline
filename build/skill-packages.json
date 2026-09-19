@@ -15,7 +15,8 @@
     "supervision": "flow-worktree-v1",
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v1",
-    "stage_transfer": "workflow-stage-transfer-v1"
+    "stage_transfer": "workflow-stage-transfer-v1",
+    "workflow_progress": "workflow-progress-v1"
   },
   "resources": {
     "design-discussion/SKILL.md": {
@@ -289,6 +290,14 @@
     "shared/references/stage-transfer.md": {
       "source": "src/shared/references/stage-transfer.md",
       "output": "references/shared/stage-transfer.md"
+    },
+    "shared/scripts/workflow_progress.py": {
+      "source": "src/shared/scripts/workflow_progress.py",
+      "output": "scripts/workflow_progress.py"
+    },
+    "shared/references/workflow-progression.md": {
+      "source": "src/shared/references/workflow-progression.md",
+      "output": "references/shared/workflow-progression.md"
     }
   },
   "packages": {
@@ -337,7 +346,9 @@
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
         "shared/scripts/stage_dispatch.py",
-        "shared/references/stage-transfer.md"
+        "shared/references/stage-transfer.md",
+        "shared/scripts/workflow_progress.py",
+        "shared/references/workflow-progression.md"
       ],
       "external_actions": {
         "discuss": []
@@ -382,7 +393,9 @@
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
         "shared/scripts/stage_dispatch.py",
-        "shared/references/stage-transfer.md"
+        "shared/references/stage-transfer.md",
+        "shared/scripts/workflow_progress.py",
+        "shared/references/workflow-progression.md"
       ],
       "external_actions": {
         "route": [
@@ -435,7 +448,9 @@
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
         "shared/scripts/stage_dispatch.py",
-        "shared/references/stage-transfer.md"
+        "shared/references/stage-transfer.md",
+        "shared/scripts/workflow_progress.py",
+        "shared/references/workflow-progression.md"
       ],
       "external_actions": {
         "spec": [
@@ -495,7 +510,9 @@
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
         "shared/scripts/stage_dispatch.py",
-        "shared/references/stage-transfer.md"
+        "shared/references/stage-transfer.md",
+        "shared/scripts/workflow_progress.py",
+        "shared/references/workflow-progression.md"
       ],
       "external_actions": {
         "dispatch": [
@@ -546,7 +563,9 @@
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
         "shared/scripts/stage_dispatch.py",
-        "shared/references/stage-transfer.md"
+        "shared/references/stage-transfer.md",
+        "shared/scripts/workflow_progress.py",
+        "shared/references/workflow-progression.md"
       ],
       "external_actions": {
         "route": [

@@ -16,19 +16,14 @@ retains its external controller; a dispatcher may prepare only its authorized
 execution allocations. 0/1 dedicated tasks stay user-visible tasks; downstream
 native roles stay native. Never replace a native child with a task or CLI carrier.
 
-1. Obtain A entry/requirement evidence and finish existing confirmation. For
-   dedicated 0/1, the existing Workflow Control prepare/decide sequence supplies
-   the confirmed plan. Attached discussion retains its original ledger authority.
-2. Resolve the actual downstream Flow Worktree once with the existing protocol.
-   Call handoff `prepare`, save the whole result, and `verify` before consumption.
-3. Dispatch `prepare` returns a record, checkpoint and exact host_call. Save the
-   record and checkpoint together before invoking any host tool. Serialize through
-   the checkpoint owner's existing lock, not a new transport registry.
-4. The host verifies target tool configuration and the saved handoff, invokes the
-   exact request once, and saves the original response before dispatch `bind`.
-5. `reconcile` processes an exact host lookup; `receive` verifies bound results;
-   `accept` records the controller's existing decision. Save returned objects.
-   C owns waits, continuation, mode decisions, phase activation and route advance.
+C's [Workflow progression](workflow-progression.md)
+now owns this fixed sequence. Use its start/advance/observe/decide interface
+instead of manually calling and copying every A/B object. It verifies A,
+prepares/verifies handoff, persists dispatch record/checkpoint before the host
+call, saves the raw response before binding, and performs receive/accept in order.
+The host still executes/authenticates the actual call; the controller still owns
+semantic decisions, phase authorization and acceptance. The exact individual
+B interfaces below remain the underlying contract and diagnostic surface.
 
 Python never invokes an unavailable native tool. The current native orchestration
 adapter owns argument mapping, actual identity, stopped-writer observations and
