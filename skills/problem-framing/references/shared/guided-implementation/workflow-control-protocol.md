@@ -1,5 +1,7 @@
 # Workflow Control Protocol
 
+Mechanical A/B execution uses [Workflow progression](../workflow-progression.md). Supply semantic decisions and authenticated raw host responses; the shared adapter retains intents, exact attempts, receipts and recovery steps. The role, review and authorization rules below remain binding.
+
 The Workflow Controller retains confirmation, routing, result acceptance and
 recovery. Dedicated Discussion Task and Dedicated Problem Framing Task are visible
 0/1 carriers. Stage 2 uses one native solution-designer; stage 3 one Implementation

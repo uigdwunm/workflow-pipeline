@@ -1,5 +1,7 @@
 # Solution-Design Subagent Protocol
 
+Mechanical A/B execution uses [Workflow progression](../shared/workflow-progression.md). Supply semantic decisions and authenticated raw host responses; the shared adapter retains intents, exact attempts, receipts and recovery steps. The role, review and authorization rules below remain binding.
+
 Before this role acts, execute [Package execution preflight](../shared/package-execution.md) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
 Read this file completely before launching, resuming, or accepting the stage-2
@@ -58,7 +60,7 @@ a snapshot preparation failure recovers at its failed local operation.
 
 Read [Workflow Control](../shared/guided-implementation/workflow-control-protocol.md) and [thread settings](../shared/guided-implementation/thread-settings-protocol.md). Use select-configuration with current native adapter evidence for solution-designer. Preserve explicit user and supported frozen settings. Without overrides use actual runtime inheritance and never claim an unverified model. Disclose the pair, reason and receipt. The adapter owns concrete argument support and identity.
 
-Use Stage Transfer prepare/verify/render and dispatch prepare to build the
+Use Workflow progression start with the complete semantic input to build the
 canonical child payload from `templates.md`. It contains
 the semantic role, requirement source, project and repository, planning target,
 Flow Worktree binding, permissions, settings and flow mode. Keep it bounded to

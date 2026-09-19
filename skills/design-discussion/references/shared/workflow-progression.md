@@ -1,0 +1,225 @@
+# Workflow progression
+
+Use the pinned `scripts/workflow_progress.py CHECKPOINT` at the A/B seam in
+both interactive and foreground-carrier execution. CHECKPOINT is the original
+conversation or runner checkpoint, an absolute path outside the repository and
+Flow Worktree. Do not create a second control ledger. The adapter owns only
+`workflow_progress`, `workflow_requirements`, and `workflow_lifecycle` in that
+outer object. The runner owns its other fields, retains a separate process lock,
+and merges these members under the same short checkpoint lock.
+
+## One mechanical path
+
+Send one bounded strict JSON object on stdin:
+
+```json
+{"protocol":"workflow-progress-v1","operation":"inspect","expected_revision":0}
+```
+
+`inspect` returns the current revision/status/pending matter without advancing.
+Mutations require that exact revision. Full raw responses and complete A/B
+objects remain in the checkpoint; output provides the unique next action.
+The caller authenticates controller decisions and host receipts. JSON strings,
+digests, child assertions, names and timestamps are not authentication.
+
+- `prepare-requirement`: data is `{request: <complete A prepare or verify request>}`.
+  C retains the exact intent before write/freeze, saves results, and reconciles
+  the same intent on repeated calls. Content and existing completion/commit
+  authorization remain Agent/controller decisions. Partial completed_evidence
+  is retained with downstream_ready=false; it never becomes a frozen receipt.
+- `start`: data is `{handoff: <B semantic prepare input>, control?: <original B control port>, requirement_transaction?: <exact A transaction ID>, next_stage?: <confirmed successor>}`.
+  C resolves omitted expected_entry from A, reuses the exact saved A transaction
+  when selected, and derives predecessor/requirement from its prior acceptance.
+  Native 2→3→4 also derives the next control context when omitted; initial and
+  dedicated entries require the original full port to preserve both slots.
+  next_stage defaults to the next numbered stage, except continuous Stage 0
+  uses Stage 2; an explicitly selected 0→2 route is also legal.
+  C verifies A, prepares/verifies the handoff, prepares dispatch and persists
+  record/checkpoint together. It returns `next_action=invoke-host` once. Supply
+  semantic scope/configuration from the original approved checkpoint; C never
+  infers permissions from the diff. On a successor pass the complete prior
+  acceptance, same mode/pins, next stage and original current control port.
+  A proven not-created attempt may instead restart the same stage with a fresh
+  controller retry reference, unchanged work/target/binding and retained pins.
+  Unknown creation and user cancellation cannot take this path. Dedicated
+  retries must supply the current confirmed ledger port; C never resets slots.
+- `advance`: continues mechanical processing. After a host action has been
+  issued it returns exact lookup, never the mutation again. Save/use the first
+  returned action. If that response is lost, inspect and reconcile; do not
+  interpret its saved payload as permission to replay a host tool.
+- `observe`: data is `{event_id, receipt, result? , action_id?, closure?}`.
+  Receipt is B's complete authenticated receipt including raw. C saves it
+  before bind/reconcile/receive. A result is B's `{delivery_id,status,payload}`.
+  `action_id`, when supplied, must name the current issued action. Use stable
+  event IDs: identical replay ACKs; conflicting replay fails.
+- `decide`: data is `{decision_id,subject,answer,reference}` copied from the
+  exact pending matter and controller decision. For acceptance answer is
+  `accept`; for stage entry it is `confirm` or an explicitly authorized
+  `continuous`. Other answers carry the user's actual semantic decision.
+  Old answers cannot apply to another pending matter. Acceptance is a
+  controller decision, not necessarily another human approval: continuous
+  Stage 2 retains its trusted readiness intake without human content review.
+- `pause`, `resume`, `cancel`: retain the attempt and side effects. Pausing and
+  cancelling are requests until the host proves stopped writers. Cancellation
+  never cleans files. Outstanding dispatcher writer effects require the
+  original control recovery, not a fabricated stopped root receipt.
+- `lifecycle`: data is `{request: <original phase operation envelope>}`.
+  Supported seams are claim-phase-carrier, phase-ready, phase-activate,
+  claim-phase-completion, complete-phase-run, finalize-phase-run,
+  reconcile-phase-run and read-phase-run. The ledger enforces actor boundaries.
+  C observes the original ready/active/completion state and emits a complete
+  source-lifecycle or carrier-lifecycle action with the original actor,
+  run/attempt, evidence, current revisions and saved idempotency key. Only that
+  authenticated actor executes it through lifecycle; carriers never impersonate
+  the source. Source complete requires B acceptance, saves the exact request, then chains
+  finalize with returned revisions and a saved idempotency key. It verifies
+  the original completed attempt. Carrier claim/ready and source activation
+  remain different authenticated actors; C never impersonates either.
+
+Use returned `next_action` with the current host adapter. It owns real tool
+mapping, supported configuration, native governance and original raw evidence.
+`wait-host` uses that adapter's notifications/cursors and bounded foreground
+waits. `continue-host` resumes the exact ref; it is not a fresh dispatch.
+`lookup-exact-action` requires request/attempt or exact pending identity.
+Absent lookup support is unknown, not permission to search by title or reissue.
+No background monitor or private governance schema is added.
+
+## Dispatcher allocations
+
+Pass the returned `checkpoint` to the native dispatcher alongside B's unchanged
+bootstrap payload. Its `allocation` operation uses
+`{allocation_id,operation,handoff? ,receipt? ,result? ,decision?}` as data.
+allocation_id is the original stable local intent ID, not a native task identity.
+Prepare uses the execution-agent B handoff input from the actual bound dispatcher;
+C retains parent source, binding, baseline and protections. Repeating prepare
+returns exact lookup, never another host create. Bind/reconcile/receive use B's
+original full receipts/results. Accept takes the dispatcher's decision reference;
+C derives the received delivery digest. Host configuration and governance remain
+the current native adapter's responsibility.
+
+These transport records live in the same original checkpoint. Only the existing
+control.handoff_progress.executions roster owns allocations and writer state;
+each B result updates that control atomically with its allocation record. Child
+acceptance is never stage completion. Cancelled parents can reconcile unbound
+allocations through the same exact not-created proof, without reviving late refs.
+Interrupted allocation intake returns allocation-recovery to its original bound
+dispatcher; another runtime must not impersonate that owner during A checks.
+
+## Decisions and recovery
+
+Continuous and stepwise share the same operations and acceptance checks.
+Stepwise retains launch, solution, optional Tickets and stage-entry decisions.
+Continuous skips only the existing human gates, not readiness, independent
+implementation reviews, phase activation or acceptance. Changed requirements,
+targets, permissions and real semantic choices always return to the controller.
+For an in-stage decision send needs_input with its exact question; C creates
+the pending identity and retains it across resumed turns.
+
+Running, idle, turn completion, continue, needs_input, technical_error, received
+and accepted are distinct. A completed B delivery requires the host's actual
+stopped-writer contract. A stopped/unknown identity cannot be blindly continued.
+Repeated continuation with unchanged progress evidence blocks for diagnosis.
+Technical errors stop without masquerading as a permission question.
+
+For attached dedicated launch, B's reservation changes the ledger control view.
+C verifies the complete handoff before reservation; before host launch it reuses
+B's post-mutation owner/configuration verifier, compares unchanged source and
+Git facts, rechecks gates and requires exact readback of the saved reservation.
+It does not refresh requirements to bless drift.
+
+The dispatch transaction is saved before ledger effects. After interruption
+`resume` replays that exact envelope, including its original idempotency key;
+unknown reservations without a recoverable request remain blocked. Original
+observations remain available if binding fails or source facts drift. Preserve
+known identities for stop/reconcile; they do not grant work on stale input.
+
+An accepted result is historical evidence. Identical receipts/answers ACK;
+successor consumption verifies current A/B/Git/phase facts separately. The
+Stage-3 accepted transfer retains implementation protection. Its rendered
+Stage-4 projection removes only approved closure_paths; never use that projection
+to accept implementation.
+
+## Publication and lifecycle boundaries
+
+`publication`: data is `{candidate_commit, reference, planning_paths?, expected_target_head?}`.
+C saves the exact derived request before invoking the existing Stage-2
+publish-planning or Stage-4 complete-worktree primitive once. Repeated input
+returns its receipt or reconciliation requirement, never calls the publisher
+again. A changed candidate requires original-protocol recovery, not overwriting
+this transaction. This wrapper does not alter either Git implementation.
+
+`control`: data is `{action,evidence,receipt}` for the original successor-ready,
+archive, archive-result, execution-result, accept-execution, execution-dispatch-result
+or recover-dispatch seam. C saves the original port and evidence, invokes its
+existing ledger/Git/control adapter, and retains effects and actual result. Host
+receipt authentication remains mandatory. Identical completed calls ACK, and
+a lost response replays the exact original mutation envelope.
+
+Stage 2 retains candidate intake before publish-planning; only verified planning
+publication forms B's completed delivery. C does not implement Git publication. Preserve the
+original publication receipt; integration_unverified must be reconciled before
+any retry, never republished.
+
+For Stage 4 partial publication, `observe` may additionally carry `closure`,
+the existing closure-result evidence. C invokes the existing Git/control check,
+retains the actual merge and cleanup facts and its cleanup-only effects. Only
+cleanup remains legal after publication. Never turn a missing complete B result
+into permission to run complete-worktree again. D/its existing protocol executes
+and reconciles publication/cleanup; implementation defects before publication
+retain the existing return-to-Stage-3 path and review requirements. C returns
+implementation-recovery with the original dispatcher ref and binding, and
+blocks further closure while that controller-owned recovery is unresolved.
+It does not reopen an accepted B delivery or invent a replacement attempt.
+
+Phase completion follows B acceptance and must finish before successor work or
+runner completion. 0/1 dedicated task claim/binding, bounded successor slots,
+successor-ready and archive-result remain original ledger/control operations;
+archiving never precedes activation, and failure never relaunches a successor.
+There is no new 0/1 discussion executor. Missing Stage1→2 delivery remains an
+explicit dependency; C cannot produce a merge proof or infer completion.
+
+## Foreground carrier and compatibility
+
+New runner records are version 3 and pin workflow-progress-v1 packages. Version
+1/2 records require their retained original runtime; neither inspection through
+new mutation APIs nor registry refresh migrates or replaces them. Complete
+registration is required for live actions. No installation is implied.
+
+Version-3 confirmed input retains the existing frozen_requirement display tuple
+and additionally requires `requirement`, the complete successful A frozen or
+attached Git checkpoint result. Its original path, commit, hash and positive
+version must match; partial completed_evidence cannot be substituted. The carrier
+reads this full object at `confirmed.requirement` in its checkpoint. It does not
+guess a version or reconstruct an A receipt from the old three-field tuple.
+The runner prompt carries checkpoint references for full predecessor results and
+pending action responses, keeping large B evidence out of command-line arguments.
+
+The CLI carrier reads `progression_checkpoint` from its runner payload and uses
+this adapter for its native role. It never writes the outer record directly.
+The external controller saves an exact `controller_decision` in the runner
+record; the original carrier applies it through C decide in its own runtime.
+Likewise, `resume_progression` directs reconciliation back to that carrier.
+The parent never impersonates the carrier's A entry identity. Pure stage-entry
+decisions remain controller-owned. Repeated unchanged CLI progress is bounded
+and stops for reconciliation instead of resuming forever.
+CLI session identity is not a native role identity. Only the runner advances
+the outer stage route; interactive carriers advance through this same contract
+in their existing task. Return C's exact `completion.stage_result`; the runner
+checks persisted B acceptance and current Git facts, not a hand-written footer.
+
+`workflow.py pause RECORD` requests a safe turn boundary; `cancel RECORD`
+requests native-stop/reconciliation through C and terminates the known local
+CLI process group. Terminating that group does not prove native/remote writers
+stopped. Their original control recovery remains mandatory before resume.
+A later pause cannot override cancellation.
+
+`workflow.py resume RECORD [ANSWER] --decision-id ID` binds a pending matter.
+Without an answer resume only reconciles an eligible technical/checkpoint state.
+Completed runs ACK without relaunching. A completed turn is persisted before
+intake so a process crash does not rerun the same completed stage.
+
+Explicit low-complexity standalone Stage 3 without an A requirement retains
+its existing standalone-entry/control route; do not synthesize a document to
+fit B. Non-Git 0/1 retains snapshot authority and is not Git downstream input.
+Real native creation, async ready, stopped proofs and cross-host lookup require
+separate host acceptance; adapter-double tests do not certify those capabilities.

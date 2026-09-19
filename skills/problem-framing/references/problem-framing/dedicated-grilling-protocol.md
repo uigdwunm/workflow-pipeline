@@ -1,5 +1,7 @@
 # Dedicated Grilling Protocol
 
+Mechanical A/B execution uses [Workflow progression](../shared/workflow-progression.md). Supply semantic decisions and authenticated raw host responses; the shared adapter retains intents, exact attempts, receipts and recovery steps. The role, review and authorization rules below remain binding.
+
 Before this role acts, execute [Package execution preflight](../shared/package-execution.md) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
 Read this file completely when the user accepts context migration, when running
@@ -69,11 +71,12 @@ Select exactly one entry authority before preparing the control plan:
 
 The plan freezes `entry_authority` and execution Stage 1. Disclose its exact
 route, missing context and configuration in one combined confirmation. On
-`decide confirm`, use the create_thread effect once. Read back pending/unknown
-creation; only an actual ready task ID is usable. Then bind that ID using
-`authorize-phase-carrier` for the wrapper or `bind-handoff` for same-stage,
-**before** recording `creation-result`. If recording fails, reconcile that same
-binding and receipt; do not create another task. Binding alone grants no work.
+`decide confirm`, use Workflow progression start and execute its saved host
+action once. Submit the raw ready/pending/unknown response through observe.
+C/B bind the actual ID using `authorize-phase-carrier` for the wrapper or
+`bind-handoff` for same-stage **before** recording `creation-result`; do not
+repeat those operations manually. Resume the same saved transaction if recording
+fails. Only a real ready task ID is usable. Binding alone grants no work.
 The controller retains intake, confirmation, readiness and archive.
 
 Stage/topic-current preference reuses the document and suppresses repeated
