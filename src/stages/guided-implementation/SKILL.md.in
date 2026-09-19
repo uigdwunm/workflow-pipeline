@@ -6,6 +6,8 @@ description: Use when the user explicitly invokes $guided-implementation, clearl
 Before any stage action, read and execute [Package execution preflight]({{resource:shared/references/package-execution.md}}). This entry is stage 3 (`guided-implementation`). Pin this package first; check the current action before its side effects.
 
 
+Read [Stage transfer and dispatch]({{resource:shared/references/stage-transfer.md}}) before building handoffs, dispatching a dedicated/native role, or accepting its result. Keep the existing semantic and authorization gates; the host executes tools and authenticates receipts.
+
 # 3实现
 
 Every implementation uses one Flow Worktree and branch. Read

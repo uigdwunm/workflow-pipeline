@@ -143,9 +143,10 @@ def verified_transition(payload):
         evidence.update(ancestor_verified=True, changed_paths=all_changes,
             worktree_removed=not Path(binding['worktree']).exists() and 'worktree ' + binding['worktree'] not in registered,
             branch_removed=branch.returncode == 1)
-    if action == 'start-dispatch':
+    if action in {'start-dispatch', 'start-design'}:
         verify_binding(repository, evidence['binding'])
-        evidence['binding_verified'] = True
+        if action == 'start-dispatch':
+            evidence['binding_verified'] = True
     if action in {'plan-execution', 'execution-result', 'accept-execution', 'recover-dispatch', 'candidate'}:
         require(progress is not None, 'missing dispatcher checkpoint')
         verify_binding(repository, progress['binding'])
@@ -173,7 +174,7 @@ def verified_transition(payload):
         evidence.update(clean=True, changed_paths=changed_paths(repository, payload['baseline']),
                         file_hashes={p: implementation_hash(repository, p) for p in progress['allowed_paths']})
     result = transition(request)
-    if action in {'start-dispatch', 'start-closure'}:
+    if action in {'start-dispatch', 'start-design', 'start-closure'}:
         git(repository, 'merge-base', '--is-ancestor', commit(payload['baseline']), 'HEAD')
         result['context']['handoff_progress']['git_baseline_commit'] = payload['baseline']
     if action == 'execution-result':

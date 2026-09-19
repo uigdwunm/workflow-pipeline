@@ -6,6 +6,8 @@ description: Use when the user explicitly invokes $problem-framing, clearly asks
 Before any stage action, read and execute [Package execution preflight](references/shared/package-execution.md). This entry is stage 1 (`problem-framing`). Pin this package first; check the current action before its side effects.
 
 
+Read [Stage transfer and dispatch](references/shared/stage-transfer.md) before building handoffs, dispatching a dedicated/native role, or accepting its result. Keep the existing semantic and authorization gates; the host executes tools and authenticates receipts.
+
 # 1拷问
 
 Use [requirement preparation](references/shared/requirement-preparation.md)
