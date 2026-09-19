@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import uuid
 from contextlib import contextmanager
 
@@ -29,18 +30,25 @@ import supervision_protocol as supervision
 
 PROTOCOL = "workflow-progress-v1"
 KEY = "workflow_progress"
+CHECKPOINT_LOCK_TIMEOUT = 5.0
 require = entry.require
 
 
 @contextmanager
-def record_lock(path):
+def record_lock(path, *, timeout=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.with_name(path.name + ".lock").open("a+") as stream:
-        try:
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise entry.PreparationError("checkpoint_busy", "another checkpoint writer is active") from error
+        deadline = time.monotonic() + (CHECKPOINT_LOCK_TIMEOUT if timeout is None else timeout)
+        while True:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as error:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise entry.PreparationError("checkpoint_busy", "checkpoint lock wait timed out; retain the current operation") from error
+                time.sleep(min(0.05, remaining))
         yield
 
 
@@ -689,6 +697,7 @@ class Progress:
                 require(slot["input"] == data["handoff"], "allocation_conflict", "retain the original allocation intent")
                 if slot["record"] is not None:
                     if slot.get("action") is None:
+                        self.require_allocation_active()
                         handoff.verify(slot["handoff"])
                         return self.issue_allocation(identity, slot)
                     if slot["record"]["status"] in {"received", "accepted", "not-created"}:
@@ -696,6 +705,7 @@ class Progress:
                     return _view(s, {"operation": "lookup-exact-allocation", "allocation_id": identity,
                                      "request": slot["record"]["request"], "checkpoint": str(self.path)}, acknowledged=True)
             else:
+                self.require_allocation_active()
                 request = copy.deepcopy(data["handoff"])
                 require(request["role"] == "execution-agent" and request["stage"] == 3, "role_mismatch", "execution-agent input required")
                 request.setdefault("requirement", s["handoff"]["requirement"])
@@ -729,6 +739,8 @@ class Progress:
             entry.fields(data, required)
             slot["observations"].append(copy.deepcopy(data))
             self.save()
+        if operation == "prepare":
+            self.require_allocation_active()
         request = {"protocol": handoff.PROTOCOL, "operation": operation, "control": copy.deepcopy(s["control"])}
         if operation == "prepare":
             request["handoff"] = slot["handoff"]
@@ -762,14 +774,33 @@ class Progress:
         return _view(s, action, acknowledged=result.get("acknowledged", False))
 
     def issue_allocation(self, identity, slot):
+        self.require_allocation_active()
         action = {"action_id": str(uuid.uuid4()), "operation": "invoke-host", "allocation_id": identity,
                   "payload": slot["record"]["request"], "checkpoint": str(self.path)}
         slot["action"] = action
         self.save()
         return _view(self.state, action)
 
+    def require_allocation_active(self):
+        require(self.state["status"] not in {"pausing", "paused", "cancelling", "cancelled"} and
+                self.state.get("stop_requested") not in {"pausing", "cancelling"} and
+                self.outer.get("runner_request", {}).get("operation") not in {"pause", "cancel"},
+                "progression_suspended", "pause/cancel prevents new allocation preparation or issue; reconcile existing allocations")
+
     def suspend(self, cancel=False):
         s = self.state
+        if s["status"] == "cancelled":
+            if cancel and s.get("stop_requested") != "cancelling":
+                s["stop_requested"] = "cancelling"
+                self.save()
+            return _view(s, acknowledged=True)
+        if s.get("stop_requested") == "cancelling" or s["status"] == "cancelling":
+            if s["status"] != "cancelling":
+                s["status"] = "cancelling"
+                self.save()
+            return _view(s, acknowledged=True)
+        if not cancel and s["status"] in {"pausing", "paused"}:
+            return _view(s, acknowledged=True)
         require(s["status"] not in {"accepted", "cancelled"}, "attempt_ended", "accepted results cannot be cancelled or paused")
         s["suspended_step"] = s["step"]
         s["status"] = "cancelling" if cancel else "pausing"
@@ -808,6 +839,8 @@ class Progress:
         if pending_control:
             return self.control_action(pending_control[0]["request"])
         if s.get("stop_requested") == "cancelling":
+            if s["status"] == "cancelled":
+                return _view(s, acknowledged=True)
             s["status"] = "cancelling"
             self.save()
             return self.advance()
@@ -999,7 +1032,7 @@ def handle(path, request):
             if operation == "resume": return owner.resume()
             raise entry.PreparationError("invalid_operation", "unknown progression operation")
         except entry.ERROR_TYPES + (control.ControlError,) as error:
-            if owner.state["status"] in {"accepted", "cancelled"}:
+            if owner.state["status"] in {"accepted", "cancelled"} or getattr(error, "code", None) == "progression_suspended":
                 raise
             return owner.block(error)
 

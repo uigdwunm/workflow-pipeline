@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "a460f74cca2da31a2a67edad5b93e78370df6d7914aa5990b55ad3838d323184",
+  "bundle_digest": "80930e6e54a63092c6b40d16b34831fa6b1702cc277ff5b454d732b84327e167",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -61,7 +61,7 @@
     },
     "references/shared/guided-implementation/originating-task-protocol.md": {
       "mode": "0644",
-      "sha256": "4ebb3fdfab4401a9f1973486b6299419bd8937e06e3e08fa4343420508fe7a34"
+      "sha256": "dc7c9a22c34389f8c2c6d8f01d47801ebbccf11207d76783aa5fa5e5f18d2f22"
     },
     "references/shared/guided-implementation/thread-settings-protocol.md": {
       "mode": "0644",
@@ -89,7 +89,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "2a9f31f07a59ac2eeaf3f6b944053a4d36df322d99a8ee3d7ef9d9e0f59193c7"
+      "sha256": "2e83ed578893a3b613e1afc85373d06ed4ed4625cbeadc0e79602c49d6069ae5"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -201,7 +201,7 @@
     },
     "scripts/workflow.py": {
       "mode": "0644",
-      "sha256": "c477e880f2d6c57ae8bf6c52113af15aa6962dc99a8bd16aab53f663f914c4c3"
+      "sha256": "9c6d2a1728b0fecea750f9102522aa873dd1a430cb5fcfb61b1c6f26ee59a47a"
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
@@ -213,7 +213,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "5a6fa562036da202bb16e2050921c74f785c7eaa2d9b7e99627a364841d45bd6"
+      "sha256": "194627baf6e6b17e7ec1aacf16b8ba2ca00f8941626cee4a57bdeefe3e973be1"
     },
     "scripts/workflow_stage_result.schema.json": {
       "mode": "0644",

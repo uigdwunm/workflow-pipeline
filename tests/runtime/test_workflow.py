@@ -30,6 +30,31 @@ state.setdefault('commands', {})[stage] = sys.argv
 state.setdefault('pids', {})[stage] = os.getpid()
 json.dump(state, open(state_path, 'w'))
 mode = os.environ.get('FIXTURE_MODE', 'success')
+if mode == 'checkpoint-lock':
+    from pathlib import Path
+    sys.path.insert(0, str(Path(payload['skill_paths']['stage2']).parent / 'scripts'))
+    from workflow_progress import record_lock, read_record, atomic_save
+    checkpoint = Path(payload['progression_checkpoint'])
+    with record_lock(checkpoint):
+        current = read_record(checkpoint)
+        current['workflow_requirements'] = {'fixture': {'retained': True}}
+        atomic_save(checkpoint, current)
+        print(json.dumps({'type': 'thread.started', 'thread_id': stage + '-session'}), flush=True)
+        time.sleep(1)
+    mode = 'needs-input'
+if mode == 'checkpoint-lock-finish':
+    from pathlib import Path
+    checkpoint = payload['progression_checkpoint']
+    locker = subprocess.Popen([sys.executable, os.environ['FIXTURE_LOCK_HOLDER'], checkpoint],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    state['locker_pid'] = locker.pid
+    json.dump(state, open(state_path, 'w'))
+    deadline = time.monotonic() + 5
+    while not Path(checkpoint + '.fixture-held').exists():
+        if time.monotonic() > deadline: raise RuntimeError('fixture lock did not start')
+        time.sleep(0.01)
+    print(json.dumps({'type': 'thread.started', 'thread_id': stage + '-session'}), flush=True)
+    mode = 'needs-input'
 if mode == 'package-change' and stage == 'stage3':
     open(payload['skill_paths']['stage4'], 'a').write('changed by fault injection')
 if mode == 'registry-remove' and stage == 'stage3':
@@ -104,6 +129,65 @@ class WorkflowCliTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def test_checkpoint_short_contention_does_not_kill_carrier(self):
+        result = self.invoke('start', str(self.confirmed), mode='checkpoint-lock')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.state()
+        self.assertEqual(state['status'], 'needs_input')
+        self.assertEqual(state['sessions'], {'stage2': 'stage2-session'})
+        self.assertTrue(state['workflow_requirements']['fixture']['retained'])
+        self.assertEqual(json.loads(self.fixture_state.read_text())['stage2'], 1)
+
+    def test_checkpoint_timeout_recovers_finished_turn_without_relaunch(self):
+        shim = self.root / 'shim'
+        shim.mkdir()
+        (shim / 'sitecustomize.py').write_text(
+            "import sys\n"
+            "if sys.argv and sys.argv[0].endswith('workflow.py'):\n"
+            f"    sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+            "    import workflow_progress\n"
+            "    workflow_progress.CHECKPOINT_LOCK_TIMEOUT = 0.05\n")
+        locker = self.root / 'lock_holder.py'
+        locker.write_text(
+            "import sys, time\nfrom pathlib import Path\n"
+            f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+            "from workflow_progress import record_lock, read_record, atomic_save\n"
+            "path = Path(sys.argv[1])\n"
+            "with record_lock(path):\n"
+            "    value = read_record(path)\n"
+            "    value['workflow_requirements'] = {'fixture': {'retained': True}}\n"
+            "    atomic_save(path, value)\n"
+            "    Path(str(path) + '.fixture-held').write_text('held')\n"
+            "    time.sleep(1)\n"
+            "Path(str(path) + '.fixture-released').write_text('released')\n")
+        result = subprocess.run([sys.executable, str(SCRIPT), 'start', str(self.confirmed)],
+            env={**os.environ, 'CODEX_BIN': str(self.fixture), 'FIXTURE_STATE': str(self.fixture_state),
+                 'FIXTURE_MODE': 'checkpoint-lock-finish', 'FIXTURE_LOCK_HOLDER': str(locker), 'PYTHONPATH': str(shim)},
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('checkpoint_write_pending', result.stderr)
+        self.assertNotEqual(self.state()['status'], 'interrupted')
+        receipt = self.record.parent / 'run.json.stage2.turn-1.carrier.json'
+        observed = json.loads(receipt.read_text())
+        self.assertEqual(observed['outcome'], 'completed_turn')
+        self.assertIn({'type': 'thread.started', 'thread_id': 'stage2-session'}, observed['events'])
+        deadline = time.monotonic() + 5
+        while not Path(str(self.record) + '.fixture-released').exists():
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+        receipt.write_text(json.dumps({**observed, 'invocation_id': 'stale-invocation'}))
+        rejected = self.invoke('resume', str(self.record))
+        self.assertEqual(rejected.returncode, 1)
+        self.assertIn('receipt differs', rejected.stderr)
+        self.assertEqual(json.loads(self.fixture_state.read_text())['stage2'], 1)
+        receipt.write_text(json.dumps(observed))
+        resumed = self.invoke('resume', str(self.record))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertEqual(self.state()['status'], 'needs_input')
+        self.assertEqual(self.state()['sessions'], {'stage2': 'stage2-session'})
+        self.assertTrue(self.state()['workflow_requirements']['fixture']['retained'])
+        self.assertEqual(json.loads(self.fixture_state.read_text())['stage2'], 1)
 
     def confirmed_input(self) -> dict[str, object]:
         # Transport-only A boundary double. Successful business chains use real

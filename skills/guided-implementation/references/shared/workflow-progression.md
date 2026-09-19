@@ -8,6 +8,16 @@ Flow Worktree. Do not create a second control ledger. The adapter owns only
 outer object. The runner owns its other fields, retains a separate process lock,
 and merges these members under the same short checkpoint lock.
 
+The short lock waits up to five seconds using a monotonic deadline. A timeout
+does not establish executor failure. The runner saves local CLI observations in
+the existing turn-artifact directory (`*.carrier.json`), bound to the exact
+record, stage, turn, launch nonce and request digest. A busy main-checkpoint save
+while receiving an event does not interrupt the carrier. If the final save is
+still busy, checkpoint_write_pending stops advancement; resume merges a verified
+finished local turn into the original record, retaining current C-owned fields.
+An unfinished or mismatched receipt cannot authorize a relaunch. These files are
+transport evidence, not another control ledger or native stopped-writer proof.
+
 ## One mechanical path
 
 Send one bounded strict JSON object on stdin:
@@ -104,6 +114,12 @@ acceptance is never stage completion. Cancelled parents can reconcile unbound
 allocations through the same exact not-created proof, without reviving late refs.
 Interrupted allocation intake returns allocation-recovery to its original bound
 dispatcher; another runtime must not impersonate that owner during A checks.
+Pausing, paused, cancelling and cancelled states prohibit new preparation and
+first issue of an already-prepared allocation. A saved runner stop request also
+closes this gate before the shared suspend transition has run. Another local
+allocation_id cannot bypass it. Rejection reports progression_suspended without
+changing control or stop state. Existing exact lookup, stopping, result intake
+and acceptance remain available subject to B's original validation.
 
 ## Decisions and recovery
 
@@ -212,6 +228,12 @@ requests native-stop/reconciliation through C and terminates the known local
 CLI process group. Terminating that group does not prove native/remote writers
 stopped. Their original control recovery remains mandatory before resume.
 A later pause cannot override cancellation.
+The shared pause/cancel entrypoints enforce this same priority, including
+repeated requests and late observations. Only the existing controller recovery
+with stopped-writer evidence can restore cancelled authority. The outer runner
+reports pausing until C records a stopped pause; a finished CLI turn alone is
+insufficient. Before any carrier is launched, or with verified non-creation,
+there is no running writer to stop.
 
 `workflow.py resume RECORD [ANSWER] --decision-id ID` binds a pending matter.
 Without an answer resume only reconciles an eligible technical/checkpoint state.

@@ -22,7 +22,7 @@ unless the brief explicitly identifies one. The explicit invocation authorizes
 only this bounded local implementation flow.
 
 Launch one native Implementation Dispatcher in the verified Flow Worktree. For
-an A/B handoff, use Workflow progression start and observe: they own
+an A/B handoff, use Workflow progression start and observe with the actual native receipt: they own
 start-dispatch and dispatcher-bound, so do not invoke those transitions again.
 The explicit standalone path without an A requirement retains those original
 control primitives. Disclose current select-configuration evidence and reason. Include the

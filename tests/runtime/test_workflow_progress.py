@@ -196,6 +196,100 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.invoke("resume")["next_action"]["operation"], "wait-host")
         self.assertEqual(self.invoke("cancel")["status"], "cancelled")
 
+    def test_cancellation_dominates_shared_pause_and_late_receipts(self):
+        self.begin()
+        self.invoke("observe", self.observation())
+        cancelled = self.invoke("cancel")
+        action = self.state()["action"]
+        for operation in ("pause", "cancel", "pause"):
+            result = self.invoke(operation)
+            self.assertEqual(result["status"], "cancelling")
+            self.assertEqual(self.state()["stop_requested"], "cancelling")
+            self.assertEqual(self.state()["action"], action)
+        stopped = self.invoke("observe", self.observation("stopped", "result"))
+        self.assertEqual(stopped["status"], "cancelled")
+        for operation in ("pause", "cancel", "resume"):
+            result = self.invoke(operation)
+            self.assertEqual(result["status"], "cancelled")
+            self.assertNotEqual((result.get("next_action") or {}).get("operation"), "continue-host")
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke("observe", self.observation("idle", "result"))
+        self.assertEqual(self.state()["status"], "cancelled")
+
+    def test_runner_pause_waits_for_native_stopped_proof(self):
+        self.begin()
+        self.invoke("observe", self.observation())
+        state = runner._new_state({})
+        state["launch"].update(state="completed_turn", turn=1)
+        runner._atomic_save(self.checkpoint, state)
+        with redirect_stdout(io.StringIO()):
+            runner.request_control(self.checkpoint, "pause")
+            self.assertEqual(runner._advance(state, self.checkpoint), 0)
+        self.assertFalse(self.state()["stopped"])
+        self.assertEqual(self.state()["status"], "pausing")
+        self.assertEqual(progress.read_record(self.checkpoint)["status"], "pausing")
+        self.invoke("observe", self.observation("stopped", "result"))
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(runner._advance(state, self.checkpoint), 0)
+        self.assertEqual(progress.read_record(self.checkpoint)["status"], "paused")
+
+    def test_runner_pause_before_any_carrier_can_be_paused(self):
+        state = runner._new_state({})
+        runner._atomic_save(self.checkpoint, state)
+        with redirect_stdout(io.StringIO()):
+            runner.request_control(self.checkpoint, "pause")
+            self.assertEqual(runner._advance(state, self.checkpoint), 0)
+        self.assertEqual(progress.read_record(self.checkpoint)["status"], "paused")
+
+    def test_runner_pause_with_unknown_creation_stays_pausing(self):
+        self.begin()
+        state = runner._new_state({})
+        runner._atomic_save(self.checkpoint, state)
+        with redirect_stdout(io.StringIO()):
+            runner.request_control(self.checkpoint, "pause")
+            runner._advance(state, self.checkpoint)
+        self.assertEqual(progress.read_record(self.checkpoint)["status"], "pausing")
+        self.assertFalse(self.state()["stopped"])
+        self.invoke("observe", self.observation("not-created", "lookup", ref=None))
+        with redirect_stdout(io.StringIO()):
+            runner._advance(state, self.checkpoint)
+        self.assertEqual(progress.read_record(self.checkpoint)["status"], "paused")
+
+    def test_runner_and_shared_cancel_pause_order_keeps_cancellation(self):
+        self.begin()
+        self.invoke("observe", self.observation())
+        state = runner._new_state({})
+        runner._atomic_save(self.checkpoint, state)
+        with redirect_stdout(io.StringIO()):
+            runner.request_control(self.checkpoint, "cancel")
+            self.invoke("pause")
+            runner.request_control(self.checkpoint, "pause")
+            runner._advance(state, self.checkpoint)
+        self.assertEqual(self.state()["stop_requested"], "cancelling")
+        self.assertEqual(progress.read_record(self.checkpoint)["runner_request"]["operation"], "cancel")
+        self.invoke("observe", self.observation("stopped", "result"))
+        with redirect_stdout(io.StringIO()):
+            runner._advance(state, self.checkpoint)
+        self.assertEqual(progress.read_record(self.checkpoint)["status"], "cancelled")
+
+    def test_runner_pause_acknowledges_prior_shared_cancellation_without_write(self):
+        self.begin()
+        self.invoke("observe", self.observation())
+        state = runner._new_state({})
+        runner._atomic_save(self.checkpoint, state)
+        self.invoke("cancel")
+        before = self.checkpoint.read_bytes()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            runner.request_control(self.checkpoint, "pause")
+        self.assertEqual(json.loads(output.getvalue())["status"], "cancelling")
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.invoke("observe", self.observation("stopped", "result"))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            runner.request_control(self.checkpoint, "pause")
+        self.assertEqual(json.loads(output.getvalue())["status"], "cancelled")
+
     def test_completed_result_arriving_during_pause_is_consumed_on_resume(self):
         payload = self.prepare_design_result("stepwise")
         self.assertEqual(self.invoke("pause")["status"], "pausing")
@@ -357,19 +451,102 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.state()["control"]["context"]["carrier"]["ref"], "native:replacement")
         self.assertTrue(self.invoke("control", request)["acknowledged"])
 
-    def prepare_execution(self):
+    def begin_dispatcher(self):
         self.context = self.context_for(3)
         self.begin("continuous", self.input_for(3))
         self.invoke("observe", self.observation(ref="native:dispatcher"))
+
+    def execution_input(self):
         self.settings["thread_id"] = "dispatcher-runtime"
         self.request["host"].update(thread_id="dispatcher-runtime", role="implementation-dispatcher",
                                     source_ref="task", actor_ref="native:dispatcher")
         execution = self.input_for(3)
         execution.update(role="execution-agent", configuration=transfer.configuration("execution-agent"))
         execution["authorization"]["flow_mode"] = "continuous"
+        return execution
+
+    def prepare_execution(self):
+        self.begin_dispatcher()
+        execution = self.execution_input()
         prepared = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "prepare", "handoff": execution})
         self.assertEqual(prepared["next_action"]["operation"], "invoke-host", prepared)
         return execution
+
+    def test_suspend_blocks_new_allocations_in_all_stop_states(self):
+        for operation, stopped in (("pause", False), ("pause", True), ("cancel", False), ("cancel", True)):
+            with self.subTest(operation=operation, stopped=stopped):
+                if self.checkpoint.exists(): self.checkpoint.unlink()
+                self.settings["thread_id"] = "task"
+                self.request["host"].update(thread_id="task", role="controller", source_ref=None)
+                self.request["host"].pop("actor_ref", None)
+                self.begin_dispatcher()
+                self.invoke(operation)
+                if stopped:
+                    self.invoke("observe", self.observation("stopped", "result", ref="native:dispatcher"))
+                before = self.state()
+                execution = self.execution_input()
+                for identity in ("first-new", "different-new"):
+                    with self.assertRaises(transfer.entry.PreparationError) as error:
+                        self.invoke("allocation", {"allocation_id": identity, "operation": "prepare", "handoff": execution})
+                    self.assertEqual(error.exception.code, "progression_suspended")
+                    self.assertEqual(self.state(), before)
+
+    def test_suspend_blocks_prepared_but_unissued_allocation_and_allows_lookup(self):
+        for operation in ("pause", "cancel"):
+            with self.subTest(operation=operation):
+                if self.checkpoint.exists(): self.checkpoint.unlink()
+                self.settings["thread_id"] = "task"
+                self.request["host"].update(thread_id="task", role="controller", source_ref=None)
+                self.request["host"].pop("actor_ref", None)
+                self.begin_dispatcher()
+                execution = self.execution_input()
+                request = {"allocation_id": "prepared", "operation": "prepare", "handoff": execution}
+                with patch.object(progress.Progress, "issue_allocation", side_effect=KeyboardInterrupt):
+                    with self.assertRaises(KeyboardInterrupt): self.invoke("allocation", request)
+                self.invoke(operation)
+                before = self.state()
+                with self.assertRaises(transfer.entry.PreparationError): self.invoke("allocation", request)
+                self.assertEqual(self.state(), before)
+                owner = progress.Progress(self.checkpoint, progress.read_record(self.checkpoint))
+                with self.assertRaises(transfer.entry.PreparationError):
+                    owner.issue_allocation("prepared", owner.state["allocations"]["prepared"])
+                self.assertEqual(self.state(), before)
+                slot = self.state()["allocations"]["prepared"]
+                result = self.invoke("allocation", {"allocation_id": "prepared", "operation": "reconcile",
+                    "receipt": self.receipt(slot["record"], "not-created", "lookup", ref=None)})
+                self.assertEqual(result["next_action"]["result"]["status"], "not-created")
+
+    def test_saved_runner_stop_request_blocks_allocation_before_core_suspend(self):
+        self.begin_dispatcher()
+        execution = self.execution_input()
+        for operation in ("pause", "cancel"):
+            outer = progress.read_record(self.checkpoint)
+            outer["runner_request"] = {"operation": operation, "request_id": operation}
+            progress.atomic_save(self.checkpoint, outer)
+            before = self.checkpoint.read_bytes()
+            with self.assertRaises(transfer.entry.PreparationError) as error:
+                self.invoke("allocation", {"allocation_id": operation, "operation": "prepare", "handoff": execution})
+            self.assertEqual(error.exception.code, "progression_suspended")
+            self.assertEqual(self.checkpoint.read_bytes(), before)
+
+    def test_pausing_still_receives_and_accepts_existing_allocation(self):
+        self.prepare_execution()
+        slot = self.state()["allocations"]["slice-one"]
+        self.invoke("allocation", {"allocation_id": "slice-one", "operation": "bind",
+            "receipt": self.receipt(slot["record"], ref="native:executor")})
+        self.invoke("pause")
+        data = b"print('finished before stopping')\n"
+        (self.flow / "impl.py").write_bytes(data)
+        slot = self.state()["allocations"]["slice-one"]
+        received = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "receive",
+            "receipt": self.receipt(slot["record"], "stopped", "result", ref="native:executor"),
+            "result": {"delivery_id": "stopped-slice", "status": "completed", "payload": {"changed_paths": ["impl.py"],
+                "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["fixture boundary passed"]}}})
+        self.assertEqual(received["next_action"]["result"]["status"], "received")
+        accepted = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "accept", "decision": {"reference": "dispatcher:accept-stopped"}})
+        self.assertEqual(accepted["status"], "pausing")
+        self.assertEqual(accepted["next_action"]["result"]["status"], "accepted")
+        self.assertIsNone(self.state()["accepted"])
 
     def test_native_allocations_share_parent_authority_and_accept_real_delta(self):
         execution = self.prepare_execution()

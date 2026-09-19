@@ -609,6 +609,51 @@ def _artifact_path(record_path: Path, stage: str, turn: int) -> Path:
     return record_path.parent / f"{record_path.name}.{stage}.turn-{turn}.json"
 
 
+def _carrier_receipt_path(record_path, stage, turn):
+    return _artifact_path(record_path, stage, turn).with_suffix(".carrier.json")
+
+
+def _recover_carrier_receipt(state, record_path):
+    """Recover local transport facts, never native stopped/acceptance authority."""
+    launch = state["launch"]
+    if launch["state"] not in {"spawning", "launched"} or "request" not in launch:
+        return
+    path = _carrier_receipt_path(record_path, state["current_stage"], launch["turn"])
+    if not path.exists():
+        return
+    receipt = _read_json(path, "carrier receipt")
+    if (receipt.get("run_record") != str(record_path) or receipt.get("stage") != state["current_stage"] or
+            receipt.get("turn") != launch["turn"] or not launch.get("invocation_id") or
+            receipt.get("invocation_id") != launch["invocation_id"] or receipt.get("request_digest") != entry_prepare.digest(launch["request"])):
+        raise WorkflowError("carrier receipt differs from the exact saved launch")
+    sessions = {event.get("thread_id") for event in receipt["events"] if event.get("type") == "thread.started"}
+    if len(sessions) != 1 or not all(isinstance(value, str) and value for value in sessions):
+        raise WorkflowError(f"carrier identity unresolved; reconcile the original launch using {path}")
+    session = next(iter(sessions))
+    previous = state["sessions"].get(state["current_stage"])
+    if previous is not None and previous != session:
+        raise WorkflowError("carrier receipt conflicts with the bound session")
+    state["sessions"][state["current_stage"]] = session
+    state["launch"]["raw_events"] = receipt["events"]
+    if receipt.get("outcome") == "failed":
+        error = receipt["error"]
+        _mark_failure(state, record_path, error["code"], error["detail"], error["uncertain"], error["recoverable"])
+        return
+    if receipt.get("outcome") != "completed_turn":
+        _atomic_save(record_path, state)
+        raise WorkflowError(f"carrier outcome unresolved; do not relaunch, reconcile {path}")
+    if not any(event.get("type") == "turn.completed" for event in receipt["events"]) or any(event.get("type") == "turn.failed" for event in receipt["events"]):
+        raise WorkflowError("carrier receipt lacks successful local turn completion")
+    # _invoke validated this result after the real process returned successfully.
+    # Native execution/acceptance still passes the ordinary C/B intake below.
+    state["turn_result"] = receipt["result"]
+    state["launch"]["state"] = "completed_turn"
+    state["status"] = "active"
+    state.setdefault("carrier_turns", {})[state["current_stage"] + ":" + str(launch["turn"])] = {
+        **copy.deepcopy(state["launch"]), "result": copy.deepcopy(receipt["result"])}
+    _atomic_save(record_path, state)
+
+
 def _mark_failure(
     state: dict[str, Any], record_path: Path, code: str, detail: str, uncertain: bool,
     recoverable: bool = False,
@@ -633,8 +678,8 @@ def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, contin
     turn = int(state["launch"].get("turn", 0)) + 1
     output = _artifact_path(record_path, stage, turn)
     diagnostic = output.with_suffix(".events.jsonl")
-    state["launch"] = {"stage": stage, "state": "spawning", "turn": turn, "output": str(output), "diagnostic": str(diagnostic)}
-    _atomic_save(record_path, state)
+    state["launch"] = {"stage": stage, "state": "spawning", "turn": turn, "output": str(output), "diagnostic": str(diagnostic),
+                       "invocation_id": str(uuid.uuid4())}
     prompt = _stage_prompt(state, stage, answer, continuing)
     codex = os.environ.get("CODEX_BIN", "codex")
     session = state["sessions"].get(stage)
@@ -656,6 +701,11 @@ def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, contin
     turn_failed = False
     state["launch"]["request"] = command
     _atomic_save(record_path, state)
+    receipt_path = _carrier_receipt_path(record_path, stage, turn)
+    receipt = {"run_record": str(record_path), "stage": stage, "turn": turn,
+               "invocation_id": state["launch"]["invocation_id"],
+               "request_digest": entry_prepare.digest(command), "events": [], "outcome": "running"}
+    progression.atomic_save(receipt_path, receipt)
 
     def receive(line: str) -> None:
         nonlocal turn_completed, turn_failed
@@ -663,6 +713,9 @@ def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, contin
         event_type = _event_type(line)
         turn_completed = turn_completed or event_type == "turn.completed"
         turn_failed = turn_failed or event_type == "turn.failed"
+        if event_type in {"thread.started", "turn.completed", "turn.failed"}:
+            receipt["events"].append(json.loads(line))
+            progression.atomic_save(receipt_path, receipt)
         if started:
             existing = state["sessions"].get(stage)
             if existing and existing != started:
@@ -671,7 +724,14 @@ def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, contin
             state["launch"]["state"] = "launched"
             state["history"].append({"event": "thread.started", "stage": stage, "session": started})
             state["launch"].setdefault("raw_events", []).append(json.loads(line))
-            _atomic_save(record_path, state)
+            try:
+                _atomic_save(record_path, state)
+            except entry_prepare.PreparationError as error:
+                if error.code != "checkpoint_busy":
+                    raise
+                # Identity is durable in this launch's raw receipt. A C writer
+                # holding the shared lock must not cause a carrier interruption.
+                print(json.dumps({"event": "checkpoint_busy", "receipt": str(receipt_path)}), flush=True)
             print(json.dumps({"event": "thread.started", "stage": stage, "session": started}), flush=True)
         if event_type == "turn.completed":
             state["launch"].setdefault("raw_events", []).append(json.loads(line))
@@ -688,6 +748,9 @@ def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, contin
             raise WorkflowError(f"executor did not report thread.started; diagnostics: {diagnostic}")
         result = _read_stage_result(output, stage)
     except KeyboardInterrupt:
+        receipt.update(outcome="failed", error={"code": "interrupted", "detail": "runner interrupted",
+                       "uncertain": stage not in state["sessions"], "recoverable": False})
+        progression.atomic_save(receipt_path, receipt)
         _mark_failure(state, record_path, "interrupted", "runner interrupted", stage not in state["sessions"])
         raise WorkflowError("runner interrupted")
     except WorkflowError as exc:
@@ -697,6 +760,9 @@ def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, contin
         if isinstance(exc, UncertainExecutorError):
             code = "interrupted"
             detail = f"{detail}; diagnostics: {diagnostic}"
+        receipt.update(outcome="failed", error={"code": code, "detail": detail, "uncertain": uncertain,
+                       "recoverable": isinstance(exc, RecoverableStageError) and not uncertain})
+        progression.atomic_save(receipt_path, receipt)
         _mark_failure(
             state, record_path, code, detail, uncertain,
             recoverable=isinstance(exc, RecoverableStageError),
@@ -709,8 +775,27 @@ def _invoke(state: dict[str, Any], record_path: Path, answer: str | None, contin
     state.pop("progression_response", None)
     state.pop("resume_progression", None)
     state["history"].append({"event": "turn.completed", "stage": stage, "turn": turn})
-    _atomic_save(record_path, state)
+    receipt.update(outcome="completed_turn", result=result)
+    progression.atomic_save(receipt_path, receipt)
+    try:
+        _atomic_save(record_path, state)
+    except entry_prepare.PreparationError as error:
+        if error.code != "checkpoint_busy":
+            raise
+        raise WorkflowError(f"checkpoint_write_pending: local turn finished; resume intake from {receipt_path}; no executor retry") from error
     return result
+
+
+def _stop_status(state, current, request):
+    """A request/finished CLI turn is not proof that native writers stopped."""
+    cancelling = (request or {}).get("operation") == "cancel" or (current or {}).get("stop_requested") == "cancelling" or (current or {}).get("status") == "cancelling"
+    if cancelling:
+        return "cancelled" if current and current["status"] == "cancelled" else "cancelling"
+    if current and current["stage"] == int(state["current_stage"][-1]):
+        return "paused" if current["status"] in {"paused", "accepted", "cancelled"} and current.get("stopped") else "pausing"
+    no_carrier = state["launch"]["state"] == "prelaunch" and state["current_stage"] not in state["sessions"]
+    previous_stopped = current is None or current["status"] in {"accepted", "cancelled"} and current.get("stopped")
+    return "paused" if no_carrier and previous_stopped else "pausing"
 
 
 def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None) -> int:
@@ -724,8 +809,7 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
         if request or (current_progress and not state.get("resume_progression") and current_progress["stage"] == int(stage[-1]) and
                        (current_progress["status"] in {"paused", "pausing", "cancelling"} or
                         current_progress["status"] == "cancelled" and cancelled_by_user)):
-            state["status"] = "paused" if request and request["operation"] == "pause" else (
-                "cancelling" if request else current_progress["status"])
+            state["status"] = _stop_status(state, current_progress, request)
             _atomic_save(record_path, state)
             print(json.dumps({"status": state["status"], "run_record": str(record_path)}))
             return 0
@@ -860,6 +944,7 @@ def resume(record_path: Path, answer: str | None = None, registry_input: Path | 
     record_path = _absolute_path(str(record_path), "run_record")
     with RunLock(record_path):
         state = _validate_record(_read_json(record_path, "run record"))
+        _recover_carrier_receipt(state, record_path)
         status = state["status"]
         stage = state["current_stage"]
         if status == "completed":
@@ -938,6 +1023,8 @@ def resume(record_path: Path, answer: str | None = None, registry_input: Path | 
             return _advance(state, record_path)
         if status == "active" and state.get("controller_decision") and state["launch"]["state"] in {"prelaunch", "completed_turn"}:
             return _advance(state, record_path, state.get("answer_pending_delivery"))
+        if status == "active" and state.get("answer_pending_delivery") and state["launch"]["state"] == "completed_turn":
+            return _advance(state, record_path, state["answer_pending_delivery"])
         known_recovery = (
             status == "failed"
             and state.get("launch", {}).get("state") == "failed"
@@ -963,6 +1050,10 @@ def request_control(record_path, operation):
             return 0
         if state.get("runner_request", {}).get("operation") == "cancel":
             print(json.dumps({"status": "cancelling", "acknowledged": True}))
+            return 0
+        current = state.get(progression.KEY) or {}
+        if operation == "pause" and (current.get("stop_requested") == "cancelling" or current.get("status") == "cancelling"):
+            print(json.dumps({"status": "cancelled" if current["status"] == "cancelled" else "cancelling", "acknowledged": True}))
             return 0
         state["runner_request"] = {"operation": operation, "request_id": str(uuid.uuid4())}
         progression.atomic_save(record_path, state)
