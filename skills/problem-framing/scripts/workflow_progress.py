@@ -113,6 +113,7 @@ def validate_state(state):
     require(isinstance(host, dict) and type(host.get("generation")) is int and host["generation"] >= 0 and
             host.get("status") in {"unknown", "running", "idle", "turn-completed", "stopped"} and
             isinstance(host.get("seen"), dict) and isinstance(host.get("calls"), dict) and
+            isinstance(host.get("query_history", []), list) and
             "last_stop" in host and "proof" in host and "query" in host,
             "invalid_checkpoint", "v4 current host projection is required")
     require(all(key in state for key in ("transaction", "transaction_source", "transaction_result")) and
@@ -1563,6 +1564,16 @@ class Progress:
             return self.advance_stop("pausing")
         if s["status"] == "paused":
             require(s["stopped"] is True, "host_evidence_missing", "completed pause requires original stopped-writer evidence")
+        # Explicit resume may retry an ended query only after stop admission.
+        # Do this before any business replay/accepted/publication early return.
+        # Advance and duplicate receipts never refresh a negative query.
+        query = s["host"].get("query")
+        if ((query or {}).get("resolved") and not s.get("business_block") and
+                (s["status"] != "accepted" or self.unresolved_host_actions())):
+            s["host"].setdefault("query_history", []).append(copy.deepcopy(query))
+            s["host"]["query"] = None
+            self.save()
+        if s["status"] == "paused":
             s.pop("stop_requested", None)
             s["status"] = "active"
             self.save()  # Explicit unpause is durable before deferred recovery.
@@ -1613,8 +1624,6 @@ class Progress:
         if s.get("business_block"):
             return _view(s)
         if (s.get("publication") or s.get("publication_candidate")) and (s["host"]["status"] != "stopped" or self.unresolved_host_actions()):
-            if (s["host"].get("query") or {}).get("resolved"):
-                s["host"]["query"] = None
             return self.query_host()
         if s.get("publication") is not None and s["publication"].get("result") is None:
             return self.reconcile_publication(resume=True)
@@ -1626,8 +1635,6 @@ class Progress:
             s["status"] = "blocked"
             self.save()
             return _view(s)
-        if (s["host"].get("query") or {}).get("resolved"):
-            s["host"]["query"] = None
         if s["status"] != "accepted":
             s["status"] = "active"
         s.pop("error", None)

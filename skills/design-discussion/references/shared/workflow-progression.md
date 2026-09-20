@@ -149,6 +149,15 @@ resume can query again. Neither the query nor its terminal outcome reissues the
 old mutation. Ordinary same-generation unresolved actions still return exact
 lookup instead of a new continuation.
 
+Explicit resume refreshes an ended query at one common point after pause/cancel
+admission and before business replay, accepted-stage or publication returns. It
+archives that query in `host.query_history` before issuing a new query for the
+same still-unsettled action. The accepted B result, Controller decisions and
+retained action are unchanged. Ordinary advance and duplicate receipts do not
+retry negative queries. An in-flight query keeps its ID; a completed accepted
+stage with no unsettled action simply ACKs. Audit history never supplies current
+proof: a response to the expired query cannot release the action.
+
 Issuing a stop does not settle or discard earlier invocations. In the same
 checkpoint save that records a new invoke/continue/stop action, C retains any
 unresolved previous `host_action` in ordered `retained_host_actions`. The new
