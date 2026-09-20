@@ -1,7 +1,27 @@
 # Discussion project identity delivery
 
 Status: ready-for-human
-Lifecycle: verification-in-progress
+Lifecycle: completed
+
+
+## Final accepted verification
+
+Code candidate: 04015c26b71e5bcd4d5c967df4051f3f0300c7a4.
+Independent coordinating Standards and Spec reviews closed the original discussion
+path P1, runner receipt-consumer P1 and runner normalization P2, with no remaining
+findings. The coordinator independently reran the real-A runner path regression.
+
+Final scripts/validate.sh completed with exit 0: 625 tests in 1643.709s,
+624 passed and 1 existing not-applicable skip. Build consistency and all five Skill
+validators passed. Repository validation: valid, no issues, 76 references, 5 Skills,
+31 test modules. Full output is retained in VALIDATION.log beside this document.
+The cancelling/pausing/blocked JSON lines are expected fixture stdout; unittest
+reported OK (skipped=1) and the script finished with Validation complete.
+
+This final evidence update changes only .scratch delivery records and the log.
+The src, tests, skills and build Git trees are checked against the exact code
+candidate above. No push, merge, deployment or installation was performed.
+Real native/cross-host/Matt/remote field acceptance remains unexecuted.
 
 ## Candidate behavior
 

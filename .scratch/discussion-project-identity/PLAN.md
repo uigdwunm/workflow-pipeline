@@ -1,6 +1,7 @@
 # Persistent discussion identity across Flow execution
 
-Status: ready-for-agent
+Status: ready-for-human
+Lifecycle: completed
 
 The user approved implementation in this task after reviewing the proposed plan.
 Baseline: 7d7f4e6c22470c56003691441c43354527ae8461.
