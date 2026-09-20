@@ -44,6 +44,34 @@ def index_entries(root, paths=None):
     return entry.git(root, *args).stdout
 
 
+def file_fingerprint(target):
+    """Observe one file without changing either caller's path selection."""
+    if target.is_symlink():
+        return {"symlink": os.readlink(target)}
+    if target.is_file():
+        hasher = hashlib.sha256()
+        with target.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(65536), b""):
+                hasher.update(chunk)
+        return {"sha256": hasher.hexdigest(), "mode": target.stat().st_mode & 0o777}
+    return {"kind": "directory" if target.is_dir() else "absent"}
+
+
+def verify_target_documents(root, head, source_commit, paths):
+    """Read-only target Git, worktree mode/bytes, and exact stage-0 index check."""
+    for path in paths:
+        expected = entry.git(root, "ls-tree", "-z", source_commit, "--", path).stdout
+        actual = entry.git(root, "ls-tree", "-z", head, "--", path).stdout
+        entry.require(expected.startswith(b"100644 blob ") and actual == expected,
+                      "delivery_pending", "target document bytes or mode differ from frozen source")
+        data = entry.git(root, "show", source_commit + ":" + path).stdout
+        entry.require(entry.read_document(root, path) == data and not (Path(root) / path).stat().st_mode & 0o111,
+                      "delivery_pending", "target working document bytes or mode differ")
+        blob = expected.split(b"\t", 1)[0].split()[2]
+        indexed = b"100644 " + blob + b" 0\t" + path.encode() + b"\0"
+        entry.require(index_entries(root, [path]) == indexed, "delivery_pending", "target index differs from frozen document")
+
+
 def unrelated(root, paths):
     excluded = {p.encode() for p in paths}
     index = b"\0".join(row for row in index_entries(root).split(b"\0") if row and row.split(b"\t", 1)[1] not in excluded)
@@ -51,20 +79,7 @@ def unrelated(root, paths):
     files = {}
     for raw in set(names) - excluded - {b""}:
         name = os.fsdecode(raw)
-        target = Path(root) / name
-        if target.is_symlink():
-            files[name] = {"symlink": os.readlink(target)}
-        elif target.is_file():
-            with target.open("rb") as stream:
-                hasher = hashlib.sha256()
-                for chunk in iter(lambda: stream.read(65536), b""):
-                    hasher.update(chunk)
-                h = hasher.hexdigest()
-            files[name] = {"sha256": h, "mode": target.stat().st_mode & 0o777}
-        elif target.is_dir():
-            files[name] = {"kind": "directory"}
-        else:
-            files[name] = {"kind": "absent"}
+        files[name] = file_fingerprint(Path(root) / name)
     return {"index": sha(index), "files": entry.digest(files)}
 
 
@@ -303,7 +318,7 @@ def complete_frozen_result(current, root, intent, commit):
                    "entry": current, "path": path, "absolute_path": str(root / path), "version": intent["version"],
                    "sha256": intent["sha256"], "commit": commit,
                    "blob": entry.git_text(root, "rev-parse", commit + ":" + path),
-                   "baseline": intent["baseline"], "changed_paths": changed,
+                   "baseline": intent["baseline"], "changed_paths": changed, "owned_paths": intent["paths"],
                    "requirement_identity": identity, "operation_id": intent["operation_id"]})
 
 

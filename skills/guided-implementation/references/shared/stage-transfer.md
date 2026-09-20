@@ -124,11 +124,15 @@ A discussion CP alone is not target-branch delivery.
 If source and delivery commits differ, proof is exactly `{commit,paths,receipt}`
 from the authenticated delivery owner. The reachable delivery commit must have
 one parent, change only those Markdown paths, include the requirement, and match
-the source commit for every listed document. B preserves both commits and calls
-A's target-side verification. Merge-based delivery requires a separately reviewed
-proof contract; matching requirement bytes alone is insufficient. This defines
-a receiver interface for the independent delivery task, not its implementation
-or a mandate to choose an integration algorithm.
+the source commit for every listed document. B preserves both commits and verifies
+all owned documents at the explicit target independently of the source entry.
+The shared read-only target check requires the frozen Git blobs, regular
+non-executable working files and their exact stage-0 index entries at receive,
+accept and successor freshness checks.
+The source commit need not enter target history, and the delivery commit need not
+enter detached source history. Use the Stage-1
+[delivery producer](requirement-delivery.md) through C
+to establish this unchanged proof. Matching bytes without provenance is insufficient.
 
 Missing delivery blocks downstream readiness. Recheck after worktree creation
 to detect target movement. Unrelated primary-checkout modifications are preserved

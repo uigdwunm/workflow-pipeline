@@ -200,7 +200,7 @@ def phase_evidence(saved, *, role_ref=None, receiving=False):
 
 def delivery(request, current, identity, source_commit):
     """Read-only receiving contract; never cherry-pick or publish a source."""
-    root = current["repository"]["root"]
+    root = request["target"]["repository"]
     head = target_head(request["target"], current["repository"]["git_common_dir"])
     expected = identity["sha256"]
     require(mode(root, head, identity["path"]) == b"100644", "delivery_pending", "target requirement is absent or has an invalid mode")
@@ -229,12 +229,8 @@ def delivery(request, current, identity, source_commit):
                     "delivery_unverified", "delivered document mode differs from source")
     require(hashlib.sha256(blob(root, delivered, identity["path"])).hexdigest() == expected,
             "delivery_unverified", "delivery commit differs from frozen requirement")
-    # Use A's existing target-side verification, retaining the distinct source
-    # receipt above. A does not require the source commit to be in target history.
-    if current["requirement"]["kind"] != "discussion":
-        requirement.verify({**current, "requirement": {"kind": "frozen", "path": identity["path"]}},
-                           {**identity, "commit": delivered, "owner_ref": current["actor"]["controller_ref"],
-                            "receipt": proof["receipt"] if proof else request["requirement"]["digest"]})
+    owned = proof["paths"] if proof else request["requirement"].get("owned_paths", [identity["path"]])
+    requirement.verify_target_documents(root, head, source_commit, owned)
     return {"source_commit": source_commit, "delivery_commit": delivered, "target_head": head}
 
 

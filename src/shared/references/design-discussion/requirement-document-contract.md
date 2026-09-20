@@ -72,7 +72,9 @@ same document identity and current bytes.
 Phase 1 completes only after the document is internally consistent, contains no
 unresolved question that could materially change Phase-2 output, passes the
 repository-aware checks, is committed, and is frozen by path, commit, and
-SHA-256. The Phase-2 child may not supplement its frozen source from chat
+SHA-256, and its Stage-1 owner has verified
+[target delivery]({{resource:shared/references/requirement-delivery.md}}). Source
+freeze/CP alone remains “需求已确认，交付待解决”. The Phase-2 child may not supplement its frozen source from chat
 history, guess a missing requirement, or create a second requirement draft.
 For a Phase-1 source, a material requirement gap returns to Phase 1, which
 reopens and updates the same document; prior Phase-2

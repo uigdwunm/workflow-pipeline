@@ -17,6 +17,10 @@ for document creation/update, exact-path commit, byte verification and recovery.
 Persist its complete intent/receipt in the existing checkpoint. Keep semantic
 questioning, completion confirmation and dedicated-task authority unchanged.
 
+Before writing, read [target delivery](references/shared/requirement-delivery.md)
+and record the source, target branch, owned paths and delivery actor. After freeze,
+run its C delivery transaction before reporting completion.
+
 Turn the user's target into a shared, implementation-relevant understanding.
 Use Matt Pocock's discussion Skills for the questioning itself. Do not choose
 the engineering implementation or write implementation code in this stage.
@@ -217,7 +221,7 @@ into stages 3 or 4.
 
 ## Complete the current-task flow
 
-After the stage-owned documentation commit and documentation-aware checks pass, end with a
+After freeze, verified target delivery and documentation-aware checks pass, end with a
 short conclusion and this stable footer:
 
 ```text
@@ -226,7 +230,12 @@ short conclusion and this stable footer:
 需求草案：<absolute path>
 规划提交：<committed draft sha>
 草案 SHA-256：<committed draft hash>
-工作区状态：实现区与暂存区干净；本阶段文档已提交；其它文档改动未纳入
+来源提交：<result.source_commit>
+交付提交：<result.delivery_commit>
+交付目标：<result.target repository/branch>
+文档范围：<result.paths>
+交付依据：<result.delivery and original checkpoint transaction>
+工作区状态：阶段自有路径已验证；无关用户文件与索引保留
 规划载体：<planning target for 2方案>
 Matt 原生动作：publish Spec; review and publish Tickets when needed; apply native labels and blocking links
 阶段授权：entering 2方案 authorizes only those standard actions on that exact target
@@ -245,7 +254,8 @@ clear request to continue through the remaining stages enters it with
 
 Continuous mode originates only at this final successful footer. It has no role in
 context migration, drafting, task creation, questioning, completion approval,
-or delivery. Preserve every blocker, authority, ambiguity, validation, and
+or delivery authorization. An already-authorized continuous route proceeds after
+verified delivery without another integration confirmation. Preserve every blocker, authority, ambiguity, validation, and
 material-decision gate. Treat corrections, objections, cancellation, or
 changed requirements as continued problem framing and emit a fresh footer.
 

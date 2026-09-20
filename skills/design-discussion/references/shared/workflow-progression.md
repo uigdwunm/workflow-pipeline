@@ -42,6 +42,15 @@ digests, child assertions, names and timestamps are not authentication.
   the same intent on repeated calls. Content and existing completion/commit
   authorization remain Agent/controller decisions. Partial completed_evidence
   is retained with downstream_ready=false; it never becomes a frozen receipt.
+- `deliver-requirement`: data is `{request: <complete delivery prepare request>}`.
+  C adds a delivery transaction to `workflow_requirements`, persists the request,
+  intent and issued state before calling the
+  [producer](requirement-delivery.md), then saves the
+  delivered and verified results. Replay reconciles original objects first; safe
+  unrelated target advancement saves a linked intent under the same transaction.
+  Stops and unresolved side effects block new writes; only read-only reconciliation
+  remains available until the original attempt resumes. A failed result remains
+  downstream_ready=false and never becomes B acceptance.
 - `start`: data is `{handoff: <B semantic prepare input>, control?: <original B control port>, requirement_transaction?: <exact A transaction ID>, next_stage?: <confirmed successor>}`.
   C resolves omitted expected_entry from A, reuses the exact saved A transaction
   when selected, and derives predecessor/requirement from its prior acceptance.
