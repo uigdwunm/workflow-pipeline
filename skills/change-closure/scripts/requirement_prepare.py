@@ -303,7 +303,7 @@ def complete_frozen_result(current, root, intent, commit):
                    "entry": current, "path": path, "absolute_path": str(root / path), "version": intent["version"],
                    "sha256": intent["sha256"], "commit": commit,
                    "blob": entry.git_text(root, "rev-parse", commit + ":" + path),
-                   "baseline": intent["baseline"], "changed_paths": changed,
+                   "baseline": intent["baseline"], "changed_paths": changed, "owned_paths": intent["paths"],
                    "requirement_identity": identity, "operation_id": intent["operation_id"]})
 
 

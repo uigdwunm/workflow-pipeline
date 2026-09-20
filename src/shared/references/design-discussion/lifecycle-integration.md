@@ -60,6 +60,15 @@ actual output and new topic revision. Identical accepted deliveries remain ACKs.
 Same-stage receive also stops new requirement writes, but needs no finalization.
 Other Phase Run routes retain their existing frozen-input checks.
 
+For Stage 1, keep that DW/claim/CP sequence and perform
+[target delivery]({{resource:shared/references/requirement-delivery.md}}) before
+declaring stage completion or B receive. The CP still publishes only its checkpoint
+ref; target delivery is a separate bounded Git transaction by the authorized actor.
+It neither changes working/output evidence nor grants source Phase authority.
+Pending DW, closed gates and revoked or foreign carriers still block delivery.
+Same-stage acceptance, wrapper finalization and successor-ready/activate/archive
+retain their current owners. Non-Git CP remains snapshot-only, without Git success.
+
 The controller cannot prepare/apply requirement writes while a dedicated
 carrier holds them. A wrapper waits through ready; revoked, completion-claimed
 or delivery-frozen carriers cannot start new writes. Before activation, settle

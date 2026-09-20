@@ -102,10 +102,14 @@ Freeze verifies its exact parent, actual changed paths, all owned blobs, documen
 SHA-256 and current bytes. A requirement already matching the verified baseline is
 reused without an empty commit. The frozen receipt contains protocol, kind=frozen,
 source_kind, entry, path, absolute_path, version, sha256, commit, blob, baseline,
-changed_paths, requirement_identity, operation_id and digest. requirement_identity
+changed_paths, owned_paths, requirement_identity, operation_id and digest. requirement_identity
 retains exactly `{path,sha256,version}`; commit remains separate for current consumers.
 
 ## Existing frozen input
+
+Stage-1 freeze proves the source, not target delivery. Before a completed footer
+or dedicated result, use [target delivery]({{resource:shared/references/requirement-delivery.md}}).
+Its transaction retains this original receipt and the owned path scope.
 
 Use source.kind=frozen and source.path, operation=verify and evidence=<original
 frozen receipt>. A trusted existing handoff may instead supply exactly path,

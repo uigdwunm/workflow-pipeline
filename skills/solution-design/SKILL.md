@@ -12,6 +12,13 @@ Read [Workflow progression](references/shared/workflow-progression.md) at the A/
 
 # 2方案
 
+For Stage-1 input, retain both source_commit and delivery_commit and the original
+target proof from [requirement delivery](references/shared/requirement-delivery.md).
+Verify source in its authenticated source context and delivery at the confirmed
+target. After creating the Flow Worktree, recheck target proof and the Flow's
+frozen document before launch. Incomplete delivery returns to Stage 1; Stage 2
+does not copy or integrate missing requirements.
+
 Use [requirement preparation](references/shared/requirement-preparation.md)
 to prepare conversation snapshots or verify the exact existing frozen source.
 Pass its committed source identity into the existing Flow Worktree launch; this

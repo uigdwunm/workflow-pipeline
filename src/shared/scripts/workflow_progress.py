@@ -22,6 +22,7 @@ from contextlib import contextmanager
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import entry_prepare as entry
 import requirement_prepare as requirement
+import requirement_delivery
 import stage_handoff as handoff
 import stage_dispatch as dispatch
 import workflow_control as control
@@ -1683,6 +1684,75 @@ def prepare_requirement(path, outer, request):
     return {"protocol": PROTOCOL, "status": "requirement-ready", "transaction": identity, "result": saved["result"]}
 
 
+def deliver_requirement(path, outer, data):
+    entry.fields(data, {"request"})
+    original = copy.deepcopy(data["request"])
+    require(isinstance(original, dict), "invalid_request", "delivery request must be an object")
+    require(original.get("protocol") == requirement_delivery.PROTOCOL and original.get("operation") == "prepare",
+            "invalid_request", "complete delivery prepare request required")
+    for root in (original["entry"]["host"]["project_path"], original["target"]["repository"]):
+        require(not Path(path).resolve().is_relative_to(Path(root).resolve()), "unsafe_checkpoint", "checkpoint must be outside source and target")
+    identity = entry.digest(original)
+    saved = outer.setdefault("workflow_requirements", {}).setdefault(identity,
+        {"kind": "delivery", "request": original, "intent": None, "result": None, "state": "prepared"})
+    atomic_save(path, outer)
+    try:
+        for other_id, other in outer["workflow_requirements"].items():
+            if (other_id != identity and other.get("kind") == "delivery" and other.get("intent") is not None
+                    and other["request"]["target"] == original["target"]
+                    and (other.get("result") is None or other.get("error") is not None)):
+                raise entry.PreparationError("delivery_in_progress", "reconcile the original target delivery transaction before preparing another")
+        def admit_write():
+            state = outer.get(KEY)
+            require(outer.get("runner_request", {}).get("operation") not in {"pause", "cancel"},
+                    "progression_suspended", "resume original owner before delivery writes")
+            if state is not None:
+                owner = Progress(path, outer)
+                owner.require_not_stopping()
+                require(not owner.unresolved_host_actions() and state.get("transaction") is None,
+                        "host_action_pending", "reconcile pending side effects before delivery")
+                actor = state["handoff"]["expected_entry"]["actor"]
+                require(original["entry"]["host"]["thread_id"] == actor["thread_id"], "identity_mismatch", "delivery must retain original attempt actor")
+        if saved["intent"] is None:
+            admit_write()
+            saved["intent"] = requirement_delivery.handle(original)
+            atomic_save(path, outer)
+        def invoke(operation):
+            return requirement_delivery.handle({"protocol": requirement_delivery.PROTOCOL,
+                "operation": operation, "entry": original["entry"], "intent": saved["intent"]})
+        outcome = invoke("reconcile")
+        for _ in range(2):
+            if outcome.get("state") == "verified":
+                break
+            admit_write()
+            if outcome.get("state") == "refresh-required":
+                previous = saved["intent"]
+                refreshed = requirement_delivery.handle(original)
+                saved.setdefault("prior_intents", []).append(previous)
+                saved["intent"] = refreshed
+                saved["issued"] = False
+                saved["state"] = "prepared"
+                atomic_save(path, outer)
+            saved.update(issued=True, state="issued")
+            atomic_save(path, outer)
+            outcome = invoke("deliver")
+        require(outcome.get("state") == "verified", "target_changed", "target repeatedly advanced; retain original transaction")
+        saved["result"] = outcome
+        saved["state"] = "delivered"
+        atomic_save(path, outer)
+        saved["result"] = requirement_delivery.handle({"protocol": requirement_delivery.PROTOCOL, "operation": "verify",
+            "entry": original["entry"], "result": outcome})
+        saved.update(state="verified", error=None)
+    except entry.ERROR_TYPES as error:
+        saved["state"] = "issued" if saved.get("issued") else "prepared"
+        saved["error"] = {"code": getattr(error, "code", "delivery_failed"), "message": entry.error_message(error),
+            "completed_evidence": getattr(error, "completed_evidence", []), "downstream_ready": False}
+        atomic_save(path, outer)
+        return {"protocol": PROTOCOL, "status": "blocked", "transaction": identity, "error": saved["error"], "downstream_ready": False}
+    atomic_save(path, outer)
+    return {"protocol": PROTOCOL, "status": "delivery-ready", "transaction": identity, "result": saved["result"]}
+
+
 def lifecycle(path, outer, data):
     """Retain original actor/envelope; only source completion chains finalize."""
     entry.fields(data, {"request"})
@@ -1755,6 +1825,8 @@ def handle(path, request):
         require((member is None or isinstance(member, dict) and member.get("protocol") == PROTOCOL) and
                 (pinned_protocol is None or pinned_protocol == PROTOCOL),
                 "legacy_run_requires_original_runtime", "all operations require the original pinned progression runtime")
+        if request["operation"] == "deliver-requirement":
+            return deliver_requirement(path, outer, request.get("data", {}))
         if request["operation"] == "prepare-requirement":
             return prepare_requirement(path, outer, request.get("data", {}))
         if request["operation"] == "lifecycle":
@@ -1813,7 +1885,7 @@ def main():
         result = handle(args.checkpoint, request)
         print(json.dumps({"ok": result["status"] != "blocked", "result": result}, ensure_ascii=False))
         return 1 if result["status"] == "blocked" else 0
-    except entry.ERROR_TYPES + (control.ControlError,) as error:
+    except entry.ERROR_TYPES + (control.ControlError, RecursionError) as error:
         print(json.dumps({"ok": False, "error": {"code": getattr(error, "code", "progress_failed"),
             "message": entry.error_message(error), "downstream_ready": False}}, ensure_ascii=False))
         return 1

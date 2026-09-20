@@ -72,6 +72,9 @@ $solution-design
 需求来源类型：<immutable-problem-framing-draft | immutable-conversation-snapshot>
 需求草案：<absolute path>
 草案提交：<commit>
+来源提交：<source_commit>
+交付提交：<delivery_commit>
+目标交付证明：<original verified proof or null>
 草案 SHA-256：<hash>
 目标项目：projectId=<id or none>; path=<absolute path>
 目标仓库：<repository identity>
@@ -80,6 +83,7 @@ $solution-design
 Flow Worktree：<exact binding returned by start-worktree>
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
 工作区要求：在首次写入前以实际工作目录调用 `verify-worktree`；所有本地规划写入和提交只在该 Flow Worktree 内完成。
+交付复查：创建 Flow 后核验原目标 proof 与 Flow 中冻结需求的字节和模式；不足时回交付责任方，不自行补交付。
 允许动作：完整执行 $to-spec、必要 ADR、$ask-matt、$to-tickets、精确目标原生发布；只写入并提交本阶段拥有的本地规划文档。
 禁止动作：修改实现代码、创建 PR、部署、发布版本、改变规划目标、进入 3实现、修改冻结需求文档或处理无关任务。
 文档权威：冻结需求文档拥有需求；CONTEXT.md 拥有术语；ADR 拥有难逆决策；Spec 拥有实施方案与测试决策；Tickets 拥有实施切片和阻塞关系。不要创建单独的 2方案草案。

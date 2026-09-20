@@ -206,6 +206,11 @@ After completion confirmation:
    with that evidence. This freezes `output_evidence` and ends new writes.
    Preserve the immutable input evidence and checkpoint. Same-stage entry
    skips Phase Run completion; Workflow Control `receive` freezes its writes.
+   Preserve the established wrapper claim/CP order and then execute
+   [target delivery](../shared/requirement-delivery.md) from the
+   authorized Stage-1 actor before sending a completed result. CP is source
+   evidence; only the separate delivery transaction verifies the target branch.
+   Keep source_commit as final-commit below and add the actual delivery proof.
 7. Compute the delivery ID as lowercase SHA-256 of this exact UTF-8 sequence,
    including the final newline:
 
@@ -265,15 +270,18 @@ Perform only these mechanical checks:
    repository path, and the same child identity, initial storage path, intended
    path match the committed draft metadata for standalone entry; attached
    entry verifies the ledger-bound topic path and exact entry authority;
-4. the final commit exists and is contained by the current checkout;
+4. the source commit exists in its authenticated source context, and the separate
+   delivery proof verifies at the confirmed target checkout; neither history
+   needs to be merged into the other;
 5. the draft is a regular non-symlink file at the trusted intended repository
    path and exists at that commit;
 6. the committed draft SHA-256 equals the payload hash;
 7. the recomputed canonical delivery ID equals the payload ID;
 8. the committed draft contains `阶段结果：拷问完成` and a recorded user
    completion confirmation; and
-9. the checkout is documentation-aware clean under the main Skill's rules and
-   this stage's paths are committed.
+9. all owned target documents retain source bytes/modes and unrelated user
+   files/index are preserved. Recheck target delivery at receive and accept;
+   historical duplicate ACK never replaces the successor's fresh target check.
 
 Do not semantically re-review the target, questions, conclusions, or document
 quality. After checks pass, the controller calls Workflow Control `receive`

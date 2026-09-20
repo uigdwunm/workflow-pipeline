@@ -4,6 +4,13 @@ Resolve the primary checkout before any documentation edit. Do not enter or
 modify another task's worktree. A planning-source commit made after an
 implementation starts is detected at integration and requires user direction.
 
+Record the source checkout, planning target checkout/branch, exact owned paths
+and delivery actor in the existing entry checkpoint. Prefer preparing ordinary
+requirements directly in the target. For an authorized separate or detached
+source, preserve its entry and follow
+[target delivery]({{resource:shared/references/requirement-delivery.md}}) after freeze.
+Successful freezing with incomplete delivery remains “需求已确认，交付待解决”.
+
 Edit only stage-owned paths. Use the
 [requirement adapter]({{resource:shared/references/requirement-preparation.md}})
 to compare the expected HEAD, commit exact stage-owned paths and verify committed
