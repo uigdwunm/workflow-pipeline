@@ -1,0 +1,16 @@
+F
+======================================================================
+FAIL: test_publication_requires_exact_readiness_and_stopped_writer (test_workflow_progress.ProgressTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/tests/runtime/test_workflow_progress.py", line 170, in test_publication_requires_exact_readiness_and_stopped_writer
+    self.assertEqual(result["error"]["code"], "candidate_not_accepted")
+AssertionError: 'host_action_pending' != 'candidate_not_accepted'
+- host_action_pending
++ candidate_not_accepted
+
+
+----------------------------------------------------------------------
+Ran 1 test in 3.287s
+
+FAILED (failures=1)

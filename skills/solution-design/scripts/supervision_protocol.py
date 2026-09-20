@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import fcntl
 import json
 import os
 from pathlib import Path
 import re
+import select
 import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -364,7 +367,7 @@ def _changed_paths(repository: Path, older: str, newer: str) -> list[str]:
         raise ProtocolError("git_failed", "changed path is not valid UTF-8") from error
 
 
-def _binding(value: Any) -> dict[str, Any]:
+def _binding(value: Any, *, removed: bool = False) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProtocolError("invalid_input", "binding must be an object")
     _expect_keys(
@@ -385,7 +388,7 @@ def _binding(value: Any) -> dict[str, Any]:
     )
     if supplied_common != common:
         raise ProtocolError("worktree_mismatch", "binding Git common directory changed")
-    worktree = _canonical_absolute_path(value["worktree"], "worktree", must_exist=True)
+    worktree = _canonical_absolute_path(value["worktree"], "worktree", must_exist=not removed)
     branch = _validate_branch(repository, value["branch"], "branch")
     target_branch = _validate_branch(repository, value["target_branch"], "target_branch")
     if branch == target_branch:
@@ -685,6 +688,7 @@ def _prepare_planning_candidate(
     planning_commit: str,
     allowed_paths: list[str],
     protected_paths: list[str],
+    record=None,
 ) -> tuple[str, str, list[str]]:
     repository = Path(binding["repository"])
     worktree = Path(binding["worktree"])
@@ -730,6 +734,8 @@ def _prepare_planning_candidate(
                 "Flow Worktree has ignored files that the target could overwrite",
                 context={"paths": ignored_collisions},
             )
+        if record is not None:
+            record({"event": "refresh", "target": target_head, "candidate": planning_commit})
         refreshed = _run_git(
             worktree,
             ["merge", "--no-edit", target_head],
@@ -774,7 +780,7 @@ def _prepare_planning_candidate(
     return target_head, candidate, changed
 
 
-def publish_planning(request: dict[str, Any]) -> dict[str, Any]:
+def publish_planning(request: dict[str, Any], *, record=None) -> dict[str, Any]:
     _expect_keys(
         request,
         {"allowed_paths", "binding", "planning_commit", "protected_paths"},
@@ -827,7 +833,11 @@ def publish_planning(request: dict[str, Any]) -> dict[str, Any]:
                     planning_commit,
                     allowed_paths,
                     protected_paths,
+                    record=record,
                 )
+                if record is not None:
+                    record({"event": "prepared", "target": target_head, "candidate": candidate,
+                            "resources": _publication_resources(binding)})
                 merge_commit = _merge_candidate_into_target(
                     binding,
                     candidate,
@@ -851,10 +861,14 @@ def publish_planning(request: dict[str, Any]) -> dict[str, Any]:
                 if error.code == "integration_unverified":
                     raise
                 _restore_planning_commit(worktree, planning_commit, error)
+                if record is not None:
+                    record({"event": "restored", "candidate": planning_commit})
                 if error.code == "target_changed" and attempt == 0:
                     continue
                 raise
             break
+        if record is not None:
+            record({"event": "merged", "merge_commit": merge_commit})
         advanced = _run_git(
             worktree,
             ["merge", "--ff-only", merge_commit],
@@ -888,7 +902,7 @@ def publish_planning(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def complete_worktree(request: dict[str, Any]) -> dict[str, Any]:
+def complete_worktree(request: dict[str, Any], *, record=None) -> dict[str, Any]:
     _expect_keys(
         request,
         {
@@ -931,26 +945,16 @@ def complete_worktree(request: dict[str, Any]) -> dict[str, Any]:
             allowed_paths,
             protected_paths,
         )
+        resources = _publication_resources(binding)
+        if record is not None:
+            record({"event": "prepared", "target": expected_target_head, "candidate": candidate, "resources": resources})
         merge_commit = _merge_candidate_into_target(
             binding, candidate, expected_target_head
         )
+        if record is not None:
+            record({"event": "merged", "merge_commit": merge_commit})
+    _cleanup_published(binding, candidate, merge_commit, resources, record=record)
 
-    removed = _run_git(
-        repository, ["worktree", "remove", str(worktree)], check=False
-    )
-    if removed.returncode != 0:
-        raise ProtocolError(
-            "cleanup_failed",
-            removed.stderr.strip() or "integrated worktree could not be removed",
-            context={"merge_commit": merge_commit, "worktree": str(worktree)},
-        )
-    deleted = _run_git(repository, ["branch", "-d", binding["branch"]], check=False)
-    if deleted.returncode != 0:
-        raise ProtocolError(
-            "cleanup_failed",
-            deleted.stderr.strip() or "integrated branch could not be removed",
-            context={"branch": binding["branch"], "merge_commit": merge_commit},
-        )
     return {
         "candidate_commit": candidate,
         "changed_paths": changed,
@@ -959,6 +963,384 @@ def complete_worktree(request: dict[str, Any]) -> dict[str, Any]:
         "state": "completed",
         "target_branch": binding["target_branch"],
     }
+
+
+def _branch_identity(binding):
+    common = Path(binding["git_common_dir"])
+    ref = common / "refs/heads" / binding["branch"]
+    log = common / "logs/refs/heads" / binding["branch"]
+    source = ref if ref.exists() else common / "packed-refs"
+    stat = source.stat()
+    return {"device": stat.st_dev, "inode": stat.st_ino,
+            "ref": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "reflog": hashlib.sha256(log.read_bytes()).hexdigest() if log.exists() else None}
+
+
+def _publication_resources(binding):
+    worktree = Path(binding["worktree"])
+    gitdir = Path(_git_text(worktree, ["rev-parse", "--absolute-git-dir"]))
+    return {"worktree": [worktree.stat().st_dev, worktree.stat().st_ino],
+            "gitdir": str(gitdir), "gitdir_identity": [gitdir.stat().st_dev, gitdir.stat().st_ino],
+            "branch": _branch_identity(binding)}
+
+
+def _verify_resource_identity(binding, resources):
+    worktree = Path(binding["worktree"])
+    if worktree.exists():
+        current = _publication_resources(binding)
+        if any(current[key] != resources[key] for key in ("worktree", "gitdir", "gitdir_identity")):
+            raise ProtocolError("cleanup_pending", "published worktree identity was replaced; preserve it")
+    if _branch_oid(Path(binding["repository"]), binding["branch"]) is not None and _branch_identity(binding) != resources["branch"]:
+        raise ProtocolError("cleanup_pending", "published branch identity changed; preserve it")
+
+
+def _branch_deletion_guards(binding, candidate, merge_commit):
+    """Retain branch -d's merged/checked-out protections before an atomic delete."""
+    repository, common = Path(binding["repository"]), Path(binding["git_common_dir"])
+    ref = "refs/heads/" + binding["branch"]
+    registered = _git_text(repository, ["worktree", "list", "--porcelain"]).splitlines()
+    if "branch " + ref in registered:
+        raise ProtocolError("cleanup_pending", "published branch is in use by a worktree")
+    # Detached rebase/bisect/update-refs operations can still own a branch. Be
+    # conservative about all active history operations, including stale metadata.
+    admin = common / "worktrees"
+    for gitdir in [common] + (list(admin.iterdir()) if admin.exists() else []):
+        if not gitdir.is_dir():
+            continue
+        head = gitdir / "HEAD"
+        if head.exists() and head.read_text().strip() == "ref: " + ref:
+            raise ProtocolError("cleanup_pending", "published branch remains checked out")
+        if any((gitdir / name).exists() for name in
+               ("rebase-merge", "rebase-apply", "BISECT_START", "sequencer", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD")):
+            raise ProtocolError("cleanup_pending", "active worktree history operation prevents branch cleanup")
+    symbolic = _run_git(repository, ["symbolic-ref", "--quiet", ref], check=False)
+    if symbolic.returncode != 1:
+        raise ProtocolError("cleanup_pending", "published branch is not an ordinary direct ref")
+    upstream = _git_text(repository, ["for-each-ref", "--format=%(upstream)", ref])
+    reference = upstream or "HEAD"
+    resolved = _run_git(repository, ["rev-parse", "--verify", "--quiet", reference + "^{commit}"], check=False)
+    if resolved.returncode != 0:
+        reference = "HEAD"
+        resolved = _run_git(repository, ["rev-parse", "--verify", "HEAD^{commit}"])
+    oid = _expect_oid(resolved.stdout.strip(), "branch deletion reference")
+    if not _is_ancestor(repository, candidate, oid):
+        raise ProtocolError("cleanup_pending", "published branch is not merged into its upstream or HEAD")
+    if reference == "HEAD":
+        reference = _git_text(repository, ["rev-parse", "--symbolic-full-name", "HEAD"])
+    if reference == ref:
+        raise ProtocolError("cleanup_pending", "self-tracking branch cannot establish deletion safety")
+    target_ref = "refs/heads/" + binding["target_branch"]
+    target = _branch_oid(repository, binding["target_branch"])
+    if target is None or not _is_ancestor(repository, merge_commit, target):
+        raise ProtocolError("integration_unverified", "published merge is no longer on target")
+    guards = {target_ref: target}
+    if reference in guards and guards[reference] != oid:
+        raise ProtocolError("cleanup_pending", "deletion reference changed during verification")
+    guards[reference] = oid
+    return guards
+
+
+def _ref_transaction_command(process, command, acknowledgement):
+    """One bounded command/ack; stdin EOF aborts any uncommitted transaction."""
+    process.stdin.write(command.encode())
+    process.stdin.flush()
+    deadline = time.monotonic() + PUBLICATION_LOCK_TIMEOUT_SECONDS
+    response = b""
+    while not response.endswith(b"\n"):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([process.stdout], [], [], max(0, remaining))[0]:
+            raise ProtocolError("cleanup_pending", "Git reference transaction acknowledgement timed out", context={"phase": acknowledgement})
+        chunk = os.read(process.stdout.fileno(), 4096)
+        if not chunk or len(response) + len(chunk) > 4096:
+            raise ProtocolError("cleanup_pending", "Git reference transaction did not acknowledge the original action", context={"phase": acknowledgement})
+        response += chunk
+    if response != (acknowledgement + ": ok\n").encode():
+        raise ProtocolError("cleanup_pending", "Git reference transaction returned an unexpected acknowledgement", context={"phase": acknowledgement})
+
+
+def _delete_published_branch(binding, candidate, merge_commit, resources):
+    repository = Path(binding["repository"])
+    ref = "refs/heads/" + binding["branch"]
+    guards = _branch_deletion_guards(binding, candidate, merge_commit)
+    try:
+        process = subprocess.Popen(["git", "-C", str(repository), "update-ref", "--stdin"],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    except OSError as error:
+        raise ProtocolError("cleanup_pending", "cannot start Git reference transaction", context={"branch": binding["branch"]}) from error
+    try:
+        _ref_transaction_command(process, "start\n", "start")
+        commands = "option no-deref\ndelete " + ref + " " + candidate + "\n"
+        commands += "".join("verify " + name + " " + oid + "\n" for name, oid in sorted(guards.items()))
+        _ref_transaction_command(process, commands + "prepare\n", "prepare")
+        # prepare holds the branch and merge-reference locks until commit/abort.
+        # A same-OID recreation before prepare must still match original resource
+        # identity here. A later ordinary Git ref writer cannot pass the locks.
+        _verify_resource_identity(binding, resources)
+        if _branch_deletion_guards(binding, candidate, merge_commit) != guards:
+            raise ProtocolError("cleanup_pending", "branch deletion conditions changed")
+        _ref_transaction_command(process, "commit\n", "commit")
+    except (BrokenPipeError, OSError) as error:
+        raise ProtocolError("cleanup_pending", "Git reference deletion could not be confirmed; reconcile original publication") from error
+    finally:
+        # Closing stdin releases prepared locks through Git's own abort path.
+        process.stdin.close()
+        try:
+            process.wait(timeout=PUBLICATION_LOCK_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=PUBLICATION_LOCK_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        process.stdout.close()
+    if process.returncode != 0:
+        raise ProtocolError("cleanup_pending", "Git reference deletion did not finish successfully")
+
+
+def _cleanup_published(binding, candidate, merge_commit, resources, *, record=None):
+    """Remove only unchanged published resources; never force or prune."""
+    repository, worktree = Path(binding["repository"]), Path(binding["worktree"])
+    if not _is_ancestor(repository, merge_commit, binding["target_branch"]):
+        raise ProtocolError("integration_unverified", "published merge is no longer on target")
+    branch = _branch_oid(repository, binding["branch"])
+    if branch is not None and branch != candidate:
+        raise ProtocolError("cleanup_pending", "published branch changed; preserve it", context={"merge_commit": merge_commit})
+    _verify_resource_identity(binding, resources)
+    registered = _git_text(repository, ["worktree", "list", "--porcelain"]).splitlines()
+    if worktree.exists():
+        if "worktree " + str(worktree) not in registered:
+            raise ProtocolError("cleanup_pending", "worktree path was replaced; preserve it")
+        report = _verify_binding(binding, platform_cwd=worktree)
+        if report["current_commit"] != candidate or _full_status(worktree):
+            raise ProtocolError("cleanup_pending", "published worktree changed; preserve it")
+        # `git worktree remove` may discard ignored content even without --force.
+        # Preserve it explicitly; the owner must resolve it before cleanup.
+        ignored = _run_git(worktree, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"]).stdout
+        if ignored:
+            raise ProtocolError("cleanup_pending", "worktree contains ignored user files; preserve them",
+                                context={"merge_commit": merge_commit})
+        removed = _run_git(repository, ["worktree", "remove", str(worktree)], check=False)
+        if removed.returncode != 0:
+            raise ProtocolError("cleanup_failed", removed.stderr.strip() or "worktree removal failed",
+                                context={"merge_commit": merge_commit, "worktree": str(worktree)})
+        if record is not None:
+            record({"event": "worktree-removed"})
+    elif "worktree " + str(worktree) in registered:
+        raise ProtocolError("cleanup_pending", "missing worktree remains registered; do not prune other resources")
+    if _branch_oid(repository, binding["branch"]) is not None:
+        _delete_published_branch(binding, candidate, merge_commit, resources)
+        if record is not None:
+            record({"event": "branch-removed"})
+    cleanup = _cleanup_facts(binding)
+    if not all(cleanup.values()):
+        raise ProtocolError("cleanup_pending", "published resources remain", context={"merge_commit": merge_commit})
+    return cleanup
+
+
+def _cleanup_facts(binding):
+    repository = Path(binding["repository"])
+    registered = _git_text(repository, ["worktree", "list", "--porcelain"]).splitlines()
+    return {"worktree_removed": not Path(binding["worktree"]).exists() and
+            "worktree " + binding["worktree"] not in registered,
+            "branch_removed": _branch_oid(repository, binding["branch"]) is None and
+            not os.path.lexists(Path(binding["git_common_dir"]) / "refs/heads" / binding["branch"]) and
+            not os.path.lexists(Path(binding["git_common_dir"]) / "logs/refs/heads" / binding["branch"])}
+
+
+def _publication_input(transaction):
+    _expect_keys(transaction, {"operation", "request", "facts"}, "publication transaction")
+    operation, request, facts = transaction["operation"], transaction["request"], transaction["facts"]
+    if operation not in {"publish-planning", "complete-worktree"} or not isinstance(request, dict):
+        raise ProtocolError("invalid_input", "unknown publication operation")
+    fields = {"binding", "allowed_paths", "protected_paths"}
+    fields |= {"planning_commit"} if operation == "publish-planning" else {"candidate_commit", "expected_target_head", "scope_base_commit"}
+    _expect_keys(request, fields, "original publication request")
+    binding = _binding(request["binding"], removed=True)
+    if not isinstance(facts, list):
+        raise ProtocolError("invalid_input", "ordered publication facts required")
+    for fact in facts:
+        if not isinstance(fact, dict):
+            raise ProtocolError("invalid_input", "invalid publication fact")
+        event = fact.get("event")
+        extra = {"refresh": {"candidate", "target"}, "prepared": {"candidate", "target", "resources"},
+                 "merged": {"merge_commit"}, "restored": {"candidate"},
+                 "worktree-removed": set(), "branch-removed": set()}.get(event)
+        if extra is None:
+            raise ProtocolError("invalid_input", "unknown publication fact")
+        _expect_keys(fact, {"event"} | extra, "publication fact")
+        for key in extra - {"resources"}:
+            _expect_oid(fact[key], key)
+        if event == "prepared":
+            resources = fact["resources"]
+            if not isinstance(resources, dict):
+                raise ProtocolError("invalid_input", "publication resource identities required")
+            _expect_keys(resources, {"worktree", "gitdir", "gitdir_identity", "branch"}, "publication resources")
+            for name in ("worktree", "gitdir_identity"):
+                if not isinstance(resources[name], list) or len(resources[name]) != 2 or any(type(n) is not int or n < 0 for n in resources[name]):
+                    raise ProtocolError("invalid_input", "invalid resource identity")
+            _canonical_absolute_path(resources["gitdir"], "resource gitdir", must_exist=False)
+            if not isinstance(resources["branch"], dict):
+                raise ProtocolError("invalid_input", "invalid branch identity")
+            _expect_keys(resources["branch"], {"device", "inode", "ref", "reflog"}, "branch identity")
+    _normalize_relative_paths(request["allowed_paths"], "allowed_paths")
+    _normalize_relative_paths(request["protected_paths"], "protected_paths")
+    _expect_oid(request.get("planning_commit", request.get("candidate_commit")), "original candidate")
+    if operation == "complete-worktree":
+        _expect_oid(request["expected_target_head"], "expected_target_head")
+        _expect_oid(request["scope_base_commit"], "scope_base_commit")
+    return operation, request, facts, binding
+
+
+def _verify_publication_scope(operation, request, binding, prepared):
+    """Verify immutable objects even after the worktree has been removed."""
+    repository = Path(binding["repository"])
+    target, candidate = prepared["target"], prepared["candidate"]
+    baseline = request.get("scope_base_commit", binding["base_commit"])
+    original = request.get("planning_commit", request.get("candidate_commit"))
+    if not all(_is_ancestor(repository, old, new) for old, new in
+               ((baseline, target), (baseline, candidate), (target, candidate), (original, candidate))):
+        raise ProtocolError("integration_unverified", "publication ancestry differs from saved scope")
+    if operation == "complete-worktree" and (candidate != original or target != request["expected_target_head"]):
+        raise ProtocolError("integration_unverified", "final publication changed original candidate or target")
+    changed = _changed_paths(repository, target, candidate)
+    if not changed or any(not _path_matches(p, request["allowed_paths"]) for p in changed):
+        raise ProtocolError("path_outside_scope", "publication delta escapes original scope")
+    if any(_path_matches(p, request["protected_paths"]) for p in _changed_paths(repository, baseline, candidate)):
+        raise ProtocolError("source_changed", "publication changed protected sources")
+    return changed
+
+
+def _inspect_publication(transaction):
+    operation, request, facts, binding = _publication_input(transaction)
+    repository = Path(binding["repository"])
+    head = _branch_oid(repository, binding["target_branch"])
+    if head is None:
+        raise ProtocolError("target_changed", "publication target is missing")
+    preparations = [f for f in facts if f["event"] == "prepared"]
+    matches = []
+    # Search exact parent pairs, not merely candidate ancestry or current HEAD.
+    for prepared in preparations:
+        _verify_publication_scope(operation, request, binding, prepared)
+        lines = _git_text(repository, ["rev-list", "--first-parent", "--parents", head,
+                                      "^" + prepared["target"]]).splitlines()
+        for line in lines:
+            parts = line.split()
+            if parts[1:] == [prepared["target"], prepared["candidate"]]:
+                merge = parts[0]
+                if _git_text(repository, ["rev-parse", merge + "^{tree}"]) != _git_text(repository, ["rev-parse", prepared["candidate"] + "^{tree}"]):
+                    raise ProtocolError("integration_unverified", "published tree differs from saved candidate")
+                if not any(item[1] == merge for item in matches):
+                    matches.append((prepared, merge))
+    if len(matches) > 1:
+        raise ProtocolError("integration_unverified", "multiple publications match the original action")
+    known = [f["merge_commit"] for f in facts if f["event"] == "merged"]
+    if known and (not matches or any(m != matches[0][1] for m in known)):
+        raise ProtocolError("integration_unverified", "saved publication is not proven on target")
+    if matches:
+        prepared, merge = matches[0]
+        changed = _verify_publication_scope(operation, request, binding, prepared)
+        result = {"ok": True, "state": "published", "candidate_commit": prepared["candidate"],
+                  "merge_commit": merge, "changed_paths": changed, "target_branch": binding["target_branch"],
+                  "resources": prepared["resources"]}
+        if operation == "publish-planning":
+            flow = _verify_binding(binding, platform_cwd=Path(binding["worktree"]))
+            result.update(binding=binding, planning_commit=request["planning_commit"], current_commit=flow["current_commit"],
+                          state="planning_published" if flow["current_commit"] == merge and not _full_status(Path(binding["worktree"])) else "flow-advance-pending")
+        else:
+            result["cleanup"] = _cleanup_facts(binding)
+            result["state"] = "completed" if all(result["cleanup"].values()) else "cleanup-pending"
+        return result
+    # Absence of a matching merge alone does not authorize retry.
+    original = request.get("planning_commit", request.get("candidate_commit"))
+    if _is_ancestor(repository, original, head):
+        raise ProtocolError("integration_unverified", "candidate is on target without exact publication proof")
+    if (Path(binding["git_common_dir"]) / "MERGE_HEAD").exists():
+        raise ProtocolError("integration_unverified", "target has an unfinished merge")
+    flow = _verify_binding(binding, platform_cwd=Path(binding["worktree"]))
+    if _full_status(Path(binding["worktree"])):
+        raise ProtocolError("worktree_not_clean", "preserve changes during publication recovery")
+    latest = facts[-1] if facts else None
+    prepared = next((f for f in reversed(facts) if f["event"] == "prepared"), None)
+    if prepared and latest["event"] not in {"restored", "refresh"}:
+        if head != prepared["target"] or flow["current_commit"] != prepared["candidate"]:
+            raise ProtocolError("integration_unverified", "target or prepared candidate changed after publication intent")
+        return {"ok": True, "state": "prepared", "prepared": prepared}
+    if latest and latest["event"] == "refresh" and flow["current_commit"] != original:
+        parents = _git_text(repository, ["show", "-s", "--format=%P", flow["current_commit"]]).split()
+        if head != latest["target"] or parents != [original, head]:
+            raise ProtocolError("integration_unverified", "planning refresh cannot be attributed to original intent")
+        prepared = {"event": "prepared", "target": head, "candidate": flow["current_commit"],
+                    "resources": _publication_resources(binding)}
+        _verify_publication_scope(operation, request, binding, prepared)
+        return {"ok": True, "state": "prepared", "prepared": prepared}
+    if flow["current_commit"] != original:
+        raise ProtocolError("candidate_changed", "original candidate changed before publication")
+    if operation == "complete-worktree" and head != request["expected_target_head"]:
+        raise ProtocolError("target_changed", "original final target changed")
+    return {"ok": True, "state": "not-published"}
+
+
+def reconcile_publication(transaction, *, resume=False, cleanup_only=False, record=None):
+    """Owner-saved facts are evidence, never authority. Caller verifies permission.
+
+    Inspect is read-only. Resume persists each new intent through the existing
+    checkpoint owner before writes; there is no second journal or run loop.
+    """
+    operation, request, _, binding = _publication_input(transaction)
+    common, worktree = Path(binding["git_common_dir"]), Path(binding["worktree"])
+    retry = False
+    with os.fdopen(os.open(common / PUBLICATION_LOCK_FILENAME, os.O_RDWR | os.O_CREAT, 0o600), "r+b") as stream:
+        _flock_with_timeout(stream)
+        result = _inspect_publication(transaction)
+        if not resume:
+            return result
+        if result["state"] in {"not-published", "prepared"}:
+            if cleanup_only:
+                raise ProtocolError("integration_unverified", "cleanup requires a proven publication")
+            if record is None:
+                raise ProtocolError("checkpoint_required", "publication recovery requires a durable owner callback")
+            if result["state"] == "not-published":
+                retry = True
+            else:
+                prepared = result["prepared"]
+                _validate_candidate(binding, prepared["candidate"], prepared["target"],
+                                    request.get("scope_base_commit", binding["base_commit"]),
+                                    request["allowed_paths"], request["protected_paths"])
+                record(copy.deepcopy(prepared))
+                merge = _merge_candidate_into_target(binding, prepared["candidate"], prepared["target"])
+                record({"event": "merged", "merge_commit": merge})
+                # Include persisted facts supplied by the callback without relying
+                # on caller object aliasing.
+                updated = copy.deepcopy(transaction)
+                updated["facts"].extend([prepared, {"event": "merged", "merge_commit": merge}])
+                result = _inspect_publication(updated)
+        if not retry and operation == "publish-planning" and result["state"] == "flow-advance-pending":
+            if cleanup_only:
+                raise ProtocolError("invalid_input", "planning has no cleanup operation")
+            if _full_status(worktree) or result["current_commit"] != result["candidate_commit"]:
+                raise ProtocolError("candidate_changed", "published Flow Worktree changed; preserve it")
+            _verify_resource_identity(binding, result["resources"])
+            advanced = _run_git(worktree, ["merge", "--ff-only", result["merge_commit"]], check=False)
+            if advanced.returncode != 0:
+                raise ProtocolError("flow_advance_failed", advanced.stderr.strip() or "Flow advance failed")
+            if _git_text(worktree, ["rev-parse", "HEAD"]) != result["merge_commit"] or _full_status(worktree):
+                raise ProtocolError("flow_advance_failed", "Flow advance could not be verified")
+            result.update(state="planning_published", current_commit=result["merge_commit"])
+        if not retry and operation == "publish-planning":
+            return result
+    if not retry:
+        result["cleanup"] = _cleanup_published(binding, result["candidate_commit"], result["merge_commit"], result["resources"], record=record)
+        result["state"] = "completed"
+        return result
+    # Initial publication rechecks under the same existing lock. The original
+    # immutable request is retained; no changed candidate or target is substituted.
+    publisher = publish_planning if operation == "publish-planning" else complete_worktree
+    return publisher(request, record=record)
+
+
+def cleanup_publication(transaction):
+    return reconcile_publication(transaction, resume=True, cleanup_only=True)
 
 
 def _emit_json(value: Any) -> None:
@@ -978,6 +1360,8 @@ def _build_command_registry() -> CommandRegistry:
             CommandSpec("verify-worktree", lambda a: verify_worktree(a.request)),
             CommandSpec("publish-planning", lambda a: publish_planning(a.request)),
             CommandSpec("complete-worktree", lambda a: complete_worktree(a.request)),
+            CommandSpec("reconcile-publication", lambda a: reconcile_publication(a.request)),
+            CommandSpec("cleanup-only", lambda a: cleanup_publication(a.request)),
         ]
     )
 

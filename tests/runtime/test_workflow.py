@@ -11,6 +11,8 @@ import tempfile
 import time
 import unittest
 import hashlib
+import importlib.util
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "skills/guided-implementation/scripts/workflow.py"
@@ -619,6 +621,117 @@ class WorkflowCliTests(unittest.TestCase):
             if runner.stderr is not None:
                 runner.stderr.close()
 
+
+
+class BusinessRecoveryTransportTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(SCRIPT.parent))
+        source = SCRIPT.parents[3] / "src/stages/guided-implementation/scripts/workflow.py"
+        spec = importlib.util.spec_from_file_location("foreground_recovery_transport", source)
+        cls.runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.runner)
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.record = Path(self.temp.name) / "run.json"
+        self.decision_path = Path(self.temp.name) / "decision.json"
+        self.decision = {"decision_id": "repair-1", "subject": {"block_id": "block-1"},
+                         "reference": "controller-review", "diagnosis": "fixed input", "instruction": "continue",
+                         "expected_progress": "produce candidate"}
+        self.decision_path.write_text(json.dumps(self.decision))
+        self.state = {"version": 3, "status": "failed", "current_stage": "stage3", "sessions": {"stage3": "original-cli"},
+                      "stage_results": {}, "confirmed": {}, "launch": {"state": "completed_turn"},
+                      self.runner.progression.KEY: {"revision": 7, "stage": 3, "status": "blocked", "business_block": {"id": "block-1"}}}
+        self.record.write_text(json.dumps(self.state))
+
+    def test_recovery_requires_persisted_exact_consumption_and_never_launches(self):
+        def consume(path, request):
+            self.assertEqual(request, {"protocol": self.runner.progression.PROTOCOL, "operation": "recover-business",
+                                      "expected_revision": 7, "data": self.decision})
+            saved = json.loads(path.read_text())
+            saved[self.runner.progression.KEY].update(status="active", business_block=None,
+                                                      recovery_decisions={"repair-1": self.decision})
+            path.write_text(json.dumps(saved))
+            return {"status": "active"}
+        with patch.object(self.runner, "_validate_record", side_effect=lambda x: x), \
+             patch.object(self.runner.progression, "handle", side_effect=consume), \
+             patch.object(self.runner, "_invoke") as invoke:
+            self.assertEqual(self.runner.recover_business(self.record, self.decision_path), 0)
+        saved = json.loads(self.record.read_text())
+        self.assertTrue(saved["resume_progression"])
+        self.assertEqual(saved["sessions"], {"stage3": "original-cli"})
+        invoke.assert_not_called()
+
+    def test_success_response_alone_cannot_authorize_carrier_recovery(self):
+        before = self.record.read_bytes()
+        with patch.object(self.runner, "_validate_record", side_effect=lambda x: x), \
+             patch.object(self.runner.progression, "handle", return_value={"status": "active"}):
+            self.runner.recover_business(self.record, self.decision_path)
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_consumed_replay_cannot_restart_completed_or_uncertain_carrier(self):
+        for status, launch in (("completed", "completed_turn"), ("failed", "uncertain")):
+            with self.subTest(status=status, launch=launch):
+                self.state.update(status=status, launch={"state": launch})
+                self.state[self.runner.progression.KEY].update(status="active", business_block=None,
+                                                              recovery_decisions={"repair-1": self.decision})
+                self.record.write_text(json.dumps(self.state))
+                before = self.record.read_bytes()
+                with patch.object(self.runner, "_validate_record", side_effect=lambda x: x), \
+                     patch.object(self.runner.progression, "handle", return_value={"status": "active", "acknowledged": True}):
+                    self.runner.recover_business(self.record, self.decision_path)
+                self.assertEqual(self.record.read_bytes(), before)
+
+    def test_paused_recovery_decision_does_not_unpause(self):
+        self.state["status"] = "paused"
+        self.state[self.runner.progression.KEY]["status"] = "paused"
+        self.record.write_text(json.dumps(self.state))
+        before = self.record.read_bytes()
+        with patch.object(self.runner, "_validate_record", side_effect=lambda x: x), \
+             patch.object(self.runner.progression, "handle", return_value={"status": "paused"}), \
+             patch.object(self.runner, "_invoke") as invoke:
+            self.runner.recover_business(self.record, self.decision_path)
+        self.assertEqual(self.record.read_bytes(), before)
+        invoke.assert_not_called()
+
+    def test_ordinary_resume_keeps_business_block_and_pause(self):
+        self.state["status"] = "paused"
+        self.state["runner_request"] = {"operation": "pause", "request_id": "pause-1"}
+        self.record.write_text(json.dumps(self.state))
+        before = self.record.read_bytes()
+        with patch.object(self.runner, "_validate_record", side_effect=lambda x: x), \
+             patch.object(self.runner, "_recover_carrier_receipt"), \
+             patch.object(self.runner, "_invoke") as invoke:
+            self.assertEqual(self.runner.resume(self.record), 1)
+        self.assertEqual(self.record.read_bytes(), before)
+        invoke.assert_not_called()
+
+    def test_authorized_transport_resumes_original_carrier_checkpoint(self):
+        self.state.update(status="active", resume_progression=True)
+        self.state[self.runner.progression.KEY].update(status="active", business_block=None, stage=3)
+        self.record.write_text(json.dumps(self.state))
+        with patch.object(self.runner, "_validate_record", side_effect=lambda x: x), \
+             patch.object(self.runner, "_recover_carrier_receipt"), \
+             patch.object(self.runner, "_check_current_registry"), \
+             patch.object(self.runner, "_advance", return_value=0) as advance:
+            self.assertEqual(self.runner.resume(self.record), 0)
+        self.assertEqual(advance.call_args.args[0]["sessions"], {"stage3": "original-cli"})
+
+    def test_explicit_resume_delivers_deferred_decision_to_paused_original_carrier(self):
+        self.state["status"] = "paused"
+        self.state[self.runner.progression.KEY].update(status="paused", deferred_business_recovery=self.decision)
+        self.record.write_text(json.dumps(self.state))
+        with patch.object(self.runner, "_validate_record", side_effect=lambda x: x), \
+             patch.object(self.runner, "_recover_carrier_receipt"), \
+             patch.object(self.runner, "_check_current_registry"), \
+             patch.object(self.runner, "_advance", return_value=0) as advance:
+            self.assertEqual(self.runner.resume(self.record), 0)
+        delivered = advance.call_args.args[0]
+        self.assertTrue(delivered["resume_progression"])
+        self.assertEqual(delivered["sessions"], {"stage3": "original-cli"})
+        self.assertEqual(delivered[self.runner.progression.KEY]["business_block"], {"id": "block-1"})
 
 
 if __name__ == "__main__":

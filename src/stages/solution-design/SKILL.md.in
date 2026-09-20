@@ -227,7 +227,11 @@ Process one trusted completion once and route any inconsistency through the
 anomaly checkpoint instead of improvising or spawning a replacement.
 ## Complete the stage
 
-After accepting the trusted child's clean planning commit, take the complete
+After accepting the trusted child's clean planning commit, record its original
+stopped host receipt and `{candidate_commit,artifacts,checks}` through C
+`observe.publication_candidate`. Consume the original Controller readiness
+decision through C `decide`; this records existing authorization and adds no user
+approval. Then take the complete
 sorted repository-relative paths from its `本地规划路径` field and pass them
 unchanged as `planning_paths` to Workflow progression `publication`, together
 with the accepted planning commit and readiness reference. C derives protected
@@ -240,7 +244,11 @@ Stage 3. The protocol retries one target race itself. A `planning_conflict` or
 other pre-publication anomaly stops through the existing anomaly protocol with
 the same child, worktree, branch, and exact planning commit preserved. A
 post-publication `integration_unverified` result preserves the published Git
-state and must not call `publish-planning` again. Do not create a replacement.
+state and must not call `publish-planning` again. Use C `reconcile-publication`
+for inspection and `resume` for authorized remaining effects. Use
+`receive-publication` to compose the B delivery from the retained native candidate
+and separately verified Git facts, then perform original Controller acceptance.
+Do not create a replacement.
 Do not add checks for pre-existing or duplicate planning files.
 Carry the compact `变更契约预检` field from the child's completion evidence,
 pointing to the Spec's preflight and real call-chain section, through the

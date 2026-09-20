@@ -17,6 +17,17 @@ yields `target_changed`; the same Implementation Dispatcher integrates the
 new target and reruns affected/full checks, the Originating Task reruns both
 review axes, and Stage 4 rechecks closure-owned documents before retrying.
 
+For managed B/C flows, submit the final documentation candidate and original host
+stop evidence through C's publication-readiness seam before the stage owner invokes
+the mechanical publisher. Readiness consumes existing Controller authority, not
+another human approval. The original implementation commit stays B's
+`candidate_commit`; the final documentation tip is `publication_candidate` and
+supervision's `candidate_commit`. C persists both sources, exact intent and ordered
+Git facts in the existing checkpoint. Never turn a reference string, digest or
+stopped receipt into proof of later publication. C `receive-publication` composes
+and records stage-owner evidence without fabricating a new native host response;
+final B acceptance and the original Phase Run remain separate requirements.
+
 Standalone closure retains its previous narrow behavior: create one short-lived
 documentation worktree only when document bytes change, integrate it with the
 same operation, and otherwise create nothing.

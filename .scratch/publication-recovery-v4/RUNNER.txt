@@ -1,0 +1,11 @@
+..................................
+----------------------------------------------------------------------
+Ran 34 tests in 47.627s
+
+OK
+{"status": "active", "acknowledged": true}
+{"status": "active", "acknowledged": true}
+{"status": "blocked", "business_block": {"id": "block-1"}, "next_action": {"operation": "await-business-recovery"}}
+{"status": "paused"}
+{"status": "active"}
+{"status": "active"}

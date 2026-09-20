@@ -28,7 +28,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v1","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v4","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -62,11 +62,15 @@ digests, child assertions, names and timestamps are not authentication.
   issued it returns exact lookup, never the mutation again. Save/use the first
   returned action. If that response is lost, inspect and reconcile; do not
   interpret its saved payload as permission to replay a host tool.
-- `observe`: data is `{event_id, receipt, result? , action_id?, closure?}`.
+- `observe`: data is `{event_id, receipt, result?, action_id?, provenance?, action_resolution?, closure?, publication_candidate?}`.
   Receipt is B's complete authenticated receipt including raw. C saves it
   before bind/reconcile/receive. A result is B's `{delivery_id,status,payload}`.
-  `action_id`, when supplied, must name the current issued action. Use stable
-  event IDs: identical replay ACKs; conflicting replay fails.
+  To establish current resumability or stopped-writer proof, `action_id` must
+  identify the actual issued invoke/continue/stop action or current read-only
+  query that produced this tool response. The adapter authenticates that causal
+  link; copying an ID onto old evidence is invalid. Use stable event IDs:
+  identical replay ACKs; conflicting replay fails. Uncorrelated adverse facts
+  revoke continuation, but cannot establish quiescence or resumability.
 - `decide`: data is `{decision_id,subject,answer,reference}` copied from the
   exact pending matter and controller decision. For acceptance answer is
   `accept`; for stage entry it is `confirm` or an explicitly authorized
@@ -98,6 +102,89 @@ waits. `continue-host` resumes the exact ref; it is not a fresh dispatch.
 `lookup-exact-action` requires request/attempt or exact pending identity.
 Absent lookup support is unknown, not permission to search by title or reissue.
 No background monitor or private governance schema is added.
+
+For current execution proof, `observe.provenance` is
+`{call_ref,response_ref,action_id}`. The trusted adapter captures these references
+at the actual invocation/response boundary and preserves them on replay, outside
+the unmodified raw response. `call_ref` identifies one real invocation;
+`response_ref` identifies one response within that adapter; the provenance
+action is the saved C action which caused the invocation. C checks that the
+outer action ID agrees, the action is current/unresolved, and the response and
+call references have not been rebound to different content or causes. Response
+identity is not raw-content equality: distinct calls may return identical raw.
+An adapter must not manufacture a new provenance for cached evidence. If it
+cannot establish the actual relationship, omit provenance; that observation
+cannot grant proof. Unsupported or uncertain queries wait for explicit recovery.
+These fields, hashes and checkpoint records are consistency evidence, not an
+authenticator for arbitrary JSON. The existing trusted host/controller boundary
+is still responsible for authenticating tool calls and Controller decisions.
+
+Host ingress precedes business-payload validation and business dedup. New
+stopped/unknown evidence for the original identity revokes permission even when
+its provenance is absent, malformed or conflicting; it does not thereby prove
+quiescence. An exact replay of a known response is an ACK. `host.last_stop`
+retains the most recently ingressed nonduplicate stop separately from the
+current projection. A fresh proven query can update current state without
+erasing that stop. Creation ready binds identity only, never runtime liveness.
+
+`inspect-host-state` is a persisted read-only query of the exact original ref,
+request and attempt, with an action ID and generation. The adapter obtains a
+new tool response after that query and returns a B-shaped `event=result` receipt
+through `observe`, naming this query's action ID. It must preserve raw tool
+provenance, not relabel a creation lookup or cached result. Unsupported lookup
+is `unknown`; never recreate an identity. A negative query returns
+`await-host-recovery`; explicit resume may query again after original recovery.
+Normal uninterrupted invoke/continue responses can supply current proof without
+an extra query. Creation `ready` binds identity only.
+
+If a revoked generation still has an unresolved host action, the query retains
+that exact action in `payload.unresolved_action`. The adapter must reconcile its
+actual invocation outcome as well as the current original-identity state. Return
+`action_resolution={action_id,outcome}` only from that reconciliation; terminal
+outcomes are `completed`, `not-issued` or `cancelled`. C requires the exact action
+ID and authenticated current query provenance before settling it. Idle/stopped
+state without this evidence becomes unknown: an earlier uncertain mutation might
+otherwise execute later. Missing or unsupported action lookup waits, and explicit
+resume can query again. Neither the query nor its terminal outcome reissues the
+old mutation. Ordinary same-generation unresolved actions still return exact
+lookup instead of a new continuation.
+
+Explicit resume refreshes an ended query at one common point after pause/cancel
+admission and before business replay, accepted-stage or publication returns. It
+archives that query in `host.query_history` before issuing a new query for the
+same still-unsettled action. The accepted B result, Controller decisions and
+retained action are unchanged. Ordinary advance and duplicate receipts do not
+retry negative queries. An in-flight query keeps its ID; a completed accepted
+stage with no unsettled action simply ACKs. Audit history never supplies current
+proof: a response to the expired query cannot release the action.
+
+Issuing a stop does not settle or discard earlier invocations. In the same
+checkpoint save that records a new invoke/continue/stop action, C retains any
+unresolved previous `host_action` in ordered `retained_host_actions`. The new
+`host_action` describes the current call; its stopped receipt proves the current
+writer stopped, not that older queued calls cannot run later. Repeated stop,
+pause and cancellation preserve this responsibility. Stops are never delayed
+while waiting for older call outcomes.
+
+Recovery queries select the oldest unresolved retained action, then the current
+action if still unresolved. The existing singular `unresolved_action` and
+`action_resolution` envelope is unchanged: one authenticated query settles one
+exact action. If more remain, C emits the next read-only query, retaining each
+settlement as audit evidence. Missing/wrong/nonterminal outcomes wait; a stop
+response cannot serve as another action's resolution. Only after all invocations
+are settled can current proof authorize one continuation, new publication/intake,
+or the next stage. Interrupted issuance and settlement retain the same identities.
+This is internal v4 checkpoint bookkeeping, not a new host permission or state
+store; existing pinned runs remain on their original package.
+
+The `host` projection stores authenticated evidence separately from business
+consumption. Pause, cancellation, stopped and unknown invalidate the previous
+continuation generation. Replayed invocation responses and late action results cannot restore it.
+Identical raw content from a different authenticated invocation is not a replay. Business-message dedup runs after independent host
+processing, so a duplicate message cannot swallow a newer stopped fact.
+Every `continue-host` issuance checks consumed business intent, original
+authority/identity/source, stop intent and current unused proof. The same save
+consumes proof and records issuance; repeating advance returns exact lookup.
 
 ## Dispatcher allocations
 
@@ -153,14 +240,81 @@ stopped-writer contract. A stopped/unknown identity cannot be blindly continued.
 Repeated continuation with unchanged progress evidence blocks for diagnosis.
 Technical errors stop without masquerading as a permission question.
 
+Both `technical_error` and `no_progress` persist as `business_block`, binding
+the trigger and original stage, attempt, handoff, ref and Controller. Its
+`subject` includes the exact `block_id`. `resume`, new host facts, bind/reconcile,
+later business results and publication bookkeeping cannot clear it. New business
+messages observed while blocked remain audit/dedup evidence, not deferred work
+that can spring into effect after recovery. Blocking does not mutate host facts
+during B replay. The continuation gate independently requires no business block.
+
+The original trusted Controller may call `recover-business` with exactly:
+
+```text
+{decision_id,subject,reference,diagnosis,instruction,expected_progress}
+```
+
+Copy `subject` from the active block. All other fields are nonempty strings
+from an actual Controller decision, not a child's claim. The Controller reviews
+the diagnosis, corrective instruction and expected progress; C verifies identity,
+current control authority and absence of unresolved B/control/allocation
+transactions. This operation authorizes only the original identity and scope;
+it does not replace a dispatcher, fabricate executions, or change A/B authority.
+Normal workflow execution acquires no additional human approval gate.
+
+The existing `control/recover-dispatch` remains a separate, explicit Controller
+recovery under B's stopped-writer, accepted-byte and replacement rules. Its C
+journal binds the active business block ID before calling B; only successful
+recovery of that exact block clears it and records the control decision in
+business history. It cannot clear a subsequently created block or serve as a
+design-stage recovery. This preserves existing replacement authority; the new
+`recover-business` operation never grants replacement authority.
+
+Recovery atomically records `recovery_decisions` and `business_history`, clears
+the exact block, starts a new no-progress counting episode and revokes old host
+proof. It records one continuation intent containing the reviewed instruction;
+it does not call a host. The original carrier subsequently uses advance/resume,
+revalidates source, scope and Phase and obtains a fresh original-identity query
+before continuation. Identical decisions ACK without reissuing; stale or
+conflicting decisions cannot clear a later block. Error history is retained.
+Publication already started permits only original publication finalization,
+never a new host continuation. Publication results cannot clear business blocks.
+
+During pause/pausing, a valid decision is saved as `deferred_business_recovery`.
+It neither clears the block nor unpauses. Only explicit resume after real stopped
+proof consumes it; cancellation never does. An interruption between saving
+explicit unpause and consuming the decision resumes that same decision. Ordinary
+resume without a recovery decision leaves both kinds of business failure blocked.
+
+The foreground runner exposes `recover-business RUN_RECORD DECISION_INPUT` to
+record the decision in the original Controller context. It rereads the consumed
+C decision before saving transport intent. It does not launch a CLI carrier;
+subsequent explicit resume carries the existing C recovery into the same CLI
+session. That CLI session is not the native designer/dispatcher/closure identity.
+
 For attached dedicated launch, B's reservation changes the ledger control view.
 C verifies the complete handoff before reservation; before host launch it reuses
 B's post-mutation owner/configuration verifier, compares unchanged source and
 Git facts, rechecks gates and requires exact readback of the saved reservation.
 It does not refresh requirements to bless drift.
 
-The dispatch transaction is saved before ledger effects. After interruption
-`resume` replays that exact envelope, including its original idempotency key;
+The dispatch transaction is saved before ledger effects. `transaction` retains
+the exact B request and original envelope; `transaction_source` retains its
+original observation or controller decision. `transaction_result` is saved
+before consumption. Consumption atomically updates control, dispatch, business
+step, pending/decision and dedup state, then clears these three journal fields.
+After interruption `resume` replays only a missing result using the exact
+envelope, including its original idempotency key. A saved result is consumed
+without another B call. Neither route re-enters live host ingress or changes
+current host facts. New business input cannot overwrite an unresolved request.
+Historical continue retains business intent while awaiting current proof;
+needs_input preserves its pending decision; technical_error remains blocked
+until original controller recovery. Completed deliveries can be reconciled
+without rerunning their author, with current quiescence checked separately
+before operations that require it. Pause/cancel take priority over consumption;
+explicit unpause is saved before replay. Cancellation never resumes a journal.
+
+After interruption,
 unknown reservations without a recoverable request remain blocked. Original
 observations remain available if binding fails or source facts drift. Preserve
 known identities for stop/reconcile; they do not grant work on stale input.
@@ -173,12 +327,82 @@ to accept implementation.
 
 ## Publication and lifecycle boundaries
 
+Before local Git publication, `observe` accepts `publication_candidate` with
+`{candidate_commit, artifacts, checks}` and the original native writer's exact
+authenticated `event=result,status=stopped` receipt. This is a candidate, not a
+completed B delivery. C checks the clean candidate, original scope, control,
+package/source identity and attempt. Stage 4 additionally proves the accepted
+implementation is its ancestor and the increment changes only closure_paths.
+The existing two-axis implementation review stays attached to the implementation
+commit; it is not silently transferred to new implementation bytes.
+
+C returns a `publication-readiness` pending decision naming the candidate digest,
+stage, handoff and attempt. The original Controller supplies `decide` with
+`answer=accept` and its existing readiness reference. The adapter authenticates
+that decision just as it authenticates other controller decisions. A string or
+digest is not permission. This records the existing review/authorization, not an
+additional user approval: continuous mode consumes its existing authorization,
+stepwise mode retains its existing review gates. Changed candidates invalidate
+readiness; resumed writers invalidate the stopped snapshot. Remote Matt artifact
+publication retains its original owner and rules.
+
 `publication`: data is `{candidate_commit, reference, planning_paths?, expected_target_head?}`.
-C saves the exact derived request before invoking the existing Stage-2
-publish-planning or Stage-4 complete-worktree primitive once. Repeated input
-returns its receipt or reconciliation requirement, never calls the publisher
-again. A changed candidate requires original-protocol recovery, not overwriting
-this transaction. This wrapper does not alter either Git implementation.
+C consumes the saved readiness decision, returns this exact next-action input,
+and saves the derived request before calling the existing Stage-2 publish-planning
+or Stage-4 complete-worktree primitive. Stage 4 retains the target observed at
+readiness. Supervision callbacks append refresh, prepared (exact target/candidate
+and resource identities), merged and cleanup facts to this same checkpoint before
+the next effect. No second journal, queue or run authority is created.
+
+Repeated publication input returns its saved receipt or reconciliation requirement.
+`reconcile-publication` with empty data inspects original Git facts without
+publishing, advancing the Flow or cleaning; it is available during pause/cancel.
+`resume` first reconciles the original action and may perform only its remaining
+authorized effects. Unknown outcomes never mean unpublished. Exact merge parents
+and tree, retained target ancestry and original scope establish publication;
+candidate ancestry alone does not. New target/candidate/permission conflicts stay
+blocked. Proven publication permits Flow advancement or cleanup, never republishing.
+Stop intent bars those writes until explicit authorized resume. No background retry
+is scheduled. The original error and ordered facts remain recovery evidence.
+
+`receive-publication` with empty data composes the completed B payload from the
+original native artifacts/checks and independently reverified publication/cleanup.
+It retains `publication.intake.kind=stage-owner-publication`, the composing entry
+actor, original candidate/stop/readiness records, Git facts and the exact B message.
+It does not add a host observation, alter raw receipt bytes, or claim the stopped
+child performed later Git actions. Stage 4's B `candidate_commit` remains the
+accepted implementation; the closure tip is separately recorded in publication.
+B receives and verifies this composed delivery, and the original Controller still
+accepts it before the original Phase Run is completed. Readiness is not final B
+acceptance. Interrupted intake replays its exact saved B/ledger envelope.
+
+If B's receive result is already saved but C's local step was not, resume,
+advance and receive-publication finish that local consumption without calling B
+again. An existing pending acceptance keeps its exact ID and subject. Before B
+accept, C retains the complete original Controller decision in
+`publication.acceptance_decision`; it cannot be replaced while the action is
+unresolved. A saved B acceptance finishes local consumption using that same
+decision. An unsaved response instead replays the original transaction envelope.
+Existing accepted results and successor decisions are not overwritten, and the
+pause/cancel gates precede local recovery as well as new side effects.
+
+Explicit `resume` normalizes a completed pause before replaying or consuming an
+outstanding B transaction. The stored `paused` state must retain stopped-writer
+evidence; `pausing` continues the original stop/lookup path instead. Release of
+the pause is saved before a transaction recovery can return early, while its
+original envelope, pending matter and Controller decision remain unchanged.
+Deferred answers/results without a pending transaction keep their existing intake
+path; pause release is included in that path's durable save rather than discarding
+the deferred input in a separate checkpoint first. Ordinary `advance` and repeated
+answers never release a pause. Runner stop requests, cancellation priority and
+original allocation/control recovery routing remain authoritative.
+
+Stage 4 completion and the runner's final/duplicate completed response recheck B
+acceptance, closure control, original Phase completion, precise publication and
+actual resource removal. Historical Stage-2 worktrees are not required to exist:
+their accepted predecessor links and committed ancestry are retained. An idle
+process, effect plan, missing result or publication-only receipt never establishes
+overall completion. Standalone stages have no synthetic discussion lifecycle.
 
 `control`: data is `{action,evidence,receipt}` for the original successor-ready,
 archive, archive-result, execution-result, accept-execution, execution-dispatch-result
@@ -212,9 +436,11 @@ explicit dependency; C cannot produce a merge proof or infer completion.
 
 ## Foreground carrier and compatibility
 
-New runner records are version 3 and pin workflow-progress-v1 packages. Version
-1/2 records require their retained original runtime; neither inspection through
-new mutation APIs nor registry refresh migrates or replaces them. Complete
+New runner records retain outer version 3 and pin workflow-progress-v4 /
+flow-worktree-v2 packages. A workflow-progress-v1, v2 or v3 member is rejected by v4; retain
+its original runtime and pinned packages. Version 1/2 runner records likewise
+require their original runtime; neither new APIs nor registry refresh migrate
+or replace records. Complete
 registration is required for live actions. No installation is implied.
 
 Version-3 confirmed input retains the existing frozen_requirement display tuple

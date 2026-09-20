@@ -22,7 +22,7 @@ Interpret user replies through
 
 Read [Workflow Control Protocol](references/shared/guided-implementation/workflow-control-protocol.md) before role preparation or transition. This stage uses Closure Agent and preserves the Workflow Controller.
 
-An authenticated non-root native closure-agent receiving the complete start-closure envelope executes the supplied closure actions in the inherited Flow Worktree and returns closure-result. It never launches another Closure Agent or asks for repeated stage entry. Only the Workflow Controller performs dispatch, binds the actual identity and accepts the result; the child reports implementation problems back to that controller.
+An authenticated non-root native closure-agent receiving the complete start-closure envelope executes the supplied closure actions in the inherited Flow Worktree. In a managed B/C flow it returns the final documentation candidate and publication request, then stops writing; the stage owner consumes that request through C's durable publication seam and composes closure-result from the retained native evidence and actual Git facts. It never launches another Closure Agent or asks for repeated stage entry. Only the Workflow Controller performs dispatch, binds the actual identity and accepts the result; the child reports implementation problems back to that controller.
 
 ## Enter
 
@@ -78,8 +78,11 @@ For an inherited flow, never create a second worktree. If document bytes change,
 commit every closure-owned update in the inherited Flow Worktree. If no bytes
 change, create no closure commit. In both cases use Workflow progression `publication` with
 the clean final candidate, current expected target and existing closure authorization.
-C derives binding, scope base, allowed and protected paths and invokes the
-existing `complete-worktree` once; reuse its persisted receipt on recovery. This publishes the accepted implementation plus closure updates and
+C requires the saved publication_candidate, original stopped receipt and readiness
+decision, derives binding, scope base, allowed and protected paths, and invokes the
+existing `complete-worktree` once. Inspect uncertain outcomes with
+`reconcile-publication`, use `resume` for remaining authorized effects, and
+`receive-publication` for B intake. This publishes the accepted implementation plus closure updates and
 removes the Flow Worktree and branch.
 
 If the target advanced, inspect the committed delta. A changed protected source

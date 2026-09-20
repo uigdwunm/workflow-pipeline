@@ -353,12 +353,26 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "continue means remaining work must continue in this same session.\n"
         "B owns the complete handoff projection, exact native identity, scope, candidate, reviews and Git evidence. "
         "Partial cleanup is not completed; consume the retained cleanup-only action.\n"
+        "For publication, record the stopped native publication_candidate and original controller readiness through C; "
+        "consume publication, reconcile-publication/resume, then receive-publication. Preserve native and Git evidence "
+        "as separate sources; do not fabricate a new host completion. Final B acceptance and phase completion still apply.\n"
         "Use scripts/workflow_progress.py from the pinned stage package for A/B progression. "
         "Persist complete handoff, dispatch intent, raw host responses and controller acceptance in progression_checkpoint. "
         "The runner owns outer carrier fields: never overwrite the checkpoint yourself. Only C's adapter writes its member. "
         "Read prior results and any progression_response at their exact checkpoint fields; full evidence is retained there, "
         "not reconstructed from these compact prompt references. Consume the saved response's next_action before advancing again. "
         "If resume_progression is true, first reconcile C's saved operation with C resume in this carrier context. "
+        "C v4 separates business recovery from current host evidence. Ordinary resume cannot clear a business block; "
+        "only the original Controller's explicit recover-business decision authorizes recovery. "
+        "For inspect-host-state, query only the exact "
+        "original identity and return a fresh authenticated tool response with that query action_id. Never attach "
+        "a new ID to cached evidence. The trusted host adapter supplies provenance={call_ref,response_ref,action_id} "
+        "from the actual invocation alongside unchanged raw evidence. The outer action_id must match provenance.action_id "
+        "and the outstanding action. C checks consistency but cannot authenticate arbitrary JSON. "
+        "If the query includes unresolved_action, also reconcile that exact invocation and return action_resolution "
+        "with its action_id and actual terminal outcome completed, not-issued or cancelled. Idle alone cannot settle it. "
+        "CLI carrier identity is never native evidence. Observe invoke/continue/stop responses with their actual causal action_id. "
+        "Unknown or unsupported lookup waits for original recovery; creation ready and user answers do not prove resumability. "
         "Then apply a saved controller_decision through C decide in this same carrier context; the external controller must not "
         "impersonate this carrier when A/B revalidates its entry. "
         "Return completed only using completion.stage_result returned by C; no hand-written handoff projection. "
@@ -822,6 +836,10 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
             print(json.dumps({"status": state["status"], "run_record": str(record_path)}))
             return 0
         if current_progress and current_progress["stage"] == int(stage[-1]):
+            if current_progress.get("business_block") and not (state.get("resume_progression") and current_progress.get("deferred_business_recovery")):
+                print(json.dumps({"status": "blocked", "business_block": current_progress["business_block"],
+                                  "next_action": {"operation": "await-business-recovery"}}))
+                return 1
             if current_progress["status"] == "blocked" and not state.get("resume_progression"):
                 state["status"] = "failed"
                 state["error"] = {"code": "progression_blocked", "detail": "reconcile the retained C checkpoint", "recoverable": True}
@@ -889,6 +907,7 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
         print(json.dumps({"event": "stage.completed", "stage": stage}), flush=True)
         index = STAGES.index(stage)
         if index == len(STAGES) - 1:
+            state["completion_evidence"] = _verify_run_completion(record_path, state)
             state["status"] = "completed"
             state["history"].append({"event": "completed", "stage": stage})
             _atomic_save(record_path, state)
@@ -911,6 +930,20 @@ def _advance(state: dict[str, Any], record_path: Path, answer: str | None = None
         if state["status"] == "needs_input":
             print(json.dumps({"status": "needs_input", "pending": state["pending_input"]}))
             return 0
+
+
+def _verify_run_completion(record_path, state):
+    try:
+        entry_prepare.require(all(stage in state["stage_results"] for stage in STAGES),
+                              "result_incomplete", "every required stage must be accepted")
+        current = progression.read_record(record_path).get(progression.KEY)
+        result = progression.verify_completion(current)
+        expected = stage_handoff.render(current["accepted"])["stage_result"]
+        entry_prepare.require(all(state["stage_results"]["stage4"][key] == value for key, value in expected.items()),
+                              "result_changed", "final runner result differs from B acceptance")
+        return result
+    except entry_prepare.ERROR_TYPES as error:
+        raise WorkflowError("workflow completion unverified: " + entry_prepare.error_message(error)) from error
 
 
 def _accepted_stage(record_path, stage, result, confirmed):
@@ -958,8 +991,14 @@ def resume(record_path: Path, answer: str | None = None, registry_input: Path | 
         status = state["status"]
         stage = state["current_stage"]
         if status == "completed":
+            _verify_run_completion(record_path, state)
             print(json.dumps({"status": "completed", "run_record": str(record_path), "acknowledged": True}))
             return 0
+        current = state.get(progression.KEY)
+        if current and current.get("business_block") and not current.get("deferred_business_recovery"):
+            print(json.dumps({"status": "blocked", "business_block": current["business_block"],
+                              "next_action": {"operation": "await-business-recovery"}}))
+            return 1
         request = state.get("runner_request")
         recovered_cancel = request and request["operation"] == "cancel" and state.get(progression.KEY, {}).get("recovered_request") == request
         if request and request["operation"] == "cancel" and not recovered_cancel:
@@ -1027,6 +1066,8 @@ def resume(record_path: Path, answer: str | None = None, registry_input: Path | 
             state.pop("pending_input", None)
             _atomic_save(record_path, state)
             return _advance(state, record_path, answer)
+        if status == "active" and state.get("resume_progression") and state["launch"]["state"] in {"prelaunch", "completed_turn", "failed"}:
+            return _advance(state, record_path)
         if safe_between_stages:
             return _advance(state, record_path, state.get("answer_pending_delivery"))
         if status in {"active", "failed"} and "turn_result" in state:
@@ -1049,13 +1090,46 @@ def resume(record_path: Path, answer: str | None = None, registry_input: Path | 
         raise WorkflowError(f"run cannot resume from status {status}; it will not retry or duplicate an executor")
 
 
+def recover_business(record_path: Path, decision_path: Path) -> int:
+    """Submit in the original Controller context; never launch a CLI carrier."""
+    record_path = _absolute_path(str(record_path), "run_record")
+    decision = _read_json(decision_path, "business recovery decision")
+    with RunLock(record_path):
+        state = _validate_record(_read_json(record_path, "run record"))
+        current = state.get(progression.KEY)
+        if current is None:
+            raise WorkflowError("missing_checkpoint: business recovery requires the retained C checkpoint")
+        result = progression.handle(record_path, {"protocol": progression.PROTOCOL,
+            "operation": "recover-business", "expected_revision": current["revision"], "data": decision})
+        state = progression.read_record(record_path)
+        current = state[progression.KEY]
+        consumed = current.get("recovery_decisions", {}).get(decision.get("decision_id")) == decision
+        if consumed and not current.get("business_block"):
+            stage = state["current_stage"]
+            if (current["status"] == "active" and state["status"] in {"active", "failed"}
+                    and current["stage"] == int(stage[-1]) and isinstance(state["sessions"].get(stage), str)
+                    and state["launch"]["state"] in {"completed_turn", "failed"} and not state.get("runner_request")):
+                state["progression_response"] = result
+                state["resume_progression"] = True
+                state["status"] = "active"
+                _atomic_save(record_path, state)
+        print(json.dumps(result))
+        return 1 if result["status"] == "blocked" else 0
+
+
 def request_control(record_path, operation):
     record_path = _absolute_path(str(record_path), "run_record")
     with progression.record_lock(record_path):
         state = progression.read_record(record_path)
         if state.get("version") != 3:
             raise WorkflowError("legacy_run_requires_original_runtime: control requires the original version-3 record")
+        member = state.get(progression.KEY)
+        pin = state.get("confirmed", {}).get("packages", {}).get("runner")
+        if ((member is not None and member.get("protocol") != progression.PROTOCOL) or
+                (pin is not None and pin.get("compatibility_key", {}).get("workflow_progress") != progression.PROTOCOL)):
+            raise WorkflowError("legacy_run_requires_original_runtime: use the original pinned control runtime; record is unchanged")
         if state["status"] == "completed":
+            _verify_run_completion(record_path, state)
             print(json.dumps({"status": "completed", "acknowledged": True}))
             return 0
         if state.get("runner_request", {}).get("operation") == "cancel":
@@ -1086,6 +1160,9 @@ def main(argv: list[str] | None = None) -> int:
     resume_parser.add_argument("user_answer", nargs="?")
     resume_parser.add_argument("--decision-id")
     resume_parser.add_argument("--registry-input", type=Path, help="current controller input containing registry evidence")
+    recovery_parser = subcommands.add_parser("recover-business", help="record an explicit original Controller recovery decision without launching a carrier")
+    recovery_parser.add_argument("run_record", type=Path)
+    recovery_parser.add_argument("decision_input", type=Path)
     for operation in ("pause", "cancel"):
         command = subcommands.add_parser(operation, help="request a foreground checkpoint pause or cancellation")
         command.add_argument("run_record", type=Path)
@@ -1098,6 +1175,8 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGTERM, interrupt_on_sigterm)
     try:
+        if args.command == "recover-business":
+            return recover_business(args.run_record, args.decision_input)
         if args.command in {"pause", "cancel"}:
             return request_control(args.run_record, args.command)
         return start(args.confirmed_input) if args.command == "start" else resume(args.run_record, args.user_answer, args.registry_input, args.decision_id)

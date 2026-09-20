@@ -88,8 +88,10 @@ path, and leave protected paths unchanged. The target must still equal
 
 Stage 4 is the normal owner of this operation. It creates one no-fast-forward
 merge commit containing the accepted implementation and any closure-document
-updates, removes the worktree without force, deletes the merged branch with
-`git branch -d`, and returns the candidate, merge commit, and changed paths.
+updates, removes the worktree without force, and deletes the unchanged merged
+branch through a guarded Git reference transaction. It retains the non-force
+merged/upstream/checked-out protections described below, and returns the candidate,
+merge commit, and changed paths.
 
 The command holds one process-local publication file lock only while checking
 and updating the shared checkout. If the lock is unavailable for five seconds,
@@ -104,6 +106,66 @@ the retained Flow Worktree, runs affected and full checks, and commits a
 replacement candidate. The Originating Task establishes the new review fixed
 point and reruns both Standards and Spec axes before retrying. There is no
 scheduler or queue.
+
+## Exact publication recovery (flow-worktree-v2)
+
+The stage owner uses workflow-progress-v4 for durable publication. The Python
+publishers accept a `record` callback that persists each immutable fact in the
+existing owner checkpoint before the next effect. A callback failure stops the
+operation; lost response recovery reads Git before deciding what remains. Raw
+publish commands are mechanical primitives, not an authorization or durability
+boundary; do not bypass C with them during a managed run.
+
+`reconcile-publication` reads `{operation,request,facts}` from stdin. `operation`
+is the original publish-planning or complete-worktree, `request` is unchanged,
+and `facts` is the exact saved ordered callback history. It does not mutate Git.
+Results distinguish not-published, prepared, flow-advance-pending,
+planning_published, cleanup-pending and completed. A matching publication requires
+its exact two parents, candidate tree and presence on the target's first-parent
+history; current target HEAD need not still be the merge. An uncertain result,
+unmatched ancestry or unfinished merge blocks retry.
+
+`cleanup-only` consumes the same transaction, requires a verified final
+publication, and removes only remaining unchanged resources. Resource device/inode,
+Git directory and branch ref/reflog evidence prevent deleting a replacement
+Worktree or a recreated/moved branch, including a recreated branch at the same
+commit. New files or changes are preserved. Cleanup uses non-forced worktree
+removal and a conditional reference deletion, never pruning, force deletion or resetting. Publication
+locks remain bounded and exclude cleanup; the original stopped-writer contract
+and fresh identity/content checks apply at cleanup. The lock coordinates these
+publishers, not arbitrary outside Git writers.
+
+After Worktree removal and its durable callback, deletion uses `git update-ref
+--stdin`: start, delete with the original candidate as old OID, verify each merge
+reference, prepare, then commit. Only after prepare holds the branch and merge-ref
+locks does it recheck original ref/reflog resource identity and deletion conditions.
+A same-OID recreation before prepare fails the identity check; a competing ordinary
+Git ref writer after prepare cannot acquire the lock. Conditions include candidate
+merged into the existing upstream (or HEAD when unresolved/unset), the original
+merge still on target, no other Worktree using the branch, and no active history
+operation. History-operation checks conservatively include all registered/admin
+worktrees, including detached rebase/bisect/sequencer state. Symbolic branch refs
+are not deleted. Loose and packed refs use the same identity guard.
+
+An uncommitted transaction is aborted by closing stdin; prepared locks belong to
+Git and are released by its abort path. A lock conflict never removes another
+process's lock. A timeout or lost acknowledgement remains cleanup-pending until
+actual Git state is reconciled. After a committed deletion with a lost receipt,
+absence is verified rather than issuing another deletion. A new same-name branch
+or reflog is preserved and blocks completion. Unsupported transaction commands fail
+closed. The implementation is exercised against Git 2.54.0 (Apple Git-157), using
+the documented [reference transaction protocol](https://github.com/git/git/blob/v2.54.0/Documentation/git-update-ref.adoc)
+and [non-force branch deletion conditions](https://github.com/git/git/blob/v2.54.0/builtin/branch.c).
+
+Cleanup completion covers the bound Worktree, branch ref and reflog. Branch
+configuration is deliberately preserved: this operation does not claim to clear
+all branch settings, and never removes later user configuration.
+
+C's `resume` invokes the same reconciler with a durable callback and the original
+readiness authority. Proven unissued/unpublished work may run; prepared work may
+finish its original merge; published work may only advance the planning Flow or
+clean the final Flow. Clearing a recorded operation or changing its candidate to
+force a retry is forbidden. V1 records are not migrated; run their original package.
 
 ## Retained-worktree recovery
 

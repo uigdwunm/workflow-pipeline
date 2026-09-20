@@ -1,0 +1,75 @@
+FEFE
+======================================================================
+ERROR: test_paused_stage2_receive_before_save (test_publication_progress.PublicationProgressTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/runtime/test_publication_progress.py", line 287, in test_paused_stage2_receive_before_save
+    self.paused_transaction_window(2, "receive", False)
+  File "<worktree>/tests/runtime/test_publication_progress.py", line 265, in paused_transaction_window
+    resumed = f.invoke("resume")
+  File "<worktree>/tests/runtime/test_workflow_progress.py", line 35, in invoke
+    return progress.handle(self.checkpoint, {"protocol": progress.PROTOCOL, "operation": operation,
+  File "<worktree>/src/shared/scripts/workflow_progress.py", line 1398, in handle
+    if operation == "resume": return owner.resume()
+  File "<worktree>/src/shared/scripts/workflow_progress.py", line 1198, in resume
+    return self.receive_publication()
+  File "<worktree>/src/shared/scripts/workflow_progress.py", line 897, in receive_publication
+    self.require_not_stopping()
+  File "<worktree>/src/shared/scripts/workflow_progress.py", line 241, in require_not_stopping
+    require(self.stop_intent() is None, "progression_suspended",
+  File "<worktree>/src/shared/scripts/entry_prepare.py", line 42, in require
+    raise PreparationError(code, message)
+entry_prepare.PreparationError: stop intent permits reconciliation and stopping, not new work or continuation
+
+======================================================================
+ERROR: test_paused_stage4_receive_before_save (test_publication_progress.PublicationProgressTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/runtime/test_publication_progress.py", line 293, in test_paused_stage4_receive_before_save
+    self.paused_transaction_window(4, "receive", False)
+  File "<worktree>/tests/runtime/test_publication_progress.py", line 265, in paused_transaction_window
+    resumed = f.invoke("resume")
+  File "<worktree>/tests/runtime/test_workflow_progress.py", line 35, in invoke
+    return progress.handle(self.checkpoint, {"protocol": progress.PROTOCOL, "operation": operation,
+  File "<worktree>/src/shared/scripts/workflow_progress.py", line 1398, in handle
+    if operation == "resume": return owner.resume()
+  File "<worktree>/src/shared/scripts/workflow_progress.py", line 1198, in resume
+    return self.receive_publication()
+  File "<worktree>/src/shared/scripts/workflow_progress.py", line 897, in receive_publication
+    self.require_not_stopping()
+  File "<worktree>/src/shared/scripts/workflow_progress.py", line 241, in require_not_stopping
+    require(self.stop_intent() is None, "progression_suspended",
+  File "<worktree>/src/shared/scripts/entry_prepare.py", line 42, in require
+    raise PreparationError(code, message)
+entry_prepare.PreparationError: stop intent permits reconciliation and stopping, not new work or continuation
+
+======================================================================
+FAIL: test_paused_stage2_accept_before_save (test_publication_progress.PublicationProgressTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/runtime/test_publication_progress.py", line 299, in test_paused_stage2_accept_before_save
+    self.paused_transaction_window(2, "accept", False)
+  File "<worktree>/tests/runtime/test_publication_progress.py", line 267, in paused_transaction_window
+    self.assertEqual(resumed["status"], expected)
+AssertionError: 'paused' != 'accepted'
+- paused
++ accepted
+
+
+======================================================================
+FAIL: test_paused_stage4_accept_before_save (test_publication_progress.PublicationProgressTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/runtime/test_publication_progress.py", line 305, in test_paused_stage4_accept_before_save
+    self.paused_transaction_window(4, "accept", False)
+  File "<worktree>/tests/runtime/test_publication_progress.py", line 267, in paused_transaction_window
+    self.assertEqual(resumed["status"], expected)
+AssertionError: 'paused' != 'accepted'
+- paused
++ accepted
+
+
+----------------------------------------------------------------------
+Ran 4 tests in 52.305s
+
+FAILED (failures=2, errors=2)
