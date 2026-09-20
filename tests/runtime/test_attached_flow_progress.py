@@ -128,6 +128,25 @@ class AttachedFlowTests(fixtures.ProgressTests):
             confirmed = runner.validate_confirmed(self.runner_input())
             state = runner._new_state(confirmed)
             self.assertEqual(runner._validate_record(copy.deepcopy(state))['confirmed']['requirement'], self.frozen)
+            # Normalize once before checking ownership and persist those same paths.
+            variant = self.runner_input()
+            for key in ('repository', 'worktree', 'git_common_dir'):
+                path = Path(variant[key])
+                variant[key] = str(path / '..' / path.name)
+            normalized = runner.validate_confirmed(variant)
+            for key in ('repository', 'worktree', 'git_common_dir'):
+                self.assertEqual(normalized[key], confirmed[key])
+            self.assertEqual(runner._validate_record(runner._new_state(normalized))['confirmed'], confirmed)
+            for forbidden in (str(self.root), str(self.root / '..' / self.root.name), str(self.root / 'docs' / '..')):
+                with self.subTest(worktree=forbidden):
+                    raw = self.runner_input()
+                    raw['worktree'] = forbidden
+                    with self.assertRaises(runner.WorkflowError):
+                        runner.validate_confirmed(raw)
+                    changed = copy.deepcopy(state)
+                    changed['confirmed']['worktree'] = forbidden
+                    with self.assertRaises(runner.WorkflowError):
+                        runner._validate_record(changed)
             self.git('worktree', 'remove', str(self.flow))
             self.assertEqual(runner._validate_record(copy.deepcopy(state))['confirmed']['requirement'], self.frozen)
             self.assertFalse(self.flow.exists())

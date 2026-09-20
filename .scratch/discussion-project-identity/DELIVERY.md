@@ -61,3 +61,21 @@ The initial full validation for 72d5c78 was explicitly interrupted (exit 130) to
 repair this consumer. Its log remains at /tmp/workflow-discussion-identity-validation.log;
 it is not passing evidence for either candidate. A complete new-tree run follows.
 Coordination reported both independent review axes complete, with no other findings.
+
+## Canonical runner input correction
+
+Standards increment review found ownership was checked against raw worktree before
+runner normalization. An owner/../owner spelling passed startup but normalized into
+an invalid restoring record. Normalize repository/worktree/git_common_dir once
+before attached validation, then reuse those exact values for checks and storage.
+No envelope rewrite or string blacklist is involved.
+
+The real-A runner regression now rejects canonical owner, owner/../owner and
+owner/docs/.. as disposable Flow on both startup and restore. Valid noncanonical
+repository/Flow/common-directory input normalizes to the same accepted restoring
+record. All previous missing/drift/legacy/removed-Flow checks remain. The extended
+test passed in 16.770s; generated packages and diff checks passed.
+
+The 30899cf full run was explicitly interrupted (exit 130); its retained log is
+/tmp/workflow-discussion-identity-validation-v2.log and does not establish a pass.
+The corrected candidate requires a new complete validation run.

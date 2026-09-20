@@ -122,6 +122,9 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[
         raise WorkflowError("frozen_requirement.commit must be a lowercase Git SHA")
     if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
         raise WorkflowError("frozen_requirement.sha256 must be a lowercase SHA-256")
+    repository = _absolute_path(raw["repository"], "repository")
+    worktree = _absolute_path(raw["worktree"], "worktree")
+    git_common_dir = _absolute_path(raw["git_common_dir"], "git_common_dir")
     source = raw["requirement"]
     try:
         if isinstance(source, dict) and source.get("source_kind") == "discussion":
@@ -133,11 +136,11 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[
             # The execution checkout can already be removed when restoring.
             # Verify the original A receipt at its surviving discussion owner,
             # and independently bind that store to the publication repository.
-            owner_entry = {"repository": entry_prepare.repository_facts(raw["repository"]),
+            owner_entry = {"repository": entry_prepare.repository_facts(str(repository)),
                 "discussion_project": source["discussion_project"],
                 "requirement": {"kind": "discussion", "attachment": source["attachment"]}}
             stage_handoff.verify_discussion_binding(owner_entry, {
-                "repository": raw["repository"], "git_common_dir": raw["git_common_dir"], "worktree": raw["worktree"]})
+                "repository": str(repository), "git_common_dir": str(git_common_dir), "worktree": str(worktree)})
             actual = requirement_prepare.attached_result(owner_entry, source["checkpoint"]["checkpoint_id"])
             entry_prepare.require(actual == source, "requirement_incomplete", "original attached A receipt changed")
         else:
@@ -163,9 +166,6 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[
             "requirement_incomplete", "v3 requires the complete successful A frozen result matching the confirmed source")
     except (*entry_prepare.ERROR_TYPES, ControlError) as error:
         raise WorkflowError("invalid complete A requirement evidence") from error
-    repository = _absolute_path(raw["repository"], "repository")
-    worktree = _absolute_path(raw["worktree"], "worktree")
-    git_common_dir = _absolute_path(raw["git_common_dir"], "git_common_dir")
     record_path = _absolute_path(raw["run_record"], "run_record")
     if _is_within(record_path, worktree) or _is_within(record_path, repository):
         raise WorkflowError("run_record must live outside worktree and repository")
