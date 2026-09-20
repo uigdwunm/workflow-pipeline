@@ -147,3 +147,40 @@ Worktree、未合并 upstream、活跃历史操作、旧分支删除后新资源
 并发证据来自隔离临时 Git 的 loose/packed refs 和明确的宿主 fixture。修复
 没有修改 A/B 公共权限、两种 candidate 身份、pin 策略或包兼容标识，也没有
 迁移旧运行。本候选仍须协调任务复审及用户另行授权合并，未合并、push 或部署。
+
+## 暂停恢复修复：基于 980a2c4
+
+上一轮 receive 已保存/C 未消费以及分支删除问题已由协调复审关闭；仍有暂停
+后的未保存 B 事务恢复问题。本轮仅修复该状态转换，不修改已验收的分支删除
+原语，也不声称这是上一提交新引入的回归。
+
+红色证据：Stage 2/4 × receive/accept 在 apply 保存前中断，再 pause/resume，
+四条路径全部失败：receive 被 stop gate 拒绝，accept 再次 deferred 并留在
+paused。输出见 [PAUSE-RED.txt](PAUSE-RED.txt)，工作区前缀替换为 `<worktree>`。
+
+`resume` 现在先保留原 runner_request、控制恢复及取消处理顺序；仍处于
+pausing 时只处理原停止/查询动作。只有 paused 且已有 stopped 证明时才解除
+暂停，恢复合法状态并保存，然后用原精确 B envelope/Controller decision
+重放或消费事务。没有移除全局 stop gate，没有把普通 advance 或重复回答
+当作显式恢复。延后输入仍通过原入口消费，不在消费入口接手之前先单独保存
+并丢弃恢复线索。接口、兼容标识、pin、角色及权限均不变。
+
+新增八项矩阵用例覆盖 Stage 2/4 × receive/accept × 保存前/后，并检查：
+
+- 中断、pause、resume、重复恢复的接收/验收结果及精确身份；
+- 未保存时只重放一次原请求，已保存时零次 B 重放；
+- 暂停解除已保存后再中断，仍能恢复原事务；
+- running/pausing 缺少停止证明时不能重放，原 stopped 回执才能结束暂停；
+- 普通 advance、重复回答和仍存在的 runner pause request 不能解锁；
+- 直接 cancel 或 pause 后 cancel 都保留取消意图。Stage 4 在 Worktree 已删除
+  后可能仍需原控制恢复；测试不把这种 blocked/cancelling 误报为取消已完成；
+- pending/decision/transaction、载体、发布请求及 Git 结果保持，不重发或重派。
+
+最终 `./scripts/validate.sh`：536 项，535 通过、1 项既有不适用跳过，耗时
+1053.846 秒；五个 Skill、构建一致性与仓库校验全部通过，issues=[]。
+完整输出见 [PAUSE-VALIDATION.txt](PAUSE-VALIDATION.txt)。新增八项矩阵回归及
+原有十七项暂停相关定向检查均通过，`git diff --check` 通过。
+
+真实宿主/跨宿主能力仍未现场验证；本轮真实 Git 与 checkpoint 配合明确的
+宿主 fixture 验证。生产修改仅涉及共享 resume 的恢复顺序，分支删除实现及其
+测试不变。本候选仍需协调复审和用户另行授权合并，未合并、push 或部署。

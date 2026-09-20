@@ -1174,6 +1174,37 @@ class Progress:
             self.save()
             return self.advance()
         require(s["status"] not in {"cancelled", "cancelling"}, "attempt_ended", "cancelled writers require the existing controller recovery protocol")
+        if self.stop_intent() == "pausing" and s["status"] != "paused":
+            return self.advance_stop("pausing")
+        if s["status"] == "paused":
+            require(s["stopped"] is True, "host_evidence_missing", "completed pause requires original stopped-writer evidence")
+            s.pop("stop_requested", None)
+            s["status"] = "active"
+            if s.get("publication", {}).get("acceptance_decision") and s["dispatch"]["status"] == "accepted":
+                self.recover_publication_intake_step()
+                return self.advance()
+            if s["transaction"] is None and s.get("pending") is not None:
+                s["status"] = "needs_input"
+                deferred = s.get("deferred_decisions", {}).get(s["pending"]["decision_id"])
+                if deferred is not None and deferred["disposition"] == "paused":
+                    return self.decide(deferred["decision"])
+                self.save()
+                return _view(s)
+            if s["transaction"] is None and s.get("deferred_observation") is not None:
+                observed = s.pop("deferred_observation")
+                s["events"][observed["event_id"]]["applied"] = False
+                s["status"] = "active"
+                return self.observe(observed)
+            # Resuming host execution still needs proof. Replaying an already
+            # issued B transaction does not resume or recreate its carrier.
+            s["step"] = s.get("suspended_step", "bound")
+            if s["transaction"] is None and s["dispatch"] and s["step"] not in {"launch", "prepare-dispatch", "received", "publication-ready", "publication-complete"} and not s.get("publication"):
+                s["step"] = "bound"
+                s["awaiting_resume"] = True
+                s["resume_intent"] = {"operation": "resume-original-paused-scope", "subject": self.subject()}
+            # Persist explicit unpause before any original B transaction can
+            # replay/consume and return early. The exact envelope stays unchanged.
+            self.save()
         if self.stop_intent() is None:
             self.recover_publication_intake_step()
         if s["stage"] == 4 and s["status"] == "blocked" and s.get("blocked_from") == "accepted":
@@ -1184,8 +1215,6 @@ class Progress:
             return _view(s, acknowledged=True)
         if s["status"] == "accepted":
             return _view(s, acknowledged=True)
-        if self.stop_intent() == "pausing" and s["status"] != "paused":
-            return self.advance_stop("pausing")
         if (s["status"] == "needs_input" and s["transaction"] is None and
                 (s.get("publication") or {}).get("intake") is not None and
                 s["dispatch"]["status"] == "received" and (s.get("pending") or {}).get("kind") == "acceptance"):
@@ -1217,31 +1246,6 @@ class Progress:
             if operation == "accept":
                 s["status"] = "accepted"
                 s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"])
-        if s["status"] == "paused":
-            s.pop("stop_requested", None)
-            if s.get("publication", {}).get("acceptance_decision") and s["dispatch"]["status"] == "accepted":
-                self.recover_publication_intake_step()
-                return self.advance()
-            if s.get("pending") is not None:
-                s["status"] = "needs_input"
-                self.save()
-                deferred = s.get("deferred_decisions", {}).get(s["pending"]["decision_id"])
-                if deferred is not None and deferred["disposition"] == "paused":
-                    return self.decide(deferred["decision"])
-                return _view(s)
-            if s.get("deferred_observation") is not None:
-                observed = s.pop("deferred_observation")
-                s["events"][observed["event_id"]]["applied"] = False
-                s["status"] = "active"
-                self.save()
-                return self.observe(observed)
-            # Stopped is not resumable. Host must first prove the same carrier can continue.
-            s["step"] = s.get("suspended_step", "bound")
-            s["status"] = "active"
-            if s["dispatch"] and s["step"] not in {"launch", "prepare-dispatch", "received", "publication-ready", "publication-complete"} and not s.get("publication"):
-                s["step"] = "bound"
-                s["awaiting_resume"] = True
-                s["resume_intent"] = {"operation": "resume-original-paused-scope", "subject": self.subject()}
         if s.get("publication") is not None and s["publication"].get("result") is None:
             return self.reconcile_publication(resume=True)
         if s["step"] == "publication-complete":

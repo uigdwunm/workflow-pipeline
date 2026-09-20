@@ -226,6 +226,138 @@ class PublicationProgressTests(unittest.TestCase):
                 f.invoke("receive-publication")
         self.assertIsNone(f.state()["pending"])
 
+    def paused_transaction_window(self, stage, operation, saved):
+        f = self.flow
+        if stage == 2:
+            f.prepare_design_result("continuous")
+        else:
+            candidate = self.closure()
+            f.ready_publication(candidate, "controller:closure", "native:closure")
+            f.invoke("publication", {"candidate_commit": candidate, "reference": "controller:closure",
+                                     "expected_target_head": f.git("rev-parse", "HEAD")})
+        decision = None
+        if operation == "accept":
+            pending = f.invoke("receive-publication")["pending"]
+            decision = {"decision_id": pending["decision_id"], "subject": pending["subject"],
+                        "answer": "accept", "reference": "controller:original-acceptance"}
+        original_apply = progress.Progress.apply
+        def interrupted(owner, result):
+            if saved:
+                original_apply(owner, result)
+            raise KeyboardInterrupt()
+        with patch.object(progress.Progress, "apply", new=interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                f.invoke("decide", decision) if decision else f.invoke("receive-publication")
+        transaction = copy.deepcopy(f.state()["transaction"])
+        native = copy.deepcopy(f.state()["dispatch"]["request"])
+        publication = copy.deepcopy(f.state()["publication"])
+        merge = f.git("rev-parse", "HEAD")
+        interrupted_state = copy.deepcopy(progress.read_record(f.checkpoint))
+        if not saved:
+            role = "native:designer" if stage == 2 else "native:closure"
+            f.invoke("observe", f.observation("running", "result", ref=role))
+            self.assertEqual(f.invoke("pause")["status"], "pausing")
+            with patch.object(progress.dispatch, "handle", side_effect=AssertionError("unproved pause replayed B")):
+                for action in ("resume", "advance", "resume"):
+                    self.assertEqual(f.invoke(action)["status"], "pausing")
+            self.assertEqual(f.state()["transaction"], transaction)
+            self.assertFalse(f.state()["stopped"])
+            self.assertEqual(f.invoke("observe", f.observation("stopped", "result", ref=role))["status"], "paused")
+        # Counterfactual stop paths share immutable Git facts in this isolated
+        # fixture; its control port has no external ledger or host mutations.
+        for pause_first in (False, True):
+            progress.atomic_save(f.checkpoint, copy.deepcopy(interrupted_state))
+            if pause_first:
+                self.assertEqual(f.invoke("pause")["status"], "paused")
+            cancellation = f.invoke("cancel")
+            # Stage 4 may need its original control recovery after Git removed
+            # the worktree. That cannot revoke the durable cancellation intent.
+            self.assertIn(cancellation["status"], {"cancelled", "cancelling", "blocked"})
+            self.assertEqual(f.state()["stop_requested"], "cancelling")
+            with patch.object(progress.dispatch, "handle", side_effect=AssertionError("cancelled transaction replayed")):
+                self.assertIn(f.invoke("resume")["status"], {"cancelled", "cancelling"})
+                self.assertIn(f.invoke("advance")["status"], {"cancelled", "cancelling"})
+            self.assertEqual(f.state()["stop_requested"], "cancelling")
+            self.assertEqual(f.state()["transaction"], transaction)
+            if decision:
+                f.invoke("decide", decision)
+                self.assertNotIn(decision["decision_id"], f.state().get("decisions", {}))
+        progress.atomic_save(f.checkpoint, copy.deepcopy(interrupted_state))
+        self.assertEqual(f.invoke("pause")["status"], "paused")
+        outer = progress.read_record(f.checkpoint)
+        outer["runner_request"] = {"operation": "pause", "request_id": "original-runner-pause"}
+        progress.atomic_save(f.checkpoint, outer)
+        with patch.object(progress.dispatch, "handle", side_effect=AssertionError("runner request bypassed")):
+            self.assertEqual(f.invoke("resume")["status"], "paused")
+        outer = progress.read_record(f.checkpoint)
+        self.assertEqual(outer.pop("runner_request"), {"operation": "pause", "request_id": "original-runner-pause"})
+        progress.atomic_save(f.checkpoint, outer)
+        self.assertEqual(f.invoke("advance")["status"], "paused")
+        if decision:
+            deferred = f.invoke("decide", decision)
+            self.assertEqual(deferred["status"], "paused")
+            self.assertTrue(deferred["decision_deferred"])
+        self.assertEqual(f.state()["transaction"], transaction)
+        with patch.object(progress.dispatch, "handle", wraps=progress.dispatch.handle) as calls, \
+             patch.object(progress.Progress, "effect", side_effect=AssertionError("carrier reissued")), \
+             patch.object(supervision, "_merge_candidate_into_target", side_effect=AssertionError("republished")):
+            if not saved:
+                original_save = progress.Progress.save
+                def crash_after_unpause(owner):
+                    original_save(owner)
+                    if owner.state["status"] == "active" and owner.state.get("stop_requested") is None:
+                        raise KeyboardInterrupt()
+                with patch.object(progress.Progress, "save", new=crash_after_unpause):
+                    with self.assertRaises(KeyboardInterrupt):
+                        f.invoke("resume")
+                self.assertEqual(f.state()["transaction"], transaction)
+                self.assertIsNone(f.state().get("stop_requested"))
+                self.assertEqual(calls.call_count, 0)
+            resumed = f.invoke("resume")
+            expected = "accepted" if decision else "needs_input"
+            self.assertEqual(resumed["status"], expected)
+            pending = copy.deepcopy(resumed["pending"])
+            for action in ("resume", "advance", "receive-publication"):
+                repeated = f.invoke(action)
+                self.assertEqual(repeated["status"], expected)
+                self.assertEqual(repeated["pending"], pending)
+            self.assertEqual(calls.call_count, 0 if saved else 1)
+            if not saved:
+                self.assertEqual(calls.call_args.args[0], transaction)
+        self.assertIsNone(f.state()["transaction"])
+        self.assertIsNone(f.state().get("stop_requested"))
+        self.assertEqual(f.state()["dispatch"]["request"], native)
+        self.assertEqual(f.state()["publication"]["request"], publication["request"])
+        self.assertEqual(f.state()["publication"]["facts"], publication["facts"])
+        self.assertEqual(f.git("rev-parse", "HEAD"), merge)
+        if decision:
+            self.assertEqual(f.state()["decisions"][decision["decision_id"]], decision)
+            self.assertEqual(f.state()["publication"]["acceptance_decision"], decision)
+
+    def test_paused_stage2_receive_before_save(self):
+        self.paused_transaction_window(2, "receive", False)
+
+    def test_paused_stage2_receive_after_save(self):
+        self.paused_transaction_window(2, "receive", True)
+
+    def test_paused_stage4_receive_before_save(self):
+        self.paused_transaction_window(4, "receive", False)
+
+    def test_paused_stage4_receive_after_save(self):
+        self.paused_transaction_window(4, "receive", True)
+
+    def test_paused_stage2_accept_before_save(self):
+        self.paused_transaction_window(2, "accept", False)
+
+    def test_paused_stage2_accept_after_save(self):
+        self.paused_transaction_window(2, "accept", True)
+
+    def test_paused_stage4_accept_before_save(self):
+        self.paused_transaction_window(4, "accept", False)
+
+    def test_paused_stage4_accept_after_save(self):
+        self.paused_transaction_window(4, "accept", True)
+
     def test_unknown_published_outcome_cannot_return_to_implementation(self):
         f = self.flow
         candidate = self.closure()

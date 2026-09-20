@@ -232,6 +232,17 @@ decision. An unsaved response instead replays the original transaction envelope.
 Existing accepted results and successor decisions are not overwritten, and the
 pause/cancel gates precede local recovery as well as new side effects.
 
+Explicit `resume` normalizes a completed pause before replaying or consuming an
+outstanding B transaction. The stored `paused` state must retain stopped-writer
+evidence; `pausing` continues the original stop/lookup path instead. Release of
+the pause is saved before a transaction recovery can return early, while its
+original envelope, pending matter and Controller decision remain unchanged.
+Deferred answers/results without a pending transaction keep their existing intake
+path; pause release is included in that path's durable save rather than discarding
+the deferred input in a separate checkpoint first. Ordinary `advance` and repeated
+answers never release a pause. Runner stop requests, cancellation priority and
+original allocation/control recovery routing remain authoritative.
+
 Stage 4 completion and the runner's final/duplicate completed response recheck B
 acceptance, closure control, original Phase completion, precise publication and
 actual resource removal. Historical Stage-2 worktrees are not required to exist:
