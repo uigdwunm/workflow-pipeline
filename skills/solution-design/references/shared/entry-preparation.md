@@ -34,7 +34,7 @@ The actual launch adapter must verify its selected configuration before launch.
 
 ```json
 {
-  "protocol": "workflow-entry-v1",
+  "protocol": "workflow-entry-v2",
   "operation": "resolve",
   "stage": 1,
   "action": "entry",
@@ -94,7 +94,20 @@ planning target and execution at its checkout root.
 
 ## Result and freshness
 
-The complete result contains protocol, repository, actor, entry, target, packages,
+`repository` describes actual execution cwd and Git facts. For discussion input,
+`discussion_project` separately pins the canonical owning root, ledger path,
+storage kind/common directory and project/tree/topic IDs; standalone input has
+`discussion_project=null`. The resolver locates the existing ledger by attachment
+in the execution coordination store. Its `project_manifest_path` locates the owner;
+original read-topic checks then verify manifest, document and conversation binding.
+A locator or digest is not host authentication. No path selection or ledger copy
+is introduced. Git execution and owner must share the exact common directory;
+the owner may itself be a linked checkout. Neither the main checkout nor binding's
+repository is automatically that owner. Non-Git input stays in its original store.
+The owner must survive and cannot be inside a disposable Flow. Rechecks reject
+identity drift, deletion or relocation instead of discovering a replacement.
+
+The complete result contains protocol, repository, discussion_project, actor, entry, target, packages,
 external, configuration, requirement and evidence_digest. Save it unchanged in
 the existing conversation checkpoint or runner record. Do not splice extra fields
 into the strict Workflow Control context.

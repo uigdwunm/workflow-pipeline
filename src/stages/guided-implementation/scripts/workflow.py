@@ -122,14 +122,27 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[
         raise WorkflowError("frozen_requirement.commit must be a lowercase Git SHA")
     if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
         raise WorkflowError("frozen_requirement.sha256 must be a lowercase SHA-256")
+    repository = _absolute_path(raw["repository"], "repository")
+    worktree = _absolute_path(raw["worktree"], "worktree")
+    git_common_dir = _absolute_path(raw["git_common_dir"], "git_common_dir")
     source = raw["requirement"]
     try:
         if isinstance(source, dict) and source.get("source_kind") == "discussion":
             entry_prepare.fields(source, {"protocol", "source_kind", "checkpoint", "attachment", "absolute_path",
-                                          "requirement_identity", "commit", "blob"})
+                                          "requirement_identity", "commit", "blob", "discussion_project"})
             entry_prepare.require(isinstance(source["checkpoint"], dict) and source["checkpoint"].get("state") == "completed" and
                 source["checkpoint"].get("storage_kind") == "git" and source["checkpoint"].get("published_identity") == commit,
                 "requirement_incomplete", "completed original Git checkpoint required")
+            # The execution checkout can already be removed when restoring.
+            # Verify the original A receipt at its surviving discussion owner,
+            # and independently bind that store to the publication repository.
+            owner_entry = {"repository": entry_prepare.repository_facts(str(repository)),
+                "discussion_project": source["discussion_project"],
+                "requirement": {"kind": "discussion", "attachment": source["attachment"]}}
+            stage_handoff.verify_discussion_binding(owner_entry, {
+                "repository": str(repository), "git_common_dir": str(git_common_dir), "worktree": str(worktree)})
+            actual = requirement_prepare.attached_result(owner_entry, source["checkpoint"]["checkpoint_id"])
+            entry_prepare.require(actual == source, "requirement_incomplete", "original attached A receipt changed")
         else:
             requirement_prepare.validate_seal(source)
             entry_prepare.require({"entry", "path", "sha256", "version", "source_kind", "blob"} <= set(source),
@@ -151,11 +164,8 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[
             _is_git_sha(source.get("blob")) and
             type(identity["version"]) is int and identity["version"] > 0,
             "requirement_incomplete", "v3 requires the complete successful A frozen result matching the confirmed source")
-    except (entry_prepare.PreparationError, ControlError, KeyError, TypeError) as error:
+    except (*entry_prepare.ERROR_TYPES, ControlError) as error:
         raise WorkflowError("invalid complete A requirement evidence") from error
-    repository = _absolute_path(raw["repository"], "repository")
-    worktree = _absolute_path(raw["worktree"], "worktree")
-    git_common_dir = _absolute_path(raw["git_common_dir"], "git_common_dir")
     record_path = _absolute_path(raw["run_record"], "run_record")
     if _is_within(record_path, worktree) or _is_within(record_path, repository):
         raise WorkflowError("run_record must live outside worktree and repository")
@@ -362,7 +372,7 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "Read prior results and any progression_response at their exact checkpoint fields; full evidence is retained there, "
         "not reconstructed from these compact prompt references. Consume the saved response's next_action before advancing again. "
         "If resume_progression is true, first reconcile C's saved operation with C resume in this carrier context. "
-        "C v4 separates business recovery from current host evidence. Ordinary resume cannot clear a business block; "
+        "C v5 retains separate business recovery and current host evidence. Ordinary resume cannot clear a business block; "
         "only the original Controller's explicit recover-business decision authorizes recovery. "
         "For inspect-host-state, query only the exact "
         "original identity and return a fresh authenticated tool response with that query action_id. Never attach "

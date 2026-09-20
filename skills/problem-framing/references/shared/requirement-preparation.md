@@ -2,7 +2,7 @@
 
 Use `scripts/requirement_prepare.py` with one bounded JSON object. It returns the
 same success/error envelope as [entry preparation](entry-preparation.md).
-Every request requires protocol=`requirement-freeze-v1`, operation and entry (the
+Every request requires protocol=`requirement-freeze-v2`, operation and entry (the
 complete entry request). Reuse the original pin. The adapter refreshes local/host
 facts and reuses the existing publication lock for standalone mutations.
 
@@ -54,14 +54,14 @@ Carrier transfer/binding remains with the existing B-side protocols.
 Example request shapes (replace the named values with complete JSON objects):
 
 ```text
-{protocol:"requirement-freeze-v1",operation:"prepare",entry:ENTRY,
+{protocol:"requirement-freeze-v2",operation:"prepare",entry:ENTRY,
  purpose:"write",path:"docs/requirements/target.md",version:1,
  authorization:"confirmed decision reference",content:"confirmed requirements"}
-{protocol:"requirement-freeze-v1",operation:"write",entry:ENTRY,intent:INTENT}
-{protocol:"requirement-freeze-v1",operation:"prepare",entry:ENTRY,
+{protocol:"requirement-freeze-v2",operation:"write",entry:ENTRY,intent:INTENT}
+{protocol:"requirement-freeze-v2",operation:"prepare",entry:ENTRY,
  purpose:"freeze",path:"docs/requirements/target.md",version:1,
  authorization:"existing commit authorization",previous:DOCUMENT_RECEIPT}
-{protocol:"requirement-freeze-v1",operation:"freeze",entry:ENTRY,intent:FREEZE_INTENT}
+{protocol:"requirement-freeze-v2",operation:"freeze",entry:ENTRY,intent:FREEZE_INTENT}
 ```
 
 ## Failure and retry
@@ -119,6 +119,11 @@ Do not supplement frozen bytes from chat. Corrections remain with the source own
 and invalidate downstream planning under the existing correction protocol.
 
 ## Attached discussion
+
+DW/CP requests, document reads and absolute result paths use A's pinned
+`discussion_project`, not the execution root. Attached receipts include the same
+project identity. Reconciliation verifies that identity and retains the original
+envelope and keys; it never normalizes an old request to a different project.
 
 Use source.kind=discussion and the existing attachment. Do not supply a standalone
 path, content, previous or owned_paths, and do not add a second requirement document.

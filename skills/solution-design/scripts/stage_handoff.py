@@ -18,7 +18,7 @@ import requirement_prepare as requirement
 import workflow_control as control
 import workflow_control_git as control_git
 
-PROTOCOL = "workflow-stage-transfer-v1"
+PROTOCOL = "workflow-stage-transfer-v2"
 ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution-designer",
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",
@@ -111,7 +111,7 @@ def refresh(request, expected, *, after_work=False):
 
 
 def source(current, evidence, stage):
-    root = current["repository"]["root"]
+    root = entry.discussion_root(current) if current["requirement"]["kind"] == "discussion" else current["repository"]["root"]
     if evidence is None and stage < 2 and current["requirement"]["kind"] == "discussion":
         topic = entry.topic_read(root, current["requirement"]["attachment"])
         require(topic["pending_document_write_count"] == 0, "source_changed", "reconcile pending discussion writes before dispatch")
@@ -143,13 +143,28 @@ def source(current, evidence, stage):
     return identity, revision
 
 
+def verify_discussion_binding(current, binding):
+    if current["requirement"]["kind"] != "discussion" or binding is None:
+        return
+    root = entry.discussion_root(current)
+    facts = entry.repository_facts(binding["repository"])
+    require(facts["kind"] == "git" and facts["git_common_dir"] == current["discussion_project"]["git_common_dir"]
+            and binding["git_common_dir"] == facts["git_common_dir"],
+            "discussion_identity_conflict", "Flow binding differs from discussion store")
+    require(not Path(root).is_relative_to(Path(binding["worktree"])),
+            "discussion_identity_conflict", "disposable Flow cannot own the persistent discussion")
+
+
 def phase_evidence(saved, *, role_ref=None, receiving=False):
     source_request = saved["entry"]["source"]
     if source_request["kind"] != "discussion":
         require("phase" not in saved["authorization"], "authority_missing", "standalone input cannot claim a discussion phase")
         return None
-    root = saved["expected_entry"]["repository"]["root"]
+    root = entry.discussion_root(saved["expected_entry"])
+    verify_discussion_binding(saved["expected_entry"], saved.get("binding"))
     attachment = source_request["attachment"]
+    require(attachment == saved["expected_entry"]["requirement"]["attachment"],
+            "discussion_identity_conflict", "phase attachment differs from pinned entry")
     topic = entry.topic_read(root, attachment)
     require(topic["pending_document_write_count"] == 0, "source_changed", "pending discussion writes block stage transfer")
     if saved["stage"] < 2:
@@ -280,12 +295,14 @@ def verify_result(stage, payload, binding, scope, root, role_ref):
 
 
 def prepare(request):
+    require(request.get("protocol") == PROTOCOL, "unsupported_protocol", "unsupported stage transfer protocol")
     entry.fields(request, FIELDS | {"operation"})
     stage, role = request["stage"], request["role"]
     require(type(stage) is int and stage in ROLES and role in {ROLES[stage], "execution-agent" if stage == 3 else ROLES[stage]},
             "role_mismatch", "stage and role differ")
     current = refresh(request["entry"], request["expected_entry"])
     require(current["entry"]["stage"] == stage, "role_mismatch", "entry must be prepared for the target stage")
+    verify_discussion_binding(current, request["binding"])
     scope = request["scope"]
     entry.fields(scope, {"baseline", "owned_paths", "protected_paths", "implementation_paths", "closure_paths"})
     root = current["repository"]["root"]
@@ -337,6 +354,8 @@ def prepare(request):
         require(prior.get("protocol") == PROTOCOL and prior.get("status") == "accepted" and prior.get("downstream_ready") is True,
                 "predecessor_incomplete", "an accepted B result is required")
         old = prior["handoff"]
+        require(old["expected_entry"]["discussion_project"] == current["discussion_project"],
+                "discussion_identity_conflict", "successor must retain the original discussion project")
         require((old["stage"], stage) in {(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)}, "invalid_stage", "illegal stage transition")
         require(old["controller_ref"] == current["actor"]["controller_ref"] and prior["requirement_identity"] == identity,
                 "source_changed", "predecessor controller or requirement differs")
@@ -405,6 +424,9 @@ def render(saved):
     payload = {k: body[k] for k in ("stage", "role", "controller_ref", "requirement_identity", "source_commit",
                 "target", "delivery_facts", "binding", "scope", "authorization", "selection", "semantic")}
     payload["packages"] = body["expected_entry"]["packages"]
+    payload["discussion_project"] = body["expected_entry"]["discussion_project"]
+    if payload["discussion_project"] is not None:
+        payload["attachment"] = body["entry"]["source"]["attachment"]
     payload["input_digest"] = saved["digest"]
     return {"payload": payload, "text": json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
             "downstream_ready": False}

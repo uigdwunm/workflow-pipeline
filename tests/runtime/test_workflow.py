@@ -240,11 +240,11 @@ class WorkflowCliTests(unittest.TestCase):
         # A freezing and Git through test_workflow_progress, not this fixture.
         def seal(value, field="digest"):
             return {**value, field: hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()}
-        original_entry = seal({"protocol": "workflow-entry-v1", "repository": {"root": str(self.repository)},
+        original_entry = seal({"protocol": "workflow-entry-v2", "repository": {"root": str(self.repository)},
             "actor": {"controller_ref": "controller"}, "entry": {"stage": 1, "action": "entry"},
             "target": {"repository": str(self.repository), "branch": "main"}, "packages": {}, "external": {},
             "configuration": {}, "requirement": {"kind": "stage1"}}, "evidence_digest")
-        source = {"protocol": "requirement-freeze-v1", "kind": "frozen", "source_kind": "stage1", "commit": "a" * 40,
+        source = {"protocol": "requirement-freeze-v2", "kind": "frozen", "source_kind": "stage1", "commit": "a" * 40,
                   "absolute_path": "/requirements/frozen.md",
                   "entry": original_entry, "path": "requirements/frozen.md", "sha256": "b" * 64, "version": 1, "blob": "c" * 40,
                   "requirement_identity": {"path": "requirements/frozen.md", "sha256": "b" * 64, "version": 1}}

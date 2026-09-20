@@ -100,7 +100,7 @@ class PreflightBoundaryTests(unittest.TestCase):
                 {'type': 'turn_context', 'payload': {'model': 'fixture-model', 'effort': 'high', 'turn_id': 'turn-1'}}]) + '\n')
             env = {**os.environ, 'CODEX_THREAD_ID': thread, 'CODEX_SESSION_ID': thread, 'CODEX_SESSIONS_ROOT': str(sessions)}
             own = self.own(2)
-            source = {'protocol': 'workflow-entry-v1', 'operation': 'resolve', 'stage': 2, 'action': 'entry',
+            source = {'protocol': 'workflow-entry-v2', 'operation': 'resolve', 'stage': 2, 'action': 'entry',
                 'host': {'project_path': str(repository), 'project_id': 'project', 'thread_id': thread,
                          'controller_ref': thread, 'role': 'controller', 'source_ref': None, 'receipt': 'tool:fixture'},
                 'source': {'kind': 'conversation'}, 'target': {'kind': 'planning', 'repository': str(repository), 'branch': 'main'},
@@ -108,7 +108,7 @@ class PreflightBoundaryTests(unittest.TestCase):
             script = self.packages / 'solution-design/scripts/requirement_prepare.py'
             def call(operation, **fields):
                 response = subprocess.run([sys.executable, str(script)], cwd=repository, env=env,
-                    input=json.dumps({'protocol': 'requirement-freeze-v1', 'operation': operation, 'entry': source, **fields}),
+                    input=json.dumps({'protocol': 'requirement-freeze-v2', 'operation': operation, 'entry': source, **fields}),
                     capture_output=True, text=True)
                 self.assertEqual(response.returncode, 0, response.stdout + response.stderr)
                 return json.loads(response.stdout)['result']
@@ -123,7 +123,7 @@ class PreflightBoundaryTests(unittest.TestCase):
             self.assertEqual(git('status', '--porcelain'), '')
             for package in self.names:
                 manifest = json.loads((self.packages / package / 'package.json').read_text())
-                self.assertEqual(manifest['compatibility_key']['preparation'], 'workflow-preparation-v1')
+                self.assertEqual(manifest['compatibility_key']['preparation'], 'workflow-preparation-v2')
                 self.assertIn('scripts/entry_prepare.py', manifest['files'])
                 self.assertIn('scripts/requirement_prepare.py', manifest['files'])
 

@@ -21,7 +21,7 @@ import discussion_protocol
 import skill_preflight
 from supervision_protocol import PUBLICATION_LOCK_FILENAME, _flock_with_timeout
 
-PROTOCOL = "requirement-freeze-v1"
+PROTOCOL = "requirement-freeze-v2"
 
 
 def sha(data):
@@ -69,7 +69,7 @@ def unrelated(root, paths):
 
 
 def bind(current, original):
-    for key in ("actor", "entry", "target"):
+    for key in ("actor", "entry", "target", "discussion_project"):
         entry.require(current[key] == original[key], "identity_changed", "preparation owner or target changed")
     for key in ("root", "git_common_dir", "branch", "kind"):
         entry.require(current["repository"].get(key) == original["repository"].get(key), "repository_changed", "repository binding changed")
@@ -375,7 +375,7 @@ def verify(current, evidence):
 
 
 def attached_snapshot(current, checkpoint_id):
-    topic = entry.topic_read(current["repository"]["root"], current["requirement"]["attachment"])
+    topic = entry.topic_read(entry.discussion_root(current), current["requirement"]["attachment"])
     matches = [c for c in topic["checkpoints"] if c["checkpoint_id"] == checkpoint_id
                and c["topic_id"] == current["requirement"]["attachment"]["actor_topic_id"]]
     entry.require(len(matches) == 1, "checkpoint_missing", "exact source checkpoint required")
@@ -394,7 +394,8 @@ def attached_result(current, checkpoint_id):
     identity = {"path": path, "sha256": expected,
                 "version": json.loads(checkpoint["creation_result_json"])["record_revision"]}
     return {"protocol": PROTOCOL, "source_kind": "discussion", "checkpoint": checkpoint,
-            "attachment": current["requirement"]["attachment"], "absolute_path": str(Path(current["repository"]["root"]) / path),
+            "discussion_project": current["discussion_project"],
+            "attachment": current["requirement"]["attachment"], "absolute_path": str(Path(entry.discussion_root(current)) / path),
             "requirement_identity": identity,
             "commit": checkpoint["published_identity"] if checkpoint["storage_kind"] == "git" else None,
             "blob": json.loads(checkpoint["blob_ids_json"]).get(path)}
@@ -414,7 +415,7 @@ def attached(current, request):
         entry.require(purpose in {"write", "freeze"} and current["entry"]["stage"] in {0, 1},
                       "invalid_operation", "only source Stages 0/1 may prepare discussion requirements")
         topic = current["requirement"]["topic"]
-        payload = {"protocol_version": 1, "project_path": current["repository"]["root"],
+        payload = {"protocol_version": 1, "project_path": entry.discussion_root(current),
                    **current["requirement"]["attachment"],
                    "expected_ledger_revision": topic["ledger_revision"],
                    "expected_topic_revision": topic["record_revision"], "idempotency_key": str(uuid.uuid4())}
@@ -426,7 +427,7 @@ def attached(current, request):
             base = request["base_ref"]
             entry.nonempty(base)
             if current["repository"]["kind"] == "git":
-                base = entry.git_text(current["repository"]["root"], "rev-parse", "--verify", base + "^{commit}")
+                base = entry.git_text(entry.discussion_root(current), "rev-parse", "--verify", base + "^{commit}")
             payload.update(operation="prepare-checkpoint", purpose="stage-entry", base_ref=base)
         return sealed({"protocol": PROTOCOL, "kind": "discussion-intent", "purpose": purpose,
                        "entry": current, "authorization": request["authorization"], "payload": payload,
@@ -439,10 +440,12 @@ def attached(current, request):
     bind(current, intent["entry"])
     entry.require(current["requirement"]["attachment"] == intent["entry"]["requirement"]["attachment"],
                   "identity_changed", "discussion attachment changed")
+    entry.require(intent["payload"]["project_path"] == entry.discussion_root(current),
+                  "identity_changed", "original discussion envelope project differs")
     entry.require(current["entry"]["stage"] in {0, 1}, "invalid_operation", "discussion source is read-only at this stage")
     entry.require(operation in {intent["purpose"], "reconcile"}, "invalid_operation", "operation differs from intent")
     prepared = discussion_protocol.handle(intent["payload"])
-    base = {"protocol_version": 1, "project_path": current["repository"]["root"],
+    base = {"protocol_version": 1, "project_path": entry.discussion_root(current),
             **current["requirement"]["attachment"]}
     if intent["purpose"] == "write":
         result = discussion_protocol.handle({**base, "operation": "apply-document-write",

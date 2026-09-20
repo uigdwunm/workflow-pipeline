@@ -2,7 +2,7 @@
 
 Use the pinned `scripts/stage_handoff.py` and `scripts/stage_dispatch.py`.
 Both take one bounded strict JSON object on stdin. Protocol is
-`workflow-stage-transfer-v1`. Success is `{ok:true,result:...}` (exit 0);
+`workflow-stage-transfer-v2`. Success is `{ok:true,result:...}` (exit 0);
 failure is `{ok:false,error:{code,operation,message,downstream_ready:false,
 completed_evidence,recovery}}` (exit 1). A digest detects changes, never
 authenticates a caller, receipt, user decision or semantic conclusion.
@@ -220,7 +220,14 @@ freshness. B never dispatches a successor, archives tasks or runs a recovery loo
 
 ## Compatibility and verification
 
-Packages add stage_transfer=workflow-stage-transfer-v1 to their exact compatibility
+Discussion source and Phase reads use A's pinned `discussion_project` through
+prepare, bind, receive and accept. Successors retain the original project/tree/topic.
+Control envelopes must already name that project and attachment; mismatches are
+rejected, not rewritten. Flow bindings prove execution Git identity and share the
+discussion's common directory; they do not select its owner. Stage-4 intake reads
+the surviving discussion project without refreshing the removed execution checkout.
+
+Packages add stage_transfer=workflow-stage-transfer-v2 to their exact compatibility
 key. Old runs keep original pinned runtime/records; no migration. Full A evidence
 stays outside strict control context. Only necessary design and launch transitions
 extend the existing control checkpoint.

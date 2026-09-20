@@ -1099,6 +1099,8 @@ class PhaseProgressTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTe
             self.assertEqual(code, 0, (result, stderr))
         attachment = {"project_id": topic["project_id"], "tree_id": topic["tree_id"],
                       "actor_topic_id": topic["topic_id"], "actor_conversation_ref": "discussion-task"}
+        facts = transfer.entry.repository_facts(str(project))
+        discussion_project, _ = transfer.entry.resolve_discussion_project(facts, attachment)
         # A port-level test of C's source adapter. Phase and ledger are real;
         # full stage acceptance is exercised separately through A/B/Git above.
         state = {"protocol": progress.PROTOCOL, "revision": 0, "mode": "stepwise", "stage": 2,
@@ -1108,7 +1110,8 @@ class PhaseProgressTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTe
             "action": None, "handoff": {"stage": 2, "binding": None,
                 "authorization": {"phase": {"run_id": prepared["phase_run_id"], "attempt_id": prepared["attempt_id"]}},
                 "entry": {"source": {"kind": "discussion", "attachment": attachment}},
-                "expected_entry": {"repository": {"root": str(project)}}}}
+                "expected_entry": {"repository": facts, "discussion_project": discussion_project,
+                                   "requirement": {"kind": "discussion", "attachment": attachment}}}}
         checkpoint = self.root / "source-record.json"
         owner = progress.Progress(checkpoint, {progress.KEY: state})
         emitted = owner.phase_action()

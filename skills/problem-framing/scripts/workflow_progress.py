@@ -28,7 +28,7 @@ import workflow_control as control
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v4"
+PROTOCOL = "workflow-progress-v5"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 require = entry.require
@@ -191,7 +191,7 @@ def verify_phase_completed(state):
         phase = {"run_id": authority["run_id"], "attempt_id": authority["attempt_id"]}
     source = saved["entry"]["source"]
     require(source["kind"] == "discussion", "authority_missing", "phase requires its original discussion attachment")
-    root = (saved.get("binding") or {}).get("repository", saved["expected_entry"]["repository"]["root"])
+    root = entry.discussion_root(saved["expected_entry"])
     result = entry.discussion_protocol.handle({"protocol_version": 1, "operation": "read-phase-run", "project_path": root,
         **source["attachment"], "phase_run_id": phase["run_id"]})
     run = result["phase_run"]
@@ -849,7 +849,7 @@ class Progress:
             selected = control.selected_control(s["control"]["context"], {"attempt": s["dispatch"]["request"]["attempt"]})
             authority = selected["handoff_progress"]["plan"]["entry_authority"]
             phase = {"run_id": authority["run_id"], "attempt_id": authority["attempt_id"]}
-        root = (saved.get("binding") or {}).get("repository", saved["expected_entry"]["repository"]["root"])
+        root = entry.discussion_root(saved["expected_entry"])
         attachment = saved["entry"]["source"]["attachment"]
         base = {"protocol_version": 1, "project_path": root, **attachment}
         run = entry.discussion_protocol.handle({**base, "operation": "read-phase-run", "phase_run_id": phase["run_id"]})["phase_run"]
@@ -902,7 +902,7 @@ class Progress:
                 "source_changed", "source changed after the saved reservation")
         require(current["repository"] == saved["expected_entry"]["repository"], "entry_changed", "repository changed after reservation")
         handoff.phase_evidence(saved)
-        topic = entry.topic_read(current["repository"]["root"], saved["entry"]["source"]["attachment"])
+        topic = entry.topic_read(entry.discussion_root(current), saved["entry"]["source"]["attachment"])
         require(topic["workflow_control"] == s["control"]["context"], "authority_changed", "reservation is no longer current")
 
     def bound_ref(self):
@@ -1691,6 +1691,13 @@ def lifecycle(path, outer, data):
                "complete-phase-run", "finalize-phase-run", "reconcile-phase-run", "read-phase-run"}
     require(request.get("operation") in allowed, "invalid_operation", "use an existing phase carrier/source operation")
     root = request["project_path"]
+    state = outer.get(KEY)
+    if state is not None:
+        current = state["handoff"]["expected_entry"]
+        require(root == entry.discussion_root(current) and
+                all(request.get(key) == current["requirement"]["attachment"][key]
+                    for key in ("project_id", "tree_id", "actor_topic_id")),
+                "discussion_identity_conflict", "lifecycle envelope differs from pinned discussion project")
     require(not Path(path).resolve().is_relative_to(Path(root).resolve()), "unsafe_checkpoint", "checkpoint must be outside the project")
     if request["operation"] in {"complete-phase-run", "finalize-phase-run"}:
         state = outer.get(KEY)
