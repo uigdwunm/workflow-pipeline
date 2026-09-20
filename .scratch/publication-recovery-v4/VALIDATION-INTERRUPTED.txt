@@ -1,0 +1,81 @@
+Skill is valid!
+Skill is valid!
+Skill is valid!
+Skill is valid!
+Skill is valid!
+....................................Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py", line 197, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/__main__.py", line 18, in <module>
+    main(module=None)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/main.py", line 101, in __init__
+    self.runTests()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/main.py", line 271, in runTests
+    self.result = testRunner.run(self.test)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/runner.py", line 176, in run
+    test(result)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/suite.py", line 122, in run
+    test(result)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/suite.py", line 122, in run
+    test(result)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/suite.py", line 84, in __call__
+    return self.run(*args, **kwds)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/suite.py", line 122, in run
+    test(result)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 653, in __call__
+    return self.run(*args, **kwds)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 593, in run
+    self._callTestMethod(testMethod)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/tests/runtime/test_business_recovery.py", line 60, in test_technical_recovery_continuous
+    def test_technical_recovery_continuous(self): self.recover("technical_error", "continuous")
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/tests/runtime/test_business_recovery.py", line 41, in recover
+    self.start(mode)
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/tests/runtime/test_business_recovery.py", line 19, in start
+    self.f.begin(mode)
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/tests/runtime/test_workflow_progress.py", line 42, in begin
+    result = self.invoke("start", {"handoff": value, "control": {"context": self.context, "discussion": None}})
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/tests/runtime/test_workflow_progress.py", line 36, in invoke
+    return progress.handle(self.checkpoint, {"protocol": progress.PROTOCOL, "operation": operation,
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/workflow_progress.py", line 1704, in handle
+    return owner.start(data)
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/workflow_progress.py", line 435, in start
+    return self.advance()
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/workflow_progress.py", line 752, in advance
+    result = self.call("prepare")
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/workflow_progress.py", line 446, in call
+    return self.replay_transaction()
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/workflow_progress.py", line 454, in replay_transaction
+    self.apply(dispatch.handle(copy.deepcopy(s["transaction"])))
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/stage_dispatch.py", line 428, in handle
+    return {"prepare": prepared, "bind": bound, "reconcile": bound, "receive": received, "accept": accepted}[operation](request)
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/stage_dispatch.py", line 63, in prepared
+    saved = handoff.verify(request["handoff"])
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/stage_handoff.py", line 367, in verify
+    actual = prepare({**{k: body[k] for k in FIELDS}, "operation": "prepare"})
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/stage_handoff.py", line 314, in prepare
+    delivered = delivery(request, current, identity, source_commit)
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/stage_handoff.py", line 220, in delivery
+    requirement.verify({**current, "requirement": {"kind": "frozen", "path": identity["path"]}},
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/requirement_prepare.py", line 364, in verify
+    entry.require(entry.git_text(root, "ls-tree", commit, "--", path).startswith("100644 "), "invalid_document", "committed requirement must be a regular document")
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/entry_prepare.py", line 74, in git_text
+    return git(repository, *args).stdout.decode("utf-8").strip()
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/src/shared/scripts/entry_prepare.py", line 67, in git
+    result = subprocess.run(["git", *literal, "-C", str(repository), *args],
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/subprocess.py", line 507, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/subprocess.py", line 1134, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/subprocess.py", line 1979, in _communicate
+    ready = selector.select(timeout)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/selectors.py", line 416, in select
+    fd_event_list = self._selector.poll(timeout)
+KeyboardInterrupt

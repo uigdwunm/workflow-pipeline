@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "88e97c277e9cf71ecbbfb024e0dd043fb3a594e989c2af25bb94c30fe262b7f9",
+  "bundle_digest": "7945537941c1265f261c932fce2ffa7357cbfa484b95bb9faecef8814507ae2b",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -14,7 +14,7 @@
     "stage_transfer": "workflow-stage-transfer-v1",
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
-    "workflow_progress": "workflow-progress-v3"
+    "workflow_progress": "workflow-progress-v4"
   },
   "external_actions": {
     "grill-with-docs": [
@@ -97,7 +97,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "27926c5c31c4d15c95a9001fc329547427ff12efc3b770104dd60351b5c376cd"
+      "sha256": "b4a7efbd5850f8219a7ae967bba9300fe561ebaf5891e8ecdd7bcc8d15ececd8"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -217,7 +217,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "1b0a67bc68213345e55c1a84cd74a123cd95a82de943310e5093b697b21abd96"
+      "sha256": "f61018f8eba77238d3fafa95751a708287ebeffa08780fbdcd613498d1ef47a7"
     }
   },
   "format_version": 1,

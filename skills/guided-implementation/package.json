@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "e3cda636e2128ecb6cb6acddbd94ae206621456e13a5e7b9bc6311ccc09bca4d",
+  "bundle_digest": "408998ee92f265dda27f6706b9f4f58918ae71de0d7a3d269f1a17d8d49bdd61",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -14,7 +14,7 @@
     "stage_transfer": "workflow-stage-transfer-v1",
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
-    "workflow_progress": "workflow-progress-v3"
+    "workflow_progress": "workflow-progress-v4"
   },
   "external_actions": {
     "dispatch": [
@@ -73,7 +73,7 @@
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "7e205243b9fa880d0de1b2cfb92ab22e40b51824ad5687c142c84420b043921e"
+      "sha256": "786e5ad6e1edeca5e08b19865fbe18d4f108f9b618bf96b283e2fb0bf575ec48"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
@@ -89,7 +89,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "27926c5c31c4d15c95a9001fc329547427ff12efc3b770104dd60351b5c376cd"
+      "sha256": "b4a7efbd5850f8219a7ae967bba9300fe561ebaf5891e8ecdd7bcc8d15ececd8"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -201,7 +201,7 @@
     },
     "scripts/workflow.py": {
       "mode": "0644",
-      "sha256": "01f5610e62748f47ca8c240582c7008ae6cdc8eb2c2586cba2533fde64a91205"
+      "sha256": "82a3bb153836619d0698983157caf9fa40d1fc5a1792700a498ad81f6cf052fd"
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
@@ -213,11 +213,11 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "1b0a67bc68213345e55c1a84cd74a123cd95a82de943310e5093b697b21abd96"
+      "sha256": "f61018f8eba77238d3fafa95751a708287ebeffa08780fbdcd613498d1ef47a7"
     },
     "scripts/workflow_stage_result.schema.json": {
       "mode": "0644",
-      "sha256": "9d1ca222af1c586d1a7b595e9200c95be0e767333057603f3e33c4a6b6de29d0"
+      "sha256": "2a02f5e24b6d2bc335ae0c024c96aff1a0d03e9af695f88b6ef23c67b212b903"
     }
   },
   "format_version": 1,

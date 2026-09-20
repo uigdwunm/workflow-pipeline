@@ -28,7 +28,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v3","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v4","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -62,7 +62,7 @@ digests, child assertions, names and timestamps are not authentication.
   issued it returns exact lookup, never the mutation again. Save/use the first
   returned action. If that response is lost, inspect and reconcile; do not
   interpret its saved payload as permission to replay a host tool.
-- `observe`: data is `{event_id, receipt, result? , action_id?, closure?}`.
+- `observe`: data is `{event_id, receipt, result?, action_id?, provenance?, action_resolution?, closure?, publication_candidate?}`.
   Receipt is B's complete authenticated receipt including raw. C saves it
   before bind/reconcile/receive. A result is B's `{delivery_id,status,payload}`.
   To establish current resumability or stopped-writer proof, `action_id` must
@@ -103,6 +103,30 @@ waits. `continue-host` resumes the exact ref; it is not a fresh dispatch.
 Absent lookup support is unknown, not permission to search by title or reissue.
 No background monitor or private governance schema is added.
 
+For current execution proof, `observe.provenance` is
+`{call_ref,response_ref,action_id}`. The trusted adapter captures these references
+at the actual invocation/response boundary and preserves them on replay, outside
+the unmodified raw response. `call_ref` identifies one real invocation;
+`response_ref` identifies one response within that adapter; the provenance
+action is the saved C action which caused the invocation. C checks that the
+outer action ID agrees, the action is current/unresolved, and the response and
+call references have not been rebound to different content or causes. Response
+identity is not raw-content equality: distinct calls may return identical raw.
+An adapter must not manufacture a new provenance for cached evidence. If it
+cannot establish the actual relationship, omit provenance; that observation
+cannot grant proof. Unsupported or uncertain queries wait for explicit recovery.
+These fields, hashes and checkpoint records are consistency evidence, not an
+authenticator for arbitrary JSON. The existing trusted host/controller boundary
+is still responsible for authenticating tool calls and Controller decisions.
+
+Host ingress precedes business-payload validation and business dedup. New
+stopped/unknown evidence for the original identity revokes permission even when
+its provenance is absent, malformed or conflicting; it does not thereby prove
+quiescence. An exact replay of a known response is an ACK. `host.last_stop`
+retains the most recently ingressed nonduplicate stop separately from the
+current projection. A fresh proven query can update current state without
+erasing that stop. Creation ready binds identity only, never runtime liveness.
+
 `inspect-host-state` is a persisted read-only query of the exact original ref,
 request and attempt, with an action ID and generation. The adapter obtains a
 new tool response after that query and returns a B-shaped `event=result` receipt
@@ -113,10 +137,22 @@ is `unknown`; never recreate an identity. A negative query returns
 Normal uninterrupted invoke/continue responses can supply current proof without
 an extra query. Creation `ready` binds identity only.
 
+If a revoked generation still has an unresolved host action, the query retains
+that exact action in `payload.unresolved_action`. The adapter must reconcile its
+actual invocation outcome as well as the current original-identity state. Return
+`action_resolution={action_id,outcome}` only from that reconciliation; terminal
+outcomes are `completed`, `not-issued` or `cancelled`. C requires the exact action
+ID and authenticated current query provenance before settling it. Idle/stopped
+state without this evidence becomes unknown: an earlier uncertain mutation might
+otherwise execute later. Missing or unsupported action lookup waits, and explicit
+resume can query again. Neither the query nor its terminal outcome reissues the
+old mutation. Ordinary same-generation unresolved actions still return exact
+lookup instead of a new continuation.
+
 The `host` projection stores authenticated evidence separately from business
 consumption. Pause, cancellation, stopped and unknown invalidate the previous
-continuation generation. Reused receipt refs/raw responses and late action
-results cannot restore it. Business-message dedup runs after independent host
+continuation generation. Replayed invocation responses and late action results cannot restore it.
+Identical raw content from a different authenticated invocation is not a replay. Business-message dedup runs after independent host
 processing, so a duplicate message cannot swallow a newer stopped fact.
 Every `continue-host` issuance checks consumed business intent, original
 authority/identity/source, stop intent and current unused proof. The same save
@@ -175,6 +211,58 @@ and accepted are distinct. A completed B delivery requires the host's actual
 stopped-writer contract. A stopped/unknown identity cannot be blindly continued.
 Repeated continuation with unchanged progress evidence blocks for diagnosis.
 Technical errors stop without masquerading as a permission question.
+
+Both `technical_error` and `no_progress` persist as `business_block`, binding
+the trigger and original stage, attempt, handoff, ref and Controller. Its
+`subject` includes the exact `block_id`. `resume`, new host facts, bind/reconcile,
+later business results and publication bookkeeping cannot clear it. New business
+messages observed while blocked remain audit/dedup evidence, not deferred work
+that can spring into effect after recovery. Blocking does not mutate host facts
+during B replay. The continuation gate independently requires no business block.
+
+The original trusted Controller may call `recover-business` with exactly:
+
+```text
+{decision_id,subject,reference,diagnosis,instruction,expected_progress}
+```
+
+Copy `subject` from the active block. All other fields are nonempty strings
+from an actual Controller decision, not a child's claim. The Controller reviews
+the diagnosis, corrective instruction and expected progress; C verifies identity,
+current control authority and absence of unresolved B/control/allocation
+transactions. This operation authorizes only the original identity and scope;
+it does not replace a dispatcher, fabricate executions, or change A/B authority.
+Normal workflow execution acquires no additional human approval gate.
+
+The existing `control/recover-dispatch` remains a separate, explicit Controller
+recovery under B's stopped-writer, accepted-byte and replacement rules. Its C
+journal binds the active business block ID before calling B; only successful
+recovery of that exact block clears it and records the control decision in
+business history. It cannot clear a subsequently created block or serve as a
+design-stage recovery. This preserves existing replacement authority; the new
+`recover-business` operation never grants replacement authority.
+
+Recovery atomically records `recovery_decisions` and `business_history`, clears
+the exact block, starts a new no-progress counting episode and revokes old host
+proof. It records one continuation intent containing the reviewed instruction;
+it does not call a host. The original carrier subsequently uses advance/resume,
+revalidates source, scope and Phase and obtains a fresh original-identity query
+before continuation. Identical decisions ACK without reissuing; stale or
+conflicting decisions cannot clear a later block. Error history is retained.
+Publication already started permits only original publication finalization,
+never a new host continuation. Publication results cannot clear business blocks.
+
+During pause/pausing, a valid decision is saved as `deferred_business_recovery`.
+It neither clears the block nor unpauses. Only explicit resume after real stopped
+proof consumes it; cancellation never does. An interruption between saving
+explicit unpause and consuming the decision resumes that same decision. Ordinary
+resume without a recovery decision leaves both kinds of business failure blocked.
+
+The foreground runner exposes `recover-business RUN_RECORD DECISION_INPUT` to
+record the decision in the original Controller context. It rereads the consumed
+C decision before saving transport intent. It does not launch a CLI carrier;
+subsequent explicit resume carries the existing C recovery into the same CLI
+session. That CLI session is not the native designer/dispatcher/closure identity.
 
 For attached dedicated launch, B's reservation changes the ledger control view.
 C verifies the complete handoff before reservation; before host launch it reuses
@@ -320,8 +408,8 @@ explicit dependency; C cannot produce a merge proof or infer completion.
 
 ## Foreground carrier and compatibility
 
-New runner records retain outer version 3 and pin workflow-progress-v3 /
-flow-worktree-v2 packages. A workflow-progress-v1 or v2 member is rejected by v3; retain
+New runner records retain outer version 3 and pin workflow-progress-v4 /
+flow-worktree-v2 packages. A workflow-progress-v1, v2 or v3 member is rejected by v4; retain
 its original runtime and pinned packages. Version 1/2 runner records likewise
 require their original runtime; neither new APIs nor registry refresh migrate
 or replace records. Complete

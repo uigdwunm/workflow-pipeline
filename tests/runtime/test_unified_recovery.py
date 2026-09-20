@@ -1,4 +1,4 @@
-"""C v3: exact B recovery cannot manufacture current host authority."""
+"""C: exact B recovery cannot manufacture current host authority."""
 import copy
 import sys
 from pathlib import Path
@@ -286,3 +286,44 @@ class UnifiedRecoveryTests(unittest.TestCase):
                                            "answer": "yes", "reference": "controller:answer"})
         self.assertNotEqual((result.get("next_action") or {}).get("operation"), "continue-host")
         self.assertIsNone(self.f.state()["host"]["proof"])
+
+    def test_new_stop_with_identical_raw_revokes_current_question_proof(self):
+        self.start()
+        self.f.invoke("observe", self.f.observation("idle", "result", self.message()))
+        self.f.invoke("pause")
+        stopped = self.f.observation("stopped", "result")
+        stopped["receipt"]["raw"].pop("tool_response_id", None)
+        self.f.invoke("observe", stopped)
+        self.f.invoke("resume")
+        self.f.invoke("observe", self.f.observation("idle", "result"))
+        question = self.message("needs_input")
+        question["delivery_id"] = "question-after-recovery"
+        pending = self.f.invoke("observe", self.f.observation("idle", "result", question))["pending"]
+        self.assertIsNotNone(self.f.state()["host"]["proof"])
+        newer = self.f.observation("stopped", "result")
+        newer["receipt"]["raw"] = copy.deepcopy(stopped["receipt"]["raw"])
+        self.f.invoke("observe", newer)
+        result = self.f.invoke("decide", {"decision_id": pending["decision_id"], "subject": pending["subject"],
+                                           "answer": "yes", "reference": "controller:answer"})
+        self.assertNotEqual((result.get("next_action") or {}).get("operation"), "continue-host")
+        self.assertIsNone(self.f.state()["host"]["proof"])
+
+    def test_stage2_technical_error_exposes_exact_business_recovery(self):
+        self.start()
+        failed = self.f.invoke("observe", self.f.observation("idle", "result", self.message("technical_error")))
+        self.assertEqual(failed["status"], "blocked")
+        resumed = self.f.invoke("resume")
+        self.assertEqual(resumed["status"], "blocked")
+        self.assertEqual((resumed.get("next_action") or {}).get("operation"), "await-business-recovery")
+        self.assertEqual(resumed["business_block"]["code"], "technical_error")
+
+    def test_plain_resume_cannot_clear_no_progress(self):
+        self.start()
+        for index in range(3):
+            message = self.message()
+            message["delivery_id"] = "repeat-" + str(index)
+            blocked = self.f.invoke("observe", self.f.observation("idle", "result", message))
+        self.assertEqual(blocked["error"]["code"], "no_progress")
+        resumed = self.f.invoke("resume")
+        self.assertEqual(resumed["status"], "blocked")
+        self.assertEqual(resumed["error"]["code"], "no_progress")

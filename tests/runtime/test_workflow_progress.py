@@ -26,6 +26,7 @@ class ProgressTests(transfer.StageTransferTests):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.checkpoint = Path(temporary.name) / "checkpoint.json"
+        self.host_response_sequence = 0
 
     def state(self):
         return progress.read_record(self.checkpoint)[progress.KEY]
@@ -51,7 +52,15 @@ class ProgressTests(transfer.StageTransferTests):
         if action is not None:
             value["action_id"] = action["action_id"]
         value["receipt"]["receipt_ref"] += ":" + value["event_id"]
-        value["receipt"]["raw"]["tool_response_id"] = value["event_id"]
+        self.host_response_sequence += 1
+        if action is not None:
+            value["provenance"] = {"call_ref": "fixture-call:" + str(self.host_response_sequence),
+                "response_ref": "fixture-response:" + str(self.host_response_sequence), "action_id": action["action_id"]}
+            if action["operation"] == "inspect-host-state" and action["payload"].get("unresolved_action"):
+                # Fixture host resolves the named invocation in its call history;
+                # tests of unavailable/uncertain lookup remove this evidence.
+                value["action_resolution"] = {"action_id": action["payload"]["unresolved_action"]["action_id"],
+                                              "outcome": "completed"}
         if result is not None:
             value["result"] = result
         return value
@@ -1094,7 +1103,7 @@ class PhaseProgressTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTe
         # full stage acceptance is exercised separately through A/B/Git above.
         state = {"protocol": progress.PROTOCOL, "revision": 0, "mode": "stepwise", "stage": 2,
             "status": "active", "step": "bound", "packages": {}, "accepted": None, "phase_complete": False,
-            "host": {"generation": 0, "status": "unknown", "proof": None, "query": None, "seen": {}},
+            "host": {"generation": 0, "status": "unknown", "proof": None, "query": None, "seen": {}, "calls": {}, "last_stop": None},
             "transaction": None, "transaction_source": None, "transaction_result": None,
             "action": None, "handoff": {"stage": 2, "binding": None,
                 "authorization": {"phase": {"run_id": prepared["phase_run_id"], "attempt_id": prepared["attempt_id"]}},

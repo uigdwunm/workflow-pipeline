@@ -1,0 +1,42 @@
+F
+======================================================================
+FAIL: test_new_stop_with_identical_raw_revokes_current_question_proof (test_unified_recovery.UnifiedRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/tests/runtime/test_unified_recovery.py", line 308, in test_new_stop_with_identical_raw_revokes_current_question_proof
+    self.assertNotEqual((result.get("next_action") or {}).get("operation"), "continue-host")
+AssertionError: 'continue-host' == 'continue-host'
+
+----------------------------------------------------------------------
+Ran 1 test in 3.797s
+
+FAILED (failures=1)
+F
+======================================================================
+FAIL: test_stage2_technical_error_exposes_exact_business_recovery (test_unified_recovery.UnifiedRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/tests/runtime/test_unified_recovery.py", line 317, in test_stage2_technical_error_exposes_exact_business_recovery
+    self.assertEqual((resumed.get("next_action") or {}).get("operation"), "await-business-recovery")
+AssertionError: None != 'await-business-recovery'
+
+----------------------------------------------------------------------
+Ran 1 test in 3.002s
+
+FAILED (failures=1)
+F
+======================================================================
+FAIL: test_plain_resume_cannot_clear_no_progress (test_unified_recovery.UnifiedRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/tests/runtime/test_unified_recovery.py", line 328, in test_plain_resume_cannot_clear_no_progress
+    self.assertEqual(resumed["status"], "blocked")
+AssertionError: 'active' != 'blocked'
+- active
++ blocked
+
+
+----------------------------------------------------------------------
+Ran 1 test in 3.590s
+
+FAILED (failures=1)

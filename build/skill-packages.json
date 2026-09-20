@@ -16,7 +16,7 @@
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v1",
     "stage_transfer": "workflow-stage-transfer-v1",
-    "workflow_progress": "workflow-progress-v3"
+    "workflow_progress": "workflow-progress-v4"
   },
   "resources": {
     "design-discussion/SKILL.md": {

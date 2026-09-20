@@ -394,6 +394,62 @@ class PublicationProgressTests(unittest.TestCase):
                 fixtures.runner.request_control(f.checkpoint, operation)
             self.assertEqual(f.checkpoint.read_bytes(), before)
 
+    def test_stage4_business_recovery_keeps_native_identity_and_candidate(self):
+        f = self.flow
+        candidate = self.closure()
+        request = copy.deepcopy(f.state()["dispatch"]["request"])
+        failed = f.invoke("observe", f.observation("idle", "result", {
+            "delivery_id": "closure-error", "status": "technical_error", "payload": {"message": "tool unavailable"}}, ref="native:closure"))
+        self.assertEqual(failed["business_block"]["code"], "technical_error")
+        decision = {"decision_id": "closure-recovery", "subject": failed["business_block"]["subject"],
+                    "reference": "controller:recovery", "diagnosis": "tool repaired", "instruction": "retry closure checks",
+                    "expected_progress": "verified closure candidate"}
+        f.invoke("recover-business", decision)
+        self.assertEqual(f.invoke("resume")["next_action"]["operation"], "inspect-host-state")
+        continued = f.invoke("observe", f.observation("idle", "result", ref="native:closure"))
+        self.assertEqual(continued["next_action"]["operation"], "continue-host")
+        self.assertEqual(continued["next_action"]["payload"]["intent"]["decision"], decision)
+        self.assertEqual(f.state()["dispatch"]["request"], request)
+        f.ready_publication(candidate, "controller:closure", "native:closure")
+        f.invoke("publication", {"candidate_commit": candidate, "reference": "controller:closure",
+                                 "expected_target_head": f.git("rev-parse", "HEAD")})
+        self.assertTrue(self.accept_publication()["workflow_completion"]["completed"])
+
+    def test_published_business_error_only_recovers_original_intake(self):
+        f = self.flow
+        f.prepare_design_result("continuous")
+        publication = copy.deepcopy(f.state()["publication"])
+        failed = f.invoke("observe", f.observation("idle", "result", {
+            "delivery_id": "published-error", "status": "technical_error", "payload": {"message": "intake interrupted"}}))
+        self.assertEqual(failed["business_block"]["code"], "technical_error")
+        for operation in ("resume", "receive-publication", "advance"):
+            self.assertEqual(f.invoke(operation)["status"], "blocked")
+        decision = {"decision_id": "intake-recovery", "subject": failed["business_block"]["subject"],
+                    "reference": "controller:recovery", "diagnosis": "original intake verified", "instruction": "finish original intake",
+                    "expected_progress": "original B acceptance"}
+        with patch.object(supervision, "publish_planning", side_effect=AssertionError("republished")), \
+             patch.object(progress.Progress, "effect", side_effect=AssertionError("restarted host")):
+            f.invoke("recover-business", decision)
+            self.assertEqual(f.invoke("resume")["pending"]["kind"], "acceptance")
+            self.assertEqual(self.accept_publication()["status"], "accepted")
+        self.assertEqual(f.state()["publication"]["request"], publication["request"])
+        self.assertEqual(f.state()["publication"]["result"], publication["result"])
+
+    def test_publication_intake_waits_for_new_stop_after_adverse_host_fact(self):
+        f = self.flow
+        f.prepare_design_result("continuous")
+        publication = copy.deepcopy(f.state()["publication"])
+        f.invoke("observe", f.observation("running", "result"))
+        self.assertEqual(f.invoke("receive-publication")["error"]["code"], "writer_active")
+        query = f.invoke("resume")["next_action"]
+        self.assertEqual(query["operation"], "inspect-host-state")
+        with patch.object(supervision, "publish_planning", side_effect=AssertionError("republished")), \
+             patch.object(progress.Progress, "effect", side_effect=AssertionError("continued writer")):
+            f.invoke("observe", f.observation("stopped", "result"))
+            self.assertEqual(f.invoke("resume")["pending"]["kind"], "acceptance")
+            self.assertEqual(self.accept_publication()["status"], "accepted")
+        self.assertEqual(f.state()["publication"]["result"], publication["result"])
+
 
 if __name__ == "__main__":
     unittest.main()
