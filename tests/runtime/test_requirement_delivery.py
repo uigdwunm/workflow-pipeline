@@ -103,9 +103,11 @@ class DeliveryTests(EntrySupport):
         self.git('add', 'existing.txt')
         (self.root / 'existing.txt').write_text('unstaged\n')
         (self.root / 'untracked').write_text('user file\n')
+        (self.root / 'user-link').symlink_to('existing.txt')
         before = requirement.unrelated(self.root, [self.path])
         result = self.deliver()
         self.assertEqual(result['status'], 'delivery-ready', result)
+        self.assertEqual(result['result']['intent']['user_work']['user-link']['work'], {'link': 'existing.txt'})
         self.assertEqual(requirement.unrelated(self.root, [self.path]), before)
         self.assertEqual(self.git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), self.path)
         self.assertFalse((self.root / 'unrelated.py').exists())
@@ -158,6 +160,8 @@ class DeliveryTests(EntrySupport):
             failed = self.deliver()
         self.assertEqual(failed['status'], 'blocked')
         head = self.git('rev-parse', 'HEAD')
+        self.assertEqual(failed['error']['completed_evidence'][0]['commit'], head)
+        self.assertFalse(failed['error']['completed_evidence'][0]['verified'])
         self.assertEqual(self.deliver()['result']['delivery_commit'], head)
 
         self.assertEqual(self.git('rev-parse', 'HEAD'), head)
@@ -382,8 +386,28 @@ class DeliveryTests(EntrySupport):
                    'payload': {'artifacts': [self.path], 'checks': ['verified target delivery'], 'requirement': self.frozen,
                                'delivery': outcome['delivery']}}
         receipt.update(event='result', status='stopped', receipt_ref='host:result')
+        def drift(kind):
+            if kind == 'mode':
+                (self.root / self.path).chmod(0o755)
+            else:
+                (self.root / self.path).write_text('different staged document\n')
+                self.git('add', self.path)
+                (self.root / self.path).write_text('confirmed requirement\n')
+        def restore():
+            (self.root / self.path).chmod(0o644)
+            self.git('restore', '--staged', self.path)
+        for kind in ('mode', 'index'):
+            with self.subTest(boundary='receive', drift=kind):
+                drift(kind)
+                self.assert_code('delivery_pending', lambda: call('receive', record=record, receipt=receipt, result=message))
+                restore()
         record = call('receive', record=record, receipt=receipt, result=message)['record']
         decision = {'reference': 'controller:accept', 'delivery_digest': record['delivery']['digest']}
+        for kind in ('mode', 'index'):
+            with self.subTest(boundary='accept', drift=kind):
+                drift(kind)
+                self.assert_code('delivery_pending', lambda: call('accept', record=record, decision=decision))
+                restore()
         accepted = call('accept', record=record, decision=decision)
         self.assertTrue(accepted['downstream_ready'])
         self.assertEqual(accepted['accepted']['payload']['requirement']['commit'], self.frozen['commit'])
@@ -399,6 +423,59 @@ class DeliveryTests(EntrySupport):
         self.assertEqual(failed['error']['code'], 'filtered_bytes_changed', failed)
         self.assertEqual(self.git('rev-parse', 'HEAD'), head)
         self.assertEqual((self.root / self.path).read_text(), 'confirmed requirement\n')
+
+    def test_hook_altered_commit_retains_unverified_object_evidence(self):
+        hook = self.root / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\nprintf "hook changed document\\n" > ' + self.path + '\ngit add -- ' + self.path + '\n')
+        hook.chmod(0o755)
+        before = self.git('rev-parse', 'HEAD')
+        failed = self.deliver()
+        head = self.git('rev-parse', 'HEAD')
+        self.assertNotEqual(head, before)
+        self.assertEqual(failed['status'], 'blocked')
+        self.assertEqual(self.git('show', 'HEAD:' + self.path), 'hook changed document')
+        evidence = failed['error']['completed_evidence'][0]
+        self.assertEqual(evidence['kind'], 'observed-delivery-object')
+        self.assertEqual(evidence['commit'], head)
+        self.assertFalse(evidence['verified'])
+        self.assertFalse(evidence['downstream_ready'])
+        self.assertEqual(evidence['validation_error'], 'delivery_unverified')
+        saved = progress.read_record(self.checkpoint)['workflow_requirements'][failed['transaction']]
+        self.assertEqual(evidence['intent_digest'], saved['intent']['digest'])
+        hook.unlink()
+        retried = self.deliver()
+        self.assertEqual(retried['error']['completed_evidence'][0]['commit'], head)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+
+    def test_missing_trailer_retains_observed_object_on_reconcile(self):
+        hook = self.root / '.git/hooks/commit-msg'
+        hook.write_text('#!/bin/sh\nprintf "rewritten message\\n" > "$1"\n')
+        hook.chmod(0o755)
+        failed = self.deliver()
+        self.assertEqual(failed['status'], 'blocked')
+        head = self.git('rev-parse', 'HEAD')
+        self.assertEqual(failed['error']['completed_evidence'][0]['commit'], head)
+        hook.unlink()
+        retried = self.deliver()
+        self.assertEqual(retried['status'], 'blocked')
+        self.assertEqual(retried['error']['completed_evidence'][0]['commit'], head)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+
+    def test_failed_commit_command_retains_observed_object_before_reuse(self):
+        real = entry.git
+        def failed_response(root, *args, **kwargs):
+            result = real(root, *args, **kwargs)
+            if args[0] == 'commit' and Path(root) == self.root:
+                result.returncode = 1
+            return result
+        with patch.object(entry, 'git', side_effect=failed_response):
+            failed = self.deliver()
+        self.assertEqual(failed['error']['code'], 'delivery_outcome_unknown')
+        head = self.git('rev-parse', 'HEAD')
+        evidence = failed['error']['completed_evidence'][0]
+        self.assertEqual(evidence['commit'], head)
+        self.assertFalse(evidence['verified'])
+        self.assertEqual(self.deliver()['result']['delivery_commit'], head)
 
     def test_ambiguous_matching_objects_block_without_ref_changes(self):
         first = self.deliver()

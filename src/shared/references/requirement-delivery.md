@@ -21,6 +21,10 @@ freeze receipt's ownership (at most 32). An attached Git CP owns exactly its
 checkpoint document. Non-Git CP retains its snapshot and cannot satisfy Git
 Stage-2 entry. Stage 0 gains no delivery authority.
 
+All five packages declare compatibility_key.requirement_delivery as
+`requirement-delivery-v1`. Their exact-key preflight rejects a mixed route whose
+older package lacks these delivery semantics. Existing running package pins stay fixed.
+
 When the original trusted checkpoint already holds a different successful delivery,
 prepare may include `previous` with that complete saved result. The producer
 revalidates its actor, source, exact target/path set and actual bounded proof before
@@ -62,6 +66,14 @@ target_head, requirement_identity, paths, operation_id and `delivery` (the exist
 It proves target delivery, not B acceptance, Phase completion or successor authority.
 Post-commit drift preserves finite completed_evidence with downstream_ready=false;
 retain that object and reconcile after its owner restores the required facts.
+
+If the commit command or object validation fails after an object is observed,
+evidence uses `kind:observed-delivery-object`, `verified:false`, the observed
+commit, original operation/intent association and validation_error. This is not a
+verified delivery receipt. C retains it across later failed reconciliations,
+including when a hook removed the trailer, and does not refresh the target intent
+over unresolved observed objects. Only successful object and target verification
+can produce the normal delivered result.
 
 On any unsuccessful delivery emit:
 

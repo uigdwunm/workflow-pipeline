@@ -1726,6 +1726,8 @@ def deliver_requirement(path, outer, data):
                 break
             admit_write()
             if outcome.get("state") == "refresh-required":
+                require(not (saved.get("error") or {}).get("completed_evidence"), "delivery_outcome_unknown",
+                        "an observed delivery object requires original evidence reconciliation before target refresh")
                 previous = saved["intent"]
                 refreshed = requirement_delivery.handle(original)
                 saved.setdefault("prior_intents", []).append(previous)
@@ -1745,8 +1747,15 @@ def deliver_requirement(path, outer, data):
         saved.update(state="verified", error=None)
     except entry.ERROR_TYPES as error:
         saved["state"] = "issued" if saved.get("issued") else "prepared"
+        evidence = list(getattr(error, "completed_evidence", []))
+        identities = {(item.get("operation_id"), item.get("intent_digest"), item.get("commit")) for item in evidence}
+        for item in (saved.get("error") or {}).get("completed_evidence", []):
+            identity_key = (item.get("operation_id"), item.get("intent_digest"), item.get("commit"))
+            if identity_key not in identities:
+                evidence.append(item)
+                identities.add(identity_key)
         saved["error"] = {"code": getattr(error, "code", "delivery_failed"), "message": entry.error_message(error),
-            "completed_evidence": getattr(error, "completed_evidence", []), "downstream_ready": False}
+            "completed_evidence": evidence, "downstream_ready": False}
         atomic_save(path, outer)
         return {"protocol": PROTOCOL, "status": "blocked", "transaction": identity, "error": saved["error"], "downstream_ready": False}
     atomic_save(path, outer)

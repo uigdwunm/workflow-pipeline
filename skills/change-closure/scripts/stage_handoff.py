@@ -230,10 +230,7 @@ def delivery(request, current, identity, source_commit):
     require(hashlib.sha256(blob(root, delivered, identity["path"])).hexdigest() == expected,
             "delivery_unverified", "delivery commit differs from frozen requirement")
     owned = proof["paths"] if proof else request["requirement"].get("owned_paths", [identity["path"]])
-    for relative in owned:
-        require(mode(root, head, relative) == b"100644" and blob(root, head, relative) == blob(root, source_commit, relative),
-                "delivery_pending", "current target differs from frozen documents")
-        require(entry.read_document(root, relative) == blob(root, head, relative), "delivery_pending", "target working document differs")
+    requirement.verify_target_documents(root, head, source_commit, owned)
     return {"source_commit": source_commit, "delivery_commit": delivered, "target_head": head}
 
 

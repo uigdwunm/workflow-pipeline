@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "0cc9a3929f431f48a9500484ccd4be930c0d4453a8f1b111e5d9e9db0759e7d9",
+  "bundle_digest": "f78def480529d39f25ca5ca7de3d0ee34e43ed33d223fe0bdd7de9573d8144af",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -11,6 +11,7 @@
     ],
     "ledger_write": 3,
     "preparation": "workflow-preparation-v2",
+    "requirement_delivery": "requirement-delivery-v1",
     "stage_transfer": "workflow-stage-transfer-v2",
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
@@ -94,7 +95,7 @@
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
-      "sha256": "e27b6bf18471cfe3f4334f357c9e8df96e8b0db7e5c8da568e983dcdf44e65c7"
+      "sha256": "d4d9c9e676f525d29c63225ffca5ffd91fb06199d036f2712f5c93c8cf477ff2"
     },
     "references/shared/requirement-preparation.md": {
       "mode": "0644",
@@ -102,7 +103,7 @@
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
-      "sha256": "5f68286fb196c73c7034bca512d8e482016057c58baee3eaf8c79439e16e32e7"
+      "sha256": "da02be1f6349db0c1d41011efe725e4d0755bcd5547bec4d6c78409e039a123e"
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
@@ -186,11 +187,11 @@
     },
     "scripts/requirement_delivery.py": {
       "mode": "0644",
-      "sha256": "a1a25ed789a55a683a0d829a05484b5645432a9adf711dbe69fd8ca4d7f4d323"
+      "sha256": "5998005e2facfbfeb6e8a8b267526e43f6a5bb114ade2b8e447fd8784ea90d6b"
     },
     "scripts/requirement_prepare.py": {
       "mode": "0644",
-      "sha256": "60e13116480e60991403f291c7ba1aa8fb7717c8bba27d6f6851404101a932cb"
+      "sha256": "f2e8f7f4acc1f1980d3c6764f7e8cbcffa951437417e1c8d24dfe647425e8211"
     },
     "scripts/skill_preflight.py": {
       "mode": "0644",
@@ -202,7 +203,7 @@
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "9ed1b3522d6e6b51934f313c5060c88fb018b317e56f6c2b5743e9f84bb502c0"
+      "sha256": "b3628053d046df72478e1da7ca244bf6b4569b16d4f846962577bd2ab8667693"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",
@@ -230,7 +231,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "a20740d7524ef87d8d660606298276275dfe34cf2b519dec8f7e3b0d81821c39"
+      "sha256": "8c54ee96a999fd0c35b5e20de8f576ae574ff1864e99f815c659dbf620a8610d"
     }
   },
   "format_version": 1,

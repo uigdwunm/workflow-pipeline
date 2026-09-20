@@ -126,6 +126,9 @@ from the authenticated delivery owner. The reachable delivery commit must have
 one parent, change only those Markdown paths, include the requirement, and match
 the source commit for every listed document. B preserves both commits and verifies
 all owned documents at the explicit target independently of the source entry.
+The shared read-only target check requires the frozen Git blobs, regular
+non-executable working files and their exact stage-0 index entries at receive,
+accept and successor freshness checks.
 The source commit need not enter target history, and the delivery commit need not
 enter detached source history. Use the Stage-1
 [delivery producer]({{resource:shared/references/requirement-delivery.md}}) through C

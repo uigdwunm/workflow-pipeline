@@ -2,7 +2,6 @@
 """Deliver frozen Stage-1 Markdown; callers persist the transaction identity."""
 from __future__ import annotations
 import os
-import hashlib
 import json
 from pathlib import Path
 import sys
@@ -27,17 +26,10 @@ def user_work(root, paths):
         names.update(os.fsdecode(p) for p in entry.git(root, *args).stdout.split(b"\0") if p)
     result = {}
     for name in sorted(names - set(paths)):
-        path = root / name
-        if path.is_symlink():
-            work = {"link": os.readlink(path)}
-        elif path.is_file():
-            hasher = hashlib.sha256()
-            with path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(65536), b""):
-                    hasher.update(chunk)
-            work = {"sha256": hasher.hexdigest(), "mode": path.stat().st_mode & 0o777}
-        else:
-            work = {"kind": "directory" if path.is_dir() else "absent"}
+        work = requirement.file_fingerprint(root / name)
+        # Keep the persisted delivery format distinct from A's existing digest.
+        if "symlink" in work:
+            work = {"link": work["symlink"]}
         result[name] = {"index": requirement.index_entries(root, [name]).decode(), "work": work}
     return result
 
@@ -182,14 +174,6 @@ def verified_result(current, intent, commit, proof):
     root, head = target(current, intent["target"])
     checked = handoff.delivery({"target": intent["target"], "delivery": proof, "requirement": intent["requirement"]},
                               current, intent["requirement_identity"], intent["source_commit"])
-    for path in intent["paths"]:
-        entry.require(tree(root, head, path) == intent["documents"][path], "delivery_pending", "target document differs from source")
-        entry.require(entry.read_document(root, path) == entry.git(root, "cat-file", "blob", intent["documents"][path]["blob"]).stdout
-                      and not (root / path).stat().st_mode & 0o111,
-                      "delivery_pending", "target working document differs from source")
-        expected_index = "100644 " + intent["documents"][path]["blob"] + " 0\t" + path + "\0"
-        entry.require(requirement.index_entries(root, [path]).decode() == expected_index,
-                      "delivery_pending", "target index differs from delivered document")
     # A later ordinary target commit may change unrelated committed files. The
     # original transaction checks user work immediately after its own commit.
     if head == commit:
@@ -198,6 +182,38 @@ def verified_result(current, intent, commit, proof):
     return requirement.sealed({"protocol": PROTOCOL, "kind": "delivered", "state": "verified", "intent": intent,
         "operation_id": intent["operation_id"], "requirement_identity": intent["requirement_identity"], "paths": intent["paths"],
         "target": intent["target"], "delivery": proof, **checked})
+
+
+def observed_object_error(root, intent, error, commits, association):
+    """Keep observed objects distinct from successfully verified delivery proof."""
+    evidence = list(getattr(error, "completed_evidence", []))
+    known = {item.get("commit") for item in evidence}
+    for commit in sorted(set(commits) - known):
+        try:
+            object_type = entry.git(root, "cat-file", "-t", commit, check=False)
+        except entry.ERROR_TYPES:
+            # An unreadable repository cannot provide new object evidence. Keep
+            # the original failure and any evidence already obtained.
+            continue
+        if object_type.returncode or object_type.stdout.strip() != b"commit":
+            continue
+        evidence.append({"kind": "observed-delivery-object", "commit": commit,
+            "operation_id": intent["operation_id"], "intent_digest": intent["digest"], "paths": intent["paths"],
+            "association": association, "validation_error": getattr(error, "code", "delivery_failed"),
+            "verified": False, "downstream_ready": False})
+    return entry.PreparationError(getattr(error, "code", "delivery_failed"), entry.error_message(error), completed_evidence=evidence)
+
+
+def validate_candidate(root, intent, commit):
+    trailer = "Codex-Requirement-Delivery: " + intent["digest"]
+    entry.require(trailer in entry.git_text(root, "show", "-s", "--format=%B", commit).splitlines(),
+                  "delivery_unverified", "delivery trailer is not exact")
+    entry.require(entry.git_text(root, "show", "-s", "--format=%P", commit).split() == [intent["target_head"]],
+                  "delivery_unverified", "delivery parent differs from intent")
+    changed = set(filter(None, entry.git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", commit).stdout.decode().split("\0")))
+    entry.require(changed and changed <= set(intent["paths"]), "delivery_unverified", "delivery changes escape scope")
+    for path in intent["paths"]:
+        entry.require(tree(root, commit, path) == intent["documents"][path], "delivery_unverified", "delivery object differs from frozen document")
 
 
 def candidates(root, intent):
@@ -209,14 +225,10 @@ def candidates(root, intent):
     selected = entry.git(root, "log", "--no-walk", "--stdin", "--format=%H", "--fixed-strings", "--grep=" + trailer,
                          data=b"\n".join(commits) + b"\n").stdout.decode().splitlines()
     for commit in selected:
-        entry.require(trailer in entry.git_text(root, "show", "-s", "--format=%B", commit).splitlines(),
-                      "delivery_unverified", "delivery trailer is not exact")
-        entry.require(entry.git_text(root, "show", "-s", "--format=%P", commit).split() == [intent["target_head"]],
-                      "delivery_unverified", "delivery parent differs from intent")
-        changed = set(filter(None, entry.git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", commit).stdout.decode().split("\0")))
-        entry.require(changed and changed <= set(intent["paths"]), "delivery_unverified", "delivery changes escape scope")
-        for path in intent["paths"]:
-            entry.require(tree(root, commit, path) == intent["documents"][path], "delivery_unverified", "delivery object differs from frozen document")
+        try:
+            validate_candidate(root, intent, commit)
+        except entry.ERROR_TYPES as error:
+            raise observed_object_error(root, intent, error, [commit], "intent-trailer-candidate") from error
     return selected
 
 
@@ -296,10 +308,22 @@ def deliver(current, intent, *, readonly=False):
                       "filtered_bytes_changed", "Git filter changed frozen bytes")
     message = "docs: deliver frozen requirement\n\nCodex-Requirement-Delivery: " + intent["digest"] + "\n"
     entry.require(entry.git_text(root, "rev-parse", "HEAD") == intent["target_head"], "target_changed", "target changed before commit")
-    command = entry.git(root, "commit", "--only", "-m", message, "--", *intent["paths"], check=False)
-    commit = entry.git_text(root, "rev-parse", "HEAD")
-    entry.require(candidates(root, intent) == [commit], "delivery_unverified", "commit failed or differs from original intent")
-    entry.require(command.returncode == 0, "delivery_outcome_unknown", "commit exists but command failed; reconcile original intent")
+    matches = []
+    try:
+        command = entry.git(root, "commit", "--only", "-m", message, "--", *intent["paths"], check=False)
+        commit = entry.git_text(root, "rev-parse", "HEAD")
+        matches = candidates(root, intent)
+        entry.require(matches == [commit], "delivery_unverified", "commit failed or differs from original intent")
+        entry.require(command.returncode == 0, "delivery_outcome_unknown", "commit exists but command failed; reconcile original intent")
+    except entry.ERROR_TYPES as error:
+        observed = list(matches)
+        try:
+            head = entry.git_text(root, "rev-parse", "HEAD")
+            if head != intent["target_head"]:
+                observed.append(head)
+        except entry.ERROR_TYPES:
+            pass  # Preserve original failure when even HEAD cannot be observed.
+        raise observed_object_error(root, intent, error, observed, "observed-after-issued-commit") from error
     proof = proof_for(intent, commit)
     return complete(current, intent, commit, proof)
 

@@ -12,6 +12,30 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageBuildTests(unittest.TestCase):
+    def test_delivery_capability_key_rejects_mixed_release(self):
+        import shutil
+        config = json.loads((ROOT / 'build/skill-packages.json').read_text())
+        self.assertEqual(config['compatibility_key'].get('requirement_delivery'), 'requirement-delivery-v1')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = root / 'source'
+            for directory in ('src', 'build', 'scripts'):
+                shutil.copytree(ROOT / directory, fixture / directory)
+            config['compatibility_key'].pop('requirement_delivery')
+            (fixture / 'build/skill-packages.json').write_text(json.dumps(config))
+            subprocess.run([sys.executable, str(fixture / 'scripts/build_skills.py'), '--output', str(root / 'legacy')], check=True)
+            names = ('design-discussion', 'problem-framing', 'solution-design', 'guided-implementation', 'change-closure')
+            current_keys = [json.loads((ROOT / 'skills' / name / 'package.json').read_text())['compatibility_key'] for name in names]
+            self.assertTrue(all(key == current_keys[0] for key in current_keys))
+            entries = [{'name': name, 'entry': str(ROOT / 'skills' / name / 'SKILL.md'), 'source': 'host'} for name in names]
+            entries[1]['entry'] = str(root / 'legacy/problem-framing/SKILL.md')
+            request = {'stage': 0, 'action': 'discuss', 'target_stages': [1],
+                       'registry': {'source': 'host-current-skills', 'entries': entries}}
+            result = subprocess.run([sys.executable, str(ROOT / 'skills/design-discussion/scripts/skill_preflight.py')],
+                input=json.dumps(request), text=True, capture_output=True)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['error']['code'], 'incompatible_package')
+
     def test_deterministic_release_rejects_drift_and_undeclared_import(self):
         import shutil
         with tempfile.TemporaryDirectory() as temp:
