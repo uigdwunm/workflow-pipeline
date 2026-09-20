@@ -40,7 +40,21 @@ query response rejection; B evidence and original decisions retained with no B
 replay; successful input/acceptance ACKs; before/after query archive save faults;
 and actual runner pause/cancel request admission.
 
-Combined recovery validation and final full validation: pending.
+Validation completed on frozen code candidate
+`0efa6a5fa5af676b15fc3dd1860088faf4ff4f3e`:
+
+- Combined recovery: 70 passed in 292.074 seconds
+  (`ACCEPTED-QUERY-RECOVERY.txt`).
+- Final `scripts/validate.sh`: exit 0, 616 tests in 1451.433 seconds;
+  615 passed and 1 existing inapplicable skip. Build consistency, all five Skill
+  validators and repository validation passed (`issues=[]`, 76 references,
+  5 Skills, 29 test modules). See `ACCEPTED-QUERY-VALIDATION.txt`.
+- The coordinator reported independent Standards and Spec reviews with no new
+  actionable findings, closure of the P2, and 8/8 independent tests plus build
+  and fixed-diff checks on that exact code candidate.
+- Before the evidence-only commit, `git diff --exit-code` against that candidate
+  confirmed no changes under `src`, `tests`, `skills` or `build`. These trees are
+  frozen; only this delivery note and completed validation logs are appended.
 
 ## Limits
 
