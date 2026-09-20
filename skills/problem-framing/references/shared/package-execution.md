@@ -1,5 +1,13 @@
 # Package execution and action preflight
 
+Persistent discussion-project identity requires preparation=workflow-preparation-v2,
+stage_transfer=workflow-stage-transfer-v2 and workflow_progress=workflow-progress-v5.
+Entry requests use workflow-entry-v2 and requirement requests use requirement-freeze-v2.
+Old pinned runs keep their original packages and records; new packages reject
+incompatible exchanges instead of filling missing identity fields or migrating runs.
+Runner outer version 3, discussion request/ledger schemas, control and supervision
+flow-worktree-v2 are unchanged.
+
 Use the [entry adapter](entry-preparation.md) to
 collect repository, task, source, settings and action dependencies before this
 stage's first side effect. It invokes the preflight below rather than requiring

@@ -362,7 +362,7 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "Read prior results and any progression_response at their exact checkpoint fields; full evidence is retained there, "
         "not reconstructed from these compact prompt references. Consume the saved response's next_action before advancing again. "
         "If resume_progression is true, first reconcile C's saved operation with C resume in this carrier context. "
-        "C v4 separates business recovery from current host evidence. Ordinary resume cannot clear a business block; "
+        "C v5 retains separate business recovery and current host evidence. Ordinary resume cannot clear a business block; "
         "only the original Controller's explicit recover-business decision authorizes recovery. "
         "For inspect-host-state, query only the exact "
         "original identity and return a fresh authenticated tool response with that query action_id. Never attach "

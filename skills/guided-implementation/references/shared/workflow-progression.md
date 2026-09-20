@@ -28,7 +28,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v4","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v5","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -436,8 +436,14 @@ explicit dependency; C cannot produce a merge proof or infer completion.
 
 ## Foreground carrier and compatibility
 
-New runner records retain outer version 3 and pin workflow-progress-v4 /
-flow-worktree-v2 packages. A workflow-progress-v1, v2 or v3 member is rejected by v4; retain
+Lifecycle envelopes and historical Phase readbacks retain A's `discussion_project`,
+including after Flow removal. Source and Carrier still execute their own operations;
+paths do not authenticate them. Pending envelopes and keys remain unchanged on retry.
+Final completion rereads the original ledger and surviving repository's published
+Git facts, without recreating a Flow. The discussion owner must remain available.
+
+New runner records retain outer version 3 and pin workflow-progress-v5 /
+flow-worktree-v2 packages. A workflow-progress-v1, v2, v3 or v4 member is rejected by v5; retain
 its original runtime and pinned packages. Version 1/2 runner records likewise
 require their original runtime; neither new APIs nor registry refresh migrate
 or replace records. Complete

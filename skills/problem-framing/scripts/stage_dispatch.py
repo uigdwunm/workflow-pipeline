@@ -22,6 +22,15 @@ PROTOCOL = handoff.PROTOCOL
 require = handoff.require
 
 
+def verify_discussion_port(envelope, saved):
+    entry.fields(envelope, {"protocol_version", "project_path", "project_id", "tree_id", "actor_topic_id",
+                           "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key"})
+    require(envelope["project_path"] == entry.discussion_root(saved["expected_entry"]) and
+            all(envelope[key] == saved["entry"]["source"]["attachment"][key]
+                for key in ("project_id", "tree_id", "actor_topic_id")),
+            "discussion_identity_conflict", "control envelope differs from pinned discussion project")
+
+
 def checkpoint(port, request, action, evidence):
     """Apply the existing authority, never a transport-record shadow ledger.
 
@@ -34,8 +43,7 @@ their exact idempotency key and revisions must be retained on an unknown result.
     require(context["controller_ref"] == request["controller_ref"], "identity_mismatch", "wrong checkpoint controller")
     if port["discussion"] is not None:
         envelope = port["discussion"]
-        entry.fields(envelope, {"protocol_version", "project_path", "project_id", "tree_id", "actor_topic_id",
-                               "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key"})
+        verify_discussion_port(envelope, request)
         require(envelope["actor_conversation_ref"] == context["controller_ref"] and
                 envelope["actor_topic_id"] == context["topic_ref"], "identity_mismatch", "discussion checkpoint owner differs")
         actual = discussion_protocol.handle({**envelope, "operation": "workflow-control", "action": action, "evidence": evidence})
@@ -141,6 +149,7 @@ def record_for(request):
     require(request["control"]["context"]["controller_ref"] == launch["controller_ref"], "identity_mismatch", "checkpoint owner changed")
     if request["control"]["discussion"] is not None:
         envelope = request["control"]["discussion"]
+        verify_discussion_port(envelope, record["handoff"])
         base = {k: envelope[k] for k in ("protocol_version", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref")}
         current = discussion_protocol.handle({**base, "operation": "read-topic"})
         require(current["workflow_control"] is not None, "authority_missing", "discussion has no workflow control checkpoint")
@@ -198,7 +207,7 @@ def bind_discussion(port, record, receipt):
             return port, None
         binding = saved["authorization"]["phase"]
         applied = discussion_protocol.handle({"protocol_version": 1, "operation": "authorize-phase-carrier",
-                     "project_path": saved["expected_entry"]["repository"]["root"], **saved["entry"]["source"]["attachment"],
+                     "project_path": entry.discussion_root(saved["expected_entry"]), **saved["entry"]["source"]["attachment"],
                      "phase_run_id": binding["run_id"], "attempt_id": binding["attempt_id"], "carrier_ref": receipt["ref"],
                      "expected_ledger_revision": phase["topic"]["ledger_revision"], "expected_topic_revision": phase["topic"]["record_revision"],
                      "idempotency_key": str(uuid.UUID(hex=entry.digest([record["request"]["digest"], "authorize-designer"])[:32], version=4))})

@@ -16,7 +16,7 @@ import skill_preflight
 import thread_settings
 from supervision_protocol import _binding, _verify_binding, ProtocolError as SupervisionError
 
-PROTOCOL = "workflow-entry-v1"
+PROTOCOL = "workflow-entry-v2"
 MAX_BYTES = 2 * 1024 * 1024
 
 
@@ -120,6 +120,57 @@ def topic_read(project, attachment):
                                        "project_path": project, **attachment})
 
 
+def resolve_discussion_project(facts, attachment):
+    """Locate the existing ledger, then verify authority at its original owner.
+
+    The manifest path is a locator, not actor authentication. read-topic retains
+    the original document, manifest and conversation-binding checks.
+    """
+    fields(attachment, {"project_id", "tree_id", "actor_topic_id", "actor_conversation_ref"})
+    for key, kind in (("project_id", "project"), ("tree_id", "tree"), ("actor_topic_id", "topic")):
+        value = nonempty(attachment[key])
+        require(value.startswith(kind + "-") and discussion_protocol.IDENTITY_RE.fullmatch(value),
+                "discussion_identity_conflict", "invalid discussion identity")
+    coordination, storage = discussion_protocol._coordination_root(Path(facts["root"]))
+    ledger = coordination / "projects" / attachment["project_id"] / "trees" / attachment["tree_id"] / "ledger.md"
+    discussion_protocol._require_regular_nosymlink(ledger, "discussion ledger")
+    header, _ = discussion_protocol._load_records(ledger)
+    require(all(header.get(key) == attachment[key] for key in ("project_id", "tree_id")),
+            "discussion_identity_conflict", "ledger identity differs from attachment")
+    manifest = Path(nonempty(header.get("project_manifest_path")))
+    require(manifest.is_absolute() and len(manifest.parents) >= 3 and
+            manifest.parts[-3:] == ("docs", "discussions", ".codex-project.md"),
+            "discussion_identity_conflict", "ledger project manifest path is invalid")
+    project = discussion_protocol._validate_project_path(str(manifest.parents[2]))
+    owner = repository_facts(str(project))
+    require(owner["kind"] == facts["kind"] and
+            (owner.get("git_common_dir") == facts.get("git_common_dir") if storage == "git"
+             else str(project) == facts["root"]),
+            "discussion_identity_conflict", "discussion owner belongs to another execution store")
+    owner_store, _ = discussion_protocol._coordination_root(project)
+    require(owner_store == coordination, "discussion_identity_conflict", "discussion coordination store changed")
+    topic = topic_read(str(project), attachment)
+    identity = {"root": str(project), "ledger_path": str(ledger), "kind": storage,
+                "git_common_dir": owner.get("git_common_dir"),
+                **{key: attachment[key] for key in ("project_id", "tree_id", "actor_topic_id")}}
+    return identity, topic
+
+
+def discussion_root(current):
+    """Recheck pinned ownership without requiring a disposable execution checkout."""
+    identity = current.get("discussion_project")
+    fields(identity, {"root", "ledger_path", "kind", "git_common_dir", "project_id", "tree_id", "actor_topic_id"})
+    attachment = current["requirement"]["attachment"]
+    actual, _ = resolve_discussion_project(repository_facts(identity["root"]), attachment)
+    require(actual == identity, "discussion_identity_conflict", "pinned discussion project changed")
+    execution = current["repository"]
+    require(execution["kind"] == identity["kind"] and
+            (execution.get("git_common_dir") == identity["git_common_dir"] if identity["kind"] == "git"
+             else execution["root"] == identity["root"]),
+            "discussion_identity_conflict", "discussion project differs from execution identity")
+    return identity["root"]
+
+
 def reject_attached_standalone(project, source, actor_refs):
     discovered = discussion_protocol.handle({"protocol_version": 1, "operation": "discover-context",
                                              "project_path": project})
@@ -192,12 +243,13 @@ def resolve(request):
     require(source["kind"] != "stage1" or stage == 1, "invalid_source", "stage1 draft requires Stage 1")
     require(source["kind"] != "conversation" or stage == 2, "invalid_source", "conversation snapshot requires Stage 2")
     requirement = dict(source)
+    discussion_project = None
     if source["kind"] == "discussion":
         fields(source, {"kind", "attachment"})
         fields(source["attachment"], {"project_id", "tree_id", "actor_topic_id", "actor_conversation_ref"})
         require(source["attachment"].get("actor_conversation_ref") in actor_refs,
                 "identity_mismatch", "discussion actor must be the authenticated current task")
-        topic = topic_read(facts["root"], source["attachment"])
+        discussion_project, topic = resolve_discussion_project(facts, source["attachment"])
         requirement["topic"] = topic
     else:
         require("attachment" not in source, "invalid_source", "non-discussion source cannot carry an attachment")
@@ -236,7 +288,7 @@ def resolve(request):
     result = {"protocol": PROTOCOL, "repository": facts, "actor": host,
               "entry": {"stage": stage, "action": request["action"]}, "target": target,
               "packages": packages["packages"], "external": packages["external"],
-              "configuration": settings, "requirement": requirement}
+              "configuration": settings, "requirement": requirement, "discussion_project": discussion_project}
     if request["operation"] == "verify":
         expected = request.get("expected")
         require(isinstance(expected, dict) and expected.get("evidence_digest") == digest({k: v for k, v in expected.items() if k != "evidence_digest"}),
@@ -244,7 +296,7 @@ def resolve(request):
         for identity in expected["packages"].values():
             skill_preflight.verify_identity(identity)
         # Current registration may move, but cannot replace any pinned package.
-        for key in ("repository", "actor", "entry", "target", "requirement"):
+        for key in ("repository", "actor", "entry", "target", "requirement", "discussion_project"):
             require(result[key] == expected[key], "entry_changed", "entry evidence changed: " + key)
         require(set(result["packages"]) == set(expected["packages"]), "entry_changed", "package route changed")
         for name, identity in result["packages"].items():

@@ -14,9 +14,9 @@
     "control": 1,
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
-    "preparation": "workflow-preparation-v1",
-    "stage_transfer": "workflow-stage-transfer-v1",
-    "workflow_progress": "workflow-progress-v4"
+    "preparation": "workflow-preparation-v2",
+    "stage_transfer": "workflow-stage-transfer-v2",
+    "workflow_progress": "workflow-progress-v5"
   },
   "resources": {
     "design-discussion/SKILL.md": {
