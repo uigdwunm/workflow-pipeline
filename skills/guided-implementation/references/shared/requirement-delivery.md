@@ -71,8 +71,10 @@ If the commit command or object validation fails after an object is observed,
 evidence uses `kind:observed-delivery-object`, `verified:false`, the observed
 commit, original operation/intent association and validation_error. This is not a
 verified delivery receipt. C retains it across later failed reconciliations,
-including when a hook removed the trailer, and does not refresh the target intent
-over unresolved observed objects. Only successful object and target verification
+including when a hook removed the trailer. Any saved result or unresolved object
+evidence blocks all further writes, including prepared retries, intent refresh and
+pause/resume. Read-only reconciliation still runs first; only verified success can
+reuse the original delivery and clear its error. Only successful object and target verification
 can produce the normal delivered result.
 
 On any unsuccessful delivery emit:

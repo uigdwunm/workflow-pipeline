@@ -310,12 +310,14 @@ class DeliveryTests(EntrySupport):
 
     def test_detached_delivery_object_is_not_recreated(self):
         baseline = self.git('rev-parse', 'HEAD')
-        delivered = self.deliver()['result']['delivery_commit']
+        success = self.deliver()
+        delivered = success['result']['delivery_commit']
         self.git('reset', '--hard', baseline)
         failed = self.deliver()
         self.assertEqual(failed['error']['code'], 'delivery_detached')
         self.assertEqual(self.git('rev-parse', 'HEAD'), baseline)
         self.assertEqual(self.git('cat-file', '-t', delivered), 'commit')
+        self.assertEqual(progress.read_record(self.checkpoint)['workflow_requirements'][success['transaction']]['result'], success['result'])
 
     def test_identical_bytes_without_original_proof_do_not_create_empty_commit(self):
         first = self.deliver()
@@ -475,7 +477,56 @@ class DeliveryTests(EntrySupport):
         evidence = failed['error']['completed_evidence'][0]
         self.assertEqual(evidence['commit'], head)
         self.assertFalse(evidence['verified'])
+        outer = progress.read_record(self.checkpoint)
+        outer['runner_request'] = {'operation': 'pause'}
+        progress.atomic_save(self.checkpoint, outer)
         self.assertEqual(self.deliver()['result']['delivery_commit'], head)
+        self.assertEqual(self.deliver()['result']['delivery_commit'], head)
+
+    def test_observed_unlinked_object_blocks_rewrite_after_target_restore_and_resume(self):
+        hook = self.root / '.git/hooks/commit-msg'
+        hook.write_text('#!/bin/sh\nprintf "rewritten message\\n" > "$1"\n')
+        hook.chmod(0o755)
+        failed = self.deliver()
+        self.assertEqual(failed['status'], 'blocked')
+        outer = progress.read_record(self.checkpoint)
+        saved = outer['workflow_requirements'][failed['transaction']]
+        original_intent = copy.deepcopy(saved['intent'])
+        observed = failed['error']['completed_evidence'][0]['commit']
+        hook.unlink()
+        self.git('reset', '--hard', original_intent['target_head'])
+        self.assertEqual(self.git('cat-file', '-t', observed), 'commit')
+        self.assertFalse((self.root / self.path).exists())
+        readonly = producer.handle({'protocol': producer.PROTOCOL, 'operation': 'reconcile',
+            'entry': self.request, 'intent': original_intent})
+        self.assertEqual(readonly['state'], 'prepared')
+        for paused in (False, True, False):
+            with self.subTest(paused=paused):
+                outer = progress.read_record(self.checkpoint)
+                if paused:
+                    outer['runner_request'] = {'operation': 'pause'}
+                else:
+                    outer.pop('runner_request', None)
+                progress.atomic_save(self.checkpoint, outer)
+                result = self.deliver()
+                self.assertEqual(result['status'], 'blocked', result)
+                self.assertEqual(result['error']['code'], 'progression_suspended' if paused else 'delivery_outcome_unknown')
+                self.assertEqual(result['error']['completed_evidence'][0]['commit'], observed)
+                self.assertEqual(self.git('rev-parse', 'HEAD'), original_intent['target_head'])
+                self.assertFalse((self.root / self.path).exists())
+                self.assertEqual(progress.read_record(self.checkpoint)['workflow_requirements'][failed['transaction']]['intent'], original_intent)
+        self.git('commit', '--allow-empty', '-qm', 'unrelated target advance')
+        advanced = self.git('rev-parse', 'HEAD')
+        readonly = producer.handle({'protocol': producer.PROTOCOL, 'operation': 'reconcile',
+            'entry': self.request, 'intent': original_intent})
+        self.assertEqual(readonly['state'], 'refresh-required')
+        result = self.deliver()
+        self.assertEqual(result['error']['code'], 'delivery_outcome_unknown')
+        self.assertEqual(self.git('rev-parse', 'HEAD'), advanced)
+        self.assertFalse((self.root / self.path).exists())
+        retained = progress.read_record(self.checkpoint)['workflow_requirements'][failed['transaction']]
+        self.assertEqual(retained['intent'], original_intent)
+        self.assertNotIn('prior_intents', retained)
 
     def test_ambiguous_matching_objects_block_without_ref_changes(self):
         first = self.deliver()

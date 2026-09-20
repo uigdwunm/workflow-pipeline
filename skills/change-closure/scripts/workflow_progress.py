@@ -1713,6 +1713,8 @@ def deliver_requirement(path, outer, data):
                         "host_action_pending", "reconcile pending side effects before delivery")
                 actor = state["handoff"]["expected_entry"]["actor"]
                 require(original["entry"]["host"]["thread_id"] == actor["thread_id"], "identity_mismatch", "delivery must retain original attempt actor")
+            require(saved.get("result") is None and not (saved.get("error") or {}).get("completed_evidence"),
+                    "delivery_outcome_unknown", "saved delivery results or observed objects require successful read-only reconciliation before any new write")
         if saved["intent"] is None:
             admit_write()
             saved["intent"] = requirement_delivery.handle(original)
@@ -1726,8 +1728,6 @@ def deliver_requirement(path, outer, data):
                 break
             admit_write()
             if outcome.get("state") == "refresh-required":
-                require(not (saved.get("error") or {}).get("completed_evidence"), "delivery_outcome_unknown",
-                        "an observed delivery object requires original evidence reconciliation before target refresh")
                 previous = saved["intent"]
                 refreshed = requirement_delivery.handle(original)
                 saved.setdefault("prior_intents", []).append(previous)

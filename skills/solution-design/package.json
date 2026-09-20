@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "b56f8b6c7c68d1b760ed3c5c92fc0822ec22d984f7c49fd10cf8803e4cf54a09",
+  "bundle_digest": "7e88b08b1bcb47101e4765db452a6978035754143dc5016e68063397baa595d8",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -74,7 +74,7 @@
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
-      "sha256": "d4d9c9e676f525d29c63225ffca5ffd91fb06199d036f2712f5c93c8cf477ff2"
+      "sha256": "5f37e76837a635ceecb1d2326d8309fdcf991f9175f8d0d36c019db10468ac04"
     },
     "references/shared/requirement-preparation.md": {
       "mode": "0644",
@@ -222,7 +222,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "8c54ee96a999fd0c35b5e20de8f576ae574ff1864e99f815c659dbf620a8610d"
+      "sha256": "ad0c80d4ca73268c015ccdb8121c15656254c8122e00bddc2ea9f50124f49e6f"
     }
   },
   "format_version": 1,
