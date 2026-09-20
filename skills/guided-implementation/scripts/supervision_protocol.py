@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -993,6 +994,110 @@ def _verify_resource_identity(binding, resources):
         raise ProtocolError("cleanup_pending", "published branch identity changed; preserve it")
 
 
+def _branch_deletion_guards(binding, candidate, merge_commit):
+    """Retain branch -d's merged/checked-out protections before an atomic delete."""
+    repository, common = Path(binding["repository"]), Path(binding["git_common_dir"])
+    ref = "refs/heads/" + binding["branch"]
+    registered = _git_text(repository, ["worktree", "list", "--porcelain"]).splitlines()
+    if "branch " + ref in registered:
+        raise ProtocolError("cleanup_pending", "published branch is in use by a worktree")
+    # Detached rebase/bisect/update-refs operations can still own a branch. Be
+    # conservative about all active history operations, including stale metadata.
+    admin = common / "worktrees"
+    for gitdir in [common] + (list(admin.iterdir()) if admin.exists() else []):
+        if not gitdir.is_dir():
+            continue
+        head = gitdir / "HEAD"
+        if head.exists() and head.read_text().strip() == "ref: " + ref:
+            raise ProtocolError("cleanup_pending", "published branch remains checked out")
+        if any((gitdir / name).exists() for name in
+               ("rebase-merge", "rebase-apply", "BISECT_START", "sequencer", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD")):
+            raise ProtocolError("cleanup_pending", "active worktree history operation prevents branch cleanup")
+    symbolic = _run_git(repository, ["symbolic-ref", "--quiet", ref], check=False)
+    if symbolic.returncode != 1:
+        raise ProtocolError("cleanup_pending", "published branch is not an ordinary direct ref")
+    upstream = _git_text(repository, ["for-each-ref", "--format=%(upstream)", ref])
+    reference = upstream or "HEAD"
+    resolved = _run_git(repository, ["rev-parse", "--verify", "--quiet", reference + "^{commit}"], check=False)
+    if resolved.returncode != 0:
+        reference = "HEAD"
+        resolved = _run_git(repository, ["rev-parse", "--verify", "HEAD^{commit}"])
+    oid = _expect_oid(resolved.stdout.strip(), "branch deletion reference")
+    if not _is_ancestor(repository, candidate, oid):
+        raise ProtocolError("cleanup_pending", "published branch is not merged into its upstream or HEAD")
+    if reference == "HEAD":
+        reference = _git_text(repository, ["rev-parse", "--symbolic-full-name", "HEAD"])
+    if reference == ref:
+        raise ProtocolError("cleanup_pending", "self-tracking branch cannot establish deletion safety")
+    target_ref = "refs/heads/" + binding["target_branch"]
+    target = _branch_oid(repository, binding["target_branch"])
+    if target is None or not _is_ancestor(repository, merge_commit, target):
+        raise ProtocolError("integration_unverified", "published merge is no longer on target")
+    guards = {target_ref: target}
+    if reference in guards and guards[reference] != oid:
+        raise ProtocolError("cleanup_pending", "deletion reference changed during verification")
+    guards[reference] = oid
+    return guards
+
+
+def _ref_transaction_command(process, command, acknowledgement):
+    """One bounded command/ack; stdin EOF aborts any uncommitted transaction."""
+    process.stdin.write(command.encode())
+    process.stdin.flush()
+    deadline = time.monotonic() + PUBLICATION_LOCK_TIMEOUT_SECONDS
+    response = b""
+    while not response.endswith(b"\n"):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([process.stdout], [], [], max(0, remaining))[0]:
+            raise ProtocolError("cleanup_pending", "Git reference transaction acknowledgement timed out", context={"phase": acknowledgement})
+        chunk = os.read(process.stdout.fileno(), 4096)
+        if not chunk or len(response) + len(chunk) > 4096:
+            raise ProtocolError("cleanup_pending", "Git reference transaction did not acknowledge the original action", context={"phase": acknowledgement})
+        response += chunk
+    if response != (acknowledgement + ": ok\n").encode():
+        raise ProtocolError("cleanup_pending", "Git reference transaction returned an unexpected acknowledgement", context={"phase": acknowledgement})
+
+
+def _delete_published_branch(binding, candidate, merge_commit, resources):
+    repository = Path(binding["repository"])
+    ref = "refs/heads/" + binding["branch"]
+    guards = _branch_deletion_guards(binding, candidate, merge_commit)
+    try:
+        process = subprocess.Popen(["git", "-C", str(repository), "update-ref", "--stdin"],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    except OSError as error:
+        raise ProtocolError("cleanup_pending", "cannot start Git reference transaction", context={"branch": binding["branch"]}) from error
+    try:
+        _ref_transaction_command(process, "start\n", "start")
+        commands = "option no-deref\ndelete " + ref + " " + candidate + "\n"
+        commands += "".join("verify " + name + " " + oid + "\n" for name, oid in sorted(guards.items()))
+        _ref_transaction_command(process, commands + "prepare\n", "prepare")
+        # prepare holds the branch and merge-reference locks until commit/abort.
+        # A same-OID recreation before prepare must still match original resource
+        # identity here. A later ordinary Git ref writer cannot pass the locks.
+        _verify_resource_identity(binding, resources)
+        if _branch_deletion_guards(binding, candidate, merge_commit) != guards:
+            raise ProtocolError("cleanup_pending", "branch deletion conditions changed")
+        _ref_transaction_command(process, "commit\n", "commit")
+    except (BrokenPipeError, OSError) as error:
+        raise ProtocolError("cleanup_pending", "Git reference deletion could not be confirmed; reconcile original publication") from error
+    finally:
+        # Closing stdin releases prepared locks through Git's own abort path.
+        process.stdin.close()
+        try:
+            process.wait(timeout=PUBLICATION_LOCK_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=PUBLICATION_LOCK_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        process.stdout.close()
+    if process.returncode != 0:
+        raise ProtocolError("cleanup_pending", "Git reference deletion did not finish successfully")
+
+
 def _cleanup_published(binding, candidate, merge_commit, resources, *, record=None):
     """Remove only unchanged published resources; never force or prune."""
     repository, worktree = Path(binding["repository"]), Path(binding["worktree"])
@@ -1024,12 +1129,7 @@ def _cleanup_published(binding, candidate, merge_commit, resources, *, record=No
     elif "worktree " + str(worktree) in registered:
         raise ProtocolError("cleanup_pending", "missing worktree remains registered; do not prune other resources")
     if _branch_oid(repository, binding["branch"]) is not None:
-        if _branch_oid(repository, binding["branch"]) != candidate:
-            raise ProtocolError("cleanup_pending", "branch changed during cleanup")
-        deleted = _run_git(repository, ["branch", "-d", binding["branch"]], check=False)
-        if deleted.returncode != 0:
-            raise ProtocolError("cleanup_failed", deleted.stderr.strip() or "branch removal failed",
-                                context={"merge_commit": merge_commit, "branch": binding["branch"]})
+        _delete_published_branch(binding, candidate, merge_commit, resources)
         if record is not None:
             record({"event": "branch-removed"})
     cleanup = _cleanup_facts(binding)
@@ -1043,7 +1143,9 @@ def _cleanup_facts(binding):
     registered = _git_text(repository, ["worktree", "list", "--porcelain"]).splitlines()
     return {"worktree_removed": not Path(binding["worktree"]).exists() and
             "worktree " + binding["worktree"] not in registered,
-            "branch_removed": _branch_oid(repository, binding["branch"]) is None}
+            "branch_removed": _branch_oid(repository, binding["branch"]) is None and
+            not os.path.lexists(Path(binding["git_common_dir"]) / "refs/heads" / binding["branch"]) and
+            not os.path.lexists(Path(binding["git_common_dir"]) / "logs/refs/heads" / binding["branch"])}
 
 
 def _publication_input(transaction):

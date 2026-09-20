@@ -163,6 +163,235 @@ class PublicationRecoveryTests(unittest.TestCase):
             self.resume_publication(transaction)
         self.assertEqual((flow / "personal.txt").read_text(), "ignored user content")
 
+    def branch_delete_interleaving(self, *, recovering, recreate):
+        transaction = self.transaction()
+        binding = transaction["request"]["binding"]
+        candidate = transaction["request"]["candidate_commit"]
+        if recovering:
+            with self.assertRaises(SimulatedCrash):
+                self.run_publication(transaction, "merged")
+        original = protocol._run_git
+        original_popen = subprocess.Popen
+        injected = []
+        def record(fact):
+            transaction["facts"].append(copy.deepcopy(fact))
+            if recreate and fact["event"] == "worktree-removed":
+                self.git("branch", "-d", binding["branch"])
+                self.git("branch", binding["branch"], candidate)
+                injected.append(candidate)
+        def before_delete(repository, arguments, **kwargs):
+            if not recreate and arguments[:2] == ["branch", "-d"]:
+                # Both tips are already merged; ordinary branch -d deletes either.
+                self.git("update-ref", "refs/heads/" + binding["branch"], binding["base_commit"], candidate)
+                injected.append(binding["base_commit"])
+            return original(repository, arguments, **kwargs)
+        def before_transaction(arguments, **kwargs):
+            if not recreate and "update-ref" in arguments and "--stdin" in arguments:
+                self.git("update-ref", "refs/heads/" + binding["branch"], binding["base_commit"], candidate)
+                injected.append(binding["base_commit"])
+            return original_popen(arguments, **kwargs)
+        with patch.object(protocol, "_run_git", side_effect=before_delete), \
+             patch.object(subprocess, "Popen", side_effect=before_transaction):
+            with self.assertRaises(protocol.ProtocolError) as caught:
+                if recovering:
+                    protocol.reconcile_publication(transaction, resume=True, record=record)
+                else:
+                    protocol.complete_worktree(transaction["request"], record=record)
+        self.assertEqual(caught.exception.code, "cleanup_pending")
+        self.assertTrue(injected)
+        self.assertEqual(self.git("rev-parse", binding["branch"]), injected[-1])
+
+    def test_initial_cleanup_preserves_same_oid_recreated_after_worktree_removal(self):
+        self.branch_delete_interleaving(recovering=False, recreate=True)
+
+    def test_recovery_cleanup_preserves_same_oid_recreated_after_worktree_removal(self):
+        self.branch_delete_interleaving(recovering=True, recreate=True)
+
+    def test_initial_cleanup_preserves_oid_changed_at_delete(self):
+        self.branch_delete_interleaving(recovering=False, recreate=False)
+
+    def test_recovery_cleanup_preserves_oid_changed_at_delete(self):
+        self.branch_delete_interleaving(recovering=True, recreate=False)
+
+    def locked_deletion(self, *, recovering, recreate_before_prepare=False):
+        transaction = self.transaction()
+        binding, candidate = transaction["request"]["binding"], transaction["request"]["candidate_commit"]
+        ref = "refs/heads/" + binding["branch"]
+        if recovering:
+            with self.assertRaises(SimulatedCrash):
+                self.run_publication(transaction, "merged")
+        original_command, original_popen = protocol._ref_transaction_command, subprocess.Popen
+        attempts = []
+        def race(arguments, **kwargs):
+            if recreate_before_prepare and "update-ref" in arguments and "--stdin" in arguments:
+                self.git("branch", "-d", binding["branch"])
+                self.git("branch", binding["branch"], candidate)
+                attempts.append("recreated")
+            return original_popen(arguments, **kwargs)
+        def locked_command(process, command, acknowledgement):
+            original_command(process, command, acknowledgement)
+            if not recreate_before_prepare and acknowledgement == "prepare":
+                moved = subprocess.run(["git", "-C", str(self.repository), "update-ref", ref, binding["base_commit"], candidate], capture_output=True)
+                attempts.append(moved.returncode)
+                self.assertNotEqual(moved.returncode, 0)
+                self.assertEqual(self.git("rev-parse", ref), candidate)
+                deleted = subprocess.run(["git", "-C", str(self.repository), "branch", "-d", binding["branch"]], capture_output=True)
+                self.assertNotEqual(deleted.returncode, 0)
+                prepared = next(f for f in reversed(transaction["facts"]) if f["event"] == "prepared")
+                self.assertEqual(protocol._branch_identity(binding), prepared["resources"]["branch"])
+                target = self.git("rev-parse", "refs/heads/main")
+                moved_target = subprocess.run(["git", "-C", str(self.repository), "update-ref", "refs/heads/main", binding["base_commit"], target], capture_output=True)
+                self.assertNotEqual(moved_target.returncode, 0)
+                self.assertEqual(self.git("rev-parse", "refs/heads/main"), target)
+        with patch.object(subprocess, "Popen", side_effect=race), \
+             patch.object(protocol, "_ref_transaction_command", side_effect=locked_command):
+            if recreate_before_prepare:
+                with self.assertRaises(protocol.ProtocolError) as caught:
+                    self.resume_publication(transaction) if recovering else self.run_publication(transaction)
+                self.assertEqual(caught.exception.code, "cleanup_pending")
+                self.assertEqual(self.git("rev-parse", ref), candidate)
+            else:
+                result = self.resume_publication(transaction) if recovering else self.run_publication(transaction)
+                self.assertEqual(result["state"], "completed")
+        self.assertTrue(attempts)
+
+    def test_initial_delete_locks_out_writers_until_commit(self):
+        self.locked_deletion(recovering=False)
+
+    def test_recovery_delete_locks_out_writers_until_commit(self):
+        self.locked_deletion(recovering=True)
+
+    def test_initial_delete_rejects_same_oid_recreated_before_prepare(self):
+        self.locked_deletion(recovering=False, recreate_before_prepare=True)
+
+    def test_recovery_delete_rejects_same_oid_recreated_before_prepare(self):
+        self.locked_deletion(recovering=True, recreate_before_prepare=True)
+
+    def transaction_interruption(self, acknowledgement):
+        transaction = self.transaction()
+        original = protocol._ref_transaction_command
+        def interrupted(process, command, ack):
+            original(process, command, ack)
+            if ack == acknowledgement:
+                raise SimulatedCrash()
+        with patch.object(protocol, "_ref_transaction_command", side_effect=interrupted):
+            with self.assertRaises(SimulatedCrash):
+                self.run_publication(transaction)
+        branch = transaction["request"]["binding"]["branch"]
+        self.assertEqual(protocol._branch_oid(self.repository, branch) is None, acknowledgement == "commit")
+        merged = self.git("rev-parse", "HEAD")
+        with patch.object(protocol, "_merge_candidate_into_target", side_effect=AssertionError("republished")):
+            self.assertEqual(self.resume_publication(transaction)["state"], "completed")
+        self.assertEqual(self.git("rev-parse", "HEAD"), merged)
+
+    def test_prepared_delete_interruption_aborts_and_releases_locks(self):
+        self.transaction_interruption("prepare")
+
+    def test_unprepared_delete_interruption_aborts_without_deleting(self):
+        self.transaction_interruption("start")
+
+    def test_committed_delete_lost_response_reconciles_absence(self):
+        self.transaction_interruption("commit")
+
+    def test_branch_in_another_worktree_is_preserved(self):
+        transaction = self.transaction()
+        binding = transaction["request"]["binding"]
+        other = self.root / "other"
+        def record(fact):
+            transaction["facts"].append(copy.deepcopy(fact))
+            if fact["event"] == "worktree-removed":
+                self.git("worktree", "add", str(other), binding["branch"])
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            protocol.complete_worktree(transaction["request"], record=record)
+        self.assertEqual(caught.exception.code, "cleanup_pending")
+        self.assertTrue(other.exists())
+        self.assertEqual(self.git("rev-parse", binding["branch"]), transaction["request"]["candidate_commit"])
+
+    def test_unmerged_upstream_prevents_atomic_delete(self):
+        transaction = self.transaction()
+        binding = transaction["request"]["binding"]
+        self.git("branch", "unmerged-upstream", binding["base_commit"])
+        self.git("config", "branch." + binding["branch"] + ".remote", ".")
+        self.git("config", "branch." + binding["branch"] + ".merge", "refs/heads/unmerged-upstream")
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            self.run_publication(transaction)
+        self.assertEqual(caught.exception.code, "cleanup_pending")
+        self.assertEqual(self.git("rev-parse", binding["branch"]), transaction["request"]["candidate_commit"])
+
+    def test_new_branch_after_completed_delete_is_not_cleaned_on_resume(self):
+        transaction = self.transaction()
+        with self.assertRaises(SimulatedCrash):
+            self.run_publication(transaction, "branch-removed")
+        binding = transaction["request"]["binding"]
+        self.git("branch", binding["branch"], transaction["request"]["candidate_commit"])
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            self.resume_publication(transaction)
+        self.assertEqual(caught.exception.code, "cleanup_pending")
+        self.assertEqual(self.git("rev-parse", binding["branch"]), transaction["request"]["candidate_commit"])
+
+    def test_new_dangling_ref_is_not_reported_as_removed(self):
+        transaction = self.transaction()
+        with self.assertRaises(SimulatedCrash):
+            self.run_publication(transaction, "branch-removed")
+        ref = "refs/heads/" + transaction["request"]["binding"]["branch"]
+        self.git("symbolic-ref", ref, "refs/heads/missing")
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            self.resume_publication(transaction)
+        self.assertEqual(caught.exception.code, "cleanup_pending")
+        self.assertEqual(self.git("symbolic-ref", ref), "refs/heads/missing")
+
+    def test_prepare_failure_preserves_foreign_lock_and_releases_owned_lock(self):
+        transaction = self.transaction()
+        binding = transaction["request"]["binding"]
+        foreign = self.repository / ".git/refs/heads/main.lock"
+        def record(fact):
+            transaction["facts"].append(copy.deepcopy(fact))
+            if fact["event"] == "worktree-removed":
+                foreign.write_text("other process")
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            protocol.complete_worktree(transaction["request"], record=record)
+        self.assertEqual(caught.exception.code, "cleanup_pending")
+        self.assertEqual(foreign.read_text(), "other process")
+        self.assertFalse((self.repository / ".git/refs/heads" / (binding["branch"] + ".lock")).exists())
+        self.assertEqual(self.git("rev-parse", binding["branch"]), transaction["request"]["candidate_commit"])
+
+    def test_branch_configuration_is_preserved(self):
+        transaction = self.transaction()
+        key = "branch." + transaction["request"]["binding"]["branch"] + ".description"
+        self.git("config", key, "user-owned configuration")
+        self.assertEqual(self.run_publication(transaction)["state"], "completed")
+        self.assertEqual(self.git("config", "--get", key), "user-owned configuration")
+
+    def test_packed_branch_uses_the_same_locked_identity_check(self):
+        transaction = self.transaction()
+        self.git("pack-refs", "--all")
+        self.assertEqual(self.run_publication(transaction)["state"], "completed")
+
+    def test_recreated_reflog_is_preserved_and_blocks_completion(self):
+        transaction = self.transaction()
+        binding = transaction["request"]["binding"]
+        log = self.repository / ".git/logs/refs/heads" / binding["branch"]
+        def record(fact):
+            transaction["facts"].append(copy.deepcopy(fact))
+            if fact["event"] == "branch-removed":
+                log.parent.mkdir(parents=True, exist_ok=True)
+                log.write_text("new user metadata")
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            protocol.complete_worktree(transaction["request"], record=record)
+        self.assertEqual(caught.exception.code, "cleanup_pending")
+        self.assertEqual(log.read_text(), "new user metadata")
+
+    def test_active_history_operation_blocks_cleanup(self):
+        transaction = self.transaction()
+        def record(fact):
+            transaction["facts"].append(copy.deepcopy(fact))
+            if fact["event"] == "worktree-removed":
+                self.git("bisect", "start")
+        with self.assertRaises(protocol.ProtocolError) as caught:
+            protocol.complete_worktree(transaction["request"], record=record)
+        self.assertEqual(caught.exception.code, "cleanup_pending")
+        self.assertEqual(self.git("rev-parse", transaction["request"]["binding"]["branch"]), transaction["request"]["candidate_commit"])
+
 
 if __name__ == "__main__":
     unittest.main()

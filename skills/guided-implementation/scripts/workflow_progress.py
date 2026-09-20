@@ -428,6 +428,7 @@ class Progress:
         intent = self.stop_intent()
         if intent is not None:
             return self.advance_stop(intent)
+        self.recover_publication_intake_step()
         if s["status"] == "accepted" and not s.get("phase_complete", True):
             return self.phase_action(completing=True)
         if s["status"] in {"blocked", "paused", "cancelled", "needs_input", "accepted"}:
@@ -468,8 +469,12 @@ class Progress:
             return self.effect("continue-host", {"ref": self.bound_ref(), "subject": self.subject(),
                 "result": s.get("last_observation"), "decision": s.get("last_decision"), "intent": s.get("resume_intent")})
         if s["step"] == "received":
-            s["pending"] = pending_decision("acceptance", {**self.subject(), "delivery_digest": s["dispatch"]["delivery"]["digest"]},
-                                            "Controller acceptance of the verified candidate")
+            subject = {**self.subject(), "delivery_digest": s["dispatch"]["delivery"]["digest"]}
+            if s["pending"] is None:
+                s["pending"] = pending_decision("acceptance", subject, "Controller acceptance of the verified candidate")
+            else:
+                require(s["pending"]["kind"] == "acceptance" and s["pending"]["subject"] == subject,
+                        "decision_conflict", "retain the original pending acceptance")
             s["status"] = "needs_input"
             self.save()
         return _view(s)
@@ -698,6 +703,12 @@ class Progress:
             s["pending"], s["status"], s["step"] = None, "active", "publication-ready"
         elif pending["kind"] == "acceptance":
             require(data["answer"] == "accept", "decision_required", "acceptance requires the controller's accept decision")
+            if (s.get("publication") or {}).get("intake") is not None:
+                original = s["publication"].get("acceptance_decision")
+                require(original is None or original == data, "decision_conflict", "retain the original publication acceptance decision")
+                if original is None:
+                    s["publication"]["acceptance_decision"] = copy.deepcopy(data)
+                    self.save()
             self.call("accept", decision={"reference": data["reference"], "delivery_digest": pending["subject"]["delivery_digest"]})
             s["status"], s["step"] = "accepted", "accepted"
             s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"]) if s["accepted"]["downstream_ready"] and s["phase_complete"] else None
@@ -851,6 +862,36 @@ class Progress:
             return self.finish_publication(result)
         return _view(s, {"operation": "publication-observation", "result": result})
 
+    def recover_publication_intake_step(self):
+        """Finish C's local consumption after B's result has already been saved."""
+        s = self.state
+        intake = (s.get("publication") or {}).get("intake")
+        record = s.get("dispatch") or {}
+        if intake is None or record.get("delivery") is None:
+            return
+        require(record["delivery"]["message"] == intake["result"], "delivery_conflict", "retain the saved publication intake")
+        require(record["status"] in {"received", "accepted"}, "result_incomplete", "B intake is not complete")
+        if record["status"] == "accepted" and s["status"] != "accepted" and s["step"] != "accepted":
+            decision = s["publication"].get("acceptance_decision")
+            require(decision is not None and s["accepted"] == record["acceptance"],
+                    "decision_required", "recover the original saved acceptance decision")
+            decision_matches(s["pending"], decision)
+            require(s["accepted"]["decision"] == {"reference": decision["reference"],
+                    "delivery_digest": decision["subject"]["delivery_digest"]},
+                    "decision_conflict", "B acceptance differs from the saved controller decision")
+            s.setdefault("decisions", {})[decision["decision_id"]] = copy.deepcopy(decision)
+            s["last_decision"] = copy.deepcopy(decision)
+            s["status"], s["step"] = "accepted", "accepted"
+            s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"]) if s["accepted"]["downstream_ready"] and s["phase_complete"] else None
+            s.pop("error", None)
+            self.save()
+            return
+        if s["step"] != "publication-complete":
+            return
+        # Existing accepted state and its pending successor decision are untouched.
+        s["step"] = "accepted" if record["status"] == "accepted" else "received"
+        self.save()
+
     def receive_publication(self):
         s = self.state
         self.require_not_stopping()
@@ -865,7 +906,11 @@ class Progress:
                    "status": "completed", "payload": publication["completion_payload"]}
         if s["dispatch"].get("delivery") is not None:
             require(s["dispatch"]["delivery"]["message"] == message, "delivery_conflict", "retain the original B delivery")
-            return _view(s, acknowledged=True)
+            if s["status"] == "accepted":
+                return _view(s, acknowledged=True)
+            result = self.advance()
+            result["acknowledged"] = True
+            return result
         # This is stage-owner composition, not a new host observation or a claim
         # that the stopped child subsequently ran Git. Preserve both sources.
         publication["intake"] = {"kind": "stage-owner-publication", "owner": s["handoff"]["expected_entry"]["actor"],
@@ -1129,6 +1174,8 @@ class Progress:
             self.save()
             return self.advance()
         require(s["status"] not in {"cancelled", "cancelling"}, "attempt_ended", "cancelled writers require the existing controller recovery protocol")
+        if self.stop_intent() is None:
+            self.recover_publication_intake_step()
         if s["stage"] == 4 and s["status"] == "blocked" and s.get("blocked_from") == "accepted":
             verify_completion({**s, "status": "accepted"})
             s["status"] = "accepted"
@@ -1139,6 +1186,10 @@ class Progress:
             return _view(s, acknowledged=True)
         if self.stop_intent() == "pausing" and s["status"] != "paused":
             return self.advance_stop("pausing")
+        if (s["status"] == "needs_input" and s["transaction"] is None and
+                (s.get("publication") or {}).get("intake") is not None and
+                s["dispatch"]["status"] == "received" and (s.get("pending") or {}).get("kind") == "acceptance"):
+            return _view(s, acknowledged=True)
         require(s["status"] != "needs_input" or s["transaction"] is not None, "decision_required", "answer the exact pending matter")
         if s["transaction"] is not None:
             transaction = copy.deepcopy(s["transaction"])
@@ -1168,6 +1219,9 @@ class Progress:
                 s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"])
         if s["status"] == "paused":
             s.pop("stop_requested", None)
+            if s.get("publication", {}).get("acceptance_decision") and s["dispatch"]["status"] == "accepted":
+                self.recover_publication_intake_step()
+                return self.advance()
             if s.get("pending") is not None:
                 s["status"] = "needs_input"
                 self.save()

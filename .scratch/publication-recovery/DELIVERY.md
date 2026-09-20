@@ -18,7 +18,8 @@ Worktree 或其他任务。外部 Matt 发布与独立 Stage 1→2 producer 不�
   scope，区分未发布、已准备、Flow 待推进、清理待完成与已完成。
 - `cleanup-only` 只处理已验证发布的剩余资源。检查目录/Git directory
   device/inode、分支 ref/reflog 身份及实际内容；保留新修改、未跟踪文件、
-  ignored 文件和同名重建资源。使用非强制 remove 和 branch -d，不 prune。
+  ignored 文件和同名重建资源。使用非强制 remove，以及保留 branch -d 安全
+  条件的引用事务，不 prune。复审修复的具体删除边界见下文。
 - C 新增 publication_candidate observation 与 publication-readiness decision，
   消费原 Controller readiness 和原生 stopped receipt。Stage 4 区分已验收
   实现与含 closure 文档的最终 tip；后者只能增加原 closure_paths。
@@ -83,3 +84,66 @@ issues=[]，76 个引用、5 个 Skill、25 个测试文件。原始输出见
 
 真实 host 创建/异步 ready、停止、跨 host lookup、外部 Matt 调用、远程发布和
 本机部署未现场验证。最终实现提交由协调任务独立复审；本任务未合并或部署。
+
+## 复审修复：基于 c74dd04
+
+独立复审未通过原候选，用户授权修复两项问题；下列修复没有新增发布、合并
+或部署授权，仍在原分支完成。
+
+### P1：B 结果已保存，C 本地消费未完成
+
+Stage 2/4 的真实临时 Git 回归在 `Progress.apply` 保存 receive 结果后中断。
+原实现的 resume、receive-publication、advance 均不能进入 acceptance，两个
+测试的六个入口子场景失败。相邻的 B accept 已保存窗口也取得两个失败回归。
+红色输出见 [REVISION-RED.txt](REVISION-RED.txt)，仅将本机工作区前缀替换为
+`<worktree>`；不将旧通过结果当作本次修复证据。
+
+`recover_publication_intake_step` 根据已经持久化的同一 B delivery 补 C 本地
+步骤，不再调用 B 或发布器；已有 pending 的 ID/subject 保持不变。B accept
+之前先保存不可替换的原 Controller 完整 decision。结果未保存时重放同一个
+原事务；结果已保存时消费同一个 decision，不重放 B，也不生成新的验收决定。
+已有 accepted 和逐阶段 successor pending 不覆盖。pause/cancel 门禁先执行。
+
+回归覆盖两个阶段的 receive/accept 保存前后中断、三个恢复入口、重复调用、
+错误替换原 decision 被拒、逐阶段 successor ID 保持和暂停后取消优先。
+
+### P2：最终分支删除需原子保护
+
+原实现的四个真实 Git 交错回归失败：正常/恢复入口在 Worktree 删除 callback
+后同名同 SHA 重建分支，以及末次 SHA 检查后更新到另一个已合并 OID，都会
+被 branch -d 误删。
+
+现在使用实际 Git 2.54.0 (Apple Git-157) 的 update-ref --stdin 显式事务：
+start → delete(原 candidate OID) + verify(删除依据引用) → prepare → 锁内
+原 ref/reflog 资源身份与非强制条件复核 → commit。prepare 锁住分支及作为
+已合并依据的引用，防止核验后 OID 变化。相同 OID 的分支重建仍必须通过原
+device/inode/ref/reflog 身份检查；不能仅靠 OID 相同删除新资源。
+
+保留上游/HEAD 已合并检查、target ancestry、其他 Worktree 使用检查，并
+保守阻塞任何活跃 rebase/bisect/sequencer 等历史操作。支持 loose/packed refs，
+拒绝 symbolic branch refs。Git 的 ref 锁保护普通 Git 引用写者；不是锁住任意
+外部文件写入或通用 Worktree 调度器，原停写与控制权合同保持。
+
+prepare 前、prepare 后、commit 后回执丢失分别做真实 CLI 故障注入。未提交
+事务通过 stdin EOF 由 Git abort；不删除其他进程锁。未确认通信结果只允许
+按实际 Git 状态对账。已删后同名 ref/reflog 重建会被保留并阻塞完成。最终
+完成检查要求原 Worktree、branch ref 与 reflog 均消失。分支配置刻意保留，
+不声称清除所有配置，不为了清理旧分支而删除后来用户配置。
+
+证据包含 callback 后及 prepare 前同 SHA 重建、prepare 持锁后 competing
+update-ref/branch -d/target 更新失败、事务中断与锁释放、外部锁保留、其他
+Worktree、未合并 upstream、活跃历史操作、旧分支删除后新资源保留和配置保留。
+同名资源复用检查还发现，悬空 symbolic ref 不能仅凭无法解析 OID 就报告删除。
+该用例也先取得失败回归，再把物理 ref/reflog 路径存在性纳入完成条件；保留
+新资源并返回 cleanup-pending。
+
+本次修复最终 `./scripts/validate.sh`：528 项，527 通过、1 项既有不适用跳过，
+耗时 888.333 秒。五个 Skill、构建一致性与仓库校验全部通过，issues=[]。
+相对 c74dd04 新增 29 项回归，原有保存前中断用例继续保留；真实 CLI 和故障
+注入均通过。最终完整输出及 Git 版本见
+[REVISION-VALIDATION.txt](REVISION-VALIDATION.txt)。`git diff --check` 通过。
+
+真实宿主与跨宿主能力、其他 Git 版本及其他 refs 存储后端仍未现场验证；本轮
+并发证据来自隔离临时 Git 的 loose/packed refs 和明确的宿主 fixture。修复
+没有修改 A/B 公共权限、两种 candidate 身份、pin 策略或包兼容标识，也没有
+迁移旧运行。本候选仍须协调任务复审及用户另行授权合并，未合并、push 或部署。

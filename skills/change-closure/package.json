@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "a96d9c3dec9951d633aa7a56cf9bb1b21f9edd2f56024f804c7e5097913fcd96",
+  "bundle_digest": "e5bf6849508cca698e55e101104aa3e7f0abcea7177aac3466cd1d374a4cf4d4",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -64,7 +64,7 @@
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "0424d9609e0dbba5a4c6942f9b88012c000d143720f88966372d4ae3170789fa"
+      "sha256": "17eb4be431c5ac3fdbf974105967f8f80bb8c52350c5fdddb63ba2d7b88d4c86"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
@@ -80,7 +80,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "af5ef19bd79c5b0d3e13b8c149657204e490043538ab5f2889cd61c91b5cd0b4"
+      "sha256": "0fba83d81abd614bc97a6f789bc77e2aaedc65ae976a124046fa5e15f9aa5c60"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -184,7 +184,7 @@
     },
     "scripts/supervision_protocol.py": {
       "mode": "0644",
-      "sha256": "99b807a884fcca655d8213db5c6c678f8e056cfbee5b0d49092f8bf554e7a626"
+      "sha256": "e5fe0b5fe7c5af02db2902aa43d70139579987fe98445e3f58e6bafd2910e44f"
     },
     "scripts/thread_settings.py": {
       "mode": "0644",
@@ -200,7 +200,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "cbe5bb0bb9137c9e02dcccb8d115874b154f75a9df0936eb9bc7f39dac3dd5fa"
+      "sha256": "73c19be6bac9f1fbbbc2d6e50c2fa5c381cf3e328288a1522f7d850e94b792f9"
     }
   },
   "format_version": 1,

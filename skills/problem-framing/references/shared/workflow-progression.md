@@ -222,6 +222,16 @@ B receives and verifies this composed delivery, and the original Controller stil
 accepts it before the original Phase Run is completed. Readiness is not final B
 acceptance. Interrupted intake replays its exact saved B/ledger envelope.
 
+If B's receive result is already saved but C's local step was not, resume,
+advance and receive-publication finish that local consumption without calling B
+again. An existing pending acceptance keeps its exact ID and subject. Before B
+accept, C retains the complete original Controller decision in
+`publication.acceptance_decision`; it cannot be replaced while the action is
+unresolved. A saved B acceptance finishes local consumption using that same
+decision. An unsaved response instead replays the original transaction envelope.
+Existing accepted results and successor decisions are not overwritten, and the
+pause/cancel gates precede local recovery as well as new side effects.
+
 Stage 4 completion and the runner's final/duplicate completed response recheck B
 acceptance, closure control, original Phase completion, precise publication and
 actual resource removal. Historical Stage-2 worktrees are not required to exist:

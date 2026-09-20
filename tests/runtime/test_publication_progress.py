@@ -94,6 +94,138 @@ class PublicationProgressTests(unittest.TestCase):
         self.assertEqual(f.state()["dispatch"]["delivery"]["message"], transaction["result"])
         self.assertEqual(f.state()["publication"]["intake"]["native_candidate"], native)
 
+    def saved_intake_interruption(self, stage):
+        f = self.flow
+        if stage == 2:
+            f.prepare_design_result("continuous")
+        else:
+            candidate = self.closure()
+            f.ready_publication(candidate, "controller:closure", "native:closure")
+            f.invoke("publication", {"candidate_commit": candidate, "reference": "controller:closure",
+                                     "expected_target_head": f.git("rev-parse", "HEAD")})
+        original = progress.Progress.apply
+        def crash_after_save(owner, result):
+            original(owner, result)
+            raise KeyboardInterrupt()
+        with patch.object(progress.Progress, "apply", new=crash_after_save):
+            with self.assertRaises(KeyboardInterrupt):
+                f.invoke("receive-publication")
+        self.assertEqual(f.state()["dispatch"]["status"], "received")
+        self.assertEqual(f.state()["step"], "publication-complete")
+        self.assertIsNone(f.state()["transaction"])
+        merge = f.git("rev-parse", "HEAD")
+        snapshot = copy.deepcopy(progress.read_record(f.checkpoint))
+        for operation in ("resume", "receive-publication", "advance"):
+            with self.subTest(stage=stage, operation=operation):
+                progress.atomic_save(f.checkpoint, copy.deepcopy(snapshot))
+                with patch.object(progress.dispatch, "handle", side_effect=AssertionError("B replayed")), \
+                     patch.object(supervision, "_merge_candidate_into_target", side_effect=AssertionError("republished")):
+                    result = f.invoke(operation)
+                    self.assertEqual(result["status"], "needs_input")
+                    self.assertEqual(result["pending"]["kind"], "acceptance")
+                    pending = copy.deepcopy(result["pending"])
+                    for repeat in ("resume", "receive-publication", "advance"):
+                        self.assertEqual(f.invoke(repeat)["pending"], pending)
+                self.assertEqual(f.git("rev-parse", "HEAD"), merge)
+
+    def test_stage2_saved_intake_recovers_local_step(self):
+        self.saved_intake_interruption(2)
+
+    def test_stage4_saved_intake_recovers_local_step(self):
+        self.saved_intake_interruption(4)
+
+    def saved_acceptance_interruption(self, stage, *, after_save=True, mode="continuous"):
+        f = self.flow
+        if stage == 2:
+            f.prepare_design_result(mode)
+        else:
+            candidate = self.closure()
+            f.ready_publication(candidate, "controller:closure", "native:closure")
+            f.invoke("publication", {"candidate_commit": candidate, "reference": "controller:closure",
+                                     "expected_target_head": f.git("rev-parse", "HEAD")})
+        pending = f.invoke("receive-publication")["pending"]
+        decision = {"decision_id": pending["decision_id"], "subject": pending["subject"],
+                    "answer": "accept", "reference": "controller:final"}
+        original = progress.Progress.apply
+        def crash_after_save(owner, result):
+            if after_save:
+                original(owner, result)
+            raise KeyboardInterrupt()
+        with patch.object(progress.Progress, "apply", new=crash_after_save):
+            with self.assertRaises(KeyboardInterrupt):
+                f.invoke("decide", decision)
+        self.assertEqual(f.state()["dispatch"]["status"], "accepted" if after_save else "received")
+        transaction = copy.deepcopy(f.state()["transaction"])
+        options = {"side_effect": AssertionError("B acceptance replayed")} if after_save else {"wraps": progress.dispatch.handle}
+        with patch.object(progress.dispatch, "handle", **options) as handler:
+            rejected = f.invoke("decide", {**decision, "reference": "different:decision"})
+            self.assertEqual(rejected["error"]["code"], "decision_conflict")
+            self.assertEqual(f.state()["publication"]["acceptance_decision"], decision)
+            result = f.invoke("resume")
+            self.assertEqual(result["status"], "accepted")
+            self.assertEqual(f.state()["decisions"][decision["decision_id"]], decision)
+            pending_after_acceptance = copy.deepcopy(result["pending"])
+            for operation in ("receive-publication", "advance", "resume"):
+                again = f.invoke(operation)
+                self.assertEqual(again["status"], "accepted")
+                self.assertEqual(again["pending"], pending_after_acceptance)
+            self.assertTrue(f.invoke("decide", decision)["acknowledged"])
+            if not after_save:
+                self.assertEqual(handler.call_count, 1)
+                self.assertEqual(handler.call_args.args[0], transaction)
+
+    def test_stage2_saved_acceptance_recovers_original_decision(self):
+        self.saved_acceptance_interruption(2)
+
+    def test_stage4_saved_acceptance_recovers_original_decision(self):
+        self.saved_acceptance_interruption(4)
+
+    def test_stage2_unsaved_acceptance_replays_exact_transaction(self):
+        self.saved_acceptance_interruption(2, after_save=False)
+
+    def test_stage4_unsaved_acceptance_replays_exact_transaction(self):
+        self.saved_acceptance_interruption(4, after_save=False)
+
+    def test_stepwise_saved_acceptance_preserves_successor_decision(self):
+        self.saved_acceptance_interruption(2, mode="stepwise")
+
+    def test_stage4_unsaved_intake_replays_exact_transaction(self):
+        f = self.flow
+        candidate = self.closure()
+        f.ready_publication(candidate, "controller:closure", "native:closure")
+        f.invoke("publication", {"candidate_commit": candidate, "reference": "controller:closure",
+                                 "expected_target_head": f.git("rev-parse", "HEAD")})
+        with patch.object(progress.Progress, "apply", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                f.invoke("receive-publication")
+        transaction = copy.deepcopy(f.state()["transaction"])
+        with patch.object(progress.dispatch, "handle", wraps=progress.dispatch.handle) as handler:
+            result = f.invoke("resume")
+        self.assertEqual(result["pending"]["kind"], "acceptance")
+        self.assertEqual(handler.call_count, 1)
+        self.assertEqual(handler.call_args.args[0], transaction)
+
+    def test_saved_intake_does_not_override_pause_or_cancel(self):
+        f = self.flow
+        f.prepare_design_result("continuous")
+        original = progress.Progress.apply
+        def crash(owner, result):
+            original(owner, result)
+            raise KeyboardInterrupt()
+        with patch.object(progress.Progress, "apply", new=crash):
+            with self.assertRaises(KeyboardInterrupt):
+                f.invoke("receive-publication")
+        self.assertEqual(f.invoke("pause")["status"], "paused")
+        self.assertEqual(f.invoke("advance")["status"], "paused")
+        self.assertIsNone(f.state()["pending"])
+        self.assertEqual(f.invoke("cancel")["status"], "cancelled")
+        with patch.object(progress.Progress, "recover_publication_intake_step", side_effect=AssertionError("cancel was bypassed")):
+            self.assertEqual(f.invoke("advance")["status"], "cancelled")
+            self.assertEqual(f.invoke("resume")["status"], "cancelled")
+            with self.assertRaises(fixtures.transfer.entry.PreparationError):
+                f.invoke("receive-publication")
+        self.assertIsNone(f.state()["pending"])
+
     def test_unknown_published_outcome_cannot_return_to_implementation(self):
         f = self.flow
         candidate = self.closure()
