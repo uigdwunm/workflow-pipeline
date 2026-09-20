@@ -1,6 +1,7 @@
 # 阶段 1 冻结需求的目标交付
 
 Status: ready-for-agent
+Lifecycle: completed
 
 ## Problem Statement
 
@@ -164,3 +165,15 @@ Stage 3 可编辑的源码/配置/测试清单（不存在的文件为本方案�
 已按完整 `$to-spec` 探索代码和测试 seam，并在连续模式下自主接受测试选择。`$ask-matt` 的 multi-session 分支判定 Tickets 有用：三段可各自端到端验证，避免一次变更同时承担生产路径、所有故障点和讨论生命周期。
 
 `$to-tickets` 的 quiz 已按连续预授权回答：粒度为“detached 正常链”“同一交付恢复”“专用及讨论边界”三条完整行为；第二条依赖第一条，第三条依赖第二条（附着 CP/专用交付必须享有相同恢复保证）。不另设横向重构 Ticket；不需要 prefactor。发布三份 ready-for-agent 本地 Ticket，不改其他父 issue、不建立远程阻塞链接。
+
+## Comments
+
+### 阶段 4 完成证据（2026-09-20）
+
+实现候选：`2233a49b78b18f8711ec25c6d87ea750b8e4b337`。Standards 与 Spec 两轴均已接受同一候选；审查引用分别为 `/root/sg_standard_standards_b5e726d_t_7aa95e6e9616`、`/root/sg_standard_spec_b5e726d_t_b7682d6c274b`。下列勾选表示已接受实现及自动化验证完成。
+
+验证：29 项 requirement-delivery 针对性测试通过；完整 `scripts/validate.sh` 通过，655 项测试、1 项既有跳过，含确定性构建检查、包检查和 repository validator（运行记录 `/tmp/stage1-delivery-gate-full.log`）。恢复快照 SHA-256 与提交 blob 一致，候选工作区干净且 `git diff --check` 通过。阶段 4 仅修改本 PRD 与三个 Ticket 的 Lifecycle、复选框和完成证据，复用上述代码验证结果。
+
+验证边界：真实 Git、文件、索引和 CLI 边界已自动化验证；宿主适配使用测试替身，真实宿主任务创建、消息认证/发送、归档和 UI 未现场验证。未进行本机部署或远程写入。冻结需求与方案语义保持不变。
+
+交付范围：有界冻结文档生产者、原 checkpoint delivery 交易恢复、目标侧 proof 验证、普通/专用/讨论附着出口契约及五个生成包，完成情况见三个 Ticket。Status 保留既有分诊值，Lifecycle 独立记录完成。
