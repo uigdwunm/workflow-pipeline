@@ -28,7 +28,7 @@ import workflow_control as control
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v2"
+PROTOCOL = "workflow-progress-v3"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 require = entry.require
@@ -109,6 +109,14 @@ def validate_state(state):
     require(type(state.get("revision")) is int and state["revision"] >= 0,
             "invalid_checkpoint", "checkpoint revision is invalid")
     require(state.get("mode") in {"stepwise", "continuous"}, "invalid_checkpoint", "invalid mode")
+    host = state.get("host")
+    require(isinstance(host, dict) and type(host.get("generation")) is int and host["generation"] >= 0 and
+            host.get("status") in {"unknown", "running", "idle", "turn-completed", "stopped"} and
+            isinstance(host.get("seen"), dict) and "proof" in host and "query" in host,
+            "invalid_checkpoint", "v3 current host projection is required")
+    require(all(key in state for key in ("transaction", "transaction_source", "transaction_result")) and
+            (state["transaction"] is not None or state["transaction_source"] is None and state["transaction_result"] is None),
+            "invalid_checkpoint", "v3 transaction journal is inconsistent")
     for pin in state["packages"].values():
         skill_preflight.verify_identity(pin)
     return state
@@ -135,6 +143,10 @@ def _view(state, next_action=None, acknowledged=False):
         next_action = state["recovery_action"]
     if next_action is None and state["step"] == "host-response" and state.get("action"):
         next_action = {"operation": "lookup-exact-action", "action": state["action"]}
+    if next_action is None and state["step"] == "continue" and state.get("host", {}).get("query"):
+        query = state["host"]["query"]
+        next_action = ({"operation": "await-host-recovery", "query": query, "ref": query["payload"]["ref"]}
+                       if query.get("resolved") else query)
     if next_action is None and state["step"] == "publication-ready":
         ready = state["publication_candidate"]
         data = {"candidate_commit": ready["payload"]["candidate_commit"], "reference": ready["decision"]["reference"]}
@@ -224,6 +236,11 @@ class Progress:
         self.state = outer.get(KEY)
 
     def save(self):
+        # Compatibility projection, never a business-replay liveness input.
+        # Before any issue, or after exact non-creation, there is no writer.
+        self.state["stopped"] = (self.state["host"]["status"] == "stopped" or
+                                 self.state.get("host_action") is None or
+                                 (self.state.get("dispatch") or {}).get("status") == "not-created")
         self.state["revision"] += 1
         self.outer[KEY] = self.state
         atomic_save(self.path, self.outer)
@@ -252,6 +269,10 @@ class Progress:
         if s["status"] != intent:
             s["status"] = intent
             self.save()
+        if intent == "pausing" and s["stopped"]:
+            s["status"], s["step"] = "paused", "bound"
+            self.save()
+            return _view(s)
         if s["step"] == "host-response":
             return _view(s, {"operation": "lookup-exact-action", "action": s["action"],
                              "request": s["dispatch"]["request"], "receipts": s["observations"]})
@@ -265,11 +286,24 @@ class Progress:
         # An issued mutation is never reissued by advance. Exact lookup is safe.
         if operation in {"invoke-host", "continue-host", "source-lifecycle", "carrier-lifecycle"}:
             self.require_not_stopping()
+        if operation == "continue-host":
+            blocked = self.continuation_gate()
+            if blocked is not None:
+                return blocked
+            require(payload.get("ref") == self.bound_ref() and payload.get("subject") == self.subject(),
+                    "identity_mismatch", "continuation must retain the original scope and identity")
         if operation == "continue-host" and self.state.get("closure_effects"):
             payload = {**payload, "remaining_actions": self.state["closure_effects"],
                        "publication_receipt": self.state["closure_receipt"]}
         action = {"action_id": str(uuid.uuid4()), "operation": operation, "payload": copy.deepcopy(payload),
                   "checkpoint": str(self.path)}
+        if operation in {"invoke-host", "continue-host", "stop-host"}:
+            self.revoke_host()
+            action["generation"] = self.state["host"]["generation"]
+            self.state["host_action"] = copy.deepcopy(action)
+        if operation == "continue-host":
+            self.state.pop("continuation_intent", None)
+            self.state.pop("resume_intent", None)
         self.state["action"] = action
         self.state["step"] = "host-response"
         self.save()
@@ -287,6 +321,8 @@ class Progress:
         self.state["error"] = {"code": getattr(error, "code", "progress_failed"),
             "message": entry.error_message(error), "completed_evidence": getattr(error, "completed_evidence", []),
             "downstream_ready": False, "recovery": "resume the saved operation; do not recreate or republish"}
+        if self.state.get("business_error") is not None:
+            self.state["error"] = copy.deepcopy(self.state["business_error"])
         self.save()
         return _view(self.state)
 
@@ -382,27 +418,49 @@ class Progress:
             "next_stage": next_stage, "phase_complete": not phase_required,
             "packages": {**retained, **resolved["packages"]}, "handoff": saved, "control": copy.deepcopy(port),
             "dispatch": None, "accepted": None, "action": None, "pending": None,
-            "events": {}, "observations": [], "transaction": None, "stopped": False,
+            "events": {}, "observations": [], "transaction": None, "transaction_source": None,
+            "transaction_result": None, "stopped": False,
+            "host": {"generation": 0, "status": "unknown", "proof": None, "query": None, "seen": {}},
             "history": (old["history"] + [{k: copy.deepcopy(value) for k, value in old.items() if k != "history"}]) if old else []}
         self.save()
         return self.advance()
 
-    def call(self, operation, **extra):
+    def call(self, operation, *, _source=None, **extra):
         s = self.state
-        request = {"protocol": handoff.PROTOCOL, "operation": operation, "control": s["control"], **extra}
-        if operation == "prepare":
-            request["handoff"] = s["handoff"]
-        else:
-            request["record"] = s["dispatch"]
-        # Persist the exact discussion envelope before a ledger mutation.
-        s["transaction"] = request
+        require(s["transaction"] is None, "transaction_pending", "consume the original B transaction before new business input")
+        request = {"protocol": handoff.PROTOCOL, "operation": operation, "control": copy.deepcopy(s["control"]), **extra}
+        request["handoff" if operation == "prepare" else "record"] = copy.deepcopy(s["handoff"] if operation == "prepare" else s["dispatch"])
+        s["transaction"], s["transaction_source"], s["transaction_result"] = request, copy.deepcopy(_source), None
         self.save()
-        result = dispatch.handle(copy.deepcopy(request))
-        self.apply(result)
+        return self.replay_transaction()
+
+    def replay_transaction(self):
+        s = self.state
+        require(s["transaction"] is not None, "transaction_missing", "no original B transaction")
+        require(s["control"]["context"] == s["transaction"]["control"]["context"],
+                "authority_changed", "original B replay cannot overwrite subsequent controller recovery")
+        if s["transaction_result"] is None:
+            self.apply(dispatch.handle(copy.deepcopy(s["transaction"])))
+        result = copy.deepcopy(s["transaction_result"])
+        self.consume_transaction()
         return result
 
     def apply(self, result):
+        # Save the result independently. Recovery can consume it without calling
+        # B again; the original request/envelope remains until atomic consumption.
+        self.state["transaction_result"] = copy.deepcopy(result)
+        self.save()
+
+    def consume_transaction(self):
         s = self.state
+        request, result, source = s["transaction"], s["transaction_result"], s["transaction_source"]
+        require(request is not None and result is not None, "transaction_pending", "original B result required")
+        if request["operation"] == "prepare" and "record" not in result:
+            self.block(entry.PreparationError("outcome_unknown", "recover the original reserved launch from its checkpoint owner"))
+            return
+        if s["status"] == "blocked" and s.get("error", {}).get("code") not in {"technical_error", "no_progress"}:
+            s["status"] = "active"
+            s.pop("error", None)
         if "checkpoint" in result:
             s["control"]["context"] = result["checkpoint"]["context"]
             s["control_receipt"] = result["checkpoint"].get("discussion_receipt")
@@ -411,9 +469,149 @@ class Progress:
             s["dispatch"] = result["record"]
         if "accepted" in result:
             s["accepted"] = result["accepted"]
-        s["transaction"] = None
+        operation = request["operation"]
+        if operation == "prepare":
+            s["step"] = "launch"
+        elif operation in {"bind", "reconcile"}:
+            s["step"] = "bound" if result["status"] == "bound" else "host-response"
+            if result["status"] == "not-created":
+                s["status"], s["step"] = "cancelled", "not-created"
+        elif operation == "receive":
+            status = result["status"]
+            s.pop("continuation_intent", None)
+            s["step"] = {"received": "received", "continue": "continue", "needs_input": "decision",
+                         "technical_error": "technical-error", "accepted": "accepted"}[status]
+            if source is not None:
+                s["last_observation"] = copy.deepcopy(source)
+            if status == "received":
+                subject = {**self.subject(), "delivery_digest": s["dispatch"]["delivery"]["digest"]}
+                s["pending"] = pending_decision("acceptance", subject, "Controller acceptance of the verified candidate")
+                s["status"] = "needs_input"
+            elif status == "needs_input":
+                s["pending"] = pending_decision("user-decision", self.subject(), request["result"]["payload"].get("question"))
+                s["status"] = "needs_input"
+            elif status == "technical_error":
+                s["status"] = "blocked"
+                s["error"] = {"code": "technical_error", "message": request["result"]["payload"], "downstream_ready": False}
+                s["business_error"] = copy.deepcopy(s["error"])
+            elif status == "continue":
+                s["continuation_intent"] = {"kind": "business", "result": copy.deepcopy(request["result"])}
+                fingerprint = entry.digest(request["result"]["payload"])
+                repeats = s.get("continue_repeats", 0) + 1 if fingerprint == s.get("continue_fingerprint") else 0
+                s["continue_fingerprint"], s["continue_repeats"] = fingerprint, repeats
+                if repeats >= 2:
+                    s["status"] = "blocked"
+                    s["error"] = {"code": "no_progress", "message": "repeated continuation has no new progress evidence", "downstream_ready": False}
+        elif operation == "accept":
+            require(source is not None, "decision_required", "retain original controller decision")
+            s["status"], s["step"] = "accepted", "accepted"
+            s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"]) if s["accepted"]["downstream_ready"] and s["phase_complete"] else None
+            s.setdefault("decisions", {})[source["decision_id"]] = copy.deepcopy(source)
+            s["last_decision"] = copy.deepcopy(source)
+        if source is not None and "event_id" in source:
+            s["events"][source["event_id"]]["applied"] = True
+            if "result" in source:
+                s.setdefault("observed_messages", {})[self.message_key(source)] = source["event_id"]
+        s["transaction"], s["transaction_source"], s["transaction_result"] = None, None, None
         s["last_result"] = result
         self.save()
+
+    def message_key(self, data):
+        return entry.digest({"request": self.state["dispatch"]["request"]["digest"],
+                             "ref": data["receipt"]["ref"], "result": data["result"]})
+
+    def revoke_host(self):
+        host = self.state["host"]
+        host["generation"] += 1
+        host["proof"], host["query"] = None, None
+
+    def record_host(self, data):
+        """Only live adapter ingress writes this projection, never B replay.
+
+        action_id authenticates causal tool provenance at the adapter boundary.
+        A new event/receipt ID alone cannot lift a stopped/unknown barrier.
+        """
+        s, receipt = self.state, data["receipt"]
+        host = s["host"]
+        event = s["events"][data["event_id"]]
+        if event.get("host_applied"):
+            return
+        identity = receipt["adapter"] + ":" + receipt["receipt_ref"]
+        raw_identity = "raw:" + entry.digest(receipt["raw"])
+        if identity in host["seen"] or raw_identity in host["seen"]:
+            event["host_applied"] = True
+            return
+        host["seen"][identity] = host["seen"][raw_identity] = data["event_id"]
+        action = host.get("query") or s.get("host_action")
+        causal = (action is not None and data.get("action_id") == action["action_id"] and
+                  action["generation"] == host["generation"] and not action.get("resolved"))
+        status = receipt["status"]
+        if status in {"stopped", "unknown"}:
+            # Unordered evidence revokes continuation but cannot prove quiescence.
+            was_stopped = host["status"] == "stopped"
+            self.revoke_host()
+            if status == "stopped" and not causal:
+                if was_stopped:
+                    event["host_applied"] = True
+                    self.save()
+                    return
+                status = "unknown"
+        elif status == "running" and not causal:
+            self.revoke_host()
+        elif not causal:
+            event["host_applied"] = True
+            self.save()
+            return
+        if causal and status != "running":
+            action["resolved"] = True
+        host["status"] = status
+        host["observation"] = {"event_id": data["event_id"], "receipt": copy.deepcopy(receipt),
+                               "action_id": data.get("action_id"), "generation": host["generation"]}
+        s["stopped"] = status == "stopped"
+        host["proof"] = copy.deepcopy(host["observation"]) if causal and status in {"idle", "turn-completed"} else None
+        if causal and action["operation"] == "inspect-host-state":
+            # Retain a negative query result so advance waits rather than loops.
+            action["resolved"] = True
+            host["query"] = action
+        event["host_applied"] = True
+        self.save()
+
+    def continuation_gate(self):
+        s, host = self.state, self.state["host"]
+        self.require_not_stopping()
+        require(s["step"] == "continue" and s["status"] == "active" and s["transaction"] is None,
+                "cannot_continue", "continuation requires consumed business intent")
+        require(s.get("continuation_intent") is not None or s.get("resume_intent") is not None,
+                "cannot_continue", "a host receipt alone cannot authorize business continuation")
+        require(self.bound_ref() is not None, "identity_mismatch", "retain the original bound identity")
+        authority = {"record": s["dispatch"], "control": copy.deepcopy(s["control"])}
+        dispatch.record_for(authority)
+        require(authority["control"]["context"] == s["control"]["context"] and
+                s["handoff"] == s["dispatch"]["handoff"],
+                "authority_changed", "continuation requires the original current control and scope")
+        ref, state, _ = dispatch.matching(s["dispatch"], authority["control"]["context"])
+        require(ref == self.bound_ref() and state not in {"cancelled", "creation-failed", "completed"},
+                "authority_changed", "original control must still authorize this identity")
+        current = handoff.refresh(s["handoff"]["entry"], s["handoff"]["expected_entry"], after_work=True)
+        if s["stage"] >= 2:
+            handoff.source(current, s["handoff"]["requirement"], s["stage"])
+        handoff.phase_evidence(s["handoff"], role_ref=self.bound_ref())
+        outstanding = s.get("host_action")
+        if (outstanding is not None and outstanding["operation"] == "continue-host" and
+                not outstanding.get("resolved")):
+            return _view(s, {"operation": "lookup-exact-action", "action": outstanding})
+        proof = host["proof"]
+        if proof is not None and proof["generation"] == host["generation"] and proof["receipt"]["ref"] == self.bound_ref():
+            dispatch.receipt_for(s["dispatch"], proof["receipt"], {"result"})
+            return None
+        if host["query"] is None:
+            host["query"] = {"action_id": str(uuid.uuid4()), "operation": "inspect-host-state",
+                "generation": host["generation"], "payload": {"ref": self.bound_ref(), "subject": self.subject(),
+                    "request": copy.deepcopy(s["dispatch"]["request"])}, "checkpoint": str(self.path)}
+            self.save()
+        query = host["query"]
+        return _view(s, {"operation": "await-host-recovery", "ref": self.bound_ref(), "query": query}
+                     if query.get("resolved") else query)
 
     def next_envelope(self, receipt):
         if receipt is not None and self.state["control"]["discussion"] is not None:
@@ -428,7 +626,8 @@ class Progress:
         intent = self.stop_intent()
         if intent is not None:
             return self.advance_stop(intent)
-        self.recover_publication_intake_step()
+        if s["transaction"] is not None:
+            self.replay_transaction()
         if s["status"] == "accepted" and not s.get("phase_complete", True):
             return self.phase_action(completing=True)
         if s["status"] in {"blocked", "paused", "cancelled", "needs_input", "accepted"}:
@@ -457,11 +656,6 @@ class Progress:
                     return action
             return _view(s, {"operation": "wait-host", "ref": self.bound_ref(), "request": s["dispatch"]["request"]})
         if s["step"] == "continue":
-            current = handoff.refresh(s["handoff"]["entry"], s["handoff"]["expected_entry"], after_work=True)
-            if s["stage"] >= 2:
-                handoff.source(current, s["handoff"]["requirement"], s["stage"])
-            else:
-                handoff.phase_evidence(s["handoff"])
             if s["handoff"]["authorization"].get("phase") and s["stage"] == 2:
                 action = self.phase_action()
                 if action is not None:
@@ -565,17 +759,50 @@ class Progress:
             s["events"][data["event_id"]] = {"digest": digest, "applied": False}
             s["observations"].append(copy.deepcopy(data))
             self.save()
-        if "action_id" in data:
-            require(s["action"] is not None and data["action_id"] == s["action"]["action_id"],
-                    "stale_action", "observation belongs to another host action")
         dispatch.receipt_for(s["dispatch"], receipt, {"create", "lookup", "result"})
-        message_key = entry.digest({"request": s["dispatch"]["request"]["digest"], "ref": receipt["ref"], "result": data["result"]}) if "result" in data else None
-        if message_key in s.get("observed_messages", {}):
+        if receipt["event"] == "result":
+            require(receipt["ref"] == self.bound_ref(), "identity_mismatch", "observation must name the bound role")
+            require(receipt["status"] in {"running", "idle", "turn-completed", "stopped", "unknown"},
+                    "invalid_result", "invalid host execution state")
+            self.record_host(data)
+        if "result" in data:
+            entry.fields(data["result"], {"delivery_id", "status", "payload"})
+            if data["result"]["status"] == "needs_input":
+                require(isinstance(data["result"]["payload"], dict), "invalid_result", "question payload must be an object")
+                entry.nonempty(data["result"]["payload"].get("question"))
+        message_key = self.message_key(data) if "result" in data else None
+        duplicate_message = message_key is not None and message_key in s.get("observed_messages", {})
+        if duplicate_message:
             s["events"][data["event_id"]]["applied"] = True
             self.save()
+            if self.stop_intent() is not None and s["stopped"]:
+                s["step"] = "bound"
+                if self.stop_intent() == "pausing":
+                    s["status"] = "paused"
+                    self.save()
+                else:
+                    self.cancel_control()
+                    self.save()
+            if s["step"] == "continue" and self.stop_intent() is None and s["transaction"] is None:
+                return self.advance()
             return _view(s, acknowledged=True)
+        # Host facts can be retained while a prior business transaction is unresolved.
+        if s["transaction"] is not None and ("result" in data or receipt["event"] != "result"):
+            intent = self.stop_intent()
+            if intent is not None and s["transaction"]["operation"] not in {"bind", "reconcile"}:
+                if s["stopped"]:
+                    s["step"] = "bound"
+                    if intent == "pausing":
+                        s["status"] = "paused"
+                    else:
+                        self.cancel_control()
+                    self.save()
+                return self.advance_stop(intent)
+            require(s["transaction_source"] == data, "transaction_pending", "recover original business input first")
+            self.replay_transaction()
+            return self.advance()
         if receipt["event"] in {"create", "lookup"}:
-            result = self.call("bind" if receipt["event"] == "create" else "reconcile", receipt=receipt)
+            result = self.call("bind" if receipt["event"] == "create" else "reconcile", _source=data, receipt=receipt)
             if result["status"] == "bound":
                 s["step"] = "bound"
             elif result["status"] == "not-created":
@@ -618,10 +845,13 @@ class Progress:
                         "ref": s["handoff"]["predecessor"]["role_ref"], "binding": s["handoff"]["binding"],
                         "problem": data["closure"]["implementation_problem"]}
                     return self.block(entry.PreparationError("implementation_required", "return the retained flow to its original controller's implementation recovery; do not wait on closure"))
-            s["stopped"] = receipt["status"] == "stopped"
             if s.get("stop_requested") in {"pausing", "cancelling"}:
                 if s["stop_requested"] == "pausing" and "result" in data:
-                    s["deferred_observation"] = copy.deepcopy(data)
+                    previous = s.get("deferred_observation")
+                    require(previous is None or self.message_key(previous) == message_key,
+                            "business_pending", "retain the first paused business result")
+                    if previous is None:
+                        s["deferred_observation"] = copy.deepcopy(data)
                 if s["stopped"]:
                     if s["stop_requested"] == "cancelling":
                         self.cancel_control()
@@ -629,28 +859,14 @@ class Progress:
                         s["status"] = "paused"
                 s["step"] = "bound"
             elif "result" in data:
-                if data["result"]["status"] == "continue":
-                    require(receipt["status"] in {"idle", "turn-completed"}, "cannot_continue", "host must verify a resumable turn")
-                    fingerprint = entry.digest(data["result"]["payload"])
-                    repeats = s.get("continue_repeats", 0) + 1 if fingerprint == s.get("continue_fingerprint") else 0
-                    require(repeats < 2, "no_progress", "repeated continuation has no new progress evidence")
-                    s["continue_fingerprint"], s["continue_repeats"] = fingerprint, repeats
-                result = self.call("receive", receipt=receipt, result=data["result"])
-                s["last_observation"] = copy.deepcopy(data)
-                s["step"] = {"received": "received", "continue": "continue", "needs_input": "decision",
-                             "technical_error": "technical-error", "accepted": "accepted"}[result["status"]]
-                if result["status"] == "needs_input":
-                    question = data["result"]["payload"].get("question")
-                    s["pending"] = pending_decision("user-decision", self.subject(), question)
-                    s["status"] = "needs_input"
-                elif result["status"] == "technical_error":
-                    s["status"] = "blocked"
-                    s["error"] = {"code": "technical_error", "message": data["result"]["payload"], "downstream_ready": False}
-                elif result["status"] == "continue":
-                    require(receipt["status"] in {"idle", "turn-completed"}, "cannot_continue", "host must verify a resumable turn; stopped identity requires recovery")
-            elif s.get("awaiting_resume") and receipt["status"] in {"idle", "turn-completed"}:
-                s.pop("awaiting_resume")
-                s["status"], s["step"] = "active", "continue"
+                if s["step"] == "technical-error":
+                    return _view(s)  # Preserve the original failure and recovery authority.
+                require(s.get("pending") is None, "decision_pending", "retain the exact unresolved controller matter")
+                self.call("receive", _source=data, receipt=receipt, result=data["result"])
+            elif s["step"] == "technical-error" or s.get("pending") is not None:
+                pass  # Liveness evidence cannot resolve a business failure.
+            elif s["step"] == "continue":
+                pass  # Current host facts may unblock the retained business intent.
             elif receipt["status"] in {"idle", "turn-completed", "stopped", "unknown"}:
                 s["status"] = "blocked"
                 s["error"] = {"code": "business_result_missing", "downstream_ready": False,
@@ -663,10 +879,13 @@ class Progress:
         if s["status"] == "blocked":
             # A newly validated result can resolve an observation/transport error.
             # Technical business outcomes remain blocked until exact recovery.
-            if ("result" in data or receipt["event"] in {"create", "lookup"}) and data.get("result", {}).get("status") != "technical_error" and s["step"] != "technical-error":
+            if ("result" in data or receipt["event"] in {"create", "lookup"}) and data.get("result", {}).get("status") != "technical_error" and s["step"] != "technical-error" and s.get("error", {}).get("code") != "no_progress":
                 s["status"] = s.get("stop_requested", "active")
                 s.pop("error", None)
         self.save()
+        if s["transaction"] is not None:
+            intent = self.stop_intent()
+            return self.advance_stop(intent) if intent is not None else _view(s)
         return self.advance()
 
     def decide(self, data):
@@ -697,6 +916,11 @@ class Progress:
             result = self.advance_stop(intent)
             result.update(decision_deferred=True, acknowledged=deferred == saved)
             return result
+        if s["transaction"] is not None:
+            require(s["transaction"]["operation"] == "accept" and s["transaction_source"] == data,
+                    "decision_conflict", "retain the decision bound to the original B transaction")
+            self.replay_transaction()
+            return self.advance()
         if pending["kind"] == "publication-readiness":
             require(data["answer"] == "accept", "decision_required", "original controller readiness acceptance required")
             s["publication_candidate"]["decision"] = copy.deepcopy(data)
@@ -709,9 +933,8 @@ class Progress:
                 if original is None:
                     s["publication"]["acceptance_decision"] = copy.deepcopy(data)
                     self.save()
-            self.call("accept", decision={"reference": data["reference"], "delivery_digest": pending["subject"]["delivery_digest"]})
-            s["status"], s["step"] = "accepted", "accepted"
-            s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"]) if s["accepted"]["downstream_ready"] and s["phase_complete"] else None
+            self.call("accept", _source=data, decision={"reference": data["reference"], "delivery_digest": pending["subject"]["delivery_digest"]})
+            return self.advance()
         elif pending["kind"] == "stage-entry":
             require(data["answer"] in {"confirm", "continuous"}, "decision_required", "confirm or continuous required")
             if data["answer"] == "continuous":
@@ -719,8 +942,7 @@ class Progress:
             s["pending"] = None
         else:
             s["pending"], s["status"], s["step"] = None, "active", "continue"
-            if s["stopped"]:
-                s["step"], s["awaiting_resume"] = "bound", True
+            s["continuation_intent"] = {"kind": "decision", "decision": copy.deepcopy(data)}
         s.setdefault("decisions", {})[data["decision_id"]] = copy.deepcopy(data)
         s["last_decision"] = copy.deepcopy(data)
         self.save()
@@ -745,11 +967,11 @@ class Progress:
         handoff.commit(data["candidate_commit"])
         handoff.strings(data["artifacts"]); handoff.strings(data["checks"])
         require(receipt["status"] == "stopped", "host_evidence_missing", "publication requires the original writer's stopped receipt")
+        require(s["host"]["status"] == "stopped", "host_evidence_missing", "publication readiness needs current causal stopped proof")
         self.verify_publication_authority(data["candidate_commit"], before=True)
         s["publication_candidate"] = {"payload": copy.deepcopy(data), "receipt": copy.deepcopy(receipt),
                                       "handoff_digest": saved["digest"], "decision": None,
                                       "target_head": supervision._branch_oid(Path(saved["binding"]["repository"]), saved["binding"]["target_branch"])}
-        s["stopped"] = True
         s["pending"] = pending_decision("publication-readiness", {**self.subject(), "candidate": entry.digest(data)},
                                         "Record the original controller's candidate readiness decision")
         s["status"], s["step"] = "needs_input", "publication-readiness"
@@ -814,8 +1036,9 @@ class Progress:
         dispatch.receipt_for(s["dispatch"], ready["receipt"], {"result"})
         require(ready["receipt"]["status"] == "stopped" and ready["receipt"]["ref"] == self.bound_ref(),
                 "host_evidence_missing", "exact original writer stop proof required")
-        matching = [o["receipt"] for o in s["observations"] if o["receipt"].get("ref") == self.bound_ref()]
-        require(matching and matching[-1]["status"] == "stopped", "writer_active", "writer has resumed since readiness")
+        current = s["host"].get("observation", {}).get("receipt", {})
+        require(current.get("ref") == self.bound_ref() and s["host"]["status"] == "stopped",
+                "writer_active", "current authenticated writer state must be stopped")
         self.verify_publication_authority(ready["payload"]["candidate_commit"], before=False)
         return ready
 
@@ -862,36 +1085,6 @@ class Progress:
             return self.finish_publication(result)
         return _view(s, {"operation": "publication-observation", "result": result})
 
-    def recover_publication_intake_step(self):
-        """Finish C's local consumption after B's result has already been saved."""
-        s = self.state
-        intake = (s.get("publication") or {}).get("intake")
-        record = s.get("dispatch") or {}
-        if intake is None or record.get("delivery") is None:
-            return
-        require(record["delivery"]["message"] == intake["result"], "delivery_conflict", "retain the saved publication intake")
-        require(record["status"] in {"received", "accepted"}, "result_incomplete", "B intake is not complete")
-        if record["status"] == "accepted" and s["status"] != "accepted" and s["step"] != "accepted":
-            decision = s["publication"].get("acceptance_decision")
-            require(decision is not None and s["accepted"] == record["acceptance"],
-                    "decision_required", "recover the original saved acceptance decision")
-            decision_matches(s["pending"], decision)
-            require(s["accepted"]["decision"] == {"reference": decision["reference"],
-                    "delivery_digest": decision["subject"]["delivery_digest"]},
-                    "decision_conflict", "B acceptance differs from the saved controller decision")
-            s.setdefault("decisions", {})[decision["decision_id"]] = copy.deepcopy(decision)
-            s["last_decision"] = copy.deepcopy(decision)
-            s["status"], s["step"] = "accepted", "accepted"
-            s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"]) if s["accepted"]["downstream_ready"] and s["phase_complete"] else None
-            s.pop("error", None)
-            self.save()
-            return
-        if s["step"] != "publication-complete":
-            return
-        # Existing accepted state and its pending successor decision are untouched.
-        s["step"] = "accepted" if record["status"] == "accepted" else "received"
-        self.save()
-
     def receive_publication(self):
         s = self.state
         self.require_not_stopping()
@@ -904,6 +1097,13 @@ class Progress:
                 "publication_pending", "reverify the original publication before B intake")
         message = {"delivery_id": "publication:" + entry.digest(publication["request"]),
                    "status": "completed", "payload": publication["completion_payload"]}
+        if s["transaction"] is not None:
+            require(s["transaction"]["operation"] in {"receive", "accept"}, "transaction_pending", "recover original B transaction")
+            if s["transaction"]["operation"] == "receive":
+                require(s["transaction"]["result"] == message and
+                        s["transaction"]["receipt"] == s["publication_candidate"]["receipt"],
+                        "transaction_pending", "retain the original publication intake")
+            self.replay_transaction()
         if s["dispatch"].get("delivery") is not None:
             require(s["dispatch"]["delivery"]["message"] == message, "delivery_conflict", "retain the original B delivery")
             if s["status"] == "accepted":
@@ -917,14 +1117,7 @@ class Progress:
                                  "native_candidate": copy.deepcopy(s["publication_candidate"]),
                                  "git_facts": copy.deepcopy(actual), "result": copy.deepcopy(message)}
         self.save()
-        transaction = s.get("transaction")
-        if transaction is not None:
-            require(transaction["operation"] == "receive" and transaction["result"] == message and
-                    transaction["receipt"] == s["publication_candidate"]["receipt"],
-                    "transaction_pending", "recover the original B operation first")
-            self.apply(dispatch.handle(copy.deepcopy(transaction)))
-        else:
-            self.call("receive", receipt=s["publication_candidate"]["receipt"], result=message)
+        self.call("receive", receipt=s["publication_candidate"]["receipt"], result=message)
         s["step"] = "accepted" if s["dispatch"]["status"] == "accepted" else "received"
         self.save()
         return self.advance()
@@ -999,6 +1192,9 @@ class Progress:
         if data["action"] == "recover-dispatch":
             s.pop("stop_requested", None)
             s.pop("error", None)
+            s.pop("business_error", None)
+            self.revoke_host()
+            s["host"]["status"] = "unknown"
             s.update(status="active", step="bound", stopped=False)
             s["recovered_request"] = self.outer.get("runner_request")
         elif s.get("stop_requested") == "cancelling" and s["stopped"]:
@@ -1129,6 +1325,7 @@ class Progress:
         if not cancel and s["status"] in {"pausing", "paused"}:
             return _view(s, acknowledged=True)
         require(s["status"] not in {"accepted", "cancelled"}, "attempt_ended", "accepted results cannot be cancelled or paused")
+        self.revoke_host()
         s["suspended_step"] = s["step"]
         s["status"] = "cancelling" if cancel else "pausing"
         s["stop_requested"] = s["status"]
@@ -1180,9 +1377,6 @@ class Progress:
             require(s["stopped"] is True, "host_evidence_missing", "completed pause requires original stopped-writer evidence")
             s.pop("stop_requested", None)
             s["status"] = "active"
-            if s.get("publication", {}).get("acceptance_decision") and s["dispatch"]["status"] == "accepted":
-                self.recover_publication_intake_step()
-                return self.advance()
             if s["transaction"] is None and s.get("pending") is not None:
                 s["status"] = "needs_input"
                 deferred = s.get("deferred_decisions", {}).get(s["pending"]["decision_id"])
@@ -1192,21 +1386,18 @@ class Progress:
                 return _view(s)
             if s["transaction"] is None and s.get("deferred_observation") is not None:
                 observed = s.pop("deferred_observation")
-                s["events"][observed["event_id"]]["applied"] = False
                 s["status"] = "active"
-                return self.observe(observed)
+                self.call("receive", _source=observed, receipt=observed["receipt"], result=observed["result"])
+                return self.advance()
             # Resuming host execution still needs proof. Replaying an already
             # issued B transaction does not resume or recreate its carrier.
             s["step"] = s.get("suspended_step", "bound")
-            if s["transaction"] is None and s["dispatch"] and s["step"] not in {"launch", "prepare-dispatch", "received", "publication-ready", "publication-complete"} and not s.get("publication"):
-                s["step"] = "bound"
-                s["awaiting_resume"] = True
+            if s["transaction"] is None and s["dispatch"] and s["step"] not in {"launch", "prepare-dispatch", "received", "publication-ready", "publication-complete", "technical-error"} and not s.get("publication"):
+                s["step"] = "continue"
                 s["resume_intent"] = {"operation": "resume-original-paused-scope", "subject": self.subject()}
             # Persist explicit unpause before any original B transaction can
             # replay/consume and return early. The exact envelope stays unchanged.
             self.save()
-        if self.stop_intent() is None:
-            self.recover_publication_intake_step()
         if s["stage"] == 4 and s["status"] == "blocked" and s.get("blocked_from") == "accepted":
             verify_completion({**s, "status": "accepted"})
             s["status"] = "accepted"
@@ -1215,37 +1406,12 @@ class Progress:
             return _view(s, acknowledged=True)
         if s["status"] == "accepted":
             return _view(s, acknowledged=True)
-        if (s["status"] == "needs_input" and s["transaction"] is None and
-                (s.get("publication") or {}).get("intake") is not None and
-                s["dispatch"]["status"] == "received" and (s.get("pending") or {}).get("kind") == "acceptance"):
+        if s["status"] == "needs_input" and s["transaction"] is None:
             return _view(s, acknowledged=True)
         require(s["status"] != "needs_input" or s["transaction"] is not None, "decision_required", "answer the exact pending matter")
         if s["transaction"] is not None:
-            transaction = copy.deepcopy(s["transaction"])
-            intake = (s.get("publication") or {}).get("intake")
-            if transaction["operation"] == "receive" and intake is not None and transaction["result"] == intake["result"]:
-                return self.receive_publication()
-            if transaction["operation"] in {"bind", "reconcile", "receive"}:
-                matches = [o for o in s["observations"] if o["receipt"] == transaction["receipt"]]
-                require(matches, "observation_missing", "recover the saved original host response")
-                return self.observe(matches[-1])
-            if transaction["operation"] == "accept":
-                pending = s["pending"]
-                require(pending is not None and pending["kind"] == "acceptance", "decision_required", "recover the original controller acceptance")
-                return self.decide({"decision_id": pending["decision_id"], "subject": pending["subject"],
-                                    "answer": "accept", "reference": transaction["decision"]["reference"]})
-            # Replays retain the original ledger revisions/idempotency key.
-            self.apply(dispatch.handle(transaction))
-            operation = transaction["operation"]
-            s["step"] = {"prepare": "launch", "receive": "received", "accept": "accepted",
-                         "bind": "bound", "reconcile": "bound"}[operation]
-            if operation == "prepare" and s["dispatch"] is None:
-                return self.block(entry.PreparationError("outcome_unknown", "reserved launch has no saved request; recover original owner evidence"))
-            if operation in {"bind", "reconcile"} and s["dispatch"]["status"] != "bound":
-                s["step"] = "host-response"
-            if operation == "accept":
-                s["status"] = "accepted"
-                s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"])
+            self.replay_transaction()
+            return self.advance()
         if s.get("publication") is not None and s["publication"].get("result") is None:
             return self.reconcile_publication(resume=True)
         if s["step"] == "publication-complete":
@@ -1253,7 +1419,11 @@ class Progress:
         if s["step"] == "publication-ready":
             return self.publication(_view(s)["next_action"]["data"])
         if s["step"] == "technical-error":
-            s["step"] = "bound"
+            s["status"] = "blocked"
+            self.save()
+            return _view(s)
+        if (s["host"].get("query") or {}).get("resolved"):
+            s["host"]["query"] = None
         if s["status"] != "accepted":
             s["status"] = "active"
         s.pop("error", None)

@@ -110,9 +110,9 @@ class PublicationProgressTests(unittest.TestCase):
         with patch.object(progress.Progress, "apply", new=crash_after_save):
             with self.assertRaises(KeyboardInterrupt):
                 f.invoke("receive-publication")
-        self.assertEqual(f.state()["dispatch"]["status"], "received")
+        self.assertEqual(f.state()["transaction_result"]["record"]["status"], "received")
         self.assertEqual(f.state()["step"], "publication-complete")
-        self.assertIsNone(f.state()["transaction"])
+        self.assertIsNotNone(f.state()["transaction"])
         merge = f.git("rev-parse", "HEAD")
         snapshot = copy.deepcopy(progress.read_record(f.checkpoint))
         for operation in ("resume", "receive-publication", "advance"):
@@ -154,7 +154,9 @@ class PublicationProgressTests(unittest.TestCase):
         with patch.object(progress.Progress, "apply", new=crash_after_save):
             with self.assertRaises(KeyboardInterrupt):
                 f.invoke("decide", decision)
-        self.assertEqual(f.state()["dispatch"]["status"], "accepted" if after_save else "received")
+        self.assertEqual(f.state()["dispatch"]["status"], "received")
+        if after_save:
+            self.assertEqual(f.state()["transaction_result"]["record"]["status"], "accepted")
         transaction = copy.deepcopy(f.state()["transaction"])
         options = {"side_effect": AssertionError("B acceptance replayed")} if after_save else {"wraps": progress.dispatch.handle}
         with patch.object(progress.dispatch, "handle", **options) as handler:
@@ -219,7 +221,7 @@ class PublicationProgressTests(unittest.TestCase):
         self.assertEqual(f.invoke("advance")["status"], "paused")
         self.assertIsNone(f.state()["pending"])
         self.assertEqual(f.invoke("cancel")["status"], "cancelled")
-        with patch.object(progress.Progress, "recover_publication_intake_step", side_effect=AssertionError("cancel was bypassed")):
+        with patch.object(progress.Progress, "consume_transaction", side_effect=AssertionError("cancel was bypassed")):
             self.assertEqual(f.invoke("advance")["status"], "cancelled")
             self.assertEqual(f.invoke("resume")["status"], "cancelled")
             with self.assertRaises(fixtures.transfer.entry.PreparationError):

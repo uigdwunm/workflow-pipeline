@@ -1,0 +1,42 @@
+test_unsaved_receive_pause_stopped_resume_needs_current_query (test_unified_recovery.UnifiedRecoveryTests) ... FAIL
+test_error_saved_result (test_unified_recovery.UnifiedRecoveryTests) ... FAIL
+
+======================================================================
+FAIL: test_unsaved_receive_pause_stopped_resume_needs_current_query (test_unified_recovery.UnifiedRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/runtime/test_unified_recovery.py", line 71, in test_unsaved_receive_pause_stopped_resume_needs_current_query
+    self.recovery_after_pause(False)
+  File "<worktree>/tests/runtime/test_unified_recovery.py", line 50, in recovery_after_pause
+    self.assertNotEqual((resumed.get("next_action") or {}).get("operation"), "continue-host")
+AssertionError: 'continue-host' == 'continue-host'
+
+======================================================================
+FAIL: test_error_saved_result (test_unified_recovery.UnifiedRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/runtime/test_unified_recovery.py", line 106, in test_error_saved_result
+    def test_error_saved_result(self): self.recover_result("technical_error", True)
+  File "<worktree>/tests/runtime/test_unified_recovery.py", line 86, in recover_result
+    self.assertTrue(self.f.invoke("observe", data)["acknowledged"])
+AssertionError: False is not true
+
+----------------------------------------------------------------------
+Ran 2 tests in 6.498s
+
+FAILED (failures=2)
+
+Additional ingress-order regression before correction:
+F
+======================================================================
+FAIL: test_invalid_business_payload_cannot_hide_adverse_host_fact (test_unified_recovery.UnifiedRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/runtime/test_unified_recovery.py", line 287, in test_invalid_business_payload_cannot_hide_adverse_host_fact
+    self.assertNotEqual((result.get("next_action") or {}).get("operation"), "continue-host")
+AssertionError: 'continue-host' == 'continue-host'
+
+----------------------------------------------------------------------
+Ran 1 test in 3.182s
+
+FAILED (failures=1)

@@ -184,3 +184,76 @@ pausing 时只处理原停止/查询动作。只有 paused 且已有 stopped 证
 真实宿主/跨宿主能力仍未现场验证；本轮真实 Git 与 checkpoint 配合明确的
 宿主 fixture 验证。生产修改仅涉及共享 resume 的恢复顺序，分支删除实现及其
 测试不变。本候选仍需协调复审和用户另行授权合并，未合并、push 或部署。
+## 统一恢复 v3：基于 e3c8a13
+
+本轮按用户明确确认的统一方案重构 C 恢复，不继续叠加 publication-only 补丁。
+原 P1 在基线 e3c8a13 复现：普通 continue 在 B 返回后、apply 保存前中断，
+pause → 新 stopped → resume 将旧 idle observation 当作当前事实，误发
+continue-host。另复现已保存 technical_error 的消费/去重缺口。证据见
+[V3-RED.txt](V3-RED.txt)。该文件还记录开发中发现并修正的入口顺序回归：
+无效业务 payload 不能遮蔽同一封装内已认证的 adverse host fact。
+
+### 原事务与业务消费
+
+`transaction` 是原样 B request，包括原 ledger envelope/idempotency key；
+`transaction_source` 保存原 observation 或完整 controller decision；
+`transaction_result` 在业务消费前单独保存。恢复只重放缺失的 B 结果；已保存
+结果直接消费。消费在同一个 checkpoint save 内更新 control、dispatch、step、
+pending/decision、业务去重及重复进度计数，再清空三个 journal 字段。未决事务
+不能被新业务覆盖，当前 controller context 改变也不能被旧回放覆盖。
+
+普通 completed 与 publication intake 的 acceptance pending 均在消费时保存。
+原 publication readiness、native candidate、独立 Git facts、原 acceptance
+和 Stage 4 accepted implementation/closure tip 区分保留。旧的
+`recover_publication_intake_step` 删除，统一消费覆盖这些中断窗口。无重复发布、
+无重新派发；supervision_protocol.py 及其分支删除回归未改。
+
+### 当前宿主事实与继续门禁
+
+只有实时 `observe` ingress 更新 host projection；B replay/consume 不调用它。
+projection 保存 generation、当前状态、原 event/receipt/action 证据、已见 tool
+receipt/raw 响应及查询。`stopped` 是保存时派生的兼容字段；尚未签发与确证
+not-created 属于无 writer 的特例，不构成运行许可。业务去重与 host 去重分开，
+业务格式错误也不会吞掉已经认证的 adverse host fact。
+
+pause/cancel、stopped/unknown 撤销旧 continuation proof。缺少许可时保存对原
+ref/request/attempt 的只读 inspect-host-state query；新查询带 action ID 与
+代际。adapter 必须认证实际工具响应与动作的因果关系，不能给缓存回执换 ID。
+旧 receipt_ref/raw、已消费动作和过时代际不能复活执行。正常未中断 invoke /
+continue 的当前返回可直接证明 resumability；creation ready 只绑定身份。
+无法查询、unknown 或停止的查询结果保留 await-host-recovery，禁止重建身份。
+
+所有 continue-host 经同一中央门禁：已消费的业务/决定或明确恢复意图、原
+handoff/control/Phase/source/identity、无 stop intent、无未决 B 事务/继续动作，
+以及当前未消费 proof。签发 action 与消费 proof/intent 同次保存。重试返回
+lookup-exact-action。直接调用 effect 也不能绕过此门禁。
+
+### 行为与验证矩阵
+
+| 场景 | 验证行为 |
+| --- | --- |
+| 普通 continue，B 调用前/返回后/结果保存后中断 | 精确原请求，保存结果零 B 重放，重复计数一次 |
+| 旧 continue + pause + 新 stopped + resume | 保存业务意图并返回当前查询；stopped 不回退 |
+| needs_input 保存前/后与消费保存后中断 | 原 question/pending 稳定；重复 resume 不丢决定 |
+| technical_error 保存前/后、再 idle/resume | 保留原错误；宿主状态不解除业务失败 |
+| 普通 completed 保存前/后并暂停 | 原 Git/B 结果进入同一 acceptance，无重新执行 |
+| bind 保存前/后与既有 lookup/ledger 恢复 | 绑定原身份，不提供 runtime live proof |
+| deferred continue，取消未决事务 | 暂停结果消费仍需查询；取消不消费或继续 |
+| 相同业务 + 新 stopped/unknown；错 ID/旧 raw | 业务去重不吞状态；无效因果证据不能签发继续 |
+| 无效业务 payload + stopped，再回答旧 question | 旧 live proof 被撤销，不误发继续 |
+| Stage 2/4 publication receive/accept 保存前/后 | 原 envelope/decision/pending、Git facts 与不重发断言保留 |
+
+workflow-progress 升为 v3，包 compatibility key、普通 Skill 文档、runner prompt
+与输出 schema 一致更新，五个包由 build_skills.py 生成。旧 v1/v2 C 成员拒绝
+由新 C 接管；旧 runner/pinned package 同样保留原运行时，不迁移、不替换。
+
+首轮全量检查为 558 通过、1 既有跳过，最后一个 Phase port-level 测试夹具
+缺少 v3 host 字段而报错。补齐夹具的 host/journal 字段后，该测试已定向通过；
+生产源码与生成包未改动。过程输出见 [V3-FIXTURE-VALIDATION.txt](V3-FIXTURE-VALIDATION.txt)。
+最终 `./scripts/validate.sh` 完整复跑通过：560 项，559 通过、1 项既有不适用
+跳过，耗时 1286.283 秒；五个 Skill、构建一致性与仓库检查通过，issues=[]。
+完整输出见 [V3-VALIDATION.txt](V3-VALIDATION.txt)。相对 e3c8a13 新增 24 项
+统一恢复回归；既有 publication 矩阵与分支删除回归继续保留。`git diff --check`
+通过。真实宿主/跨宿主调用未现场
+验证；宿主证据由明确 fixture 提供，Git、checkpoint 和既有 ledger 测试使用
+隔离临时环境。此候选仍需协调任务独立复审；未合并、push、部署或安装。

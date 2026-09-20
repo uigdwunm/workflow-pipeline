@@ -1,0 +1,31 @@
+Skill is valid!
+Skill is valid!
+Skill is valid!
+Skill is valid!
+Skill is valid!
+.......................................................................................................................................................................................................................................................................................s.......................................................................................................................................................................................................................................................................................E
+======================================================================
+ERROR: test_source_activation_uses_exact_real_phase_and_idempotent_envelope (tests.runtime.test_workflow_progress.PhaseProgressTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<worktree>/tests/runtime/test_workflow_progress.py", line 1103, in test_source_activation_uses_exact_real_phase_and_idempotent_envelope
+    emitted = owner.phase_action()
+  File "<worktree>/src/shared/scripts/workflow_progress.py", line 719, in phase_action
+    return self.effect("carrier-lifecycle" if operation == "claim-phase-completion" else "source-lifecycle", {"actor_ref": actor, "request": request,
+  File "<worktree>/src/shared/scripts/workflow_progress.py", line 309, in effect
+    self.save()
+  File "<worktree>/src/shared/scripts/workflow_progress.py", line 241, in save
+    self.state["stopped"] = (self.state["host"]["status"] == "stopped" or
+KeyError: 'host'
+
+----------------------------------------------------------------------
+Ran 560 tests in 1239.985s
+
+FAILED (errors=1, skipped=1)
+
+After completing the v3 port fixture:
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.353s
+
+OK

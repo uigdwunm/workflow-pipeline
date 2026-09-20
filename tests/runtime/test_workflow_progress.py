@@ -46,6 +46,12 @@ class ProgressTests(transfer.StageTransferTests):
         saved = self.state()
         value = {"event_id": "event-" + str(len(saved["events"])),
                  "receipt": self.receipt(saved["dispatch"], status, event, ref=ref)}
+        # Fixture adapter authenticates each real tool response and its cause.
+        action = saved.get("host", {}).get("query") or saved.get("host_action") or saved.get("action")
+        if action is not None:
+            value["action_id"] = action["action_id"]
+        value["receipt"]["receipt_ref"] += ":" + value["event_id"]
+        value["receipt"]["raw"]["tool_response_id"] = value["event_id"]
         if result is not None:
             value["result"] = result
         return value
@@ -158,6 +164,11 @@ class ProgressTests(transfer.StageTransferTests):
         observed["publication_candidate"] = {"candidate_commit": candidate, "artifacts": ["docs/spec.md"], "checks": ["readiness"]}
         result = self.invoke("observe", observed)
         self.assertEqual(result["error"]["code"], "host_evidence_missing")
+        # The idle response ended that turn. Obtain a causally new stop receipt,
+        # then a current query; merely relabelling the old action is not proof.
+        self.invoke("pause")
+        self.invoke("observe", self.observation("stopped", "result"))
+        self.invoke("resume")
         self.ready_publication(candidate, "original:review")
         result = self.invoke("publication", {**request, "reference": "different:review"})
         self.assertEqual(result["error"]["code"], "candidate_changed")
@@ -272,7 +283,7 @@ class ProgressTests(transfer.StageTransferTests):
         self.invoke("observe", self.observation())
         self.assertEqual(self.invoke("pause")["status"], "pausing")
         self.assertEqual(self.invoke("observe", self.observation("stopped", "result"))["status"], "paused")
-        self.assertEqual(self.invoke("resume")["next_action"]["operation"], "wait-host")
+        self.assertEqual(self.invoke("resume")["next_action"]["operation"], "inspect-host-state")
         self.assertEqual(self.invoke("cancel")["status"], "cancelled")
 
     def pending_business_answer(self, stage=2):
@@ -319,7 +330,7 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.invoke("decide", answer)["status"], "paused")
         self.assertEqual(self.state()["deferred_decisions"][answer["decision_id"]]["decision"], answer)
         resumed = self.invoke("resume")
-        self.assertEqual(resumed["next_action"]["operation"], "wait-host")
+        self.assertEqual(resumed["next_action"]["operation"], "inspect-host-state")
         self.assertEqual(self.state()["decisions"][answer["decision_id"]], answer)
         continued = self.invoke("observe", self.observation("idle", "result"))
         self.assertEqual(continued["next_action"]["operation"], "continue-host")
@@ -345,6 +356,8 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertNotEqual((replay.get("next_action") or {}).get("operation"), "continue-host")
         renewed = {**answer, "reference": "controller:renew-after-recovery"}
         result = self.invoke("decide", renewed)
+        self.assertEqual(result["next_action"]["operation"], "inspect-host-state")
+        result = self.invoke("observe", self.observation("idle", "result", ref="native:replacement"))
         self.assertEqual(result["next_action"]["operation"], "continue-host")
         self.assertEqual(result["next_action"]["payload"]["ref"], "native:replacement")
         self.assertEqual(self.state()["deferred_decisions"][answer["decision_id"]]["decision"], answer)
@@ -360,7 +373,7 @@ class ProgressTests(transfer.StageTransferTests):
         with self.assertRaises(transfer.entry.PreparationError): self.invoke("decide", {**answer, "answer": "changed"})
         self.assertEqual(self.state()["status"], "paused")
         self.assertEqual(self.state()["pending"]["decision_id"], answer["decision_id"])
-        self.assertEqual(self.invoke("resume")["next_action"]["operation"], "wait-host")
+        self.assertEqual(self.invoke("resume")["next_action"]["operation"], "inspect-host-state")
 
     def test_stop_intent_guards_continue_and_effect_even_if_status_is_active(self):
         self.begin()
@@ -1081,6 +1094,8 @@ class PhaseProgressTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTe
         # full stage acceptance is exercised separately through A/B/Git above.
         state = {"protocol": progress.PROTOCOL, "revision": 0, "mode": "stepwise", "stage": 2,
             "status": "active", "step": "bound", "packages": {}, "accepted": None, "phase_complete": False,
+            "host": {"generation": 0, "status": "unknown", "proof": None, "query": None, "seen": {}},
+            "transaction": None, "transaction_source": None, "transaction_result": None,
             "action": None, "handoff": {"stage": 2, "binding": None,
                 "authorization": {"phase": {"run_id": prepared["phase_run_id"], "attempt_id": prepared["attempt_id"]}},
                 "entry": {"source": {"kind": "discussion", "attachment": attachment}},

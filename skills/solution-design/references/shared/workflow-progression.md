@@ -28,7 +28,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v2","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v3","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -65,8 +65,12 @@ digests, child assertions, names and timestamps are not authentication.
 - `observe`: data is `{event_id, receipt, result? , action_id?, closure?}`.
   Receipt is B's complete authenticated receipt including raw. C saves it
   before bind/reconcile/receive. A result is B's `{delivery_id,status,payload}`.
-  `action_id`, when supplied, must name the current issued action. Use stable
-  event IDs: identical replay ACKs; conflicting replay fails.
+  To establish current resumability or stopped-writer proof, `action_id` must
+  identify the actual issued invoke/continue/stop action or current read-only
+  query that produced this tool response. The adapter authenticates that causal
+  link; copying an ID onto old evidence is invalid. Use stable event IDs:
+  identical replay ACKs; conflicting replay fails. Uncorrelated adverse facts
+  revoke continuation, but cannot establish quiescence or resumability.
 - `decide`: data is `{decision_id,subject,answer,reference}` copied from the
   exact pending matter and controller decision. For acceptance answer is
   `accept`; for stage entry it is `confirm` or an explicitly authorized
@@ -98,6 +102,25 @@ waits. `continue-host` resumes the exact ref; it is not a fresh dispatch.
 `lookup-exact-action` requires request/attempt or exact pending identity.
 Absent lookup support is unknown, not permission to search by title or reissue.
 No background monitor or private governance schema is added.
+
+`inspect-host-state` is a persisted read-only query of the exact original ref,
+request and attempt, with an action ID and generation. The adapter obtains a
+new tool response after that query and returns a B-shaped `event=result` receipt
+through `observe`, naming this query's action ID. It must preserve raw tool
+provenance, not relabel a creation lookup or cached result. Unsupported lookup
+is `unknown`; never recreate an identity. A negative query returns
+`await-host-recovery`; explicit resume may query again after original recovery.
+Normal uninterrupted invoke/continue responses can supply current proof without
+an extra query. Creation `ready` binds identity only.
+
+The `host` projection stores authenticated evidence separately from business
+consumption. Pause, cancellation, stopped and unknown invalidate the previous
+continuation generation. Reused receipt refs/raw responses and late action
+results cannot restore it. Business-message dedup runs after independent host
+processing, so a duplicate message cannot swallow a newer stopped fact.
+Every `continue-host` issuance checks consumed business intent, original
+authority/identity/source, stop intent and current unused proof. The same save
+consumes proof and records issuance; repeating advance returns exact lookup.
 
 ## Dispatcher allocations
 
@@ -159,8 +182,23 @@ B's post-mutation owner/configuration verifier, compares unchanged source and
 Git facts, rechecks gates and requires exact readback of the saved reservation.
 It does not refresh requirements to bless drift.
 
-The dispatch transaction is saved before ledger effects. After interruption
-`resume` replays that exact envelope, including its original idempotency key;
+The dispatch transaction is saved before ledger effects. `transaction` retains
+the exact B request and original envelope; `transaction_source` retains its
+original observation or controller decision. `transaction_result` is saved
+before consumption. Consumption atomically updates control, dispatch, business
+step, pending/decision and dedup state, then clears these three journal fields.
+After interruption `resume` replays only a missing result using the exact
+envelope, including its original idempotency key. A saved result is consumed
+without another B call. Neither route re-enters live host ingress or changes
+current host facts. New business input cannot overwrite an unresolved request.
+Historical continue retains business intent while awaiting current proof;
+needs_input preserves its pending decision; technical_error remains blocked
+until original controller recovery. Completed deliveries can be reconciled
+without rerunning their author, with current quiescence checked separately
+before operations that require it. Pause/cancel take priority over consumption;
+explicit unpause is saved before replay. Cancellation never resumes a journal.
+
+After interruption,
 unknown reservations without a recoverable request remain blocked. Original
 observations remain available if binding fails or source facts drift. Preserve
 known identities for stop/reconcile; they do not grant work on stale input.
@@ -282,8 +320,8 @@ explicit dependency; C cannot produce a merge proof or infer completion.
 
 ## Foreground carrier and compatibility
 
-New runner records retain outer version 3 and pin workflow-progress-v2 /
-flow-worktree-v2 packages. A workflow-progress-v1 member is rejected by v2; retain
+New runner records retain outer version 3 and pin workflow-progress-v3 /
+flow-worktree-v2 packages. A workflow-progress-v1 or v2 member is rejected by v3; retain
 its original runtime and pinned packages. Version 1/2 runner records likewise
 require their original runtime; neither new APIs nor registry refresh migrate
 or replace records. Complete
