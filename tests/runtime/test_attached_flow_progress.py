@@ -104,6 +104,56 @@ class AttachedFlowTests(fixtures.ProgressTests):
             self.assertEqual(self.ledger.read_bytes(), before)
         self.fail('phase did not complete')
 
+    def runner_input(self):
+        package_root = Path(__file__).resolve().parents[2] / 'skills'
+        return {'controller_ref': 'task', 'requirement': copy.deepcopy(self.frozen),
+            'frozen_requirement': {'path': self.frozen['absolute_path'], 'commit': self.frozen['commit'],
+                                   'sha256': self.frozen['requirement_identity']['sha256']},
+            **{key: self.binding[key] for key in ('repository', 'worktree', 'git_common_dir', 'target_branch')},
+            'run_record': str(self.checkpoint), 'registry_input': str(self.checkpoint.parent / 'registry.json'),
+            'authority_scope': {'allowed_paths': ['impl.py', 'CHANGELOG.md']}, 'flow_mode': 'stepwise',
+            'stages': {stage: {'model': 'fixture-model', 'reasoning_effort': 'high',
+                'selection_input': fixtures.transfer.configuration('scripted-carrier')} for stage in fixtures.runner.STAGES},
+            'registry': {'source': 'host-current-skills', 'entries': [{'name': name,
+                'entry': str(package_root / name / 'SKILL.md'), 'source': 'test-host'}
+                for name in ('solution-design', 'guided-implementation', 'change-closure')]}}
+
+    def test_runner_accepts_real_a_receipt_on_start_and_restore_and_rejects_drift(self):
+        runner = fixtures.runner
+        packages = Path(__file__).resolve().parents[2] / 'skills'
+        identity = runner.package_identity(str(packages / 'guided-implementation/SKILL.md'), 'guided-implementation')
+        # Source-module runner stands in for its generated entry location only.
+        # A, ledger, Git, strict receipt and restored-record validation are real.
+        with patch.object(runner, 'package_identity', return_value=identity):
+            confirmed = runner.validate_confirmed(self.runner_input())
+            state = runner._new_state(confirmed)
+            self.assertEqual(runner._validate_record(copy.deepcopy(state))['confirmed']['requirement'], self.frozen)
+            self.git('worktree', 'remove', str(self.flow))
+            self.assertEqual(runner._validate_record(copy.deepcopy(state))['confirmed']['requirement'], self.frozen)
+            self.assertFalse(self.flow.exists())
+            variants = []
+            missing = copy.deepcopy(self.frozen)
+            missing.pop('discussion_project')
+            variants.append(missing)
+            old = copy.deepcopy(self.frozen)
+            old['protocol'] = 'requirement-freeze-v1'
+            variants.append(old)
+            for field, value in (('root', str(self.flow)), ('actor_topic_id', 'topic-' + 'a' * 32),
+                                 ('git_common_dir', str(self.root / 'other-store'))):
+                changed = copy.deepcopy(self.frozen)
+                changed['discussion_project'][field] = value
+                variants.append(changed)
+            for source in variants:
+                with self.subTest(source=source['protocol'], identity=source.get('discussion_project')):
+                    raw = self.runner_input()
+                    raw['requirement'] = source
+                    with self.assertRaises(runner.WorkflowError):
+                        runner.validate_confirmed(raw)
+                    changed = copy.deepcopy(state)
+                    changed['confirmed']['requirement'] = source
+                    with self.assertRaises(runner.WorkflowError):
+                        runner._validate_record(changed)
+
     def test_attached_flow_publication_cleanup_acceptance_and_phase_replay(self):
         self.begin('stepwise')
         self.invoke('observe', self.observation())

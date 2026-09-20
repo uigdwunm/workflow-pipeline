@@ -126,10 +126,20 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[
     try:
         if isinstance(source, dict) and source.get("source_kind") == "discussion":
             entry_prepare.fields(source, {"protocol", "source_kind", "checkpoint", "attachment", "absolute_path",
-                                          "requirement_identity", "commit", "blob"})
+                                          "requirement_identity", "commit", "blob", "discussion_project"})
             entry_prepare.require(isinstance(source["checkpoint"], dict) and source["checkpoint"].get("state") == "completed" and
                 source["checkpoint"].get("storage_kind") == "git" and source["checkpoint"].get("published_identity") == commit,
                 "requirement_incomplete", "completed original Git checkpoint required")
+            # The execution checkout can already be removed when restoring.
+            # Verify the original A receipt at its surviving discussion owner,
+            # and independently bind that store to the publication repository.
+            owner_entry = {"repository": entry_prepare.repository_facts(raw["repository"]),
+                "discussion_project": source["discussion_project"],
+                "requirement": {"kind": "discussion", "attachment": source["attachment"]}}
+            stage_handoff.verify_discussion_binding(owner_entry, {
+                "repository": raw["repository"], "git_common_dir": raw["git_common_dir"], "worktree": raw["worktree"]})
+            actual = requirement_prepare.attached_result(owner_entry, source["checkpoint"]["checkpoint_id"])
+            entry_prepare.require(actual == source, "requirement_incomplete", "original attached A receipt changed")
         else:
             requirement_prepare.validate_seal(source)
             entry_prepare.require({"entry", "path", "sha256", "version", "source_kind", "blob"} <= set(source),
@@ -151,7 +161,7 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[
             _is_git_sha(source.get("blob")) and
             type(identity["version"]) is int and identity["version"] > 0,
             "requirement_incomplete", "v3 requires the complete successful A frozen result matching the confirmed source")
-    except (entry_prepare.PreparationError, ControlError, KeyError, TypeError) as error:
+    except (*entry_prepare.ERROR_TYPES, ControlError) as error:
         raise WorkflowError("invalid complete A requirement evidence") from error
     repository = _absolute_path(raw["repository"], "repository")
     worktree = _absolute_path(raw["worktree"], "worktree")

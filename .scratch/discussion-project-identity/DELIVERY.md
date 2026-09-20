@@ -41,3 +41,23 @@ No push, merge, install or deployment. No real native/cross-host/Matt/remote fie
 acceptance is claimed. Full validation result will be added in a separate evidence
 commit; source, tests and generated package trees must remain identical to the
 reviewed code candidate unless explicitly reported otherwise.
+
+## Runner consumer correction
+
+Independent review of 72d5c78 found the runner's strict attached receipt field
+set still omitted discussion_project. Fixed validate_confirmed for both startup
+and _validate_record restoring: retain the explicit field, verify its store against
+the publication repository/common directory and disposable Flow boundary, and
+compare the complete receipt to the original live A checkpoint result. Recovery
+uses the surviving owner and does not require the removed Flow.
+
+A new regression uses real A-produced evidence and generated package identities:
+startup and restored records accept the valid receipt, including after removing
+Flow; missing/changed identity and requirement-freeze-v1 fail on both entry paths.
+The test passed in 12.335s. Only the source runner's package location is substituted
+with the generated package identity; receipt/Git/ledger/record validation is real.
+
+The initial full validation for 72d5c78 was explicitly interrupted (exit 130) to
+repair this consumer. Its log remains at /tmp/workflow-discussion-identity-validation.log;
+it is not passing evidence for either candidate. A complete new-tree run follows.
+Coordination reported both independent review axes complete, with no other findings.
