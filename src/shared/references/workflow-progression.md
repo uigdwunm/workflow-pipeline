@@ -149,6 +149,25 @@ resume can query again. Neither the query nor its terminal outcome reissues the
 old mutation. Ordinary same-generation unresolved actions still return exact
 lookup instead of a new continuation.
 
+Issuing a stop does not settle or discard earlier invocations. In the same
+checkpoint save that records a new invoke/continue/stop action, C retains any
+unresolved previous `host_action` in ordered `retained_host_actions`. The new
+`host_action` describes the current call; its stopped receipt proves the current
+writer stopped, not that older queued calls cannot run later. Repeated stop,
+pause and cancellation preserve this responsibility. Stops are never delayed
+while waiting for older call outcomes.
+
+Recovery queries select the oldest unresolved retained action, then the current
+action if still unresolved. The existing singular `unresolved_action` and
+`action_resolution` envelope is unchanged: one authenticated query settles one
+exact action. If more remain, C emits the next read-only query, retaining each
+settlement as audit evidence. Missing/wrong/nonterminal outcomes wait; a stop
+response cannot serve as another action's resolution. Only after all invocations
+are settled can current proof authorize one continuation, new publication/intake,
+or the next stage. Interrupted issuance and settlement retain the same identities.
+This is internal v4 checkpoint bookkeeping, not a new host permission or state
+store; existing pinned runs remain on their original package.
+
 The `host` projection stores authenticated evidence separately from business
 consumption. Pause, cancellation, stopped and unknown invalidate the previous
 continuation generation. Replayed invocation responses and late action results cannot restore it.

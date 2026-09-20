@@ -1,0 +1,27 @@
+Skill is valid!
+Skill is valid!
+Skill is valid!
+Skill is valid!
+Skill is valid!
+.............................................................................................................................................................................................................................................................................................................................s....................................................................................................................................................................................................................................................................F.............................
+======================================================================
+FAIL: test_publication_requires_exact_readiness_and_stopped_writer (tests.runtime.test_workflow_progress.ProgressTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/tests/runtime/test_workflow_progress.py", line 170, in test_publication_requires_exact_readiness_and_stopped_writer
+    self.assertEqual(result["error"]["code"], "candidate_not_accepted")
+AssertionError: 'host_action_pending' != 'candidate_not_accepted'
+- host_action_pending
++ candidate_not_accepted
+
+
+----------------------------------------------------------------------
+Ran 608 tests in 1264.909s
+
+FAILED (failures=1, skipped=1)
+{"status": "active", "acknowledged": true}
+{"status": "active", "acknowledged": true}
+{"status": "blocked", "business_block": {"id": "block-1"}, "next_action": {"operation": "await-business-recovery"}}
+{"status": "paused"}
+{"status": "active"}
+{"status": "active"}

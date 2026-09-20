@@ -1,0 +1,14 @@
+Immutable baseline: d7d01b75688d6ad501cb547b8c8334fb8011193b
+F
+======================================================================
+FAIL: test_stop_does_not_settle_preceding_continue (test_pending_host_actions.PendingHostActionTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zhaolaiyuan/.codex/worktrees/fa4c/workflow-pipeline/tests/runtime/test_pending_host_actions.py", line 40, in test_stop_does_not_settle_preceding_continue
+    self.assertNotEqual((result.get("next_action") or {}).get("operation"), "continue-host")
+AssertionError: 'continue-host' == 'continue-host'
+
+----------------------------------------------------------------------
+Ran 1 test in 3.445s
+
+FAILED (failures=1)

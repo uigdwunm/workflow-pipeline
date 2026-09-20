@@ -118,6 +118,8 @@ def validate_state(state):
     require(all(key in state for key in ("transaction", "transaction_source", "transaction_result")) and
             (state["transaction"] is not None or state["transaction_source"] is None and state["transaction_result"] is None),
             "invalid_checkpoint", "v4 transaction journal is inconsistent")
+    require(isinstance(state.get("retained_host_actions", []), list),
+            "invalid_checkpoint", "retained host actions must be an ordered list")
     for pin in state["packages"].values():
         skill_preflight.verify_identity(pin)
     return state
@@ -306,6 +308,11 @@ class Progress:
         action = {"action_id": str(uuid.uuid4()), "operation": operation, "payload": copy.deepcopy(payload),
                   "checkpoint": str(self.path)}
         if operation in {"invoke-host", "continue-host", "stop-host"}:
+            previous = self.state.get("host_action")
+            if previous is not None and not previous.get("resolved"):
+                # A stop must be issued promptly, but cannot erase an earlier
+                # invocation which might still execute after this writer stops.
+                self.state.setdefault("retained_host_actions", []).append(copy.deepcopy(previous))
             self.revoke_host()
             action["generation"] = self.state["host"]["generation"]
             self.state["host_action"] = copy.deepcopy(action)
@@ -344,6 +351,8 @@ class Progress:
             validate_state(old)
             require(old["status"] == "accepted" or retry, "run_active", "finish the current stage or reconcile non-creation before a new attempt")
             if not retry:
+                require(not self.unresolved_host_actions(), "host_action_pending",
+                        "settle original host actions before starting another stage")
                 verify_phase_completed(old)
             predecessor = old["handoff"]["predecessor"] if retry else old["accepted"]
             request.setdefault("predecessor", predecessor)
@@ -428,6 +437,7 @@ class Progress:
             "dispatch": None, "accepted": None, "action": None, "pending": None,
             "events": {}, "observations": [], "transaction": None, "transaction_source": None,
             "transaction_result": None, "stopped": False,
+            "retained_host_actions": [],
             "host": {"generation": 0, "status": "unknown", "proof": None, "query": None,
                      "seen": {}, "calls": {}, "last_stop": None},
             "history": (old["history"] + [{k: copy.deepcopy(value) for k, value in old.items() if k != "history"}]) if old else []}
@@ -581,15 +591,18 @@ class Progress:
                   action["generation"] == host["generation"] and not action.get("resolved"))
         if causal and action["operation"] == "inspect-host-state" and action["payload"].get("unresolved_action"):
             outstanding = action["payload"]["unresolved_action"]
+            retained = next((item for item in self.unresolved_host_actions()
+                             if item["action_id"] == outstanding["action_id"]), None)
             resolution = data.get("action_resolution")
             settled = (isinstance(resolution, dict) and set(resolution) == {"action_id", "outcome"} and
                        resolution["action_id"] == outstanding["action_id"] and
                        isinstance(resolution["outcome"], str) and
                        resolution["outcome"] in {"completed", "not-issued", "cancelled"} and
-                       (s.get("host_action") or {}).get("action_id") == outstanding["action_id"])
+                       retained == outstanding)
             if settled:
-                s["host_action"]["resolved"] = True
-                s["host_action"]["resolution"] = copy.deepcopy(resolution)
+                retained["resolved"] = True
+                retained["resolution"] = copy.deepcopy(resolution)
+                action["settled_action_id"] = outstanding["action_id"]
             else:
                 # An idle identity alone does not settle an uncertain mutation
                 # which might still execute later. Retain it and wait.
@@ -730,6 +743,7 @@ class Progress:
                 not outstanding.get("resolved")):
             if outstanding["generation"] == host["generation"]:
                 return _view(s, {"operation": "lookup-exact-action", "action": outstanding})
+        if self.unresolved_host_actions():
             return self.query_host()
         proof = host["proof"]
         if proof is not None and proof["generation"] == host["generation"] and proof["receipt"]["ref"] == self.bound_ref():
@@ -737,15 +751,28 @@ class Progress:
             return None
         return self.query_host()
 
+    def unresolved_host_actions(self):
+        # Older replaced invocations retain their identities until exact query
+        # settlement. Return the actual journal objects for atomic resolution.
+        actions = [item for item in self.state.get("retained_host_actions", []) if not item.get("resolved")]
+        current = self.state.get("host_action")
+        if current is not None and not current.get("resolved"):
+            actions.append(current)
+        return actions
+
     def query_host(self):
         s, host = self.state, self.state["host"]
+        outstanding = self.unresolved_host_actions()
+        if (host.get("query") or {}).get("settled_action_id") and outstanding:
+            # One authenticated response settles one action, not the entire
+            # chain. Continue read-only reconciliation of the next original.
+            host["query"] = None
         if host["query"] is None:
             host["query"] = {"action_id": str(uuid.uuid4()), "operation": "inspect-host-state",
                 "generation": host["generation"], "payload": {"ref": self.bound_ref(), "subject": self.subject(),
                     "request": copy.deepcopy(s["dispatch"]["request"])}, "checkpoint": str(self.path)}
-            outstanding = s.get("host_action")
-            if outstanding is not None and not outstanding.get("resolved"):
-                host["query"]["payload"]["unresolved_action"] = copy.deepcopy(outstanding)
+            if outstanding:
+                host["query"]["payload"]["unresolved_action"] = copy.deepcopy(outstanding[0])
             self.save()
         query = host["query"]
         return _view(s, {"operation": "await-host-recovery", "ref": self.bound_ref(), "query": query}
@@ -1015,8 +1042,8 @@ class Progress:
                 pass  # Liveness evidence cannot resolve a business failure.
             elif s["step"] == "continue":
                 pass  # Current host facts may unblock the retained business intent.
-            elif s.get("publication") or s.get("publication_candidate"):
-                pass  # A fresh stopped query permits original publication only.
+            elif s.get("publication") or s.get("publication_candidate") or s["step"] == "accepted":
+                pass  # Reconcile host actions without replacing saved completion.
             elif receipt["status"] in {"idle", "turn-completed", "stopped", "unknown"}:
                 s["status"] = "blocked"
                 s["error"] = {"code": "business_result_missing", "downstream_ready": False,
@@ -1192,6 +1219,8 @@ class Progress:
         require(current.get("ref") == self.bound_ref() and s["host"]["status"] == "stopped",
                 "writer_active", "current authenticated writer state must be stopped")
         self.verify_publication_authority(ready["payload"]["candidate_commit"], before=False)
+        require(not self.unresolved_host_actions(), "host_action_pending",
+                "settle every original host action before publication or new intake")
         return ready
 
     def publication_payload(self, result):
@@ -1563,6 +1592,8 @@ class Progress:
             # Persist explicit unpause before any original B transaction can
             # replay/consume and return early. The exact envelope stays unchanged.
             self.save()
+        if self.unresolved_host_actions() and (s["status"] == "accepted" or s.get("blocked_from") == "accepted"):
+            return self.query_host()
         if s["stage"] == 4 and s["status"] == "blocked" and s.get("blocked_from") == "accepted":
             verify_completion({**s, "status": "accepted"})
             s["status"] = "accepted"
@@ -1581,7 +1612,7 @@ class Progress:
             self.recover_business(s["deferred_business_recovery"])
         if s.get("business_block"):
             return _view(s)
-        if (s.get("publication") or s.get("publication_candidate")) and s["host"]["status"] != "stopped":
+        if (s.get("publication") or s.get("publication_candidate")) and (s["host"]["status"] != "stopped" or self.unresolved_host_actions()):
             if (s["host"].get("query") or {}).get("resolved"):
                 s["host"]["query"] = None
             return self.query_host()
