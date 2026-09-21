@@ -28,7 +28,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v7","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v8","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -202,7 +202,11 @@ bootstrap payload. Its `allocation` operation uses
 `{allocation_id,operation,handoff? ,receipt? ,result? ,decision?}` as data.
 allocation_id is the original stable local intent ID, not a native task identity.
 Prepare uses the execution-agent B handoff input from the actual bound dispatcher;
-C retains parent source, binding, baseline and protections. Repeating prepare
+C retains parent source, binding, authority baseline and protections. Each new
+allocation snapshots current HEAD, which must descend from that baseline without
+changing original protected paths. The Git adapter still receives the parent's
+frozen authority baseline for prepare, receive and acceptance; it never replaces
+that boundary with a later allocation snapshot. Repeating prepare
 returns exact lookup, never another host create. Bind/reconcile/receive use B's
 original full receipts/results. Accept takes the dispatcher's decision reference;
 C derives the received delivery digest. Host configuration and governance remain
@@ -451,7 +455,7 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 4 and pin workflow-progress-v7 /
+New runner records use outer version 4 and pin workflow-progress-v8 /
 flow-worktree-v2 packages. A workflow-progress-v1 through v5 member is rejected;
 retain its original runtime and pinned packages. Version 1/2/3 runner records likewise
 require their original runtime; neither new APIs nor registry refresh migrate
@@ -657,3 +661,20 @@ Verify resumed validation through actual B receive/accept, not merely a
 Paused or cancelled final results are retained for reconciliation and cannot
 advance acceptance. All historical reviewers and execution allocations remain
 inside the native stop barrier. Original transport loss still blocks recovery.
+
+## Registration and dispatch recovery
+
+Every saved entry retains the original host registration identity and either its
+registry_input reference or paired inline snapshot/context. A revalidation reads
+current file evidence without replacing package pins. The rendered native payload
+contains registration_input fields for entry_prepare.py; pass those fields with
+the actual role identity/cwd. See [Entry preparation](entry-preparation.md).
+
+The Stage-3 controlled-recovery actions and their exact evidence contract are in
+[Workflow Control Protocol](guided-implementation/workflow-control-protocol.md#controlled-stage-3-recovery).
+C owns the only durable intent and result journal. Follow invoke-recovery-host once,
+lookup-recovery-host after uncertainty, and activate-dispatch-recovery only after
+current stops, calls, authority and Git bytes still match. The successor's prepared
+state is read-only. Resume reconciles the same intent instead of creating a role.
+Original host loss remains await-host-recovery with retained refs and missing
+proofs. Stages 2/4 retain their existing same-identity/publication paths.

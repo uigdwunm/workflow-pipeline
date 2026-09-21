@@ -72,7 +72,7 @@ class PreflightBoundaryTests(unittest.TestCase):
         return response
 
     def own(self, stage):
-        return {'name':self.names[stage],'entry':str(self.packages/self.names[stage]/'SKILL.md'),'source':'host'}
+        return {'name':self.names[stage],'entry':str(self.packages/self.names[stage]/'SKILL.md'),'source':'host','enabled':True}
 
     def external(self, name, directory='matt'):
         path=self.root/directory/name/'SKILL.md'
@@ -100,11 +100,14 @@ class PreflightBoundaryTests(unittest.TestCase):
                 {'type': 'turn_context', 'payload': {'model': 'fixture-model', 'effort': 'high', 'turn_id': 'turn-1'}}]) + '\n')
             env = {**os.environ, 'CODEX_THREAD_ID': thread, 'CODEX_SESSION_ID': thread, 'CODEX_SESSIONS_ROOT': str(sessions)}
             own = self.own(2)
-            source = {'protocol': 'workflow-entry-v2', 'operation': 'resolve', 'stage': 2, 'action': 'entry',
+            source = {'protocol': 'workflow-entry-v3', 'operation': 'resolve', 'stage': 2, 'action': 'entry',
                 'host': {'project_path': str(repository), 'project_id': 'project', 'thread_id': thread,
                          'controller_ref': thread, 'role': 'controller', 'source_ref': None, 'receipt': 'tool:fixture'},
                 'source': {'kind': 'conversation'}, 'target': {'kind': 'planning', 'repository': str(repository), 'branch': 'main'},
                 'registry': {'source': 'host-current-skills', 'entries': [own]}}
+            import hashlib
+            source['registry_context'] = {'project_path':str(repository), 'project_id':'project', 'controller_ref':thread, 'receipt':'fixture-query',
+                'registry_digest':hashlib.sha256(json.dumps(source['registry'], sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()}
             script = self.packages / 'solution-design/scripts/requirement_prepare.py'
             def call(operation, **fields):
                 response = subprocess.run([sys.executable, str(script)], cwd=repository, env=env,
@@ -123,7 +126,7 @@ class PreflightBoundaryTests(unittest.TestCase):
             self.assertEqual(git('status', '--porcelain'), '')
             for package in self.names:
                 manifest = json.loads((self.packages / package / 'package.json').read_text())
-                self.assertEqual(manifest['compatibility_key']['preparation'], 'workflow-preparation-v2')
+                self.assertEqual(manifest['compatibility_key']['preparation'], 'workflow-preparation-v3')
                 self.assertIn('scripts/entry_prepare.py', manifest['files'])
                 self.assertIn('scripts/requirement_prepare.py', manifest['files'])
 

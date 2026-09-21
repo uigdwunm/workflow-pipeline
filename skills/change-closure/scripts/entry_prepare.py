@@ -16,7 +16,7 @@ import skill_preflight
 import thread_settings
 from supervision_protocol import _binding, _verify_binding, ProtocolError as SupervisionError
 
-PROTOCOL = "workflow-entry-v2"
+PROTOCOL = "workflow-entry-v3"
 MAX_BYTES = 2 * 1024 * 1024
 
 
@@ -196,9 +196,66 @@ def reject_attached_standalone(project, source, actor_refs):
                 raise PreparationError("source_changed", "current actor has a discussion binding; use its existing document")
 
 
+def registration_inputs(request, facts=None):
+    """Resolve one current registry source without changing the execution cwd."""
+    host = request["host"]
+    facts = facts or repository_facts(os.getcwd())
+    file_mode = "registry_input" in request
+    inline = "registry" in request or "registry_context" in request
+    require(not (file_mode and inline), "invalid_registry_context", "registry file and inline evidence are mutually exclusive")
+    if file_mode:
+        location = Path(nonempty(request["registry_input"]))
+        require(location.is_absolute() and location.is_file() and location.stat().st_size <= MAX_BYTES,
+                "registry_unavailable", "bounded absolute registry input file required")
+        with location.open("rb") as stream:
+            current = decode(stream.read(MAX_BYTES + 1))
+        require(isinstance(current, dict), "invalid_registry_context", "registry input must be an object")
+    else:
+        current = request
+    if not file_mode and not inline:
+        require(host["role"] == "controller" and
+                (request.get("target") or {}).get("kind") != "flow",
+                "registry_context_required", "delegated or Flow entry requires original host registration evidence")
+        return {"registry_query": {"cwd": facts["cwd"]}}, None
+    registry, context = current.get("registry"), current.get("registry_context")
+    fields(context, {"project_path", "project_id", "controller_ref", "receipt", "registry_digest"})
+    require(isinstance(registry, dict) and registry.get("source") in
+            {"host-current-skills", "controller-current-skills"}, "invalid_registry_context", "trusted complete registry required")
+    require(isinstance(registry.get('entries'), list) and all(isinstance(item, dict) and
+        all(isinstance(item.get(key), str) and item[key] for key in ('name','entry','source')) and
+        Path(item['entry']).is_absolute() and type(item.get('enabled')) is bool for item in registry['entries']),
+        'invalid_registry_context', 'complete registry entries need name, absolute entry, source and explicit enabled')
+    for key in context:
+        nonempty(context[key])
+    require(context["registry_digest"] == digest(registry), "registry_changed", "registry digest differs from current input")
+    require(context["project_id"] == host["project_id"] and context["controller_ref"] == host["controller_ref"],
+            "registration_identity_changed", "registration project or Controller differs")
+    owner = repository_facts(context["project_path"])
+    require(context["project_path"] == owner["cwd"] and owner["kind"] == facts["kind"] and
+            (owner.get("git_common_dir") == facts.get("git_common_dir") if facts["kind"] == "git"
+             else owner["root"] == facts["root"]), "registration_identity_changed", "registration belongs to another project")
+    binding = (request.get("target") or {}).get("binding")
+    require(owner['root'] == facts['root'] or binding is not None,
+            'registration_identity_changed', 'cross-checkout entry requires its exact Flow binding')
+    require(host.get('role') not in {'solution-designer', 'implementation-dispatcher', 'execution-agent', 'closure-agent'} or
+            (request.get('target') or {}).get('kind') == 'flow', 'target_mismatch', 'native stage role requires its exact Flow binding')
+    if binding:
+        require(owner["root"] == binding["repository"] and owner.get("git_common_dir") == binding["git_common_dir"],
+                "registration_identity_changed", "registration differs from bound repository")
+    return {"registry": registry}, {**context, "source": registry["source"], "git_common_dir": owner.get("git_common_dir")}
+
+
+def verify_registration(current, expected):
+    require(isinstance(expected, dict) and isinstance(current, dict), "invalid_registry_context", "original registration evidence required")
+    for key in ("project_path", "project_id", "controller_ref", "source", "git_common_dir"):
+        require(current.get(key) == expected.get(key), "registration_identity_changed", "frozen registration identity changed: " + key)
+    require(current["registry_digest"] == expected["registry_digest"] or current["receipt"] != expected["receipt"],
+            "registry_changed", "changed registry requires a new trusted query receipt")
+
+
 def resolve(request):
     fields(request, {"protocol", "operation", "stage", "action", "host", "source"},
-           {"target", "registry", "target_stages", "required_skills", "expected", "pinned_packages"})
+           {"target", "registry", "registry_context", "registry_input", "registration_identity", "target_stages", "required_skills", "expected", "pinned_packages"})
     require(request["protocol"] == PROTOCOL and request["operation"] in {"resolve", "verify"},
             "unsupported_protocol", "unsupported entry operation or version")
     if request["operation"] == "verify":
@@ -213,7 +270,7 @@ def resolve(request):
     if "actor_ref" in host:
         nonempty(host["actor_ref"])
     facts = repository_facts(os.getcwd())
-    require(str(Path(host["project_path"]).resolve()) == facts["cwd"], "project_mismatch", "host project differs from actual cwd")
+    require(Path(host["project_path"]).is_absolute() and str(Path(host["project_path"]).resolve()) == facts["cwd"], "project_mismatch", "host project differs from actual cwd")
     settings = thread_settings.resolve_current_thread_settings()
     require(settings["thread_id"] == host["thread_id"], "identity_mismatch", "host task differs from runtime task")
     stage = request["stage"]
@@ -271,8 +328,16 @@ def resolve(request):
                     "target_mismatch", "planning checkout or branch differs")
     preflight = {"stage": stage, "action": request["action"]}
     preflight.update({k: request[k] for k in ("target_stages", "required_skills") if k in request})
-    preflight.update({"registry": request["registry"]} if "registry" in request else {"registry_query": {"cwd": facts["cwd"]}})
+    registration, registration_context = registration_inputs(request, facts)
+    if 'registration_identity' in request:
+        verify_registration(registration_context, request['registration_identity'])
+    preflight.update(registration)
     packages = skill_preflight.preflight(preflight)
+    if registration_context is None:
+        registration_context = {"project_path": facts["cwd"], "project_id": host["project_id"],
+            "controller_ref": host["controller_ref"], "receipt": packages.get("registry_receipt") or host["receipt"],
+            "registry_digest": packages.get("registry_digest"), "source": "host-current-skills",
+            "git_common_dir": facts.get("git_common_dir")}
     pinned = request.get("pinned_packages")
     if pinned is not None:
         require(isinstance(pinned, dict) and set(pinned) == set(packages["packages"]), "package_changed", "original pinned package route required")
@@ -288,11 +353,16 @@ def resolve(request):
     result = {"protocol": PROTOCOL, "repository": facts, "actor": host,
               "entry": {"stage": stage, "action": request["action"]}, "target": target,
               "packages": packages["packages"], "external": packages["external"],
-              "configuration": settings, "requirement": requirement, "discussion_project": discussion_project}
+              "configuration": settings, "registration_context": registration_context,
+              "registry": registration.get('registry', packages.get('registry')),
+              "requirement": requirement, "discussion_project": discussion_project}
     if request["operation"] == "verify":
         expected = request.get("expected")
         require(isinstance(expected, dict) and expected.get("evidence_digest") == digest({k: v for k, v in expected.items() if k != "evidence_digest"}),
                 "invalid_evidence", "complete entry evidence required")
+        verify_registration(result["registration_context"], expected.get("registration_context"))
+        require(expected.get('registry') is None or digest(expected['registry']) == expected['registration_context']['registry_digest'],
+                'invalid_evidence', 'original registry snapshot and digest differ')
         for identity in expected["packages"].values():
             skill_preflight.verify_identity(identity)
         # Current registration may move, but cannot replace any pinned package.

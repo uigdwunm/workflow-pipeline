@@ -51,12 +51,31 @@ their exact idempotency key and revisions must be retained on an unknown result.
     # Downstream Phase Runs own lifecycle, while execution control stays in the
     # caller checkpoint. Attached dedicated-stage mutations must use the ledger.
     require(context["topic_ref"] is None or context["stage"] >= 2, "authority_missing", "attached dedicated control requires its ledger adapter")
-    payload = {"schema_version": 2, "actor_ref": context["controller_ref"], "context": context,
+    payload = {"schema_version": 3, "actor_ref": context["controller_ref"], "context": context,
                "action": action, "evidence": evidence}
     if context["stage"] >= 2 or action == "receive":
         repository = request["binding"]["repository"] if action == "closure-result" else request["expected_entry"]["repository"]["root"]
+        baseline = request['scope']['baseline']
+        if request['role'] == 'execution-agent':
+            progress = context.get('handoff_progress') or {}
+            require('git_baseline_commit' in progress and request['binding'] == progress.get('binding'),
+                    'authority_changed', 'allocation requires its original dispatcher Git authority')
+            scope = request['scope']
+            require(scope['implementation_paths'] == progress['allowed_paths'] and
+                    set(progress['protected_paths']) <= set(scope['protected_paths']),
+                    'scope_changed', 'allocation must retain original implementation scope and protections')
+            authority_base = progress['git_baseline_commit']
+            handoff.ancestor(repository, authority_base, baseline)
+            for relative in progress['protected_paths']:
+                original = control_git.committed_fingerprint(Path(repository), authority_base, relative)
+                require(control_git.committed_fingerprint(Path(repository), baseline, relative) == original and
+                        control_git.file_fingerprint(Path(repository), relative) == original,
+                        'source_changed', 'allocation cannot move or change an original protected source')
+            # scope.baseline is this execution's current-HEAD snapshot. The
+            # controller's frozen scope base remains the Git authority boundary.
+            baseline = authority_base
         result = control_git.verified_transition({"repository": repository,
-                   "baseline": request["scope"]["baseline"], "request": payload})
+                   "baseline": baseline, "request": payload})
     else:
         result = control.transition(payload)
     return result, None

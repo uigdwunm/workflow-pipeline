@@ -2,7 +2,7 @@
 
 Mechanical A/B execution uses [Workflow progression]({{resource:shared/references/workflow-progression.md}}). Supply semantic decisions and authenticated raw host responses; the shared adapter retains intents, exact attempts, receipts and recovery steps. The role, review and authorization rules below remain binding.
 
-Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
+Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using the inherited registration_input fields from the verified handoff. Pass them unchanged to entry_prepare.py with this role’s actual host identity and cwd; keep registration_identity as the frozen source identity. File evidence is reread by the adapter, while inline registry/context remain paired. Missing evidence stops before work. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
 The originating task binds the Flow Worktree, keeps at most one active Implementation Dispatcher, independently reviews its committed candidate, and passes
 the retained flow to Stage 4. It does not implement code.
@@ -72,31 +72,20 @@ that its prior terminal result did not satisfy Stage 3. If the next result is
 again `no-progress`, classify that executor as stalled; do not keep issuing
 continuations to it.
 
-Maintain at most one active Implementation Dispatcher. Before proposing a
-successor for a stalled executor, require its terminal result, stop tracking it,
-reverify the same Worktree Binding and current verified clean HEAD, and confirm
-that no protected source changed. Emit:
+Maintain at most one active Implementation Dispatcher. Progression chooses the
+next action: wait for a running original; continue an explicitly resumable original
+only after its calls and business block are reconciled. A terminal result alone
+does not prove resumability or authorize a replacement.
 
-```text
-流程异常：需要用户决策
-异常类型：实现任务无进展
-当前阶段：3实现
-原调度者：<exact task identity>
-当前检查点：<verified clean HEAD>
-已完成：<committed scope>
-未完成：<remaining scope>
-阻塞检查：未发现需要用户决策的具体阻塞
-建议：在同一 Flow Worktree 和当前检查点创建一个替代实现任务
-确认后行为：停止跟踪原任务；替代任务先检查已有提交，再继续剩余范围；不创建替代 Flow Worktree
-确认方式：明确同意上述单一待执行事项；如需调整可直接说明
-```
-
-After confirmation, launch one successor with the original authority boundary,
-the exact completed and remaining scope, and the same Flow Worktree and current
-verified clean HEAD. The successor inspects existing commits before editing.
-This exception replaces only a terminal stalled executor; ordinary
-continuation and remediation stay with the same task. A changed or dirty Git
-state is a separate anomaly and must be resolved before launch.
+If the original cannot resume and the retained host proves all old writers stopped,
+use the controlled recovery sequence in
+[Workflow Control Protocol](workflow-control-protocol.md). It accepts owned committed
+and uncommitted work through a frozen Git snapshot, exact Controller decision and
+one durable dispatch intent. The successor remains read-only until recover-dispatch
+activates its real ref. Preserve ambiguous calls and unknown identity for lookup;
+host loss remains await-host-recovery. Ordinary in-scope recovery requires the
+Controller's decision, not a new end-user permission gate. Scope, permission or
+requirement changes still require the existing user decision.
 
 ## Accept
 
@@ -148,7 +137,7 @@ through the existing implementation-authority or anomaly decision before
 changing code. An ordinary technical defect continues in the same task and
 worktree. Do not create a diagnostic document, impose a fixed remediation
 round gate, or spawn an automatic replacement; the stalled-task replacement
-exception above remains limited to terminal no-progress results.
+exception above still requires the complete original-host recovery proof.
 
 ## Retain and hand off
 

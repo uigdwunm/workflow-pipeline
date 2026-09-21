@@ -1,14 +1,14 @@
 # Package execution and action preflight
 
-Persistent discussion-project identity requires preparation=workflow-preparation-v2,
-stage_transfer=workflow-stage-transfer-v3 and workflow_progress=workflow-progress-v7.
-Entry requests use workflow-entry-v2 and requirement requests use requirement-freeze-v2.
+Registration provenance and controlled recovery require preparation=workflow-preparation-v3,
+stage_transfer=workflow-stage-transfer-v4 and workflow_progress=workflow-progress-v8.
+Entry requests use workflow-entry-v3 and requirement requests use requirement-freeze-v2.
 Old pinned runs keep their original packages and records; new packages reject
 incompatible exchanges instead of filling missing identity fields or migrating runs.
-Runner outer version 5 requires workflow-progress-v7, workflow-stage-transfer-v3
-and control schema 2. Discussion request/ledger, preparation, thread-settings and
-supervision flow-worktree-v2 retain their existing versions. Runner v1–4, C v6,
-B v2 and control v1 require their original pinned runtime without mutation.
+Runner outer version 6 requires workflow-progress-v8, workflow-stage-transfer-v4
+and control schema 3. Discussion request/ledger, requirement-freeze, thread-settings and
+supervision flow-worktree-v2 retain their existing versions. Older records require
+their original pinned runtime without mutation.
 
 Use the [entry adapter]({{resource:shared/references/entry-preparation.md}}) to
 collect repository, task, source, settings and action dependencies before this
@@ -17,8 +17,14 @@ the Agent to assemble its results. Requirement preparation uses the
 [requirement adapter]({{resource:shared/references/requirement-preparation.md}}).
 The direct preflight interface below remains supported for existing callers.
 
-Before this stage's first side effect, query the host's complete current Skill
-registry for this task's project working directory. Invoke this package's
+Before this stage's first side effect, resolve the original host's complete current
+Skill registry. Delegated and Flow entries use the inherited `registry_input` via
+the entry adapter, or paired inline `registry` and `registry_context`. The file
+contains those same two objects. Scripts reread it for each action; preserve its
+reference through runner, carrier, transfer and native bootstrap. Verify the
+original host project separately from the actual execution cwd and Flow binding.
+Only an undelegated controller in its original checkout may query its actual cwd.
+For that direct preflight route, invoke this package's
 `<skill-root>/scripts/skill_preflight.py` with one JSON object on stdin:
 
 ```json
@@ -28,8 +34,8 @@ registry for this task's project working directory. Invoke this package's
 Replace stage and action with the current operation. The query uses the installed
 Codex executable (`CODEX_BIN` when supplied, otherwise `codex` on PATH) and its
 read-only `skills/list` interface with a forced refresh. Use the actual task's
-project context, including for each native child; do not substitute another
-project merely because it exposes a missing dependency.
+project context. A child inherits the original host evidence instead of querying
+its Flow directory. Missing provenance blocks without a directory fallback.
 
 The prompt's Available skills list is not a complete registry. An enabled Skill
 with `allow_implicit_invocation: false` can be absent from that list and still
@@ -101,14 +107,14 @@ activation and archive protocol is satisfied; installation never supplies author
 
 The foreground runner belongs only to Stage 3's package. Start requires a current
 registry snapshot and freezes runner plus Stage 2/3/4 identities in record version
-4. The runner pins the confirmed-input file as `registry_input`, rereads its current
-`registry` before every executor launch, and rechecks all remaining targets on
+6. The runner pins the confirmed-input file as `registry_input`, rereads its current
+`registry` and `registry_context` before every executor launch, and rechecks all remaining targets on
 resume. The trusted host/controller must refresh that evidence when registrations
 change; executor filesystem discovery is not registration evidence. To supply a
 new controller evidence file, use `resume <record> <answer> --registry-input <file>`;
-the file must contain the current `registry` object. This changes evidence only:
+the file must contain current paired `registry` and `registry_context` objects. This changes evidence only:
 execution retains the original package realpaths and identities. Missing,
 ambiguous or incompatible current targets block without launching an executor.
-Resume retains the record lock, sessions and completed results. Version 1/2/3 records
+Resume retains the record lock, sessions and completed results. Version 1–5 records
 are read-only: `legacy_run_requires_original_runtime` means use the retained original
 runner and installation tree; never guess identities or migrate/restart the run.

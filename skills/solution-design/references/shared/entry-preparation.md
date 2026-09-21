@@ -13,7 +13,7 @@ as null rather than echoing arbitrary request data.
 
 The adapter obtains cwd from the executing process, repository/branch/HEAD/common
 directory from Git, current task/settings through thread-settings-v5, and complete
-current registration through the existing forced-refresh host adapter. It verifies
+current registration through the inherited original-host evidence or, for an undelegated same-directory controller, the existing forced-refresh host adapter. It verifies
 Flow Worktree bindings through the existing supervision implementation.
 
 The controller supplies project ID, authenticated controller/carrier/source refs,
@@ -34,7 +34,7 @@ The actual launch adapter must verify its selected configuration before launch.
 
 ```json
 {
-  "protocol": "workflow-entry-v2",
+  "protocol": "workflow-entry-v3",
   "operation": "resolve",
   "stage": 1,
   "action": "entry",
@@ -57,10 +57,24 @@ The actual launch adapter must verify its selected configuration before launch.
 ```
 
 The exact required fields are protocol, operation, stage, action, host and source.
-Optional fields are target, registry, target_stages, required_skills,
-pinned_packages and expected. Unknown fields and duplicate JSON keys fail.
-`registry` is the existing trusted complete host/controller snapshot alternative;
-otherwise the adapter queries the actual cwd. It never falls back to disk discovery.
+Optional fields are target, registry_input, registry, registry_context, target_stages, required_skills,
+pinned_packages, registration_identity and expected. Unknown fields and duplicate JSON keys fail.
+Use one absolute `registry_input` file containing `registry` and `registry_context`,
+or supply those two objects inline. File and inline modes are mutually exclusive.
+`registry_context` contains exactly project_path, project_id, controller_ref, receipt
+and registry_digest. Its project_path is the original host project; registry_digest
+is the canonical sorted compact UTF-8 JSON SHA-256 of the complete registry.
+The host authenticates the current query receipt; a string/digest is not proof of
+origin by itself. The script binds project/controller identity and Git common dir,
+independently verifies actual host.project_path/cwd and Flow binding, and returns
+registration_context inside its evidence digest. A delegated or Flow entry missing
+this evidence fails before dispatch. Only undelegated same-checkout controllers
+may query actual cwd. No alternate-directory or filesystem fallback exists.
+Verify permits a same-project refresh with a new query receipt, while retaining
+package pins. Changed contents under the old receipt or frozen project fail;
+there is no invented TTL. Retain the original complete expected evidence.
+Native render supplies the derived registration_identity from that evidence;
+pass it unchanged to bind the child's current snapshot to the original source.
 Action names and target_stages retain their existing preflight semantics.
 
 Host fields in the example are required; source_ref may be null only for a

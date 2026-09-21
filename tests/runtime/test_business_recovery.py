@@ -19,7 +19,7 @@ class BusinessRecoveryTests(unittest.TestCase):
         self.f.begin(mode)
         self.f.invoke("observe", self.f.observation())
 
-    def fail(self, code="technical_error"):
+    def business_fail(self, code="technical_error"):
         for index in range(3 if code == "no_progress" else 1):
             data = {"delivery_id": "failure-" + str(len(self.f.state()["events"])),
                     "status": "continue" if code == "no_progress" else code,
@@ -39,7 +39,7 @@ class BusinessRecoveryTests(unittest.TestCase):
 
     def recover(self, code, mode):
         self.start(mode)
-        block = self.fail(code)
+        block = self.business_fail(code)
         identity = copy.deepcopy(self.f.state()["dispatch"]["request"])
         decision = self.decision()
         result = self.f.invoke("recover-business", decision)
@@ -64,7 +64,7 @@ class BusinessRecoveryTests(unittest.TestCase):
 
     def test_recovery_does_not_disable_later_no_progress_limit(self):
         old = self.recover("no_progress", "continuous")
-        block = self.fail("no_progress")
+        block = self.business_fail("no_progress")
         self.assertNotEqual(block["subject"], old["subject"])
         self.assertTrue(self.f.invoke("recover-business", old)["acknowledged"])
         self.assertEqual(self.f.state()["business_block"], block)
@@ -72,7 +72,7 @@ class BusinessRecoveryTests(unittest.TestCase):
 
     def test_new_business_or_creation_lookup_cannot_clear_block(self):
         self.start()
-        block = self.fail()
+        block = self.business_fail()
         for status in ("continue", "needs_input", "completed"):
             payload = {"question": "new question"} if status == "needs_input" else {"new": "payload"}
             result = self.f.invoke("observe", self.f.observation("idle", "result", {
@@ -85,7 +85,7 @@ class BusinessRecoveryTests(unittest.TestCase):
 
     def test_wrong_subject_and_missing_diagnosis_cannot_recover(self):
         self.start()
-        block = self.fail()
+        block = self.business_fail()
         for field in ("ref", "attempt", "controller_ref", "block_id", "handoff"):
             data = self.decision()
             data["subject"][field] = "wrong"
@@ -98,7 +98,7 @@ class BusinessRecoveryTests(unittest.TestCase):
 
     def test_pause_defers_recovery_until_explicit_resume(self):
         self.start()
-        block = self.fail()
+        block = self.business_fail()
         decision = self.decision()
         self.assertEqual(self.f.invoke("pause")["status"], "pausing")
         self.f.invoke("recover-business", decision)
@@ -114,7 +114,7 @@ class BusinessRecoveryTests(unittest.TestCase):
 
     def test_cancel_does_not_apply_deferred_recovery(self):
         self.start()
-        self.fail()
+        self.business_fail()
         decision = self.decision()
         self.f.invoke("pause")
         self.f.invoke("recover-business", decision)
@@ -126,7 +126,7 @@ class BusinessRecoveryTests(unittest.TestCase):
 
     def test_recovery_save_before_and_after_failure_is_atomic(self):
         self.start()
-        block = self.fail()
+        block = self.business_fail()
         decision = self.decision()
         original = progress.atomic_save
         for after in (False, True):
@@ -195,7 +195,7 @@ class BusinessRecoveryTests(unittest.TestCase):
 
     def test_interrupted_explicit_unpause_consumes_same_deferred_recovery(self):
         self.start()
-        self.fail()
+        self.business_fail()
         decision = self.decision()
         self.f.invoke("pause")
         self.f.invoke("recover-business", decision)
@@ -235,7 +235,7 @@ class BusinessRecoveryTests(unittest.TestCase):
 
     def test_recovery_instruction_is_delivered_and_source_drift_still_blocks(self):
         self.start()
-        self.fail()
+        self.business_fail()
         decision = self.decision()
         self.f.invoke("recover-business", decision)
         self.f.invoke("resume")
@@ -254,9 +254,28 @@ class BusinessRecoveryTests(unittest.TestCase):
         failed = f.invoke("observe", f.observation("idle", "result", {
             "delivery_id": "dispatcher-error", "status": "technical_error", "payload": {"message": "worker failure"}}, ref="native:dispatcher"))
         block = copy.deepcopy(failed["business_block"])
-        recovery = {"action": "recover-dispatch", "evidence": {"stopped_refs": ["native:dispatcher"],
-                    "file_hashes": {}, "replacement_ref": "native:replacement"}, "receipt": {"tool": "fixture:verified-replacement"}}
-        f.invoke("control", recovery)
+        f.invoke('pause')
+        stopped = f.observation('stopped','result',ref='native:dispatcher')
+        stopped['receipt']['raw'].update(resumable=False, dispatch_available=True)
+        f.invoke('observe',stopped); f.invoke('resume')
+        old = f.state()['control']['context']['carrier']
+        prepared = f.invoke('control',{'action':'prepare-dispatch-recovery','evidence':{
+            'dispatcher_ref':old['ref'],'attempt':old['attempt'],'reference':'controller:prepare','reason':'cannot resume',
+            'stop_receipts':[stopped['receipt']['receipt_ref']],'call_receipts':[stopped['provenance']['response_ref']]},
+            'receipt':{'controller_ref':'task','reference':'controller:prepare'}})['next_action']['result']['recovery']
+        decision = {'reference':'controller:assume','authority_digest':prepared['authority_digest'],'attempt':prepared['attempt'],
+            'remaining_paths':prepared['remaining_paths'],'assume_paths':prepared['ownership']['dispatcher']}
+        identity = {'recovery_id':prepared['recovery_id'],'snapshot_digest':prepared['snapshot_digest'],'decision':decision}
+        owner = {'controller_ref':'task','reference':'controller:assume'}
+        intent = f.invoke('control',{'action':'dispatch-recovery-intent','evidence':identity,'receipt':owner})['next_action']['request']
+        receipt = {'adapter':'fixture-native','call_ref':'replacement-call','response_ref':'replacement-response',
+            'intent_id':intent['intent_id'],'status':'ready','ref':'native:replacement','raw':{'write_authority':False}}
+        f.invoke('control',{'action':'dispatch-recovery-result','evidence':{'recovery_id':prepared['recovery_id'],'receipt':receipt},'receipt':receipt})
+        snapshot = f.observation('stopped','result',ref='native:dispatcher')['lifecycle']
+        snapshot['pages'][0]['response']['data'].append({'id':'native:replacement','status':{'type':'idle'}})
+        f.invoke('lifecycle-state',snapshot)
+        recovery = {'action':'recover-dispatch','evidence':{**identity,'replacement_ref':'native:replacement'},'receipt':owner}
+        f.invoke('control',recovery)
         self.assertIsNone(f.state()["business_block"])
         self.assertEqual(f.state()["business_history"][0]["block"], block)
         self.assertEqual(f.state()["business_history"][0]["kind"], "recover-dispatch")

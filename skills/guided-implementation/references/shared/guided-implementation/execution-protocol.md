@@ -1,6 +1,13 @@
 # Native Implementation Dispatcher Protocol
 
 In a foreground run, retain the original native identity across carrier turns.
+For a controlled recovery successor, first read the exact handoff/control fields
+from the supplied checkpoint and run entry verification with registration_input.
+Prepared write_authority:false permits inspection only. Begin writes only after
+C's recover-dispatch receipt proves this exact real ref is the current dispatcher
+under the new attempt and original authority/snapshot. Preserve accepted ownership;
+revalidate historical allocations or obtain the Controller's exact release before
+new allocation. Never promote inherited test strings to candidate verification.
 Execution allocations remain in C/B and the control executions roster. On a
 pause/cancel request, reconcile every issued allocation and stop its bound
 Execution Agents before reporting root stop; an unknown or late creation receipt
@@ -16,7 +23,7 @@ Allocation receipts and acceptance update the same control roster consumed by
 the originating task's candidate intake. Existing native governance still owns
 real launch, waits, stopped-writer proofs and interruption.
 
-Before this role acts, execute [Package execution preflight](../package-execution.md) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
+Before this role acts, execute [Package execution preflight](../package-execution.md) using the inherited registration_input fields from the verified handoff. Pass them unchanged to entry_prepare.py with this role’s actual host identity and cwd; keep registration_identity as the frozen source identity. File evidence is reread by the adapter, while inline registry/context remain paired. Missing evidence stops before work. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
 The dispatcher accepts the verified Flow Worktree binding inherited from
 Stage 2 or created by a qualified standalone Stage-3 entry. It must run

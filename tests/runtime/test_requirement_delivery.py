@@ -41,6 +41,7 @@ class DeliveryTests(EntrySupport):
         self.request['source']['path'] = self.path
         if self._testMethodName == 'test_dedicated_delivery_receive_accept_and_duplicate':
             self.request['host'].update(role='dedicated-problem-framing', controller_ref='controller', source_ref='host:created')
+        self.request = self.with_registration(self.request, project=self.source, receipt='host:detached-source-registry')
         prepared = requirement.handle({'protocol': requirement.PROTOCOL, 'operation': 'prepare', 'entry': self.request,
             'purpose': 'write', 'path': self.path, 'version': 1, 'authorization': 'controller:write', 'content': 'confirmed requirement\n'})
         document = requirement.handle({'protocol': requirement.PROTOCOL, 'operation': 'write', 'entry': self.request, 'intent': prepared})
@@ -85,6 +86,7 @@ class DeliveryTests(EntrySupport):
         downstream = copy.deepcopy(self.request)
         downstream.update(stage=2, source={'kind': 'frozen', 'path': self.path}, target={'kind': 'flow', 'binding': binding})
         downstream['host']['project_path'] = str(flow)
+        downstream = self.with_registration(downstream, project=self.root, receipt='host:receiving-project-registry')
         scope = {'baseline': binding['base_commit'], 'owned_paths': ['docs/spec.md'], 'protected_paths': [self.path],
                  'implementation_paths': ['impl.py'], 'closure_paths': []}
         prepared = handoff.handle({'protocol': handoff.PROTOCOL, 'operation': 'prepare', 'entry': downstream,
@@ -355,14 +357,15 @@ class DeliveryTests(EntrySupport):
         outcome = self.deliver()['result']
         controller = copy.deepcopy(self.request)
         controller['host'].update(role='controller', controller_ref='task', source_ref=None)
+        controller = self.with_registration(controller, project=self.source, receipt='host:source-controller-registry')
         config = configuration('dedicated-problem-framing')
-        ctx = {'schema_version': 2, 'controller_ref': 'task', 'topic_ref': None, 'stage': 1, 'carrier': None,
+        ctx = {'schema_version': 3, 'controller_ref': 'task', 'topic_ref': None, 'stage': 1, 'carrier': None,
             'preference': {'topic_current': False, 'stage_current': False}, 'flow_authority': None,
             'requirement_identity': self.frozen['requirement_identity'], 'handoff_progress': None}
-        planned = control.transition({'schema_version': 2, 'actor_ref': 'task', 'context': ctx, 'action': 'prepare',
+        planned = control.transition({'schema_version': 3, 'actor_ref': 'task', 'context': ctx, 'action': 'prepare',
             'evidence': {'target': 'local', 'project': 'project', 'title': 'Frame', 'missing_context': [], 'configuration': config,
                          'next_step': 'stage2', 'archive_ref': None, 'gate_open': True}})
-        ctx = control.transition({'schema_version': 2, 'actor_ref': 'task', 'context': planned['context'], 'action': 'decide',
+        ctx = control.transition({'schema_version': 3, 'actor_ref': 'task', 'context': planned['context'], 'action': 'decide',
             'evidence': {'plan_id': planned['plan']['plan_id'], 'intent': 'confirm'}})['context']
         scope = {'baseline': self.frozen['commit'], 'owned_paths': [self.path], 'protected_paths': [],
                  'implementation_paths': [], 'closure_paths': []}
@@ -612,6 +615,7 @@ class AttachedDeliveryTests(EntrySupport):
             self.request['host']['project_path'] = str(root)
             self.request['source'] = {'kind': 'discussion', 'attachment': attachment}
             self.request['target'] = None
+            self.request = self.with_registration(self.request, project=root, receipt='host:non-git-registry')
             intent = requirement.handle({'protocol': requirement.PROTOCOL, 'operation': 'prepare', 'entry': self.request,
                 'purpose': 'freeze', 'authorization': 'controller:freeze', 'base_ref': 'HEAD'})
             frozen = requirement.handle({'protocol': requirement.PROTOCOL, 'operation': 'freeze', 'entry': self.request, 'intent': intent})

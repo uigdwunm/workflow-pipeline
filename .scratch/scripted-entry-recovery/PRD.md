@@ -1,6 +1,7 @@
 # 脚本化入口证据与异常恢复衔接
 
 Status: ready-for-agent
+Lifecycle: completed
 
 ## Problem Statement
 
@@ -121,3 +122,13 @@ T1：首选现有生成包 CLI + 临时真实 Git + runner/transfer/progression 
 原生 to-spec 测试 seam 问题：连续模式下采用 T1；无额外人类 review。ask-matt 判断为多上下文构建：需要三个 tracer-bullet Tickets，入口链、可核验接管、跨链恢复验收；各自带协议文档与行为测试。to-tickets 粒度/依赖问题由阶段预授权决定，03 依赖 01/02，01 与 02 行为独立但共享文件必须串行集成。
 
 方案就绪检查：通过。每项行为有 owner、Interface、失败分支、状态/顺序与测试 seam；预检发现的两处矛盾已在 D1/D3/D5 解决；宿主恢复边界明确，不增加外部权限。Tickets 逐一对应 D1–D6、AC1–AC6，无独立重设计。
+
+## Completion evidence
+
+实现候选：`b72553d100330ef9e74abcbbeeb4769b3942d876`；验证目标：`374397d4d79db5194d288ed540a7b00c054ef677`。三个 Tickets 的范围已完成，Status 保留原分流标签，Lifecycle 独立记录完成。
+
+Standards 与 Spec 两轴独立审查均接受同一完整候选，无 actionable findings；恢复后重新分配的 R1 已关闭。最终 `bash scripts/validate.sh` 在原 Flow Worktree 自然完成，exit 0，716 tests、1 existing skip，无 error/failure；起止 HEAD、tree、main 与 clean 状态一致。先前失败或中止的检查只保留为诊断，未计入通过证据。
+
+原始日志：`/Users/zhaolaiyuan/.codex/visualizations/2026/09/20/01a0bf0f-653d-70e1-b7f2-1c5820a4fd2a/implementation-evidence/final-validation-b72553d.log`；SHA-256：`42d505804a10deb08b032da0010a6eaa3d3868490cd56e9ea13cf68dce073e6f`。完整验证时段：2026-09-21 15:32:25–16:04:38 UTC。
+
+确定性回归覆盖注册证据入口、恢复准入、归属/漂移校验及重入拒绝分支。真实旧宿主丢失恢复与真实 nested 恢复仍为 pending/unsupported，未验收通过；本次交付证明严格拒绝和缺项报告，不构成真实旧宿主恢复能力声明。未执行部署、安装或远程操作。

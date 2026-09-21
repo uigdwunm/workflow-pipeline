@@ -18,7 +18,7 @@ import requirement_prepare as requirement
 import workflow_control as control
 import workflow_control_git as control_git
 
-PROTOCOL = "workflow-stage-transfer-v3"
+PROTOCOL = "workflow-stage-transfer-v4"
 ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution-designer",
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",
@@ -435,6 +435,13 @@ def render(saved):
     payload = {k: body[k] for k in ("stage", "role", "controller_ref", "requirement_identity", "source_commit",
                 "target", "delivery_facts", "binding", "scope", "authorization", "selection", "semantic")}
     payload["packages"] = body["expected_entry"]["packages"]
+    payload['registration_input'] = {key: copy.deepcopy(body['entry'][key]) for key in
+        ('registry_input', 'registry', 'registry_context') if key in body['entry']}
+    if not payload['registration_input']:
+        payload['registration_input'] = {'registry': copy.deepcopy(body['expected_entry']['registry']),
+            'registry_context': {k:body['expected_entry']['registration_context'][k] for k in
+                ('project_path', 'project_id', 'controller_ref', 'receipt', 'registry_digest')}}
+    payload['registration_input']['registration_identity'] = copy.deepcopy(body['expected_entry']['registration_context'])
     payload["discussion_project"] = body["expected_entry"]["discussion_project"]
     if payload["discussion_project"] is not None:
         payload["attachment"] = body["entry"]["source"]["attachment"]

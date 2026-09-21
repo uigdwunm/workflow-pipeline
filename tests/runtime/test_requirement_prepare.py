@@ -327,6 +327,7 @@ class AttachedRequirementTests(test_entry_prepare.EntrySupport):
             self.request['host']['project_path'] = str(root)
             self.request.pop('target')
             self.request['source']['attachment'].update(project_id=initial['project_id'], tree_id=initial['tree_id'], actor_topic_id=initial['topic_id'])
+            self.request = self.with_registration(self.request, project=root, receipt='host:non-git-registry')
             with patch.object(entry.os, 'getcwd', return_value=str(root)):
                 intent = self.call('prepare', purpose='freeze', authorization='confirmed', base_ref='non-git')
                 result = self.call('freeze', intent=intent)

@@ -1,6 +1,6 @@
 # Closure Protocol
 
-Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
+Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using the inherited registration_input fields from the verified handoff. Pass them unchanged to entry_prepare.py with this role’s actual host identity and cwd; keep registration_identity as the frozen source identity. File evidence is reread by the adapter, while inline registry/context remain paired. Missing evidence stops before work. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
 In a foreground run, the runner preserves the host while this original role is
 running or a decision is pending. Use C's exact wait/continue/stop action and
