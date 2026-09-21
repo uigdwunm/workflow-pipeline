@@ -217,6 +217,13 @@ The Controller reads raw output against pass_condition and allowed suite skips.
 The entire required check cannot be skipped even when an internal suite skip is
 allowed. Untrusted, unknown or incomplete observations never pass.
 
+For a procedure that produces an explicit acceptance judgment rather than a
+process exit code, freeze `category: environment` and `pass_condition: accepted`;
+describe the procedure in `command` and bind its environment fingerprint. A
+trusted `status: passed` observation may then retain `exit_code: null`. Other
+conditions require an actual zero exit code; a nonzero exit, skipped/unknown
+verdict, changed procedure or wrong fingerprint never becomes a pass.
+
 State order is implementing → reviewable → reviewing → final-validation-pending
 → validating → deliverable. A failed/incomplete final result records
 final-validation-failed. validation-retry names its latest failed attempt and

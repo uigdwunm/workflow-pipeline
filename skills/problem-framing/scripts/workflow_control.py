@@ -92,9 +92,10 @@ def validate_validation_plan(plan, binding=None):
             identity = text(item['id'])
             require(identity not in seen, 'duplicate validation check id')
             seen.add(identity)
-            require(item['category'] in categories, 'invalid required check category')
+            require(text(item['category']) in categories, 'invalid required check category')
             for field in ('command', 'cwd', 'pass_condition'):
                 text(item[field])
+            require(item['pass_condition'] != 'accepted' or item['category'] == 'environment', 'procedure acceptance requires an environment check')
             require(PurePosixPath(item['cwd']).is_absolute(), 'validation cwd must be absolute')
             if binding is not None:
                 require(item['cwd'] == binding['worktree'], 'validation cwd differs from bound worktree')
@@ -109,10 +110,20 @@ def validate_validation_plan(plan, binding=None):
         text(plan['environment_not_applicable'])
 
 
+def check_passed(result):
+    """The frozen condition selects command success or explicit procedure acceptance."""
+    return result['status'] == 'passed' and (result['exit_code'] == 0 or
+        result['exit_code'] is None and result['category'] == 'environment' and result['pass_condition'] == 'accepted')
+
+
 def validate_checks(required, checks, candidate, *, passed=True, complete=True):
     require(isinstance(checks, list), 'structured check results required')
     require((not complete or len(checks) == len(required)) and all(isinstance(v, dict) for v in checks), 'required checks must be covered exactly once')
-    require(len({v.get('id') for v in checks}) == len(checks), 'duplicate check result')
+    for result in checks:
+        keys(result, {'id','category','command','cwd','pass_condition','allowed_skips','environment',
+                      'status','exit_code','start_commit','end_commit','environment_fingerprint','output_ref','output_digest'})
+        text(result['id'])
+    require(len({v['id'] for v in checks}) == len(checks), 'duplicate check result')
     by_id = {v['id']: v for v in required}
     for result in checks:
         require(result.get('id') in by_id, 'unexpected check result')
@@ -120,10 +131,10 @@ def validate_checks(required, checks, candidate, *, passed=True, complete=True):
         keys(result, set(item) | {'status', 'exit_code', 'start_commit', 'end_commit', 'environment_fingerprint', 'output_ref', 'output_digest'})
         require(all(result[k] == v for k, v in item.items()), 'check differs from frozen validation plan')
         require(result['start_commit'] == result['end_commit'] == candidate, 'validation source changed')
-        require(result['status'] in {'passed', 'failed', 'skipped', 'unknown'}, 'invalid check outcome')
+        require(text(result['status']) in {'passed', 'failed', 'skipped', 'unknown'}, 'invalid check outcome')
         require(result['exit_code'] is None or type(result['exit_code']) is int, 'invalid check exit code')
         if passed:
-            require(result['status'] == 'passed' and result['exit_code'] == 0, 'required validation did not pass')
+            require(check_passed(result), 'required validation did not pass')
         if item['environment'] is not None:
             require(result['environment_fingerprint'] == item['environment'], 'wrong validation environment')
         text(result['output_ref'])
@@ -152,6 +163,12 @@ def validate_review_axes(candidate, target, plan_digest, review, dispatcher_ref)
     require(len(set(reviewers)) == 2 and dispatcher_ref not in reviewers, 'independent two-axis review required')
 
 
+def validate_attempt_identities(attempts):
+    require(isinstance(attempts,list) and all(isinstance(v,dict) for v in attempts), 'structured validation attempts required')
+    identities = [text(value.get('attempt_id')) for value in attempts]
+    require(len(set(identities)) == len(identities), 'duplicate validation attempt')
+
+
 def validate_review(candidate, review, verification, dispatcher_ref):
     """Strict delivery projection shared by B, runner and closure."""
     keys(verification, {'candidate', 'expected_target_head', 'validation_plan', 'plan_digest', 'review_digest',
@@ -175,7 +192,7 @@ def validate_review(candidate, review, verification, dispatcher_ref):
                 'stopped native semantic review evidence required')
     attempts = verification['attempts']
     require(isinstance(attempts, list) and attempts, 'final validation attempts missing')
-    require(len({v['attempt_id'] for v in attempts}) == len(attempts), 'duplicate validation attempt')
+    validate_attempt_identities(attempts)
     latest = attempts[-1]
     keys(latest, {'attempt_id','carrier_attempt','candidate','expected_target_head','plan_digest','review_digest','dispatcher_ref','source_snapshot','required','state','checks','source','result'})
     keys(latest['result'], {'attempt_id','checks','source','source_snapshot'})
@@ -266,6 +283,8 @@ def validate_progress(progress):
         paths(progress['allowed_paths']); paths(progress['protected_paths'], empty=True)
         validate_validation_plan(progress['validation_plan'], progress['binding'])
         require(progress['plan_digest'] == digest(progress['validation_plan']), 'frozen validation plan changed')
+        if 'attempts' in progress:
+            validate_attempt_identities(progress['attempts'])
         require(isinstance(progress['executions'], list), 'executions must be a list')
         for execution in progress['executions']:
             required = {'task_id', 'paths', 'read_only', 'behavior', 'tests', 'git_operations', 'configuration', 'agent_ref', 'state', 'stopped', 'file_hashes', 'allocation_digest'}
@@ -707,7 +726,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         validate_checks(attempt['required'], evidence['checks'], progress['candidate'], passed=False, complete=False)
         validate_result_source(evidence['source'], evidence['checks'], context['carrier']['ref'], attempt['attempt_id'])
         require(all(not old.get('source') or old['source']['response_ref'] != evidence['source']['response_ref'] for old in progress['attempts'][:-1]), 'command result response reused across attempts')
-        passed = len(evidence['checks']) == len(attempt['required']) and evidence['source_snapshot'] == attempt['source_snapshot'] and all(v['status'] == 'passed' and v['exit_code'] == 0 for v in evidence['checks'])
+        passed = len(evidence['checks']) == len(attempt['required']) and evidence['source_snapshot'] == attempt['source_snapshot'] and all(check_passed(v) for v in evidence['checks'])
         attempt.update(state='passed' if passed else 'failed', checks=evidence['checks'], source=evidence['source'], result=evidence)
         progress['state'] = 'deliverable' if passed else 'final-validation-failed'
     elif action == 'validation-retry':

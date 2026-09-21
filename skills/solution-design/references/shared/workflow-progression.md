@@ -641,6 +641,12 @@ for exact evidence. C persists the final attempt and continuation intent before
 same-dispatcher followup. reviewable/reviewing return review actions and never an
 implementation-writing continuation. Partial writes reuse the existing exact
 control transaction; unknown host actions are reconciled, never reissued.
+An unresolved control transaction also blocks later control decisions, B intake,
+review starts, allocations and publication. Recover only its exact saved request
+and port before changing business state; a lost response cannot be cleared or
+overwritten by candidate invalidation. Definitive read-only validation rejection
+is retained separately from an unknown outcome and does not block a corrected
+request. Cancellation, pause and raw stopped-role observations retain priority.
 Paused or cancelled final results are retained for reconciliation and cannot
 advance acceptance. All historical reviewers and execution allocations remain
 inside the native stop barrier. Original transport loss still blocks recovery.

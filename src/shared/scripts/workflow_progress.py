@@ -676,6 +676,7 @@ class Progress:
 
     def call(self, operation, *, _source=None, **extra):
         s = self.state
+        self.require_controls_reconciled()
         require(s["transaction"] is None, "transaction_pending", "consume the original B transaction before new business input")
         if operation in {"receive", "accept"}:
             self.require_business_ready()
@@ -879,7 +880,17 @@ class Progress:
         self.save()
         require(not conflict, "host_provenance_conflict", "tool provenance was reused with different evidence or cause")
 
-    def require_business_ready(self):
+    def unresolved_control_transactions(self):
+        return {identity:value for identity,value in self.state.get('control_transactions',{}).items()
+                if value.get('result') is None and value.get('rejection') is None}
+
+    def require_controls_reconciled(self, replay_identity=None):
+        require(not (set(self.unresolved_control_transactions()) - {replay_identity}),
+                'control_outcome_unknown', 'reconcile the exact original control transaction before another state change')
+
+    def require_business_ready(self, *, control_replay=False):
+        if not control_replay:
+            self.require_controls_reconciled()
         require(not self.state.get('prior_carrier_activity'), 'host_recovery_required', 'reconcile activity through the original prior-stage carrier')
         require(self.state.get('transport_loss') is None, 'host_recovery_required', 'original host identity and calls require current recovery evidence')
         require(self.state.get("business_block") is None, "business_recovery_required",
@@ -910,7 +921,7 @@ class Progress:
         require(block is not None and data["subject"] == block["subject"],
                 "stale_decision", "recovery must name the exact active business block")
         require(s["transaction"] is None and
-                not any(item.get("result") is None for item in s.get("control_transactions", {}).values()) and
+                not self.unresolved_control_transactions() and
                 not any(item.get("transaction") is not None for item in s.get("allocations", {}).values()),
                 "transaction_pending", "consume original transactions before a recovery decision")
         authority = {"record": s["dispatch"], "control": copy.deepcopy(s["control"])}
@@ -1041,6 +1052,7 @@ class Progress:
             if self.unresolved_host_actions() or self.stop_barrier_pending():
                 return self.query_host()
             return self.control_action(s['deferred_validation'])
+        self.require_controls_reconciled()
         if s["transaction"] is not None:
             self.replay_transaction()
         if s.get("business_block"):
@@ -1281,6 +1293,7 @@ class Progress:
                 require(not (known_merge and data["closure"].get("implementation_problem") is not None),
                         "already_published", "published merge permits cleanup-only, never implementation replay")
                 # Existing Git adapter determines actual ancestry and cleanup.
+                self.require_controls_reconciled()
                 result, applied = dispatch.checkpoint(s["control"], s["handoff"], "closure-result", data["closure"])
                 s["control"]["context"] = result["context"]
                 s["control_receipt"] = applied
@@ -1641,6 +1654,7 @@ class Progress:
 
     def control_action(self, data):
         entry.fields(data, {"action", "evidence", "receipt"})
+        entry.nonempty(data["action"])
         require(data["action"] in {"successor-ready", "archive", "archive-result", "execution-result",
                     "accept-execution", "execution-dispatch-result", "recover-dispatch", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
                 "invalid_operation", "use the original bounded control recovery/closure operation")
@@ -1657,7 +1671,7 @@ class Progress:
             self.save()
             return _view(s, {'operation':'reconcile-validation-result','disposition':'stopped','attempt_id':data['evidence']['attempt_id']})
         if data["action"] in {"candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"}:
-            self.require_business_ready()
+            self.require_business_ready(control_replay=True)
             self.require_not_stopping()
             current = handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
             require(current['actor']['thread_id'] == s['handoff']['expected_entry']['actor']['thread_id'], 'identity_mismatch', 'original controller required')
@@ -1690,9 +1704,14 @@ class Progress:
             raise control.ControlError(previous["rejection"])
         if previous and previous.get("result") is not None:
             return _view(s, {"operation": "control-effects", "result": previous["result"]}, acknowledged=True)
+        self.require_controls_reconciled(identity)
+        require(s['transaction'] is None and not any(slot.get('transaction') is not None for slot in s.get('allocations',{}).values()),
+                'transaction_pending', 'reconcile original B/allocation transactions before control mutation')
         transactions.setdefault(identity, {"request": copy.deepcopy(data), "port": copy.deepcopy(s["control"]),
                                             "status": s["status"], "result": None,
                                             "business_block_id": (s.get("business_block") or {}).get("id")})
+        require(transactions[identity]['port']['context'] == s['control']['context'],
+                'control_context_changed', 'retain the original result without overwriting newer control authority')
         self.save()
         # Retain exact ledger envelope on a lost response; never promote slots by hand.
         try:
@@ -1700,7 +1719,7 @@ class Progress:
         except control.ControlError as error:
             # This pure/Git read-only boundary definitively rejected before any
             # durable control mutation. OS/transport/ledger failures stay unknown.
-            if data['action'] in {'candidate-ready','review-converged','validation-start','validation-result','validation-retry','invalidate-candidate'} and transactions[identity]['port']['discussion'] is None:
+            if transactions[identity]['port']['discussion'] is None:
                 transactions[identity]['rejection'] = str(error)
                 self.save()
             raise
@@ -1745,6 +1764,7 @@ class Progress:
         require(operation in {"prepare", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown allocation operation")
         s = self.state
         require(s["stage"] == 3 and s["handoff"]["role"] == "implementation-dispatcher", "role_mismatch", "allocation belongs to the Stage-3 dispatcher")
+        self.require_controls_reconciled()
         slots = s.setdefault("allocations", {})
         slot = slots.get(identity)
         if operation == "prepare":
@@ -1867,6 +1887,7 @@ class Progress:
         if data['operation'] == 'prepare':
             entry.fields(data, {'operation','axis','candidate','actor_ref','verification'})
             self.require_not_stopping()
+            self.require_business_ready()
             control.validate_reviewable(s['control']['context']['handoff_progress'], data['candidate'], data['verification'])
             binding, scope = s['handoff']['binding'], s['handoff']['scope']
             observed = supervision.verify_worktree({'binding':binding,'platform_cwd':binding['worktree']})
@@ -1975,9 +1996,9 @@ class Progress:
                             {key: request[key] for key in ("receipt", "result", "decision") if key in request})
                 return _view(s, {"operation": "allocation-recovery", "ref": slot["owner_ref"], "data": data,
                                  "checkpoint": str(self.path)})
-        pending_control = [value for value in s.get("control_transactions", {}).values() if value["result"] is None and value.get("rejection") is None]
+        pending_control = list(self.unresolved_control_transactions().values())
         require(len(pending_control) <= 1, "control_outcome_unknown", "reconcile each exact outstanding control operation before advancing")
-        if pending_control:
+        if pending_control and self.stop_intent() is None:
             return self.control_action(pending_control[0]["request"])
         if s.get("stop_requested") == "cancelling":
             if s["status"] == "cancelled":
@@ -2008,6 +2029,8 @@ class Progress:
             s.pop("stop_requested", None)
             s["status"] = "active"
             self.save()  # Explicit unpause is durable before deferred recovery.
+            if pending_control:
+                return self.control_action(pending_control[0]['request'])
             if s.get("deferred_business_recovery") is not None:
                 self.recover_business(s["deferred_business_recovery"])
                 return self.advance()

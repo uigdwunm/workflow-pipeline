@@ -308,6 +308,158 @@ class ReviewFirstTests(fixture.ProgressTests):
             fixture.transfer.dispatch.record_for({'record':sealed,'control':state[fixture.progress.KEY]['control']})
         self.assertEqual(error.exception.code,'legacy_run_requires_original_runtime')
 
+    def final_result_request(self, checks, response='final-observation'):
+        return {'action':'validation-result','evidence':{'attempt_id':'final-1','checks':checks},
+            'receipt':{'adapter':'fixture-controller','call_ref':'final-command','response_ref':response,
+                       'raw':{'attempt_id':'final-1','checks':checks,'source_unchanged':True,'stopped':True,
+                              'dispatcher_ref':'native:dispatcher'}}}
+
+    def test_malformed_check_id_is_rejected_without_poisoning_recovery(self):
+        candidate = self.start_final()
+        self.invoke('observe',self.observation('idle','result',ref='native:dispatcher'))
+        for invalid in ([], {}, None, '', 3):
+            with self.subTest(invalid=invalid):
+                checks = fixture.transfer.checks_for(self.plan()['final_required'],candidate)
+                checks[0]['id'] = invalid
+                response = self.invoke('control',self.final_result_request(checks,str(invalid)))
+                self.assertEqual(response['status'],'blocked')
+                unresolved = [v for v in self.state()['control_transactions'].values()
+                              if v['result'] is None and v.get('rejection') is None]
+                self.assertEqual(unresolved,[])
+        checks = fixture.transfer.checks_for(self.plan()['final_required'],candidate)
+        self.invoke('control',self.final_result_request(checks))
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'deliverable')
+
+    def test_unknown_control_result_blocks_new_decisions_until_exact_reconciliation(self):
+        from unittest.mock import patch
+        candidate = self.start_final()
+        self.invoke('observe',self.observation('idle','result',ref='native:dispatcher'))
+        checks = fixture.transfer.checks_for(self.plan()['final_required'],candidate)
+        original = fixture.progress.dispatch.checkpoint
+        def lose_response(*args, **kwargs):
+            original(*args, **kwargs)
+            raise OSError('injected response loss after control result')
+        with patch.object(fixture.progress.dispatch,'checkpoint',side_effect=lose_response):
+            self.assertEqual(self.invoke('control',self.final_result_request(checks))['status'],'blocked')
+        context = copy.deepcopy(self.state()['control']['context'])
+        progress = context['handoff_progress']
+        sibling_requests = [('review-activity',{'operation':'prepare','axis':'standards','candidate':candidate,'actor_ref':'task',
+            'verification':{'candidate':candidate,'plan_digest':progress['plan_digest'],'checks':progress['tests']}}),
+            ('allocation',{'allocation_id':'blocked','operation':'prepare','handoff':{}}),
+            ('publication',{'candidate_commit':candidate,'reference':'blocked'})]
+        for operation,data in sibling_requests:
+            with self.subTest(operation=operation):
+                response = self.invoke(operation,data)
+                self.assertEqual(response['error']['code'],'control_outcome_unknown')
+                self.assertEqual(self.state()['control']['context'],context)
+        invalidate = {'action':'invalidate-candidate',
+            'evidence':{'candidate':candidate,'reference':'controller:invalidate','reason':'replacement'},
+            'receipt':{'adapter':'fixture','call_ref':'invalidate','response_ref':'invalidated','raw':{'stopped':True}}}
+        rejected = self.invoke('control',invalidate)
+        self.assertEqual(rejected['error']['code'],'control_outcome_unknown')
+        self.assertEqual(self.state()['control']['context'],context)
+        unresolved = [v for v in self.state()['control_transactions'].values()
+                      if v['result'] is None and v.get('rejection') is None]
+        self.assertEqual(len(unresolved),1)
+        self.invoke('resume')
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'deliverable')
+        self.invoke('control',invalidate)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'implementing')
+        self.invoke('resume')
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'implementing')
+
+    def configure_environment_plan(self, condition='accepted'):
+        original_plan = self.plan
+        def plan():
+            value = original_plan()
+            value['final_required'].append({'id':'lifecycle','category':'environment','command':'Verify native lifecycle and stopped identities',
+                'cwd':str(self.flow),'pass_condition':condition,'allowed_skips':[],'environment':'fixture-host-identity'})
+            value['environment_not_applicable'] = None
+            return value
+        self.plan = plan
+
+    def test_environment_program_acceptance_does_not_fabricate_exit_code(self):
+        self.configure_environment_plan()
+        candidate = self.start_final()
+        checks = fixture.transfer.checks_for(self.plan()['final_required'],candidate)
+        checks[-1].update(exit_code=None,environment_fingerprint='fixture-host-identity')
+        response = self.invoke('control',self.final_result_request(checks))
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(checkpoint['state'],'deliverable',response)
+        control.validate_review(candidate,checkpoint['review_decision']['review'],
+            control.delivery_verification(checkpoint,'native:dispatcher'),'native:dispatcher')
+
+    def test_malformed_adjacent_validation_collections_raise_control_errors(self):
+        self.complete_final()
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        verification = control.delivery_verification(checkpoint,'native:dispatcher')
+        for invalid in ([], {}, None, '', 3):
+            malformed = copy.deepcopy(verification)
+            malformed['attempts'].insert(0,{'attempt_id':invalid})
+            with self.subTest(field='attempt_id', invalid=invalid), self.assertRaises(control.ControlError):
+                control.validate_review(checkpoint['candidate'],checkpoint['review_decision']['review'],malformed,'native:dispatcher')
+            plan = self.plan()
+            plan['final_required'][0]['category'] = invalid
+            with self.subTest(field='category', invalid=invalid), self.assertRaises(control.ControlError):
+                control.validate_validation_plan(plan,self.binding)
+            checks = fixture.transfer.checks_for(self.plan()['final_required'],checkpoint['candidate'])
+            checks[0]['status'] = invalid
+            with self.subTest(field='status', invalid=invalid), self.assertRaises(control.ControlError):
+                control.validate_checks(self.plan()['final_required'],checks,checkpoint['candidate'])
+
+    def test_environment_command_still_requires_its_frozen_exit_condition(self):
+        self.configure_environment_plan('exit 0')
+        candidate = self.start_final()
+        checks = fixture.transfer.checks_for(self.plan()['final_required'],candidate)
+        checks[-1].update(exit_code=None,environment_fingerprint='fixture-host-identity')
+        self.invoke('control',self.final_result_request(checks))
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'final-validation-failed')
+        self.assertIsNone(self.state()['dispatch']['delivery'])
+
+    def test_environment_acceptance_rejects_wrong_fingerprint_and_unknown_verdict(self):
+        self.configure_environment_plan()
+        candidate = self.start_final()
+        checks = fixture.transfer.checks_for(self.plan()['final_required'],candidate)
+        checks[-1].update(exit_code=None,environment_fingerprint='wrong-host')
+        self.assertEqual(self.invoke('control',self.final_result_request(checks,'wrong-fingerprint'))['status'],'blocked')
+        checks[-1].update(status='unknown',environment_fingerprint='fixture-host-identity')
+        self.invoke('control',self.final_result_request(checks,'unknown-verdict'))
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'final-validation-failed')
+        self.assertIsNone(self.state()['dispatch']['delivery'])
+
+    def test_definitive_sibling_control_rejection_does_not_become_unknown(self):
+        candidate = self.start_final()
+        self.invoke('observe',self.observation('idle','result',ref='native:dispatcher'))
+        rejected = self.invoke('control', {'action':'recover-dispatch','evidence':{
+            'stopped_refs':[],'file_hashes':{},'replacement_ref':'native:dispatcher'},
+            'receipt':{'adapter':'fixture','raw':{'stopped':False}}})
+        self.assertEqual(rejected['status'],'blocked')
+        pending = [v for v in self.state()['control_transactions'].values()
+                   if v['result'] is None and v.get('rejection') is None]
+        self.assertEqual(pending,[])
+        checks = fixture.transfer.checks_for(self.plan()['final_required'],candidate)
+        self.invoke('control',self.final_result_request(checks))
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'deliverable')
+
+    def test_paused_unknown_control_result_reconciles_after_explicit_resume(self):
+        from unittest.mock import patch
+        candidate = self.start_final()
+        self.invoke('observe',self.observation('idle','result',ref='native:dispatcher'))
+        checks = fixture.transfer.checks_for(self.plan()['final_required'],candidate)
+        original = fixture.progress.dispatch.checkpoint
+        def lose_response(*args, **kwargs):
+            original(*args, **kwargs)
+            raise OSError('injected response loss')
+        with patch.object(fixture.progress.dispatch,'checkpoint',side_effect=lose_response):
+            self.invoke('control',self.final_result_request(checks))
+        self.invoke('pause')
+        self.invoke('observe',self.observation('stopped','result',ref='native:dispatcher'))
+        self.assertEqual(self.state()['status'],'paused')
+        resumed = self.invoke('resume')
+        self.assertNotEqual(resumed['status'],'paused')
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'deliverable')
+        self.assertIsNone(self.state()['dispatch']['delivery'])
+
 
 # unittest otherwise inherits the unrelated several-hundred-check fixture inventory.
 for _name in dir(fixture.ProgressTests):
