@@ -194,7 +194,11 @@ or
             "ordinary continuation, not recovery",
             "one corrective continuation",
             "at most one active Dedicated Implementation Task",
-            "same Flow Worktree and current verified clean HEAD",
+            "owned committed and uncommitted work",
+            "frozen Git snapshot",
+            "exact Controller decision and one durable dispatch intent",
+            "read-only until recover-dispatch activates its real ref",
+            "host loss remains await-host-recovery",
         ):
             self.assertIn(marker, normalized_originating)
         for marker in (

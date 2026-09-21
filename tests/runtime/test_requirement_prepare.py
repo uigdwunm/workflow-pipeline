@@ -325,6 +325,7 @@ class AttachedRequirementTests(test_entry_prepare.EntrySupport):
             initial = discussion_protocol.handle({'protocol_version': 1, 'operation': 'bootstrap', 'project_path': str(root),
                 'entry_mode': 'explicit-skill', 'conversation_ref': 'task', 'idempotency_key': str(uuid.uuid4()), 'root_slug': 'non-git'})
             self.request['host']['project_path'] = str(root)
+            self.request['registry_context'].update(project_path=str(root), receipt='host:non-git-registry')
             self.request.pop('target')
             self.request['source']['attachment'].update(project_id=initial['project_id'], tree_id=initial['tree_id'], actor_topic_id=initial['topic_id'])
             with patch.object(entry.os, 'getcwd', return_value=str(root)):
