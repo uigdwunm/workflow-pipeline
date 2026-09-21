@@ -1,5 +1,6 @@
 """Real attached A/B/C/Phase/Git closure; only native host receipts are fixtures."""
 import copy
+import json
 import tempfile
 import uuid
 import unittest
@@ -107,6 +108,13 @@ class AttachedFlowTests(fixtures.ProgressTests):
     def runner_input(self):
         package_root = Path(__file__).resolve().parents[2] / 'skills'
         roots = [self.binding[key] for key in ('repository','worktree','git_common_dir')]
+        registry = {'source': 'host-current-skills', 'entries': [{'name': name,
+            'entry': str(package_root / name / 'SKILL.md'), 'source': 'test-host', 'enabled': True}
+            for name in ('solution-design', 'guided-implementation', 'change-closure')]}
+        registry_context = {'project_path':str(self.root), 'project_id':self.request['host']['project_id'],
+            'controller_ref':'task', 'receipt':'fixture:attached-host-registry', 'registry_digest':entry.digest(registry)}
+        registry_input = self.checkpoint.parent / 'registry.json'
+        registry_input.write_text(json.dumps({'registry':registry, 'registry_context':registry_context}))
         return {'controller_ref': 'task', 'requirement': copy.deepcopy(self.frozen),
             'host':{'transport':'app-server-stdio','cli_version':'codex-cli fixture',
                 'source':{'kind':'controller-current-config','controller_ref':'task','receipt':'fixture:effective-config'},
@@ -115,13 +123,11 @@ class AttachedFlowTests(fixtures.ProgressTests):
             'frozen_requirement': {'path': self.frozen['absolute_path'], 'commit': self.frozen['commit'],
                                    'sha256': self.frozen['requirement_identity']['sha256']},
             **{key: self.binding[key] for key in ('repository', 'worktree', 'git_common_dir', 'target_branch')},
-            'run_record': str(self.checkpoint), 'registry_input': str(self.checkpoint.parent / 'registry.json'),
+            'run_record': str(self.checkpoint), 'registry_input': str(registry_input),
             'authority_scope': {'allowed_paths': ['impl.py', 'CHANGELOG.md']}, 'flow_mode': 'stepwise',
             'stages': {stage: {'model': 'fixture-model', 'reasoning_effort': 'high',
                 'selection_input': fixtures.transfer.configuration('scripted-carrier')} for stage in fixtures.runner.STAGES},
-            'registry': {'source': 'host-current-skills', 'entries': [{'name': name,
-                'entry': str(package_root / name / 'SKILL.md'), 'source': 'test-host'}
-                for name in ('solution-design', 'guided-implementation', 'change-closure')]}}
+            'registry': registry, 'registry_context': registry_context}
 
     def test_runner_accepts_real_a_receipt_on_start_and_restore_and_rejects_drift(self):
         runner = fixtures.runner
