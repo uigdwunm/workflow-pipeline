@@ -2,6 +2,12 @@
 
 Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using this child’s current effective registry. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
+In a foreground run, the runner preserves the host while this original role is
+running or a decision is pending. Use C's exact wait/continue/stop action and
+complete its native lifecycle barrier before publication or host release.
+After connection loss, retain raw receipts and existing Git publication facts;
+the original publication is reconciled, never restarted from a carrier footer.
+
 Closure uses ordinary committed Git history. It owns no proposal store,
 auxiliary workflow state or separate archival lifecycle. When Stage 3 carries
 an attached discussion topic, closure participates in that topic's existing

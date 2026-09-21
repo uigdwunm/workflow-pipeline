@@ -36,6 +36,14 @@ decision remains unresolved.
 
 ## Intake
 
+For foreground-carrier runs, use C's review-activity prepare/observe around each
+independent Standards and Spec native call, retaining the exact candidate and
+mechanical reviewer ref. Before waiting, continuing, pausing or closing, apply
+the shared progression lifecycle contract. A running dispatcher receives wait;
+a later business followup needs fresh original-identity proof. Keep the host
+while a user decision or pause is pending, and include both review slots in the
+native stop barrier before cancellation or final release.
+
 A platform terminal result ends one execution turn; it does not complete Stage
 3. Before acting on each result, the Originating Task records the exact HEAD
 before and after the turn, verifies the Worktree Binding and Git state, and

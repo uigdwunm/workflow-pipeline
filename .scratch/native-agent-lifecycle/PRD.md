@@ -1,6 +1,7 @@
 # 原生子 Agent 生命周期与连续执行安全续接
 
 Status: ready-for-agent
+Lifecycle: completed
 
 ## Problem Statement
 
@@ -292,3 +293,35 @@ Stage 3 与 Stage 4 都保护冻结需求 `docs/requirements/2026-09-20-native-a
 ### Stage 2 文档验证记录
 
 Repository validator、暂存差异检查、构建一致性检查与五个 Skill 校验已通过。规划阶段启动的 `./scripts/validate.sh` 运行时全量测试按主 Agent 明确决定主动中止，未完成；中止前无失败输出、观察到一项 skip，不据此声明全量通过。仅本轮测试 PID 64781、64800 及其当时明确子进程 66859 已结束，无残留；未删除其他产物。Stage 3 必须对最终实施候选完整运行 `./scripts/validate.sh`，本次中止不减免该要求。
+
+### Stage 4 implementation acceptance and closure
+
+T1-T4 are complete for this repository. Accepted candidate: `35d0c24d3729d6487751d80baabea1310a69a43a`; both independent Standards and Spec reviews accepted this exact candidate. This record changes no D1-D7/A1-A6 requirement.
+
+- [x] One foreground host survives carrier turns; native followup retains the original identity. Events are strictly attributed, effective configuration is checked, version-4 / workflow-progress-v6 boundaries and generated packages are synchronized.
+- [x] One owner consumes exact queued decisions. Stop takes priority over unsent responses; current and historical candidate reviewers participate in the stop barrier. Late activity invalidates old stop receipts.
+- [x] Lost host, interrupted receipts and uncertain sends preserve original actions and Git facts; recovery reconciles publication/cleanup without duplicate dispatch or publication.
+- [x] Review fixes validate malformed native event containers/aliases, prioritize queued stop, include historical reviewer identities, and bound nonblocking pipe writes. The first positive byte write commits the frame; zero-byte EAGAIN waits outside checkpoint locks and rechecks stop. Partial timeout remains uncertain and poisons the connection against replay.
+
+Evidence index: `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/candidate-delivery.json`; review handoff: `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/stage4-handoff.json`.
+
+- [x] full: 671 tests, passed; log `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/backpressure-full-validation-passed.log`.
+- [x] focused: 28 tests, passed; log `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/backpressure-frozen-focused.log`.
+- [x] pipe_and_priority: 6 tests, passed; log `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/backpressure-final-focused.log`.
+
+The full `./scripts/validate.sh` run took 1828.058 seconds and ended OK with one existing NonGit fixture skip. Deterministic build/check, five Skill validations and repository validation passed (5 Skills, 81 references, 33 test modules). Earlier 666-test results belong to the previous candidate and are not substituted for this 671-test result.
+
+- [x] Real single-layer lifecycle: completed, local_exit_code 0; report `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/backpressure-host-lifecycle/report.json`, raw events `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/backpressure-host-lifecycle/events.jsonl`.
+- [x] Real single-layer stop: completed, local_exit_code 0; report `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/backpressure-host-stop-retry/report.json`, raw events `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/backpressure-host-stop-retry/events.jsonl`.
+
+These current reports use codex-cli 0.155.0-alpha.9.2, product module SHA-256 `623944f519ba0c2ea6e007bed8c5f9f96764f1725725d50dcc70eace7ed4c84a` and candidate guided-implementation package digest `d2b92636767a77aa551107c6dfacfdcd71bce99df954f19f9c71c339ccd8feff`.
+
+The first stop experiment failed during local cleanup: PermissionError EPERM on SIGKILL of process group 9013. Cause is not established; this attempt is not a pass. Failure receipt: `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/backpressure-host-stop/failed-execution.json`; stderr: `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/backpressure-host-stop/failed-execution.log`; raw events: `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/backpressure-host-stop/events.jsonl`. Read-only inspection found the original PID/group absent. One Controller-authorized isolated retry with unchanged module/package passed at `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/backpressure-host-stop-retry/report.json`. This does not establish that the original cause was fixed.
+
+Complete stage 2-to-3-to-4 runner/C/B/Git and unique publication/cleanup are verified with substituted external host transport. Real reports certify single-layer product-adapter/native lifecycle only, not a fully model-driven nested business run. Real nested integration remains pending external dependency, owned by the external governance project; the user explicitly made it nonblocking for local repository delivery. It is not counted as passed. Named permission profiles without complete effective-rule readback fail closed. Loss of the original foreground owner cannot revive old native identities: missing native lookup/action reconciliation retains evidence and blocks continuation. No installation, deployment, remote publication, external plugin change, old-run migration or old download rerun is claimed.
+
+### Stage 3 regression path supplements
+
+The Controller supplemented the original 95-path implementation scope to 99 paths solely for existing regression modules: `tests/runtime/test_accepted_query_retry.py` and `tests/runtime/test_pending_host_actions.py` (95 to 97), `tests/runtime/test_unified_recovery.py` (97 to 98), and `tests/runtime/test_business_recovery.py` (98 to 99). Original settlement-before-stop, no unknown-call replay, fresh proof and anti-forgery requirements remain unchanged.
+
+Authority: `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/stage2-checkpoint.json` field `authority_addendum`; exact chained records: `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/stage3-test-path-addendum.json`, `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/stage3-test-path-addendum-2.json`, `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/native-agent-lifecycle/stage3-test-path-addendum-3.json`. Frozen requirements remain unchanged.

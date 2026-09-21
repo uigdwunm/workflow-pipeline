@@ -106,7 +106,12 @@ class AttachedFlowTests(fixtures.ProgressTests):
 
     def runner_input(self):
         package_root = Path(__file__).resolve().parents[2] / 'skills'
+        roots = [self.binding[key] for key in ('repository','worktree','git_common_dir')]
         return {'controller_ref': 'task', 'requirement': copy.deepcopy(self.frozen),
+            'host':{'transport':'app-server-stdio','cli_version':'codex-cli fixture',
+                'source':{'kind':'controller-current-config','controller_ref':'task','receipt':'fixture:effective-config'},
+                'thread':{'approvalPolicy':'never','sandbox':'read-only','config':{},'runtimeWorkspaceRoots':roots},
+                'effective':{'approvalPolicy':'never','sandbox':{'type':'readOnly'},'runtimeWorkspaceRoots':roots}},
             'frozen_requirement': {'path': self.frozen['absolute_path'], 'commit': self.frozen['commit'],
                                    'sha256': self.frozen['requirement_identity']['sha256']},
             **{key: self.binding[key] for key in ('repository', 'worktree', 'git_common_dir', 'target_branch')},

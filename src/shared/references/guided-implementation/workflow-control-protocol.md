@@ -150,8 +150,12 @@ implementation_paths/closure_paths/protected_paths, independent review axes
 {candidate,reviewer_ref,status:"accepted"}, verification {candidate,checks}.
 Stage 4 includes changed_paths, same accepted candidate_commit/binding, merge_commit,
 ancestry and both cleanup facts. Partial cleanup returns continue or technical_error.
-continue resumes the same session; needs_input returns to the controller. Interactive
-carriers do not also advance stages while the runner owns progression.
+continue returns to C's next action in the same foreground host; a running role
+is waited on, and only current proof permits followup to its exact identity.
+needs_input keeps that host while the Controller answers the exact pending
+matter. Interactive carriers do not also advance stages while the runner owns
+progression. Native role, carrier thread, host process and completed stage are
+distinct identities and outcomes.
 
 execution-dispatch-result reconciles a pending task_id/allocation_digest with unknown
 (read-native-state) or authenticated not-created (release allocation). A late ref

@@ -151,6 +151,8 @@ class BusinessRecoveryTests(unittest.TestCase):
         self.f.invoke("observe", initial)
         self.f.invoke("pause")
         self.f.invoke("observe", self.f.observation("stopped", "result"))
+        self.assertEqual(self.f.state()['status'],'pausing')
+        self.assertEqual(self.f.invoke('observe',self.f.observation('stopped','result'))['status'],'paused')
         query = self.f.invoke("resume")["next_action"]
         forged = copy.deepcopy(initial)
         forged["event_id"] = "old-response-new-label"
@@ -299,6 +301,11 @@ class BusinessRecoveryTests(unittest.TestCase):
     def test_unknown_action_outcome_requires_exact_settlement(self):
         self.start()
         f = self.f
+        self.assertIsNone(f.state()['host']['proof'])
+        self.assertFalse(f.state()['stopped'])
+        continued = f.invoke('observe',f.observation('idle','result',{
+            'delivery_id':'initial-complete','status':'continue','payload':{'slice':0}}))
+        self.assertEqual(continued['next_action']['operation'],'continue-host')
         original = copy.deepcopy(f.state()["host_action"])
         result = f.invoke("observe", f.observation("unknown", "result", {
             "delivery_id": "unknown-action", "status": "continue", "payload": {"slice": 1}}))

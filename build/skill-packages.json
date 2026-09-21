@@ -16,7 +16,7 @@
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v2",
     "stage_transfer": "workflow-stage-transfer-v2",
-    "workflow_progress": "workflow-progress-v5",
+    "workflow_progress": "workflow-progress-v6",
     "requirement_delivery": "requirement-delivery-v1"
   },
   "resources": {
@@ -307,6 +307,10 @@
     "shared/references/requirement-delivery.md": {
       "source": "src/shared/references/requirement-delivery.md",
       "output": "references/shared/requirement-delivery.md"
+    },
+    "guided-implementation/scripts/foreground_host.py": {
+      "source": "src/stages/guided-implementation/scripts/foreground_host.py",
+      "output": "scripts/foreground_host.py"
     }
   },
   "packages": {
@@ -529,7 +533,8 @@
         "shared/scripts/workflow_progress.py",
         "shared/references/workflow-progression.md",
         "shared/scripts/requirement_delivery.py",
-        "shared/references/requirement-delivery.md"
+        "shared/references/requirement-delivery.md",
+        "guided-implementation/scripts/foreground_host.py"
       ],
       "external_actions": {
         "dispatch": [

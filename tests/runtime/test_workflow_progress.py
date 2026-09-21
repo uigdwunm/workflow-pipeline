@@ -63,6 +63,22 @@ class ProgressTests(transfer.StageTransferTests):
                                               "outcome": "completed"}
         if result is not None:
             value["result"] = result
+        if status == 'stopped':
+            context = saved['control']['context']
+            threads = [{'id':ref, 'status':{'type':'idle'}}]
+            for execution in (context.get('handoff_progress') or {}).get('executions', []):
+                if execution.get('agent_ref'):
+                    threads.append({'id':execution['agent_ref'], 'status':{'type':'idle' if execution['stopped'] else 'active'}})
+            for slot in saved.get('review_activity', {}).values():
+                if slot and slot.get('ref'):
+                    threads.append({'id':slot['ref'], 'status':{'type':'idle' if slot['stopped'] else 'active'}})
+            carrier = progress.read_record(self.checkpoint).get('sessions', {}).get('stage' + str(saved['stage'])) or saved['handoff']['expected_entry']['actor']['thread_id']
+            transport = progress.read_record(self.checkpoint).get('transport') or {}
+            value['lifecycle'] = {'instance':transport.get('instance','fixture-host'),'carrier_thread':carrier,
+                'sequence':transport.get('native_event_sequence',0),'events':[],
+                'pages':[{'request':{'method':'thread/list','params':{'ancestorThreadId':carrier,'archived':archived,
+                          'sourceKinds':list(progress.NATIVE_SOURCE_KINDS),'modelProviders':[]}},
+                          'response':{'data':[] if archived else threads,'nextCursor':None}} for archived in (False,True)]}
         return value
 
     def test_launch_is_saved_before_host_and_never_reissued(self):
@@ -470,6 +486,188 @@ class ProgressTests(transfer.StageTransferTests):
             self.invoke("observe", self.observation("idle", "result"))
         self.assertEqual(self.state()["status"], "cancelled")
 
+    def test_root_stop_does_not_close_unsettled_execution_allocation(self):
+        self.prepare_execution()
+        self.invoke('pause')
+        self.invoke('observe', self.observation('stopped','result',ref='native:dispatcher'))
+        self.assertEqual(self.state()['status'], 'pausing')
+        self.assertFalse(self.state()['stopped'])
+
+    def test_malformed_host_event_is_controlled_and_does_not_mutate_checkpoint(self):
+        self.begin()
+        saved = progress.read_record(self.checkpoint)
+        saved['transport'] = {'instance':'fixture-host','state':'live'}
+        progress.atomic_save(self.checkpoint,saved)
+        before = self.checkpoint.read_bytes()
+        for params in ([], None, {'item':[]}, {'item':None},
+                       {'threadId':'carrier','item':{'type':'subAgentActivity','id':'call','kind':'started','agentPath':['bad']}}):
+            with self.subTest(params=params):
+                with self.assertRaises(transfer.entry.PreparationError) as error:
+                    self.invoke('host-event',{'instance':'fixture-host','event':{'method':'item/started','params':params}})
+                self.assertEqual(error.exception.code,'invalid_result')
+                self.assertEqual(self.checkpoint.read_bytes(),before)
+
+    def test_snapshot_rejects_malformed_native_alias_without_saving_it(self):
+        self.begin()
+        self.invoke('observe',self.observation())
+        self.invoke('pause')
+        observation = self.observation('stopped','result')
+        snapshot = observation['lifecycle']
+        snapshot['events'] = [{'method':'item/started','params':{'threadId':snapshot['carrier_thread'],
+            'item':{'type':'subAgentActivity','id':'x','kind':'started','agentPath':['bad'],'agentThreadId':'child'}}}]
+        before = self.checkpoint.read_bytes()
+        for operation, data in (('observe',observation),('lifecycle-state',snapshot)):
+            with self.subTest(operation=operation):
+                with self.assertRaises(transfer.entry.PreparationError) as error:
+                    self.invoke(operation,data)
+                self.assertEqual(error.exception.code,'invalid_result')
+                self.assertEqual(self.checkpoint.read_bytes(),before)
+
+    def test_previous_candidate_reviewers_require_current_stop_evidence(self):
+        self.begin_dispatcher()
+        rounds = []
+        for number in (1,2):
+            (self.flow/'impl.py').write_text('implemented = '+str(number)+'\n')
+            self.flow_git('add','impl.py'); self.flow_git('commit','-qm','candidate '+str(number))
+            candidate = self.flow_git('rev-parse','HEAD')
+            slots = {}
+            for axis in ('standards','spec'):
+                prepared = self.invoke('review-activity',{'operation':'prepare','axis':axis,'candidate':candidate,
+                    'actor_ref':'task','verification':{'candidate':candidate,'checks':['focused']}})
+                identity = prepared['next_action']['action_id']
+                ref = 'native:'+axis+'-'+str(number)
+                request = {'operation':'observe','axis':axis,'candidate':candidate,'actor_ref':'task','action_id':identity,
+                    'receipt':{'adapter':'fixture','call_ref':'wait-'+ref,'response_ref':'stopped-'+ref,
+                    'ref':ref,'status':'stopped','raw':{'task_name':ref,'status':'completed'}}}
+                self.invoke('review-activity',request)
+                slots[axis] = request
+            rounds.append(slots)
+        self.invoke('pause')
+        observation = self.observation('stopped','result',ref='native:dispatcher')
+        snapshot = observation['lifecycle']
+        for request in rounds[0].values():
+            ref = request['receipt']['ref']
+            snapshot['pages'][0]['response']['data'].append({'id':ref,'status':{'type':'idle'}})
+            snapshot['events'].append({'method':'item/completed','params':{'threadId':snapshot['carrier_thread'],
+                'item':{'type':'subAgentActivity','id':'create-'+ref,'kind':'started','agentPath':ref,'agentThreadId':ref}}})
+        self.assertEqual(self.invoke('observe',observation)['status'],'paused')
+        active = copy.deepcopy(snapshot)
+        active['pages'][0]['response']['data'][-1]['status'] = {'type':'active'}
+        self.assertEqual(self.invoke('lifecycle-state',active)['status'],'pausing')
+        omitted = copy.deepcopy(snapshot); omitted['pages'][0]['response']['data'].pop()
+        self.assertEqual(self.invoke('lifecycle-state',omitted)['status'],'pausing')
+        self.assertEqual(self.invoke('lifecycle-state',snapshot)['status'],'paused')
+        old = rounds[0]['standards']
+        saved = progress.read_record(self.checkpoint)
+        saved['transport'] = {'instance':snapshot['instance'],'state':'live','native_event_sequence':1}
+        progress.atomic_save(self.checkpoint,saved)
+        event = {'method':'item/started','params':{'threadId':snapshot['carrier_thread'],'item':{
+            'id':'late-old-review','type':'subAgentActivity','kind':'interacted','agentPath':old['receipt']['ref'],
+            'agentThreadId':old['receipt']['ref']}}}
+        self.assertEqual(self.invoke('host-event',{'instance':snapshot['instance'],'event':event})['status'],'pausing')
+        fresh = copy.deepcopy(snapshot); fresh['sequence'] = 1
+        fresh['events'].append({**event,'method':'item/completed'})
+        self.assertEqual(self.invoke('lifecycle-state',fresh)['status'],'pausing')
+        duplicate = self.invoke('review-activity',old)
+        self.assertEqual(duplicate['status'],'pausing')
+        self.assertTrue(duplicate['acknowledged'])
+        stopped = copy.deepcopy(old)
+        stopped['receipt'].update(call_ref='fresh-old-stop',response_ref='fresh-old-stopped')
+        self.assertEqual(self.invoke('review-activity',stopped)['status'],'paused')
+
+    def test_descendant_lookup_rejects_incomplete_archive_or_source_coverage(self):
+        self.begin()
+        self.invoke('observe',self.observation())
+        snapshot = self.observation('stopped','result')['lifecycle']
+        for mutation in ('missing-archive','filtered-source','filtered-provider','filtered-cwd','moved-between-partitions','missing-page'):
+            incomplete = copy.deepcopy(snapshot)
+            if mutation == 'missing-archive':
+                incomplete['pages'] = incomplete['pages'][:1]
+            elif mutation == 'filtered-source':
+                incomplete['pages'][0]['request']['params']['sourceKinds'] = ['appServer']
+            elif mutation == 'filtered-provider':
+                incomplete['pages'][0]['request']['params']['modelProviders'] = ['one-provider']
+            elif mutation == 'filtered-cwd':
+                incomplete['pages'][0]['request']['params']['cwd'] = str(self.root)
+            elif mutation == 'moved-between-partitions':
+                incomplete['pages'][1]['response']['data'] = copy.deepcopy(incomplete['pages'][0]['response']['data'])
+            else:
+                incomplete['pages'][0]['response']['nextCursor'] = 'missing-page'
+            result = self.invoke('lifecycle-state',incomplete)
+            self.assertEqual(result['status'],'blocked',mutation)
+            self.assertEqual(result['error']['code'],'host_evidence_missing',mutation)
+            self.assertIsNone(self.state().get('lifecycle_snapshot'))
+
+    def test_stop_barrier_includes_both_review_axes_and_unknown_descendants(self):
+        self.begin_dispatcher()
+        (self.flow / 'impl.py').write_text('implemented = True\n')
+        self.flow_git('add','impl.py'); self.flow_git('commit','-qm','candidate')
+        candidate = self.flow_git('rev-parse','HEAD')
+        slots = {}
+        for axis in ('standards','spec'):
+            prepare = {'operation':'prepare','axis':axis,'candidate':candidate,'actor_ref':'task',
+                       'verification':{'candidate':candidate,'checks':['focused']}}
+            first = self.invoke('review-activity',prepare)
+            slots[axis] = first['next_action']['action_id']
+            duplicate = self.invoke('review-activity',prepare)
+            self.assertEqual(duplicate['next_action']['operation'],'lookup-exact-review')
+            self.assertEqual(duplicate['next_action']['action_id'],slots[axis])
+            self.invoke('review-activity',{'operation':'observe','axis':axis,'candidate':candidate,'actor_ref':'task',
+                'action_id':slots[axis], 'receipt':{'adapter':'fixture','call_ref':'spawn-'+axis,'response_ref':'created-'+axis,
+                'ref':'native:'+axis,'status':'running','raw':{'task_name':'native:'+axis,'status':'running'}}})
+        self.invoke('pause')
+        self.invoke('observe',self.observation('stopped','result',ref='native:dispatcher'))
+        self.assertEqual(self.state()['status'],'pausing')
+        for axis in ('standards','spec'):
+            self.invoke('review-activity',{'operation':'observe','axis':axis,'candidate':candidate,'actor_ref':'task',
+                'action_id':slots[axis], 'receipt':{'adapter':'fixture','call_ref':'wait-'+axis,'response_ref':'stopped-'+axis,
+                'ref':'native:'+axis,'status':'stopped','raw':{'task_name':'native:'+axis,'status':'completed'}}})
+        snapshot = self.observation('stopped','result',ref='native:dispatcher')['lifecycle']
+        snapshot['pages'][0]['response']['data'].append({'id':'unreconciled-grandchild','status':{'type':'idle'}})
+        self.assertEqual(self.invoke('lifecycle-state',snapshot)['status'],'pausing')
+        snapshot['pages'][0]['response']['data'].pop()
+        self.assertEqual(self.invoke('lifecycle-state',snapshot)['status'],'paused')
+        self.assertTrue(self.state()['stopped'])
+
+    def test_late_spawn_revokes_complete_partition_snapshot(self):
+        self.begin()
+        self.invoke('observe',self.observation())
+        self.invoke('pause')
+        saved = progress.read_record(self.checkpoint)
+        saved['transport'] = {'instance':'fixture-host','state':'live','native_event_sequence':0}
+        progress.atomic_save(self.checkpoint,saved)
+        self.assertEqual(self.invoke('observe',self.observation('stopped','result'))['status'],'paused')
+        original = copy.deepcopy(self.state()['lifecycle_snapshot'])
+        omitted = copy.deepcopy(original)
+        omitted['pages'][0]['response']['data'] = []
+        self.assertEqual(self.invoke('lifecycle-state',omitted)['status'],'pausing')
+        self.assertEqual(self.invoke('lifecycle-state',original)['status'],'paused')
+        saved = progress.read_record(self.checkpoint)
+        saved['transport']['native_event_sequence'] = 1
+        progress.atomic_save(self.checkpoint,saved)
+        event = {'method':'item/started','params':{'threadId':self.state()['lifecycle_snapshot']['carrier_thread'],
+            'turnId':'original-turn','item':{'type':'subAgentActivity','id':'late-call','kind':'started',
+            'agentPath':'native:late-child','agentThreadId':'late-child-thread'}}}
+        self.assertEqual(self.invoke('host-event',{'instance':'fixture-host','event':event})['status'],'pausing')
+        snapshot = copy.deepcopy(self.state()['lifecycle_snapshot'])
+        snapshot.update(sequence=1,events=[event])
+        self.assertEqual(self.invoke('lifecycle-state',snapshot)['status'],'pausing')
+        self.assertFalse(self.state()['stopped'])
+
+    def test_failed_lookup_cannot_reuse_prior_complete_snapshot(self):
+        self.begin()
+        self.invoke('observe',self.observation())
+        self.invoke('pause')
+        saved = progress.read_record(self.checkpoint)
+        saved['transport'] = {'instance':'fixture-host','state':'live','native_event_sequence':0}
+        progress.atomic_save(self.checkpoint,saved)
+        self.assertEqual(self.invoke('observe',self.observation('stopped','result'))['status'],'paused')
+        saved = progress.read_record(self.checkpoint)
+        saved['transport']['lookup_blocked'] = 'original host lookup unavailable'
+        progress.atomic_save(self.checkpoint,saved)
+        self.assertEqual(self.invoke('advance')['status'],'pausing')
+        self.assertFalse(self.state()['stopped'])
+
     def paused_runner_cancel(self, saved_answer, recovery=None, stage=2):
         answer = self.pending_business_answer(stage)
         state = runner._new_state({})
@@ -503,10 +701,12 @@ class ProgressTests(transfer.StageTransferTests):
                     self.assertEqual(result["status"], "cancelled")
                     self.assertIsNone(result["next_action"])
                 runner._advance(state, self.checkpoint)
-            # This fixture supplies real A/B control, but no CLI registry/model config.
-            with patch.object(runner, "validate_confirmed", return_value={}), self.assertRaisesRegex(
-                    runner.WorkflowError, "cancelled carrier requires exact stopped-writer reconciliation"):
-                runner.resume(self.checkpoint)
+            # A fully stopped cancellation is a read-only acknowledgement,
+            # never permission to resume the cancelled carrier.
+            before_ack = self.checkpoint.read_bytes()
+            with patch.object(runner, "validate_confirmed", return_value={}):
+                self.assertEqual(runner.resume(self.checkpoint), 0)
+            self.assertEqual(self.checkpoint.read_bytes(), before_ack)
         self.assertEqual(progress.read_record(self.checkpoint)["status"], "cancelled")
         self.assertEqual(self.state()["stop_requested"], "cancelling")
         self.assertEqual(self.state()["control"]["context"]["handoff_progress"]["state"], "cancelled")
@@ -629,6 +829,17 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.invoke("resume")["pending"], pending)
 
     def accept_current(self, payload, role):
+        if self.state()['stage'] == 3:
+            actor = self.state()['handoff']['expected_entry']['actor']['thread_id']
+            for axis in ('standards','spec'):
+                prepared = self.invoke('review-activity', {'operation':'prepare','axis':axis,'candidate':payload['candidate_commit'],
+                    'actor_ref':actor,'verification':payload['verification']})
+                self.assertEqual(prepared['next_action']['operation'],'invoke-review',prepared)
+                ref = payload['review'][axis]['reviewer_ref']
+                self.invoke('review-activity',{'operation':'observe','axis':axis,'candidate':payload['candidate_commit'],
+                    'actor_ref':actor,'action_id':prepared['next_action']['action_id'],
+                    'receipt':{'adapter':'fixture','call_ref':'review-'+axis,'response_ref':'terminal-'+axis,
+                               'ref':ref,'status':'stopped','raw':{'task_name':ref,'status':'completed'}}})
         message = {"delivery_id": "completed-" + str(self.state()["stage"]), "status": "completed", "payload": payload}
         result = self.invoke("observe", self.observation("stopped", "result", message, ref=role))
         self.assertEqual(result["status"], "needs_input", result)
@@ -671,7 +882,7 @@ class ProgressTests(transfer.StageTransferTests):
         runner._atomic_save(self.checkpoint, state)
         calls = []
 
-        def carrier(state, path, answer, continuing):
+        def carrier(state, path, answer, continuing, host=None):
             stage = int(state["current_stage"][-1])
             calls.append(stage)
             response = self.finish_next(stage, mode)
@@ -710,14 +921,15 @@ class ProgressTests(transfer.StageTransferTests):
             {"delivery_id": "design", "status": "completed", "payload": payload}))
         pending = response["pending"]
         confirmed = {**{key: self.binding[key] for key in ("repository", "worktree", "git_common_dir", "target_branch")},
-            "controller_ref": "task", "flow_mode": "stepwise", "frozen_requirement": {**self.frozen, "path": self.frozen["absolute_path"]}}
+            "controller_ref": "task", "flow_mode": "stepwise", "registry_input": str(self.checkpoint),
+            "frozen_requirement": {**self.frozen, "path": self.frozen["absolute_path"]}}
         state = runner._new_state(confirmed)
         state.update(status="needs_input", pending_input=pending, sessions={"stage2": "carrier"},
                      launch={"stage": "stage2", "state": "completed_turn", "turn": 1})
         runner._atomic_save(self.checkpoint, state)
         self.settings["thread_id"] = "task"
 
-        def resume_carrier(state, record, answer, continuing):
+        def resume_carrier(state, record, answer, continuing, host=None):
             self.assertTrue(continuing)
             self.assertEqual(state["sessions"]["stage2"], "carrier")
             self.settings["thread_id"] = "carrier"
@@ -732,7 +944,13 @@ class ProgressTests(transfer.StageTransferTests):
         with patch.object(runner, "validate_confirmed", side_effect=lambda value, **kwargs: value), \
              patch.object(runner, "_check_current_registry"), \
              patch.object(runner, "_invoke", side_effect=resume_carrier) as invoked, redirect_stdout(io.StringIO()):
-            self.assertEqual(runner.resume(self.checkpoint, "accept", decision_id=pending["decision_id"]), 0)
+            # A retained carrier belongs to the live owner. Concurrent resume
+            # queues the exact decision; only that owner delivers it to C.
+            with runner.RunLock(self.checkpoint):
+                self.assertEqual(runner.resume(self.checkpoint, "accept", decision_id=pending["decision_id"]), 0)
+                self.assertEqual(invoked.call_count, 0)
+                self.assertTrue(runner._live_commands(state, self.checkpoint))
+                self.assertEqual(runner._advance_in_host(state, self.checkpoint, "accept", object()), 0)
         self.assertEqual(invoked.call_count, 1)
         outer = progress.read_record(self.checkpoint)
         self.assertEqual(outer["current_stage"], "stage3")

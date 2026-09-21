@@ -82,6 +82,12 @@ for Stage 3. This carrier does wait for and accepts only its own required native
 already-authorized carrier entry: do not fall back to interactive stage-entry or
 review confirmation defaults.
 
+Foreground continuation, pending decisions and stop/recovery follow the shared
+progression lifecycle contract. Keep the same app-server and original designer
+identity across turns; a carrier footer does not close the host or prove the
+designer stopped. Only C/B acceptance and verified planning publication advance
+the stage.
+
 ## Enter the stage
 
 Enter from exactly one route:

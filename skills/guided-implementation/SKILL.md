@@ -79,10 +79,12 @@ entry. It preserves the payload's explicit model/effort pair for the carrier;
 the dedicated native executor still follows the existing task-settings protocol.
 Use only the pending decisions selected by the shared progression contract.
 
-The runner leaves the user's existing `codex exec` approval and sandbox policy
-in effect. It does not force a narrower sandbox that can prevent the existing
-Flow Worktree protocol from updating Git metadata, and it does not add a bypass
-flag.
+The runner holds one foreground app-server across carrier turns, waiting for
+native roles, decisions, and pauses. Follow the shared progression contract's
+exact next action: running means wait; continuation requires current proof for
+the original identity. The confirmed effective permissions and CLI version are
+frozen and read back before the first business turn. Complete native stop and
+unresolved-call reconciliation precede cancellation and normal host release.
 
 ## Establish standalone authority
 

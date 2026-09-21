@@ -12,7 +12,7 @@
 5. For an inherited flow, commit changed closure paths in the same Flow
    Worktree; create no closure commit when bytes do not change. Return the exact
    final candidate, artifacts/checks and stop writing. The stage owner authenticates
-   the native stopped receipt, records C `publication_candidate` and the original
+   the native stopped receipt and complete lifecycle barrier, records C `publication_candidate` and the original
    readiness decision, then consumes C `publication` to call `complete-worktree`
    for that candidate. This preserves Closure Agent responsibility for the final
    documentation candidate and publication request; C executes only its mechanical

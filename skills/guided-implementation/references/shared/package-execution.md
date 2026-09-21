@@ -1,12 +1,12 @@
 # Package execution and action preflight
 
 Persistent discussion-project identity requires preparation=workflow-preparation-v2,
-stage_transfer=workflow-stage-transfer-v2 and workflow_progress=workflow-progress-v5.
+stage_transfer=workflow-stage-transfer-v2 and workflow_progress=workflow-progress-v6.
 Entry requests use workflow-entry-v2 and requirement requests use requirement-freeze-v2.
 Old pinned runs keep their original packages and records; new packages reject
 incompatible exchanges instead of filling missing identity fields or migrating runs.
-Runner outer version 3, discussion request/ledger schemas, control and supervision
-flow-worktree-v2 are unchanged.
+Runner outer version 4 requires workflow-progress-v6. Discussion request/ledger,
+control, B handoff and supervision flow-worktree-v2 retain their existing shapes.
 
 Use the [entry adapter](entry-preparation.md) to
 collect repository, task, source, settings and action dependencies before this
@@ -99,7 +99,7 @@ activation and archive protocol is satisfied; installation never supplies author
 
 The foreground runner belongs only to Stage 3's package. Start requires a current
 registry snapshot and freezes runner plus Stage 2/3/4 identities in record version
-2. The runner pins the confirmed-input file as `registry_input`, rereads its current
+4. The runner pins the confirmed-input file as `registry_input`, rereads its current
 `registry` before every executor launch, and rechecks all remaining targets on
 resume. The trusted host/controller must refresh that evidence when registrations
 change; executor filesystem discovery is not registration evidence. To supply a
@@ -107,6 +107,6 @@ new controller evidence file, use `resume <record> <answer> --registry-input <fi
 the file must contain the current `registry` object. This changes evidence only:
 execution retains the original package realpaths and identities. Missing,
 ambiguous or incompatible current targets block without launching an executor.
-Resume retains the record lock, sessions and completed results. Version 1 records
+Resume retains the record lock, sessions and completed results. Version 1/2/3 records
 are read-only: `legacy_run_requires_original_runtime` means use the retained original
 runner and installation tree; never guess identities or migrate/restart the run.

@@ -1,5 +1,12 @@
 # Native Implementation Dispatcher Protocol
 
+In a foreground run, retain the original native identity across carrier turns.
+Execution allocations remain in C/B and the control executions roster. On a
+pause/cancel request, reconcile every issued allocation and stop its bound
+Execution Agents before reporting root stop; an unknown or late creation receipt
+keeps the barrier open. A terminal dispatcher turn is neither Stage-3 completion
+nor proof that descendants stopped. Follow the shared progression next action.
+
 Mechanical A/B execution uses [Workflow progression]({{resource:shared/references/workflow-progression.md}}). Supply semantic decisions and authenticated raw host responses; the shared adapter retains intents, exact attempts, receipts and recovery steps. The role, review and authorization rules below remain binding.
 
 Use its allocation operation for ordinary Execution Agents, with the original
