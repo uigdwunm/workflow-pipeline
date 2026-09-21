@@ -279,8 +279,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                             target={"kind": "planning", "repository": str(self.flow), "branch": self.binding["branch"]})
         # This independent source controller starts in the linked checkout;
         # its registry provenance names that original source project.
-        source_entry['registry_context']['project_path'] = str(self.flow)
-        source_entry['registry_context']['receipt'] = 'host:source-project-registry'
+        source_entry = self.with_registration(source_entry, project=self.flow, receipt='host:source-project-registry')
         def req(operation, **kwargs):
             return copy.deepcopy(requirement.handle({"protocol": requirement.PROTOCOL, "operation": operation, "entry": source_entry, **kwargs}))
         intent = req("prepare", purpose="write", path="docs/requirements/b.md", version=1, authorization="write:b", content="new confirmed source\n")
@@ -482,8 +481,8 @@ class AttachedTransferTests(test_entry_prepare.EntrySupport):
             self.root = Path(temporary.name).resolve()
             entry.os.getcwd.return_value = str(self.root)
             self.request["host"]["project_path"] = str(self.root)
-            self.request["registry_context"]["project_path"] = str(self.root)
             self.request.pop("target")
+            self.request = self.with_registration(self.request, project=self.root, receipt='host:non-git-registry')
         initial = discussion_protocol.handle({"protocol_version": 1, "operation": "bootstrap", "project_path": str(self.root),
                     "entry_mode": "explicit-skill", "conversation_ref": "task", "idempotency_key": str(uuid.uuid4()), "root_slug": "topic"})
         self.attachment = {"project_id": initial["project_id"], "tree_id": initial["tree_id"],

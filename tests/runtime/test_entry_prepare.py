@@ -39,9 +39,25 @@ class EntrySupport(unittest.TestCase):
                         "source": {"kind": "stage1"},
                         "target": {"kind": "planning", "repository": str(self.root), "branch": "main"}}
         registry = {"source": "host-current-skills", "entries": []}
-        self.request.update(registry=registry, registry_context={"project_path": str(self.root),
-            "project_id": "project", "controller_ref": "task", "receipt": "host:registry",
-            "registry_digest": entry.digest(registry)})
+        self.request['registry'] = registry
+        self.request = self.with_registration(self.request, project=self.root, receipt='host:registry')
+
+    def with_registration(self, request, *, project, receipt):
+        """Capture an explicit fixture host query after assembling a positive entry.
+
+        The registration project is never inferred from execution cwd or target.
+        Role-only continuations retain their existing context. Negative cases
+        mutate the returned request afterwards and are never repaired by resolve.
+        """
+        project = Path(project).resolve()
+        self.assertTrue(project.is_dir())
+        result = copy.deepcopy(request)
+        self.assertIn('registry', result)
+        self.assertNotIn('registry_input', result)
+        result['registry_context'] = {'project_path':str(project),
+            'project_id':result['host']['project_id'], 'controller_ref':result['host']['controller_ref'],
+            'receipt':receipt, 'registry_digest':entry.digest(result['registry'])}
+        return result
 
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, check=True).stdout.decode().strip()
@@ -56,7 +72,7 @@ class EntryTests(EntrySupport):
     def test_stage2_scripted_carrier_keeps_distinct_controller_and_source(self):
         self.request.update(stage=2, source={'kind': 'frozen'})
         self.request['host'].update(role='scripted-carrier', controller_ref='controller', source_ref='runner')
-        self.request['registry_context']['controller_ref'] = 'controller'
+        self.request = self.with_registration(self.request, project=self.root, receipt='host:carrier-controller-registry')
         observed = entry.resolve(self.request)
         self.assertEqual(observed['actor']['role'], 'scripted-carrier')
         self.assertEqual(observed['actor']['controller_ref'], 'controller')

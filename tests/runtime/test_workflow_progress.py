@@ -1176,6 +1176,7 @@ class ProgressTests(transfer.StageTransferTests):
         request = copy.deepcopy(self.request)
         request.update(stage=1, source={"kind": "stage1", "path": "docs/requirements/c.md"},
                        target={"kind": "planning", "repository": str(self.flow), "branch": self.binding["branch"]})
+        request = self.with_registration(request, project=self.flow, receipt='host:requirement-source-registry')
         write = {"protocol": transfer.requirement.PROTOCOL, "operation": "prepare", "entry": request,
             "purpose": "write", "path": "docs/requirements/c.md", "version": 1, "authorization": "user:write", "content": "new requirement\n"}
         response = self.invoke("prepare-requirement", {"request": write})

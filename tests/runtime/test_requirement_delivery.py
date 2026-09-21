@@ -37,12 +37,11 @@ class DeliveryTests(EntrySupport):
         self.path = 'docs/requirements/a.md'
         entry.os.getcwd.return_value = str(self.source)
         self.request['host']['project_path'] = str(self.source)
-        self.request['registry_context'].update(project_path=str(self.source), receipt='host:detached-source-registry')
         self.request['target'] = {'kind': 'planning', 'repository': str(self.source), 'branch': None}
         self.request['source']['path'] = self.path
         if self._testMethodName == 'test_dedicated_delivery_receive_accept_and_duplicate':
             self.request['host'].update(role='dedicated-problem-framing', controller_ref='controller', source_ref='host:created')
-            self.request['registry_context']['controller_ref'] = 'controller'
+        self.request = self.with_registration(self.request, project=self.source, receipt='host:detached-source-registry')
         prepared = requirement.handle({'protocol': requirement.PROTOCOL, 'operation': 'prepare', 'entry': self.request,
             'purpose': 'write', 'path': self.path, 'version': 1, 'authorization': 'controller:write', 'content': 'confirmed requirement\n'})
         document = requirement.handle({'protocol': requirement.PROTOCOL, 'operation': 'write', 'entry': self.request, 'intent': prepared})
@@ -87,7 +86,7 @@ class DeliveryTests(EntrySupport):
         downstream = copy.deepcopy(self.request)
         downstream.update(stage=2, source={'kind': 'frozen', 'path': self.path}, target={'kind': 'flow', 'binding': binding})
         downstream['host']['project_path'] = str(flow)
-        downstream['registry_context'].update(project_path=str(self.root), receipt='host:receiving-project-registry')
+        downstream = self.with_registration(downstream, project=self.root, receipt='host:receiving-project-registry')
         scope = {'baseline': binding['base_commit'], 'owned_paths': ['docs/spec.md'], 'protected_paths': [self.path],
                  'implementation_paths': ['impl.py'], 'closure_paths': []}
         prepared = handoff.handle({'protocol': handoff.PROTOCOL, 'operation': 'prepare', 'entry': downstream,
@@ -358,7 +357,7 @@ class DeliveryTests(EntrySupport):
         outcome = self.deliver()['result']
         controller = copy.deepcopy(self.request)
         controller['host'].update(role='controller', controller_ref='task', source_ref=None)
-        controller['registry_context'].update(controller_ref='task', receipt='host:source-controller-registry')
+        controller = self.with_registration(controller, project=self.source, receipt='host:source-controller-registry')
         config = configuration('dedicated-problem-framing')
         ctx = {'schema_version': 3, 'controller_ref': 'task', 'topic_ref': None, 'stage': 1, 'carrier': None,
             'preference': {'topic_current': False, 'stage_current': False}, 'flow_authority': None,
@@ -614,9 +613,9 @@ class AttachedDeliveryTests(EntrySupport):
             attachment = {'project_id': topic['project_id'], 'tree_id': topic['tree_id'],
                 'actor_topic_id': topic['topic_id'], 'actor_conversation_ref': 'task'}
             self.request['host']['project_path'] = str(root)
-            self.request['registry_context'].update(project_path=str(root), receipt='host:non-git-registry')
             self.request['source'] = {'kind': 'discussion', 'attachment': attachment}
             self.request['target'] = None
+            self.request = self.with_registration(self.request, project=root, receipt='host:non-git-registry')
             intent = requirement.handle({'protocol': requirement.PROTOCOL, 'operation': 'prepare', 'entry': self.request,
                 'purpose': 'freeze', 'authorization': 'controller:freeze', 'base_ref': 'HEAD'})
             frozen = requirement.handle({'protocol': requirement.PROTOCOL, 'operation': 'freeze', 'entry': self.request, 'intent': intent})
