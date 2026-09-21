@@ -441,7 +441,7 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.invoke('control',self.final_result_request(checks))
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'deliverable')
 
-    def test_paused_unknown_control_result_reconciles_after_explicit_resume(self):
+    def pause_after_lost_validation_result(self):
         from unittest.mock import patch
         candidate = self.start_final()
         self.invoke('observe',self.observation('idle','result',ref='native:dispatcher'))
@@ -455,10 +455,109 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.invoke('pause')
         self.invoke('observe',self.observation('stopped','result',ref='native:dispatcher'))
         self.assertEqual(self.state()['status'],'paused')
+        return candidate
+
+    def test_paused_unknown_control_result_reconciles_after_explicit_resume(self):
+        candidate = self.pause_after_lost_validation_result()
         resumed = self.invoke('resume')
         self.assertNotEqual(resumed['status'],'paused')
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'deliverable')
         self.assertIsNone(self.state()['dispatch']['delivery'])
+        self.finish_resumed_validation_delivery(resumed, candidate)
+
+    def finish_resumed_validation_delivery(self, response, candidate):
+        if response['next_action']['operation'] == 'control-effects':
+            response = self.invoke('advance')
+        if response['next_action']['operation'] == 'inspect-host-state':
+            # Stop proof is insufficient to resume; the original host must now
+            # authenticate this same identity as idle/resumable.
+            response = self.invoke('observe',self.observation('idle','result',ref='native:dispatcher'))
+        self.assertEqual(response['next_action']['operation'],'continue-host',response)
+        self.assertEqual(response['next_action']['payload']['ref'],'native:dispatcher')
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(len(checkpoint['attempts']),1)
+        payload = {'candidate_commit':candidate,'artifacts':['impl.py'],'checks':['final validation passed'],
+            'review':checkpoint['review_decision']['review'],
+            'verification':control.delivery_verification(checkpoint,'native:dispatcher')}
+        response = self.invoke('observe',self.observation('stopped','result',
+            {'delivery_id':'resumed-final-delivery','status':'completed','payload':payload},ref='native:dispatcher'))
+        self.assertEqual(response['status'],'needs_input',response)
+        pending = response['pending']
+        accepted = self.invoke('decide',{'decision_id':pending['decision_id'],'subject':pending['subject'],
+            'answer':'accept','reference':'controller:accept-resumed-delivery'})
+        self.assertEqual(accepted['status'],'accepted',accepted)
+        self.assertTrue(accepted['downstream_ready'])
+        self.assertEqual(self.state()['accepted']['role_ref'],'native:dispatcher')
+        self.assertEqual(self.state()['accepted']['payload']['candidate_commit'],candidate)
+        self.assertEqual(self.flow_git('rev-parse','HEAD'),candidate)
+
+    def test_resume_delivery_intent_survives_unpause_write_interruption(self):
+        from unittest.mock import patch
+        candidate = self.pause_after_lost_validation_result()
+        original = fixture.progress.atomic_save
+        def crash_after_unpause(path, value):
+            original(path,value)
+            state = value.get(fixture.progress.KEY,{})
+            if state.get('status') == 'active' and state.get('resume_intent'):
+                raise KeyboardInterrupt()
+        with patch.object(fixture.progress,'atomic_save',side_effect=crash_after_unpause):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('resume')
+        self.assertEqual(self.state()['step'],'continue')
+        self.assertEqual(self.state()['resume_intent']['operation'],'resume-original-paused-scope')
+        self.finish_resumed_validation_delivery(self.invoke('resume'),candidate)
+
+    def test_duplicate_deferred_validation_result_resumes_to_actual_delivery(self):
+        candidate = self.complete_final()
+        self.invoke('observe',self.observation('idle','result',ref='native:dispatcher'))
+        request = next(value['request'] for value in self.state()['control_transactions'].values()
+                       if value['request']['action'] == 'validation-result')
+        self.invoke('pause')
+        self.invoke('observe',self.observation('stopped','result',ref='native:dispatcher'))
+        self.invoke('control',request)
+        self.assertIn('deferred_validation',self.state())
+        response = self.invoke('resume')
+        self.assertNotIn('deferred_validation',self.state())
+        self.finish_resumed_validation_delivery(response,candidate)
+
+    def test_paused_validation_start_reconciliation_issues_only_original_followup(self):
+        from unittest.mock import patch
+        candidate,evidence = self.ready_candidate()
+        self.converge(candidate,evidence)
+        context = self.state()['control']['context']
+        start = {'attempt_id':'final-1','dispatcher_ref':'native:dispatcher','carrier_attempt':context['carrier']['attempt'],
+                 **{key:context['handoff_progress'][key] for key in ('candidate','expected_target_head','plan_digest','review_digest')}}
+        original = fixture.progress.dispatch.checkpoint
+        def lose_response(*args, **kwargs):
+            original(*args,**kwargs)
+            raise OSError('injected validation-start response loss')
+        with patch.object(fixture.progress.dispatch,'checkpoint',side_effect=lose_response):
+            self.invoke('control',{'action':'validation-start','evidence':start,
+                'receipt':{'adapter':'fixture','call_ref':'start','response_ref':'start-approved','raw':{'decision':'run'}}})
+        self.invoke('pause')
+        self.invoke('observe',self.observation('stopped','result',ref='native:dispatcher'))
+        response = self.invoke('resume')
+        if response['next_action']['operation'] == 'inspect-host-state':
+            response = self.invoke('observe',self.observation('idle','result',ref='native:dispatcher'))
+        self.assertEqual(response['next_action']['operation'],'continue-host',response)
+        action = copy.deepcopy(self.state()['action'])
+        self.assertEqual(self.invoke('advance')['next_action']['operation'],'lookup-exact-action')
+        self.assertEqual(self.state()['action'],action)
+        checks = fixture.transfer.checks_for(self.plan()['final_required'],candidate)
+        self.invoke('control',self.final_result_request(checks))
+        self.finish_resumed_validation_delivery(response,candidate)
+
+    def test_resumed_validation_waits_for_actual_same_host_resumability(self):
+        self.pause_after_lost_validation_result()
+        resumed = self.invoke('resume')
+        self.assertEqual(resumed['next_action']['operation'],'inspect-host-state',resumed)
+        negative = self.invoke('observe',self.observation('stopped','result',ref='native:dispatcher'))
+        self.assertEqual(negative['next_action']['operation'],'await-host-recovery',negative)
+        query = copy.deepcopy(self.state()['host']['query'])
+        self.assertEqual(self.invoke('advance')['next_action']['operation'],'await-host-recovery')
+        self.assertEqual(self.state()['host']['query'],query)
+        self.assertIsNone(self.state()['dispatch']['delivery'])
+        self.assertEqual(self.state()['control']['context']['carrier']['ref'],'native:dispatcher')
 
 
 # unittest otherwise inherits the unrelated several-hundred-check fixture inventory.

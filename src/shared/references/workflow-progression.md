@@ -647,6 +647,13 @@ and port before changing business state; a lost response cannot be cleared or
 overwritten by candidate invalidation. Definitive read-only validation rejection
 is retained separately from an unknown outcome and does not block a corrected
 request. Cancellation, pause and raw stopped-role observations retain priority.
+Explicit unpause durably restores the suspended step and original resume intent
+before reconciling pending control work. A control result or identical-result ACK
+does not finish resume: complete the existing deferred-decision/result handling,
+then use the original host's resumability and unresolved-call gates for followup.
+A validation-start action that already issued its followup is consumed once.
+Verify resumed validation through actual B receive/accept, not merely a
+`deliverable` control state. A stopped identity alone never proves resumability.
 Paused or cancelled final results are retained for reconciliation and cannot
 advance acceptance. All historical reviewers and execution allocations remain
 inside the native stop barrier. Original transport loss still blocks recovery.

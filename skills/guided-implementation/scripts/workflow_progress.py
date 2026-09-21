@@ -1051,7 +1051,7 @@ class Progress:
         if s.get('deferred_validation') is not None:
             if self.unresolved_host_actions() or self.stop_barrier_pending():
                 return self.query_host()
-            return self.control_action(s['deferred_validation'])
+            return self.resume_control(s['deferred_validation'])
         self.require_controls_reconciled()
         if s["transaction"] is not None:
             self.replay_transaction()
@@ -1981,6 +1981,29 @@ class Progress:
         self.save()
         return self.advance()
 
+    def restore_paused_step(self):
+        s = self.state
+        s['step'] = s.get('suspended_step', 'bound')
+        if s['transaction'] is None and s['dispatch'] and s['step'] not in {
+                'launch', 'prepare-dispatch', 'received', 'publication-ready', 'publication-complete', 'technical-error'} and not s.get('publication'):
+            s['step'] = 'continue'
+            s['resume_intent'] = {'operation':'resume-original-paused-scope', 'subject':self.subject()}
+
+    def resume_control(self, request):
+        result = self.control_action(request)
+        if ((result.get('next_action') or {}).get('operation') == 'control-effects' and
+                request == self.state.get('deferred_validation')):
+            # An identical already-consumed result ACKs before control_action's
+            # normal consumption path; retire only this deferred work pointer.
+            self.state.pop('deferred_validation')
+            self.save()
+        # Reconciliation is not the stopped dispatcher's business continuation.
+        # A control action that already issued its own followup keeps that action.
+        if (self.state.get('resume_intent') is not None and self.state['step'] == 'continue' and
+                (result.get('next_action') or {}).get('operation') == 'control-effects'):
+            return self.resume()
+        return result
+
     def resume(self):
         s = self.state
         if self.outer.get("runner_request", {}).get("operation") in {"pause", "cancel"}:
@@ -1999,7 +2022,7 @@ class Progress:
         pending_control = list(self.unresolved_control_transactions().values())
         require(len(pending_control) <= 1, "control_outcome_unknown", "reconcile each exact outstanding control operation before advancing")
         if pending_control and self.stop_intent() is None:
-            return self.control_action(pending_control[0]["request"])
+            return self.resume_control(pending_control[0]["request"])
         if s.get("stop_requested") == "cancelling":
             if s["status"] == "cancelled":
                 return _view(s, acknowledged=True)
@@ -2025,12 +2048,15 @@ class Progress:
             s["host"].setdefault("query_history", []).append(copy.deepcopy(query))
             s["host"]["query"] = None
             self.save()
-        if s["status"] == "paused":
+        if (s["status"] == "paused" or s["status"] == "active" and
+                (s.get('resume_intent') or {}).get('operation') == 'resume-original-paused-scope'):
             s.pop("stop_requested", None)
             s["status"] = "active"
+            if pending_control:
+                self.restore_paused_step()
             self.save()  # Explicit unpause is durable before deferred recovery.
             if pending_control:
-                return self.control_action(pending_control[0]['request'])
+                return self.resume_control(pending_control[0]['request'])
             if s.get("deferred_business_recovery") is not None:
                 self.recover_business(s["deferred_business_recovery"])
                 return self.advance()
@@ -2050,10 +2076,7 @@ class Progress:
                 return self.advance()
             # Resuming host execution still needs proof. Replaying an already
             # issued B transaction does not resume or recreate its carrier.
-            s["step"] = s.get("suspended_step", "bound")
-            if s["transaction"] is None and s["dispatch"] and s["step"] not in {"launch", "prepare-dispatch", "received", "publication-ready", "publication-complete", "technical-error"} and not s.get("publication"):
-                s["step"] = "continue"
-                s["resume_intent"] = {"operation": "resume-original-paused-scope", "subject": self.subject()}
+            self.restore_paused_step()
             # Persist explicit unpause before any original B transaction can
             # replay/consume and return early. The exact envelope stays unchanged.
             self.save()
