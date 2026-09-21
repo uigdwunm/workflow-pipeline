@@ -46,13 +46,17 @@ Matt 内容不随包分发，也不会自动安装。需要某项能力时另行
 
 每次运行固定包的真实根、摘要和协议键，脚本启动、恢复、交接前复核。升级应安装到新的不可变目录，再切换新任务的注册链接；保留旧目录直到旧运行结束。原地覆盖导致 `package_changed`，缺失旧包导致 `package_unavailable`；不得把同一运行偷偷换到新版本。
 
-前台 runner 仅在 `guided-implementation` 包内。新记录为 v2，固定 runner 与 Stage 2/3/4 身份。start 的 confirmed JSON 包含可信当前 `registry`；runner 将该文件固定为 `registry_input`，每次 executor 启动前重读其中证据，resume 重验剩余目标。宿主/控制器须在注册变化后刷新该文件，或显式改用新证据文件：
+前台 runner 仅在 `guided-implementation` 包内。新记录为 v4，C 协议为 workflow-progress-v6，固定 runner 与 Stage 2/3/4 身份。start 的 confirmed JSON 包含可信当前 `registry`；runner 将该文件固定为 `registry_input`，每次 executor 启动前重读其中证据，resume 重验剩余目标。宿主/控制器须在注册变化后刷新该文件，或显式改用新证据文件：
 
 ```bash
 python3 <固定包根>/scripts/workflow.py resume <record> <answer> --registry-input <current-evidence.json>
 ```
 
-新文件须包含当前 `registry` 对象；这只更新注册证据，不替换原固定包身份。旧 v1 记录返回 `legacy_run_requires_original_runtime`，必须用保留的原 runner 和原安装树恢复；新 runner 不猜测迁移、重启阶段或清理 worktree。
+新文件须包含当前 `registry` 对象；这只更新注册证据，不替换原固定包身份。旧 v1/v2/v3 记录返回 `legacy_run_requires_original_runtime`，必须用保留的原 runner 和原安装树恢复；新 runner 不猜测迁移、重启阶段或清理 worktree。
+
+新运行在一个前台 app-server 内跨轮执行。confirmed input 还需冻结 Controller 提供的实际 CLI 版本、权限配置和来源；首次业务轮前回读 model/effort/cwd/权限，不能推断默认值。完整字段见[前台生命周期协议](src/shared/references/workflow-progression.md#foreground-carrier-and-compatibility)。等待子角色、问题答案或暂停时，前台进程继续持有宿主。
+
+另一终端可用 `resume RECORD ANSWER --decision-id ID` 提交答案，返回 `queued` 只表示已保存；同一 carrier 经 C 消费后才生效。裸 `resume RECORD` 明确请求解除已完成的暂停，单纯答案不会解除暂停。`pause RECORD` 和 `cancel RECORD` 由原 owner 消费；取消必须等所有已绑定角色、执行者和审查者及未解决调用闭合后结束。宿主丢失保留现场并返回 `await-host-recovery`，不会启动第二宿主或重复派发。单层真实宿主验收与外部嵌套待验证项分别记录于 `tests/host/`，不把传输替身通过当成真实宿主通过。
 
 ## 使用方式
 

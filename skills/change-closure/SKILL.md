@@ -59,8 +59,12 @@ complete retained-worktree handoff, prior artifacts, exact authority scope, and
 explicit stage model and reasoning effort. It remains the owner of session
 launch/wait/checkpoint state outside the disposable Flow Worktree. Return a
 structured `completed`, `continue`, or `needs_input` outcome only after this
-Skill's normal verification and cleanup contract; a CLI exit alone never proves
-closure complete.
+Skill's normal verification and cleanup contract. Apply the shared progression
+lifecycle contract: keep the foreground host across waits and decisions,
+reconcile the original Closure Agent and outstanding publication calls, and
+release only after the complete native stop barrier and C/B/D completion.
+Partial cleanup remains the original cleanup-only action; transport success
+never proves closure complete.
 
 ## Update documents
 

@@ -28,7 +28,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v5","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v6","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -451,14 +451,14 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records retain outer version 3 and pin workflow-progress-v5 /
-flow-worktree-v2 packages. A workflow-progress-v1, v2, v3 or v4 member is rejected by v5; retain
-its original runtime and pinned packages. Version 1/2 runner records likewise
+New runner records use outer version 4 and pin workflow-progress-v6 /
+flow-worktree-v2 packages. A workflow-progress-v1 through v5 member is rejected;
+retain its original runtime and pinned packages. Version 1/2/3 runner records likewise
 require their original runtime; neither new APIs nor registry refresh migrate
 or replace records. Complete
 registration is required for live actions. No installation is implied.
 
-Version-3 confirmed input retains the existing frozen_requirement display tuple
+Version-4 confirmed input retains the existing frozen_requirement display tuple
 and additionally requires `requirement`, the complete successful A frozen or
 attached Git checkpoint result. Its original path, commit, hash and positive
 version must match; partial completed_evidence cannot be substituted. The carrier
@@ -480,10 +480,20 @@ the outer stage route; interactive carriers advance through this same contract
 in their existing task. Return C's exact `completion.stage_result`; the runner
 checks persisted B acceptance and current Git facts, not a hand-written footer.
 
-`workflow.py pause RECORD` requests a safe turn boundary; `cancel RECORD`
-requests native-stop/reconciliation through C and terminates the known local
-CLI process group. Terminating that group does not prove native/remote writers
-stopped. Their original control recovery remains mandatory before resume.
+The owner holds one app-server stdio connection across carrier turns and stage
+boundaries. `continue` permits only C's next action in that same host. A running
+native role is waited on; it does not authorize another invoke or a business
+followup. Carrier turn completion, native completion, B acceptance and Git
+publication are separate facts. Stable running waits do not consume the
+unchanged-business-progress counter. Reads use bounded intervals up to 60 seconds.
+
+`workflow.py pause RECORD` and `cancel RECORD` queue an exact request when an
+owner holds RunLock. The owner reads it outside RPC/checkpoint locks, steers an
+active carrier or delivers it at the next turn boundary, and consumes C's
+original stop/reconciliation actions. Paused and needs_input keep the foreground
+host. Normal close occurs only after final verified C/B/D completion or a closed
+cancellation barrier. Emergency process-group cleanup is transport cleanup and
+never native stopped proof. Unknown lookup leaves the original request pending.
 A later pause cannot override cancellation.
 A completed pause is still eligible for cancellation: the runner delivers that
 upgrade to C, and shared advance/resume recover a saved cancellation request
@@ -498,9 +508,106 @@ insufficient. Before any carrier is launched, or with verified non-creation,
 there is no running writer to stop.
 
 `workflow.py resume RECORD [ANSWER] --decision-id ID` binds a pending matter.
-Without an answer resume only reconciles an eligible technical/checkpoint state.
-Completed runs ACK without relaunching. A completed turn is persisted before
-intake so a process crash does not rerun the same completed stage.
+With a live owner, an answer returns `queued` after saving its exact ID, subject,
+and value; only the original carrier consumes it through C decide. Identical
+answers ACK, different answers conflict, and obsolete IDs are rejected. An
+answer alone does not unpause. `resume RECORD` without an answer explicitly
+queues release of the original paused subject; it is applied only after the
+stop barrier closes. Cancellation has priority over both forms. Requests remain
+in the original checkpoint if the owner disappears before consuming them.
+
+No-owner resume first reads the original durable transport receipts and finished
+carrier result. It does not create an app-server or replay a sent request.
+Missing current original-identity/action evidence returns await-host-recovery.
+An untouched prelaunch can start; a completed run revalidates and ACKs. Old
+records, missing fixed packages and incompatible registrations remain read-only.
+
+The confirmed `host` object contains `transport: app-server-stdio`, the exact
+`cli_version`, Controller provenance `source: {kind: controller-current-config,
+controller_ref, receipt}`, the actual `thread` request settings and `effective`
+permission readback. Thread settings include approvalPolicy, config,
+runtimeWorkspaceRoots and exactly one of sandbox/permissions. The confirmed
+roots include repository, Flow and Git metadata. Effective settings retain
+approvalPolicy, sandbox and runtimeWorkspaceRoots, plus applicable reviewer,
+permission-profile/provider facts. Per-stage model/effort keep their existing
+owner. The adapter disables model fallback and compares actual thread settings
+before its first business turn. Unsupported settings stop; there is no exec
+fallback or inferred default permission policy.
+The checked CLI's thread/start named-profile readback exposes only id/extends;
+permissionProfile/list adds availability, not resolved permission rules.
+config/read returns cwd configuration layers and configRequirements/read returns
+selection constraints, neither a thread-bound complete effective profile. This
+adapter therefore rejects an explicit permissions selector whose complete rules
+cannot be checked. A default activePermissionProfile identity does not reject a
+sandbox configuration with complete effective sandbox readback.
+It preserves the Controller's selection and reports unsupported configuration;
+it does not translate the profile into a broader sandbox mode.
+
+RPC IDs belong to one connection. The adapter journals intent before sending,
+retains original responses, and accepts only the matching carrier thread/turn's
+successful terminal event and full final message. Native notifications retain
+their own original thread/turn, including late events from an earlier parent
+turn. subAgentActivity started plus item/completed ends a creation tool item;
+it does not prove child completion. Commentary and deltas remain progress.
+Server requests preserve exact ID/method/params/host instance in the original
+checkpoint; the Controller supplies the exact RPC result JSON for that pending
+matter. No request is automatically approved or replayed into another host.
+
+`transport-lost` revokes current proof and retains identities, unresolved calls,
+accepted B data and publication facts. It cannot clear a business_block. The
+runner's host nonce, PID and locks locate evidence; they are not live proof.
+
+### Native stop barrier and review activity
+
+The stop barrier derives targets from the original dispatch, control executions,
+allocation transactions and the current candidate's two review_activity slots.
+An unbound allocation or unresolved create/continue/stop call keeps it open.
+Creation-ready may settle the creation call without proving the child's turn
+completed. A stopped root does not settle its executions, reviewers or descendants.
+Original parents retain their governing responsibilities; an unavailable parent
+permits only supported exact-ref lookup/control, never an impersonated actor.
+
+`review-activity` belongs only to the original Stage-3 Originating Task. Prepare
+data is `{operation: prepare, axis, candidate, actor_ref, verification}`; axis
+is standards/spec and verification is `{candidate, checks}`. C verifies the
+clean exact Git candidate and returns one invoke-review action_id. The original
+task performs its existing independent review call once. Observe data retains
+the same axis/candidate/actor_ref/action_id and `receipt: {adapter, call_ref,
+response_ref, status, ref, raw}`. The caller authenticates that actual native
+response. Status is running/stopped/unknown/not-created. Unknown creation keeps
+the action open; a stopped response requires the mechanically bound ref.
+Duplicates ACK, conflicting receipts fail, and a new candidate waits for both
+old axes to stop before retaining their receipts in review_history. These slots
+grant no file allocation, implementation or candidate-acceptance authority.
+
+`lifecycle-state` receives the current adapter's complete raw descendant lookup:
+`{instance, carrier_thread, sequence, pages, events}`. Each page retains its
+thread/list request and response, exact ancestor, all sourceKinds (including unknown),
+modelProviders=[] to include every provider, and an explicit
+archived selector. Complete archived=false pagination precedes complete
+archived=true pagination; neither query may add cwd/provider/project filters.
+C rejects missing partitions, interrupted pagination and duplicate identities
+across pages, including a thread moving between archive partitions. Listing is
+an observation, not quiescence: original bindings, terminal parent calls,
+closed unresolved actions and current event generations remain mandatory.
+Late spawn/activity events revoke prior evidence, and a failed lookup cannot
+reuse an older snapshot to close the stop barrier. Archived does not mean stopped.
+Events retain raw subAgentActivity notifications. The
+foreground adapter includes all source kinds, because omitted sourceKinds would
+hide native children. C mechanically associates already-bound canonical refs
+with agentThreadId from those events and checks current idle status for every
+known target. notLoaded/history, missing targets, unknown extra descendants and
+unfinished native tool items keep the barrier open. No model-reported tree_closed
+boolean is accepted. A new native event invalidates the snapshot; `host-event`
+retains that raw event and recomputes the projection. The runner emits snapshots
+after current native stop facts and retains unsupported lookup as a recovery
+condition rather than polling or substituting a new host.
+
+`observe` may carry this same raw snapshot in `lifecycle` with an authenticated
+native response. Snapshot evidence is a projection, not a second role registry.
+Publication and new B acceptance require the complete barrier; Stage 3 also
+matches both stopped review refs to its exact accepted candidate. Final release
+rechecks C/B/D completion. Process exit alone satisfies none of those conditions.
 
 Explicit low-complexity standalone Stage 3 without an A requirement retains
 its existing standalone-entry/control route; do not synthesize a document to

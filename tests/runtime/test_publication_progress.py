@@ -385,7 +385,7 @@ class PublicationProgressTests(unittest.TestCase):
         f = self.flow
         f.begin("continuous")
         outer = progress.read_record(f.checkpoint)
-        outer.update(version=3, status="active")
+        outer.update(version=4, status="active")
         outer[progress.KEY]["protocol"] = "workflow-progress-v1"
         progress.atomic_save(f.checkpoint, outer)
         before = f.checkpoint.read_bytes()

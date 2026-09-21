@@ -4,6 +4,11 @@ Use these formats verbatim and replace every placeholder. Interpret user replies
 through
 [`../shared/design-discussion/confirmation-contract.md`](../shared/design-discussion/confirmation-contract.md).
 
+For foreground runs, these business messages retain C's original pending ID,
+native ref and checkpoint. The runner keeps its host while waiting; queued is
+only a saved answer, and the original carrier consumes it. Apply the shared
+progression lifecycle gate before any native followup or host release.
+
 ## Stepwise subagent launch confirmation
 
 ```text

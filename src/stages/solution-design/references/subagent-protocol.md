@@ -308,9 +308,12 @@ return control to this protocol. Review and recoverable anomaly messages retain
 the same semantic child identity and stage checkpoint; transport bookkeeping
 does not create a new stage attempt or widen its authority.
 
-On a review or anomaly, the child becomes idle after returning its status. The
-primary agent asks the user and resumes the same child through the current
-orchestration adapter. The follow-up must include:
+On a review or anomaly, retain the actual current native state separately from
+the child's message. In a foreground run the host stays open while a decision
+is pending. The primary records the exact decision and follows C's current
+original-identity continuation gate; running permits wait, and a historical
+completion or stopped receipt alone cannot authorize followup. The follow-up
+through the original orchestration adapter must include:
 
 - protocol `solution-design-subagent-v2`;
 - trusted child target;
