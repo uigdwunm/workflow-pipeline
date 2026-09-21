@@ -131,19 +131,41 @@ or
             "Any replacement candidate invalidates both review results",
             "reruns both axes against that replacement candidate",
             "Only the Originating Task accepts the candidate; Stage 4 integrates it",
-            "merges that target, runs affected and full checks, and commits a replacement candidate",
+            "merges that target, runs affected checks, and commits a replacement candidate",
+            "Then record `review-converged`",
+            "Persist one `validation-start` attempt",
+            "Only the latest complete passed final attempt permits formal B acceptance",
         ):
             self.assertIn(marker, normalized_originating)
+        accept_contract = " ".join(originating.split("## Accept", 1)[1].split("## Diagnosis-first remediation", 1)[0].split())
+        review_first_order = (
+            "focused and affected checks",
+            "dispatches the Standards and Spec review axes independently",
+            "Then record `review-converged`",
+            "Persist one `validation-start` attempt",
+            "Only the latest complete passed final attempt permits formal B acceptance",
+        )
+        positions = [accept_contract.index(marker) for marker in review_first_order]
+        self.assertEqual(positions, sorted(positions))
         normalized_worktree_execution = " ".join(worktree_execution.split()).replace("Implementation Dispatcher", "Dedicated Implementation Task")
         self.assertNotIn("reruns verification and review", normalized_worktree_execution)
         for marker in (
             "Dedicated Implementation Task merges the new target",
-            "runs affected and full checks",
+            "runs affected checks",
             "commits a replacement candidate",
             "Originating Task establishes the new review fixed point",
             "reruns both Standards and Spec axes",
+            "complete the frozen final validation before retrying",
         ):
             self.assertIn(marker, normalized_worktree_execution)
+        replacement_order = (
+            "runs affected checks",
+            "commits a replacement candidate",
+            "reruns both Standards and Spec axes",
+            "complete the frozen final validation before retrying",
+        )
+        positions = [normalized_worktree_execution.index(marker) for marker in replacement_order]
+        self.assertEqual(positions, sorted(positions))
 
     def test_stage_three_intakes_execution_results_before_declaring_completion(self) -> None:
         guided = (
@@ -165,7 +187,7 @@ or
             "A platform terminal result ends one execution turn; it does not complete Stage 3",
             normalized_originating,
         )
-        for result_type in ("candidate", "checkpoint", "blocked", "no-progress"):
+        for result_type in ("reviewable", "candidate", "checkpoint", "blocked", "no-progress"):
             self.assertIn(f"`{result_type}`", normalized_originating)
         for marker in (
             "exact HEAD before and after the turn",
@@ -176,7 +198,7 @@ or
         ):
             self.assertIn(marker, normalized_originating)
         for marker in (
-            "结果类型：<candidate | checkpoint | blocked>",
+            "结果类型：<reviewable | candidate | checkpoint | blocked>",
             "当前 HEAD：<commit>",
             "已完成：<completed scope>",
             "剩余：<remaining scope | none>",
