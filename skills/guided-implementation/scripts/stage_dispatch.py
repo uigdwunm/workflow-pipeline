@@ -51,7 +51,7 @@ their exact idempotency key and revisions must be retained on an unknown result.
     # Downstream Phase Runs own lifecycle, while execution control stays in the
     # caller checkpoint. Attached dedicated-stage mutations must use the ledger.
     require(context["topic_ref"] is None or context["stage"] >= 2, "authority_missing", "attached dedicated control requires its ledger adapter")
-    payload = {"schema_version": 1, "actor_ref": context["controller_ref"], "context": context,
+    payload = {"schema_version": 2, "actor_ref": context["controller_ref"], "context": context,
                "action": action, "evidence": evidence}
     if context["stage"] >= 2 or action == "receive":
         repository = request["binding"]["repository"] if action == "closure-result" else request["expected_entry"]["repository"]["root"]
@@ -111,7 +111,7 @@ def prepared(request):
             action = "start-dispatch"
             evidence.update(binding=saved["binding"], binding_verified=True, allowed_paths=scope["implementation_paths"],
                             protected_paths=scope["protected_paths"], authority_digest=saved["authorization"]["scope_digest"],
-                            testing_basis=saved["semantic"]["testing_basis"])
+                            testing_basis=saved["semantic"]["testing_basis"], validation_plan=saved["semantic"]["validation_plan"])
         elif role == "execution-agent":
             action = "plan-execution"
             evidence.update(task_id=str(uuid.uuid4()), paths=scope["owned_paths"], read_only=scope["protected_paths"],
@@ -141,9 +141,10 @@ def prepared(request):
 def record_for(request):
     record = handoff.unseal(request["record"])
     entry.fields(record, {"protocol", "kind", "handoff", "request", "receipts", "delivery", "acceptance", "status"})
-    require(record["protocol"] == PROTOCOL and record["kind"] == "dispatch", "invalid_evidence", "dispatch record required")
+    handoff.require_current_protocol(record)
+    require(record["kind"] == "dispatch", "invalid_evidence", "dispatch record required")
     launch = handoff.unseal(record["request"])
-    handoff.unseal(record["handoff"])
+    handoff.require_current_protocol(handoff.unseal(record["handoff"]))
     require(launch["input_digest"] == record["handoff"]["digest"], "identity_mismatch", "request belongs to another input")
     control.validate_context(request["control"]["context"])
     require(request["control"]["context"]["controller_ref"] == launch["controller_ref"], "identity_mismatch", "checkpoint owner changed")
@@ -362,9 +363,9 @@ def received(request):
         elif stage == 2:
             action, evidence = "design-result", {"ref": ref, "result_digest": claim["digest"]}
         elif stage == 3:
-            action = "candidate"
-            evidence = {"dispatcher_ref": ref, "commit": payload["candidate_commit"], "clean": True,
-                        "changed_paths": [], "file_hashes": {}, "tests": payload["checks"], "binding": saved["binding"]}
+            action = "delivery-ready"
+            evidence = {"dispatcher_ref":ref, "candidate":payload['candidate_commit'],
+                        "review":payload['review'], "verification":payload['verification']}
         else:
             require(payload["candidate_commit"] == saved["predecessor"]["payload"]["candidate_commit"], "source_changed", "closure candidate differs from accepted input")
             action = "closure-result"
@@ -415,6 +416,9 @@ def accepted(request):
                 result, applied = checkpoint(request["control"], saved, "accept", {"delivery_digest": item["delivery_digest"]})
             elif stage == 2:
                 result, applied = checkpoint(request["control"], saved, "accept-design", {"ref": ref, "result_digest": claim["digest"]})
+            elif stage == 3:
+                result, applied = checkpoint(request['control'], saved, 'accept-delivery',
+                    {'dispatcher_ref':ref,'candidate':payload['candidate_commit'],'review':payload['review'],'verification':payload['verification'], 'delivery_digest':claim['digest']})
         record["status"] = "accepted"
     identity = saved["requirement_identity"]
     if saved["stage"] < 2:
@@ -431,7 +435,7 @@ def accepted(request):
 
 def handle(request):
     request = copy.deepcopy(request)
-    require(request.get("protocol") == PROTOCOL, "unsupported_protocol", "unsupported stage transfer protocol")
+    require(request.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime", "retain original stage-transfer runtime: " + str(request.get("protocol")))
     operation = request.get("operation")
     require(operation in {"prepare", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown dispatch operation")
     return {"prepare": prepared, "bind": bound, "reconcile": bound, "receive": received, "accept": accepted}[operation](request)

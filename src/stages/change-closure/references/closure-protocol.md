@@ -20,8 +20,9 @@ authoritative execution state. Closure-document changes are additional commits
 in that same worktree. `complete-worktree` integrates the final combined
 candidate and cleans the Flow Worktree in one operation. A later target change
 yields `target_changed`; the same Implementation Dispatcher integrates the
-new target and reruns affected/full checks, the Originating Task reruns both
-review axes, and Stage 4 rechecks closure-owned documents before retrying.
+new target and reruns affected checks, the Originating Task reruns both
+review axes, and the same dispatcher completes the frozen final validation
+again. Stage 4 then rechecks closure-owned documents before retrying.
 
 For managed B/C flows, submit the final documentation candidate and original host
 stop evidence through C's publication-readiness seam before the stage owner invokes
@@ -56,3 +57,11 @@ remaining is likewise cleaned rather than merged again. Explicit user
 cancellation cancels the active Phase Run and leaves the topic at phase 3.
 
 The Closure Agent writes only the supplied documentation scope. The Workflow Controller uses workflow_control_git.py to verify candidate ancestry, changed paths and actual worktree/branch cleanup. Code defects return to stage 3. Partial cleanup retains the verified merge and uses cleanup-only, never another publication.
+
+Inherited Stage-3 delivery requires the strict schema-2 final verification on
+implementation commit I and the unchanged expected target. Closure commit D is
+I or its descendant, with the complete I→D path/byte/mode delta limited to exact
+closure_paths. Check documentation at D without claiming I's test result validates
+D. An implementation or target change returns to the original dispatcher for
+focused/affected checks, both review axes and a new final validation attempt.
+Already-published facts retain cleanup-only and original Phase Run completion.

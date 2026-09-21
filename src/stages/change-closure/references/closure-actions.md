@@ -31,3 +31,11 @@
 An integration failure before merge preserves the Flow Worktree for
 correction. A `cleanup_failed` result already contains a merge commit and must
 be handled as cleanup, not retried as another merge.
+
+Inherited Stage-3 delivery requires the strict schema-2 final verification on
+implementation commit I and the unchanged expected target. Closure commit D is
+I or its descendant, with the complete I→D path/byte/mode delta limited to exact
+closure_paths. Check documentation at D without claiming I's test result validates
+D. An implementation or target change returns to the original dispatcher for
+focused/affected checks, both review axes and a new final validation attempt.
+Already-published facts retain cleanup-only and original Phase Run completion.

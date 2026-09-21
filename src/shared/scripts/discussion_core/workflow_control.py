@@ -97,13 +97,15 @@ def workflow_control(request):
         if matches:
             record = matches[0]
             context = _json_field(record, 'data_json', 'workflow control')
+            if context.get('schema_version') != 2:
+                raise ProtocolError('legacy_run_requires_original_runtime', 'retain original package for embedded control schema ' + str(context.get('schema_version')))
             if context['controller_ref'] != owner_ref:
                 raise ProtocolError('document_ownership_conflict', 'controller identity changed')
         else:
             record = {'result_id': 'WC-' + request['actor_topic_id'], 'result_kind': 'workflow-control',
                       'topic_id': request['actor_topic_id'], 'record_revision': 0, 'state': 'active'}
             records['Phase Results'].append(record)
-            context = {'schema_version': 1, 'controller_ref': owner_ref,
+            context = {'schema_version': 2, 'controller_ref': owner_ref,
                        'topic_ref': request['actor_topic_id'], 'stage': topic['current_phase'],
                        'carrier': None, 'preference': {'topic_current': False, 'stage_current': False},
                        'flow_authority': None, 'requirement_identity': identity, 'handoff_progress': None}
@@ -181,7 +183,7 @@ def workflow_control(request):
                     evidence['verified_commit_hash'] = identity['sha256']
                 else:
                     _git.verify_delivery(project, evidence['commit'], evidence)
-            control = _control.transition({'schema_version': 1, 'actor_ref': owner_ref,
+            control = _control.transition({'schema_version': 2, 'actor_ref': owner_ref,
                 'context': context, 'action': action, 'evidence': evidence})
         except _control.ControlError as error:
             raise ProtocolError('invalid_request', str(error)) from error

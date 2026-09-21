@@ -28,7 +28,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v6","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v7","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -451,7 +451,7 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 4 and pin workflow-progress-v6 /
+New runner records use outer version 4 and pin workflow-progress-v7 /
 flow-worktree-v2 packages. A workflow-progress-v1 through v5 member is rejected;
 retain its original runtime and pinned packages. Version 1/2/3 runner records likewise
 require their original runtime; neither new APIs nor registry refresh migrate
@@ -631,3 +631,29 @@ its existing standalone-entry/control route; do not synthesize a document to
 fit B. Non-Git 0/1 retains snapshot authority and is not Git downstream input.
 Real native creation, async ready, stopped proofs and cross-host lookup require
 separate host acceptance; adapter-double tests do not certify those capabilities.
+
+## Review-first Stage 3
+
+The original Controller uses `control` with authenticated receipt for
+candidate-ready → review-converged → validation-start → validation-result.
+See [Workflow Control Protocol](guided-implementation/workflow-control-protocol.md)
+for exact evidence. C persists the final attempt and continuation intent before
+same-dispatcher followup. reviewable/reviewing return review actions and never an
+implementation-writing continuation. Partial writes reuse the existing exact
+control transaction; unknown host actions are reconciled, never reissued.
+An unresolved control transaction also blocks later control decisions, B intake,
+review starts, allocations and publication. Recover only its exact saved request
+and port before changing business state; a lost response cannot be cleared or
+overwritten by candidate invalidation. Definitive read-only validation rejection
+is retained separately from an unknown outcome and does not block a corrected
+request. Cancellation, pause and raw stopped-role observations retain priority.
+Explicit unpause durably restores the suspended step and original resume intent
+before reconciling pending control work. A control result or identical-result ACK
+does not finish resume: complete the existing deferred-decision/result handling,
+then use the original host's resumability and unresolved-call gates for followup.
+A validation-start action that already issued its followup is consumed once.
+Verify resumed validation through actual B receive/accept, not merely a
+`deliverable` control state. A stopped identity alone never proves resumability.
+Paused or cancelled final results are retained for reconciliation and cannot
+advance acceptance. All historical reviewers and execution allocations remain
+inside the native stop barrier. Original transport loss still blocks recovery.

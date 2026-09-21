@@ -34,7 +34,7 @@
     },
     "handoff_json": {
       "type": "string",
-      "description": "For completed, use the exact completion.stage_result.handoff_json from the persisted workflow-progress-v6 acceptance. For needs_input, retain the exact pending matter. Never reconstruct B evidence."
+      "description": "Reviewable Stage-3 work returns continue. Completed requires converged reviews and the latest complete passed final attempt; use the exact completion.stage_result.handoff_json from the persisted workflow-progress-v7 acceptance. For needs_input, retain the exact pending matter. Never reconstruct B evidence."
     },
     "question": {
       "type": "string"
@@ -51,5 +51,5 @@
       ]
     }
   },
-  "description": "One carrier turn in runner v4. Only persisted workflow-progress-v6 C/B/D acceptance completes a stage; continue and needs_input retain the foreground host."
+  "description": "One carrier turn in runner v5. Only persisted workflow-progress-v7 C/B/D acceptance completes a stage; continue and needs_input retain the foreground host."
 }

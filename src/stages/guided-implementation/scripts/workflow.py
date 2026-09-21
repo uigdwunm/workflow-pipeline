@@ -400,7 +400,7 @@ def _host_pending(instance, request):
 
 def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
     return {
-        "version": 4,
+        "version": 5,
         "confirmed": confirmed,
         "status": "active",
         "current_stage": "stage2",
@@ -412,9 +412,9 @@ def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_record(state: dict[str, Any]) -> dict[str, Any]:
-    if state.get("version") in {1, 2, 3}:
-        raise WorkflowError('legacy_run_requires_original_runtime: use the retained original runner and installation tree; record is unchanged')
-    if state.get("version") != 4:
+    if state.get("version") in {1, 2, 3, 4}:
+        raise WorkflowError('legacy_run_requires_original_runtime: record version ' + str(state.get('version')) + '; retain original package digests ' + str({k:v.get('bundle_digest') for k,v in state.get('confirmed',{}).get('packages',{}).items()}))
+    if state.get("version") != 5:
         raise WorkflowError("unsupported run record version")
     confirmed = validate_confirmed(state.get("confirmed") if isinstance(state.get("confirmed"), dict) else {}, restoring=True)
     if state.get("status") not in {"active", "needs_input", "completed", "failed", "interrupted", "paused", "pausing", "cancelling", "cancelled"}:
@@ -495,7 +495,7 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "Use the saved flow_mode and exact pending decisions; continuous mode skips only existing human stage gates. "
         "Do not start a daemon, scheduler, monitor, project, or discussion ledger. A carrier turn result never releases its foreground host.\n"
         "At the end, write exactly one JSON result matching the supplied output schema. Every schema field is required. "
-        "completed requires useful artifacts/evidence and uses handoff_json for a JSON-encoded object (Stage 2 and 3 "
+        "Reviewable Stage-3 checkpoints return continue; completed requires converged review plus strict final verification and uses handoff_json for a JSON-encoded object (Stage 2 and 3 "
         "must carry their full handoff there); use empty question/message strings when inapplicable. needs_input uses "
         "empty artifacts/evidence, handoff_json '{}', and its exact question. needs_input_kind must be user_decision "
         "only for a genuine user decision; report technical failure with needs_input_kind technical_error and the exact "
@@ -616,8 +616,6 @@ def _require_handoff(stage: str, result: dict[str, Any]) -> None:
             raise WorkflowError("stage3 handoff.candidate_commit must be a string")
         if not isinstance(handoff["review"], dict) or not handoff["review"]:
             raise WorkflowError("stage3 handoff.review must be an object")
-        if not isinstance(handoff["verification"], (dict, list)) or not handoff["verification"]:
-            raise WorkflowError("stage3 handoff.verification must be useful evidence")
 
 
 def _validate_handoff_continuity(
@@ -1474,8 +1472,8 @@ def _request_control(record_path, operation, *, live):
     record_path = _absolute_path(str(record_path), "run_record")
     with progression.record_lock(record_path):
         state = progression.read_record(record_path)
-        if state.get("version") != 4:
-            raise WorkflowError("legacy_run_requires_original_runtime: control requires the original version-4 record")
+        if state.get("version") != 5:
+            raise WorkflowError("legacy_run_requires_original_runtime: control requires the original version-5 record")
         member = state.get(progression.KEY)
         pin = state.get("confirmed", {}).get("packages", {}).get("runner")
         if ((member is not None and member.get("protocol") != progression.PROTOCOL) or

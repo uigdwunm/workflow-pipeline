@@ -49,9 +49,10 @@ A platform terminal result ends one execution turn; it does not complete Stage
 before and after the turn, verifies the Worktree Binding and Git state, and
 classifies the result:
 
-- `candidate`: the confirmed scope is complete, the exact HEAD is a clean
-  committed candidate, focused and full checks are reported, and no planned
-  work remains.
+- `reviewable`: implementation scope is complete at a clean committed HEAD with
+  all frozen review-required checks; independent review and final validation remain.
+- `candidate`: the exact reviewed fixed point has the latest complete successful
+  final attempt, authenticated raw results and no remaining planned work.
 - `checkpoint`: planned work remains and the exact HEAD advanced to clean,
   committed, in-scope progress.
 - `blocked`: a specific implementation-authority decision, changed protected
@@ -60,7 +61,7 @@ classifies the result:
 - `no-progress`: planned work remains, no specific blocker was reported, and
   the exact HEAD and clean worktree are unchanged.
 
-Route a `candidate` to Accept. Continue a `checkpoint` in the same Implementation Dispatcher and worktree from the exact current HEAD and remaining
+Route `reviewable` to independent review; route `candidate` to final delivery acceptance. Continue a `checkpoint` in the same Implementation Dispatcher and worktree from the exact current HEAD and remaining
 scope; this is ordinary continuation, not recovery. Route a material `blocked`
 decision to the user and return an ordinary technical condition within the
 confirmed scope to the same Implementation Dispatcher.
@@ -100,7 +101,7 @@ state is a separate anomaly and must be resolved before launch.
 ## Accept
 
 This review contract is authoritative. Require a clean committed candidate plus
-focused/full checks. The Originating Task pins the exact candidate commit and
+focused and affected checks. The Originating Task pins the exact candidate commit and
 the expected target-branch commit as one review fixed point, independently
 inspects the candidate diff against that fixed point, and passes that same fixed
 point and candidate to both Standards and Spec review axes. Give the Spec axis
@@ -109,6 +110,10 @@ standalone brief. It dispatches the Standards and Spec review axes independently
 and records their results
 separately. Do not accept a candidate until both axes correspond to that exact
 fixed point and candidate commit and have no unresolved actionable findings.
+Then record `review-converged` with semantic result references matching the two
+stopped native responses. Persist one `validation-start` attempt and consume its
+followup on the original dispatcher. Only the latest complete passed final attempt
+permits formal B acceptance; inspect raw outputs and every frozen check condition.
 Reject an unplanned feature, behavior change, deletion, replacement, side
 effect, or optional adjacent improvement even when its tests pass.
 Return every actionable test or review finding to the same Implementation Dispatcher and verified worktree; the originating task does not edit
@@ -118,7 +123,7 @@ reruns both axes against that replacement candidate before accepting it. Only
 the Originating Task accepts the candidate; Stage 4 integrates it. Route only a material
 unresolved decision to the user. If the target advanced without changing a
 source path, the same Implementation Dispatcher merges that target, runs
-affected and full checks, and commits a replacement candidate. The Originating
+affected checks, and commits a replacement candidate. The Originating
 Task then establishes its exact replacement fixed point and reruns both axes.
 
 ## Diagnosis-first remediation
@@ -135,7 +140,7 @@ failure and fix side by side; (b) explains why that fix did not address the
 mechanism; (c) identifies the smallest effective validation at the affected
 real boundary; and (d) lists the affected sibling paths inspected and whether
 the mechanism applies to each. The task then runs that focused validation,
-repairs in scope, reruns the affected and full checks, and commits the
+repairs in scope, reruns the affected checks, and commits the
 replacement candidate as usual.
 
 If diagnosis shows that the accepted scope or plan is insufficient, stop

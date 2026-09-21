@@ -125,6 +125,7 @@ def verified_transition(payload):
         verify_delivery(repository, payload['baseline'], evidence)
     if action == 'start-closure':
         verify_binding(repository, evidence['binding'])
+        require(git(repository, 'rev-parse', evidence['binding']['target_branch']).decode().strip() == evidence['verification']['expected_target_head'], 'target_changed')
         require(snapshot(repository)['head'] == evidence['candidate'] and not git(repository, 'status', '--porcelain'), 'closure must start at the clean accepted candidate')
     if action == 'closure-result' and evidence.get('implementation_problem') is None:
         require(progress is not None, 'missing closure checkpoint')
@@ -136,7 +137,7 @@ def verified_transition(payload):
         git(primary, 'merge-base', '--is-ancestor', merge, binding['target_branch'])
         closure_changes = set(git(primary, 'diff', '--name-only', accepted, merge).decode().splitlines())
         require(closure_changes <= set(progress['closure_paths']), 'closure changed implementation or protected paths')
-        all_changes = git(primary, 'diff', '--name-only', commit(payload['baseline']), merge).decode().splitlines()
+        all_changes = git(primary, 'diff', '--name-only', commit(progress['verification']['expected_target_head']), merge).decode().splitlines()
         registered = git(primary, 'worktree', 'list', '--porcelain').decode().splitlines()
         branch = subprocess.run(['git', '-C', str(primary), 'show-ref', '--verify', '--quiet', 'refs/heads/' + binding['branch']], capture_output=True)
         require(branch.returncode in {0, 1}, 'cannot verify branch cleanup')
@@ -147,10 +148,10 @@ def verified_transition(payload):
         verify_binding(repository, evidence['binding'])
         if action == 'start-dispatch':
             evidence['binding_verified'] = True
-    if action in {'plan-execution', 'execution-result', 'accept-execution', 'recover-dispatch', 'candidate'}:
+    if action in {'plan-execution', 'execution-result', 'accept-execution', 'recover-dispatch', 'candidate-ready'}:
         require(progress is not None, 'missing dispatcher checkpoint')
         verify_binding(repository, progress['binding'])
-        require(set(changed_paths(repository, payload['baseline'])) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
+        require(set(changed_paths(repository, git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip())) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
     if action == 'plan-execution':
         before = snapshot(repository)
         before['files'] = {p: file_fingerprint(repository, p) for p in progress['allowed_paths']}
@@ -167,12 +168,24 @@ def verified_transition(payload):
             execution = execution_record(progress, evidence['agent_ref'])
             execution_delta(repository, progress, execution, accepting=True)
             evidence['file_hashes'] = {p: evidence['file_hashes'][p] for p in execution['file_hashes']}
-    if action == 'candidate':
+    if action in {'candidate-ready', 'review-start', 'review-converged', 'validation-start', 'validation-result', 'validation-retry', 'delivery-ready', 'accept-delivery'}:
+        require(not set(changed_paths(repository, payload['baseline'])) & set(progress['protected_paths']), 'protected source changed')
+    if action == 'candidate-ready':
+        require(git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip() == evidence['expected_target_head'], 'target_changed')
+        git(repository, 'merge-base', '--is-ancestor', evidence['expected_target_head'], evidence['commit'])
         require(not git(repository, 'status', '--porcelain'), 'candidate working tree is dirty')
         actual_commit = snapshot(repository)['head']
         require(evidence['commit'] == actual_commit, 'candidate is not actual HEAD')
-        evidence.update(clean=True, changed_paths=changed_paths(repository, payload['baseline']),
+        evidence.update(clean=True, changed_paths=changed_paths(repository, evidence['expected_target_head']),
                         file_hashes={p: implementation_hash(repository, p) for p in progress['allowed_paths']})
+    if action in {'review-start', 'review-converged', 'validation-start', 'validation-result', 'validation-retry', 'delivery-ready', 'accept-delivery'}:
+        require(progress is not None, 'missing implementation fixed point')
+        verify_binding(repository, progress['binding'])
+        require(not git(repository, 'status', '--porcelain') and snapshot(repository)['head'] == progress['candidate'], 'validation candidate changed or dirty')
+        require(git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip() == progress['expected_target_head'], 'target_changed')
+        require(set(changed_paths(repository, git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip())) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
+        if action in {'validation-start', 'validation-result'}:
+            evidence['source_snapshot'] = {p:file_fingerprint(repository, p) for p in progress['allowed_paths'] + progress['protected_paths']}
     result = transition(request)
     if action in {'start-dispatch', 'start-design', 'start-closure'}:
         git(repository, 'merge-base', '--is-ancestor', commit(payload['baseline']), 'HEAD')

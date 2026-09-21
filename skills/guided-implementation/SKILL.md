@@ -182,7 +182,7 @@ exact authority boundaries in its prompt. The dispatcher must call
 `verify-worktree` with its actual platform working directory before substantive
 work.
 
-## Implement and review
+## Implement, review, then validate
 
 - When Tickets are present, read each completely, topologically sort `Blocked
   by`, preserve source document order among simultaneously ready Tickets, and
@@ -199,7 +199,7 @@ work.
   implementation-authority/testing-seam gap before coding instead of bypassing
   the boundary.
 - Work only inside the verified worktree. Invoke the complete native
-  `$implement` workflow, including `$tdd`, focused and full checks, typecheck,
+  `$implement` workflow, including `$tdd`, focused and affected checks, typecheck,
   lint or build where applicable, and commit a clean candidate.
 - The Implementation Dispatcher must not dispatch Standards or Spec review
   agents or receive the parent Session or CLI. It reports the exact candidate
@@ -222,14 +222,17 @@ work.
   identities. Before another edit, the task compares the prior failure and
   fix, explains why the mechanism remained, names the minimal effective
   validation at the real boundary, and inspects affected sibling paths. It
-  then validates, repairs in scope, and reruns affected and full checks in the
+  then validates, repairs in scope, and reruns affected checks in the
   same task and Flow Worktree. Scope or plan gaps use the existing authority or
   anomaly path; ordinary defects continue here. No diagnostic document, fixed
   remediation-round gate, automatic replacement, or new Workflow Stage is
   added.
 - Local stage entry grants no push, pull request, deployment, release, tracker or
   other remote write. Each such action requires separate explicit authority.
-- The Originating Task owns `$code-review` and candidate acceptance. Its Spec
+- After focused/affected checks, return a clean reviewable checkpoint. The
+  Originating Task owns independent `$code-review`, records review convergence,
+  then sends the frozen full/environment validation attempt to the same dispatcher.
+  Only complete same-commit final evidence permits candidate acceptance. Its Spec
   axis uses the published planning artifacts for an inherited flow and the
   fixed implementation brief for a standalone flow. Stage 4 owns final
   integration and cleanup. The candidate, review, and remediation

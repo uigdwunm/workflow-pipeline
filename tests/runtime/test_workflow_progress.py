@@ -530,10 +530,11 @@ class ProgressTests(transfer.StageTransferTests):
             (self.flow/'impl.py').write_text('implemented = '+str(number)+'\n')
             self.flow_git('add','impl.py'); self.flow_git('commit','-qm','candidate '+str(number))
             candidate = self.flow_git('rev-parse','HEAD')
+            verification = self.mark_reviewable(candidate)
             slots = {}
             for axis in ('standards','spec'):
                 prepared = self.invoke('review-activity',{'operation':'prepare','axis':axis,'candidate':candidate,
-                    'actor_ref':'task','verification':{'candidate':candidate,'checks':['focused']}})
+                    'actor_ref':'task','verification':verification})
                 identity = prepared['next_action']['action_id']
                 ref = 'native:'+axis+'-'+str(number)
                 request = {'operation':'observe','axis':axis,'candidate':candidate,'actor_ref':'task','action_id':identity,
@@ -603,10 +604,11 @@ class ProgressTests(transfer.StageTransferTests):
         (self.flow / 'impl.py').write_text('implemented = True\n')
         self.flow_git('add','impl.py'); self.flow_git('commit','-qm','candidate')
         candidate = self.flow_git('rev-parse','HEAD')
+        verification = self.mark_reviewable(candidate)
         slots = {}
         for axis in ('standards','spec'):
             prepare = {'operation':'prepare','axis':axis,'candidate':candidate,'actor_ref':'task',
-                       'verification':{'candidate':candidate,'checks':['focused']}}
+                       'verification':verification}
             first = self.invoke('review-activity',prepare)
             slots[axis] = first['next_action']['action_id']
             duplicate = self.invoke('review-activity',prepare)
@@ -828,18 +830,60 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.invoke("pause")["status"], "paused")
         self.assertEqual(self.invoke("resume")["pending"], pending)
 
+    def mark_reviewable(self, candidate):
+        current = self.state()['control']['context']
+        if current['handoff_progress'].get('candidate') is not None:
+            self.invoke('control', {'action':'invalidate-candidate',
+                'evidence':{'candidate':current['handoff_progress']['candidate'],'reference':'fixture:remediation','reason':'replacement'},
+                'receipt':{'adapter':'fixture','call_ref':'remediate','response_ref':'remediation','raw':{'decision':'fix'}}})
+        self.invoke('observe', self.observation('idle','result',ref='native:dispatcher'))
+        current = self.state()['control']['context']
+        plan = current['handoff_progress']['validation_plan']
+        checks = transfer.checks_for(plan['review_required'],candidate)
+        result = self.invoke('control', {'action':'candidate-ready', 'evidence':{
+            'dispatcher_ref':'native:dispatcher','attempt':current['carrier']['attempt'],'commit':candidate,
+            'expected_target_head':self.git('rev-parse','main'),'binding':self.binding,
+            'plan_digest':transfer.control.digest(plan),'checks':checks},
+            'receipt':{'adapter':'fixture','call_ref':'focused','response_ref':'focused-result','raw':{'checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':'native:dispatcher'}}})
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'reviewable',result)
+        return {'candidate':candidate,'plan_digest':transfer.control.digest(plan),'checks':checks}
+
     def accept_current(self, payload, role):
         if self.state()['stage'] == 3:
+            verification = self.mark_reviewable(payload['candidate_commit'])
             actor = self.state()['handoff']['expected_entry']['actor']['thread_id']
             for axis in ('standards','spec'):
                 prepared = self.invoke('review-activity', {'operation':'prepare','axis':axis,'candidate':payload['candidate_commit'],
-                    'actor_ref':actor,'verification':payload['verification']})
+                    'actor_ref':actor,'verification':verification})
                 self.assertEqual(prepared['next_action']['operation'],'invoke-review',prepared)
                 ref = payload['review'][axis]['reviewer_ref']
                 self.invoke('review-activity',{'operation':'observe','axis':axis,'candidate':payload['candidate_commit'],
                     'actor_ref':actor,'action_id':prepared['next_action']['action_id'],
                     'receipt':{'adapter':'fixture','call_ref':'review-'+axis,'response_ref':'terminal-'+axis,
                                'ref':ref,'status':'stopped','raw':{'task_name':ref,'status':'completed'}}})
+            candidate = payload['candidate_commit']
+            checkpoint = self.state()['control']['context']['handoff_progress']
+            review = {axis:{'candidate':candidate,'expected_target_head':checkpoint['expected_target_head'],
+                      'plan_digest':checkpoint['plan_digest'],'reviewer_ref':payload['review'][axis]['reviewer_ref'],
+                      'status':'accepted','result_ref':'terminal-'+axis} for axis in ('standards','spec')}
+            response = self.invoke('control', {'action':'review-converged',
+                'evidence':{'candidate':candidate,'review':review,'reference':'fixture:converged'},
+                'receipt':{'adapter':'fixture','call_ref':'review','response_ref':'review-converged','raw':{'review':review}}})
+            checkpoint = self.state()['control']['context']['handoff_progress']
+            self.assertEqual(checkpoint['state'],'final-validation-pending',response)
+            context = self.state()['control']['context']
+            start = {'attempt_id':'fixture-final','dispatcher_ref':role,'carrier_attempt':context['carrier']['attempt'],
+                     **{key:checkpoint[key] for key in ('candidate','expected_target_head','plan_digest','review_digest')}}
+            response = self.invoke('control', {'action':'validation-start','evidence':start,
+                'receipt':{'adapter':'fixture','call_ref':'final','response_ref':'final-start','raw':{'decision':'run'}}})
+            self.assertEqual(response['next_action']['operation'],'continue-host',response)
+            checks = transfer.checks_for(checkpoint['validation_plan']['final_required'], candidate)
+            response = self.invoke('control', {'action':'validation-result','evidence':{'attempt_id':'fixture-final','checks':checks},
+                'receipt':{'adapter':'fixture','call_ref':'command','response_ref':'command-result',
+                           'raw':{'attempt_id':'fixture-final','checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':role}}})
+            checkpoint = self.state()['control']['context']['handoff_progress']
+            self.assertEqual(checkpoint['state'],'deliverable',response)
+            payload.update(review=review, verification=transfer.control.delivery_verification(checkpoint,role))
         message = {"delivery_id": "completed-" + str(self.state()["stage"]), "status": "completed", "payload": payload}
         result = self.invoke("observe", self.observation("stopped", "result", message, ref=role))
         self.assertEqual(result["status"], "needs_input", result)
