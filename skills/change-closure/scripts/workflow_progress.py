@@ -29,7 +29,7 @@ import workflow_control as control
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v5"
+PROTOCOL = "workflow-progress-v6"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 require = entry.require
@@ -1828,7 +1828,7 @@ def handle(path, request):
     require(path.is_absolute(), "invalid_checkpoint", "absolute checkpoint path required")
     with record_lock(path):
         outer = read_record(path)
-        require(outer.get("version") not in {1, 2}, "legacy_run_requires_original_runtime", "retain the original runner and record")
+        require(outer.get("version") not in {1, 2, 3}, "legacy_run_requires_original_runtime", "retain the original runner and record")
         member = outer.get(KEY)
         pinned_protocol = outer.get("confirmed", {}).get("packages", {}).get("runner", {}).get("compatibility_key", {}).get("workflow_progress")
         require((member is None or isinstance(member, dict) and member.get("protocol") == PROTOCOL) and

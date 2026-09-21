@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "f360c27008fe9abe4b80b698925d3f8ab0e33b7c86cd98af4779c7f26cd97bec",
+  "bundle_digest": "82c0c1222d9c7e9abc32c9d64c06e46fbce86b7762e88d11eadef3556d3647d9",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -15,7 +15,7 @@
     "stage_transfer": "workflow-stage-transfer-v2",
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
-    "workflow_progress": "workflow-progress-v5"
+    "workflow_progress": "workflow-progress-v6"
   },
   "external_actions": {
     "dispatch": [
@@ -168,6 +168,10 @@
       "mode": "0644",
       "sha256": "1cebc68af29aea7c8323e6352148cf1228f5faad1602fc85d635943b14805d23"
     },
+    "scripts/foreground_host.py": {
+      "mode": "0644",
+      "sha256": "f327039c930d72c515118fc9292d6b97e6979165dbd912b2a38321fc094b19d2"
+    },
     "scripts/host_skill_registry.py": {
       "mode": "0644",
       "sha256": "61fc2fc0cf9670734426fc1dffe6f1b41d3b973a6dbf0d33f92088da0ebf1b37"
@@ -210,7 +214,7 @@
     },
     "scripts/workflow.py": {
       "mode": "0644",
-      "sha256": "d26aceb15f7e2aea5a874df0415d1eb739e2b3467845aab9705ad99997f6f734"
+      "sha256": "22be258576a86fe4bcfc2def478cff877e0c56716dd6139f082e85706679a3bb"
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
@@ -222,7 +226,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "ad0c80d4ca73268c015ccdb8121c15656254c8122e00bddc2ea9f50124f49e6f"
+      "sha256": "0a597f0a4d0b4c9c0f37d8b9e677c4dc8641dd5d5f538735fb3fe6894a186a5f"
     },
     "scripts/workflow_stage_result.schema.json": {
       "mode": "0644",
@@ -259,6 +263,7 @@
     "guided-implementation/references/thread-settings-protocol.md",
     "guided-implementation/references/workflow-control-protocol.md",
     "guided-implementation/references/worktree-execution.md",
+    "guided-implementation/scripts/foreground_host.py",
     "guided-implementation/scripts/supervision_core/__init__.py",
     "guided-implementation/scripts/supervision_core/commands.py",
     "guided-implementation/scripts/supervision_protocol.py",

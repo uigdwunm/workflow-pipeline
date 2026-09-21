@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "b804502f546fc2a0e0e55b9c7548331465c97fe3a4c0a65ff367fa46daa32fee",
+  "bundle_digest": "594bdfe3533c95a90cf4bffcbeb88a78f3032b5466b1f7c8558592c48c50ac1d",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -15,7 +15,7 @@
     "stage_transfer": "workflow-stage-transfer-v2",
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
-    "workflow_progress": "workflow-progress-v5"
+    "workflow_progress": "workflow-progress-v6"
   },
   "external_actions": {
     "discuss": []
@@ -231,7 +231,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "ad0c80d4ca73268c015ccdb8121c15656254c8122e00bddc2ea9f50124f49e6f"
+      "sha256": "0a597f0a4d0b4c9c0f37d8b9e677c4dc8641dd5d5f538735fb3fe6894a186a5f"
     }
   },
   "format_version": 1,
