@@ -1,6 +1,7 @@
 # 审查收敛后执行最终全量验证
 
 Status: ready-for-agent
+Lifecycle: completed
 Review: solution-review-20260920-01（用户已确认方案及 Testing Decisions；连续执行后续全部流程）
 Requirement: docs/requirements/2026-09-20-review-before-full-validation.md
 Requirement commit: 0c535aab872eda0db0bfd2784de0358cf42f29d0
@@ -324,3 +325,38 @@ Stage 4 仅更新本主题 PRD 的实施/验证/关闭记录及本主题 Tickets
 - `docs/requirements/2026-09-20-review-before-full-validation.md`
 
 以上路径展开未改变已确认行为或权限；执行包仍使用父任务固定旧包，候选包升级只影响待交付的新运行。
+
+## 实施、验证与关闭记录
+
+2026-09-21：五个 Tickets 完成，Lifecycle 与 triage Status 分别记录。接受的实现 I 为 `72d37ad011671a2fcd52c69279fd8e606e55c731`；目标和作用域基线为 `eb54d378c82fe82deaf8c0651c6a218b97d35e34`。同一 Flow Worktree 承载方案、实现及六份文档归档。归档候选 D 仅更新这些文档，I→D 不修改实现、测试、生成包或保护需求。审查与完整验证仍证明 I，不改写成 D 的全量证明；最终合并和清理事实由既有 evidence root 的 `closure-delivery.json` 记录。
+
+### 实际顺序与审查修复
+
+先做真实生产边界的定向红绿及受影响检查，再提交两轴审查；每轮修复先定向回归再复审，审查收敛后才运行昂贵最终验证。本次运行保持固定旧包 release 1.1.0、bundle `78667077240623baa09626efa1dedce17da0d4df83600904ceacf4a894cbff7c`，未切换到新构建包。
+
+- Standards 的 malformed collections 问题：在 membership/deduplication 前严格检查字段与非空字符串，畸形结果不再留下无法解决的事务。
+- Spec 的 stale control port 问题：新业务变更前对账原 unknown control，只重放原请求并重验保存上下文。环境验收允许冻结条件明确认可的 trusted passed/null；命令仍必须实际 exit 0。
+- 第二轮 Spec 发现暂停对账未继续实际交付：修复持久化恢复意图并继续原 resume 流程，回归验证到真实 B receive/accept。stopped-only 证据仍不能伪造原宿主可继续状态，已发起调用不重复派发。
+- 最终 I 两轴 accepted：Standards `/root/sg_standard_review_review_first_implementation_on_t_839664837667`，Spec `/root/sg_standard_review_review_first_implementation_on_t_99c85eeaae21`。原调度者保持 `/root/sg_standard_implement_accepted_review_first_valid_t_5b4c1cf5ba0e`。诊断、红绿原始记录和完整修复列表保留于 evidence root 的 `review-r2-diagnosis.json`、`review-r3-delivery.json` 及关联日志。
+
+### 首次失败与测试范围补充
+
+首次最终 attempt `final-1637ba6b-8e86-49a1-8539-654692b32806` 绑定旧候选 `bd24f1b449e70a52cafbacb0a841b355870dadc8`：696 项测试，5 failures、1 error、1 allowed skip。四个 pipe 用例共享遗漏的旧 runner v4 正向 fixture，另两项文案断言仍要求旧的先全量后审查顺序/结果 footer。仅在 `tests/runtime/test_foreground_host.py` 与 `tests/runtime/test_repository_validation.py` 修复，保留旧版本拒绝、角色和安全断言；六项红绿和 45 项受影响检查通过。旧 attempt 原始失败和旧候选两项宿主报告保留，不覆盖、不复用为新候选通过。
+
+Controller 批准必要测试连带补充：精确 implementation_paths 从 109 增至 110，仅增加 `tests/runtime/test_repository_validation.py`，无产品范围扩张。补充文件 `/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/review-before-full-validation/stage3-test-scope-addendum.json`；SHA-256 `a2568cc70c36a9b2d3c54a1153e2757fa7f1bb3072e3297a9d145021e28d384f`。上方方案路径保留原清单，此处记录授权增量；冻结需求字节和模式保持不变。
+
+### 最终验收事实
+
+修复后的 I 重新通过两轴审查，再新建完整 attempt `final-ec656333-6b4c-4c76-991f-b1f636865283` 重跑所有必需项，未拼接不同 attempt 的通过项。
+
+| 必需项 | 实际结果 |
+| --- | --- |
+| `./scripts/validate.sh` | exit 0；696 tests，0 failures，0 errors，1 skipped；构建一致性、Skill 和仓库检查通过 |
+| 候选包真实单层 lifecycle | 新隔离环境和 raw events/report，passed，local exit 0 |
+| 候选包真实单层 stop/pause/resume/cancel | 新隔离环境和 raw events/report，passed，local exit 0 |
+
+唯一预批准 skip 为 `NonGitAttachedTransferTests.test_successor_dispatch_uses_real_ledger_slot_without_promoting_old_carrier`，原因 `wrapper transfer uses a Git stage-entry checkpoint`。整个必需检查均未 skipped。前后 HEAD 均为 I，源码字节和模式快照一致、工作区干净。候选包 digest `f8a732cc28afc740c183a23e26afe73acdf5ce7774647e251fbed2610ed0afde`；全量输出 digest `f98279cc5867b827d5dc0515f9116ba8587927616ddf269fba207ffce82db8b6`。
+
+Evidence root：`/Users/zhaolaiyuan/.codex/workflow-runs/01a0bdd5-8915-70e0-8e0c-027e96ccd1dd/review-before-full-validation/`。准确 final attempt 子目录保留原始输出、宿主 readback、各项摘要和源码前后快照。Controller 已验证并接受 `final-validation-delivery.json`；digest、路径和模型声明本身不认证执行。归档检查文档、仓库及 Git 范围，不重复已经通过的长时 runtime 和宿主验收。
+
+真实嵌套集成仍为 `pending-external-dependency`，未计通过；确定性生产链替身不证明真实嵌套能力。不声称来源、权限或丢失原生身份能够复活。本次无安装、部署、推送、PR 或外部写入，旧 EPERM 根因调查仍在范围外。
