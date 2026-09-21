@@ -77,7 +77,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                     **({"validation_plan":plan_for(self.flow)} if stage == 3 else {})}}
 
     def context_for(self, stage):
-        return {"schema_version": 2, "controller_ref": "task", "topic_ref": None, "stage": stage,
+        return {"schema_version": 3, "controller_ref": "task", "topic_ref": None, "stage": stage,
                 "carrier": None, "preference": {"topic_current": False, "stage_current": False}, "flow_authority": None,
                 "requirement_identity": self.frozen["requirement_identity"], "handoff_progress": None}
 
@@ -321,7 +321,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         ctx = self.context_for(1)
         def transition(action, evidence):
             nonlocal ctx
-            result = control.transition({"schema_version": 2, "actor_ref": "task", "context": ctx, "action": action, "evidence": evidence})
+            result = control.transition({"schema_version": 3, "actor_ref": "task", "context": ctx, "action": action, "evidence": evidence})
             ctx = result["context"]
             return result
         prepared = transition("prepare", {"target": "local", "project": "project", "title": "Discuss", "missing_context": [],
@@ -360,7 +360,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         execution = self.input_for(3)
         execution.update(role="execution-agent", configuration=configuration("execution-agent"))
         pending = self.launch(execution)["record"]
-        self.context = control.transition({"schema_version": 2, "actor_ref": "task", "context": self.context,
+        self.context = control.transition({"schema_version": 3, "actor_ref": "task", "context": self.context,
                                            "action": "cancel", "evidence": {}})["context"]
         unknown = self.call("reconcile", pending, receipt=self.receipt(pending, "unknown", "lookup", None))
         self.assertEqual(self.context["handoff_progress"]["executions"][0]["state"], "dispatch-pending")
@@ -373,11 +373,13 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         import workflow_control_git
         def recover(stopped):
             return workflow_control_git.verified_transition({"repository": str(self.flow), "baseline": execution["scope"]["baseline"],
-                "request": {"schema_version": 2, "actor_ref": "task", "context": self.context, "action": "recover-dispatch",
+                "request": {"schema_version": 3, "actor_ref": "task", "context": self.context, "action": "recover-dispatch",
                             "evidence": {"stopped_refs": stopped, "file_hashes": {}, "replacement_ref": "native:replacement"}}})
         with self.assertRaises(control.ControlError):
             recover([])
-        self.assertEqual(recover(["native:dispatcher"])["context"]["handoff_progress"]["state"], "implementing")
+        with self.assertRaises(control.ControlError):
+            recover(["native:dispatcher"])
+        self.assertEqual(self.context["handoff_progress"]["state"], "cancelled")
 
     def test_planning_read_only_in_implementation_but_authorized_for_closure(self):
         self.input["scope"]["owned_paths"] = ["docs/adr.md", "docs/spec.md"]
@@ -476,6 +478,7 @@ class AttachedTransferTests(test_entry_prepare.EntrySupport):
             self.root = Path(temporary.name).resolve()
             entry.os.getcwd.return_value = str(self.root)
             self.request["host"]["project_path"] = str(self.root)
+            self.request["registry_context"]["project_path"] = str(self.root)
             self.request.pop("target")
         initial = discussion_protocol.handle({"protocol_version": 1, "operation": "bootstrap", "project_path": str(self.root),
                     "entry_mode": "explicit-skill", "conversation_ref": "task", "idempotency_key": str(uuid.uuid4()), "root_slug": "topic"})

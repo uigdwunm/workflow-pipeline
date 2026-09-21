@@ -38,6 +38,10 @@ class EntrySupport(unittest.TestCase):
                                  "controller_ref": "task", "role": "controller", "source_ref": None, "receipt": "tool:project"},
                         "source": {"kind": "stage1"},
                         "target": {"kind": "planning", "repository": str(self.root), "branch": "main"}}
+        registry = {"source": "host-current-skills", "entries": []}
+        self.request.update(registry=registry, registry_context={"project_path": str(self.root),
+            "project_id": "project", "controller_ref": "task", "receipt": "host:registry",
+            "registry_digest": entry.digest(registry)})
 
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, check=True).stdout.decode().strip()
@@ -52,6 +56,7 @@ class EntryTests(EntrySupport):
     def test_stage2_scripted_carrier_keeps_distinct_controller_and_source(self):
         self.request.update(stage=2, source={'kind': 'frozen'})
         self.request['host'].update(role='scripted-carrier', controller_ref='controller', source_ref='runner')
+        self.request['registry_context']['controller_ref'] = 'controller'
         observed = entry.resolve(self.request)
         self.assertEqual(observed['actor']['role'], 'scripted-carrier')
         self.assertEqual(observed['actor']['controller_ref'], 'controller')
@@ -92,7 +97,8 @@ class EntryTests(EntrySupport):
         entry.skill_preflight.verify_identity.assert_called_with(expected["packages"]["problem-framing"])
 
     def test_registry_query_uses_actual_cwd_and_explicit_snapshot_is_preserved(self):
-        entry.resolve(self.request)
+        direct = {k: v for k, v in self.request.items() if k not in {'registry', 'registry_context'}}
+        entry.resolve(direct)
         self.assertEqual(entry.skill_preflight.preflight.call_args.args[0]["registry_query"], {"cwd": str(self.root)})
         snapshot = {"source": "host-current-skills", "entries": []}
         entry.resolve({**self.request, "registry": snapshot})

@@ -29,7 +29,7 @@ import workflow_control as control
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v7"
+PROTOCOL = "workflow-progress-v8"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -153,8 +153,7 @@ def retain_entry_pins(request, retained):
     if retained:
         registry_request = {"stage": entry_request["stage"], "action": entry_request["action"],
             **{key: entry_request[key] for key in ("target_stages", "required_skills") if key in entry_request}}
-        registry_request.update({"registry": entry_request["registry"]} if "registry" in entry_request else
-                                {"registry_query": {"cwd": os.getcwd()}})
+        registry_request.update(entry.registration_inputs(entry_request)[0])
         registered = skill_preflight.preflight(registry_request)
         current_pins = {name: retained.get(name, identity) for name, identity in registered["packages"].items()}
         entry_request["pinned_packages"] = current_pins
@@ -165,7 +164,8 @@ def retain_entry_pins(request, retained):
 
 
 def _view(state, next_action=None, acknowledged=False):
-    if state.get("business_block") and state["status"] == "blocked":
+    if state.get("business_block") and state["status"] == "blocked" and (next_action or {}).get('operation') not in {
+            'invoke-recovery-host', 'lookup-recovery-host', 'activate-dispatch-recovery', 'prepare-dispatch-recovery', 'control-effects', 'await-host-recovery'}:
         next_action = {"operation": "await-business-recovery", "subject": state["business_block"]["subject"]}
     if next_action is None and state.get("recovery_action"):
         next_action = state["recovery_action"]
@@ -286,6 +286,9 @@ class Progress:
         """Derive writer closure from the existing roles and invocation journal."""
         s = self.state
         pending = []
+        recovery = (s.get('control', {}).get('context', {}).get('handoff_progress') or {}).get('recovery')
+        if recovery and recovery['state'] in {'dispatch-pending', 'dispatch-unknown'}:
+            pending.append({'kind':'replacement-call', 'intent_id':recovery['intent']['intent_id']})
         pending.extend({'kind':'prior-carrier-activity','carrier_thread':thread} for thread in s.get('prior_carrier_activity', {}))
         pending.extend({'kind':'native-stop-proof-revoked','ref':ref} for ref in s.get('native_adverse', {}))
         for action in self.unresolved_host_actions():
@@ -317,7 +320,10 @@ class Progress:
                 refs = {self.bound_ref()}
                 for transaction in s.get('control_transactions', {}).values():
                     if transaction.get('result') is not None and transaction['request']['action'] == 'recover-dispatch':
-                        refs.update(transaction['request']['evidence']['stopped_refs'])
+                        refs.update(transaction['result']['recovery']['host_evidence']['stopped_refs'])
+                recovery = (selected.get('handoff_progress') or {}).get('recovery')
+                if recovery and recovery['state'] == 'ready':
+                    refs.add(recovery['receipts'][-1]['ref'])
                 refs.update(e['agent_ref'] for e in (selected.get('handoff_progress') or {}).get('executions', []) if e.get('agent_ref'))
                 refs.update(slot['ref'] for group in review_groups for slot in group.values() if slot and slot.get('ref'))
                 aliases, calls = {}, set()
@@ -439,18 +445,33 @@ class Progress:
         require(transport is not None and data['instance'] == transport.get('instance'),
                 'identity_mismatch', 'loss must name the original foreground host')
         if self.state.get('transport_loss') == data:
-            return _view(self.state, acknowledged=True)
+            return _view(self.state, self.state.get('recovery_action'), acknowledged=True)
         self.state['transport_loss'] = copy.deepcopy(data)
         self.revoke_host()
         self.state['host']['status'] = 'unknown'
-        self.state['recovery_action'] = {'operation':'await-host-recovery', 'host_instance':data['instance'],
-            'ref':self.bound_ref() if self.state.get('dispatch') else None,
-            'unresolved_actions':[action['action_id'] for action in self.unresolved_host_actions()],
-            'reason':data['reason']}
+        self.state['recovery_action'] = {'operation':'await-host-recovery', **self.recovery_requirements(), 'reason':data['reason']}
         if self.state['status'] != 'accepted':
             self.state['status'] = self.stop_intent() or 'blocked'
         self.save()
-        return _view(self.state)
+        return _view(self.state, self.state['recovery_action'])
+
+    def recovery_requirements(self):
+        s = self.state
+        context = s.get('control', {}).get('context', {})
+        progress = context.get('handoff_progress') or {}
+        refs = {context.get('carrier', {}).get('ref')} if context.get('carrier') else set()
+        refs.update(e.get('agent_ref') for e in progress.get('executions', []))
+        recovery = progress.get('recovery')
+        if recovery:
+            refs.update(receipt['ref'] for receipt in recovery['receipts'] if receipt['status'] == 'ready')
+        for group in [s.get('review_activity', {}), *s.get('review_history', [])]:
+            refs.update(slot.get('ref') for slot in group.values() if slot)
+        return {'host_instance': (self.outer.get('transport') or {}).get('instance'),
+            'carrier_thread': self.outer.get('sessions', {}).get('stage' + str(s['stage'])) or s['handoff']['expected_entry']['actor']['thread_id'],
+            'ref': self.bound_ref() if s.get('dispatch') else None, 'native_refs': sorted(ref for ref in refs if ref),
+            'unresolved_actions': [action['action_id'] for action in self.unresolved_host_actions()],
+            'missing': ['current-original-host-identity', 'same-identity-resumability-or-complete-stop-proof',
+                        'reconciled-original-invocations'], 'pending': self.stop_barrier_pending()}
 
     def carrier_failure(self, data):
         entry.fields(data, {'instance','invocation_id','code','evidence'})
@@ -870,7 +891,8 @@ class Progress:
         # Unordered stops retain an existing barrier, never replace causal proof.
         if causal or status != "stopped":
             host["observation"] = observation
-        host["proof"] = copy.deepcopy(observation) if causal and status in {"idle", "turn-completed"} else None
+        resumable = status == 'stopped' and receipt['raw'].get('resumable') is True
+        host["proof"] = copy.deepcopy(observation) if causal and (status in {"idle", "turn-completed"} or resumable) else None
         if action is not None and action["operation"] == "inspect-host-state" and (causal or status == "unknown"):
             # Retain a negative query result so advance waits rather than loops.
             action["resolved"] = True
@@ -1027,7 +1049,7 @@ class Progress:
                 host["query"]["payload"]["unresolved_action"] = copy.deepcopy(outstanding[0])
             self.save()
         query = host["query"]
-        return _view(s, {"operation": "await-host-recovery", "ref": self.bound_ref(), "query": query}
+        return _view(s, {"operation": "await-host-recovery", **self.recovery_requirements(), "query": query}
                      if query.get("resolved") else query)
 
     def next_envelope(self, receipt):
@@ -1040,6 +1062,9 @@ class Progress:
 
     def advance(self):
         s = self.state
+        recovery = (s.get('control', {}).get('context', {}).get('handoff_progress') or {}).get('recovery')
+        if recovery and recovery['state'] != 'activated' and self.stop_intent() is None and not s.get('transport_loss') and not self.unresolved_control_transactions() and s['transaction'] is None:
+            return self.recovery_view()
         if s.get('stopped') and self.stop_barrier_pending():
             self.save()
             return _view(s, {'operation':'await-host-recovery','pending':self.stop_barrier_pending()})
@@ -1055,6 +1080,9 @@ class Progress:
         self.require_controls_reconciled()
         if s["transaction"] is not None:
             self.replay_transaction()
+        recovery = (s['control']['context'].get('handoff_progress') or {}).get('recovery')
+        if recovery and recovery['state'] != 'activated':
+            return self.recovery_view()
         if s.get("business_block"):
             return _view(s)
         if s["status"] == "accepted" and not s.get("phase_complete", True):
@@ -1656,10 +1684,75 @@ class Progress:
         entry.fields(data, {"action", "evidence", "receipt"})
         entry.nonempty(data["action"])
         require(data["action"] in {"successor-ready", "archive", "archive-result", "execution-result",
-                    "accept-execution", "execution-dispatch-result", "recover-dispatch", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
+                    "accept-execution", "execution-dispatch-result", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
                 "invalid_operation", "use the original bounded control recovery/closure operation")
         require(isinstance(data["receipt"], dict) and data["receipt"], "host_evidence_missing", "original authenticated host/controller evidence required")
         s = self.state
+        if data['action'] == 'release-recovery-allocation':
+            self.require_not_stopping()
+            handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
+            require(data['receipt'].get('controller_ref') == s['control']['context']['controller_ref'] and
+                    data['receipt'].get('reference') == data['evidence']['reference'], 'identity_mismatch', 'Controller ownership assumption required')
+        recovery_action = data['action'] in {'dispatch-recovery-intent', 'dispatch-recovery-result', 'recover-dispatch'}
+        if recovery_action:
+            recovery = (s['control']['context'].get('handoff_progress') or {}).get('recovery')
+            if data['action'] == 'dispatch-recovery-intent' and recovery and recovery['receipts'] and recovery['receipts'][-1]['status'] == 'not-created':
+                data = copy.deepcopy(data)
+                data['receipt']['derived_not_created'] = recovery['receipts'][-1]['response_ref']
+            cached = s.get('control_transactions', {}).get(entry.digest(data))
+            if cached and cached.get('result') is not None:
+                if data['action'] == 'dispatch-recovery-intent':
+                    return self.recovery_view(acknowledged=True)
+                if data['action'] == 'dispatch-recovery-result' and s.get('transport_loss'):
+                    return _view(s, s['recovery_action'], acknowledged=True)
+                return _view(s, {'operation':'control-effects', 'result':cached['result']}, acknowledged=True)
+            if data['action'] != 'dispatch-recovery-result':
+                self.require_not_stopping()
+            require(not s.get('publication') and (data['action'] == 'dispatch-recovery-result' or not s.get('transport_loss')),
+                    'host_recovery_required', 'recover only in the original retained host')
+            handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
+            require(not self.unresolved_host_actions(), 'host_action_pending', 'reconcile original calls before replacement')
+            recovery = (s['control']['context'].get('handoff_progress') or {}).get('recovery')
+            require(recovery is not None, 'recovery_missing', 'prepare the original dispatcher recovery first')
+            if data['action'] == 'dispatch-recovery-result':
+                require(data['receipt'] == data['evidence']['receipt'], 'host_evidence_missing', 'retain exact external replacement response')
+            else:
+                require(data['receipt'].get('controller_ref') == s['control']['context']['controller_ref'] and
+                        data['receipt'].get('reference') == data['evidence']['decision']['reference'],
+                        'identity_mismatch', 'original Controller snapshot decision required')
+                require(s['host']['status'] == 'stopped' and not self.stop_barrier_pending(),
+                        'host_evidence_missing', 'current complete old-writer stop barrier required')
+        if data['action'] == 'prepare-dispatch-recovery':
+            self.require_not_stopping()
+            require(s['stage'] == 3 and not s.get('publication') and not s.get('transport_loss'),
+                    'host_recovery_required', 'retain original host and stage; publication must reconcile first')
+            handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
+            require(not self.unresolved_host_actions() and not self.stop_barrier_pending(),
+                    'host_evidence_missing', 'reconcile all original calls and prove every old writer stopped')
+            stop = s['host'].get('last_stop')
+            require(s['host']['status'] == 'stopped' and stop is not None and stop.get('provenance') is not None,
+                    'host_evidence_missing', 'current causal stop observation required')
+            raw = stop['receipt']['raw']
+            require(raw.get('resumable') is False and raw.get('dispatch_available') is True,
+                    'host_recovery_required', 'original host must prove nonresumability and current dispatch capability')
+            stop_refs = [stop['receipt']['receipt_ref']]
+            refs = [self.bound_ref()]
+            for slot in s.get('allocations', {}).values():
+                record = slot.get('record') or {}
+                stopped = [r for r in record.get('receipts', []) if r.get('status') == 'stopped']
+                if stopped:
+                    stop_refs.append(stopped[-1]['receipt_ref']); refs.append(stopped[-1]['ref'])
+            evidence = data['evidence']
+            require(data['receipt'].get('controller_ref') == s['control']['context']['controller_ref'] and
+                    data['receipt'].get('reference') == evidence['reference'], 'identity_mismatch', 'original Controller recovery reference required')
+            require(set(evidence['stop_receipts']) == set(stop_refs) and
+                    evidence['call_receipts'] == [stop['provenance']['response_ref']],
+                    'host_evidence_missing', 'references must name actual saved stop and invocation receipts')
+            data = copy.deepcopy(data)
+            data['evidence']['host_evidence'] = {'stopped_refs': sorted(set(refs)),
+                'stop_receipts': evidence['stop_receipts'], 'call_receipts': evidence['call_receipts'],
+                'lifecycle_digest': entry.digest(s['lifecycle_snapshot']),
+                'original_host': s['lifecycle_snapshot']['instance']}
         if data['action'] == 'validation-result' and self.stop_intent() is not None:
             data = copy.deepcopy(data)
             # Replayed transactions already contain the adapter's derived source;
@@ -1701,8 +1794,13 @@ class Progress:
         transactions = s.setdefault("control_transactions", {})
         previous = transactions.get(identity)
         if previous and previous.get("rejection") is not None:
-            raise control.ControlError(previous["rejection"])
+            if data['action'] in {'prepare-dispatch-recovery', 'recover-dispatch'}:
+                previous.setdefault('rejected_attempts', []).append(previous.pop('rejection'))
+            else:
+                raise control.ControlError(previous["rejection"])
         if previous and previous.get("result") is not None:
+            if data['action'] == 'dispatch-recovery-intent':
+                return self.recovery_view(acknowledged=True)
             return _view(s, {"operation": "control-effects", "result": previous["result"]}, acknowledged=True)
         self.require_controls_reconciled(identity)
         require(s['transaction'] is None and not any(slot.get('transaction') is not None for slot in s.get('allocations',{}).values()),
@@ -1732,9 +1830,17 @@ class Progress:
             s["status"] = transactions[identity]["status"] if transactions[identity]["status"] != "blocked" else s.get("blocked_from","active")
             s.pop("error", None)
         if data["action"] == "recover-dispatch":
-            if s.get('cancellation') is not None:
-                s.setdefault('cancellation_history', []).append(s.pop('cancellation'))
-            for ref in data['evidence']['stopped_refs']:
+            recovery = result['recovery']
+            old_record = copy.deepcopy(s['dispatch'])
+            record_body = handoff.unseal(old_record)
+            launch = copy.deepcopy(handoff.unseal(old_record['request']))
+            s.setdefault('recovery_dispatch_history', []).append(old_record)
+            launch['attempt'] = result['context']['carrier']['attempt']
+            launch['payload']['dispatch_recovery'] = {k:copy.deepcopy(recovery[k]) for k in
+                ('recovery_id','snapshot_digest','remaining_paths','revalidate','ownership')}
+            s['dispatch'] = handoff.seal({**record_body, 'request':handoff.seal(launch),
+                'receipts':[], 'delivery':None, 'acceptance':None, 'status':'bound'})
+            for ref in recovery['host_evidence']['stopped_refs']:
                 s.get('native_adverse', {}).pop(ref, None)
             if s.get("business_block") and s["business_block"]["id"] == transactions[identity]["business_block_id"]:
                 self.clear_business_block(data, "recover-dispatch")
@@ -1751,10 +1857,30 @@ class Progress:
                 s["status"], s["stop_effects"] = "cancelled", []
         if data['action'] == 'validation-start':
             s.update(step='continue', status='active', continuation_intent={'kind':'final-validation', 'attempt_id':data['evidence']['attempt_id']})
+        if data['action'] == 'dispatch-recovery-result' and s.get('transport_loss'):
+            s['status'] = self.stop_intent() or 'blocked'
+            s['recovery_action'] = {'operation':'await-host-recovery', **self.recovery_requirements(),
+                                    'reason':s['transport_loss']['reason']}
         self.save()
+        if data['action'] == 'dispatch-recovery-result' and s.get('transport_loss'):
+            return _view(s, s['recovery_action'])
+        if data['action'] == 'dispatch-recovery-intent':
+            return self.recovery_view(issued=bool(result['effects']))
         if data['action'] == 'validation-start':
             return self.advance()
         return _view(s, {"operation": "control-effects", "result": result})
+
+    def recovery_view(self, *, issued=False, acknowledged=False):
+        recovery = self.state['control']['context']['handoff_progress']['recovery']
+        if recovery['state'] == 'activated':
+            return _view(self.state, {'operation':'wait-host', 'ref':self.bound_ref()}, acknowledged=acknowledged)
+        operation = ('invoke-recovery-host' if issued else 'lookup-recovery-host') if recovery['state'] in {
+            'dispatch-pending', 'dispatch-unknown'} else 'activate-dispatch-recovery' if recovery['state'] == 'ready' else 'prepare-dispatch-recovery'
+        request = None if recovery['intent'] is None else {**recovery['intent'],
+            'checkpoint':str(self.path), 'handoff_field':KEY + '.handoff', 'control_field':KEY + '.control',
+            'registration_input':copy.deepcopy(self.state['dispatch']['request']['payload']['registration_input'])}
+        return _view(self.state, {'operation': operation, 'recovery_id': recovery['recovery_id'],
+            'request': request, 'receipts': recovery['receipts'], 'write_authority': False}, acknowledged=acknowledged)
 
     def allocation(self, data):
         """B transport records share the dispatcher's existing control roster."""
@@ -2023,6 +2149,9 @@ class Progress:
         require(len(pending_control) <= 1, "control_outcome_unknown", "reconcile each exact outstanding control operation before advancing")
         if pending_control and self.stop_intent() is None:
             return self.resume_control(pending_control[0]["request"])
+        recovery = (s['control']['context'].get('handoff_progress') or {}).get('recovery')
+        if recovery and recovery['state'] != 'activated' and self.stop_intent() is None:
+            return self.recovery_view()
         if s.get("stop_requested") == "cancelling":
             if s["status"] == "cancelled":
                 return _view(s, acknowledged=True)
@@ -2313,7 +2442,7 @@ def handle(path, request):
                 (pinned_protocol is None or pinned_protocol == PROTOCOL),
                 "legacy_run_requires_original_runtime", "all operations require the original pinned progression runtime")
         if member is not None:
-            require(member.get("control",{}).get("context",{}).get("schema_version") == 2,
+            require(member.get("control",{}).get("context",{}).get("schema_version") == 3,
                     "legacy_run_requires_original_runtime", "retain the original embedded control runtime")
         if request["operation"] == "deliver-requirement":
             return deliver_requirement(path, outer, request.get("data", {}))

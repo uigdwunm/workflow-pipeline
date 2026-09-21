@@ -47,7 +47,7 @@ def verification_fixture(candidate, dispatcher, cwd, target):
 
 class WorkflowControlTests(unittest.TestCase):
     def call(self, action, evidence=None, context=None):
-        request = {'schema_version': 2, 'action': action,
+        request = {'schema_version': 3, 'action': action,
                    'actor_ref': 'controller', 'context': context or self.context(),
                    'evidence': evidence or {}}
         result = subprocess.run([sys.executable, str(CLI)], input=json.dumps(request),
@@ -68,7 +68,7 @@ class WorkflowControlTests(unittest.TestCase):
                 'inherited': None, 'upgrade_attempted': False}
 
     def context(self):
-        return {'schema_version': 2, 'controller_ref': 'controller', 'topic_ref': None,
+        return {'schema_version': 3, 'controller_ref': 'controller', 'topic_ref': None,
                 'stage': 0, 'carrier': None,
                 'preference': {'topic_current': False, 'stage_current': False},
                 'flow_authority': None, 'requirement_identity': {'path': 'docs/draft.md',
@@ -171,9 +171,9 @@ class WorkflowControlTests(unittest.TestCase):
         accepted = self.call('accept-execution', {'agent_ref': 'executor-a', 'file_hashes': {'src/a.py': 'd' * 64}}, stopped['context'])
         recovered = self.call('recover-dispatch', {'stopped_refs': ['dispatcher', 'executor-a'],
             'file_hashes': {'src/a.py': 'd' * 64}, 'replacement_ref': 'replacement'}, accepted['context'])
-        self.assertTrue(recovered['ok'])
-        self.assertEqual(recovered['remaining_paths'], ['src/b.py'])
-        self.assertEqual(recovered['revalidate'], [])
+        # Bare stopped_refs no longer authorize a replacement; C must prepare
+        # the exact snapshot and persist the controlled creation first.
+        self.assertFalse(recovered['ok'])
 
     def test_standalone_entry_requires_complete_explicit_unattached_brief(self):
         brief = {'goal': 'Small fix', 'complexity': 'low', 'implementation_basis': 'exact requirement',

@@ -8,7 +8,7 @@ recovery. Dedicated Discussion Task and Dedicated Problem Framing Task are visib
 Dispatcher and optional Execution Agents; stage 4 one Closure Agent. A split child
 is one independent Workflow Controller and inherits no preferences or authority.
 
-`workflow_control.py` accepts bounded strict JSON with schema_version=2, action,
+`workflow_control.py` accepts bounded strict JSON with schema_version=3, action,
 actor_ref, context and evidence. Context contains schema_version, controller_ref,
 topic_ref, stage, carrier, preference, flow_authority, requirement_identity and
 handoff_progress, plus at most one optional successor_control slot. The caller authenticates actor_ref and persists the returned
@@ -242,8 +242,59 @@ No implementation contract, tests, generated package or protected source belongs
 to closure scope. After a recorded merge, reconcile publication/cleanup instead
 of demanding a new validation or merge.
 
-New records use runner 5, C workflow-progress-v7, B workflow-stage-transfer-v3
-and control schema 2. Old executable records fail with
+New records use runner 6, C workflow-progress-v8, B workflow-stage-transfer-v4
+and control schema 3. Old executable records fail with
 legacy_run_requires_original_runtime before writes or host calls. Embedded old
 control keeps the ledger outer version and bytes; resume with its original pinned
 package. Never migrate checks strings into passed evidence.
+
+## Controlled Stage-3 recovery
+
+Use C's `control` operation; retain its transaction journal and `handoff_progress.recovery`.
+Read entry/package authority first, reconcile the original native calls, then
+check current host identity and all old writers, and finally inspect real Git.
+Running means wait. Idle or stopped requires fresh explicit same-identity
+resumability before followup. A business block still requires recover-business.
+Unknown identity/calls require lookup. Original host loss remains
+await-host-recovery; no new app-server substitutes for that host. Stop/cancel
+intent and existing publication reconciliation take precedence.
+
+1. `prepare-dispatch-recovery` evidence names dispatcher_ref, attempt, reference,
+   reason, stop_receipts and call_receipts. The Controller receipt repeats its
+   controller_ref/reference. C resolves references to saved authenticated native
+   observations and a complete current descendant lookup. The original stop
+   response must prove resumable:false and dispatch_available:true. Child claims
+   and stopped status alone do not qualify. Git freezes HEAD, branch, index, base,
+   target and full allowed/protected fingerprints, including absence and mode.
+   Accepted allocations must match original result fingerprints; unaccepted
+   allocations retain ownership and require revalidation. The Controller may
+   assume only the exact unallocated dispatcher changes. Protected/out-of-scope
+   changes and ambiguous allocations block without cleaning or committing.
+2. `dispatch-recovery-intent` takes recovery_id, snapshot_digest and decision.
+   Decision has reference, authority_digest, attempt, remaining_paths and
+   assume_paths (the exact dispatcher-owned paths). C saves one intent before
+   returning invoke-recovery-host. Create only that prepared, read-only role.
+   Repeated requests return lookup-recovery-host; unknown never creates again.
+3. `dispatch-recovery-result` takes recovery_id and the actual receipt with
+   adapter, call_ref, response_ref, intent_id, status, ref and raw. The C receipt
+   is the same object. Status is ready, unknown or not-created. Ready carries a
+   new real ref and raw write_authority:false; no writing is yet authorized.
+   A confirmed not-created result permits retry of that same intent.
+   A late original creation receipt may still be retained after host loss; it
+   adds the prepared ref to recovery evidence and grants no activation authority.
+4. Refresh the original host's complete stopped-writer lookup, including the
+   prepared successor. `recover-dispatch` takes recovery_id, snapshot_digest,
+   the identical decision and replacement_ref. C checks authority/stops/calls
+   again; Git rejects any snapshot drift. Control atomically activates one new
+   attempt and preserves prior refs, allocations and receipts. Exact repeats ACK;
+   conflicts cannot activate again or clear a later block. Reconcile an interrupted
+   control transaction through the original C record.
+
+The successor receives ownership, remaining_paths and revalidate. Historical
+allocations remain reserved until their original results are accepted or explicitly
+released by the Controller after stopped ownership revalidation. Use release-recovery-allocation with recovery_id, snapshot_digest, agent_ref and reference; its Controller receipt repeats controller_ref/reference. Git must still match that allocation’s prepared fingerprints before control cancels its old reservation. Previous tests
+remain diagnostic history. The new attempt must produce a clean reviewable
+candidate, converge independent Standards/Spec review, then perform current final
+validation. A recovered dirty tree is never candidate evidence. Deterministic
+transport doubles prove admission/refusal only; real-host recovery remains a
+separate acceptance claim, unsupported when the original host lacks that API.

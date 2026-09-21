@@ -80,7 +80,7 @@ class WorkflowCliTests(unittest.TestCase):
         # A freezing and Git through test_workflow_progress, not this fixture.
         def seal(value, field="digest"):
             return {**value, field: hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()}
-        original_entry = seal({"protocol": "workflow-entry-v2", "repository": {"root": str(self.repository)},
+        original_entry = seal({"protocol": "workflow-entry-v3", "repository": {"root": str(self.repository)},
             "actor": {"controller_ref": "controller"}, "entry": {"stage": 1, "action": "entry"},
             "target": {"repository": str(self.repository), "branch": "main"}, "packages": {}, "external": {},
             "configuration": {}, "requirement": {"kind": "stage1"}}, "evidence_digest")
@@ -89,10 +89,13 @@ class WorkflowCliTests(unittest.TestCase):
                   "entry": original_entry, "path": "requirements/frozen.md", "sha256": "b" * 64, "version": 1, "blob": "c" * 40,
                   "requirement_identity": {"path": "requirements/frozen.md", "sha256": "b" * 64, "version": 1}}
         source = seal(source)
+        registry = {"source":"host-current-skills", "entries":[
+            {"name":name,"entry":str(SCRIPT.resolve().parents[2] / name / "SKILL.md"),"source":"test-host","enabled":True}
+            for name in ("solution-design","guided-implementation","change-closure")]}
         return {
-            "registry": {"source":"host-current-skills", "entries":[
-                {"name":name,"entry":str(SCRIPT.resolve().parents[2] / name / "SKILL.md"),"source":"test-host"}
-                for name in ("solution-design","guided-implementation","change-closure")]},
+            "registry": registry,
+            "registry_context": {"project_path":str(self.repository),"project_id":"project","controller_ref":"controller",
+                "receipt":"fixture:registry","registry_digest":hashlib.sha256(json.dumps(registry, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()},
             "controller_ref": "controller",
             "frozen_requirement": {"path": "/requirements/frozen.md", "commit": "a" * 40, "sha256": "b" * 64},
             "requirement": source,
@@ -126,7 +129,7 @@ class BusinessRecoveryTransportTests(unittest.TestCase):
                          "reference": "controller-review", "diagnosis": "fixed input", "instruction": "continue",
                          "expected_progress": "produce candidate"}
         self.decision_path.write_text(json.dumps(self.decision))
-        self.state = {"version": 5, "status": "failed", "current_stage": "stage3", "sessions": {"stage3": "original-cli"},
+        self.state = {"version": 6, "status": "failed", "current_stage": "stage3", "sessions": {"stage3": "original-cli"},
                       "stage_results": {}, "confirmed": {}, "launch": {"state": "completed_turn"},
                       self.runner.progression.KEY: {"revision": 7, "stage": 3, "status": "blocked", "business_block": {"id": "block-1"}}}
         self.record.write_text(json.dumps(self.state))

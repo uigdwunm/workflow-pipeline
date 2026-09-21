@@ -135,6 +135,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         raw = helper.confirmed_input()
         raw.update(requirement=self.frozen, controller_ref='task',
                    frozen_requirement={'path':self.frozen['absolute_path'], 'commit':self.frozen['commit'], 'sha256':self.frozen['sha256']})
+        raw['registry_context']['controller_ref'] = 'task'
         raw['authority_scope']['allowed_paths'] = ['impl.py', 'CHANGELOG.md']
         for settings in raw['stages'].values():
             settings['model'] = 'fixture-model'
@@ -703,7 +704,7 @@ class HostProtocolTests(unittest.TestCase):
         result = {'answers':{'question':{'answers':['x' * (128 * 1024)]}}}
         decision = {'decision_id':pending['decision_id'],'subject':pending['subject'],
                     'answer':json.dumps(result),'reference':'controller-answer:'+pending['decision_id']}
-        state = {'version':5,'status':'needs_input','current_stage':'stage2',
+        state = {'version':6,'status':'needs_input','current_stage':'stage2',
                  'transport':{'instance':self.host.instance,'server_decision':decision}}
         progress.atomic_save(checkpoint,state)
         return checkpoint, state, request, result

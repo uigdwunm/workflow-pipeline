@@ -51,7 +51,7 @@ their exact idempotency key and revisions must be retained on an unknown result.
     # Downstream Phase Runs own lifecycle, while execution control stays in the
     # caller checkpoint. Attached dedicated-stage mutations must use the ledger.
     require(context["topic_ref"] is None or context["stage"] >= 2, "authority_missing", "attached dedicated control requires its ledger adapter")
-    payload = {"schema_version": 2, "actor_ref": context["controller_ref"], "context": context,
+    payload = {"schema_version": 3, "actor_ref": context["controller_ref"], "context": context,
                "action": action, "evidence": evidence}
     if context["stage"] >= 2 or action == "receive":
         repository = request["binding"]["repository"] if action == "closure-result" else request["expected_entry"]["repository"]["root"]

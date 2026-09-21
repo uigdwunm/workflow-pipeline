@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -19,7 +20,9 @@ from workflow_control import ControlError, MAX_BYTES, keys, path, require, trans
 
 
 def git(repository, *arguments):
-    result = subprocess.run(['git', '-C', str(repository), *arguments], capture_output=True)
+    require(not any(key in os.environ for key in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR',
+            'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES')), 'alternate Git environment cannot prove recovery state')
+    result = subprocess.run(['git', '--literal-pathspecs', '-C', str(repository), *arguments], capture_output=True)
     require(result.returncode == 0, 'Git evidence failed: ' + ' '.join(arguments[:2]))
     return result.stdout
 
@@ -49,12 +52,14 @@ def verify_delivery(repository, baseline, evidence):
 def snapshot(repository):
     return {'head': git(repository, 'rev-parse', 'HEAD').decode().strip(),
             'branch': git(repository, 'symbolic-ref', '--short', 'HEAD').decode().strip(),
-            'index_hash': hashlib.sha256(git(repository, 'ls-files', '--stage', '-z')).hexdigest()}
+            'index_hash': hashlib.sha256(git(repository, 'ls-files', '--stage', '-v', '-z')).hexdigest()}
 
 
 def implementation_hash(repository, relative):
     target = repository / path(relative)
     require(target.resolve().is_relative_to(repository) and not target.is_symlink(), 'implementation path escapes repository')
+    require(not any(parent.is_symlink() for parent in target.parents if parent != repository and repository in parent.parents),
+            'implementation path traverses a symlink')
     if not target.exists():
         return None
     require(target.is_file(), 'assignment must expand directories into exact files')
@@ -65,7 +70,7 @@ def file_fingerprint(repository, relative):
     content = implementation_hash(repository, relative)
     if content is None:
         return None
-    mode = (repository / relative).stat().st_mode & 0o777
+    mode = (repository / relative).stat().st_mode & 0o7777
     return hashlib.sha256(json.dumps([content, mode]).encode()).hexdigest()
 
 
@@ -99,6 +104,52 @@ def changed_paths(repository, baseline):
     tracked = git(repository, 'diff', '--name-only', '-z', commit(baseline)).decode().split('\0')
     untracked = git(repository, 'ls-files', '--others', '--exclude-standard', '-z').decode().split('\0')
     return sorted(set(tracked + untracked) - {''})
+
+
+def recovery_snapshot(repository, progress):
+    """Freeze index, committed ancestry and every scoped file including absence/mode."""
+    baseline = progress['git_baseline_commit']
+    actual = snapshot(repository)
+    target = git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip()
+    git(repository, 'merge-base', '--is-ancestor', baseline, actual['head'])
+    git(repository, 'merge-base', '--is-ancestor', progress['binding']['base_commit'], actual['head'])
+    changed = set(changed_paths(repository, target))
+    # A committed addition followed by an unstaged deletion must not cancel out
+    # scope evidence. Inspect committed, staged and unstaged deltas separately.
+    for arguments in (('diff', '--name-only', '-z', target, 'HEAD'),
+                      ('diff', '--cached', '--name-only', '-z'), ('diff', '--name-only', '-z')):
+        changed.update(filter(None, git(repository, *arguments).decode().split('\0')))
+    for relative in progress['allowed_paths'] + progress['protected_paths']:
+        record = git(repository, 'ls-tree', '-z', baseline, '--', relative)
+        before = None
+        if record:
+            require(record.startswith((b'100644 blob ', b'100755 blob ')), 'recovery source must be a regular file')
+            content = hashlib.sha256(git(repository, 'show', baseline + ':' + relative)).hexdigest()
+            mode = 0o755 if record.startswith(b'100755') else 0o644
+            before = hashlib.sha256(json.dumps([content, mode]).encode()).hexdigest()
+        if file_fingerprint(repository, relative) != before:
+            changed.add(relative)
+    require(changed <= set(progress['allowed_paths']) and not changed & set(progress['protected_paths']),
+            'recovery diff escapes authority or changes protected sources')
+    actual.update(base=baseline, target=target,
+        files={p: file_fingerprint(repository, p) for p in progress['allowed_paths'] + progress['protected_paths']})
+    owners, accepted, revalidate = {}, [], []
+    for execution in progress['executions']:
+        if execution['state'] == 'cancelled':
+            continue
+        require(execution.get('git_snapshot') is not None, 'allocation lacks original Git ownership evidence')
+        for p in execution['paths']:
+            require(p not in owners, 'conflicting historical allocation ownership: ' + p)
+            owners[p] = execution['agent_ref']
+            if execution['state'] == 'accepted':
+                require('git_result_snapshot' in execution, 'accepted allocation lacks complete result fingerprint')
+                expected = execution['git_result_snapshot'].get(p, execution['git_snapshot']['files'][p])
+                require(actual['files'][p] == expected, 'accepted content, existence or mode changed: ' + p)
+                accepted.append(p)
+        if execution['state'] != 'accepted':
+            revalidate.append(execution['agent_ref'])
+    return actual, {'accepted': sorted(accepted), 'unaccepted': sorted(set(owners) - set(accepted)),
+                    'dispatcher': sorted(changed - set(owners))}, sorted(revalidate)
 
 
 def verify_binding(repository, binding):
@@ -148,10 +199,13 @@ def verified_transition(payload):
         verify_binding(repository, evidence['binding'])
         if action == 'start-dispatch':
             evidence['binding_verified'] = True
-    if action in {'plan-execution', 'execution-result', 'accept-execution', 'recover-dispatch', 'candidate-ready'}:
+    if action in {'plan-execution', 'execution-result', 'accept-execution', 'prepare-dispatch-recovery', 'recover-dispatch', 'candidate-ready'}:
         require(progress is not None, 'missing dispatcher checkpoint')
         verify_binding(repository, progress['binding'])
         require(set(changed_paths(repository, git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip())) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
+    if action == 'prepare-dispatch-recovery':
+        actual, ownership, revalidate = recovery_snapshot(repository, progress)
+        evidence.update(snapshot=actual, ownership=ownership, revalidate=revalidate)
     if action == 'plan-execution':
         before = snapshot(repository)
         before['files'] = {p: file_fingerprint(repository, p) for p in progress['allowed_paths']}
@@ -162,7 +216,13 @@ def verified_transition(payload):
         require(set(evidence['changed_paths']) == set(actual_hashes) and evidence['file_hashes'] == actual_hashes,
                 'reported changes must exactly match the actual allocation delta')
         evidence['git_unchanged'] = True
-    if action in {'accept-execution', 'recover-dispatch'}:
+    if action == 'recover-dispatch':
+        evidence['snapshot'] = recovery_snapshot(repository, progress)[0]
+    if action == 'release-recovery-allocation':
+        verify_binding(repository, progress['binding'])
+        execution = execution_record(progress, evidence['agent_ref'])
+        evidence['fingerprints'] = {p:file_fingerprint(repository, p) for p in execution['paths']}
+    if action == 'accept-execution':
         evidence['file_hashes'] = {p: implementation_hash(repository, p) for p in progress['allowed_paths']}
         if action == 'accept-execution':
             execution = execution_record(progress, evidence['agent_ref'])

@@ -16,7 +16,9 @@ class DiscussionProjectTests(AttachedTransferTests):
         flow = Path(temporary.name).resolve() / 'flow'
         self.git('worktree', 'add', '-q', '-b', 'identity-flow', str(flow), 'HEAD')
         request = copy.deepcopy(self.request)
-        request.pop('target')
+        request['target'] = {'kind':'flow', 'binding':{'repository':str(self.root), 'worktree':str(flow),
+            'git_common_dir':self.git('rev-parse','--path-format=absolute','--git-common-dir'),
+            'branch':'identity-flow','target_branch':'main','base_commit':self.git('rev-parse','HEAD')}}
         request['host']['project_path'] = str(flow)
         entry.os.getcwd.return_value = str(flow)
         return flow, request
@@ -98,7 +100,9 @@ class DiscussionProjectTests(AttachedTransferTests):
             'idempotency_key': str(uuid.uuid4()), 'root_slug': 'linked-topic'})
         self.git('worktree', 'add', '-q', '-b', 'linked-execution', str(flow), 'HEAD')
         request = copy.deepcopy(self.request)
-        request.pop('target')
+        request['target'] = {'kind':'flow', 'binding':{'repository':str(self.root), 'worktree':str(flow),
+            'git_common_dir':self.git('rev-parse','--path-format=absolute','--git-common-dir'),
+            'branch':'linked-execution','target_branch':'main','base_commit':self.git('rev-parse','HEAD')}}
         request['host']['project_path'] = str(flow)
         request['source']['attachment'] = {'project_id': topic['project_id'], 'tree_id': topic['tree_id'],
             'actor_topic_id': topic['topic_id'], 'actor_conversation_ref': 'task'}

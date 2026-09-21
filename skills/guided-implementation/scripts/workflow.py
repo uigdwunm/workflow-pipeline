@@ -221,7 +221,19 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[
         host = foreground_host.validate_configuration(raw.get("host"), raw["controller_ref"], str(repository), str(worktree), str(git_common_dir))
     except foreground_host.HostError as error:
         raise WorkflowError(str(error)) from error
+    try:
+        registration_request = {"registry_input": str(_absolute_path(raw.get('registry_input'), 'registry_input')),
+            "host": {"project_id": raw['registration_context' if restoring else 'registry_context']['project_id'], "controller_ref": raw['controller_ref']},
+            "target": {"binding": {"repository": str(repository), "git_common_dir": str(git_common_dir)}}}
+        _, registration = entry_prepare.registration_inputs(registration_request, entry_prepare.repository_facts(str(repository)))
+        if restoring:
+            entry_prepare.verify_registration(registration, raw['registration_context'])
+        else:
+            entry_prepare.require(registration['project_path'] == str(repository), 'registration_identity_changed', 'original host project required')
+    except entry_prepare.ERROR_TYPES as error:
+        raise WorkflowError('invalid registration context: ' + str(error)) from error
     return {
+        "registration_context": registration,
         "host": host,
         "controller_ref": raw["controller_ref"],
         "frozen_requirement": {"path": str(requirement_path), "commit": commit, "sha256": digest},
@@ -236,15 +248,19 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[
 
 
 def _check_current_registry(confirmed: dict[str, Any], stages: list[int]) -> None:
-    current = _read_json(Path(confirmed['registry_input']), 'current registry input')
     try:
+        registration, current = entry_prepare.registration_inputs({
+            "registry_input": confirmed['registry_input'], "host": confirmed['registration_context'],
+            "target": {"binding": {"repository": confirmed['repository'], "git_common_dir": confirmed['git_common_dir']}}},
+            entry_prepare.repository_facts(confirmed['repository']))
+        entry_prepare.verify_registration(current, confirmed['registration_context'])
         resolved = preflight({'stage': 3, 'action': 'entry', 'target_stages': stages,
-                              'registry': current.get('registry')})
+                              **registration})
         for identity in resolved['packages'].values():
             if identity['compatibility_key'] != confirmed['packages']['runner']['compatibility_key']:
                 raise WorkflowError('incompatible_package: current registry protocols changed')
-    except PreflightError as exc:
-        raise WorkflowError(f'{exc.code}: {exc}; retained checkpoint, no executor launched') from exc
+    except entry_prepare.ERROR_TYPES as exc:
+        raise WorkflowError(f'{getattr(exc, "code", "registry_unavailable")}: {exc}; retained checkpoint, no executor launched') from exc
 
 
 def _atomic_save(path: Path, state: dict[str, Any]) -> None:
@@ -400,7 +416,7 @@ def _host_pending(instance, request):
 
 def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
     return {
-        "version": 5,
+        "version": 6,
         "confirmed": confirmed,
         "status": "active",
         "current_stage": "stage2",
@@ -412,9 +428,9 @@ def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_record(state: dict[str, Any]) -> dict[str, Any]:
-    if state.get("version") in {1, 2, 3, 4}:
+    if state.get("version") in {1, 2, 3, 4, 5}:
         raise WorkflowError('legacy_run_requires_original_runtime: record version ' + str(state.get('version')) + '; retain original package digests ' + str({k:v.get('bundle_digest') for k,v in state.get('confirmed',{}).get('packages',{}).items()}))
-    if state.get("version") != 5:
+    if state.get("version") != 6:
         raise WorkflowError("unsupported run record version")
     confirmed = validate_confirmed(state.get("confirmed") if isinstance(state.get("confirmed"), dict) else {}, restoring=True)
     if state.get("status") not in {"active", "needs_input", "completed", "failed", "interrupted", "paused", "pausing", "cancelling", "cancelled"}:
@@ -487,6 +503,7 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "continuing_same_session": continuing,
         "skill_paths": {name: confirmed['packages'][name]['entry'] for name in STAGES},
         "registry_input": confirmed['registry_input'],
+        "registration_context": confirmed['registration_context'],
         "package_identities": confirmed['packages'],
     }
     return (
@@ -506,6 +523,7 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "For publication, record the stopped native publication_candidate and original controller readiness through C; "
         "consume publication, reconcile-publication/resume, then receive-publication. Preserve native and Git evidence "
         "as separate sources; do not fabricate a new host completion. Final B acceptance and phase completion still apply.\n"
+        "Pass registry_input unchanged to every carrier and native role entry. Scripts reread registry and registry_context; never copy entries or query the Flow cwd. Verify registration_context against the original host and actual execution cwd against the Flow binding independently. "
         "Use scripts/workflow_progress.py from the pinned stage package for A/B progression. "
         "Persist complete handoff, dispatch intent, raw host responses and controller acceptance in progression_checkpoint. "
         "The runner owns outer carrier fields: never overwrite the checkpoint yourself. Only C's adapter writes its member. "
@@ -1319,7 +1337,11 @@ def _resume_owned(record_path: Path, answer: str | None = None, registry_input: 
         # A durable carrier receipt permits intake, never a new host/ref.
         if state.get('transport') is not None and state['transport'].get('state') != 'lost':
             _record_transport_loss(record_path, 'foreground owner is absent')
-        raise WorkflowError('await-host-recovery: original foreground owner is absent; preserve the exact transport receipts and native calls')
+        retained = progression.read_record(record_path)
+        details = (retained.get(progression.KEY) or {}).get('recovery_action') or {
+            'host_instance': (retained.get('transport') or {}).get('instance'), 'carrier_threads':retained.get('sessions', {}),
+            'missing':['original-host-identity-and-native-stop-or-resume-evidence']}
+        raise WorkflowError('await-host-recovery: original foreground owner is absent; ' + json.dumps(details, sort_keys=True))
     if state['launch']['state'] == 'prelaunch' and state.get('error', {}).get('code') == 'host_prelaunch':
         if registry_input is not None:
             state['confirmed']['registry_input'] = str(registry_input.resolve())
@@ -1472,7 +1494,7 @@ def _request_control(record_path, operation, *, live):
     record_path = _absolute_path(str(record_path), "run_record")
     with progression.record_lock(record_path):
         state = progression.read_record(record_path)
-        if state.get("version") != 5:
+        if state.get("version") != 6:
             raise WorkflowError("legacy_run_requires_original_runtime: control requires the original version-5 record")
         member = state.get(progression.KEY)
         pin = state.get("confirmed", {}).get("packages", {}).get("runner")

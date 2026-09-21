@@ -84,6 +84,7 @@ def unrelated(root, paths):
 
 
 def bind(current, original):
+    entry.verify_registration(current.get("registration_context"), original.get("registration_context"))
     for key in ("actor", "entry", "target", "discussion_project"):
         entry.require(current[key] == original[key], "identity_changed", "preparation owner or target changed")
     for key in ("root", "git_common_dir", "branch", "kind"):

@@ -11,12 +11,14 @@
       3
     ],
     "ledger_write": 3,
-    "control": 2,
+    "control": 3,
+    "entry": "workflow-entry-v3",
+    "runner": 6,
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
-    "preparation": "workflow-preparation-v2",
-    "stage_transfer": "workflow-stage-transfer-v3",
-    "workflow_progress": "workflow-progress-v7",
+    "preparation": "workflow-preparation-v3",
+    "stage_transfer": "workflow-stage-transfer-v4",
+    "workflow_progress": "workflow-progress-v8",
     "requirement_delivery": "requirement-delivery-v1"
   },
   "resources": {

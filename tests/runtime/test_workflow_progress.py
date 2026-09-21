@@ -363,7 +363,7 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertTrue(self.invoke("decide", answer, revision=0)["acknowledged"])
         self.assertEqual(self.state()["action"], action)
 
-    def test_cancelled_answer_needs_controller_recovery_and_new_reference(self):
+    def test_cancelled_answer_cannot_replace_dispatcher_with_legacy_claims(self):
         answer = self.pending_business_answer(stage=3)
         self.invoke("pause")
         self.invoke("decide", answer)
@@ -373,19 +373,13 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.invoke("decide", answer)["status"], "cancelled")
         self.assertEqual(self.invoke("resume")["status"], "cancelled")
         self.assertNotIn(answer["decision_id"], self.state().get("decisions", {}))
-        self.invoke("control", {"action": "recover-dispatch", "evidence": {
-            "stopped_refs": ["native:dispatcher"], "file_hashes": {}, "replacement_ref": "native:replacement"},
-            "receipt": {"host": "fixture", "stopped": "native:dispatcher", "ready": "native:replacement"}})
-        replay = self.invoke("decide", answer)
-        self.assertTrue(replay["acknowledged"])
-        self.assertNotEqual((replay.get("next_action") or {}).get("operation"), "continue-host")
-        renewed = {**answer, "reference": "controller:renew-after-recovery"}
-        result = self.invoke("decide", renewed)
-        self.assertEqual(result["next_action"]["operation"], "inspect-host-state")
-        result = self.invoke("observe", self.observation("idle", "result", ref="native:replacement"))
-        self.assertEqual(result["next_action"]["operation"], "continue-host")
-        self.assertEqual(result["next_action"]["payload"]["ref"], "native:replacement")
-        self.assertEqual(self.state()["deferred_decisions"][answer["decision_id"]]["decision"], answer)
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke("control", {"action": "recover-dispatch", "evidence": {
+                "stopped_refs": ["native:dispatcher"], "file_hashes": {}, "replacement_ref": "native:replacement"},
+                "receipt": {"host": "fixture", "stopped": "native:dispatcher", "ready": "native:replacement"}})
+        self.assertEqual(self.state()["control"]["context"]["carrier"]["ref"], "native:dispatcher")
+        self.assertEqual(self.invoke("resume")["status"], "cancelled")
+        self.assertEqual(self.state()["deferred_decisions"][answer["decision_id"]]["disposition"], "cancelled")
 
     def test_answer_after_stop_receipt_is_saved_without_consuming_pending(self):
         answer = self.pending_business_answer()
@@ -1021,7 +1015,7 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(result["next_action"]["operation"], "wait-host")
         self.assertEqual(self.state()["dispatch"]["status"], "bound")
 
-    def test_resume_recovers_original_stopped_writer_control_transaction(self):
+    def test_legacy_replacement_cannot_start_a_control_transaction(self):
         self.finish_design("continuous")
         self.context = self.context_for(3)
         self.begin("continuous", self.input_for(3, self.state()["accepted"]))
@@ -1029,14 +1023,10 @@ class ProgressTests(transfer.StageTransferTests):
         request = {"action": "recover-dispatch", "evidence": {"stopped_refs": ["native:dispatcher"],
             "file_hashes": {}, "replacement_ref": "native:replacement"},
             "receipt": {"host": "fixture", "stopped": "native:dispatcher", "ready": "native:replacement"}}
-        with patch.object(progress.Progress, "next_envelope", side_effect=KeyboardInterrupt):
-            with self.assertRaises(KeyboardInterrupt):
-                self.invoke("control", request)
+        result = self.invoke("control", request)
+        self.assertEqual(result["status"], "blocked")
         self.assertEqual(self.state()["control"]["context"]["carrier"]["ref"], "native:dispatcher")
-        recovered = self.invoke("resume")
-        self.assertEqual(recovered["next_action"]["operation"], "control-effects")
-        self.assertEqual(self.state()["control"]["context"]["carrier"]["ref"], "native:replacement")
-        self.assertTrue(self.invoke("control", request)["acknowledged"])
+        self.assertFalse(progress.Progress(self.checkpoint, progress.read_record(self.checkpoint)).unresolved_control_transactions())
 
     def begin_dispatcher(self):
         self.context = self.context_for(3)

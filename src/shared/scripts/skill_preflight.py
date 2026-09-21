@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import uuid
 from host_skill_registry import RegistryError, query_registry
 
 STAGES = ('design-discussion', 'problem-framing', 'solution-design', 'guided-implementation', 'change-closure')
@@ -257,7 +258,8 @@ def preflight(request):
         if identity['compatibility_key'] != own['compatibility_key']:
             raise PreflightError('incompatible_package', 'target protocol compatibility key differs', required_skill=name)
     return {'ok': True, 'packages':packages, 'external':external, 'diagnostics':diagnostics,
-        'registry_source':registry['source']}
+        'registry': registry, 'registry_receipt': 'skills-query:' + str(uuid.uuid4()) if 'registry_query' in request else None,
+        'registry_source':registry['source'], 'registry_digest': hashlib.sha256(json.dumps(registry, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()}
 
 
 def main():
