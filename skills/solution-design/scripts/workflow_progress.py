@@ -29,7 +29,7 @@ import workflow_control as control
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v6"
+PROTOCOL = "workflow-progress-v7"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -126,7 +126,7 @@ def stage_boundary(mode, stage, accepted, next_stage=None):
 
 def validate_state(state):
     require(isinstance(state, dict) and state.get("protocol") == PROTOCOL,
-            "legacy_run_requires_original_runtime", "use the original runtime; no checkpoint migration")
+            "legacy_run_requires_original_runtime", "use original " + str(state.get("protocol") if isinstance(state,dict) else None) + "; package digests " + str({k:v.get("bundle_digest") for k,v in (state.get("packages",{}) if isinstance(state,dict) else {}).items()}))
     require(type(state.get("revision")) is int and state["revision"] >= 0,
             "invalid_checkpoint", "checkpoint revision is invalid")
     require(state.get("mode") in {"stepwise", "continuous"}, "invalid_checkpoint", "invalid mode")
@@ -142,6 +142,7 @@ def validate_state(state):
             "invalid_checkpoint", "v4 transaction journal is inconsistent")
     require(isinstance(state.get("retained_host_actions", []), list),
             "invalid_checkpoint", "retained host actions must be an ordered list")
+    control.validate_context(state["control"]["context"])
     for pin in state["packages"].values():
         skill_preflight.verify_identity(pin)
     return state
@@ -1036,6 +1037,10 @@ class Progress:
         intent = self.stop_intent()
         if intent is not None:
             return self.advance_stop(intent)
+        if s.get('deferred_validation') is not None:
+            if self.unresolved_host_actions() or self.stop_barrier_pending():
+                return self.query_host()
+            return self.control_action(s['deferred_validation'])
         if s["transaction"] is not None:
             self.replay_transaction()
         if s.get("business_block"):
@@ -1067,6 +1072,11 @@ class Progress:
                 if action is not None:
                     return action
             return _view(s, {"operation": "wait-host", "ref": self.bound_ref(), "request": s["dispatch"]["request"]})
+        implementation = s['control']['context'].get('handoff_progress') or {}
+        if s['stage'] == 3 and implementation.get('state') in {'reviewable','reviewing','final-validation-pending','final-validation-failed'}:
+            return _view(s, {'operation':{'reviewable':'review-candidate','reviewing':'await-review-convergence',
+                          'final-validation-pending':'await-validation-start','final-validation-failed':'await-validation-recovery'}[implementation['state']],
+                          'candidate':implementation['candidate']})
         if s["step"] == "continue":
             if s["handoff"]["authorization"].get("phase") and s["stage"] == 2:
                 action = self.phase_action()
@@ -1074,7 +1084,9 @@ class Progress:
                     return action
             return self.effect("continue-host", {"ref": self.bound_ref(), "subject": self.subject(),
                 "result": s.get("last_observation"), "decision": s.get("last_decision"),
-                "intent": s.get("resume_intent") or s.get("continuation_intent")})
+                "intent": s.get("resume_intent") or s.get("continuation_intent"),
+                **({"validation_attempt":s["control"]["context"]["handoff_progress"]["attempts"][-1]} if
+                   (s["control"]["context"].get("handoff_progress") or {}).get("state") == "validating" else {})})
         if s["step"] == "received":
             subject = {**self.subject(), "delivery_digest": s["dispatch"]["delivery"]["digest"]}
             if s["pending"] is None:
@@ -1456,6 +1468,9 @@ class Progress:
                     owner["implementation_paths"] == scope["implementation_paths"] and
                     owner["protected_paths"] == scope["protected_paths"], "scope_changed", "closure authority changed")
             control.validate_review(accepted, predecessor["payload"]["review"], predecessor["payload"]["verification"], predecessor["role_ref"])
+            if before:
+                require(supervision._branch_oid(Path(root), binding['target_branch']) == predecessor['payload']['verification']['expected_target_head'],
+                        'target_changed', 'implementation validation belongs to another target')
             handoff.ancestor(root, accepted, candidate)
             changed = supervision._changed_paths(Path(root), accepted, candidate)
             require(set(changed) <= set(scope["closure_paths"]), "scope_changed", "closure candidate changes implementation or unapproved documents")
@@ -1627,13 +1642,52 @@ class Progress:
     def control_action(self, data):
         entry.fields(data, {"action", "evidence", "receipt"})
         require(data["action"] in {"successor-ready", "archive", "archive-result", "execution-result",
-                    "accept-execution", "execution-dispatch-result", "recover-dispatch"},
+                    "accept-execution", "execution-dispatch-result", "recover-dispatch", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
                 "invalid_operation", "use the original bounded control recovery/closure operation")
         require(isinstance(data["receipt"], dict) and data["receipt"], "host_evidence_missing", "original authenticated host/controller evidence required")
         s = self.state
+        if data['action'] == 'validation-result' and self.stop_intent() is not None:
+            data = copy.deepcopy(data)
+            # Replayed transactions already contain the adapter's derived source;
+            # retain and compare the original Controller input on the stop path.
+            data['evidence'].pop('source', None)
+            previous = s.get('deferred_validation')
+            require(previous is None or previous == data, 'validation_conflict', 'retain exact late validation result')
+            s['deferred_validation'] = copy.deepcopy(data)
+            self.save()
+            return _view(s, {'operation':'reconcile-validation-result','disposition':'stopped','attempt_id':data['evidence']['attempt_id']})
+        if data["action"] in {"candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"}:
+            self.require_business_ready()
+            self.require_not_stopping()
+            current = handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
+            require(current['actor']['thread_id'] == s['handoff']['expected_entry']['actor']['thread_id'], 'identity_mismatch', 'original controller required')
+            if data['action'] == 'validation-start' and self.unresolved_host_actions():
+                return self.query_host()
+            data = copy.deepcopy(data)
+            if data['action'] == 'review-converged':
+                slots = s.get('review_activity', {})
+                require(set(slots) == {'standards','spec'}, 'review_incomplete', 'both native review axes required')
+                native = {}
+                for axis, slot in slots.items():
+                    review = data['evidence']['review'][axis]
+                    require(slot['stopped'] and slot['ref'] == review['reviewer_ref'] and slot['candidate'] == data['evidence']['candidate'], 'review_incomplete', 'native reviews must stop at exact candidate')
+                    receipts = [r for r in slot['receipts'] if r['response_ref'] == review['result_ref'] and r['status'] == 'stopped']
+                    require(len(receipts) == 1, 'review_incomplete', 'semantic result must name original stopped response')
+                    native[axis] = receipts[0]
+                data['evidence']['native_evidence'] = native
+            if data['action'] in {'candidate-ready', 'validation-result'}:
+                data['evidence']['source'] = copy.deepcopy(data['receipt'])
+            if data['action'] == 'invalidate-candidate' and (s['control']['context'].get('handoff_progress') or {}).get('state') == 'validating':
+                require(data['receipt'].get('raw',{}).get('stopped') is True, 'host_evidence_missing', 'stop and reconcile the validation command before invalidation')
+                data['evidence']['stopped'] = True
+            if data['action'] in {'validation-retry', 'invalidate-candidate'}:
+                require(not self.unresolved_host_actions(), 'host_action_pending', 'reconcile original calls before validation recovery')
+                require(all(v.get('stopped') for v in s.get('review_activity', {}).values()), 'review_active', 'stop old native reviewers before recovery')
         identity = entry.digest(data)
         transactions = s.setdefault("control_transactions", {})
         previous = transactions.get(identity)
+        if previous and previous.get("rejection") is not None:
+            raise control.ControlError(previous["rejection"])
         if previous and previous.get("result") is not None:
             return _view(s, {"operation": "control-effects", "result": previous["result"]}, acknowledged=True)
         transactions.setdefault(identity, {"request": copy.deepcopy(data), "port": copy.deepcopy(s["control"]),
@@ -1641,12 +1695,22 @@ class Progress:
                                             "business_block_id": (s.get("business_block") or {}).get("id")})
         self.save()
         # Retain exact ledger envelope on a lost response; never promote slots by hand.
-        result, applied = dispatch.checkpoint(transactions[identity]["port"], s["handoff"], data["action"], data["evidence"])
+        try:
+            result, applied = dispatch.checkpoint(transactions[identity]["port"], s["handoff"], data["action"], data["evidence"])
+        except control.ControlError as error:
+            # This pure/Git read-only boundary definitively rejected before any
+            # durable control mutation. OS/transport/ledger failures stay unknown.
+            if data['action'] in {'candidate-ready','review-converged','validation-start','validation-result','validation-retry','invalidate-candidate'} and transactions[identity]['port']['discussion'] is None:
+                transactions[identity]['rejection'] = str(error)
+                self.save()
+            raise
         s["control"]["context"], s["control_receipt"] = result["context"], applied
         self.next_envelope(applied)
         transactions[identity]["result"] = result
+        if data["action"] == "validation-result":
+            s.pop("deferred_validation", None)
         if s["status"] == "blocked":
-            s["status"] = transactions[identity]["status"]
+            s["status"] = transactions[identity]["status"] if transactions[identity]["status"] != "blocked" else s.get("blocked_from","active")
             s.pop("error", None)
         if data["action"] == "recover-dispatch":
             if s.get('cancellation') is not None:
@@ -1666,7 +1730,11 @@ class Progress:
             remaining = [e for e in (s["control"]["context"].get("handoff_progress") or {}).get("executions", []) if not e["stopped"]]
             if not remaining:
                 s["status"], s["stop_effects"] = "cancelled", []
+        if data['action'] == 'validation-start':
+            s.update(step='continue', status='active', continuation_intent={'kind':'final-validation', 'attempt_id':data['evidence']['attempt_id']})
         self.save()
+        if data['action'] == 'validation-start':
+            return self.advance()
         return _view(s, {"operation": "control-effects", "result": result})
 
     def allocation(self, data):
@@ -1799,14 +1867,13 @@ class Progress:
         if data['operation'] == 'prepare':
             entry.fields(data, {'operation','axis','candidate','actor_ref','verification'})
             self.require_not_stopping()
-            require(data['verification'].get('candidate') == data['candidate'] and
-                    isinstance(data['verification'].get('checks'), list) and data['verification']['checks'],
-                    'candidate_unverified', 'retain the exact candidate verification')
+            control.validate_reviewable(s['control']['context']['handoff_progress'], data['candidate'], data['verification'])
             binding, scope = s['handoff']['binding'], s['handoff']['scope']
             observed = supervision.verify_worktree({'binding':binding,'platform_cwd':binding['worktree']})
             require(observed['current_commit'] == data['candidate'] and not supervision._full_status(Path(binding['worktree'])),
                     'candidate_changed', 'review requires the clean exact candidate')
-            changed = supervision._changed_paths(Path(binding['repository']), scope['baseline'], data['candidate'])
+            require(supervision._branch_oid(Path(binding['repository']), binding['target_branch']) == s['control']['context']['handoff_progress']['expected_target_head'], 'target_changed', 'review target changed')
+            changed = supervision._changed_paths(Path(binding['repository']), s['control']['context']['handoff_progress']['expected_target_head'], data['candidate'])
             require(set(changed) <= set(scope['implementation_paths']) and not set(changed) & set(scope['protected_paths']),
                     'scope_changed', 'review candidate escaped implementation scope')
             if any(value['candidate'] != data['candidate'] for value in slots.values()):
@@ -1817,6 +1884,9 @@ class Progress:
             if slot is not None:
                 require(slot['prepare'] == data, 'review_conflict', 'retain the original review intent')
                 return _view(s, {'operation':'lookup-exact-review','axis':data['axis'], 'action_id':slot['action_id'], 'ref':slot.get('ref')}, acknowledged=True)
+            result, applied = dispatch.checkpoint(s['control'], s['handoff'], 'review-start', {'candidate':data['candidate']})
+            s['control']['context'] = result['context']
+            self.next_envelope(applied)
             slot = {'candidate':data['candidate'], 'originating_ref':data['actor_ref'], 'prepare':copy.deepcopy(data),
                     'action_id':str(uuid.uuid4()), 'ref':None, 'stopped':False, 'receipts':[]}
             slots[data['axis']] = slot
@@ -1905,7 +1975,7 @@ class Progress:
                             {key: request[key] for key in ("receipt", "result", "decision") if key in request})
                 return _view(s, {"operation": "allocation-recovery", "ref": slot["owner_ref"], "data": data,
                                  "checkpoint": str(self.path)})
-        pending_control = [value for value in s.get("control_transactions", {}).values() if value["result"] is None]
+        pending_control = [value for value in s.get("control_transactions", {}).values() if value["result"] is None and value.get("rejection") is None]
         require(len(pending_control) <= 1, "control_outcome_unknown", "reconcile each exact outstanding control operation before advancing")
         if pending_control:
             return self.control_action(pending_control[0]["request"])
@@ -2184,18 +2254,21 @@ def lifecycle(path, outer, data):
 
 def handle(path, request):
     entry.fields(request, {"protocol", "operation", "expected_revision"}, {"data"})
-    require(request["protocol"] == PROTOCOL, "unsupported_protocol", "unsupported progression protocol")
+    require(request["protocol"] == PROTOCOL, "legacy_run_requires_original_runtime", "retain original progression runtime " + str(request.get("protocol")))
     require(type(request["expected_revision"]) is int, "invalid_request", "exact revision required")
     path = Path(path)
     require(path.is_absolute(), "invalid_checkpoint", "absolute checkpoint path required")
     with record_lock(path):
         outer = read_record(path)
-        require(outer.get("version") not in {1, 2, 3}, "legacy_run_requires_original_runtime", "retain the original runner and record")
+        require(outer.get("version") not in {1, 2, 3, 4}, "legacy_run_requires_original_runtime", "retain the original runner and record")
         member = outer.get(KEY)
         pinned_protocol = outer.get("confirmed", {}).get("packages", {}).get("runner", {}).get("compatibility_key", {}).get("workflow_progress")
         require((member is None or isinstance(member, dict) and member.get("protocol") == PROTOCOL) and
                 (pinned_protocol is None or pinned_protocol == PROTOCOL),
                 "legacy_run_requires_original_runtime", "all operations require the original pinned progression runtime")
+        if member is not None:
+            require(member.get("control",{}).get("context",{}).get("schema_version") == 2,
+                    "legacy_run_requires_original_runtime", "retain the original embedded control runtime")
         if request["operation"] == "deliver-requirement":
             return deliver_requirement(path, outer, request.get("data", {}))
         if request["operation"] == "prepare-requirement":

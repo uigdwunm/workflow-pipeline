@@ -12,7 +12,7 @@ python3 tests/host/verify_native_lifecycle.py --case stop --input /absolute/anot
 ```
 
 The input contains `workspace`, a fresh `output` directory, `controller_ref`,
-`settings: {model, reasoning_effort}` and the version-4 confirmed `host` object
+`settings: {model, reasoning_effort}` and the version-5 confirmed `host` object
 documented in the shared workflow-progression reference. Create an isolated Git
 repository plus its `flow` directory first. Freeze actual current permissions,
 approval policy, workspace roots and their Controller source; there is no safe
@@ -49,3 +49,8 @@ or rerun that nested integration here. Keep its runtime gates closed when actual
 identity, stop or unresolved-call evidence is missing; never count a transport
 double or the single-layer checks as a nested-host pass. Cross-host resurrection
 is also unproven: the product retains evidence and awaits original-host recovery.
+
+For review-first validation, run both real cases only after the exact candidate
+has converged Standards and Spec review. Bind their raw reports to that candidate
+and its frozen final validation attempt. A prior package report does not validate
+the new candidate. Keep the existing isolated test skip reason explicit.

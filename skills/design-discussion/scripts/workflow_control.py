@@ -82,17 +82,132 @@ def execution_record(progress, ref):
     return matches[0]
 
 
-def validate_review(candidate, review, verification, dispatcher_ref):
+def validate_validation_plan(plan, binding=None):
+    keys(plan, {'review_required', 'final_required', 'environment_not_applicable'})
+    seen = set()
+    for group, categories in (('review_required', {'focused', 'affected'}), ('final_required', {'full', 'environment'})):
+        require(isinstance(plan[group], list) and plan[group], 'nonempty required validation list needed')
+        for item in plan[group]:
+            keys(item, {'id', 'category', 'command', 'cwd', 'pass_condition', 'allowed_skips', 'environment'})
+            identity = text(item['id'])
+            require(identity not in seen, 'duplicate validation check id')
+            seen.add(identity)
+            require(item['category'] in categories, 'invalid required check category')
+            for field in ('command', 'cwd', 'pass_condition'):
+                text(item[field])
+            require(PurePosixPath(item['cwd']).is_absolute(), 'validation cwd must be absolute')
+            if binding is not None:
+                require(item['cwd'] == binding['worktree'], 'validation cwd differs from bound worktree')
+            require(isinstance(item['allowed_skips'], list) and all(isinstance(v, str) and v for v in item['allowed_skips']), 'invalid allowed suite skips')
+            if item['category'] == 'environment':
+                text(item['environment'])
+            else:
+                require(item['environment'] is None, 'environment identity only belongs to environment checks')
+    require({v['category'] for v in plan['review_required']} == {'focused','affected'}, 'review plan must explicitly cover focused and affected purposes')
+    require(any(v['category'] == 'full' for v in plan['final_required']), 'final validation requires a full check')
+    if not any(v['category'] == 'environment' for v in plan['final_required']):
+        text(plan['environment_not_applicable'])
+
+
+def validate_checks(required, checks, candidate, *, passed=True, complete=True):
+    require(isinstance(checks, list), 'structured check results required')
+    require((not complete or len(checks) == len(required)) and all(isinstance(v, dict) for v in checks), 'required checks must be covered exactly once')
+    require(len({v.get('id') for v in checks}) == len(checks), 'duplicate check result')
+    by_id = {v['id']: v for v in required}
+    for result in checks:
+        require(result.get('id') in by_id, 'unexpected check result')
+        item = by_id[result['id']]
+        keys(result, set(item) | {'status', 'exit_code', 'start_commit', 'end_commit', 'environment_fingerprint', 'output_ref', 'output_digest'})
+        require(all(result[k] == v for k, v in item.items()), 'check differs from frozen validation plan')
+        require(result['start_commit'] == result['end_commit'] == candidate, 'validation source changed')
+        require(result['status'] in {'passed', 'failed', 'skipped', 'unknown'}, 'invalid check outcome')
+        require(result['exit_code'] is None or type(result['exit_code']) is int, 'invalid check exit code')
+        if passed:
+            require(result['status'] == 'passed' and result['exit_code'] == 0, 'required validation did not pass')
+        if item['environment'] is not None:
+            require(result['environment_fingerprint'] == item['environment'], 'wrong validation environment')
+        text(result['output_ref'])
+        require(isinstance(result['output_digest'], str) and re.fullmatch('[0-9a-f]{64}', result['output_digest']), 'raw output digest required')
+
+
+def validate_reviewable(progress, candidate, verification):
+    require(progress and progress['state'] in {'reviewable', 'reviewing'}, 'candidate is not reviewable')
+    require(progress['candidate'] == candidate, 'review candidate changed')
+    keys(verification, {'candidate', 'plan_digest', 'checks'})
+    require(verification == {'candidate': candidate, 'plan_digest': progress['plan_digest'], 'checks': progress['tests']}, 'review verification differs from frozen candidate')
+    validate_checks(progress['validation_plan']['review_required'], verification['checks'], candidate)
+
+
+def validate_review_axes(candidate, target, plan_digest, review, dispatcher_ref):
     require(isinstance(candidate, str) and re.fullmatch('[0-9a-f]{40}', candidate), 'invalid reviewed candidate')
     keys(review, {'standards', 'spec'})
     reviewers = []
     for axis in ('standards', 'spec'):
-        keys(review[axis], {'candidate', 'reviewer_ref', 'status'})
-        require(review[axis]['candidate'] == candidate and review[axis]['status'] == 'accepted', 'review does not accept exact candidate')
+        keys(review[axis], {'candidate', 'expected_target_head', 'plan_digest', 'reviewer_ref', 'status', 'result_ref'})
+        require(review[axis]['candidate'] == candidate and review[axis]['status'] == 'accepted' and
+                review[axis]['expected_target_head'] == target and review[axis]['plan_digest'] == plan_digest,
+                'review does not accept exact candidate, target and plan')
         reviewers.append(text(review[axis]['reviewer_ref']))
+        text(review[axis]['result_ref'])
     require(len(set(reviewers)) == 2 and dispatcher_ref not in reviewers, 'independent two-axis review required')
-    keys(verification, {'candidate', 'checks'})
-    require(verification['candidate'] == candidate and isinstance(verification['checks'], list) and verification['checks'], 'candidate verification missing')
+
+
+def validate_review(candidate, review, verification, dispatcher_ref):
+    """Strict delivery projection shared by B, runner and closure."""
+    keys(verification, {'candidate', 'expected_target_head', 'validation_plan', 'plan_digest', 'review_digest',
+                        'review_decision', 'attempts', 'dispatcher_ref'})
+    require(verification['candidate'] == candidate and verification['dispatcher_ref'] == dispatcher_ref, 'verification identity mismatch')
+    plan = verification['validation_plan']
+    validate_validation_plan(plan)
+    require(verification['plan_digest'] == digest(plan), 'validation plan digest changed')
+    validate_review_axes(candidate, verification['expected_target_head'], verification['plan_digest'], review, dispatcher_ref)
+    decision = verification['review_decision']
+    keys(decision, {'controller_ref', 'reference', 'review', 'native_evidence'})
+    require(decision['review'] == review and verification['review_digest'] == digest(decision), 'review convergence mismatch')
+    text(decision['controller_ref']); text(decision['reference'])
+    keys(decision['native_evidence'], {'standards', 'spec'})
+    for axis, item in decision['native_evidence'].items():
+        keys(item, {'adapter','call_ref','response_ref','status','ref','raw'})
+        for field in ('adapter','call_ref','response_ref'):
+            text(item[field])
+        require(isinstance(item, dict) and item.get('status') == 'stopped' and item.get('ref') == review[axis]['reviewer_ref'] and
+                item.get('response_ref') == review[axis]['result_ref'] and isinstance(item.get('raw'), dict) and item['raw'],
+                'stopped native semantic review evidence required')
+    attempts = verification['attempts']
+    require(isinstance(attempts, list) and attempts, 'final validation attempts missing')
+    require(len({v['attempt_id'] for v in attempts}) == len(attempts), 'duplicate validation attempt')
+    latest = attempts[-1]
+    keys(latest, {'attempt_id','carrier_attempt','candidate','expected_target_head','plan_digest','review_digest','dispatcher_ref','source_snapshot','required','state','checks','source','result'})
+    keys(latest['result'], {'attempt_id','checks','source','source_snapshot'})
+    require(latest['result'] == {k:latest[k] for k in ('attempt_id','checks','source','source_snapshot')}, 'final result differs from original attempt observations')
+    require(isinstance(latest['source_snapshot'],dict), 'original source snapshot required')
+    require(latest['state'] == 'passed', 'latest final attempt did not pass')
+    require(all(latest[k] == verification[k] for k in ('candidate', 'expected_target_head', 'plan_digest', 'review_digest', 'dispatcher_ref')), 'final attempt fixed point differs')
+    require(latest['required'] == plan['final_required'], 'final required checks changed')
+    validate_checks(plan['final_required'], latest['checks'], candidate)
+    validate_result_source(latest['source'], latest['checks'], dispatcher_ref, latest['attempt_id'])
+
+
+def validate_result_source(source, checks, dispatcher_ref, attempt_id=None):
+    keys(source, {'adapter', 'call_ref', 'response_ref', 'raw'})
+    for field in ('adapter', 'call_ref', 'response_ref'):
+        text(source[field])
+    raw = source['raw']
+    if attempt_id is not None:
+        require(isinstance(raw,dict) and raw.get('attempt_id') == attempt_id, 'command result belongs to another validation attempt')
+    require(isinstance(raw, dict) and raw.get('checks') == checks and raw.get('source_unchanged') is True and
+            raw.get('dispatcher_ref') == dispatcher_ref and raw.get('stopped') is True, 'trusted original stopped command observations required')
+
+
+def delivery_verification(progress, dispatcher_ref):
+    return {k: copy.deepcopy(progress[k]) for k in ('candidate', 'expected_target_head', 'validation_plan', 'plan_digest',
+            'review_digest', 'review_decision', 'attempts')} | {'dispatcher_ref': dispatcher_ref}
+
+
+def validate_deliverable(progress, candidate, review, verification, dispatcher_ref):
+    require(progress and progress['state'] == 'deliverable', 'candidate is not deliverable')
+    require(verification == delivery_verification(progress, dispatcher_ref) and review == progress['review_decision']['review'], 'delivery differs from control evidence')
+    validate_review(candidate, review, verification, dispatcher_ref)
 
 
 def validate_binding(binding):
@@ -145,10 +260,12 @@ def validate_progress(progress):
         validate_binding(progress['binding'])
         paths(progress['allowed_paths']); paths(progress['protected_paths'], empty=True)
     elif 'executions' in progress:
-        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit'}
-        require(state in {'dispatcher-pending', 'implementing', 'candidate', 'cancelled'}, 'invalid dispatcher state')
+        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery'}
+        require(state in {'dispatcher-pending', 'implementing', 'reviewable', 'reviewing', 'final-validation-pending', 'validating', 'final-validation-failed', 'deliverable', 'cancelled'}, 'invalid dispatcher state')
         validate_binding(progress['binding'])
         paths(progress['allowed_paths']); paths(progress['protected_paths'], empty=True)
+        validate_validation_plan(progress['validation_plan'], progress['binding'])
+        require(progress['plan_digest'] == digest(progress['validation_plan']), 'frozen validation plan changed')
         require(isinstance(progress['executions'], list), 'executions must be a list')
         for execution in progress['executions']:
             required = {'task_id', 'paths', 'read_only', 'behavior', 'tests', 'git_operations', 'configuration', 'agent_ref', 'state', 'stopped', 'file_hashes', 'allocation_digest'}
@@ -191,7 +308,7 @@ def validate_context(context):
         require(isinstance(successor, dict) and 'successor_control' not in successor, 'only one successor slot allowed')
         validate_context(successor)
         require(successor['controller_ref'] == context['controller_ref'] and successor['topic_ref'] == context['topic_ref'], 'successor controller/topic mismatch')
-    require(type(context['schema_version']) is int and context['schema_version'] == 1, 'unsupported control schema')
+    require(type(context['schema_version']) is int and context['schema_version'] == 2, 'legacy_run_requires_original_runtime: control schema ' + str(context.get('schema_version')))
     text(context['controller_ref'])
     if context['topic_ref'] is not None:
         text(context['topic_ref'])
@@ -282,7 +399,7 @@ def select_configuration(evidence):
 
 def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     keys(request, {'schema_version', 'action', 'actor_ref', 'context', 'evidence'})
-    require(type(request['schema_version']) is int and request['schema_version'] == 1, 'unsupported request schema')
+    require(type(request['schema_version']) is int and request['schema_version'] == 2, 'legacy_run_requires_original_runtime: control request schema ' + str(request.get('schema_version')))
     context = copy.deepcopy(request['context'])
     validate_context(context)
     require(request['actor_ref'] == context['controller_ref'], 'only authenticated controller writes control checkpoints')
@@ -393,6 +510,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         closure = paths(evidence['closure_paths'], empty=True)
         require(all(PurePosixPath(p).suffix.lower() in {'.md', '.mdx', '.rst', '.adoc', '.asciidoc', '.org', '.txt'} or PurePosixPath(p).name.lower() in {'readme', 'changelog', 'authors', 'maintainers'} for p in closure), 'closure scope must contain documentation files only')
         protected = paths(evidence['protected_paths'], empty=True)
+        require(not set(implementation) & set(closure), 'closure overlaps implementation contracts')
+        validate_validation_plan(evidence['verification']['validation_plan'], evidence['binding'])
         require(not (set(implementation) | set(closure)) & set(protected), 'closure scope includes protected source')
         attempt = digest(evidence)
         context['carrier'] = {'kind': 'closure-agent', 'ref': None, 'attempt': attempt}
@@ -438,18 +557,20 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         context.update(stage=3, topic_ref=None, carrier=None, flow_authority=None, handoff_progress=None,
                        preference={'topic_current': False, 'stage_current': False})
     elif action == 'start-dispatch':
-        keys(evidence, {'binding', 'binding_verified', 'allowed_paths', 'protected_paths', 'authority_digest', 'testing_basis', 'configuration'})
+        keys(evidence, {'binding', 'binding_verified', 'allowed_paths', 'protected_paths', 'authority_digest', 'testing_basis', 'validation_plan', 'configuration'})
         require(context['stage'] == 3 and progress is None and context['carrier'] is None, 'only one implementation dispatcher')
         require(evidence['binding_verified'] is True and isinstance(evidence['binding'], dict) and evidence['binding'], 'verified worktree required')
         validate_binding(evidence['binding'])
         allowed, protected = paths(evidence['allowed_paths']), paths(evidence['protected_paths'], empty=True)
         require(not set(allowed) & set(protected), 'protected scope overlap')
         text(evidence['testing_basis'])
+        validate_validation_plan(evidence['validation_plan'], evidence['binding'])
         attempt = digest(evidence)
         context['carrier'] = {'kind': 'implementation-dispatcher', 'ref': None, 'attempt': attempt}
         context['handoff_progress'] = {'state': 'dispatcher-pending', 'binding': evidence['binding'],
             'allowed_paths': allowed, 'protected_paths': protected, 'authority_digest': evidence['authority_digest'],
-            'executions': [], 'candidate': None, 'tests': [], 'configuration': evidence['configuration']}
+            'executions': [], 'candidate': None, 'tests': [], 'configuration': evidence['configuration'],
+            'validation_plan': evidence['validation_plan'], 'plan_digest': digest(evidence['validation_plan'])}
         return {'ok': True, 'context': context, 'attempt': attempt,
                 'effects': [{'operation': 'spawn_native', 'role': 'implementation-dispatcher', 'configuration': evidence['configuration']}]}
     elif action == 'dispatcher-bound':
@@ -526,18 +647,94 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         progress['state'] = 'implementing'
         return {'ok': True, 'context': context, 'effects': [], 'revalidate': revalidate,
                 'remaining_paths': sorted(set(progress['allowed_paths']) - set(accepted))}
-    elif action == 'candidate':
-        keys(evidence, {'dispatcher_ref', 'commit', 'clean', 'changed_paths', 'file_hashes', 'tests', 'binding'})
-        require(progress and progress['state'] == 'implementing' and evidence['dispatcher_ref'] == context['carrier']['ref'], 'only dispatcher may integrate candidate')
+    elif action == 'candidate-ready':
+        keys(evidence, {'dispatcher_ref', 'attempt', 'commit', 'expected_target_head', 'binding', 'plan_digest', 'checks', 'source', 'clean', 'changed_paths', 'file_hashes'})
+        require(progress and evidence['dispatcher_ref'] == context['carrier']['ref'] and evidence['attempt'] == context['carrier']['attempt'], 'wrong dispatcher identity or attempt')
+        if progress.get('candidate_evidence') is not None:
+            require(progress['candidate_evidence'] == evidence, 'candidate identity cannot change; invalidate explicitly')
+            return {'ok': True, 'context': context, 'effects': [], 'acknowledged': True}
+        require(progress['state'] == 'implementing', 'candidate is not implementing')
         require(all(e['stopped'] and e['state'] in {'accepted', 'cancelled'} for e in progress['executions']), 'all executions must stop and be accepted')
         require(evidence['clean'] is True and evidence['binding'] == progress['binding'], 'candidate must be clean in bound worktree')
         require(set(paths(evidence['changed_paths'])) <= set(progress['allowed_paths']), 'candidate diff escapes scope')
-        require(re.fullmatch('[0-9a-f]{40}', evidence['commit']) and evidence['tests'], 'candidate commit and full verification required')
+        require(re.fullmatch('[0-9a-f]{40}', evidence['commit']) and evidence['plan_digest'] == progress['plan_digest'], 'candidate commit or plan changed')
+        validate_checks(progress['validation_plan']['review_required'], evidence['checks'], evidence['commit'])
+        validate_result_source(evidence['source'], evidence['checks'], context['carrier']['ref'])
         accepted_hashes = {}
         for execution in progress['executions']:
             accepted_hashes.update(execution['file_hashes'])
         require(all(evidence['file_hashes'].get(p) == h for p, h in accepted_hashes.items()), 'accepted bytes differ from candidate')
-        progress.update(state='candidate', candidate=evidence['commit'], tests=evidence['tests'])
+        progress.update(state='reviewable', candidate=evidence['commit'], tests=evidence['checks'],
+                        expected_target_head=evidence['expected_target_head'], candidate_evidence=evidence)
+    elif action == 'review-start':
+        keys(evidence, {'candidate'})
+        require(progress and progress['state'] in {'reviewable', 'reviewing'} and progress['candidate'] == evidence['candidate'], 'candidate is not reviewable')
+        progress['state'] = 'reviewing'
+    elif action == 'review-converged':
+        keys(evidence, {'candidate', 'review', 'reference', 'native_evidence'})
+        require(progress and progress['state'] == 'reviewing' and evidence['candidate'] == progress['candidate'], 'review has not started for exact candidate')
+        validate_review_axes(progress['candidate'], progress['expected_target_head'], progress['plan_digest'], evidence['review'], context['carrier']['ref'])
+        decision = {'controller_ref':context['controller_ref'], 'reference':text(evidence['reference']),
+                    'review':evidence['review'], 'native_evidence':evidence['native_evidence']}
+        keys(decision['native_evidence'], {'standards', 'spec'})
+        for axis, receipt in decision['native_evidence'].items():
+            keys(receipt, {'adapter','call_ref','response_ref','status','ref','raw'})
+            for field in ('adapter','call_ref','response_ref'):
+                text(receipt[field])
+            require(receipt.get('status') == 'stopped' and receipt.get('ref') == evidence['review'][axis]['reviewer_ref'] and
+                    receipt.get('response_ref') == evidence['review'][axis]['result_ref'] and receipt.get('raw'), 'native review evidence mismatch')
+        progress.update(state='final-validation-pending', review_decision=decision, review_digest=digest(decision), attempts=[])
+    elif action == 'validation-start':
+        keys(evidence, {'attempt_id', 'dispatcher_ref', 'carrier_attempt', 'candidate', 'expected_target_head', 'plan_digest', 'review_digest', 'source_snapshot'})
+        require(progress and progress['state'] == 'final-validation-pending', 'final validation requires converged review')
+        require(evidence['dispatcher_ref'] == context['carrier']['ref'] and evidence['carrier_attempt'] == context['carrier']['attempt'], 'final validation must resume original dispatcher')
+        require(all(evidence[k] == progress[k] for k in ('candidate','expected_target_head','plan_digest','review_digest')), 'final validation fixed point changed')
+        text(evidence['attempt_id'])
+        require(all(v['attempt_id'] != evidence['attempt_id'] for v in progress['attempts']), 'validation attempt reused')
+        progress['attempts'].append({**evidence, 'required':copy.deepcopy(progress['validation_plan']['final_required']),
+                                     'state':'running', 'checks':[], 'source':None})
+        progress['state'] = 'validating'
+        effects = [{'operation':'continue-host', 'ref':context['carrier']['ref'], 'validation_attempt':copy.deepcopy(progress['attempts'][-1])}]
+    elif action == 'validation-result':
+        keys(evidence, {'attempt_id', 'checks', 'source', 'source_snapshot'})
+        require(progress and progress.get('attempts'), 'no final validation attempt')
+        attempt = progress['attempts'][-1]
+        require(evidence['attempt_id'] == attempt['attempt_id'], 'result belongs to another attempt')
+        if attempt['state'] != 'running':
+            require(attempt.get('result') == evidence, 'validation result identity cannot change')
+            return {'ok':True, 'context':context, 'effects':[], 'acknowledged':True}
+        require(progress['state'] == 'validating', 'validation is not active')
+        validate_checks(attempt['required'], evidence['checks'], progress['candidate'], passed=False, complete=False)
+        validate_result_source(evidence['source'], evidence['checks'], context['carrier']['ref'], attempt['attempt_id'])
+        require(all(not old.get('source') or old['source']['response_ref'] != evidence['source']['response_ref'] for old in progress['attempts'][:-1]), 'command result response reused across attempts')
+        passed = len(evidence['checks']) == len(attempt['required']) and evidence['source_snapshot'] == attempt['source_snapshot'] and all(v['status'] == 'passed' and v['exit_code'] == 0 for v in evidence['checks'])
+        attempt.update(state='passed' if passed else 'failed', checks=evidence['checks'], source=evidence['source'], result=evidence)
+        progress['state'] = 'deliverable' if passed else 'final-validation-failed'
+    elif action == 'validation-retry':
+        keys(evidence, {'attempt_id', 'reference'})
+        require(progress and progress['state'] == 'final-validation-failed' and progress['attempts'][-1]['attempt_id'] == evidence['attempt_id'], 'retry must name latest failed attempt')
+        text(evidence['reference'])
+        progress['attempts'][-1]['retry_decision'] = copy.deepcopy(evidence)
+        progress['state'] = 'final-validation-pending'
+    elif action == 'invalidate-candidate':
+        keys(evidence, {'candidate', 'reference', 'reason'} | ({'stopped'} if 'stopped' in evidence else set()))
+        require(progress and progress.get('candidate') == evidence['candidate'] and not progress.get('accepted_delivery'), 'accepted delivery cannot be replaced')
+        require(progress['state'] != 'cancelled', 'cancelled validation cannot be invalidated')
+        if progress['state'] == 'validating':
+            require(evidence.get('stopped') is True, 'reconcile active validation before invalidation')
+            progress['attempts'][-1].update(state='unknown', invalidated=True)
+        text(evidence['reference']); text(evidence['reason'])
+        progress.setdefault('validation_history', []).append({k:copy.deepcopy(progress[k]) for k in
+            ('candidate','expected_target_head','candidate_evidence','tests','review_decision','review_digest','attempts') if k in progress} | {'invalidation':evidence})
+        for key in ('expected_target_head','candidate_evidence','review_decision','review_digest','attempts'):
+            progress.pop(key, None)
+        progress.update(state='implementing', candidate=None, tests=[])
+    elif action in {'delivery-ready', 'accept-delivery'}:
+        keys(evidence, {'candidate', 'review', 'verification', 'dispatcher_ref'} | ({'delivery_digest'} if action == 'accept-delivery' else set()))
+        validate_deliverable(progress, **{k:v for k,v in evidence.items() if k != 'delivery_digest'})
+        if action == 'accept-delivery':
+            require(progress.get('accepted_delivery') in {None, evidence['delivery_digest']}, 'accepted delivery cannot change')
+            progress['accepted_delivery'] = text(evidence['delivery_digest'])
     elif action == 'receive':
         keys(evidence, {'delivery_id', 'source_ref', 'attempt', 'requirement_identity', 'commit', 'verified_commit_hash'})
         require(context['carrier'] is not None and evidence['source_ref'] == context['carrier']['ref'] and

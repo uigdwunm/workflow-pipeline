@@ -7,9 +7,47 @@ import unittest
 
 CLI = Path(__file__).resolve().parents[2] / "skills/guided-implementation/scripts/workflow_control.py"
 
+def plan_for(cwd):
+    def item(identity, category):
+        return {'id':identity, 'category':category, 'command':'python3 -m unittest '+identity,
+                'cwd':str(cwd), 'pass_condition':'exit 0', 'allowed_skips':[], 'environment':None}
+    return {'review_required':[item('focused','focused'),item('affected','affected')],
+            'final_required':[item('full','full')], 'environment_not_applicable':'isolated test fixture'}
+
+
+def checks_for(required, candidate, status='passed'):
+    return [dict(item, status=status, exit_code=0 if status == 'passed' else 1,
+                 start_commit=candidate, end_commit=candidate, environment_fingerprint=None,
+                 output_ref='fixture:output:'+item['id'], output_digest='a'*64) for item in required]
+
+
+def verification_fixture(candidate, dispatcher, cwd, target):
+    # Only external command/reviewer observations are synthetic; consumers still validate them.
+    import hashlib
+    def digest(value):
+        return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    plan = plan_for(cwd)
+    review = {axis:{'candidate':candidate,'expected_target_head':target,'plan_digest':digest(plan),
+              'reviewer_ref':axis,'status':'accepted','result_ref':'terminal-'+axis} for axis in ('standards','spec')}
+    native = {axis:{'adapter':'fixture','call_ref':'review-'+axis,'response_ref':'terminal-'+axis,
+                    'status':'stopped','ref':axis,'raw':{'result':'accepted'}} for axis in review}
+    decision = {'controller_ref':'controller','reference':'fixture:convergence','review':review,'native_evidence':native}
+    checks = checks_for(plan['final_required'],candidate)
+    source = {'adapter':'fixture','call_ref':'command','response_ref':'command-result',
+              'raw':{'attempt_id':'fixture-final','checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':dispatcher}}
+    verification = {'candidate':candidate,'expected_target_head':target,'validation_plan':plan,'plan_digest':digest(plan),
+                    'review_digest':digest(decision),'review_decision':decision,'dispatcher_ref':dispatcher}
+    verification['attempts'] = [{k:verification[k] for k in ('candidate','expected_target_head','plan_digest','review_digest','dispatcher_ref')} |
+        {'attempt_id':'fixture-final','carrier_attempt':'fixture-carrier','required':plan['final_required'],
+         'state':'passed','checks':checks,'source':source,'source_snapshot':{}}]
+    latest = verification['attempts'][-1]
+    latest['result'] = {k:latest[k] for k in ('attempt_id','checks','source','source_snapshot')}
+    return review, verification
+
+
 class WorkflowControlTests(unittest.TestCase):
     def call(self, action, evidence=None, context=None):
-        request = {'schema_version': 1, 'action': action,
+        request = {'schema_version': 2, 'action': action,
                    'actor_ref': 'controller', 'context': context or self.context(),
                    'evidence': evidence or {}}
         result = subprocess.run([sys.executable, str(CLI)], input=json.dumps(request),
@@ -30,7 +68,7 @@ class WorkflowControlTests(unittest.TestCase):
                 'inherited': None, 'upgrade_attempted': False}
 
     def context(self):
-        return {'schema_version': 1, 'controller_ref': 'controller', 'topic_ref': None,
+        return {'schema_version': 2, 'controller_ref': 'controller', 'topic_ref': None,
                 'stage': 0, 'carrier': None,
                 'preference': {'topic_current': False, 'stage_current': False},
                 'flow_authority': None, 'requirement_identity': {'path': 'docs/draft.md',
@@ -101,7 +139,7 @@ class WorkflowControlTests(unittest.TestCase):
         ctx['stage'] = 3
         started = self.call('start-dispatch', {'binding': self.binding(),
             'binding_verified': True, 'allowed_paths': ['src/a.py', 'src/b.py'], 'protected_paths': ['docs/draft.md'],
-            'authority_digest': 'c' * 64, 'testing_basis': 'real CLI', 'configuration': self.configuration('implementation-dispatcher')}, ctx)
+            'authority_digest': 'c' * 64, 'testing_basis': 'real CLI', 'validation_plan': plan_for(self.binding()['worktree']), 'configuration': self.configuration('implementation-dispatcher')}, ctx)
         self.assertTrue(started['ok'])
         self.assertFalse(self.call('start-dispatch', {}, started['context'])['ok'])
         bound = self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']}, started['context'])
@@ -160,6 +198,7 @@ class WorkflowControlTests(unittest.TestCase):
             'verification': {'candidate': candidate, 'checks': ['full suite']},
             'binding': self.binding(), 'implementation_paths': ['src/a.py'],
             'closure_paths': ['README.md'], 'protected_paths': ['docs/draft.md'], 'configuration': self.configuration('closure-agent')}
+        evidence['review'], evidence['verification'] = verification_fixture(candidate, 'dispatcher', self.binding()['worktree'], self.binding()['base_commit'])
         bad = {**evidence, 'closure_paths': ['src/repair.py']}
         self.assertFalse(self.call('start-closure', bad, ctx)['ok'])
         started = self.call('start-closure', evidence, ctx)

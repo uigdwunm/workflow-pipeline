@@ -18,7 +18,7 @@ import requirement_prepare as requirement
 import workflow_control as control
 import workflow_control_git as control_git
 
-PROTOCOL = "workflow-stage-transfer-v2"
+PROTOCOL = "workflow-stage-transfer-v3"
 ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution-designer",
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",
@@ -263,11 +263,13 @@ def verify_result(stage, payload, binding, scope, root, role_ref):
         protected_revision = merged
     elif stage == 3:
         candidate = commit(payload["candidate_commit"])
-        control.validate_review(candidate, payload["review"], payload["verification"], role_ref)
         require(entry.git_text(root, "rev-parse", "HEAD") == candidate, "result_changed", "candidate differs from actual HEAD")
         ancestor(root, binding["base_commit"], candidate)
-        changed = set(entry.git(root, "diff", "--name-only", "-z", scope["baseline"], candidate).stdout.decode().split("\0")) - {""}
+        changed = set(entry.git(root, "diff", "--name-only", "-z", head, candidate).stdout.decode().split("\0")) - {""}
         require(changed <= set(scope["implementation_paths"]), "invalid_scope", "candidate escapes implementation scope")
+        control.validate_review(candidate, payload["review"], payload["verification"], role_ref)
+        require(payload["verification"]["expected_target_head"] == head, "target_changed", "validated target changed")
+        control.validate_validation_plan(payload["verification"]["validation_plan"], binding)
         protected_revision = candidate
     else:
         primary = binding["repository"]
@@ -275,7 +277,7 @@ def verify_result(stage, payload, binding, scope, root, role_ref):
         ancestor(primary, candidate, merged); ancestor(primary, merged, head)
         changed = set(entry.git(primary, "diff", "--name-only", "-z", candidate, merged).stdout.decode().split("\0")) - {""}
         require(changed <= set(scope["closure_paths"]), "invalid_scope", "closure changed implementation or protected paths")
-        actual = sorted(set(entry.git(primary, "diff", "--name-only", "-z", scope["baseline"], merged).stdout.decode().split("\0")) - {""})
+        actual = sorted(set(entry.git(primary, "diff", "--name-only", "-z", entry.git_text(primary,"rev-parse",merged+"^1"), merged).stdout.decode().split("\0")) - {""})
         require(payload["changed_paths"] == actual, "result_changed", "closure paths differ from Git")
         registered = entry.git_text(primary, "worktree", "list", "--porcelain").splitlines()
         branch = entry.git(primary, "show-ref", "--verify", "--quiet", "refs/heads/" + binding["branch"], check=False)
@@ -291,7 +293,7 @@ def verify_result(stage, payload, binding, scope, root, role_ref):
 
 
 def prepare(request):
-    require(request.get("protocol") == PROTOCOL, "unsupported_protocol", "unsupported stage transfer protocol")
+    require(request.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime", "retain original stage-transfer runtime: " + str(request.get("protocol")))
     entry.fields(request, FIELDS | {"operation"})
     stage, role = request["stage"], request["role"]
     require(type(stage) is int and stage in ROLES and role in {ROLES[stage], "execution-agent" if stage == 3 else ROLES[stage]},
@@ -337,7 +339,9 @@ def prepare(request):
     require(authority["flow_mode"] in {"stepwise", "continuous"} and authority["scope_digest"] == entry.digest(scope),
             "authorization_changed", "authorization must bind the exact scope and flow mode")
     semantic = request["semantic"]
-    entry.fields(semantic, {"objective", "testing_basis", "completion_criteria", "constraints"})
+    entry.fields(semantic, {"objective", "testing_basis", "completion_criteria", "constraints"}, {"validation_plan"})
+    if stage == 3 and request["role"] == "implementation-dispatcher":
+        control.validate_validation_plan(semantic.get("validation_plan"), request["binding"])
     entry.nonempty(semantic["objective"]); entry.nonempty(semantic["testing_basis"])
     strings(semantic["completion_criteria"]); strings(semantic["constraints"])
     phase_evidence(request)
@@ -347,7 +351,8 @@ def prepare(request):
     predecessor = request["predecessor"]
     if predecessor is not None:
         prior = unseal(predecessor)
-        require(prior.get("protocol") == PROTOCOL and prior.get("status") == "accepted" and prior.get("downstream_ready") is True,
+        require_current_protocol(prior)
+        require(prior.get("status") == "accepted" and prior.get("downstream_ready") is True,
                 "predecessor_incomplete", "an accepted B result is required")
         old = prior["handoff"]
         require(old["expected_entry"]["discussion_project"] == current["discussion_project"],
@@ -376,8 +381,17 @@ def prepare(request):
                  "source_commit": source_commit, "delivery_facts": delivered, "selection": configuration})
 
 
+def require_current_protocol(value):
+    original = value.get('record') or value.get('handoff') or value
+    saved = original.get('handoff', original)
+    pins = {name:pin.get('bundle_digest') for name,pin in saved.get('expected_entry',{}).get('packages',{}).items()}
+    require(value.get('protocol') == PROTOCOL, 'legacy_run_requires_original_runtime',
+            'retain original stage-transfer runtime ' + str(value.get('protocol')) + '; package digests ' + str(pins))
+
+
 def verify(saved):
     body = unseal(saved)
+    require_current_protocol(body)
     entry.fields(body, FIELDS | {"kind", "controller_ref", "requirement_identity", "source_commit", "delivery_facts", "selection"})
     actual = prepare({**{k: body[k] for k in FIELDS}, "operation": "prepare"})
     require(actual == saved, "handoff_changed", "stage input facts changed; retain the original handoff")
@@ -386,6 +400,7 @@ def verify(saved):
 
 def render(saved):
     body = unseal(saved)
+    require_current_protocol(body)
     if body.get("protocol") == PROTOCOL and body.get("status") == "accepted":
         original = body["handoff"]
         unseal(original)
@@ -429,7 +444,7 @@ def render(saved):
 
 
 def handle(request):
-    require(request.get("protocol") == PROTOCOL, "unsupported_protocol", "unsupported stage transfer protocol")
+    require(request.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime", "retain original stage-transfer runtime: " + str(request.get("protocol")))
     if request.get("operation") == "prepare":
         return prepare(request)
     entry.fields(request, {"protocol", "operation", "handoff"})

@@ -35,6 +35,16 @@ class PackageBuildTests(unittest.TestCase):
                 input=json.dumps(request), text=True, capture_output=True)
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertEqual(json.loads(result.stdout)['error']['code'], 'incompatible_package')
+            config['compatibility_key']['requirement_delivery'] = 'requirement-delivery-v1'
+            config['compatibility_key']['control'] = 1
+            config['compatibility_key']['stage_transfer'] = 'workflow-stage-transfer-v2'
+            config['compatibility_key']['workflow_progress'] = 'workflow-progress-v6'
+            (fixture / 'build/skill-packages.json').write_text(json.dumps(config))
+            subprocess.run([sys.executable, str(fixture / 'scripts/build_skills.py'), '--output', str(root / 'legacy')], check=True)
+            result = subprocess.run([sys.executable, str(ROOT / 'skills/design-discussion/scripts/skill_preflight.py')],
+                input=json.dumps(request), text=True, capture_output=True)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['error']['code'], 'incompatible_package')
 
     def test_deterministic_release_rejects_drift_and_undeclared_import(self):
         import shutil

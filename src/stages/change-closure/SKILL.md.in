@@ -92,8 +92,9 @@ removes the Flow Worktree and branch.
 If the target advanced, inspect the committed delta. A changed protected source
 or material semantic conflict requires user direction. Otherwise return the
 same Flow Worktree to the existing implementation task to merge the target and
-rerun affected/full checks, then have the Originating Task rerun both review
-axes for the replacement candidate. Recheck any closure-document result and
+rerun affected checks, then have the Originating Task rerun both review
+axes for the replacement candidate. After the same dispatcher completes its
+frozen final validation, recheck any closure-document result and
 retry final completion. Stage 4 never repairs implementation code itself.
 
 For explicit standalone Stage 4, read documents from the current target. If
@@ -143,3 +144,11 @@ and binds the actual ref/attempt for one native Closure Agent. Supply the approv
 semantic scope; C reuses the complete candidate, review, verification and binding.
 Do not run a second manual launch/bind sequence. Standalone closure retains its
 original protocol. Code defects return to stage 3; published merge recovery uses cleanup-only.
+
+Inherited Stage-3 delivery requires the strict schema-2 final verification on
+implementation commit I and the unchanged expected target. Closure commit D is
+I or its descendant, with the complete I→D path/byte/mode delta limited to exact
+closure_paths. Check documentation at D without claiming I's test result validates
+D. An implementation or target change returns to the original dispatcher for
+focused/affected checks, both review axes and a new final validation attempt.
+Already-published facts retain cleanup-only and original Phase Run completion.

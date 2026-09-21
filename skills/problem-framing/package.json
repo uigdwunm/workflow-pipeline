@@ -1,7 +1,7 @@
 {
-  "bundle_digest": "33b8ecb815b6f20b3ae95d2883d9767c963ee298fe729bd322b4e34f94fff2b0",
+  "bundle_digest": "1d36d0c285e4ce8fdd1f5ab91628180c4faa4d7cdc646c0db5c5ca69461f70c7",
   "compatibility_key": {
-    "control": 1,
+    "control": 2,
     "discussion_request": 1,
     "handoff": "workflow-controller-v1",
     "ledger_read": [
@@ -12,10 +12,10 @@
     "ledger_write": 3,
     "preparation": "workflow-preparation-v2",
     "requirement_delivery": "requirement-delivery-v1",
-    "stage_transfer": "workflow-stage-transfer-v2",
+    "stage_transfer": "workflow-stage-transfer-v3",
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
-    "workflow_progress": "workflow-progress-v6"
+    "workflow_progress": "workflow-progress-v7"
   },
   "external_actions": {
     "grill-with-docs": [
@@ -82,11 +82,11 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "4edaeb8f6d3028ccb316ec0dd4aa94df7da708651c1c3d12369d8a923b07da20"
+      "sha256": "f3e05b28d873f88f25775637cd4b6a87fb38082cb26ccbd9dab84537a7c4def0"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "d5f830c17efc7c6aaba4b782bab304532d08e73ba10e34a5873aeed86ae7c6b8"
+      "sha256": "0acdb2115289565d1bd5a9637b019f1b097034e399958e6a7ea9c357bbe8789d"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -98,11 +98,11 @@
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
-      "sha256": "da02be1f6349db0c1d41011efe725e4d0755bcd5547bec4d6c78409e039a123e"
+      "sha256": "aa721a56b75f358d94f65da5afc88146ead176cf4ed91742c954dc76ec5e546f"
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "0cbbf6f545ee4fa8026bcab6137c7d23d3c997bc1350d721dfc0fb0c28447457"
+      "sha256": "ea0e7339747de275391f02f7efae875fe4e3e5a0a2119034754556d1e75369ad"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -166,7 +166,7 @@
     },
     "scripts/discussion_core/workflow_control.py": {
       "mode": "0644",
-      "sha256": "90e4103289ab070d6869619595d33cd7eb18ebbb4c2ab1bb2934bf50e83b954b"
+      "sha256": "d4c2b191f79b6dc91c47ab75c9b813f2dc120cd9c9184fd7b601e6c04e7a5ed2"
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
@@ -194,11 +194,11 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "3bb31fd51fbc8724640adeb93fdd2151263411d4b5131cfa5c2a68427b1ff6fd"
+      "sha256": "3ddea355607bd55111e2fa343ed61e58053182635a591f8b5c0c289efb1ffd7d"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "b3628053d046df72478e1da7ca244bf6b4569b16d4f846962577bd2ab8667693"
+      "sha256": "5470e6b40daffd9448c3530b8338a05a72a70b4f6f9f09ba1c86c448cea9edfb"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",
@@ -218,15 +218,15 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "968683ba98e12de8fce5553c7387df5090f3e34f96c8796f987cc837d03b33a1"
+      "sha256": "037304e2ce346ff20e0d0c492f4d23777c4f1944aa108e43fb38be472ebdd157"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "1b43ab6c61d23c96843704039f360079183935523414e95b967f28c9676ba814"
+      "sha256": "22957dd5ce081984e0cafeba85ecf2b99b1bc246f5984135dce5b22ae94140f6"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "4bc9f2d6d2cf9ed91b9c450c848709c2eea8be8a829052909e5b7ae69da96176"
+      "sha256": "249974dd9bac814cfd80ab8ad7ca467e679e81b4ff33e47e785bd4dc30b83e6a"
     }
   },
   "format_version": 1,

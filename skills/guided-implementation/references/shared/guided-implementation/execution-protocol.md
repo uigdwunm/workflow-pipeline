@@ -75,8 +75,8 @@ supplies an explicit user-authorized resolution. A material question in stage
 3 is evidence of incomplete authority, not permission to guess.
 
 Work only in the verified worktree and invoke the complete native `$implement`
-workflow for the accepted work, including `$tdd`, typechecking, focused tests,
-and the final full suite. Keep planning sources read-only when present.
+workflow for the accepted work, including `$tdd`, typechecking, focused and affected tests before review, then the frozen final suite only after
+the original Controller confirms review convergence. Keep planning sources read-only when present.
 Implementation commits contain only code, tests and required implementation
 artifacts; report documentation paths and intended updates to the originating
 task for Stage 4 instead of editing or committing them here.
@@ -84,7 +84,7 @@ task for Stage 4 instead of editing or committing them here.
 Before ending any execution turn, report one result block:
 
 ```text
-结果类型：<candidate | checkpoint | blocked>
+结果类型：<reviewable | candidate | checkpoint | blocked>
 当前 HEAD：<commit>
 已完成：<completed scope>
 剩余：<remaining scope | none>
@@ -92,7 +92,9 @@ Before ending any execution turn, report one result block:
 阻塞：<specific decision gap | none>
 ```
 
-Use `candidate` only after all confirmed work is complete and the clean exact
+Use `reviewable` after all implementation scope and review-required checks are
+complete at a clean committed HEAD. Return this checkpoint for independent review;
+final validation remains pending. Use `candidate` only after all confirmed work is complete and the clean exact
 HEAD has focused and full verification. Use `checkpoint` for clean committed
 in-scope progress when planned work remains; the Originating Task will continue
 the same task from that HEAD. Use `blocked` only for a concrete condition that
@@ -103,7 +105,7 @@ work, not a blocker.
 Before reporting a `candidate`:
 
 1. require a clean worktree;
-2. run focused and full checks;
+2. retain focused checks and the same-commit final attempt authorized after review;
 3. report the exact HEAD and changed paths;
 4. disclose remaining risks; and
 5. retain the verified worktree for remediation.
@@ -124,7 +126,7 @@ identities. Before editing, provide execution evidence comparing the prior
 failure and fix, explaining why the fix missed the mechanism, naming the
 minimal effective validation at the affected real boundary, and listing the
 inspected sibling paths with applicability. Run that focused validation, then
-repair in scope and rerun affected and full checks in this same worktree.
+repair in scope and rerun affected checks in this same worktree.
 If diagnosis exposes an insufficient scope or plan, stop for the existing
 implementation-authority/anomaly decision; ordinary defects continue here.
 The dispatcher reports an unexpected material implementation-authority gap
@@ -145,3 +147,23 @@ worktree for Stage 4.
 Execution Agents use plan-execution before native spawn and assign after the actual
 receipt as specified in [workflow-control-protocol.md](workflow-control-protocol.md).
 They have no Git mutation authority; the dispatcher integrates verified bytes.
+
+## Review-first final validation
+
+Read the frozen `validation_plan` in the existing control checkpoint. Implement all
+Tickets, run `review_required`, and commit a clean reviewable checkpoint. Report
+`candidate-ready` through C control using the original carrier attempt, exact
+commit, target, plan digest and structured results. This never completes B.
+The Originating Task records two independent review responses and issues
+`review-converged`. Only then consume C's `continue-host` validation attempt on
+this same dispatcher identity. Run every `final_required` item from that attempt;
+retain the original command outputs and observed source state for Controller
+verification. Final full validation and required real environment acceptance are
+mandatory before delivery, never prerequisites for initial or replacement review.
+
+A failed attempt remains immutable. Retry the complete final list only after the
+Controller names that failed attempt; reuse review only while commit, target,
+plan, binding and source state remain unchanged. A code or target change returns
+to implementation, focused/affected checks and both review axes before another
+final attempt. Unknown command completion requires original-host reconciliation,
+not replay. Pause/cancel intent precedes all new business actions.

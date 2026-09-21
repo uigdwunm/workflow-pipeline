@@ -8,7 +8,7 @@ recovery. Dedicated Discussion Task and Dedicated Problem Framing Task are visib
 Dispatcher and optional Execution Agents; stage 4 one Closure Agent. A split child
 is one independent Workflow Controller and inherits no preferences or authority.
 
-`workflow_control.py` accepts bounded strict JSON with schema_version=1, action,
+`workflow_control.py` accepts bounded strict JSON with schema_version=2, action,
 actor_ref, context and evidence. Context contains schema_version, controller_ref,
 topic_ref, stage, carrier, preference, flow_authority, requirement_identity and
 handoff_progress, plus at most one optional successor_control slot. The caller authenticates actor_ref and persists the returned
@@ -119,8 +119,8 @@ assign binds its actual agent_ref/task_id/allocation_digest. Expand directories 
 name new files. Concurrent writers cannot overlap; shared files are serial.
 Execution Agents never mutate index, commits, branches, merges, worktrees or cleanup.
 execution-result reports stopped, diff/hashes, tests and Git state; the Git adapter
-compares actual allocation snapshot. accept-execution rechecks bytes. candidate
-requires all writers stopped/accepted and clean verified HEAD. The controller owns
+compares actual allocation snapshot. accept-execution rechecks bytes. candidate-ready
+requires all writers stopped/accepted, frozen review-required checks and clean verified HEAD. The controller owns
 two independent review axes on that exact candidate. Recovery proves all old writers
 stopped, rechecks accepted hashes and revalidates remaining work. Preserve differences
 on interruption/cancel; reconcile unknown native dispatch before replacement.
@@ -145,9 +145,9 @@ The foreground scripted runner alone advances while active. Confirmed input incl
 controller_ref and per-stage model/reasoning_effort/selection_input. Handoffs contain
 controller_ref, role_ref and control_checkpoint exactly
 {controller_ref,stage,role_ref,state:"completed",role_kind}. Stage role_kind is
-solution-designer, implementation-dispatcher or closure-agent. Stage 3 includes exact
-implementation_paths/closure_paths/protected_paths, independent review axes
-{candidate,reviewer_ref,status:"accepted"}, verification {candidate,checks}.
+solution-designer, implementation-dispatcher or closure-agent. Stage 3 includes exact implementation_paths/closure_paths/protected_paths and
+the strict review/final-verification projection below. Nonempty text checks alone
+never establish reviewability or delivery.
 Stage 4 includes changed_paths, same accepted candidate_commit/binding, merge_commit,
 ancestry and both cleanup facts. Partial cleanup returns continue or technical_error.
 continue returns to C's next action in the same foreground host; a running role
@@ -183,3 +183,60 @@ missing or drifted attribution fails, preserving the worktree for reconciliation
 This allows nonoverlapping results to arrive in either order without silently attributing
 one writer's changes to another. Serial follow-up allocations snapshot the current
 complete state after the prior writer stopped.
+
+## Stage-3 validation contract (schema 2)
+
+`start-dispatch` requires `validation_plan` in addition to testing_basis. The
+Controller derives and approves this exact plan from the accepted testing basis.
+Both `review_required` and `final_required` are nonempty lists of unique checks
+with `id`, `category`, `command`, bound absolute `cwd`, `pass_condition`,
+`allowed_skips`, and `environment`. Review categories are focused/affected; final
+categories are full/environment, including at least one full check. An environment
+check names its required fingerprint; otherwise record an explicit
+`environment_not_applicable` basis. Plan digests identify approved bytes, not
+execution or semantic authority. Changing a plan is an existing authority anomaly.
+
+C's bounded `control` channel accepts candidate-ready, review-converged,
+validation-start, validation-result, validation-retry and invalidate-candidate.
+Git enriches candidate-ready with actual clean HEAD, paths and fingerprints.
+The candidate binds dispatcher ref/attempt, commit, expected_target_head, binding,
+plan_digest and checks. C review-activity consumes exactly those review checks.
+Each review axis binds candidate, expected_target_head, plan_digest, reviewer_ref,
+accepted status and result_ref naming its real stopped native response. The
+original Controller's convergence decision includes both raw native receipts.
+
+validation-start records attempt_id, original dispatcher_ref/carrier_attempt,
+candidate/target/plan/review digests, full required list and actual source snapshot
+before issuing same-identity continue-host. Results contain each frozen check's
+fields plus status, exit_code, start_commit/end_commit, environment_fingerprint,
+output_ref and output_digest. C supplies the separate authenticated source receipt:
+adapter/call_ref/response_ref/raw, with raw attempt_id, checks, original dispatcher_ref,
+source_unchanged and stopped observations from actual tools. The caller must
+authenticate these observations; model prose, a digest or a path is not proof.
+The Controller reads raw output against pass_condition and allowed suite skips.
+The entire required check cannot be skipped even when an internal suite skip is
+allowed. Untrusted, unknown or incomplete observations never pass.
+
+State order is implementing → reviewable → reviewing → final-validation-pending
+→ validating → deliverable. A failed/incomplete final result records
+final-validation-failed. validation-retry names its latest failed attempt and
+Controller reference; it preserves all previous attempts and repeats the complete
+final list. invalidate-candidate names the old candidate, reason and Controller
+reference, preserves validation_history, and returns to implementing only after
+old calls/reviewers stop. An accepted delivery cannot be invalidated in place.
+
+The strict verification projection contains candidate, expected_target_head,
+validation_plan, plan_digest, review_digest, review_decision, attempts and
+original dispatcher_ref. B receive and accept compare it against deliverable
+control evidence; completed cannot manufacture candidate readiness. Stage-4 entry
+and C publication reuse the strict validator and target checks. Implementation I
+retains its final evidence; closure descendant D may change only closure_paths.
+No implementation contract, tests, generated package or protected source belongs
+to closure scope. After a recorded merge, reconcile publication/cleanup instead
+of demanding a new validation or merge.
+
+New records use runner 5, C workflow-progress-v7, B workflow-stage-transfer-v3
+and control schema 2. Old executable records fail with
+legacy_run_requires_original_runtime before writes or host calls. Embedded old
+control keeps the ledger outer version and bytes; resume with its original pinned
+package. Never migrate checks strings into passed evidence.

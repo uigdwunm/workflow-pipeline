@@ -35,7 +35,7 @@ class WorkflowGitTests(unittest.TestCase):
     def call(self, action, evidence, context):
         result = subprocess.run([sys.executable, str(CLI)], text=True, capture_output=True,
             input=json.dumps({'repository': str(self.repo), 'baseline': self.base,
-                'request': {'schema_version': 1, 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
+                'request': {'schema_version': 2, 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
         self.assertTrue(result.stdout, result.stderr)
         return json.loads(result.stdout)
 
@@ -74,7 +74,7 @@ class WorkflowGitTests(unittest.TestCase):
         self.repo = self.root / 'flow'
         started = self.call('start-dispatch', {'binding': binding, 'binding_verified': True,
             'allowed_paths': ['src/a.py'], 'protected_paths': ['docs/draft.md'], 'authority_digest': 'c' * 64,
-            'testing_basis': 'CLI', 'configuration': helper.configuration('implementation-dispatcher')}, ctx)
+            'testing_basis': 'CLI', 'validation_plan': __import__('test_workflow_control').plan_for(binding['worktree']), 'configuration': helper.configuration('implementation-dispatcher')}, ctx)
         self.assertTrue(started['ok'], started)
         bound = self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']}, started['context'])
         envelope = {'task_id': 'a', 'paths': ['src/a.py'], 'read_only': ['docs/draft.md'],
@@ -112,7 +112,7 @@ class WorkflowGitTests(unittest.TestCase):
         context = helper.context(); context['stage'] = 3
         started = self.call('start-dispatch', {'binding': binding, 'binding_verified': True,
             'allowed_paths': ['a.py', 'b.py'], 'protected_paths': ['docs/draft.md'], 'authority_digest': 'c' * 64,
-            'testing_basis': 'CLI', 'configuration': helper.configuration('implementation-dispatcher')}, context)
+            'testing_basis': 'CLI', 'validation_plan': __import__('test_workflow_control').plan_for(binding['worktree']), 'configuration': helper.configuration('implementation-dispatcher')}, context)
         context = self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']}, started['context'])['context']
         for name in ('a', 'b') if peers else ('a',):
             planned = self.call('plan-execution', {'task_id': name, 'paths': [name+'.py'], 'read_only': [],
@@ -204,6 +204,7 @@ class WorkflowGitTests(unittest.TestCase):
             'verification': {'candidate': candidate, 'checks': ['full suite']}, 'binding': binding,
             'implementation_paths': ['code.py'], 'closure_paths': ['README.md'], 'protected_paths': ['docs/draft.md'],
             'configuration': helper.configuration('closure-agent')}
+        evidence['review'], evidence['verification'] = __import__('test_workflow_control').verification_fixture(candidate, 'dispatcher', binding['worktree'], self.git('rev-parse', 'main'))
         started = self.call('start-closure', evidence, ctx)
         self.assertTrue(started['ok'], started)
         bound = self.call('closure-bound', {'ref': 'closure', 'attempt': started['attempt']}, started['context'])

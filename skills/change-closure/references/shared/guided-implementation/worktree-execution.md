@@ -102,14 +102,15 @@ before Git can overwrite them; unrelated ignored paths do not block it.
 
 When two candidates race from one base, one completes and the other receives
 `target_changed`. The Implementation Dispatcher merges the new target into
-the retained Flow Worktree, runs affected and full checks, and commits a
+the retained Flow Worktree, runs affected checks, and commits a
 replacement candidate. The Originating Task establishes the new review fixed
-point and reruns both Standards and Spec axes before retrying. There is no
+point and reruns both Standards and Spec axes, then authorizes the same
+dispatcher to complete the frozen final validation before retrying. There is no
 scheduler or queue.
 
 ## Exact publication recovery (flow-worktree-v2)
 
-The stage owner uses workflow-progress-v6 for durable publication. The Python
+The stage owner uses workflow-progress-v7 for durable publication. The Python
 publishers accept a `record` callback that persists each immutable fact in the
 existing owner checkpoint before the next effect. A callback failure stops the
 operation; lost response recovery reads Git before deciding what remains. Raw
