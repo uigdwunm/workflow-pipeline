@@ -15,6 +15,8 @@ import uuid
 
 PROTOCOL = 'foreground-host-v1'
 MAX_MESSAGE = 16 * 1024 * 1024
+WRITE_TIMEOUT = 5.0
+WRITE_CHUNK = 64 * 1024
 
 
 class HostError(RuntimeError):
@@ -95,6 +97,7 @@ class ForegroundHost:
         self.stderr = None
         self.server_requests = {}
         self.lifecycle_events = []
+        self.write_uncertain = False
 
     def start(self, diagnostics):
         try:
@@ -113,12 +116,55 @@ class ForegroundHost:
                                     'capabilities':{'experimentalApi':True}})
         self._write({'method':'initialized'})
 
-    def _write(self, message):
+    def _require_writable(self):
+        if self.write_uncertain:
+            raise HostError('transport_uncertain: previous write outcome is uncertain; do not replay on this connection')
+
+    def _write(self, message, *, send_guard=None):
+        self._require_writable()
+        payload = (json.dumps(message, ensure_ascii=False) + '\n').encode()
+        offset, complete, backpressure_logged = 0, False, False
+        evidence = {'instance':self.instance,'message_id':message.get('id'),
+                    'method':message.get('method'),'bytes_total':len(payload)}
         try:
-            self.process.stdin.write((json.dumps(message, ensure_ascii=False) + '\n').encode())
-            self.process.stdin.flush()
-        except (OSError, ValueError) as error:
-            raise HostError('transport_uncertain: request must not be replayed') from error
+            descriptor = self.process.stdin.fileno()
+            os.set_blocking(descriptor, False)
+            deadline = time.monotonic() + WRITE_TIMEOUT
+            with selectors.DefaultSelector() as writable:
+                writable.register(descriptor, selectors.EVENT_WRITE)
+                while offset < len(payload):
+                    if time.monotonic() >= deadline:
+                        raise HostError('transport_uncertain: outbound write deadline expired; do not replay')
+                    # Only a first positive nonblocking write commits the frame.
+                    # EAGAIN releases the guard before any readiness wait; after
+                    # commit, only the remaining suffix is sent, outside locks.
+                    guard = send_guard() if offset == 0 and send_guard is not None else nullcontext(True)
+                    with guard as allowed:
+                        if not allowed:
+                            return False
+                        try:
+                            count = os.write(descriptor, memoryview(payload)[offset:offset + WRITE_CHUNK])
+                        except BlockingIOError:
+                            count = 0
+                    if count:
+                        first = offset == 0
+                        offset += count
+                        if first:
+                            self.journal({'kind':'write-committed',**evidence,'bytes_written':offset})
+                    else:
+                        if not backpressure_logged:
+                            self.journal({'kind':'write-backpressure',**evidence,'bytes_written':offset})
+                            backpressure_logged = True
+                        writable.select(max(0,min(.05,deadline-time.monotonic())))
+            complete = True
+            return True
+        except (OSError, ValueError, HostError) as error:
+            self.write_uncertain = True
+            self.journal({'kind':'write-failed',**evidence,'bytes_written':offset,'outcome':'uncertain','reason':str(error)})
+            raise HostError(f'transport_uncertain: outbound frame wrote {offset}/{len(payload)} bytes; do not replay') from error
+        finally:
+            if offset and not complete:
+                self.write_uncertain = True
 
     def _read(self, timeout=1):
         if not 0 <= timeout <= 60:
@@ -161,6 +207,7 @@ class ForegroundHost:
         return self.messages.popleft() if self.messages else None
 
     def _request(self, method, params):
+        self._require_writable()
         self.request_number += 1
         request = {'id':self.request_number,'method':method,'params':params}
         self.journal({'kind':'request-intent','instance':self.instance,'request':request})
@@ -226,13 +273,12 @@ class ForegroundHost:
         return True
 
     def answer_request(self, request, result, *, send_guard=None):
+        self._require_writable()
         if self.server_requests.get(request.get('id')) != request:
             raise HostError('stale_decision: original server request is not pending in this host')
         self.journal({'kind':'server-response-intent','instance':self.instance,'request':request,'result':result})
-        with send_guard() if send_guard is not None else nullcontext(True) as allowed:
-            if not allowed:
-                return False
-            self._write({'id':request['id'],'result':result})
+        if not self._write({'id':request['id'],'result':result},send_guard=send_guard):
+            return False
         del self.server_requests[request['id']]
         self.journal({'kind':'server-response-sent','instance':self.instance,'request_id':request['id']})
         return True

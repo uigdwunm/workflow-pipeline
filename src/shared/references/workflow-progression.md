@@ -512,9 +512,17 @@ With a live owner, an answer returns `queued` after saving its exact ID, subject
 and value; only the original carrier consumes it through C decide. Identical
 answers ACK, different answers conflict, and obsolete IDs are rejected. An
 app-server approval remains queued while pause/cancel is pending. The owner
-rechecks that priority under the checkpoint lock immediately around its wire
-write, after journaling intent; a newly queued stop defers the response and
-steers the original carrier without consuming the saved approval.
+rechecks that priority under the checkpoint lock around only the first
+nonblocking write attempt, after journaling intent. A first positive byte count
+commits the frame. EAGAIN with zero bytes releases the lock before a bounded
+readiness wait, then rechecks stop priority before trying again. A stop recorded
+before the first byte defers the response and steers the original carrier.
+After commitment, only the remaining suffix is sent, outside the checkpoint
+lock; a later stop can still be saved while the pipe is backpressured. Every
+outbound frame has a bounded write deadline. Timeout or pipe failure records
+the actual byte count as uncertain, retains the original request, and prevents
+further writes on that connection. Neither a partial frame nor a failed write
+is replayed as a whole message, and neither proves native stopped state.
 An answer alone does not unpause. `resume RECORD` without an answer explicitly
 queues release of the original paused subject; it is applied only after the
 stop barrier closes. Cancellation has priority over both forms. Requests remain

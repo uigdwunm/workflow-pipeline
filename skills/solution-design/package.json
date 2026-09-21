@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "8f9aa5d5c7b29a2b144e557ea7c2539f6aa20f82b3d467e26ed4939df44d697c",
+  "bundle_digest": "d6607c02332a4199d2452eadc749fe14555ddd93a193c6cc229806b06e1ce7c4",
   "compatibility_key": {
     "control": 1,
     "discussion_request": 1,
@@ -86,7 +86,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "936f0d35348011a03130368b3b5db6cd19550c0149f4b43fbee7a8cd0a042d84"
+      "sha256": "0cbbf6f545ee4fa8026bcab6137c7d23d3c997bc1350d721dfc0fb0c28447457"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",

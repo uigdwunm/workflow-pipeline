@@ -368,8 +368,8 @@ def _live_progress(state, record_path, host, steered):
             raise WorkflowError('invalid_host_answer: provide the exact RPC result JSON') from error
         @contextmanager
         def send_guard():
-            # Serialize the final stop check with control writers and the wire
-            # write. Journaling runs outside this short checkpoint lock.
+            # Serialize the stop check with the first positive nonblocking
+            # write only. Suffix writes, journaling and readiness waits are outside.
             with progression.record_lock(record_path):
                 latest = progression.read_record(record_path)
                 yield _stop_command(latest) is None

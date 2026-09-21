@@ -2,15 +2,17 @@
 import io
 import json
 import os
+import select
 import subprocess
 import sys
 import threading
 import time
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent))
 import test_workflow_progress as scenario
@@ -681,6 +683,172 @@ class HostProtocolTests(unittest.TestCase):
         self.host = runner.foreground_host.ForegroundHost(self.configuration, str(self.root), self.events.append,
                                                          executable=str(self.executable))
         self.addCleanup(self.host.close)
+
+    @contextmanager
+    def pipe_transport(self):
+        read_fd, write_fd = os.pipe()
+        reader, writer = os.fdopen(read_fd,'rb',buffering=0), os.fdopen(write_fd,'wb',buffering=0)
+        self.host.process = SimpleNamespace(stdin=writer)
+        try:
+            yield reader, writer
+        finally:
+            reader.close(); writer.close()
+            self.host.process = None
+
+    def queued_large_response(self):
+        checkpoint = self.root/'checkpoint.json'
+        request = {'id':'input-1','method':'item/tool/requestUserInput','params':{'threadId':'carrier','turnId':'1'}}
+        self.host.server_requests[request['id']] = request
+        pending = runner._host_pending(self.host.instance,request)
+        result = {'answers':{'question':{'answers':['x' * (128 * 1024)]}}}
+        decision = {'decision_id':pending['decision_id'],'subject':pending['subject'],
+                    'answer':json.dumps(result),'reference':'controller-answer:'+pending['decision_id']}
+        state = {'version':4,'status':'needs_input','current_stage':'stage2',
+                 'transport':{'instance':self.host.instance,'server_decision':decision}}
+        progress.atomic_save(checkpoint,state)
+        return checkpoint, state, request, result
+
+    def test_real_pipe_backpressure_does_not_hold_checkpoint_lock(self):
+        self.assert_backpressure_control('cancel')
+
+    def test_real_pipe_backpressure_does_not_block_pause(self):
+        self.assert_backpressure_control('pause')
+
+    def assert_backpressure_control(self, operation):
+        checkpoint, state, request, result = self.queued_large_response()
+        errors = []
+        def deliver():
+            try: runner._live_progress(state,checkpoint,self.host,set())
+            except Exception as error: errors.append(error)
+        with self.pipe_transport() as (reader, writer), runner.RunLock(checkpoint), \
+                patch.object(progress,'CHECKPOINT_LOCK_TIMEOUT',.2), redirect_stdout(io.StringIO()):
+            worker = threading.Thread(target=deliver)
+            worker.start()
+            control_error = None
+            try:
+                deadline = time.monotonic()+2
+                while select.select([], [writer], [], 0)[1]:
+                    self.assertLess(time.monotonic(),deadline,'pipe never became backpressured')
+                    time.sleep(.005)
+                started = time.monotonic()
+                try: runner.request_control(checkpoint,operation)
+                except Exception as error: control_error = error
+                elapsed = time.monotonic()-started
+            finally:
+                reader.close()
+                worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertIsNone(control_error)
+            self.assertLess(elapsed,.5)
+            saved = progress.read_record(checkpoint)
+            self.assertEqual(saved['runner_request']['operation'],operation)
+            self.assertIn('server_decision',saved['transport'])
+            self.assertNotEqual(saved['status'],'cancelled')
+            self.assertTrue(errors)
+            self.assertFalse(any(event['kind']=='server-response-sent' for event in self.events))
+
+    def test_real_pipe_full_response_continues_only_suffix_after_commit(self):
+        checkpoint, state, request, result = self.queued_large_response()
+        committed = threading.Event()
+        received, errors = [], []
+        def journal(event):
+            self.events.append(event)
+            if event['kind'] == 'write-committed':
+                runner.request_control(checkpoint,'cancel')
+                committed.set()
+        self.host.journal = journal
+        with self.pipe_transport() as (reader, writer), runner.RunLock(checkpoint), \
+                patch.object(progress,'CHECKPOINT_LOCK_TIMEOUT',.2), redirect_stdout(io.StringIO()):
+            def read_frame():
+                if not committed.wait(2): return
+                try:
+                    data = b''
+                    while not data.endswith(b'\n'):
+                        chunk = reader.read(8192)
+                        if not chunk: break
+                        data += chunk
+                    received.append(data)
+                except Exception as error: errors.append(error)
+            def deliver():
+                try: runner._live_progress(state,checkpoint,self.host,set())
+                except Exception as error: errors.append(error)
+            receiver, sender = threading.Thread(target=read_frame), threading.Thread(target=deliver)
+            receiver.start(); sender.start()
+            sender.join(2)
+            finished = not sender.is_alive()
+            if not finished: reader.close()
+            sender.join(2); receiver.join(2)
+            self.assertTrue(finished)
+            self.assertEqual(errors,[])
+            self.assertEqual(len(received),1)
+            self.assertEqual(json.loads(received[0]),{'id':request['id'],'result':result})
+            self.assertEqual(received[0].count(b'\n'),1)
+            self.assertEqual(sum(event['kind']=='write-committed' for event in self.events),1)
+            self.assertEqual(sum(event['kind']=='server-response-sent' for event in self.events),1)
+            self.assertEqual(progress.read_record(checkpoint)['runner_request']['operation'],'cancel')
+
+    def test_real_pipe_eagain_zero_bytes_obeys_cancel_before_first_byte(self):
+        checkpoint, state, request, result = self.queued_large_response()
+        waiting = threading.Event(); errors = []
+        def journal(event):
+            self.events.append(event)
+            if event['kind']=='write-backpressure': waiting.set()
+        self.host.journal = journal
+        with self.pipe_transport() as (reader, writer), runner.RunLock(checkpoint), redirect_stdout(io.StringIO()):
+            os.set_blocking(writer.fileno(),False)
+            filled = 0
+            while True:
+                try: filled += os.write(writer.fileno(),b' ')
+                except BlockingIOError: break
+            def deliver():
+                try: runner._live_progress(state,checkpoint,self.host,set())
+                except Exception as error: errors.append(error)
+            sender = threading.Thread(target=deliver); sender.start()
+            try:
+                self.assertTrue(waiting.wait(2))
+                runner.request_control(checkpoint,'cancel')
+                sender.join(1)
+                self.assertFalse(sender.is_alive())
+            finally:
+                if sender.is_alive(): reader.close(); sender.join(2)
+            self.assertEqual(errors,[])
+            self.assertFalse(self.host.write_uncertain)
+            self.assertFalse(any(event['kind'] in {'write-committed','server-response-sent'} for event in self.events))
+            self.assertIn('server_decision',progress.read_record(checkpoint)['transport'])
+            os.set_blocking(reader.fileno(),False)
+            self.assertEqual(reader.read(filled+1),b' '*filled)
+
+    def test_real_pipe_partial_timeout_is_uncertain_and_never_replayed(self):
+        checkpoint, state, request, result = self.queued_large_response()
+        errors = []
+        with self.pipe_transport() as (reader, writer), patch.object(runner.foreground_host,'WRITE_TIMEOUT',.15):
+            def deliver():
+                try: self.host.answer_request(request,result)
+                except Exception as error: errors.append(error)
+            sender = threading.Thread(target=deliver); sender.start(); sender.join(1)
+            finished = not sender.is_alive()
+            if not finished: reader.close(); sender.join(2)
+            self.assertTrue(finished)
+            self.assertEqual(len(errors),1)
+            self.assertIsInstance(errors[0],runner.foreground_host.HostError)
+            failed = next(event for event in self.events if event['kind']=='write-failed')
+            self.assertEqual(failed['outcome'],'uncertain')
+            self.assertGreater(failed['bytes_written'],0)
+            self.assertLess(failed['bytes_written'],failed['bytes_total'])
+            os.set_blocking(reader.fileno(),False)
+            prefix = reader.read(failed['bytes_total'])
+            expected = (json.dumps({'id':request['id'],'result':result},ensure_ascii=False)+'\n').encode()
+            self.assertEqual(prefix,expected[:failed['bytes_written']])
+            before_retry = list(self.events)
+            for retry in (lambda:self.host.answer_request(request,result),
+                          lambda:self.host._request('turn/start',{}),
+                          lambda:self.host._write({'method':'initialized'})):
+                with self.assertRaisesRegex(runner.foreground_host.HostError,'previous write outcome'):
+                    retry()
+            self.assertEqual(self.events,before_retry)
+            self.assertIsNone(reader.read(1))
+            self.assertIn(request['id'],self.host.server_requests)
+            self.assertFalse(any(event['kind']=='server-response-sent' for event in self.events))
 
     def test_cross_turn_native_events_are_retained_but_do_not_complete_carrier(self):
         changed = HOST.replace("if method == 'turn/start':\n        emit", """if method == 'turn/start':
