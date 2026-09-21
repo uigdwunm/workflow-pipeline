@@ -511,7 +511,11 @@ there is no running writer to stop.
 With a live owner, an answer returns `queued` after saving its exact ID, subject,
 and value; only the original carrier consumes it through C decide. Identical
 answers ACK, different answers conflict, and obsolete IDs are rejected. An
-answer alone does not unpause. `resume RECORD` without an answer explicitly
+app-server approval remains queued while pause/cancel is pending. The owner
+rechecks that priority under the checkpoint lock immediately around its wire
+write, after journaling intent; a newly queued stop defers the response and
+steers the original carrier without consuming the saved approval.
+An answer alone does not unpause. `resume RECORD` without an answer explicitly
 queues release of the original paused subject; it is applied only after the
 stop barrier closes. Cancellation has priority over both forms. Requests remain
 in the original checkpoint if the owner disappears before consuming them.
@@ -560,7 +564,12 @@ runner's host nonce, PID and locks locate evidence; they are not live proof.
 ### Native stop barrier and review activity
 
 The stop barrier derives targets from the original dispatch, control executions,
-allocation transactions and the current candidate's two review_activity slots.
+allocation transactions, the current candidate's two review_activity slots, and
+every retained review_history binding. Historical receipts identify original
+roles; current lookup and newly observed activity still govern their stop
+proof. Reconcile late historical reviewer activity against its exact original
+candidate/axis/action, without reopening allocation or treating that result as
+a review of the current candidate.
 An unbound allocation or unresolved create/continue/stop call keeps it open.
 Creation-ready may settle the creation call without proving the child's turn
 completed. A stopped root does not settle its executions, reviewers or descendants.

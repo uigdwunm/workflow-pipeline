@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import deque
+from contextlib import nullcontext
 import copy
 import json
 import os
@@ -224,13 +225,17 @@ class ForegroundHost:
             raise HostError('host_protocol_error: steering receipt changed the active turn')
         return True
 
-    def answer_request(self, request, result):
+    def answer_request(self, request, result, *, send_guard=None):
         if self.server_requests.get(request.get('id')) != request:
             raise HostError('stale_decision: original server request is not pending in this host')
         self.journal({'kind':'server-response-intent','instance':self.instance,'request':request,'result':result})
-        self._write({'id':request['id'],'result':result})
+        with send_guard() if send_guard is not None else nullcontext(True) as allowed:
+            if not allowed:
+                return False
+            self._write({'id':request['id'],'result':result})
         del self.server_requests[request['id']]
         self.journal({'kind':'server-response-sent','instance':self.instance,'request_id':request['id']})
+        return True
 
     def snapshot_lifecycle(self, stage):
         """Current descendants of this run's original carrier, never discovery."""

@@ -345,6 +345,48 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         self.assertEqual(saved['sessions'], {})
         self.assertTrue(all(json.loads(line)['status'] == 'queued' for line in output.getvalue().splitlines()))
 
+    def test_stop_queued_after_approval_preempts_actual_server_response(self):
+        executable, log, confirmed = self.fixture()
+        executable.write_text(HOST.replace("else: raise RuntimeError(method)",
+            "elif method == 'turn/steer': response = {'turnId':p['expectedTurnId']}\n    else: raise RuntimeError(method)").replace(
+            "request = json.loads(line); method = request['method']; p = request.get('params', {})",
+            "request = json.loads(line)\n    if 'method' not in request:\n        note({'event':'server-response','message':request}); continue\n    method = request['method']; p = request.get('params', {})"))
+        for operation, timing in ((operation,timing) for operation in ('pause','cancel') for timing in ('queued','before-write')):
+            with self.subTest(operation=operation,timing=timing), patch.object(runner,'__file__',str(cli.SCRIPT)), \
+                    patch.dict(os.environ,{'HOST_LOG':str(log)}), redirect_stdout(io.StringIO()):
+                raw = json.loads(confirmed.read_text()); raw['registry_input'] = str(confirmed)
+                state = runner._new_state(runner.validate_confirmed(raw))
+                events = []
+                def journal(event):
+                    events.append(event)
+                    if timing == 'before-write' and event['kind'] == 'server-response-intent':
+                        runner.request_control(self.checkpoint,operation)
+                host = runner.foreground_host.ForegroundHost(raw['host'],str(self.flow),journal,executable=str(executable))
+                try:
+                    host.start(self.checkpoint.parent/('approval-'+operation+'.stderr'))
+                    thread = host.start_carrier('stage2',{'model':'fixture-model','reasoning_effort':'high'})
+                    host.active = (thread,'1')
+                    request = {'id':'approval','method':'item/commandExecution/requestApproval',
+                               'params':{'threadId':thread,'turnId':'1','command':['must-not-run']}}
+                    host.server_requests['approval'] = request
+                    pending = runner._host_pending(host.instance,request)
+                    state.update(status='needs_input',pending_input=pending,
+                                 transport={'instance':host.instance,'state':'live'})
+                    progress.atomic_save(self.checkpoint,state)
+                    with runner.RunLock(self.checkpoint):
+                        runner.resume(self.checkpoint,json.dumps({'decision':'accept'}),decision_id=pending['decision_id'])
+                        if timing == 'queued':
+                            runner.request_control(self.checkpoint,operation)
+                        steered = set()
+                        runner._live_progress(state,self.checkpoint,host,steered)
+                        runner._live_progress(state,self.checkpoint,host,steered)
+                    self.assertFalse(any(event['kind']=='server-response-sent' for event in events))
+                    self.assertEqual(sum(event.get('request',{}).get('method')=='turn/steer' for event in events),1)
+                    self.assertFalse(any(call['event']=='server-response' for call in host_calls(log)))
+                    self.assertIn('server_decision',progress.read_record(self.checkpoint)['transport'])
+                finally:
+                    host.close()
+
     def test_live_owner_delivers_answer_in_original_carrier(self):
         executable, log, confirmed = self.fixture()
         script = HOST.replace("result='continue' if turn == 1 else 'needs_input'", "result='needs_input'")

@@ -20,6 +20,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import time
 import uuid
+from contextlib import contextmanager
 from typing import Any
 
 from workflow_control import ControlError, validate_review, select_configuration, paths
@@ -320,6 +321,15 @@ def _live_commands(state, record_path):
         return work
 
 
+def _stop_command(saved):
+    request = saved.get('runner_request')
+    current = saved.get(progression.KEY) or {}
+    intent = current.get('stop_requested')
+    if intent in {'pausing','cancelling'}:
+        return request or {'operation':intent,'stage':saved['current_stage']}
+    return request
+
+
 def _live_progress(state, record_path, host, steered):
     saved = progression.read_record(record_path)
     current = saved.get(progression.KEY) or {}
@@ -343,8 +353,10 @@ def _live_progress(state, record_path, host, steered):
                 progression.atomic_save(record_path, saved)
             progression.handle(record_path, {'protocol':progression.PROTOCOL,'operation':'advance',
                 'expected_revision':saved[progression.KEY]['revision'],'data':{}})
+    saved = progression.read_record(record_path)
+    command = _stop_command(saved)
     decision = saved.get('transport', {}).get('server_decision') or saved.get('controller_decision')
-    if decision is not None and decision['subject'].get('host_instance') is not None:
+    if command is None and decision is not None and decision['subject'].get('host_instance') is not None:
         subject = decision['subject']
         request = host.server_requests.get(subject.get('request_id'))
         if (subject.get('host_instance') != host.instance or request is None or
@@ -354,15 +366,25 @@ def _live_progress(state, record_path, host, steered):
             response = json.loads(decision['answer'])
         except json.JSONDecodeError as error:
             raise WorkflowError('invalid_host_answer: provide the exact RPC result JSON') from error
-        host.answer_request(request, response)
-        with progression.record_lock(record_path):
-            current = progression.read_record(record_path)
-            if current.get('transport', {}).get('server_decision') == decision:
-                current['transport'].pop('server_decision')
-                progression.atomic_save(record_path, current)
-        return
+        @contextmanager
+        def send_guard():
+            # Serialize the final stop check with control writers and the wire
+            # write. Journaling runs outside this short checkpoint lock.
+            with progression.record_lock(record_path):
+                latest = progression.read_record(record_path)
+                yield _stop_command(latest) is None
+
+        if host.answer_request(request, response, send_guard=send_guard):
+            with progression.record_lock(record_path):
+                current = progression.read_record(record_path)
+                if current.get('transport', {}).get('server_decision') == decision:
+                    current['transport'].pop('server_decision')
+                    progression.atomic_save(record_path, current)
+            return
+        saved = progression.read_record(record_path)
+        command = _stop_command(saved)
     pending_decision = decision if decision is not None and entry_prepare.digest(decision) not in saved.get('delivered_commands', []) else None
-    command = saved.get('runner_request') or pending_decision
+    command = command or pending_decision
     if command is not None and host.active is not None:
         identity = entry_prepare.digest(command)
         if identity not in steered:

@@ -37,6 +37,24 @@ NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAge
 require = entry.require
 
 
+def validate_native_event(event):
+    require(isinstance(event, dict) and isinstance(event.get('method'), str) and event['method'] in {'item/started','item/completed'} and
+            isinstance(event.get('params'), dict) and isinstance(event['params'].get('item'), dict) and
+            event['params']['item'].get('type') == 'subAgentActivity',
+            'invalid_result', 'raw native lifecycle notification required')
+    item = event['params']['item']
+    require(all(isinstance(value,str) and value for value in (event['params'].get('threadId'),item.get('id'),item.get('kind'))) and
+            all(item.get(key) is None or isinstance(item[key],str) and item[key] for key in ('agentPath','agentThreadId')),
+            'invalid_result', 'native lifecycle identities must be strings')
+
+
+def validate_snapshot_events(snapshot):
+    require(isinstance(snapshot,dict) and isinstance(snapshot.get('events'),list),
+            'invalid_result', 'raw lifecycle events must be a list')
+    for event in snapshot['events']:
+        validate_native_event(event)
+
+
 @contextmanager
 def record_lock(path, *, timeout=None):
     path = Path(path)
@@ -279,9 +297,11 @@ class Progress:
         for identity, slot in s.get('allocations', {}).items():
             if slot.get('transaction') is not None or slot.get('record') is None:
                 pending.append({'kind':'allocation', 'allocation_id':identity})
-        for axis, slot in s.get('review_activity', {}).items():
-            if slot is not None and not slot.get('stopped'):
-                pending.append({'kind':'reviewer', 'axis':axis, 'ref':slot.get('ref'), 'action_id':slot['action_id']})
+        review_groups = [s.get('review_activity', {}), *s.get('review_history', [])]
+        for group in review_groups:
+            for axis, slot in group.items():
+                if slot is not None and not slot.get('stopped'):
+                    pending.append({'kind':'reviewer', 'axis':axis, 'ref':slot.get('ref'), 'action_id':slot['action_id']})
         if s.get('stage', 0) >= 2 and s.get('dispatch') and self.bound_ref() is not None:
             snapshot = s.get('lifecycle_snapshot')
             transport = self.outer.get('transport')
@@ -298,7 +318,7 @@ class Progress:
                     if transaction.get('result') is not None and transaction['request']['action'] == 'recover-dispatch':
                         refs.update(transaction['request']['evidence']['stopped_refs'])
                 refs.update(e['agent_ref'] for e in (selected.get('handoff_progress') or {}).get('executions', []) if e.get('agent_ref'))
-                refs.update(slot['ref'] for slot in s.get('review_activity', {}).values() if slot and slot.get('ref'))
+                refs.update(slot['ref'] for group in review_groups for slot in group.values() if slot and slot.get('ref'))
                 aliases, calls = {}, set()
                 for event in snapshot['events']:
                     params = event.get('params', {})
@@ -338,10 +358,7 @@ class Progress:
         require(previous is None or previous['instance'] == snapshot['instance'], 'host_recovery_required', 'a new host cannot replace current native evidence')
         require(type(snapshot['sequence']) is int and snapshot['sequence'] >= 0 and isinstance(snapshot['events'], list) and
                 isinstance(snapshot['pages'], list) and snapshot['pages'], 'invalid_result', 'complete raw lifecycle lookup required')
-        require(all(isinstance(event,dict) and isinstance(event.get('params'),dict) and
-                    isinstance(event['params'].get('item'),dict) and
-                    isinstance(event['params']['item'].get('id'),str) and isinstance(event['params'].get('threadId'),str)
-                    for event in snapshot['events']), 'invalid_result', 'native event identities must be explicit')
+        validate_snapshot_events(snapshot)
         cursor, seen, cursors = None, set(), set()
         archived, complete = False, False
         for page in snapshot['pages']:
@@ -387,23 +404,23 @@ class Progress:
         require(transport is not None and data['instance'] == transport.get('instance'),
                 'identity_mismatch', 'native event belongs to the current foreground connection')
         event = data['event']
-        require(isinstance(event, dict) and event.get('method') in {'item/started','item/completed'} and
-                event.get('params', {}).get('item', {}).get('type') == 'subAgentActivity',
-                'invalid_result', 'raw native lifecycle notification required')
-        self.state['observations'].append({'native_event':copy.deepcopy(data)})
+        validate_native_event(event)
         item = event['params']['item']
         carrier = data.get('carrier_thread')
         if carrier is not None and carrier != self.outer.get('sessions', {}).get('stage' + str(self.state['stage'])):
             require(carrier in self.outer.get('sessions', {}).values(), 'identity_mismatch', 'event must retain a known original carrier')
+            self.state['observations'].append({'native_event':copy.deepcopy(data)})
             if event['method'] == 'item/started' and item.get('kind') in {'started','interacted'}:
                 self.state.setdefault('prior_carrier_activity', {})[carrier] = copy.deepcopy(data)
                 self.state['recovery_action'] = {'operation':'await-host-recovery','carrier_thread':carrier,
                     'reason':'reconcile new activity through its original prior-stage parent'}
             self.save()
             return _view(self.state)
+        self.state['observations'].append({'native_event':copy.deepcopy(data)})
         if event['method'] == 'item/started' and item.get('kind') in {'started','interacted'} and item.get('agentPath'):
             self.state.setdefault('native_adverse', {})[item['agentPath']] = copy.deepcopy(data)
-            for slot in self.state.get('review_activity', {}).values():
+            for slot in (slot for group in [self.state.get('review_activity', {}), *self.state.get('review_history', [])]
+                         for slot in group.values()):
                 if slot and slot.get('ref') == item['agentPath']:
                     slot['stopped'] = False
         if (self.state.get('dispatch') and item.get('agentPath') == self.bound_ref() and
@@ -1773,6 +1790,12 @@ class Progress:
         handoff.commit(data['candidate'])
         slots = s.setdefault('review_activity', {})
         slot = slots.get(data['axis'])
+        if data['operation'] == 'observe' and (slot is None or slot['candidate'] != data['candidate'] or
+                                               slot['action_id'] != data.get('action_id')):
+            matches = [group[data['axis']] for group in s.get('review_history', []) if data['axis'] in group and
+                       group[data['axis']]['candidate'] == data['candidate'] and group[data['axis']]['action_id'] == data.get('action_id')]
+            require(len(matches) == 1, 'review_missing', 'observe one exact retained historical review call')
+            slot = matches[0]
         if data['operation'] == 'prepare':
             entry.fields(data, {'operation','axis','candidate','actor_ref','verification'})
             self.require_not_stopping()
@@ -2198,6 +2221,15 @@ def handle(path, request):
         if operation == "start":
             return owner.start(data)
         require(owner.state is not None, "missing_checkpoint", "start a progression checkpoint first")
+        # Reject malformed adapter events before even the raw observation
+        # journal changes. All three ingress paths share the same shape rules.
+        if operation == 'host-event':
+            require(isinstance(data,dict), 'invalid_result', 'native event data must be an object')
+            validate_native_event(data.get('event'))
+        elif operation == 'lifecycle-state':
+            validate_snapshot_events(data)
+        elif operation == 'observe' and isinstance(data,dict) and 'lifecycle' in data:
+            validate_snapshot_events(data['lifecycle'])
         try:
             if operation == "advance": return owner.advance()
             if operation == "observe": return owner.observe(data)

@@ -493,6 +493,88 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.state()['status'], 'pausing')
         self.assertFalse(self.state()['stopped'])
 
+    def test_malformed_host_event_is_controlled_and_does_not_mutate_checkpoint(self):
+        self.begin()
+        saved = progress.read_record(self.checkpoint)
+        saved['transport'] = {'instance':'fixture-host','state':'live'}
+        progress.atomic_save(self.checkpoint,saved)
+        before = self.checkpoint.read_bytes()
+        for params in ([], None, {'item':[]}, {'item':None},
+                       {'threadId':'carrier','item':{'type':'subAgentActivity','id':'call','kind':'started','agentPath':['bad']}}):
+            with self.subTest(params=params):
+                with self.assertRaises(transfer.entry.PreparationError) as error:
+                    self.invoke('host-event',{'instance':'fixture-host','event':{'method':'item/started','params':params}})
+                self.assertEqual(error.exception.code,'invalid_result')
+                self.assertEqual(self.checkpoint.read_bytes(),before)
+
+    def test_snapshot_rejects_malformed_native_alias_without_saving_it(self):
+        self.begin()
+        self.invoke('observe',self.observation())
+        self.invoke('pause')
+        observation = self.observation('stopped','result')
+        snapshot = observation['lifecycle']
+        snapshot['events'] = [{'method':'item/started','params':{'threadId':snapshot['carrier_thread'],
+            'item':{'type':'subAgentActivity','id':'x','kind':'started','agentPath':['bad'],'agentThreadId':'child'}}}]
+        before = self.checkpoint.read_bytes()
+        for operation, data in (('observe',observation),('lifecycle-state',snapshot)):
+            with self.subTest(operation=operation):
+                with self.assertRaises(transfer.entry.PreparationError) as error:
+                    self.invoke(operation,data)
+                self.assertEqual(error.exception.code,'invalid_result')
+                self.assertEqual(self.checkpoint.read_bytes(),before)
+
+    def test_previous_candidate_reviewers_require_current_stop_evidence(self):
+        self.begin_dispatcher()
+        rounds = []
+        for number in (1,2):
+            (self.flow/'impl.py').write_text('implemented = '+str(number)+'\n')
+            self.flow_git('add','impl.py'); self.flow_git('commit','-qm','candidate '+str(number))
+            candidate = self.flow_git('rev-parse','HEAD')
+            slots = {}
+            for axis in ('standards','spec'):
+                prepared = self.invoke('review-activity',{'operation':'prepare','axis':axis,'candidate':candidate,
+                    'actor_ref':'task','verification':{'candidate':candidate,'checks':['focused']}})
+                identity = prepared['next_action']['action_id']
+                ref = 'native:'+axis+'-'+str(number)
+                request = {'operation':'observe','axis':axis,'candidate':candidate,'actor_ref':'task','action_id':identity,
+                    'receipt':{'adapter':'fixture','call_ref':'wait-'+ref,'response_ref':'stopped-'+ref,
+                    'ref':ref,'status':'stopped','raw':{'task_name':ref,'status':'completed'}}}
+                self.invoke('review-activity',request)
+                slots[axis] = request
+            rounds.append(slots)
+        self.invoke('pause')
+        observation = self.observation('stopped','result',ref='native:dispatcher')
+        snapshot = observation['lifecycle']
+        for request in rounds[0].values():
+            ref = request['receipt']['ref']
+            snapshot['pages'][0]['response']['data'].append({'id':ref,'status':{'type':'idle'}})
+            snapshot['events'].append({'method':'item/completed','params':{'threadId':snapshot['carrier_thread'],
+                'item':{'type':'subAgentActivity','id':'create-'+ref,'kind':'started','agentPath':ref,'agentThreadId':ref}}})
+        self.assertEqual(self.invoke('observe',observation)['status'],'paused')
+        active = copy.deepcopy(snapshot)
+        active['pages'][0]['response']['data'][-1]['status'] = {'type':'active'}
+        self.assertEqual(self.invoke('lifecycle-state',active)['status'],'pausing')
+        omitted = copy.deepcopy(snapshot); omitted['pages'][0]['response']['data'].pop()
+        self.assertEqual(self.invoke('lifecycle-state',omitted)['status'],'pausing')
+        self.assertEqual(self.invoke('lifecycle-state',snapshot)['status'],'paused')
+        old = rounds[0]['standards']
+        saved = progress.read_record(self.checkpoint)
+        saved['transport'] = {'instance':snapshot['instance'],'state':'live','native_event_sequence':1}
+        progress.atomic_save(self.checkpoint,saved)
+        event = {'method':'item/started','params':{'threadId':snapshot['carrier_thread'],'item':{
+            'id':'late-old-review','type':'subAgentActivity','kind':'interacted','agentPath':old['receipt']['ref'],
+            'agentThreadId':old['receipt']['ref']}}}
+        self.assertEqual(self.invoke('host-event',{'instance':snapshot['instance'],'event':event})['status'],'pausing')
+        fresh = copy.deepcopy(snapshot); fresh['sequence'] = 1
+        fresh['events'].append({**event,'method':'item/completed'})
+        self.assertEqual(self.invoke('lifecycle-state',fresh)['status'],'pausing')
+        duplicate = self.invoke('review-activity',old)
+        self.assertEqual(duplicate['status'],'pausing')
+        self.assertTrue(duplicate['acknowledged'])
+        stopped = copy.deepcopy(old)
+        stopped['receipt'].update(call_ref='fresh-old-stop',response_ref='fresh-old-stopped')
+        self.assertEqual(self.invoke('review-activity',stopped)['status'],'paused')
+
     def test_descendant_lookup_rejects_incomplete_archive_or_source_coverage(self):
         self.begin()
         self.invoke('observe',self.observation())
