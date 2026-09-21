@@ -1924,12 +1924,12 @@ class Progress:
                         "identity_mismatch", "only the bound native dispatcher allocates execution agents")
                 saved = handoff.handle(request)
                 parent_scope, scope = s["handoff"]["scope"], saved["scope"]
-                require(scope["baseline"] == parent_scope["baseline"] and
-                        scope["implementation_paths"] == parent_scope["implementation_paths"] and
+                require(scope["implementation_paths"] == parent_scope["implementation_paths"] and
                         scope["closure_paths"] == parent_scope["closure_paths"] and
                         set(scope["owned_paths"]) <= set(parent_scope["implementation_paths"]) and
                         set(parent_scope["protected_paths"]) <= set(scope["protected_paths"]),
-                        "scope_changed", "allocation must retain parent baseline and protections")
+                        "scope_changed", "allocation must retain parent scope and protections")
+                handoff.ancestor(saved['expected_entry']['repository']['root'], parent_scope['baseline'], scope['baseline'])
                 slot = {"input": copy.deepcopy(data["handoff"]), "handoff": saved, "record": None, "owner_ref": self.bound_ref(),
                         "transaction": None, "observations": [], "result": None}
                 slots[identity] = slot

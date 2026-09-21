@@ -72,8 +72,13 @@ the saved controller decision binds it, not a new permission token. Completion
 criteria and constraints are nonempty text lists. Path lists are sorted, unique
 exact repository-relative files; directories must be expanded and new files named.
 Baseline is current downstream HEAD, except Stage 4 retains the accepted Stage-3
-scope baseline and separately checks its candidate against current HEAD. Protected
-paths cannot overlap current write paths; implementation and closure ownership
+scope baseline and separately checks its candidate against current HEAD.
+Execution allocations may start at a later dispatcher commit: their baseline is
+the current-HEAD execution snapshot, while control retains its original
+git_baseline_commit as the authorization boundary. B verifies ancestry and original
+protected bytes/modes against both the new snapshot and working tree; neither
+committed progress nor recovery changes the parent's authorized paths or baseline.
+Protected paths cannot overlap current write paths; implementation and closure ownership
 cannot overlap. At Stage 3, closure_paths is a future authorization, not a write
 allocation: planning documents remain protected during implementation even when
 listed for later closure. Stage 2→3 preserves that approved closure list. Stage 4

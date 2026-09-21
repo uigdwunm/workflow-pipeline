@@ -277,6 +277,10 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         source_entry = copy.deepcopy(self.request)
         source_entry.update(stage=1, source={"kind": "stage1", "path": "docs/requirements/b.md"},
                             target={"kind": "planning", "repository": str(self.flow), "branch": self.binding["branch"]})
+        # This independent source controller starts in the linked checkout;
+        # its registry provenance names that original source project.
+        source_entry['registry_context']['project_path'] = str(self.flow)
+        source_entry['registry_context']['receipt'] = 'host:source-project-registry'
         def req(operation, **kwargs):
             return copy.deepcopy(requirement.handle({"protocol": requirement.PROTOCOL, "operation": operation, "entry": source_entry, **kwargs}))
         intent = req("prepare", purpose="write", path="docs/requirements/b.md", version=1, authorization="write:b", content="new confirmed source\n")

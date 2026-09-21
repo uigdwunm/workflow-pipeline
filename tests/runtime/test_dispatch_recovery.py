@@ -24,8 +24,12 @@ class DispatchRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.f = RecoveryFixture(methodName='runTest'); self.f.setUp(); self.addCleanup(self.f.doCleanups)
 
-    def recovery_intent(self, *, accept=True):
-        prepared = self.f.invoke('control', self.prepare_mixed(accept=accept))['next_action']['result']['recovery']
+    def recovery_intent(self, *, accept=True, committed=False):
+        request = self.prepare_mixed(accept=accept)
+        if committed:
+            self.f.flow_git('add', 'extra.py')
+            self.f.flow_git('commit', '-qm', 'retained dispatcher progress')
+        prepared = self.f.invoke('control', request)['next_action']['result']['recovery']
         decision = {'reference':'controller:assume-snapshot','authority_digest':prepared['authority_digest'],
             'attempt':prepared['attempt'],'remaining_paths':prepared['remaining_paths'],'assume_paths':prepared['ownership']['dispatcher']}
         identity = {'recovery_id':prepared['recovery_id'],'snapshot_digest':prepared['snapshot_digest'],'decision':decision}
@@ -40,8 +44,8 @@ class DispatchRecoveryTests(unittest.TestCase):
         return self.f.invoke('control', {'action':'dispatch-recovery-result',
             'evidence':{'recovery_id':prepared['recovery_id'],'receipt':receipt},'receipt':receipt})
 
-    def ready_replacement(self, *, accept=True):
-        prepared, identity, request = self.recovery_intent(accept=accept)
+    def ready_replacement(self, *, accept=True, committed=False):
+        prepared, identity, request = self.recovery_intent(accept=accept, committed=committed)
         intent = self.f.invoke('control',request)['next_action']['request']
         self.replacement_response(prepared,intent,'ready','ready-response')
         snapshot = self.f.observation('stopped','result',ref='native:dispatcher')['lifecycle']
@@ -212,7 +216,10 @@ class DispatchRecoveryTests(unittest.TestCase):
         self.assertTrue(f.invoke('control',request)['acknowledged'])
 
     def test_unaccepted_allocation_keeps_ownership_until_exact_controller_release(self):
-        request = self.ready_replacement(accept=False); f = self.f
+        request = self.ready_replacement(accept=False, committed=True); f = self.f
+        original_baseline = f.state()['handoff']['scope']['baseline']
+        retained_commit = f.flow_git('rev-parse', 'HEAD')
+        self.assertNotEqual(retained_commit, original_baseline)
         f.invoke('control',request)
         progress = f.state()['control']['context']['handoff_progress']
         self.assertEqual(progress['recovery']['revalidate'],['native:executor'])
@@ -225,6 +232,85 @@ class DispatchRecoveryTests(unittest.TestCase):
         self.assertEqual(f.state()['control']['context']['handoff_progress']['executions'][0]['state'],'cancelled',result)
         self.assertTrue(f.invoke('control',release)['acknowledged'])
         self.assertEqual((f.flow/'impl.py').read_text(),'accepted bytes\n')
+        execution = f.execution_input()
+        execution['entry']['host']['actor_ref'] = 'native:replacement'
+        import entry_prepare
+        execution['expected_entry'] = entry_prepare.resolve(execution['entry'])
+        allocated = f.invoke('allocation', {'allocation_id':'replacement-slice','operation':'prepare','handoff':execution})
+        self.assertEqual((allocated.get('next_action') or {}).get('operation'), 'invoke-host', allocated.get('error'))
+        slot = f.state()['allocations']['replacement-slice']
+        self.assertEqual(slot['handoff']['scope']['baseline'], retained_commit)
+        self.assertEqual(f.state()['handoff']['scope']['baseline'], original_baseline)
+        f.invoke('allocation', {'allocation_id':'replacement-slice','operation':'bind',
+            'receipt':f.receipt(slot['record'], ref='native:new-executor')})
+        data = b'revalidated successor implementation\n'; (f.flow/'impl.py').write_bytes(data)
+        slot = f.state()['allocations']['replacement-slice']
+        received = f.invoke('allocation', {'allocation_id':'replacement-slice','operation':'receive',
+            'receipt':f.receipt(slot['record'],'stopped','result',ref='native:new-executor'),
+            'result':{'delivery_id':'new-slice','status':'completed','payload':{'changed_paths':['impl.py'],
+                'file_hashes':{'impl.py':hashlib.sha256(data).hexdigest()},'tests':['successor focused check passed']}}})
+        self.assertEqual((received.get('next_action') or {}).get('result', {}).get('status'), 'received', received.get('error'))
+        accepted = f.invoke('allocation', {'allocation_id':'replacement-slice','operation':'accept',
+            'decision':{'reference':'replacement:accepted'}})
+        self.assertEqual(accepted['next_action']['result']['status'], 'accepted')
+        self.assertEqual(f.flow_git('rev-parse','HEAD'), retained_commit)
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['git_baseline_commit'], original_baseline)
+
+    def test_ordinary_dispatcher_allocates_at_current_head_after_partial_commit(self):
+        f = self.f; f.begin_dispatcher()
+        original = f.state()['control']['context']['handoff_progress']['git_baseline_commit']
+        (f.flow/'extra.py').write_text('committed first slice\n')
+        f.flow_git('add','extra.py'); f.flow_git('commit','-qm','first slice')
+        current = f.flow_git('rev-parse','HEAD')
+        result = f.invoke('allocation', {'allocation_id':'next-slice','operation':'prepare','handoff':f.execution_input()})
+        self.assertEqual((result.get('next_action') or {}).get('operation'),'invoke-host',result.get('error'))
+        progress = f.state()['control']['context']['handoff_progress']
+        self.assertEqual(progress['git_baseline_commit'],original)
+        self.assertEqual(progress['executions'][0]['git_snapshot']['head'],current)
+
+    def test_new_allocation_cannot_rebase_away_an_original_protected_file(self):
+        f = self.f
+        f.context = f.context_for(3); parent = f.input_for(3)
+        parent['scope']['protected_paths'].append('existing.txt')
+        import entry_prepare
+        parent['authorization']['scope_digest'] = entry_prepare.digest(parent['scope'])
+        f.begin('continuous',parent); f.invoke('observe',f.observation(ref='native:dispatcher'))
+        original = f.state()['control']['context']['handoff_progress']['git_baseline_commit']
+        (f.flow/'existing.txt').write_text('changed original protection\n')
+        f.flow_git('add','existing.txt'); f.flow_git('commit','-qm','invalid protected commit')
+        execution = f.execution_input(); execution['scope']['protected_paths'].append('existing.txt')
+        execution['authorization']['scope_digest'] = entry_prepare.digest(execution['scope'])
+        result = f.invoke('allocation',{'allocation_id':'protected-drift','operation':'prepare','handoff':execution})
+        self.assertEqual(result['status'],'blocked')
+        self.assertEqual(result['error']['code'],'source_changed')
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['git_baseline_commit'],original)
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['executions'],[])
+
+    def test_new_allocation_cannot_change_committed_scope_or_ancestry(self):
+        f = self.f; f.begin_dispatcher()
+        (f.flow/'foreign.py').write_text('outside approved paths\n')
+        f.flow_git('add','foreign.py'); f.flow_git('commit','-qm','out-of-scope commit')
+        current = f.flow_git('rev-parse','HEAD')
+        result = f.invoke('allocation',{'allocation_id':'foreign','operation':'prepare','handoff':f.execution_input()})
+        self.assertEqual(result['status'],'blocked')
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['executions'],[])
+        self.assertEqual(f.flow_git('rev-parse','HEAD'),current)
+
+    def test_new_allocation_head_must_descend_from_original_stage_baseline(self):
+        f = self.f
+        (f.flow/'extra.py').write_text('before dispatcher\n')
+        f.flow_git('add','extra.py'); f.flow_git('commit','-qm','dispatch baseline')
+        f.begin_dispatcher()
+        original = f.state()['control']['context']['handoff_progress']['git_baseline_commit']
+        f.flow_git('reset','--hard',f.binding['base_commit'])
+        (f.flow/'extra.py').write_text('sibling commit\n')
+        f.flow_git('add','extra.py'); f.flow_git('commit','-qm','different ancestry')
+        current = f.flow_git('rev-parse','HEAD')
+        result = f.invoke('allocation',{'allocation_id':'wrong-ancestry','operation':'prepare','handoff':f.execution_input()})
+        self.assertEqual(result['status'],'blocked')
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['executions'],[])
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['git_baseline_commit'],original)
+        self.assertEqual(f.flow_git('rev-parse','HEAD'),current)
 
 
 def load_tests(loader, tests, pattern):

@@ -202,7 +202,11 @@ bootstrap payload. Its `allocation` operation uses
 `{allocation_id,operation,handoff? ,receipt? ,result? ,decision?}` as data.
 allocation_id is the original stable local intent ID, not a native task identity.
 Prepare uses the execution-agent B handoff input from the actual bound dispatcher;
-C retains parent source, binding, baseline and protections. Repeating prepare
+C retains parent source, binding, authority baseline and protections. Each new
+allocation snapshots current HEAD, which must descend from that baseline without
+changing original protected paths. The Git adapter still receives the parent's
+frozen authority baseline for prepare, receive and acceptance; it never replaces
+that boundary with a later allocation snapshot. Repeating prepare
 returns exact lookup, never another host create. Bind/reconcile/receive use B's
 original full receipts/results. Accept takes the dispatcher's decision reference;
 C derives the received delivery digest. Host configuration and governance remain

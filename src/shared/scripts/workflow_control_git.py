@@ -74,6 +74,16 @@ def file_fingerprint(repository, relative):
     return hashlib.sha256(json.dumps([content, mode]).encode()).hexdigest()
 
 
+def committed_fingerprint(repository, revision, relative):
+    record = git(repository, 'ls-tree', '-z', commit(revision), '--', path(relative))
+    if not record:
+        return None
+    require(record.startswith((b'100644 blob ', b'100755 blob ')), 'scoped source must be a regular file')
+    content = hashlib.sha256(git(repository, 'show', revision + ':' + relative)).hexdigest()
+    mode = 0o755 if record.startswith(b'100755') else 0o644
+    return hashlib.sha256(json.dumps([content, mode]).encode()).hexdigest()
+
+
 def execution_delta(repository, progress, execution, *, accepting=False):
     require('git_snapshot' in execution, 'execution has no verified Git allocation snapshot')
     before = execution['git_snapshot']
@@ -120,13 +130,7 @@ def recovery_snapshot(repository, progress):
                       ('diff', '--cached', '--name-only', '-z'), ('diff', '--name-only', '-z')):
         changed.update(filter(None, git(repository, *arguments).decode().split('\0')))
     for relative in progress['allowed_paths'] + progress['protected_paths']:
-        record = git(repository, 'ls-tree', '-z', baseline, '--', relative)
-        before = None
-        if record:
-            require(record.startswith((b'100644 blob ', b'100755 blob ')), 'recovery source must be a regular file')
-            content = hashlib.sha256(git(repository, 'show', baseline + ':' + relative)).hexdigest()
-            mode = 0o755 if record.startswith(b'100755') else 0o644
-            before = hashlib.sha256(json.dumps([content, mode]).encode()).hexdigest()
+        before = committed_fingerprint(repository, baseline, relative)
         if file_fingerprint(repository, relative) != before:
             changed.add(relative)
     require(changed <= set(progress['allowed_paths']) and not changed & set(progress['protected_paths']),

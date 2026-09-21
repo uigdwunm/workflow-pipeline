@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "eb0c21bc94eff156da549bfb221214d5886533deaa22661ea204b953d34e1429",
+  "bundle_digest": "13220e96a208ca8683f0d0e90bfce9c939a722ff68790216896714ab3cc936ef",
   "compatibility_key": {
     "control": 3,
     "discussion_request": 1,
@@ -100,11 +100,11 @@
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
-      "sha256": "62b8bcd1852919abc3c45d5c37c1e76ccb0f4c27eeb0d7917c3e1ddbcafdad26"
+      "sha256": "2998b85348f317f03f82b528482510dd17b601b0b91295009a2b22b87448487a"
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "70f86a58144b4657d158b49e2108d4fa5a85e3b9efb2c74449018766cade88de"
+      "sha256": "06fe6533c3a9a8399a314fb6019f710660b9f8e6d7b2054f552ab7e827586d75"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -196,7 +196,7 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "c3cf10053cdaa65a78c0ea8fd216524b61c76417d0e3c076ab6f60d77b42d4df"
+      "sha256": "cb792d2c016101ceec9b93f52c678418f1f7da119285311349074d809e8674a4"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
@@ -224,11 +224,11 @@
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "96beee9539dcedc0b37023ecf56b04e2dfca1c4795982c1c04b979bb31969cb0"
+      "sha256": "cf07106784afd760f95081b77a82e65028fa2baf6a270f99907bee09996e2f6d"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "d568d20dc78aa329cc38444dd7a1970254c16c6b6acc4f0ee5b054d332ea7b9c"
+      "sha256": "f990815e3f38b8fd607329c9f25a025820728f5f9e9ab05087bb89156ff65334"
     }
   },
   "format_version": 1,
