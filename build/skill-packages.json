@@ -11,13 +11,13 @@
       3
     ],
     "ledger_write": 3,
-    "control": 3,
+    "control": 4,
     "entry": "workflow-entry-v3",
     "runner": 6,
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v3",
-    "stage_transfer": "workflow-stage-transfer-v4",
+    "stage_transfer": "workflow-stage-transfer-v5",
     "workflow_progress": "workflow-progress-v8",
     "requirement_delivery": "requirement-delivery-v1"
   },
@@ -274,6 +274,10 @@
       "source": "src/shared/scripts/requirement_prepare.py",
       "output": "scripts/requirement_prepare.py"
     },
+    "shared/scripts/model_inventory.py": {
+      "source": "src/shared/scripts/model_inventory.py",
+      "output": "scripts/model_inventory.py"
+    },
     "shared/references/entry-preparation.md": {
       "source": "src/shared/references/entry-preparation.md",
       "output": "references/shared/entry-preparation.md"
@@ -357,6 +361,7 @@
         "shared/LICENSE",
         "shared/scripts/entry_prepare.py",
         "shared/scripts/requirement_prepare.py",
+        "shared/scripts/model_inventory.py",
         "shared/references/entry-preparation.md",
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
@@ -406,6 +411,7 @@
         "shared/LICENSE",
         "shared/scripts/entry_prepare.py",
         "shared/scripts/requirement_prepare.py",
+        "shared/scripts/model_inventory.py",
         "shared/references/entry-preparation.md",
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
@@ -463,6 +469,7 @@
         "shared/LICENSE",
         "shared/scripts/entry_prepare.py",
         "shared/scripts/requirement_prepare.py",
+        "shared/scripts/model_inventory.py",
         "shared/references/entry-preparation.md",
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
@@ -527,6 +534,7 @@
         "shared/LICENSE",
         "shared/scripts/entry_prepare.py",
         "shared/scripts/requirement_prepare.py",
+        "shared/scripts/model_inventory.py",
         "shared/references/entry-preparation.md",
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
@@ -583,6 +591,7 @@
         "shared/LICENSE",
         "shared/scripts/entry_prepare.py",
         "shared/scripts/requirement_prepare.py",
+        "shared/scripts/model_inventory.py",
         "shared/references/entry-preparation.md",
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",

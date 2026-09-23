@@ -175,6 +175,44 @@ class WorkflowControlTests(unittest.TestCase):
         # the exact snapshot and persist the controlled creation first.
         self.assertFalse(recovered['ok'])
 
+    def test_candidate_requires_accepted_execution_bytes_for_every_changed_path(self):
+        ctx = self.context(); ctx['stage'] = 3
+        plan = plan_for(self.binding()['worktree'])
+        started = self.call('start-dispatch', {'binding': self.binding(),
+            'binding_verified': True, 'allowed_paths': ['src/a.py', 'src/b.py'],
+            'protected_paths': ['docs/draft.md'], 'authority_digest': 'c' * 64,
+            'testing_basis': 'real CLI', 'validation_plan': plan,
+            'configuration': self.configuration('implementation-dispatcher')}, ctx)
+        bound = self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']}, started['context'])
+        candidate = 'b' * 40
+        checks = checks_for(plan['review_required'], candidate)
+        evidence = {'dispatcher_ref': 'dispatcher', 'attempt': started['attempt'],
+            'commit': candidate, 'expected_target_head': 'a' * 40,
+            'binding': self.binding(), 'plan_digest': __import__('hashlib').sha256(
+                json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
+            'checks': checks, 'source': {'adapter': 'fixture', 'call_ref': 'focused',
+                'response_ref': 'focused-result', 'raw': {'checks': checks,
+                'source_unchanged': True, 'stopped': True, 'dispatcher_ref': 'dispatcher'}},
+            'clean': True, 'changed_paths': ['src/a.py'], 'file_hashes': {'src/a.py': 'd' * 64}}
+        self.assertFalse(self.call('candidate-ready', evidence, bound['context'])['ok'])
+        allocation = self.call('plan-execution', {'task_id': 'slice', 'paths': ['src/a.py'],
+            'read_only': ['docs/draft.md'], 'behavior': 'real caller behavior',
+            'tests': ['focused test'], 'git_operations': [],
+            'configuration': self.configuration('execution-agent')}, bound['context'])
+        assigned = self.call('assign', {'agent_ref': 'executor', 'task_id': 'slice',
+            'allocation_digest': allocation['allocation_digest']}, allocation['context'])
+        received = self.call('execution-result', {'agent_ref': 'executor', 'stopped': True,
+            'changed_paths': ['src/a.py'], 'file_hashes': {'src/a.py': 'd' * 64},
+            'tests': ['focused test passed'], 'git_unchanged': True}, assigned['context'])
+        accepted = self.call('accept-execution', {'agent_ref': 'executor',
+            'file_hashes': {'src/a.py': 'd' * 64}}, received['context'])
+        self.assertTrue(self.call('candidate-ready', evidence, accepted['context'])['ok'])
+        extra = {**evidence, 'changed_paths': ['src/a.py', 'src/b.py'],
+                 'file_hashes': {'src/a.py': 'd' * 64, 'src/b.py': 'e' * 64}}
+        self.assertFalse(self.call('candidate-ready', extra, accepted['context'])['ok'])
+        changed_bytes = {**evidence, 'file_hashes': {'src/a.py': 'e' * 64}}
+        self.assertFalse(self.call('candidate-ready', changed_bytes, accepted['context'])['ok'])
+
     def test_standalone_entry_requires_complete_explicit_unattached_brief(self):
         brief = {'goal': 'Small fix', 'complexity': 'low', 'implementation_basis': 'exact requirement',
                  'allowed_paths': ['src/a.py'], 'failure_semantics': 'fail explicitly',
@@ -263,10 +301,47 @@ class WorkflowControlTests(unittest.TestCase):
         upgraded = self.call('select-configuration', evidence)
         self.assertFalse(upgraded['ok'])
         evidence['supported'][0]['cost'] = 2
+        evidence['preferred'] = {'model': 'large', 'effort': 'high'}
+        evidence['preference_reason'] = 'only available configuration meeting the role requirement'
         upgraded = self.call('select-configuration', evidence)
         self.assertTrue(upgraded['selection']['needs_decision'])
         evidence['upgrade_attempted'] = True
         self.assertFalse(self.call('select-configuration', evidence)['ok'])
+
+    def test_stage3_default_pool_and_available_model_fallback(self):
+        default = {'model': 'gpt-6-sol', 'effort': 'high', 'capability': None,
+                   'cost': None, 'permission': 'same', 'visible_identity': 'executor'}
+        alternative = {**default, 'model': 'available-other'}
+        evidence = {'role': 'execution-agent', 'required_capability': None,
+            'supported': [alternative, default], 'user': None, 'frozen': None,
+            'previous': None, 'receipt': 'current native adapter', 'can_override': True,
+            'inherited': {'model': 'available-other', 'effort': 'high'},
+            'upgrade_attempted': False, 'preferred': {'model': 'gpt-6-sol', 'effort': 'high'},
+            'preference_reason': 'implementation needs the stronger available reasoning setting'}
+        selected = self.call('select-configuration', evidence)
+        self.assertEqual((selected['selection']['model'], selected['selection']['effort']), ('gpt-6-sol', 'high'))
+        self.assertIn('default pool', selected['selection']['reason'])
+        evidence['preferred'] = {'model': 'available-other', 'effort': 'high'}
+        self.assertFalse(self.call('select-configuration', evidence)['ok'])
+        evidence['supported'] = [alternative]
+        fallback = self.call('select-configuration', evidence)
+        self.assertEqual(fallback['selection']['model'], 'available-other')
+        self.assertIn('fallback', fallback['selection']['reason'])
+        evidence['supported'] = [{**default, 'capability': 1}, {**alternative, 'capability': 3}]
+        evidence['required_capability'] = 2
+        capable_fallback = self.call('select-configuration', evidence)
+        self.assertEqual(capable_fallback['selection']['model'], 'available-other')
+        self.assertIn('fallback', capable_fallback['selection']['reason'])
+        evidence['supported'].append({**default, 'model': 'gpt-6-luna', 'effort': 'xhigh',
+                                      'capability': 3})
+        evidence['preferred'] = {'model': 'gpt-6-luna', 'effort': 'xhigh'}
+        capable_default = self.call('select-configuration', evidence)
+        self.assertEqual(capable_default['selection']['model'], 'gpt-6-luna')
+        self.assertIn('default pool', capable_default['selection']['reason'])
+        evidence.pop('preferred')
+        self.assertFalse(self.call('select-configuration', evidence)['ok'])
+        evidence['user'] = {'model': 'available-other', 'effort': 'high'}
+        self.assertEqual(self.call('select-configuration', evidence)['selection']['source'], 'user')
 
     def test_json_duplicate_keys_and_invalid_previous_configuration_fail_closed(self):
         raw = '{"schema_version":1,"schema_version":1,"action":"cancel","actor_ref":"controller","context":' + json.dumps(self.bound()) + ',"evidence":{}}'

@@ -5,7 +5,7 @@ Mechanical A/B execution uses [Workflow progression]({{resource:shared/reference
 The Workflow Controller retains confirmation, routing, result acceptance and
 recovery. Dedicated Discussion Task and Dedicated Problem Framing Task are visible
 0/1 carriers. Stage 2 uses one native solution-designer; stage 3 one Implementation
-Dispatcher and optional Execution Agents; stage 4 one Closure Agent. A split child
+Dispatcher and at least one Execution Agent with accepted implementation bytes; stage 4 one Closure Agent. A split child
 is one independent Workflow Controller and inherits no preferences or authority.
 
 `workflow_control.py` accepts bounded strict JSON with schema_version=3, action,
@@ -111,19 +111,33 @@ scope and testing seam; it is unattached and performs no ledger write.
 
 start-dispatch freezes verified binding, allowed_paths, protected_paths,
 authority_digest, testing_basis and configuration; dispatcher-bound records actual
-native ref/attempt. The dispatcher alone integrates Git and reads full $implement
-and $tdd, beginning with a real production-boundary red/green slice.
+native ref/attempt. The dispatcher integrates Git and runs the full $implement
+and $tdd workflow. Its first Execution Agent implements a real production-boundary
+red/green slice; later implementation and repair edits also use allocations.
 plan-execution reserves task_id, exact paths, read_only dependencies, behavior,
 tests, git_operations=[] and execution-agent configuration before native spawn.
 assign binds its actual agent_ref/task_id/allocation_digest. Expand directories and
-name new files. Concurrent writers cannot overlap; shared files are serial.
+name new files. Before each allocation, the Git adapter compares every
+unallocated implementation path with the frozen baseline or latest accepted
+Execution Agent fingerprint; unexplained edits block dispatch. Concurrent writers
+cannot overlap; shared files are serial. During controlled dispatcher recovery,
+the exact Controller-assumed snapshot may seed a replacement allocation after
+historical unaccepted ownership is explicitly released; its eventual candidate
+still requires accepted Execution Agent delivery for every changed path.
+At native bind, Git rechecks the assigned paths and Git HEAD/index against the
+prepared snapshot. The created child receives write authority only from that
+successful bound receipt; its completed result must echo the bound release.
 Execution Agents never mutate index, commits, branches, merges, worktrees or cleanup.
 execution-result reports stopped, diff/hashes, tests and Git state; the Git adapter
-compares actual allocation snapshot. accept-execution rechecks bytes. candidate-ready
-requires all writers stopped/accepted, frozen review-required checks and clean verified HEAD. The controller owns
+compares actual allocation snapshot. accept-execution rechecks bytes and file modes. candidate-ready
+requires at least one accepted Execution Agent, every changed implementation path
+covered by the latest accepted allocation with matching final bytes and mode, all writers stopped,
+frozen review-required checks and clean verified HEAD. The controller owns
 two independent review axes on that exact candidate. Recovery proves all old writers
 stopped, rechecks accepted hashes and revalidates remaining work. Preserve differences
 on interruption/cancel; reconcile unknown native dispatch before replacement.
+For a path with serial accepted allocations, recovery uses the last accepted
+fingerprint as its current owner rather than rejecting its earlier history.
 
 start-closure freezes candidate, dispatcher_ref, review, verification, binding,
 implementation_paths, closure_paths, protected_paths and configuration. closure-bound
@@ -133,13 +147,32 @@ controller verifies actual ancestry, scope and resource removal. A published mer
 with partial cleanup remains cleanup-pending; cleanup-only never republishes.
 
 select-configuration inputs role, required_capability, supported, user, frozen,
-previous, receipt, can_override, inherited, upgrade_attempted. Supported entries
+previous, receipt, can_override, inherited, upgrade_attempted, and optional
+preferred and preference_reason. Supported entries
 have model/effort/capability/cost/permission/visible_identity; unknown cost or capability is null; required_capability may also be null.
-Use current target adapter evidence, explicit user choice, supported frozen choice,
-then capable lower known cost only with comparable evidence. Otherwise retain a supported frozen/user choice or actual inheritance; if none is available, request a controller decision. Never invent numeric capability scores or prices from text descriptions. Unknown cost never means cheaper. Capability failure
+Use current target adapter evidence, explicit user choice and supported frozen choice.
+For a Stage-3 dispatcher or Execution Agent with override support and no such choice,
+the controller or dispatcher supplies an exact preferred pair and task-specific
+preference_reason. The Stage-3 handoff requires the complete current native adapter
+inventory, independently reads the account's visible paginated Codex `model/list` catalog,
+and blocks a nondefault automatic choice while an account-visible default may be eligible.
+The native declaration cannot establish that an account-visible default is unavailable;
+such a mismatch blocks automatic fallback. The catalog intersection used for the
+original selection is frozen with the handoff, so a newly listed default does not
+rewrite an already prepared choice.
+Select the pair from the
+supported intersection not known to be inadequate with the default
+pool: gpt-6-luna/high, gpt-6-luna/xhigh, gpt-6-sol/medium, gpt-6-sol/high and
+gpt-6-sol/xhigh. A default with known capability below the role requirement is
+not eligible. If that intersection is empty, select an exact pair from the
+user's supported configurations with the reason recorded as a fallback. A missing
+or unsupported preference blocks dispatch. For other roles, use capable lower known
+cost only with comparable evidence, then actual inheritance or a controller decision.
+Never invent numeric capability scores or prices from text descriptions. Unknown cost never means cheaper. Capability failure
 allows one upgrade candidate; increased/unknown cost or permission/identity change
 requires controller decision. Without override use actual runtime inheritance,
-never a guessed model. Disclose important roles; ordinary execution records suffice.
+never a guessed model. Explicit user and frozen choices may lie outside the default
+pool when supported. Disclose important roles; ordinary execution records suffice.
 
 The foreground scripted runner alone advances while active. Confirmed input includes
 controller_ref and per-stage model/reasoning_effort/selection_input. Handoffs contain
@@ -242,8 +275,8 @@ No implementation contract, tests, generated package or protected source belongs
 to closure scope. After a recorded merge, reconcile publication/cleanup instead
 of demanding a new validation or merge.
 
-New records use runner 6, C workflow-progress-v8, B workflow-stage-transfer-v4
-and control schema 3. Old executable records fail with
+New records use runner 6, C workflow-progress-v8, B workflow-stage-transfer-v5
+and control compatibility key 4 (JSON schema 3). Old executable records fail with
 legacy_run_requires_original_runtime before writes or host calls. Embedded old
 control keeps the ledger outer version and bytes; resume with its original pinned
 package. Never migrate checks strings into passed evidence.

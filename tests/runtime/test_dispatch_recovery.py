@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from test_workflow_progress import ProgressTests
+import stage_dispatch as dispatch
 
 
 class RecoveryFixture(ProgressTests):
@@ -64,7 +65,8 @@ class DispatchRecoveryTests(unittest.TestCase):
         f.invoke('allocation', {'allocation_id':'slice-one','operation':'receive',
             'receipt':f.receipt(slot['record'],'stopped','result',ref='native:executor'),
             'result':{'delivery_id':'slice','status':'completed','payload':{'changed_paths':['impl.py'],
-                'file_hashes':{'impl.py':hashlib.sha256(data).hexdigest()},'tests':['focused passed']}}})
+                'file_hashes':{'impl.py':hashlib.sha256(data).hexdigest()},'tests':['focused passed'],
+                'write_release':dispatch.execution_release_token(slot['record'])}}})
         if accept:
             f.invoke('allocation', {'allocation_id':'slice-one','operation':'accept','decision':{'reference':'dispatcher:accepted'}})
         (f.flow/'extra.py').write_text('dispatcher bytes\n')
@@ -248,25 +250,34 @@ class DispatchRecoveryTests(unittest.TestCase):
         received = f.invoke('allocation', {'allocation_id':'replacement-slice','operation':'receive',
             'receipt':f.receipt(slot['record'],'stopped','result',ref='native:new-executor'),
             'result':{'delivery_id':'new-slice','status':'completed','payload':{'changed_paths':['impl.py'],
-                'file_hashes':{'impl.py':hashlib.sha256(data).hexdigest()},'tests':['successor focused check passed']}}})
+                'file_hashes':{'impl.py':hashlib.sha256(data).hexdigest()},'tests':['successor focused check passed'],
+                'write_release':dispatch.execution_release_token(slot['record'])}}})
         self.assertEqual((received.get('next_action') or {}).get('result', {}).get('status'), 'received', received.get('error'))
         accepted = f.invoke('allocation', {'allocation_id':'replacement-slice','operation':'accept',
             'decision':{'reference':'replacement:accepted'}})
         self.assertEqual(accepted['next_action']['result']['status'], 'accepted')
         self.assertEqual(f.flow_git('rev-parse','HEAD'), retained_commit)
         self.assertEqual(f.state()['control']['context']['handoff_progress']['git_baseline_commit'], original_baseline)
+        followup = f.execution_input()
+        followup['entry']['host']['actor_ref'] = 'native:replacement'
+        followup['expected_entry'] = entry_prepare.resolve(followup['entry'])
+        next_slice = f.invoke('allocation', {'allocation_id':'post-recovery-slice',
+            'operation':'prepare','handoff':followup})
+        self.assertEqual((next_slice.get('next_action') or {}).get('operation'),
+                         'invoke-host', next_slice.get('error'))
 
-    def test_ordinary_dispatcher_allocates_at_current_head_after_partial_commit(self):
+    def test_ordinary_dispatcher_cannot_allocate_after_unowned_partial_commit(self):
         f = self.f; f.begin_dispatcher()
         original = f.state()['control']['context']['handoff_progress']['git_baseline_commit']
         (f.flow/'extra.py').write_text('committed first slice\n')
         f.flow_git('add','extra.py'); f.flow_git('commit','-qm','first slice')
         current = f.flow_git('rev-parse','HEAD')
         result = f.invoke('allocation', {'allocation_id':'next-slice','operation':'prepare','handoff':f.execution_input()})
-        self.assertEqual((result.get('next_action') or {}).get('operation'),'invoke-host',result.get('error'))
+        self.assertNotEqual((result.get('next_action') or {}).get('operation'),'invoke-host')
         progress = f.state()['control']['context']['handoff_progress']
         self.assertEqual(progress['git_baseline_commit'],original)
-        self.assertEqual(progress['executions'][0]['git_snapshot']['head'],current)
+        self.assertEqual(progress['executions'],[])
+        self.assertEqual(f.flow_git('rev-parse','HEAD'),current)
 
     def test_new_allocation_cannot_rebase_away_an_original_protected_file(self):
         f = self.f

@@ -137,23 +137,64 @@ def recovery_snapshot(repository, progress):
             'recovery diff escapes authority or changes protected sources')
     actual.update(base=baseline, target=target,
         files={p: file_fingerprint(repository, p) for p in progress['allowed_paths'] + progress['protected_paths']})
-    owners, accepted, revalidate = {}, [], []
+    owners, accepted_fingerprints, revalidate = {}, {}, []
     for execution in progress['executions']:
         if execution['state'] == 'cancelled':
             continue
         require(execution.get('git_snapshot') is not None, 'allocation lacks original Git ownership evidence')
         for p in execution['paths']:
-            require(p not in owners, 'conflicting historical allocation ownership: ' + p)
             owners[p] = execution['agent_ref']
             if execution['state'] == 'accepted':
                 require('git_result_snapshot' in execution, 'accepted allocation lacks complete result fingerprint')
-                expected = execution['git_result_snapshot'].get(p, execution['git_snapshot']['files'][p])
-                require(actual['files'][p] == expected, 'accepted content, existence or mode changed: ' + p)
-                accepted.append(p)
+                accepted_fingerprints[p] = execution['git_result_snapshot'].get(p, execution['git_snapshot']['files'][p])
+            else:
+                accepted_fingerprints.pop(p, None)
         if execution['state'] != 'accepted':
             revalidate.append(execution['agent_ref'])
-    return actual, {'accepted': sorted(accepted), 'unaccepted': sorted(set(owners) - set(accepted)),
+    for relative, fingerprint in accepted_fingerprints.items():
+        require(actual['files'][relative] == fingerprint,
+                'accepted content, existence or mode changed: ' + relative)
+    accepted = set(accepted_fingerprints)
+    return actual, {'accepted': sorted(accepted), 'unaccepted': sorted(set(owners) - accepted),
                     'dispatcher': sorted(changed - set(owners))}, sorted(revalidate)
+
+
+def verify_execution_start(repository, progress):
+    """Require every pre-allocation implementation byte to have an owner."""
+    baseline = commit(progress['git_baseline_commit'])
+    expected = {p: committed_fingerprint(repository, baseline, p)
+                for p in progress['allowed_paths']}
+    recovery = progress.get('recovery')
+    historical_refs = (set(recovery['host_evidence']['stopped_refs'])
+                       if recovery is not None and recovery['state'] == 'activated' else set())
+    accepted_before, accepted_after, active_paths = [], [], set()
+    for execution in progress['executions']:
+        if execution['state'] == 'accepted':
+            require('git_result_snapshot' in execution,
+                    'accepted execution has no verified result snapshot')
+            (accepted_before if recovery is None or execution['agent_ref'] in historical_refs
+             else accepted_after).append(execution['git_result_snapshot'])
+        elif execution['state'] == 'assigned' and not execution['stopped']:
+            active_paths.update(execution['paths'])
+        else:
+            require(execution['state'] == 'cancelled' and execution['stopped'],
+                    'finish or reconcile the previous allocation before another assignment')
+    for fingerprints in accepted_before:
+        expected.update(fingerprints)
+    if recovery is not None and recovery['state'] == 'activated':
+        released = {item['agent_ref'] for item in recovery.get('releases', [])}
+        assumed = set(recovery['decision']['assume_paths'])
+        for execution in progress['executions']:
+            if execution['agent_ref'] in released:
+                assumed.update(execution['paths'])
+        for relative in assumed:
+            expected[relative] = recovery['snapshot']['files'][relative]
+    for fingerprints in accepted_after:
+        expected.update(fingerprints)
+    for relative, fingerprint in expected.items():
+        if relative not in active_paths:
+            require(file_fingerprint(repository, relative) == fingerprint,
+                    'implementation changed without an accepted Execution Agent: ' + relative)
 
 
 def verify_binding(repository, binding):
@@ -203,7 +244,7 @@ def verified_transition(payload):
         verify_binding(repository, evidence['binding'])
         if action == 'start-dispatch':
             evidence['binding_verified'] = True
-    if action in {'plan-execution', 'execution-result', 'accept-execution', 'prepare-dispatch-recovery', 'recover-dispatch', 'candidate-ready'}:
+    if action in {'plan-execution', 'assign', 'execution-result', 'accept-execution', 'prepare-dispatch-recovery', 'recover-dispatch', 'candidate-ready'}:
         require(progress is not None, 'missing dispatcher checkpoint')
         verify_binding(repository, progress['binding'])
         require(set(changed_paths(repository, git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip())) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
@@ -211,8 +252,23 @@ def verified_transition(payload):
         actual, ownership, revalidate = recovery_snapshot(repository, progress)
         evidence.update(snapshot=actual, ownership=ownership, revalidate=revalidate)
     if action == 'plan-execution':
+        verify_execution_start(repository, progress)
         before = snapshot(repository)
         before['files'] = {p: file_fingerprint(repository, p) for p in progress['allowed_paths']}
+    if action == 'assign':
+        matches = [item for item in progress['executions']
+                   if item['task_id'] == evidence['task_id'] and
+                   item['allocation_digest'] == evidence['allocation_digest']]
+        require(len(matches) == 1 and 'git_snapshot' in matches[0],
+                'execution allocation has no verified preparation snapshot')
+        allocation = matches[0]
+        before = allocation['git_snapshot']
+        current = snapshot(repository)
+        require(all(current[key] == before[key] for key in ('head', 'branch', 'index_hash')),
+                'Git state changed before Execution Agent binding')
+        require(all(file_fingerprint(repository, relative) == before['files'][relative]
+                    for relative in allocation['paths']),
+                'assigned implementation changed before Execution Agent binding')
     if action == 'execution-result':
         execution = execution_record(progress, evidence['agent_ref'])
         result_snapshot, pending_peers = execution_delta(repository, progress, execution)
@@ -240,7 +296,18 @@ def verified_transition(payload):
         require(not git(repository, 'status', '--porcelain'), 'candidate working tree is dirty')
         actual_commit = snapshot(repository)['head']
         require(evidence['commit'] == actual_commit, 'candidate is not actual HEAD')
-        evidence.update(clean=True, changed_paths=changed_paths(repository, evidence['expected_target_head']),
+        candidate_paths = changed_paths(repository, evidence['expected_target_head'])
+        accepted_fingerprints = {}
+        for execution in progress['executions']:
+            if execution['state'] == 'accepted':
+                require('git_result_snapshot' in execution,
+                        'accepted execution has no verified result snapshot')
+                accepted_fingerprints.update(execution['git_result_snapshot'])
+        require(all(relative in accepted_fingerprints and
+                    file_fingerprint(repository, relative) == accepted_fingerprints[relative]
+                    for relative in candidate_paths),
+                'candidate content or mode differs from accepted Execution Agent delivery')
+        evidence.update(clean=True, changed_paths=candidate_paths,
                         file_hashes={p: implementation_hash(repository, p) for p in progress['allowed_paths']})
     if action in {'review-start', 'review-converged', 'validation-start', 'validation-result', 'validation-retry', 'delivery-ready', 'accept-delivery'}:
         require(progress is not None, 'missing implementation fixed point')

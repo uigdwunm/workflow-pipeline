@@ -17,6 +17,20 @@ from typing import Any
 MAX_BYTES = 262144
 CONTEXT_FIELDS = {'schema_version', 'controller_ref', 'topic_ref', 'stage', 'carrier',
                   'preference', 'flow_authority', 'requirement_identity', 'handoff_progress'}
+STAGE3_DEFAULT_CONFIGURATIONS = frozenset({
+    ('gpt-6-luna', 'high'),
+    ('gpt-6-luna', 'xhigh'),
+    ('gpt-6-sol', 'medium'),
+    ('gpt-6-sol', 'high'),
+    ('gpt-6-sol', 'xhigh'),
+})
+
+
+def stage3_eligible_defaults(supported, required_capability, available_pairs):
+    capabilities = {(item['model'], item['effort']): item['capability'] for item in supported}
+    return {pair for pair in STAGE3_DEFAULT_CONFIGURATIONS & set(available_pairs)
+            if pair not in capabilities or required_capability is None or
+            capabilities[pair] is None or capabilities[pair] >= required_capability}
 
 class ControlError(ValueError):
     pass
@@ -414,9 +428,11 @@ def validate_context(context):
     require(type(identity['version']) is int and identity['version'] > 0, 'invalid requirement version')
 
 
-def select_configuration(evidence):
-    keys(evidence, {'role', 'required_capability', 'supported', 'user', 'frozen', 'previous',
-                    'receipt', 'can_override', 'inherited', 'upgrade_attempted'})
+def select_configuration(evidence, available_pairs=None):
+    required = {'role', 'required_capability', 'supported', 'user', 'frozen', 'previous',
+                'receipt', 'can_override', 'inherited', 'upgrade_attempted'}
+    require(isinstance(evidence, dict) and required <= set(evidence) <= required | {'preferred', 'preference_reason'},
+            'unexpected or missing configuration fields')
     require(evidence['role'] in {'dedicated-discussion', 'dedicated-problem-framing', 'solution-designer',
         'implementation-dispatcher', 'execution-agent', 'closure-agent', 'scripted-carrier'}, 'invalid role')
     text(evidence['receipt'])
@@ -438,6 +454,8 @@ def select_configuration(evidence):
         return next((s for s in supported if all(s[k] == pair[k] for k in pair)), None)
     user, frozen = resolve(evidence['user']), resolve(evidence['frozen'])
     require(evidence['user'] is None or user is not None, 'explicit user configuration is unsupported')
+    stage3_role = evidence['role'] in {'implementation-dispatcher', 'execution-agent'}
+    reason = 'current adapter evidence and role requirement'
     if evidence['can_override'] is False:
         selected = resolve(evidence['inherited'])
         require(selected is not None, 'actual inherited configuration unavailable')
@@ -447,6 +465,23 @@ def select_configuration(evidence):
         selected, source = user, 'user'
     elif frozen is not None:
         selected, source = frozen, 'confirmed'
+    elif stage3_role:
+        require(evidence['upgrade_attempted'] is False, 'capability upgrade already attempted')
+        preferred = resolve(evidence.get('preferred'))
+        require(preferred is not None, 'Stage-3 role must select an available model and effort')
+        basis = text(evidence.get('preference_reason'))
+        native_pairs = {(item['model'], item['effort']) for item in supported}
+        eligible = stage3_eligible_defaults(
+            supported, evidence['required_capability'],
+            native_pairs if available_pairs is None else native_pairs & set(available_pairs))
+        defaults = [item for item in supported if (item['model'], item['effort']) in eligible]
+        require(not defaults or preferred in defaults,
+                'available Stage-3 default configurations take precedence')
+        if evidence['required_capability'] is not None and preferred['capability'] is not None:
+            require(preferred['capability'] >= evidence['required_capability'],
+                    'selected configuration is below the known role requirement')
+        selected, source = preferred, 'role'
+        reason = ('Stage-3 default pool: ' if defaults else 'Stage-3 available-model fallback: ') + basis
     else:
         require(evidence['upgrade_attempted'] is False, 'capability upgrade already attempted')
         eligible = [s for s in supported if evidence['required_capability'] is not None and
@@ -468,7 +503,7 @@ def select_configuration(evidence):
     changed = previous is not None and any(previous.get(k) != selected[k] for k in ('model', 'effort', 'permission', 'visible_identity'))
     needs_decision = changed and (previous.get('cost') is None or selected['cost'] is None or
         selected['cost'] > previous['cost'] or any(previous.get(k) != selected[k] for k in ('permission', 'visible_identity')))
-    return {**selected, 'source': source, 'reason': 'current adapter evidence and role requirement',
+    return {**selected, 'source': source, 'reason': reason,
             'receipt': evidence['receipt'], 'needs_decision': bool(needs_decision),
             'disclose': evidence['role'] != 'execution-agent', 'upgrade_attempted': source == 'role' and evidence['frozen'] is not None}
 
@@ -668,7 +703,9 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         require(all(e['task_id'] != evidence['task_id'] for e in progress['executions']), 'execution identity reused')
         require(all(e.get('stopped') is True or not set(e['paths']) & set(assigned) for e in progress['executions']), 'concurrent file assignment overlap')
         if progress.get('recovery'):
-            require(all(e['state'] == 'cancelled' or not set(e['paths']) & set(assigned) for e in progress['executions']),
+            historical_unaccepted = set(progress['recovery']['revalidate'])
+            require(all(e['state'] == 'cancelled' or e['agent_ref'] not in historical_unaccepted or
+                        not set(e['paths']) & set(assigned) for e in progress['executions']),
                     'historical recovery allocation must be accepted or explicitly released, never redispatched')
         allocation_digest = digest({'binding': progress['binding'], 'envelope': evidence})
         progress['executions'].append({**evidence, 'agent_ref': None, 'state': 'dispatch-pending', 'stopped': False,
@@ -837,15 +874,20 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             return {'ok': True, 'context': context, 'effects': [], 'acknowledged': True}
         require(progress['state'] == 'implementing', 'candidate is not implementing')
         require(all(e['stopped'] and e['state'] in {'accepted', 'cancelled'} for e in progress['executions']), 'all executions must stop and be accepted')
+        accepted = [e for e in progress['executions'] if e['state'] == 'accepted' and e['agent_ref'] is not None]
+        require(accepted, 'Stage-3 candidate requires an accepted Execution Agent')
         require(evidence['clean'] is True and evidence['binding'] == progress['binding'], 'candidate must be clean in bound worktree')
-        require(set(paths(evidence['changed_paths'])) <= set(progress['allowed_paths']), 'candidate diff escapes scope')
+        changed = set(paths(evidence['changed_paths']))
+        require(changed <= set(progress['allowed_paths']), 'candidate diff escapes scope')
         require(re.fullmatch('[0-9a-f]{40}', evidence['commit']) and evidence['plan_digest'] == progress['plan_digest'], 'candidate commit or plan changed')
         validate_checks(progress['validation_plan']['review_required'], evidence['checks'], evidence['commit'])
         validate_result_source(evidence['source'], evidence['checks'], context['carrier']['ref'])
         accepted_hashes = {}
-        for execution in progress['executions']:
+        for execution in accepted:
             accepted_hashes.update(execution['file_hashes'])
-        require(all(evidence['file_hashes'].get(p) == h for p, h in accepted_hashes.items()), 'accepted bytes differ from candidate')
+        require(changed <= set(accepted_hashes), 'candidate contains implementation paths without accepted Execution Agent delivery')
+        require(all(evidence['file_hashes'].get(p) == accepted_hashes[p] for p in changed),
+                'candidate bytes differ from accepted Execution Agent delivery')
         progress.update(state='reviewable', candidate=evidence['commit'], tests=evidence['checks'],
                         expected_target_head=evidence['expected_target_head'], candidate_evidence=evidence)
     elif action == 'review-start':

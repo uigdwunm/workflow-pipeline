@@ -19,6 +19,7 @@ import stage_handoff as handoff
 import stage_dispatch as dispatch
 import supervision_protocol as supervision
 import workflow_control as control
+import workflow_control_git as control_git
 import discussion_protocol
 from test_workflow_control import plan_for, checks_for, verification_fixture
 
@@ -34,6 +35,12 @@ def configuration(role):
 class StageTransferTests(test_entry_prepare.EntrySupport):
     def setUp(self):
         super().setUp()
+        self.request['host']['supported_configurations'] = [
+            {'model': 'fixture-model', 'reasoning_effort': 'high'}]
+        catalog_patch = patch.object(handoff.model_inventory, 'available_pairs',
+                                     return_value={('fixture-model', 'high')})
+        catalog_patch.start()
+        self.addCleanup(catalog_patch.stop)
         self.requirement_path = "docs/requirements/a.md"
         write = requirement.handle({"protocol": requirement.PROTOCOL, "operation": "prepare", "entry": self.request,
                     "purpose": "write", "path": self.requirement_path, "version": 1, "authorization": "confirmed:write", "content": "confirmed requirement\n"})
@@ -56,6 +63,25 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
 
     def flow_git(self, *args):
         return subprocess.run(["git", "-C", str(self.flow), *args], capture_output=True, check=True).stdout.decode().strip()
+
+    def fixture_accepted_execution(self, context, candidate):
+        # Review and transfer fixtures start from committed code. Allocation
+        # mechanics have their own tests; supply their accepted result here.
+        progress = context['handoff_progress']
+        changed = set(self.flow_git('diff', '--name-only', self.git('rev-parse', 'main'), candidate).splitlines())
+        owned = sorted(changed & set(progress['allowed_paths']))
+        self.assertTrue(owned)
+        hashes = {name: control_git.implementation_hash(self.flow, name) for name in owned}
+        fingerprints = {name: control_git.file_fingerprint(self.flow, name) for name in owned}
+        index = len(progress['executions'])
+        progress['executions'].append({'task_id': 'fixture-execution-' + str(index),
+            'paths': owned, 'read_only': progress['protected_paths'],
+            'behavior': 'fixture implementation', 'tests': ['focused fixture check'],
+            'git_operations': [], 'configuration': progress['configuration'],
+            'agent_ref': 'native:executor-' + str(index), 'state': 'accepted',
+            'stopped': True, 'file_hashes': hashes,
+            'git_result_snapshot': fingerprints,
+            'allocation_digest': 'fixture-allocation-' + str(index)})
 
     def input_for(self, stage, predecessor=None):
         self.request["stage"] = stage
@@ -128,6 +154,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         progress = self.context['handoff_progress']
         if progress.get('candidate') is not None:
             apply('invalidate-candidate', {'candidate':progress['candidate'],'reference':'fixture:invalidate','reason':'replacement'})
+        self.fixture_accepted_execution(self.context, candidate)
         plan = progress['validation_plan']; target = self.git('rev-parse','main')
         apply('candidate-ready', {'dispatcher_ref':'native:dispatcher','attempt':self.context['carrier']['attempt'],
               'commit':candidate,'expected_target_head':target,'binding':self.binding,
@@ -232,6 +259,90 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.assert_code("delivery_conflict", lambda: self.call("receive", record, receipt=self.receipt(record, "stopped", "result"), result=message))
         self.assertTrue(self.call("accept", record, decision=accepted["accepted"]["decision"])["acknowledged"])
         self.assert_code("delivery_conflict", lambda: self.call("accept", record, decision={**accepted["accepted"]["decision"], "reference": "other"}))
+
+    def test_stage3_selection_requires_complete_native_inventory(self):
+        accepted = self.complete_design()
+        self.request['host']['supported_configurations'] = [
+            {'model': 'fixture-model', 'reasoning_effort': 'high'},
+            {'model': 'gpt-6-sol', 'reasoning_effort': 'high'},
+        ]
+        implementation = self.input_for(3, accepted['accepted'])
+        selected = configuration('implementation-dispatcher')
+        selected.update(can_override=True, preferred={'model': 'gpt-6-sol', 'effort': 'high'},
+                        preference_reason='use the available Stage-3 default for implementation')
+        selected['supported'].append({**selected['supported'][0],
+                                      'model': 'gpt-6-sol'})
+        implementation['configuration'] = selected
+        catalog = {('fixture-model', 'high'), ('gpt-6-sol', 'high')}
+        with patch.object(handoff.model_inventory, 'available_pairs', return_value=catalog):
+            self.assertTrue(handoff.handle(implementation))
+            incomplete = copy.deepcopy(implementation)
+            incomplete['configuration']['supported'] = selected['supported'][:1]
+            incomplete['configuration']['preferred'] = {'model': 'fixture-model', 'effort': 'high'}
+            self.assert_code('configuration_changed', lambda: handoff.handle(incomplete))
+            filtered = copy.deepcopy(incomplete)
+            filtered['entry']['host']['supported_configurations'] = [
+                {'model': 'fixture-model', 'reasoning_effort': 'high'}]
+            filtered['expected_entry'] = entry.resolve(filtered['entry'])
+            self.assert_code('configuration_changed', lambda: handoff.handle(filtered))
+            unsupported_frozen = copy.deepcopy(filtered)
+            unsupported_frozen['configuration']['frozen'] = {'model': 'unavailable', 'effort': 'high'}
+            self.assert_code('configuration_changed', lambda: handoff.handle(unsupported_frozen))
+            inherited = copy.deepcopy(filtered)
+            inherited['configuration'] = configuration('implementation-dispatcher')
+            self.assert_code('configuration_changed', lambda: handoff.handle(inherited))
+            inconsistent = copy.deepcopy(implementation)
+            inconsistent['configuration']['can_override'] = False
+            inconsistent['configuration']['inherited'] = {'model': 'fixture-model', 'effort': 'high'}
+            self.assert_code('configuration_changed', lambda: handoff.handle(inconsistent))
+
+    def test_stage3_selects_native_default_from_account_catalog_intersection(self):
+        accepted = self.complete_design()
+        self.request['host']['supported_configurations'] = [
+            {'model': 'fixture-model', 'reasoning_effort': 'high'},
+            {'model': 'gpt-6-sol', 'reasoning_effort': 'medium'},
+        ]
+        implementation = self.input_for(3, accepted['accepted'])
+        selected = configuration('implementation-dispatcher')
+        selected.update(can_override=True,
+                        preferred={'model': 'gpt-6-sol', 'effort': 'medium'},
+                        preference_reason='use the supported Stage-3 default')
+        selected['supported'].append({**selected['supported'][0],
+                                      'model': 'gpt-6-sol', 'effort': 'medium'})
+        implementation['configuration'] = selected
+        catalog = {('fixture-model', 'high'), ('gpt-6-sol', 'medium'),
+                   ('gpt-6-luna', 'high')}
+        with patch.object(handoff.model_inventory, 'available_pairs', return_value=catalog):
+            prepared = handoff.handle(implementation)
+        self.assertEqual(prepared['selection']['model'], 'gpt-6-sol')
+        self.assertEqual(prepared['selection']['effort'], 'medium')
+
+    def test_stage3_explicit_supported_user_choice_overrides_default_pool(self):
+        accepted = self.complete_design()
+        implementation = self.input_for(3, accepted['accepted'])
+        implementation['configuration']['user'] = {'model': 'fixture-model', 'effort': 'high'}
+        catalog = {('fixture-model', 'high'), ('gpt-6-sol', 'high')}
+        with patch.object(handoff.model_inventory, 'available_pairs', return_value=catalog):
+            prepared = handoff.handle(implementation)
+        self.assertEqual(prepared['selection']['model'], 'fixture-model')
+        self.assertEqual(prepared['selection']['source'], 'inherited')
+
+    def test_frozen_stage3_handoff_tolerates_newly_available_default(self):
+        accepted = self.complete_design()
+        self.request['host']['supported_configurations'] = [
+            {'model': 'fixture-model', 'reasoning_effort': 'high'},
+            {'model': 'gpt-6-sol', 'reasoning_effort': 'high'}]
+        implementation = self.input_for(3, accepted['accepted'])
+        selected = configuration('implementation-dispatcher')
+        selected.update(can_override=True, preferred={'model': 'fixture-model', 'effort': 'high'},
+                        preference_reason='no default pair is currently available')
+        selected['supported'].append({**selected['supported'][0], 'model': 'gpt-6-sol'})
+        implementation['configuration'] = selected
+        with patch.object(handoff.model_inventory, 'available_pairs',
+                          side_effect=[{('fixture-model', 'high')},
+                                       {('fixture-model', 'high'), ('gpt-6-sol', 'high')} ]):
+            frozen = handoff.handle(implementation)
+            self.assertEqual(handoff.verify(frozen), frozen)
 
     def test_accepted_design_consumed_by_stage3_and_actual_candidate_review(self):
         accepted = self.complete_design()["accepted"]
@@ -346,11 +457,17 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         execution = self.input_for(3)
         execution.update(role="execution-agent", configuration=configuration("execution-agent"))
         launched = self.launch(execution)
+        self.assertEqual(launched["host_call"]["payload"]["write_authority"], 'await-bound-release')
         bound = self.call("bind", launched["record"], receipt=self.receipt(launched["record"], ref="native:executor"))
         data = b"print('slice')\n"
         (self.flow / "impl.py").write_bytes(data)
         message = {"delivery_id": "slice", "status": "completed", "payload": {"changed_paths": ["impl.py"],
-                    "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["production CLI passed"]}}
+                    "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["production CLI passed"],
+                    "write_release": bound["write_release"]}}
+        missing_release = copy.deepcopy(message)
+        missing_release['payload'].pop('write_release')
+        self.assert_code('invalid_request', lambda: self.call("receive", bound["record"],
+            receipt=self.receipt(bound["record"], "stopped", "result", "native:executor"), result=missing_release))
         received = self.call("receive", bound["record"], receipt=self.receipt(bound["record"], "stopped", "result", "native:executor"), result=message)
         accepted = self.call("accept", received["record"], decision={"reference": "slice:accepted", "delivery_digest": received["record"]["delivery"]["digest"]})
         self.assertFalse(accepted["downstream_ready"])

@@ -830,6 +830,9 @@ class ProgressTests(transfer.StageTransferTests):
             self.invoke('control', {'action':'invalidate-candidate',
                 'evidence':{'candidate':current['handoff_progress']['candidate'],'reference':'fixture:remediation','reason':'replacement'},
                 'receipt':{'adapter':'fixture','call_ref':'remediate','response_ref':'remediation','raw':{'decision':'fix'}}})
+        outer = progress.read_record(self.checkpoint)
+        self.fixture_accepted_execution(outer[progress.KEY]['control']['context'], candidate)
+        progress.atomic_save(self.checkpoint, outer)
         self.invoke('observe', self.observation('idle','result',ref='native:dispatcher'))
         current = self.state()['control']['context']
         plan = current['handoff_progress']['validation_plan']
@@ -1118,7 +1121,8 @@ class ProgressTests(transfer.StageTransferTests):
         received = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "receive",
             "receipt": self.receipt(slot["record"], "stopped", "result", ref="native:executor"),
             "result": {"delivery_id": "stopped-slice", "status": "completed", "payload": {"changed_paths": ["impl.py"],
-                "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["fixture boundary passed"]}}})
+                "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["fixture boundary passed"],
+                "write_release": transfer.dispatch.execution_release_token(slot["record"])}}})
         self.assertEqual(received["next_action"]["result"]["status"], "received")
         accepted = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "accept", "decision": {"reference": "dispatcher:accept-stopped"}})
         self.assertEqual(accepted["status"], "pausing")
@@ -1139,13 +1143,28 @@ class ProgressTests(transfer.StageTransferTests):
         received = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "receive",
             "receipt": self.receipt(slot["record"], "stopped", "result", ref="native:executor"),
             "result": {"delivery_id": "slice", "status": "completed", "payload": {"changed_paths": ["impl.py"],
-                "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["fixture boundary passed"]}}})
+                "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["fixture boundary passed"],
+                "write_release": transfer.dispatch.execution_release_token(slot["record"])}}})
         self.assertEqual(received["next_action"]["result"]["status"], "received", received)
         accepted = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "accept", "decision": {"reference": "dispatcher:accept"}})
         self.assertFalse(accepted["downstream_ready"])
         self.assertIsNone(self.state()["accepted"])
         self.assertEqual(self.state()["dispatch"]["request"]["role"], "implementation-dispatcher")
         self.assertEqual(self.state()["control"]["context"]["handoff_progress"]["executions"][0]["state"], "accepted")
+
+    def test_public_control_cannot_bypass_execution_receipts(self):
+        self.prepare_execution()
+        slot = self.state()["allocations"]["slice-one"]
+        self.invoke("allocation", {"allocation_id": "slice-one", "operation": "bind",
+            "receipt": self.receipt(slot["record"], ref="native:executor")})
+        before = self.state()["control"]["context"]
+        for action in ("execution-dispatch-result", "execution-result", "accept-execution"):
+            with self.subTest(action=action):
+                blocked = self.invoke("control", {"action": action, "evidence": {},
+                    "receipt": {"host": "fixture"}})
+                self.assertEqual(blocked["status"], "blocked")
+                self.assertEqual(self.state()["error"]["code"], "invalid_operation")
+                self.assertEqual(self.state()["control"]["context"], before)
 
     def test_cancelled_parent_reconciles_exact_unbound_allocation(self):
         self.prepare_execution()

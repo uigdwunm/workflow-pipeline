@@ -15,10 +15,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import entry_prepare as entry
 import requirement_prepare as requirement
+import model_inventory
 import workflow_control as control
 import workflow_control_git as control_git
 
-PROTOCOL = "workflow-stage-transfer-v4"
+PROTOCOL = "workflow-stage-transfer-v5"
 ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution-designer",
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",
@@ -292,7 +293,7 @@ def verify_result(stage, payload, binding, scope, root, role_ref):
                 "source_changed", "protected source changed")
 
 
-def prepare(request):
+def prepare(request, selection_catalog=None):
     require(request.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime", "retain original stage-transfer runtime: " + str(request.get("protocol")))
     entry.fields(request, FIELDS | {"operation"})
     stage, role = request["stage"], request["role"]
@@ -345,7 +346,44 @@ def prepare(request):
     entry.nonempty(semantic["objective"]); entry.nonempty(semantic["testing_basis"])
     strings(semantic["completion_criteria"]); strings(semantic["constraints"])
     phase_evidence(request)
-    configuration = control.select_configuration(request["configuration"])
+    stage3_role = stage == 3 and role in {'implementation-dispatcher', 'execution-agent'}
+    current_catalog = None
+    if stage3_role:
+        try:
+            current_catalog = model_inventory.available_pairs()
+        except model_inventory.ModelInventoryError as error:
+            require(False, 'configuration_unavailable', str(error))
+    if selection_catalog is not None:
+        require(stage3_role and isinstance(selection_catalog, list) and
+                all(isinstance(pair, list) and len(pair) == 2 and
+                    all(isinstance(value, str) and value for value in pair)
+                    for pair in selection_catalog),
+                'invalid_evidence', 'invalid frozen Stage-3 model inventory')
+    catalog_basis = (set(map(tuple, selection_catalog)) if selection_catalog is not None
+                     else current_catalog)
+    configuration = control.select_configuration(request["configuration"], catalog_basis)
+    saved_catalog = None
+    if stage3_role:
+        advertised = current['actor'].get('supported_configurations')
+        require(isinstance(advertised, list) and advertised,
+                'configuration_unavailable', 'Stage-3 model selection requires the current native adapter inventory')
+        available_pairs = {(item['model'], item['reasoning_effort']) for item in advertised}
+        selected_pairs = {(item['model'], item['effort']) for item in request['configuration']['supported']}
+        require(len(available_pairs) == len(advertised) and selected_pairs == available_pairs,
+                'configuration_changed', 'selection must use the complete current native adapter inventory')
+        require(request['configuration']['can_override'] or len(advertised) == 1,
+                'configuration_changed', 'multiple native configurations require override support')
+        saved_catalog = [list(pair) for pair in sorted(catalog_basis & available_pairs)]
+        explicit_choice = (request['configuration']['user'] is not None or
+                           configuration['source'] == 'confirmed')
+        if request['operation'] == 'prepare' and not explicit_choice:
+            eligible_defaults = control.stage3_eligible_defaults(
+                request['configuration']['supported'],
+                request['configuration']['required_capability'], current_catalog)
+            require(not eligible_defaults or (configuration['model'], configuration['effort']) in eligible_defaults,
+                    'configuration_changed', 'account-visible default requires a supported native choice')
+        require((configuration['model'], configuration['effort']) in current_catalog,
+                'configuration_unsupported', 'selected model is absent from the current account catalog')
     require(request["configuration"]["role"] == role and not configuration["needs_decision"],
             "configuration_changed", "role configuration requires a controller decision")
     predecessor = request["predecessor"]
@@ -378,7 +416,8 @@ def prepare(request):
     require(stage != 4 or predecessor is not None, "predecessor_incomplete", "inherited closure requires an accepted implementation result")
     return seal({**{k: copy.deepcopy(request[k]) for k in FIELDS}, "kind": "stage-input",
                  "controller_ref": current["actor"]["controller_ref"], "requirement_identity": identity,
-                 "source_commit": source_commit, "delivery_facts": delivered, "selection": configuration})
+                 "source_commit": source_commit, "delivery_facts": delivered, "selection": configuration,
+                 "selection_catalog": saved_catalog})
 
 
 def require_current_protocol(value):
@@ -392,8 +431,8 @@ def require_current_protocol(value):
 def verify(saved):
     body = unseal(saved)
     require_current_protocol(body)
-    entry.fields(body, FIELDS | {"kind", "controller_ref", "requirement_identity", "source_commit", "delivery_facts", "selection"})
-    actual = prepare({**{k: body[k] for k in FIELDS}, "operation": "prepare"})
+    entry.fields(body, FIELDS | {"kind", "controller_ref", "requirement_identity", "source_commit", "delivery_facts", "selection", "selection_catalog"})
+    actual = prepare({**{k: body[k] for k in FIELDS}, "operation": "verify"}, body['selection_catalog'])
     require(actual == saved, "handoff_changed", "stage input facts changed; retain the original handoff")
     return actual
 
@@ -446,6 +485,8 @@ def render(saved):
     if payload["discussion_project"] is not None:
         payload["attachment"] = body["entry"]["source"]["attachment"]
     payload["input_digest"] = saved["digest"]
+    if body['role'] == 'execution-agent':
+        payload['write_authority'] = 'await-bound-release'
     return {"payload": payload, "text": json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
             "downstream_ready": False}
 

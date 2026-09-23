@@ -196,6 +196,14 @@ def matching(record, context, *, reconcile_unbound=False):
     return carrier["ref"], selected["handoff_progress"]["state"], selected["handoff_progress"]
 
 
+def execution_release_token(record):
+    launch = record['request']
+    require(launch['role'] == 'execution-agent', 'role_mismatch', 'write release belongs to an Execution Agent')
+    ready = next((receipt for receipt in record['receipts'] if receipt['status'] == 'ready'), None)
+    require(ready is not None, 'authorization_missing', 'bound Execution Agent receipt required')
+    return entry.digest([launch['attempt'], ready['receipt_ref'], ready['ref']])
+
+
 def receipt_for(record, receipt, event):
     entry.fields(receipt, {"adapter", "receipt_ref", "request_digest", "attempt", "role", "event", "status", "ref", "pending_id", "configuration", "raw"})
     entry.nonempty(receipt["adapter"]); entry.nonempty(receipt["receipt_ref"])
@@ -273,6 +281,7 @@ def bind_discussion(port, record, receipt):
 def bound(request):
     entry.fields(request, {"protocol", "operation", "record", "control", "receipt"})
     record = record_for(request)
+    launch = record['request']
     receipt = request["receipt"]
     receipt_for(record, receipt, {"create"} if request["operation"] == "bind" else {"lookup"})
     require(receipt["status"] in {"ready", "pending", "unknown", "not-created"}, "invalid_request", "unknown launch outcome")
@@ -289,20 +298,25 @@ def bound(request):
                 "checkpoint": {"context": request["control"]["context"], "discussion_receipt": None}, "downstream_ready": False}
     if receipt in record["receipts"]:
         require(known == receipt["ref"] or known is None, "identity_mismatch", "replayed receipt conflicts with checkpoint")
-        return {"status": record["status"], "record": request["record"], "acknowledged": True, "downstream_ready": False}
+        result = {"status": record["status"], "record": request["record"], "acknowledged": True, "downstream_ready": False}
+        if launch['role'] == 'execution-agent' and receipt['status'] == 'ready':
+            result['write_release'] = execution_release_token(record)
+        return result
     require(state not in {"cancelled", "creation-failed", "accepted"}, "attempt_mismatch", "late receipt cannot revive an ended attempt")
     if known is not None:
         require(receipt["status"] == "ready" and known == receipt["ref"], "identity_mismatch", "bound identity cannot be replaced")
         record["receipts"].append(receipt)
         record["status"] = "bound"
-        return {"status": "bound", "record": handoff.seal(record), "acknowledged": True,
-                "checkpoint": {"context": request["control"]["context"], "discussion_receipt": None}, "downstream_ready": False}
+        result = {"status": "bound", "record": handoff.seal(record), "acknowledged": True,
+                  "checkpoint": {"context": request["control"]["context"], "discussion_receipt": None}, "downstream_ready": False}
+        if launch['role'] == 'execution-agent':
+            result['write_release'] = execution_release_token(record)
+        return result
     if record["receipts"]:
         require(request["operation"] == "reconcile", "outcome_unknown", "read back the original launch before retrying")
         pending = {r["pending_id"] for r in record["receipts"] if r["pending_id"] is not None}
         if receipt["pending_id"] is not None:
             require(not pending or receipt["pending_id"] in pending, "identity_mismatch", "pending identity changed")
-    launch = record["request"]
     ready = receipt["status"] == "ready"
     if launch["kind"] == "visible-task":
         action = "creation-result"
@@ -318,8 +332,8 @@ def bound(request):
     else:
         action = "native-dispatch-result"
         evidence = {"attempt": launch["attempt"], "status": "not-created" if receipt["status"] == "not-created" else "unknown"}
-    # No freshness check here: creation already happened. Save/bind its identity
-    # even if source bytes changed; subsequent work must separately reverify.
+    # A created Execution Agent must retain its exact receipt even if the Git
+    # adapter rejects binding because assigned bytes changed before handoff.
     port, binding_receipt = request["control"], None
     try:
         if ready:
@@ -330,9 +344,12 @@ def bound(request):
               completed_evidence=[{"kind": "host-creation", "receipt": receipt, "binding_receipt": binding_receipt, "downstream_ready": False}]) from error
     record["receipts"].append(copy.deepcopy(receipt))
     record["status"] = "bound" if ready else receipt["status"]
-    return {"status": record["status"], "record": handoff.seal(record), "checkpoint": port_result(result, applied), "binding_receipt": binding_receipt,
-            "downstream_ready": False, "next_action": "receive" if ready else "stop" if receipt["status"] == "not-created" else "lookup-exact-request",
-            "lookup": None if ready else {"request_digest": launch["digest"], "attempt": launch["attempt"], "pending_id": receipt["pending_id"]}}
+    bound_result = {"status": record["status"], "record": handoff.seal(record), "checkpoint": port_result(result, applied), "binding_receipt": binding_receipt,
+                    "downstream_ready": False, "next_action": "receive" if ready else "stop" if receipt["status"] == "not-created" else "lookup-exact-request",
+                    "lookup": None if ready else {"request_digest": launch["digest"], "attempt": launch["attempt"], "pending_id": receipt["pending_id"]}}
+    if ready and launch['role'] == 'execution-agent':
+        bound_result['write_release'] = execution_release_token(record)
+    return bound_result
 
 
 def received(request):
@@ -363,8 +380,11 @@ def received(request):
         if stage >= 2:
             handoff.source(current, saved["requirement"], stage)
     if saved["role"] == "execution-agent":
-        entry.fields(payload, {"changed_paths", "file_hashes", "tests"})
-        evidence = {**payload, "agent_ref": ref, "stopped": True, "git_unchanged": True}
+        entry.fields(payload, {"changed_paths", "file_hashes", "tests", "write_release"})
+        require(payload['write_release'] == execution_release_token(record),
+                'authorization_changed', 'Execution Agent did not receive its bound write release')
+        evidence = {key: payload[key] for key in ("changed_paths", "file_hashes", "tests")}
+        evidence.update(agent_ref=ref, stopped=True, git_unchanged=True)
         action = "execution-result"
     else:
         handoff.verify_result(stage, payload, saved["binding"], saved["scope"], root, ref)
