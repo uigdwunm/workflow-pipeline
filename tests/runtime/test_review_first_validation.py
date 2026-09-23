@@ -30,6 +30,9 @@ class ReviewFirstTests(fixture.ProgressTests):
         (self.flow / 'impl.py').write_text("print('ok')\n")
         self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'implementation')
         candidate = self.flow_git('rev-parse', 'HEAD')
+        outer = fixture.progress.read_record(self.checkpoint)
+        self.fixture_accepted_execution(outer[fixture.progress.KEY]['control']['context'], candidate)
+        fixture.progress.atomic_save(self.checkpoint, outer)
         target = self.git('rev-parse', 'main')
         self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
         checks = [dict(item, status='passed', exit_code=0, start_commit=candidate, end_commit=candidate,

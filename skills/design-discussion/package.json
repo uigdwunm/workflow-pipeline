@@ -1,7 +1,7 @@
 {
-  "bundle_digest": "f1c80568d0baf8f53fa6ef967dfa471c8e6d6fff54b64053afc65e8e4b348914",
+  "bundle_digest": "51f3696008cecee38f3997e199f03fce25e4706536a28f7cdf3c0e194e60b21e",
   "compatibility_key": {
-    "control": 3,
+    "control": 4,
     "discussion_request": 1,
     "entry": "workflow-entry-v3",
     "handoff": "workflow-controller-v1",
@@ -14,7 +14,7 @@
     "preparation": "workflow-preparation-v3",
     "requirement_delivery": "requirement-delivery-v1",
     "runner": 6,
-    "stage_transfer": "workflow-stage-transfer-v4",
+    "stage_transfer": "workflow-stage-transfer-v5",
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
     "workflow_progress": "workflow-progress-v8"
@@ -81,19 +81,19 @@
     },
     "references/shared/entry-preparation.md": {
       "mode": "0644",
-      "sha256": "abcc9c72f87b49fbed1d426a70bde267c18c9d04f1fcaaafe65e511dc39d39b2"
+      "sha256": "31007f30cd390bdecdc70aa779276f132b899ce7a9fc147a9a76530a215438aa"
     },
     "references/shared/guided-implementation/thread-settings-protocol.md": {
       "mode": "0644",
-      "sha256": "e2bc6c671018800c0d50a6dfc7ddcedf3fd14bc2582f80987e5de2d7eeda86f6"
+      "sha256": "0ac47471558cb1c4737dad072bc6b4eea06f0802c68174e66f02fd85c67d90ed"
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "d8856a4673ac60b5fab1605a58f3a115d3e20a1a3648228bcb66a833bc5b4c86"
+      "sha256": "6a537492dd7d593c2119c3315c69a4ed66dcc3565b78b3cdd0bee6ea35e0552c"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "59a82117d045093773d18ec807a955e4b1e68955f0184bfb8a6610c689216dcb"
+      "sha256": "f22ec6ef5d58841b3ee273ca0939e44d04435de7f3a062993f5ce05ea7ced150"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -105,11 +105,11 @@
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
-      "sha256": "2998b85348f317f03f82b528482510dd17b601b0b91295009a2b22b87448487a"
+      "sha256": "50cfa5c93b5110da58ad73b32e470d9cc4e607bdf687775b3de55e8de1eb0b74"
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "06fe6533c3a9a8399a314fb6019f710660b9f8e6d7b2054f552ab7e827586d75"
+      "sha256": "65718accd61b5a4742949bb657571ea82adb4e81ab69f7e7164a640ada59627c"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -187,6 +187,10 @@
       "mode": "0644",
       "sha256": "61fc2fc0cf9670734426fc1dffe6f1b41d3b973a6dbf0d33f92088da0ebf1b37"
     },
+    "scripts/model_inventory.py": {
+      "mode": "0644",
+      "sha256": "1ae4acedffb01e77ea93371f1cf6b30b214b5fa1a8c130ef2a758e9b0688d726"
+    },
     "scripts/requirement_delivery.py": {
       "mode": "0644",
       "sha256": "5998005e2facfbfeb6e8a8b267526e43f6a5bb114ade2b8e447fd8784ea90d6b"
@@ -201,11 +205,11 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "cb792d2c016101ceec9b93f52c678418f1f7da119285311349074d809e8674a4"
+      "sha256": "06357e32978f7effc4322af40489c8f0285f79386992f54c620562656a8e6baf"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "cc73ae6d6107ded213bbb9cbf0c065813f20d134382fa5338866a9ca48312d79"
+      "sha256": "7bff4251717ed63e407068a63f90685454468553afe123d1f4e8fe96197ff6f4"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",
@@ -225,15 +229,15 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "e3939c086599b04aec73e78e5e331b7620b05e4b3ef2c8f7aa7a485d99190135"
+      "sha256": "659a08b4833fa17f3167c093c0df426e44b8ab3d3d1f78085f1830923faacf73"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "cf07106784afd760f95081b77a82e65028fa2baf6a270f99907bee09996e2f6d"
+      "sha256": "f38312d9e7e86bf106161e4ca62df4f328e34ef32ae0316d0d32f6e10feb218b"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "f990815e3f38b8fd607329c9f25a025820728f5f9e9ab05087bb89156ff65334"
+      "sha256": "025f0d793f738917247657ca6d724a47670b2b67e35d9fbec3500bf65da92dd2"
     }
   },
   "format_version": 1,
@@ -286,6 +290,7 @@
     "shared/references/workflow-progression.md",
     "shared/scripts/entry_prepare.py",
     "shared/scripts/host_skill_registry.py",
+    "shared/scripts/model_inventory.py",
     "shared/scripts/requirement_delivery.py",
     "shared/scripts/requirement_prepare.py",
     "shared/scripts/skill_preflight.py",

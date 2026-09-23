@@ -1683,8 +1683,8 @@ class Progress:
     def control_action(self, data):
         entry.fields(data, {"action", "evidence", "receipt"})
         entry.nonempty(data["action"])
-        require(data["action"] in {"successor-ready", "archive", "archive-result", "execution-result",
-                    "accept-execution", "execution-dispatch-result", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
+        require(data["action"] in {"successor-ready", "archive", "archive-result",
+                    "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
                 "invalid_operation", "use the original bounded control recovery/closure operation")
         require(isinstance(data["receipt"], dict) and data["receipt"], "host_evidence_missing", "original authenticated host/controller evidence required")
         s = self.state

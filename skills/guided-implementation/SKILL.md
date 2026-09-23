@@ -24,7 +24,7 @@ Interpret user replies through
 
 Read [Workflow Control Protocol](references/shared/guided-implementation/workflow-control-protocol.md) before role preparation or transition. This stage uses Implementation Dispatcher and preserves the Workflow Controller.
 
-An authenticated non-root native implementation-dispatcher with the complete bound Stage-3 envelope follows references/shared/guided-implementation/execution-protocol.md directly. It never creates another dispatcher or a visible implementation task. Only the Workflow Controller performs the launch and independent review portions below; the dispatcher may allocate ordinary Execution Agents under the shared exact-file contract.
+An authenticated non-root native implementation-dispatcher with the complete bound Stage-3 envelope follows references/shared/guided-implementation/execution-protocol.md directly. It never creates another dispatcher or a visible implementation task. Only the Workflow Controller performs the launch and independent review portions below. The dispatcher allocates implementation writes to ordinary Execution Agents under the shared exact-file contract; a candidate without accepted Execution Agent deliveries cannot pass the scripted gate.
 
 ## Entry
 
@@ -201,6 +201,11 @@ work.
 - Work only inside the verified worktree. Invoke the complete native
   `$implement` workflow, including `$tdd`, focused and affected checks, typecheck,
   lint or build where applicable, and commit a clean candidate.
+- Allocate the first real production-boundary TDD slice to an Execution Agent
+  before implementation edits. Allocate subsequent implementation and repair
+  edits through the same scripted execution contract. The dispatcher integrates
+  accepted bytes, runs checks and commits; the candidate gate requires every
+  changed implementation path to match an accepted Execution Agent delivery.
 - The Implementation Dispatcher must not dispatch Standards or Spec review
   agents or receive the parent Session or CLI. It reports the exact candidate
   commit, changed paths, focused and full checks, remaining risks, and any

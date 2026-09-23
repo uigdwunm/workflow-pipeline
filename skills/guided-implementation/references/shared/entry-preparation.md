@@ -82,7 +82,17 @@ controller. Optional actor_ref is the host-authenticated alias for this exact
 runtime task (for example a native carrier's tool ref); it is never inferred from
 task recency. Without it, only the current thread ID or its codex-thread: form is
 accepted as a discussion actor. Optional host.supported_configurations is a nonempty array of exact
-`{model,reasoning_effort}` pairs. Roles are controller; dedicated-discussion at 0;
+`{model,reasoning_effort}` pairs. For every Stage-3 dispatcher or Execution Agent,
+this field is required and must be the
+complete current tool inventory; the Stage-3 handoff compares it with the
+selector's `supported` pairs and independently reads the current account's visible
+Codex app-server `model/list` catalog before choosing a default or fallback.
+Missing catalog evidence blocks automatic selection. If the account catalog
+lists an eligible default that the declared native inventory cannot dispatch,
+automatic fallback blocks because that declaration cannot independently prove
+the default unavailable. A frozen Stage-3 handoff
+rechecks that its selected pair remains available; newly listed defaults do not
+rewrite the original selection. Roles are controller; dedicated-discussion at 0;
 dedicated-problem-framing at 1; solution-designer or scripted-carrier at 2; implementation-dispatcher,
 execution-agent or scripted-carrier at 3; closure-agent or scripted-carrier at 4.
 The Stage-2 foreground CLI carrier uses scripted-carrier, not controller or the

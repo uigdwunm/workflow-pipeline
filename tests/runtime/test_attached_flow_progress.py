@@ -20,6 +20,12 @@ supervision = fixtures.transfer.supervision
 class AttachedFlowTests(fixtures.ProgressTests):
     def setUp(self):
         test_entry_prepare.EntrySupport.setUp(self)
+        self.request['host']['supported_configurations'] = [
+            {'model': 'fixture-model', 'reasoning_effort': 'high'}]
+        catalog_patch = patch.object(fixtures.transfer.handoff.model_inventory, 'available_pairs',
+                                     return_value={('fixture-model', 'high')})
+        catalog_patch.start()
+        self.addCleanup(catalog_patch.stop)
         topic = protocol.handle({'protocol_version': 1, 'operation': 'bootstrap', 'project_path': str(self.root),
             'entry_mode': 'explicit-skill', 'conversation_ref': 'task', 'idempotency_key': str(uuid.uuid4()), 'root_slug': 'attached'})
         self.attachment = {'project_id': topic['project_id'], 'tree_id': topic['tree_id'],

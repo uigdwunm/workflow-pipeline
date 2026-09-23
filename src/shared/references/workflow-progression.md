@@ -211,6 +211,10 @@ returns exact lookup, never another host create. Bind/reconcile/receive use B's
 original full receipts/results. Accept takes the dispatcher's decision reference;
 C derives the received delivery digest. Host configuration and governance remain
 the current native adapter's responsibility.
+Execution children wait for the `write_release` returned only after a successful
+native bind. B checks assigned-file freshness at bind and requires that exact
+release in the completed child result. A failed bind retains its original native
+creation receipt for reconciliation and cannot authorize child writes.
 
 These transport records live in the same original checkpoint. Only the existing
 control.handoff_progress.executions roster owns allocations and writer state;
@@ -418,8 +422,9 @@ process, effect plan, missing result or publication-only receipt never establish
 overall completion. Standalone stages have no synthetic discussion lifecycle.
 
 `control`: data is `{action,evidence,receipt}` for the original successor-ready,
-archive, archive-result, execution-result, accept-execution, execution-dispatch-result
-or recover-dispatch seam. C saves the original port and evidence, invokes its
+archive, archive-result, candidate/review/validation or recover-dispatch seam.
+Execution dispatch, result and acceptance belong exclusively to `allocation`'s
+native B bind/receive/accept path; the public control action rejects them. C saves the original port and evidence, invokes its
 existing ledger/Git/control adapter, and retains effects and actual result. Host
 receipt authentication remains mandatory. Identical completed calls ACK, and
 a lost response replays the exact original mutation envelope.

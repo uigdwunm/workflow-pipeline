@@ -16,9 +16,15 @@ nor proof that descendants stopped. Follow the shared progression next action.
 
 Mechanical A/B execution uses [Workflow progression]({{resource:shared/references/workflow-progression.md}}). Supply semantic decisions and authenticated raw host responses; the shared adapter retains intents, exact attempts, receipts and recovery steps. The role, review and authorization rules below remain binding.
 
-Use its allocation operation for ordinary Execution Agents, with the original
+Use its allocation operation for every implementation and repair edit by an
+ordinary Execution Agent, with the original
 checkpoint passed by the controller. Do not start a second workflow for each
 child or copy the dispatcher's control into another authoritative record.
+The child starts with `write_authority: await-bound-release` and reads only.
+After its native ready receipt is bound and the assigned files still match the
+prepared snapshot, the dispatcher sends the returned `write_release` to that
+exact child. The child's completed result echoes this release. If binding fails,
+retain and reconcile the created identity; no implementation edit is accepted.
 Allocation receipts and acceptance update the same control roster consumed by
 the originating task's candidate intake. Existing native governance still owns
 real launch, waits, stopped-writer proofs and interruption.
