@@ -99,7 +99,11 @@ def package_identity(value, name=None):
             if path.is_symlink():
                 raise PreflightError('invalid_package', 'package resources cannot be symlinks')
             if path.is_file() and '__pycache__' not in path.parts and path != manifest_path:
-                actual_files.add(path.relative_to(root).as_posix())
+                relative = path.relative_to(root).as_posix()
+                if (path.name == '.DS_Store' and relative not in table
+                    and not path.stat().st_mode & 0o111):
+                    continue
+                actual_files.add(relative)
         if actual_files != set(table):
             raise PreflightError('package_changed', 'resource file set changed')
         for relative, record in table.items():

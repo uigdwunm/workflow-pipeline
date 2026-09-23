@@ -319,6 +319,35 @@ class AttachedRequirementTests(test_entry_prepare.EntrySupport):
         self.request["stage"] = 2
         self.assert_code("invalid_operation", lambda: self.call("prepare", purpose="write", authorization="confirmed", mutation=mutation))
 
+    def test_attached_write_reconciles_original_intent_after_lost_completion(self):
+        mutation = {"type": "refresh-requirement-narrative", "goal": "recovered goal", "background": [],
+                    "scope": [], "non_goals": [], "scenarios": [], "tentative_assumptions": [],
+                    "facts": [], "constraints": [], "acceptance_conditions": [],
+                    "direction_change_summary": []}
+        intent = self.call("prepare", purpose="write", authorization="confirmed", mutation=mutation)
+        with patch.dict(os.environ, {"CODEX_DISCUSSION_TEST_FAILPOINT": "document-write-before-ledger-persist"}):
+            with self.assertRaises(discussion_protocol.ProtocolError):
+                self.call("write", intent=intent)
+        completed = self.call("reconcile", intent=intent)
+        self.assertEqual(completed["discussion"]["state"], "completed")
+        self.assertIn("recovered goal", self.topic_path.read_text())
+        replay = self.call("reconcile", intent=intent)
+        self.assertTrue(replay["discussion"]["idempotent_replay"])
+        self.assertEqual(replay["discussion"]["document_write_id"], completed["discussion"]["document_write_id"])
+
+    def test_attached_write_rejects_old_prepare_operation_in_intent(self):
+        mutation = {"type": "refresh-requirement-narrative", "goal": "confirmed goal", "background": [],
+                    "scope": [], "non_goals": [], "scenarios": [], "tentative_assumptions": [],
+                    "facts": [], "constraints": [], "acceptance_conditions": [],
+                    "direction_change_summary": []}
+        intent = self.call("prepare", purpose="write", authorization="confirmed", mutation=mutation)
+        altered = {key: value for key, value in intent.items() if key != "digest"}
+        altered["payload"] = {**intent["payload"], "operation": "prepare-topic-update"}
+        altered = requirement.sealed(altered)
+        before = self.ledger_path.read_bytes()
+        self.assert_code("invalid_intent", lambda: self.call("write", intent=altered))
+        self.assertEqual(self.ledger_path.read_bytes(), before)
+
     def test_non_git_discussion_keeps_snapshot_authority(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

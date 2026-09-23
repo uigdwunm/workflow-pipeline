@@ -131,10 +131,8 @@ and candidate acceptance; Stage 4 owns integration. The authoritative review con
 [{{resource:guided-implementation/references/originating-task-protocol.md}}]({{resource:guided-implementation/references/originating-task-protocol.md}}).
 
 Return review or test remediation to the same implementation task and worktree.
-When the Originating Task identifies the same failure mechanism after a fix, a
-same-class regression in another affected path, or successive review/test
-outcomes overturning the same implementation approach, the continuation is
-diagnosis-first and carries the trigger plus the prior candidate/finding
+When the Originating Task marks the continuation diagnosis-first under its
+remediation rule, it carries the trigger plus prior candidate/finding
 identities. Before editing, provide execution evidence comparing the prior
 failure and fix, explaining why the fix missed the mechanism, naming the
 minimal effective validation at the affected real boundary, and listing the

@@ -133,12 +133,12 @@ Use source.kind=discussion and the existing attachment. Do not supply a standalo
 path, content, previous or owned_paths, and do not add a second requirement document.
 
 - prepare with purpose=write, authorization and the existing semantic mutation
-  produces a read-only intent. write executes prepare-topic-update followed by
-  apply-document-write, deriving IDs and revisions and retaining the original DW.
+  produces a read-only intent. write executes `update-topic` with the original
+  intent; reconcile retries that same request and pending DW.
 - prepare with purpose=freeze, authorization and base_ref produces a read-only
   intent. freeze executes the existing stage-entry CP prepare, reconciliation and
   publication operations. Git bases are resolved to an exact commit when preparing.
-- reconcile resumes the same intent through the original DW/CP operations. Prepared
+- reconcile resumes the same intent through the original update/CP operations. Prepared
   CPs are reconciled before publication because an earlier process may have created
   an object without recording success. No second ledger or checkpoint authority exists.
 - verify with checkpoint_id reads the exact completed stage-entry checkpoint and

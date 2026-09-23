@@ -136,8 +136,9 @@ If diagnosis shows that the accepted scope or plan is insufficient, stop
 through the existing implementation-authority or anomaly decision before
 changing code. An ordinary technical defect continues in the same task and
 worktree. Do not create a diagnostic document, impose a fixed remediation
-round gate, or spawn an automatic replacement; the stalled-task replacement
-exception above still requires the complete original-host recovery proof.
+round gate, spawn an automatic replacement, or add a new Workflow Stage; the
+stalled-task replacement exception above still requires the complete
+original-host recovery proof.
 
 ## Retain and hand off
 

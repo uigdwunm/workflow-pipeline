@@ -149,6 +149,35 @@ class PreflightBoundaryTests(unittest.TestCase):
         missing=self.call(0,'selected-capability',[self.own(0)],required_skills=['research'])
         self.assertEqual(missing['error']['required_skill'],'research')
 
+    def test_only_inert_ds_store_is_ignored_outside_manifest(self):
+        package = self.packages / 'design-discussion'
+        metadata = package / '.DS_Store'
+        extra_script = package / 'scripts/extra.py'
+        extra_link = package / 'scripts/extra-link.py'
+        own = self.own(0)
+        try:
+            metadata.write_bytes(b'Finder metadata')
+            identity = self.call(0, 'entry', [own])['packages']['design-discussion']
+            verified = subprocess.run(
+                [sys.executable, str(package / 'scripts/skill_preflight.py')],
+                input=json.dumps({'operation': 'verify', 'identity': identity}),
+                capture_output=True, text=True,
+            )
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+
+            metadata.chmod(0o755)
+            self.assertEqual(self.call(0, 'entry', [own])['error']['code'], 'package_changed')
+            metadata.chmod(0o644)
+            extra_script.write_text('pass\n')
+            self.assertEqual(self.call(0, 'entry', [own])['error']['code'], 'package_changed')
+            extra_script.unlink()
+            extra_link.symlink_to(package / 'SKILL.md')
+            self.assertEqual(self.call(0, 'entry', [own])['error']['code'], 'invalid_package')
+        finally:
+            extra_link.unlink(missing_ok=True)
+            extra_script.unlink(missing_ok=True)
+            metadata.unlink(missing_ok=True)
+
     def test_selected_registry_wins_and_real_file_aliases_deduplicate(self):
         own=self.own(1); one=self.external('ask-matt','one'); two=self.external('ask-matt','two')
         alias=self.root/'alias';alias.mkdir(exist_ok=True)

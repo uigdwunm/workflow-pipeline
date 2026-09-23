@@ -184,12 +184,10 @@ material outcome, the solution is not complete.
 
 Before the existing solution review or direct publication seam, the
 `solution_designer` performs the bounded change-contract preflight in
-`references/solution-design/design-readiness.md`: trace each affected entrypoint through the
-real production call chain and record the interface, state, ordering,
-governing specification, evidence, and any in-scope contradiction resolution
-in the Spec's existing decisions. A contradiction that would change the
-accepted requirement, target, permissions, or published plan uses the existing
-`SOLUTION_DESIGN_ANOMALY` contract.
+`references/solution-design/design-readiness.md` and records its
+evidence in the Spec's existing decisions. Resolve in-scope contradictions
+there; use the existing `SOLUTION_DESIGN_ANOMALY` contract for a material
+change outside the accepted boundary.
 
 ## Track the flow mode
 

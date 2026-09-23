@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "af6a4810baa01c0c8f7065da4011d7d1314498b0c84b7aafa209671d8d8b138d",
+  "bundle_digest": "609913471067e4409a6caa952ce5a28aa4cd29165356c756373a6b62ddd99712",
   "compatibility_key": {
     "control": 4,
     "discussion_request": 1,
@@ -36,7 +36,7 @@
     },
     "SKILL.md": {
       "mode": "0644",
-      "sha256": "410dbe610b53bb600ff61567369db28f27be332a8f44aac673613cd415d017d3"
+      "sha256": "b4882523d156294b70ba6e29dcd121a42b6b3db83e3464aa1302d67863a09e39"
     },
     "agents/openai.yaml": {
       "mode": "0644",
@@ -60,11 +60,11 @@
     },
     "references/shared/guided-implementation/execution-protocol.md": {
       "mode": "0644",
-      "sha256": "405f637cb4e71407065614cd24da9decd338e2c3acd97637580ace5c3404bd68"
+      "sha256": "ac3c73006a41743c911001683cf48f7a84c597ae8cf7406224784dc51ce9ed7f"
     },
     "references/shared/guided-implementation/originating-task-protocol.md": {
       "mode": "0644",
-      "sha256": "d2d5c1fb0b618526bc0c08602d3677da5d83e78a367b739b5fc1f4aed10babe3"
+      "sha256": "d389db000fd65a50aa42d1fd2660e7be50257207fd72304cc487690e73818643"
     },
     "references/shared/guided-implementation/thread-settings-protocol.md": {
       "mode": "0644",
@@ -88,7 +88,7 @@
     },
     "references/shared/requirement-preparation.md": {
       "mode": "0644",
-      "sha256": "8ee6ccc10b757254cab94156448adb738fce5f7d3165166c0b978cc81d9b119c"
+      "sha256": "1d57a65440a3958587c7d55997049a98182d7124c73e70f7b2fb453afbc140e5"
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
@@ -164,7 +164,7 @@
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
-      "sha256": "528ce7361bc1e4169e299abe1e6f77478268c5a0d32d83d0b0475d5a6710eb37"
+      "sha256": "387c4f73050db2a508f555d86be7be7215b309ac8cf73f0c27534ac3a9e6f3bf"
     },
     "scripts/entry_prepare.py": {
       "mode": "0644",
@@ -188,11 +188,11 @@
     },
     "scripts/requirement_prepare.py": {
       "mode": "0644",
-      "sha256": "5485e98ad6e3d241fee11c7a9232d8d6d07efc6ea22ea15b47dba968bd22451d"
+      "sha256": "4989396ff6a2b07b890a939026f37180c9f9173081b1620ac710d02b447e5893"
     },
     "scripts/skill_preflight.py": {
       "mode": "0644",
-      "sha256": "67a49dd9523ae87907fc5098dfa614286184f8d54634be115a6f2c393fc17340"
+      "sha256": "b820c4d35a6364aa26b8e799754d2fecfbe6941887e65562346da888292cb781"
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",

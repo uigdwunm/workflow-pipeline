@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+from contextlib import nullcontext
 from pathlib import Path
 import stat
 import subprocess
@@ -1041,7 +1042,7 @@ def _apply_mutation_to_records(
     return result
 
 
-def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
+def _prepare_topic_update(request: dict[str, Any], *, lock_held: bool = False) -> dict[str, Any]:
     project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, allow_tree_topic=True)
     allowed = {
         "protocol_version", "operation", "project_path", "project_id", "tree_id",
@@ -1051,8 +1052,9 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
     _expect_keys(request, allowed, "prepare-topic-update request")
     _validate_uuid4(request["idempotency_key"], "idempotency_key")
     mutation = _validate_mutation(request["mutation"], request["idempotency_key"])
-    with lock_path.open("a+b") as lock_stream:
-        _flock_with_timeout(lock_stream)
+    with (nullcontext() if lock_held else lock_path.open("a+b")) as lock_stream:
+        if not lock_held:
+            _flock_with_timeout(lock_stream)
         frontmatter, records = _load_records(ledger_path)
         replay = _idempotent_result(records, request)
         if replay is not None:
@@ -1185,7 +1187,9 @@ def _prepare_topic_update(request: dict[str, Any]) -> dict[str, Any]:
         return result
 
 
-def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
+def _apply_document_write(
+    request: dict[str, Any], *, lock_held: bool = False,
+) -> dict[str, Any]:
     project, ledger_path, topic_path, lock_path, owner_ref = _evolution_paths(request, allow_tree_topic=True)
     _expect_keys(
         request,
@@ -1193,8 +1197,9 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
         "apply-document-write request",
     )
     _validate_uuid4(request["idempotency_key"], "idempotency_key")
-    with lock_path.open("a+b") as lock_stream:
-        _flock_with_timeout(lock_stream)
+    with (nullcontext() if lock_held else lock_path.open("a+b")) as lock_stream:
+        if not lock_held:
+            _flock_with_timeout(lock_stream)
         frontmatter, records = _load_records(ledger_path)
         replay = _idempotent_result(records, request)
         if replay is not None:
@@ -1247,6 +1252,52 @@ def _apply_document_write(request: dict[str, Any]) -> dict[str, Any]:
         frontmatter["event_count"] = str(int(frontmatter["event_count"]) + 1)
         _persist_ledger(ledger_path, frontmatter, records)
         return result
+
+
+def _update_topic(request: dict[str, Any]) -> dict[str, Any]:
+    _expect_keys(
+        request,
+        {
+            "protocol_version", "operation", "project_path", "project_id", "tree_id",
+            "actor_topic_id", "actor_conversation_ref", "expected_ledger_revision",
+            "expected_topic_revision", "idempotency_key", "mutation",
+        },
+        "update-topic request",
+    )
+    _validate_uuid4(request["idempotency_key"], "idempotency_key")
+
+    def step_key(step: str) -> str:
+        digest = hashlib.sha256(
+            f"update-topic:{step}:{request['idempotency_key']}".encode("ascii")
+        ).hexdigest()
+        return str(uuid.UUID(hex=digest[:32], version=4))
+
+    _, _, _, lock_path, _ = _evolution_paths(request, allow_tree_topic=True)
+    with lock_path.open("a+b") as lock_stream:
+        _flock_with_timeout(lock_stream)
+        prepared = _prepare_topic_update({
+            **request,
+            "operation": "prepare-topic-update",
+            "idempotency_key": step_key("prepare"),
+        }, lock_held=True)
+        applied = _apply_document_write({
+            "protocol_version": request["protocol_version"],
+            "operation": "apply-document-write",
+            "project_path": request["project_path"],
+            "project_id": request["project_id"],
+            "tree_id": request["tree_id"],
+            "actor_topic_id": request["actor_topic_id"],
+            "actor_conversation_ref": request["actor_conversation_ref"],
+            "expected_ledger_revision": prepared["ledger_revision"],
+            "expected_topic_revision": prepared["record_revision"],
+            "idempotency_key": step_key("apply"),
+            "document_write_id": prepared["document_write_id"],
+        }, lock_held=True)
+    return {
+        **applied,
+        "idempotent_replay": prepared["idempotent_replay"] or applied["idempotent_replay"],
+        "recovered_orphan": prepared["recovered_orphan"],
+    }
 
 
 def _validate_pending_writes(
@@ -1993,6 +2044,7 @@ def _build_operation_registry() -> OperationRegistry:
             ("reconcile-phase-run", _reconcile_phase_run),
             ("read-phase-run", _read_phase_run),
             ("reopen-phase", _reopen_phase),
+            ("update-topic", _update_topic),
             ("prepare-topic-update", _prepare_topic_update),
             ("apply-document-write", _apply_document_write),
             ("prepare-checkpoint", _prepare_checkpoint),

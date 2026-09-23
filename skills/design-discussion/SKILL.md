@@ -91,7 +91,7 @@ question. Do not silently preserve, replace or discard an earlier decision.
 For detailed document sections and confirmation boundaries, read
 [references/shared/design-discussion/topic-document-protocol.md](references/shared/design-discussion/topic-document-protocol.md).
 
-For a substantive document update, call `prepare-topic-update` with the
+For a substantive document update, call `update-topic` with the
 current ledger and topic revisions, the authenticated topic binding, a new
 UUIDv4 idempotency key and exactly one typed mutation. Supported Ticket 02
 mutations are `confirm-decision`, `set-active-question`, `insert-idea`,
@@ -117,24 +117,22 @@ affected decisions into one resolution.
 ## Coordinate writes and later actions
 
 All durable discussion state belongs to `discussion_protocol.py`; do not patch
-the authoritative ledger directly. The update sequence is:
+the authoritative ledger directly. `update-topic` prepares one immutable
+`DW-*` payload with before and after SHA-256 digests, compares and atomically
+applies the authorized bytes, verifies the document, and completes the pending
+record. Call `read-topic` before continuing substantive discussion.
 
-1. `prepare-topic-update` creates one immutable `DW-*` payload with before and
-   after SHA-256 digests and enters `confirmed-but-pending`.
-2. `apply-document-write` compares the current bytes with the immutable
-   payload, atomically writes the document, verifies it, and marks the `DW-*`
-   completed while holding the discussion lock.
-3. Call `read-topic` before continuing substantive discussion.
-
-If an apply result is uncertain, retry the exact `apply-document-write`
-request. It accepts either the recorded before digest or the exact payload
-digest, so it can finish the ledger record without rewriting already-applied
-bytes. Any third digest is a conflict.
+If the update result is uncertain, retry the exact `update-topic` request with
+the same idempotency key. The protocol can adopt the exact orphan payload or
+already-applied document bytes; any different payload or third document digest
+is a conflict. If a later ledger event causes a revision conflict, follow the
+exceptional reconciliation procedure in the topic-document protocol.
 
 While any `DW-*` is not `completed`, do not prepare another substantive
 update. Outcome uncertainty or a missing or damaged payload leaves a
-confirmed-but-pending checkpoint; retry the exact apply before asking the next
-design question. Never edit or delete the payload to force recovery.
+confirmed-but-pending checkpoint; retry the exact update or resolve its
+reported conflict before asking the next design question. Never edit or delete
+the payload to force recovery.
 
 ## Publish a verifiable checkpoint
 

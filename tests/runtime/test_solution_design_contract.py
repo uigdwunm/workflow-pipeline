@@ -92,53 +92,34 @@ class SolutionDesignContractTests(unittest.TestCase):
         self.assertNotIn("CHANGE_CONTRACT_REVIEW_REQUIRED", PROTOCOL)
 
     def test_first_tdd_slice_crosses_the_real_changed_boundary_before_expansion(self) -> None:
-        for document in (GUIDED_SKILL, GUIDED_EXECUTION):
-            normalized = compact(document)
-            self.assertIn("representative", normalized)
-            self.assertIn("changed internal boundary", normalized)
-            self.assertIn("production caller", normalized)
-            self.assertIn("smallest failing test", normalized)
-            self.assertTrue(
-                "Only then" in normalized
-                or "Only after that slice passes" in normalized
-            )
-
+        self.assertIn("execution-protocol.md", GUIDED_SKILL)
+        self.assertIn("Before implementing remaining Tickets", GUIDED_SKILL)
         execution = compact(
             section(GUIDED_EXECUTION, "Before implementing the remaining Tickets")
         )
+        for obligation in (
+            "representative vertical slice",
+            "changed internal boundary",
+            "production caller",
+            "smallest failing test",
+        ):
+            self.assertIn(obligation, execution)
         self.assertLess(
             execution.index("smallest failing test"),
             execution.index("expand the same pattern"),
         )
 
     def test_boundary_doubles_are_prohibited_but_downstream_doubles_remain_allowed(self) -> None:
-        for document in (GUIDED_SKILL, GUIDED_EXECUTION):
-            for forbidden in ("mock", "stub", "fake", "in-memory substitute"):
-                self.assertIn(forbidden, document)
-            self.assertIn("external", document)
-            self.assertIn("downstream", document)
-            self.assertIn("implementation-authority/testing-seam gap", document)
-            self.assertTrue(
-                "do not bypass" in document or "instead of bypassing" in document
-            )
+        self.assertIn("execution-protocol.md", GUIDED_SKILL)
+        for forbidden in ("mock", "stub", "fake", "in-memory substitute"):
+            self.assertIn(forbidden, GUIDED_EXECUTION)
+        self.assertIn("downstream", GUIDED_EXECUTION)
+        self.assertIn("implementation-authority/testing-seam gap", GUIDED_EXECUTION)
+        self.assertIn("do not bypass", GUIDED_EXECUTION)
 
     def test_repeated_mechanisms_require_diagnosis_evidence_before_another_fix(self) -> None:
-        for document in (GUIDED_SKILL, GUIDED_EXECUTION, GUIDED_ORIGINATING):
-            normalized = compact(document)
-            for trigger in (
-                "same failure mechanism",
-                "same-class regression",
-                "successive review/test outcomes",
-            ):
-                self.assertIn(trigger, normalized)
-            self.assertIn("prior failure", normalized)
-            self.assertIn("why", normalized)
-            self.assertTrue(
-                "minimal effective validation" in normalized
-                or "smallest effective validation" in normalized
-            )
-            self.assertIn("sibling paths", normalized)
-
+        self.assertIn("originating-task-protocol.md", GUIDED_SKILL)
+        self.assertIn("diagnosis-first", GUIDED_EXECUTION)
         diagnosis = compact(
             section(
                 GUIDED_ORIGINATING,
@@ -146,12 +127,20 @@ class SolutionDesignContractTests(unittest.TestCase):
                 "## Retain and hand off",
             )
         )
+        for trigger in (
+            "same failure mechanism",
+            "same-class regression",
+            "successive review/test outcomes",
+        ):
+            self.assertIn(trigger, diagnosis)
+        self.assertIn("smallest effective validation", diagnosis)
+        self.assertIn("affected sibling paths", diagnosis)
         self.assertLess(
             diagnosis.index("Before another edit"),
             diagnosis.index("repairs in scope"),
         )
         self.assertIn("prior candidate and finding identities", diagnosis)
-        self.assertIn("same Implementation Dispatcher", diagnosis.replace("Dedicated Implementation Task", "Implementation Dispatcher"))
+        self.assertIn("same Implementation Dispatcher", diagnosis)
         self.assertIn("Flow Worktree", diagnosis)
 
     def test_scope_gaps_and_stalled_replacement_remain_distinct(self) -> None:

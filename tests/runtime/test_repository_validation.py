@@ -25,10 +25,27 @@ class RepositoryValidationTests(unittest.TestCase):
             repository = Path(directory)
             reference = repository / "skills/guided-implementation/references/shared/guided-implementation/workflow-control-protocol.md"
             reference.parent.mkdir(parents=True)
-            reference.write_text("Workflow Control schema_version controller_ref plan-execution workflow_control_git.py cleanup-only select-configuration")
+            reference.write_text("Workflow Control " + " ".join(REPOSITORY_VALIDATION.WORKFLOW_CONTROL_REFERENCE_MARKERS))
             issues = REPOSITORY_VALIDATION.validate_workflow_control_docs(repository)
             self.assertTrue(any(i['path'] == 'skills/change-closure/SKILL.md' for i in issues))
             self.assertTrue(any(i['path'] == 'skills/guided-implementation/SKILL.md' for i in issues))
+            for relative in REPOSITORY_VALIDATION.WORKFLOW_CONTROL_ENTRIES:
+                entry = repository / relative
+                entry.parent.mkdir(parents=True, exist_ok=True)
+                local_reference = entry.parent / 'references/shared/guided-implementation/workflow-control-protocol.md'
+                local_reference.parent.mkdir(parents=True, exist_ok=True)
+                local_reference.write_text(reference.read_text())
+                entry.write_text("Read [the role contract](references/shared/guided-implementation/workflow-control-protocol.md) before handoff.\n")
+            self.assertEqual(REPOSITORY_VALIDATION.validate_workflow_control_docs(repository), [])
+            (repository / 'skills/change-closure/SKILL.md').write_text('Read workflow-control-protocol.md before handoff.\n')
+            issues = REPOSITORY_VALIDATION.validate_workflow_control_docs(repository)
+            self.assertEqual([(i['code'], i['path']) for i in issues], [
+                ('workflow-control-contract', 'skills/change-closure/SKILL.md')
+            ])
+            reference.write_text(reference.read_text().replace('cleanup-only', ''))
+            issues = REPOSITORY_VALIDATION.validate_workflow_control_docs(repository)
+            self.assertTrue(any(i['path'] == REPOSITORY_VALIDATION.WORKFLOW_CONTROL_REFERENCE
+                                and i['marker'] == 'cleanup-only' for i in issues))
 
     def test_dedicated_grilling_split_proposal_contract_is_fixed(self) -> None:
         protocol = (REPOSITORY / "skills/problem-framing/references/problem-framing/dedicated-grilling-protocol.md").read_text(encoding="utf-8")

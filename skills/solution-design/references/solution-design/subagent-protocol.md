@@ -151,10 +151,8 @@ drafting state to its final published state.
 
 The child runs `$to-spec` until the native testing-seam and solution review
 point, then performs the bounded change-contract preflight and completes
-**Spec readiness** from `design-readiness.md`. The preflight traces affected
-entrypoints through their real production callers and records interface,
-state, ordering, governing specification, call-chain evidence, and any
-contradiction resolution in the Spec's existing decisions. It repairs
+**Spec readiness** from `design-readiness.md`.
+It records the required evidence in the Spec's existing decisions and repairs
 the draft inside the accepted scope before it returns
 `SOLUTION_REVIEW_REQUIRED` instead of addressing the user.
 It must include the exact candidate Spec, decisions, ADRs, scope, target, and a

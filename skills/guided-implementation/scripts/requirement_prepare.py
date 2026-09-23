@@ -437,7 +437,7 @@ def attached(current, request):
                    "expected_topic_revision": topic["record_revision"], "idempotency_key": str(uuid.uuid4())}
         if purpose == "write":
             entry.require("mutation" in request and "base_ref" not in request, "invalid_request", "discussion write needs its semantic mutation")
-            payload.update(operation="prepare-topic-update", mutation=request["mutation"])
+            payload.update(operation="update-topic", mutation=request["mutation"])
         else:
             entry.require("base_ref" in request and "mutation" not in request, "invalid_request", "checkpoint needs its base ref")
             base = request["base_ref"]
@@ -453,6 +453,10 @@ def attached(current, request):
     validate_seal(intent)
     entry.require(intent.get("kind") == "discussion-intent" and intent.get("protocol") == PROTOCOL,
                   "invalid_intent", "original discussion preparation intent required")
+    expected_operation = {"write": "update-topic", "freeze": "prepare-checkpoint"}.get(intent.get("purpose"))
+    entry.require(expected_operation is not None and isinstance(intent.get("payload"), dict)
+                  and intent["payload"].get("operation") == expected_operation,
+                  "invalid_intent", "discussion intent purpose and operation differ")
     bind(current, intent["entry"])
     entry.require(current["requirement"]["attachment"] == intent["entry"]["requirement"]["attachment"],
                   "identity_changed", "discussion attachment changed")
@@ -460,15 +464,12 @@ def attached(current, request):
                   "identity_changed", "original discussion envelope project differs")
     entry.require(current["entry"]["stage"] in {0, 1}, "invalid_operation", "discussion source is read-only at this stage")
     entry.require(operation in {intent["purpose"], "reconcile"}, "invalid_operation", "operation differs from intent")
+    if intent["purpose"] == "write":
+        result = discussion_protocol.handle(intent["payload"])
+        return {"protocol": PROTOCOL, "source_kind": "discussion", "discussion": result}
     prepared = discussion_protocol.handle(intent["payload"])
     base = {"protocol_version": 1, "project_path": entry.discussion_root(current),
             **current["requirement"]["attachment"]}
-    if intent["purpose"] == "write":
-        result = discussion_protocol.handle({**base, "operation": "apply-document-write",
-                    "expected_ledger_revision": prepared["ledger_revision"],
-                    "expected_topic_revision": prepared["record_revision"],
-                    "idempotency_key": intent["completion_key"], "document_write_id": prepared["document_write_id"]})
-        return {"protocol": PROTOCOL, "source_kind": "discussion", "discussion": result}
     checkpoint_id = prepared["checkpoint_id"]
     topic, checkpoint = attached_snapshot(current, checkpoint_id)
     if checkpoint["state"] == "completed":

@@ -185,8 +185,8 @@ After completion confirmation:
 
 1. Record `阶段结果：拷问完成`, the user confirmation and final native-document
    links. Standalone entry uses its draft fields. Attached entry records the
-   completion decision and confirmation through supported `prepare-topic-update`
-   / `apply-document-write` operations, preserving the topic format. Finish all
+   completion decision and confirmation through `update-topic`, preserving the
+   topic format. Finish all
    pending writes before freezing bytes and SHA-256.
 2. Require branch, `HEAD`, documentation-aware status, target path, and
    compared native-document blobs to equal the

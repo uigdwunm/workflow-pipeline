@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "06fc16d0f1861848aca6c3a08f44425f85a049121d3b4631d7aaf60f5573bd38",
+  "bundle_digest": "093c0c0aeb553b5e566ba61610b3328a8bfd5598ccdce56cd4cd4bf48e53a0ae",
   "compatibility_key": {
     "control": 4,
     "discussion_request": 1,
@@ -40,7 +40,7 @@
     },
     "SKILL.md": {
       "mode": "0644",
-      "sha256": "b7e1c9485ebe0faaeddf966ee42e443e13e2084342adc2cf6b9b37f2363f8904"
+      "sha256": "1b43632966db1990a8b992d815e83316475337f5535545b543d854b153131556"
     },
     "agents/openai.yaml": {
       "mode": "0644",
@@ -80,7 +80,7 @@
     },
     "references/shared/requirement-preparation.md": {
       "mode": "0644",
-      "sha256": "8ee6ccc10b757254cab94156448adb738fce5f7d3165166c0b978cc81d9b119c"
+      "sha256": "1d57a65440a3958587c7d55997049a98182d7124c73e70f7b2fb453afbc140e5"
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
@@ -100,7 +100,7 @@
     },
     "references/solution-design/subagent-protocol.md": {
       "mode": "0644",
-      "sha256": "0c680a04ee51a37c2a01e6f1affa2ad693740591c27092e407894afc241ff483"
+      "sha256": "a73661711217d9e210ecf7b8664b0e087fd6a98ed3f2cd528e13b032f86922e9"
     },
     "references/solution-design/templates.md": {
       "mode": "0644",
@@ -168,7 +168,7 @@
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
-      "sha256": "528ce7361bc1e4169e299abe1e6f77478268c5a0d32d83d0b0475d5a6710eb37"
+      "sha256": "387c4f73050db2a508f555d86be7be7215b309ac8cf73f0c27534ac3a9e6f3bf"
     },
     "scripts/entry_prepare.py": {
       "mode": "0644",
@@ -188,11 +188,11 @@
     },
     "scripts/requirement_prepare.py": {
       "mode": "0644",
-      "sha256": "5485e98ad6e3d241fee11c7a9232d8d6d07efc6ea22ea15b47dba968bd22451d"
+      "sha256": "4989396ff6a2b07b890a939026f37180c9f9173081b1620ac710d02b447e5893"
     },
     "scripts/skill_preflight.py": {
       "mode": "0644",
-      "sha256": "67a49dd9523ae87907fc5098dfa614286184f8d54634be115a6f2c393fc17340"
+      "sha256": "b820c4d35a6364aa26b8e799754d2fecfbe6941887e65562346da888292cb781"
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",

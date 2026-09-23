@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/shared/scripts"))
 import discussion_protocol as PROTOCOL
 from discussion_core import RequestContext
+from discussion_core.state import _write_ledger_transaction
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "skills/design-discussion/scripts/discussion_protocol.py"
@@ -276,6 +278,7 @@ class DiscussionProtocolBootstrapTests(DiscussionProtocolTestSupport):
                 "reconcile-phase-run",
                 "read-phase-run",
                 "reopen-phase",
+                "update-topic",
                 "prepare-topic-update",
                 "apply-document-write",
                 "prepare-checkpoint",
@@ -4838,6 +4841,216 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolScenarioFixture, Discus
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(reconciled["state"], "completed")
         self.assertTrue(reconciled["document_verified"])
+
+    def test_update_topic_completes_once_and_rejects_changed_retry(self) -> None:
+        project = self.make_project("single-topic-update", git=True)
+        topic = self.bootstrap_topic(project)
+        unauthorized = self.evolution_request(
+            topic,
+            operation="update-topic",
+            expected_revision=1,
+            owner_ref="foreign-task",
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Unauthorized decision.",
+                "rationale": "The owner binding must be checked.",
+            },
+        )
+        code, conflict, _ = self.run_cli(unauthorized)
+        self.assertEqual(code, 1)
+        self.assertEqual(conflict["error"]["code"], "document_ownership_conflict")
+        request = self.evolution_request(
+            topic,
+            operation="update-topic",
+            expected_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Keep one durable decision.",
+                "rationale": "The caller submits one confirmed mutation.",
+            },
+        )
+        code, first, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(first["state"], "completed")
+        self.assertFalse(first["idempotent_replay"])
+        code, replay, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(replay["document_write_id"], first["document_write_id"])
+        self.assertEqual(replay["ledger_revision"], first["ledger_revision"])
+
+        code, topic_state, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(len(topic_state["decisions"]), 1)
+        self.assertEqual(topic_state["pending_document_write_count"], 0)
+
+        changed = {**request, "mutation": {**request["mutation"], "summary": "Changed decision."}}
+        code, conflict, _ = self.run_cli(changed)
+        self.assertEqual(code, 1)
+        self.assertEqual(conflict["error"]["code"], "idempotency_conflict")
+        stale = self.evolution_request(
+            topic,
+            operation="update-topic",
+            expected_revision=1,
+            mutation=request["mutation"],
+        )
+        code, conflict, _ = self.run_cli(stale)
+        self.assertEqual(code, 1)
+        self.assertEqual(conflict["error"]["code"], "ledger_revision_conflict")
+
+    def test_update_topic_retries_each_uncertain_write_boundary(self) -> None:
+        for boundary in ("payload", "pending-ledger", "document"):
+            with self.subTest(boundary=boundary):
+                project = self.make_project(f"single-update-{boundary}", git=True)
+                topic = self.bootstrap_topic(project)
+                request = self.evolution_request(
+                    topic,
+                    operation="update-topic",
+                    expected_revision=1,
+                    mutation={
+                        "type": "confirm-decision",
+                        "summary": f"Recover the {boundary} boundary.",
+                        "rationale": "The original request remains authoritative.",
+                    },
+                )
+                if boundary == "pending-ledger":
+                    with mock.patch.object(PROTOCOL, "_apply_document_write", side_effect=OSError("interrupted")):
+                        with self.assertRaises(OSError):
+                            PROTOCOL.handle(request)
+                else:
+                    failpoint = (
+                        "topic-update-ledger-replace" if boundary == "payload"
+                        else "document-write-before-ledger-persist"
+                    )
+                    code, _, _ = self.run_cli(request, failpoint=failpoint)
+                    self.assertEqual(code, 1)
+
+                code, completed, stderr = self.run_cli(request)
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(completed["state"], "completed")
+                self.assertTrue(completed["idempotent_replay"] or completed["recovered_orphan"])
+                code, state, stderr = self.run_cli(
+                    self.evolution_request(topic, operation="read-topic")
+                )
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(len(state["decisions"]), 1)
+                self.assertEqual(state["pending_document_write_count"], 0)
+
+    def test_update_topic_rejects_damaged_pending_payload(self) -> None:
+        project = self.make_project("single-update-damaged-payload", git=True)
+        topic = self.bootstrap_topic(project)
+        request = self.evolution_request(
+            topic,
+            operation="update-topic",
+            expected_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Keep the pending bytes intact.",
+                "rationale": "Damaged payloads cannot be reconstructed from prose.",
+            },
+        )
+        with mock.patch.object(PROTOCOL, "_apply_document_write", side_effect=OSError("interrupted")):
+            with self.assertRaises(OSError):
+                PROTOCOL.handle(request)
+        _, records = PROTOCOL._load_records(Path(str(topic["ledger_path"])))
+        payload = Path(records["Pending Document Writes"][0]["payload_path"])
+        payload.chmod(0o600)
+        payload.write_bytes(b"damaged payload\n")
+
+        code, conflict, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(conflict["error"]["code"], "document_write_payload_damaged")
+
+    def test_update_topic_requires_explicit_reconcile_after_intervening_ledger_event(self) -> None:
+        project = self.make_project("single-update-later-ledger-event", git=True)
+        topic = self.bootstrap_topic(project)
+        request = self.evolution_request(
+            topic,
+            operation="update-topic",
+            expected_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Complete the original pending document.",
+                "rationale": "An intervening ledger event needs an explicit review.",
+            },
+        )
+        with mock.patch.object(PROTOCOL, "_apply_document_write", side_effect=OSError("interrupted")):
+            with self.assertRaises(OSError):
+                PROTOCOL.handle(request)
+
+        ledger_path = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger_path)
+        unrelated = {**request, "operation": "unrelated-control-event",
+                     "actor_topic_id": "other-topic", "idempotency_key": str(uuid.uuid4())}
+        _write_ledger_transaction(
+            ledger_path, frontmatter, records, unrelated,
+            ledger_revision=3, event_type="control-recorded",
+            result={"ok": True, "state": "recorded", "ledger_revision": 3},
+        )
+
+        code, strict_conflict, _ = self.run_cli(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(strict_conflict["error"]["code"], "ledger_revision_conflict")
+
+        code, current, stderr = self.run_cli(self.evolution_request(topic, operation="read-topic"))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(current["pending_document_write_count"], 1)
+        code, completed, stderr = self.run_cli(self.evolution_request(
+            topic,
+            operation="apply-document-write",
+            expected_revision=current["ledger_revision"],
+            expected_topic_revision=current["record_revision"],
+            document_write_id=current["pending_document_writes"][0]["document_write_id"],
+        ))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(completed["state"], "completed")
+        self.assertEqual(completed["ledger_revision"], 4)
+
+    def test_update_topic_holds_discussion_lock_through_apply(self) -> None:
+        project = self.make_project("single-update-lock", git=True)
+        topic = self.bootstrap_topic(project)
+        request = self.evolution_request(
+            topic,
+            operation="update-topic",
+            expected_revision=1,
+            mutation={
+                "type": "confirm-decision",
+                "summary": "Serialize the complete write.",
+                "rationale": "Another ledger mutation must not enter between phases.",
+            },
+        )
+        _, _, _, lock_path, _ = PROTOCOL._evolution_paths(request, allow_tree_topic=True)
+        prepared = threading.Event()
+        proceed = threading.Event()
+        competing_lock = threading.Event()
+        original_prepare = PROTOCOL._prepare_topic_update
+
+        def pause_after_prepare(inner_request, *, lock_held=False):
+            result = original_prepare(inner_request, lock_held=lock_held)
+            prepared.set()
+            if not proceed.wait(5):
+                raise AssertionError("update did not resume")
+            return result
+
+        def acquire_competing_lock():
+            with lock_path.open("a+b") as stream:
+                fcntl.flock(stream, fcntl.LOCK_EX)
+                competing_lock.set()
+
+        with mock.patch.object(PROTOCOL, "_prepare_topic_update", side_effect=pause_after_prepare):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                update = pool.submit(PROTOCOL.handle, request)
+                self.assertTrue(prepared.wait(5))
+                competing = pool.submit(acquire_competing_lock)
+                try:
+                    self.assertFalse(competing_lock.wait(0.1))
+                finally:
+                    proceed.set()
+                self.assertEqual(update.result(timeout=5)["state"], "completed")
+                competing.result(timeout=5)
+                self.assertTrue(competing_lock.is_set())
 
     def test_orphan_payload_is_digest_bound_and_adopted_by_exact_prepare_replay(self) -> None:
         project = self.make_project("orphan-prepare-replay", git=True)
