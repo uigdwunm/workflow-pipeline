@@ -491,6 +491,9 @@ class ReviewFirstTests(fixture.ProgressTests):
         value['expected_entry'] = fixture.transfer.entry.resolve(value['entry'])
         saved = fixture.transfer.handoff.handle(value)
         self.assertNotIn('implementation_policy', saved['semantic'])
+        value['semantic']['implementation_policy'] = {'mode': 'full'}
+        saved = fixture.transfer.handoff.handle(value)
+        self.assertEqual(saved['semantic']['implementation_policy'], {'mode': 'full'})
 
     def test_direct_candidate_fingerprints_add_delete_and_executable_mode(self):
         for name in ('remove.py', 'executable.py'):

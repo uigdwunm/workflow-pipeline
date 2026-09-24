@@ -353,11 +353,11 @@ def prepare(request, selection_catalog=None):
     if 'implementation_policy' in semantic:
         require(isinstance(semantic['implementation_policy'], dict), 'invalid_policy', 'explicit policy must be an object')
         require(stage == 3 and role == 'implementation-dispatcher', 'invalid_policy', 'policy only belongs to the Stage-3 Dispatcher')
-        require(current['actor']['role'] == 'controller', 'identity_mismatch',
-                'only the original Controller can approve direct implementation')
         control.implementation_policy(semantic['implementation_policy'], controller_ref=current['actor']['controller_ref'],
             requirement_identity=identity, scope_digest=authority['scope_digest'], baseline=scope['baseline'])
         if semantic['implementation_policy']['mode'] == 'direct':
+            require(current['actor']['role'] == 'controller', 'identity_mismatch',
+                    'only the original Controller can approve direct implementation')
             assessment = semantic['implementation_policy']['assessment']
             require(set(assessment['implementation_paths'] + assessment['test_paths']) <= set(scope['implementation_paths']),
                     'invalid_scope', 'direct locations must be in the authorized implementation scope')

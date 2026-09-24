@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "59240c26f8c5cec88013f2314640adfab68e20ceb0584db00d86dfe24fe512ff",
+  "bundle_digest": "66094122073984992b67d0ce350527adb0c0953e24cb9a779eb5c577f1fdf094",
   "compatibility_key": {
     "control": 5,
     "discussion_request": 1,
@@ -200,7 +200,7 @@
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "970a68c426069481150b086c122c88a96c7f4aed8a3feae05b0eff9bcf497b04"
+      "sha256": "f9475fbba0c43c09bf745f6e9f48534b751e19539ca3b3b73c1a500b1e489dfa"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",
