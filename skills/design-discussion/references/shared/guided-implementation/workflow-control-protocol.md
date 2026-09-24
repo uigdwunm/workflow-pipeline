@@ -249,8 +249,9 @@ candidate. On the causal stopped observation, C freezes the real Git snapshot;
 candidate-ready rejects any later byte or Git-state drift. Git verifies that snapshot,
 clean exact HEAD, allowed cumulative paths and complete content/presence/mode
 fingerprints against commit objects. Baseline/target ancestry, current target,
-protected bytes and frozen review checks still apply. Direct start-dispatch also
-freezes `implementation_target_head`; target movement requires conversion to full
+protected bytes and frozen review checks still apply. Direct start-dispatch freezes
+`implementation_target_head` to the original baseline that was verified at admission;
+it does not reread the target after that check. Target movement requires conversion to full
 before integration. Candidate paths keep the original target-diff semantics, with
 the original implementation baseline still required as an ancestor. Self-reported clean/hash,
 child prose or an empty roster cannot substitute for these facts. Provenance

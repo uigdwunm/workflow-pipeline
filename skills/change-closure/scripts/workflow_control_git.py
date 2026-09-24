@@ -385,7 +385,7 @@ def verified_transition(payload):
         git(repository, 'merge-base', '--is-ancestor', commit(payload['baseline']), 'HEAD')
         result['context']['handoff_progress']['git_baseline_commit'] = payload['baseline']
         if action == 'start-dispatch' and direct_implementation(result['context']['handoff_progress']):
-            result['context']['handoff_progress']['implementation_target_head'] = git(repository, 'rev-parse', evidence['binding']['target_branch']).decode().strip()
+            result['context']['handoff_progress']['implementation_target_head'] = payload['baseline']
     if action == 'execution-result':
         recorded = execution_record(result['context']['handoff_progress'], evidence['agent_ref'])
         recorded['git_result_snapshot'] = result_snapshot

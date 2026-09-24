@@ -543,6 +543,36 @@ class ReviewFirstTests(fixture.ProgressTests):
         with self.assertRaises((control.ControlError, fixture.transfer.entry.PreparationError)):
             self.begin('continuous', value)
 
+    def test_direct_start_keeps_original_target_if_it_advances_during_admission(self):
+        from unittest.mock import patch
+        self.context = self.context_for(3)
+        value = self.input_for(3)
+        value['semantic']['implementation_policy'] = self.direct_policy(value)
+        original_target = self.git('rev-parse', 'main')
+        original_transition = fixture.progress.control_git.transition
+        advanced = []
+        observed = []
+
+        def advance_after_admission(request):
+            if request['action'] == 'start-dispatch' and not advanced:
+                (self.root / 'unrelated.txt').write_text('upstream during admission\n')
+                self.git('add', 'unrelated.txt')
+                self.git('commit', '-qm', 'advance target during admission')
+                advanced.append(True)
+            result = original_transition(request)
+            if request['action'] == 'start-dispatch':
+                observed.append(result)
+            return result
+
+        with patch.object(fixture.progress.control_git, 'transition', side_effect=advance_after_admission):
+            with self.assertRaises(fixture.transfer.entry.PreparationError):
+                self.begin('continuous', value)
+        self.assertEqual(advanced, [True])
+        self.assertEqual(len(observed), 1)
+        self.assertNotEqual(self.git('rev-parse', 'main'), original_target)
+        checkpoint = observed[0]['context']['handoff_progress']
+        self.assertEqual(checkpoint['implementation_target_head'], original_target)
+
     def test_ordinary_full_allocation_cannot_adopt_without_direct_snapshot(self):
         self.begin_dispatcher()
         execution = self.execution_input()
