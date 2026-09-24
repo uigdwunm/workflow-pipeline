@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "ad235aa4ea4b8a2d81d2232bb983c487789883d8c79b4df222fd4f9840e4cf6a",
+  "bundle_digest": "4c1d70b834b77646b8daa9798f82be96d7896d5095bebfd82e28071dc561f2c3",
   "compatibility_key": {
     "control": 5,
     "discussion_request": 1,
@@ -224,7 +224,7 @@
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "08efa7e5e02f00b9ec9280b6276d8c5b2d1157e55c60974ef89b6b0c23a5bbcc"
+      "sha256": "48c72ff1f8df759d4306f56913a97a9c32ecf766a1197883a4090c0894411bf8"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",

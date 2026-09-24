@@ -369,6 +369,95 @@ class ReviewFirstTests(fixture.ProgressTests):
     def test_direct_target_advance_does_not_hide_staged_foreign_addition_then_deletion(self):
         self.rejected_net_zero_foreign_write(committed=False)
 
+    def test_direct_rejects_foreign_file_added_and_removed_in_separate_commits(self):
+        self.begin_direct()
+        (self.flow / 'impl.py').write_text("print('approved')\n")
+        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'approved implementation')
+        foreign = self.flow / 'foreign.py'
+        foreign.write_text('outside approved scope\n')
+        self.flow_git('add', 'foreign.py'); self.flow_git('commit', '-qm', 'unauthorized addition')
+        foreign.unlink()
+        self.flow_git('add', 'foreign.py'); self.flow_git('commit', '-qm', 'remove unauthorized addition')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        result = self.invoke('control', self.direct_candidate_request())
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertIsNone(self.state()['control']['context']['handoff_progress']['candidate'])
+
+    def test_direct_rejects_reverted_foreign_history_on_merged_side_branch(self):
+        self.begin_direct()
+        (self.flow / 'impl.py').write_text("print('approved')\n")
+        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'approved implementation')
+        self.flow_git('checkout', '-qb', 'codex/foreign-side')
+        foreign = self.flow / 'foreign.py'
+        foreign.write_text('outside approved scope\n')
+        self.flow_git('add', 'foreign.py'); self.flow_git('commit', '-qm', 'foreign addition on side branch')
+        foreign.unlink()
+        self.flow_git('add', 'foreign.py'); self.flow_git('commit', '-qm', 'remove foreign addition on side branch')
+        self.flow_git('checkout', 'codex/test-flow')
+        self.flow_git('merge', '--no-ff', '-m', 'merge side branch', 'codex/foreign-side')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        result = self.invoke('control', self.direct_candidate_request())
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertIsNone(self.state()['control']['context']['handoff_progress']['candidate'])
+
+    def test_full_adoption_after_target_changes_other_authorized_file(self):
+        sibling = self.root / 'sibling.py'
+        sibling.write_text('original\n')
+        self.git('add', 'sibling.py'); self.git('commit', '-qm', 'add sibling implementation file')
+        self.flow_git('merge', '--ff-only', 'main')
+        self.context = self.context_for(3)
+        value = self.input_for(3)
+        value['scope']['implementation_paths'] = ['impl.py', 'sibling.py']
+        value['authorization']['scope_digest'] = control.digest(value['scope'])
+        value['semantic']['implementation_policy'] = self.direct_policy(value)
+        self.begin('continuous', value)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        (self.flow / 'impl.py').write_text("print('inherited')\n")
+        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'direct implementation')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        sibling.write_text('upstream change\n')
+        self.git('add', 'sibling.py'); self.git('commit', '-qm', 'advance target sibling')
+        result = self.invoke('control', self.direct_escalation_request())
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(checkpoint['implementation_policy'], {'mode': 'full'}, result)
+        self.assertEqual(checkpoint['implementation_escalation']['pending_paths'], ['impl.py'])
+        self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        self.invoke('observe', self.observation('running', 'result', ref='native:dispatcher'))
+        self.flow_git('merge', '--no-edit', 'main')
+        execution = self.execution_input()
+        execution['scope']['implementation_paths'] = ['impl.py', 'sibling.py']
+        execution['authorization']['scope_digest'] = control.digest(execution['scope'])
+        execution['semantic']['adopt_paths'] = ['impl.py']
+        execution['semantic']['adoption_snapshot_digest'] = checkpoint['implementation_escalation']['snapshot_digest']
+        prepared = self.invoke('allocation', {'allocation_id': 'adopt-after-upstream-sibling',
+            'operation': 'prepare', 'handoff': execution})
+        self.assertNotEqual(prepared['status'], 'blocked', prepared.get('error'))
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+        slot = self.state()['allocations']['adopt-after-upstream-sibling']
+        self.invoke('allocation', {'allocation_id': 'adopt-after-upstream-sibling', 'operation': 'bind',
+            'receipt': self.receipt(slot['record'], ref='native:executor')})
+        slot = self.state()['allocations']['adopt-after-upstream-sibling']
+        import hashlib
+        inherited_hash = hashlib.sha256((self.flow / 'impl.py').read_bytes()).hexdigest()
+        received = self.invoke('allocation', {'allocation_id': 'adopt-after-upstream-sibling',
+            'operation': 'receive', 'receipt': self.receipt(slot['record'], 'stopped', 'result', ref='native:executor'),
+            'result': {'delivery_id': 'adopt-sibling', 'status': 'completed', 'payload': {
+                'changed_paths': [], 'adopted_paths': ['impl.py'], 'file_hashes': {'impl.py': inherited_hash},
+                'tests': ['Inherited output verified after upstream merge'],
+                'write_release': fixture.transfer.dispatch.execution_release_token(slot['record'])}}})
+        self.assertNotEqual(received['status'], 'blocked', received)
+        accepted = self.invoke('allocation', {'allocation_id': 'adopt-after-upstream-sibling',
+            'operation': 'accept', 'decision': {'reference': 'dispatcher:accept-inherited'}})
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['executions'][0]['state'],
+                         'accepted', accepted)
+        self.settings['thread_id'] = 'task'
+        self.request['host'].update(thread_id='task', role='controller', source_ref=None)
+        self.request['host'].pop('actor_ref', None)
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        candidate = self.invoke('control', self.direct_candidate_request())
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'reviewable', candidate)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['candidate_evidence']['changed_paths'], ['impl.py'])
+
     def test_direct_target_advance_requires_full_even_after_clean_merge(self):
         self.begin_direct()
         (self.flow / 'impl.py').write_text("print('ok')\n")
