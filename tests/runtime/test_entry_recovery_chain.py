@@ -46,7 +46,7 @@ class EntryChainTests(fixture.RegistrationContextTests):
             {'model':'gpt-5.6-sol','effort':'high','capability':None,'cost':None,'permission':'same','visible_identity':'same'}],
             'user':None,'frozen':None,'previous':None,'receipt':'fixture:configuration','can_override':False,
             'inherited':{'model':'gpt-5.6-sol','effort':'high'},'upgrade_attempted':False}
-        body = {'protocol':'workflow-stage-transfer-v5','operation':'prepare','entry':current,'expected_entry':expected,
+        body = {'protocol':progress_fixture.transfer.handoff.PROTOCOL,'operation':'prepare','entry':current,'expected_entry':expected,
             'stage':2,'role':'solution-designer','requirement':frozen,'predecessor':None,
             'target':{'repository':str(self.repo),'branch':'main'},'delivery':None,'binding':self.binding,'scope':scope,
             'authorization':{'reference':'controller:approved','flow_mode':'continuous','scope_digest':fixture.entry.digest(scope)},
