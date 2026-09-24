@@ -797,8 +797,6 @@ def _finish_carrier_turn(state, result):
     state["launch"]["state"] = "completed_turn"
     state["status"] = "active"
     state["turn_result"] = result
-    state.setdefault("carrier_turns", {})[stage + ":" + str(turn)] = {
-        **copy.deepcopy(state["launch"]), "result": copy.deepcopy(result)}
     # These describe transport delivered to the finished invocation. A queued
     # controller_decision is different: _atomic_save removes it only with C's
     # exact consumption proof, otherwise the original user input remains saved.
@@ -832,7 +830,6 @@ def _recover_carrier_receipt(state, record_path):
     if previous is not None and previous != session:
         raise WorkflowError("carrier receipt conflicts with the bound session")
     state["sessions"][state["current_stage"]] = session
-    state["launch"]["raw_events"] = receipt["events"]
     if receipt.get("outcome") == "failed":
         error = receipt["error"]
         _mark_failure(state, record_path, error["code"], error["detail"], error["uncertain"], error["recoverable"])
@@ -955,7 +952,6 @@ def _mark_failure(
     state["launch"]["state"] = "uncertain" if uncertain else "failed"
     state["error"] = {"code": code, "detail": detail, "recoverable": recoverable and not uncertain}
     state["history"].append({"event": "failure", "stage": state["current_stage"], "code": code})
-    state.setdefault("carrier_turns", {})[state["current_stage"] + ":" + str(state["launch"]["turn"])] = copy.deepcopy(state["launch"])
     _atomic_save(record_path, state)
 
 

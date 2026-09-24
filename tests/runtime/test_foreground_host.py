@@ -197,6 +197,9 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         self.assertEqual(self.state()['control']['context']['carrier']['ref'], 'native:designer')
         self.assertEqual(self.state()['host']['status'], 'unknown')
         self.assertIsNone(self.state()['host']['proof'])
+        saved = progress.read_record(self.checkpoint)
+        self.assertNotIn('carrier_turns', saved)
+        self.assertNotIn('raw_events', saved['launch'])
         before = self.checkpoint.read_bytes()
         with patch.object(runner, '__file__', str(cli.SCRIPT)), self.assertRaisesRegex(runner.WorkflowError, 'await-host-recovery'):
             runner.resume(self.checkpoint)
@@ -250,7 +253,10 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
             runner.resume(self.checkpoint)
         self.assertEqual(log.read_bytes(),before_log)
         self.assertEqual(self.flow_git('rev-parse','HEAD'),before_head)
-        self.assertEqual(progress.read_record(self.checkpoint)['turn_result']['result'],'continue')
+        saved = progress.read_record(self.checkpoint)
+        self.assertEqual(saved['turn_result']['result'],'continue')
+        self.assertNotIn('carrier_turns', saved)
+        self.assertNotIn('raw_events', saved['launch'])
 
     def test_eof_after_request_write_never_replays_that_turn(self):
         script = HOST.replace("response = {'turn':", "sys.exit(7)\n        response = {'turn':")
@@ -280,7 +286,10 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         with patch.object(runner,'__file__',str(cli.SCRIPT)), self.assertRaisesRegex(runner.WorkflowError,'await-host-recovery'):
             runner.resume(self.checkpoint)
         self.assertEqual(log.read_bytes(),before)
-        self.assertEqual(progress.read_record(self.checkpoint)['turn_result']['result'],'continue')
+        saved = progress.read_record(self.checkpoint)
+        self.assertEqual(saved['turn_result']['result'],'continue')
+        self.assertNotIn('carrier_turns', saved)
+        self.assertNotIn('raw_events', saved['launch'])
 
     def test_live_controller_answers_two_exact_server_requests_once(self):
         script = HOST.replace("if method == 'turn/start':\n        emit", """if method == 'turn/start':
