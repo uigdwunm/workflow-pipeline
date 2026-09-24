@@ -12,6 +12,31 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageBuildTests(unittest.TestCase):
+    def test_direct_provenance_release_rejects_prior_transfer_and_progress(self):
+        config = json.loads((ROOT / 'build/skill-packages.json').read_text())
+        key = config['compatibility_key']
+        self.assertEqual((key['control'], key['stage_transfer'], key['workflow_progress']),
+                         (5, 'workflow-stage-transfer-v6', 'workflow-progress-v9'))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / 'packages'
+            subprocess.run([sys.executable, str(ROOT / 'scripts/build_skills.py'), '--output', str(output)],
+                           capture_output=True, check=True)
+            for name in ('solution-design', 'guided-implementation', 'change-closure'):
+                package = json.loads((output / name / 'package.json').read_text())
+                self.assertEqual(package['compatibility_key'], key)
+            scripts = output / 'guided-implementation/scripts'
+            requests = [('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v5', 'operation': 'prepare'}),
+                        ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
+                         {'protocol': 'workflow-progress-v8', 'operation': 'inspect', 'expected_revision': 0, 'data': {}})]
+            for script, args, request in requests:
+                with self.subTest(script=script):
+                    response = subprocess.run([sys.executable, str(scripts / script), *args],
+                        input=json.dumps(request), text=True, capture_output=True)
+                    self.assertEqual(response.returncode, 1, response.stdout + response.stderr)
+                    self.assertEqual(json.loads(response.stdout)['error']['code'], 'legacy_run_requires_original_runtime')
+            self.assertFalse((root / 'old-checkpoint.json').exists())
+
     def test_delivery_capability_key_rejects_mixed_release(self):
         import shutil
         config = json.loads((ROOT / 'build/skill-packages.json').read_text())

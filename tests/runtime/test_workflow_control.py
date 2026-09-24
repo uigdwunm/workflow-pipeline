@@ -5,7 +5,7 @@ import subprocess
 import sys
 import unittest
 
-CLI = Path(__file__).resolve().parents[2] / "skills/guided-implementation/scripts/workflow_control.py"
+CLI = Path(__file__).resolve().parents[2] / "src/shared/scripts/workflow_control.py"
 
 def plan_for(cwd):
     def item(identity, category):

@@ -46,6 +46,461 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'reviewable', result)
         return candidate, evidence
 
+    def direct_policy(self, value):
+        return {'mode': 'direct', 'assessment': {
+            'reference': 'controller:local-output', 'controller_ref': 'task',
+            'requirement_identity': self.frozen['requirement_identity'],
+            'scope_digest': value['authorization']['scope_digest'],
+            'baseline': value['scope']['baseline'],
+            'responsibility': 'Render the approved local output',
+            'implementation_paths': ['impl.py'], 'test_paths': ['impl.py'],
+            'behavior_ref': 'requirement:output', 'acceptance_ref': 'requirement:verified-output',
+            'checks': [v['command'] for v in self.plan()['review_required']], 'testing_seam': 'CLI output',
+            'conditions': {name: {'satisfied': True, 'evidence': reason} for name, reason in {
+                'behavior_fixed': 'Output and acceptance are frozen',
+                'single_responsibility': 'Only output rendering changes',
+                'focused_verification': 'CLI check covers this behavior independently',
+                'locations_known': 'The output lives in impl.py'}.items()},
+            'exclusions': {name: {'present': False, 'evidence': 'Output-only change has no ' + name}
+                for name in ('state_machine', 'concurrency', 'recovery', 'migration', 'public_interface',
+                             'cross_module_interface', 'data_format', 'permissions', 'workflow_state')}}}
+
+    def test_controller_direct_candidate_uses_real_dispatcher_without_execution(self):
+        self.context = self.context_for(3)
+        value = self.input_for(3)
+        value['semantic']['implementation_policy'] = self.direct_policy(value)
+        self.begin('continuous', value)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        (self.flow / 'impl.py').write_text("print('ok')\n")
+        self.flow_git('add', 'impl.py')
+        self.flow_git('commit', '-qm', 'direct implementation')
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        checks = fixture.transfer.checks_for(self.plan()['review_required'], candidate)
+        evidence = {'dispatcher_ref': 'native:dispatcher',
+            'attempt': self.state()['control']['context']['carrier']['attempt'],
+            'commit': candidate, 'expected_target_head': self.git('rev-parse', 'main'),
+            'binding': self.binding, 'plan_digest': control.digest(self.plan()), 'checks': checks}
+        response = self.invoke('control', {'action': 'candidate-ready', 'evidence': evidence,
+            'receipt': {'adapter': 'fixture-controller', 'call_ref': 'focused', 'response_ref': 'focused-result',
+                'raw': {'checks': checks, 'source_unchanged': True, 'stopped': True,
+                        'dispatcher_ref': 'native:dispatcher'}}})
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(checkpoint['state'], 'reviewable', response)
+        self.assertEqual(checkpoint['executions'], [])
+        self.assertEqual(checkpoint['candidate_evidence']['direct_provenance']['dispatcher_ref'], 'native:dispatcher')
+        self.converge(candidate, evidence)
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        started = self.invoke('control', {'action': 'validation-start', 'evidence': {
+            'attempt_id': 'final-1', 'dispatcher_ref': 'native:dispatcher',
+            'carrier_attempt': self.state()['control']['context']['carrier']['attempt'],
+            **{key: checkpoint[key] for key in ('candidate', 'expected_target_head', 'plan_digest', 'review_digest')}},
+            'receipt': {'adapter': 'fixture', 'call_ref': 'final', 'response_ref': 'final-started', 'raw': {'decision': 'run'}}})
+        if started['next_action']['operation'] == 'inspect-host-state':
+            started = self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        self.assertEqual(started['next_action']['operation'], 'continue-host', started)
+        checks = fixture.transfer.checks_for(self.plan()['final_required'], candidate)
+        self.invoke('control', self.final_result_request(checks))
+        self.finish_resumed_validation_delivery(started, candidate)
+        delivered = self.state()['accepted']
+        self.assertEqual(delivered['payload']['candidate_commit'], candidate)
+        closed = self.finish_next(4, 'continuous')
+        self.assertEqual(closed['status'], 'accepted', closed)
+        self.assertFalse(self.flow.exists())
+
+    def escalate_and_adopt(self, storage):
+        import hashlib
+        self.context = self.context_for(3)
+        value = self.input_for(3)
+        value['semantic']['implementation_policy'] = self.direct_policy(value)
+        self.begin('continuous', value)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        data = b"print('inherited')\n"
+        (self.flow / 'impl.py').write_bytes(data)
+        if storage != 'dirty':
+            self.flow_git('add', 'impl.py')
+        if storage == 'committed':
+            self.flow_git('commit', '-qm', 'retained direct commit')
+        before = self.flow_git('rev-parse', 'HEAD'), self.flow_git('ls-files', '--stage')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        context = self.state()['control']['context']
+        request = {'action': 'escalate-implementation', 'evidence': {
+            'dispatcher_ref': 'native:dispatcher', 'attempt': context['carrier']['attempt'],
+            'reference': 'controller:escalate', 'reason': 'Behavior needs a wider independent verification',
+            'assessment_reference': 'controller:local-output'},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:escalate'}}
+        result = self.invoke('control', request)
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(checkpoint['implementation_policy']['mode'], 'full', result)
+        self.assertEqual(before, (self.flow_git('rev-parse', 'HEAD'), self.flow_git('ls-files', '--stage')))
+        self.assertEqual(self.state()['control']['context']['carrier'], context['carrier'])
+        escalation = checkpoint['implementation_escalation']
+        self.assertEqual(escalation['pending_paths'], ['impl.py'])
+        self.assertTrue(self.invoke('control', request)['acknowledged'])
+        self.assertEqual(result['next_action']['operation'], 'inspect-host-state', result)
+        continued = self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        self.assertEqual(continued['next_action']['operation'], 'continue-host', continued)
+        self.assertEqual(continued['next_action']['payload']['ref'], 'native:dispatcher')
+        self.invoke('observe', self.observation('running', 'result', ref='native:dispatcher'))
+        execution = self.execution_input()
+        execution['semantic']['adopt_paths'] = ['impl.py']
+        execution['semantic']['adoption_snapshot_digest'] = escalation['snapshot_digest']
+        prepared = self.invoke('allocation', {'allocation_id': 'adopt', 'operation': 'prepare', 'handoff': execution})
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+        slot = self.state()['allocations']['adopt']
+        self.invoke('allocation', {'allocation_id': 'adopt', 'operation': 'bind',
+            'receipt': self.receipt(slot['record'], ref='native:executor')})
+        slot = self.state()['allocations']['adopt']
+        if storage == 'staged':
+            valid_payload = {'changed_paths': [], 'adopted_paths': ['impl.py'],
+                'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()}, 'tests': ['Inherited CLI verified'],
+                'write_release': fixture.transfer.dispatch.execution_release_token(slot['record'])}
+            for mutation in (lambda p: p.pop('adopted_paths'), lambda p: p.update(tests=[]),
+                             lambda p: p.update(changed_paths=['impl.py'])):
+                invalid = copy.deepcopy(valid_payload); mutation(invalid)
+                with self.subTest(invalid=invalid), self.assertRaises((control.ControlError, fixture.transfer.entry.PreparationError)):
+                    fixture.transfer.dispatch.handle({'protocol': fixture.transfer.handoff.PROTOCOL, 'operation': 'receive',
+                        'record': slot['record'], 'control': self.state()['control'],
+                        'receipt': self.receipt(slot['record'], 'stopped', 'result', ref='native:executor'),
+                        'result': {'delivery_id': 'invalid-adoption', 'status': 'completed', 'payload': invalid}})
+        received = self.invoke('allocation', {'allocation_id': 'adopt', 'operation': 'receive',
+            'receipt': self.receipt(slot['record'], 'stopped', 'result', ref='native:executor'),
+            'result': {'delivery_id': 'adopted', 'status': 'completed', 'payload': {
+                'changed_paths': [], 'adopted_paths': ['impl.py'],
+                'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
+                'tests': ['Inherited CLI output verified'],
+                'write_release': fixture.transfer.dispatch.execution_release_token(slot['record'])}}})
+        self.assertNotEqual(received['status'], 'blocked', received)
+        if storage == 'staged':
+            slot = self.state()['allocations']['adopt']
+            (self.flow / 'impl.py').chmod(0o755)
+            with self.assertRaises((control.ControlError, fixture.transfer.entry.PreparationError)):
+                fixture.transfer.dispatch.handle({'protocol': fixture.transfer.handoff.PROTOCOL, 'operation': 'accept',
+                    'record': slot['record'], 'control': self.state()['control'],
+                    'decision': {'reference': 'dispatcher:drift', 'delivery_digest': slot['record']['delivery']['digest']}})
+            (self.flow / 'impl.py').chmod(0o644)
+        accepted = self.invoke('allocation', {'allocation_id': 'adopt', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:adopt-accepted'}})
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(checkpoint['executions'][0]['state'], 'accepted', accepted)
+        self.assertEqual(checkpoint['git_baseline_commit'], value['scope']['baseline'])
+        if storage != 'committed':
+            self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'accepted inherited bytes')
+        self.settings['thread_id'] = 'task'
+        self.request['host'].update(thread_id='task', role='controller', source_ref=None)
+        self.request['host'].pop('actor_ref', None)
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        result = self.invoke('control', self.direct_candidate_request())
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(checkpoint['state'], 'reviewable', result)
+        self.assertEqual(checkpoint['candidate_evidence']['changed_paths'], ['impl.py'])
+        self.assertEqual(checkpoint['git_baseline_commit'], value['scope']['baseline'])
+
+    def test_direct_escalation_retains_staged_bytes_and_accepts_explicit_adoption(self):
+        self.escalate_and_adopt('staged')
+
+    def test_direct_escalation_retains_dirty_bytes_and_accepts_explicit_adoption(self):
+        self.escalate_and_adopt('dirty')
+
+    def test_direct_escalation_retains_committed_bytes_and_original_cumulative_baseline(self):
+        self.escalate_and_adopt('committed')
+
+    def test_direct_replacement_defaults_full_and_requires_real_adoption(self):
+        self.context = self.context_for(3)
+        value = self.input_for(3)
+        value['semantic']['implementation_policy'] = self.direct_policy(value)
+        self.begin('continuous', value)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        (self.flow / 'impl.py').write_text("print('retained')\n")
+        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'direct retained')
+        stopped = self.observation('stopped', 'result', ref='native:dispatcher')
+        stopped['receipt']['raw'].update(resumable=False, dispatch_available=True)
+        self.invoke('observe', stopped)
+        context = self.state()['control']['context']
+        result = self.invoke('control', {'action': 'prepare-dispatch-recovery', 'evidence': {
+            'dispatcher_ref': 'native:dispatcher', 'attempt': context['carrier']['attempt'],
+            'reference': 'controller:replace', 'reason': 'Original host cannot resume',
+            'stop_receipts': [stopped['receipt']['receipt_ref']],
+            'call_receipts': [stopped['provenance']['response_ref']]},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:replace'}})
+        recovery = result['next_action']['result']['recovery']
+        decision = {'reference': 'controller:assume', 'authority_digest': recovery['authority_digest'],
+            'attempt': recovery['attempt'], 'remaining_paths': recovery['remaining_paths'],
+            'assume_paths': recovery['ownership']['dispatcher']}
+        identity = {'recovery_id': recovery['recovery_id'], 'snapshot_digest': recovery['snapshot_digest'], 'decision': decision}
+        receipt = {'controller_ref': 'task', 'reference': decision['reference']}
+        intent = self.invoke('control', {'action': 'dispatch-recovery-intent', 'evidence': identity,
+            'receipt': receipt})['next_action']['request']
+        native = {'adapter': 'fixture-native', 'call_ref': 'replace', 'response_ref': 'replacement',
+            'intent_id': intent['intent_id'], 'status': 'ready', 'ref': 'native:replacement',
+            'raw': {'status': 'ready', 'write_authority': False}}
+        self.invoke('control', {'action': 'dispatch-recovery-result',
+            'evidence': {'recovery_id': recovery['recovery_id'], 'receipt': native}, 'receipt': native})
+        lifecycle = self.observation('stopped', 'result', ref='native:dispatcher')['lifecycle']
+        lifecycle['pages'][0]['response']['data'].append({'id': 'native:replacement', 'status': {'type': 'idle'}})
+        self.invoke('lifecycle-state', lifecycle)
+        result = self.invoke('control', {'action': 'recover-dispatch',
+            'evidence': {**identity, 'replacement_ref': 'native:replacement'}, 'receipt': receipt})
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(checkpoint['implementation_policy'], {'mode': 'full'}, result)
+        self.assertEqual(checkpoint['recovery']['direct_policy'], value['semantic']['implementation_policy'])
+        self.assertEqual(checkpoint['git_baseline_commit'], value['scope']['baseline'])
+        execution = self.execution_input()
+        execution['entry']['host']['actor_ref'] = 'native:replacement'
+        execution['expected_entry'] = fixture.transfer.entry.resolve(execution['entry'])
+        execution['semantic'].update(adopt_paths=['impl.py'], adoption_snapshot_digest=recovery['snapshot_digest'])
+        prepared = self.invoke('allocation', {'allocation_id': 'recovered-adopt', 'operation': 'prepare', 'handoff': execution})
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+        slot = self.state()['allocations']['recovered-adopt']
+        self.invoke('allocation', {'allocation_id': 'recovered-adopt', 'operation': 'bind',
+            'receipt': self.receipt(slot['record'], ref='native:recovered-executor')})
+        slot = self.state()['allocations']['recovered-adopt']
+        data = (self.flow / 'impl.py').read_bytes()
+        import hashlib
+        response = self.invoke('allocation', {'allocation_id': 'recovered-adopt', 'operation': 'receive',
+            'receipt': self.receipt(slot['record'], 'stopped', 'result', ref='native:recovered-executor'),
+            'result': {'delivery_id': 'recovered-validated', 'status': 'completed', 'payload': {
+                'changed_paths': [], 'adopted_paths': ['impl.py'], 'tests': ['retained CLI verified'],
+                'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
+                'write_release': fixture.transfer.dispatch.execution_release_token(slot['record'])}}})
+        self.assertNotEqual(response['status'], 'blocked', response)
+        accepted = self.invoke('allocation', {'allocation_id': 'recovered-adopt', 'operation': 'accept',
+            'decision': {'reference': 'replacement:accepted'}})
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['executions'][0]['state'], 'accepted', accepted)
+
+    def begin_direct(self):
+        self.context = self.context_for(3)
+        value = self.input_for(3)
+        value['semantic']['implementation_policy'] = self.direct_policy(value)
+        self.begin('continuous', value)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        return value
+
+    def direct_candidate_request(self):
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        checks = fixture.transfer.checks_for(self.plan()['review_required'], candidate)
+        return {'action': 'candidate-ready', 'evidence': {'dispatcher_ref': 'native:dispatcher',
+            'attempt': self.state()['control']['context']['carrier']['attempt'], 'commit': candidate,
+            'expected_target_head': self.git('rev-parse', 'main'), 'binding': self.binding,
+            'plan_digest': control.digest(self.plan()), 'checks': checks},
+            'receipt': {'adapter': 'fixture', 'call_ref': 'checks-' + candidate, 'response_ref': 'checked-' + candidate,
+                'raw': {'checks': checks, 'source_unchanged': True, 'stopped': True, 'dispatcher_ref': 'native:dispatcher'}}}
+
+    def test_direct_requires_saved_stop_and_rejects_post_stop_git_changes(self):
+        self.begin_direct()
+        (self.flow / 'impl.py').write_text("print('original')\n")
+        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'direct')
+        request = self.direct_candidate_request()
+        result = self.invoke('control', request)
+        self.assertEqual(result['error']['code'], 'host_evidence_missing')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        (self.flow / 'impl.py').write_text("print('foreign')\n")
+        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'post stop foreign')
+        result = self.invoke('control', self.direct_candidate_request())
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertIsNone(self.state()['control']['context']['handoff_progress']['candidate'])
+
+    def test_direct_target_advance_requires_full_even_after_clean_merge(self):
+        self.begin_direct()
+        (self.flow / 'impl.py').write_text("print('ok')\n")
+        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'direct')
+        (self.root / 'unrelated.txt').write_text('new target\n')
+        self.git('add', 'unrelated.txt'); self.git('commit', '-qm', 'advance target')
+        self.flow_git('merge', '--no-edit', 'main')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        result = self.invoke('control', self.direct_candidate_request())
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertIsNone(self.state()['control']['context']['handoff_progress']['candidate'])
+
+    def test_direct_policy_rejects_unknown_conditions_exclusions_and_mismatched_bindings(self):
+        value = self.input_for(3)
+        original = self.direct_policy(value)
+        changes = [lambda p: p['assessment'].update(controller_ref='native:dispatcher'),
+                   lambda p: p['assessment'].update(baseline='f' * 40),
+                   lambda p: p['assessment'].update(scope_digest='f' * 64),
+                   lambda p: p['assessment'].update(requirement_identity={}),
+                   lambda p: p['assessment'].pop('testing_seam'),
+                   lambda p: p['assessment'].update(test_paths=['foreign.py'])]
+        for name in original['assessment']['conditions']:
+            changes.append(lambda p, name=name: p['assessment']['conditions'][name].update(satisfied=None))
+        for name in original['assessment']['exclusions']:
+            changes.append(lambda p, name=name: p['assessment']['exclusions'][name].update(present=True))
+        for change in changes:
+            request = copy.deepcopy(value)
+            request['semantic']['implementation_policy'] = copy.deepcopy(original)
+            change(request['semantic']['implementation_policy'])
+            with self.subTest(change=change), self.assertRaises((control.ControlError, fixture.transfer.entry.PreparationError)):
+                fixture.transfer.handoff.handle(request)
+
+    def test_direct_resume_rejects_drift_before_any_business_followup(self):
+        self.begin_direct()
+        (self.flow / 'impl.py').write_text('retained direct bytes\n')
+        self.invoke('pause')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        self.assertEqual(self.state()['status'], 'paused')
+        (self.flow / 'impl.py').write_text('unexplained bytes while stopped\n')
+        response = self.invoke('resume')
+        self.assertEqual(response['status'], 'blocked', response)
+        self.assertNotEqual((response.get('next_action') or {}).get('operation'), 'continue-host')
+        (self.flow / 'impl.py').write_text('retained direct bytes\n')
+        escalated = self.invoke('control', self.direct_escalation_request())
+        self.assertEqual(self.state()['status'], 'paused', escalated)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['implementation_policy'], {'mode': 'full'})
+
+    def direct_escalation_request(self):
+        return {'action': 'escalate-implementation', 'evidence': {
+            'dispatcher_ref': 'native:dispatcher', 'attempt': self.state()['control']['context']['carrier']['attempt'],
+            'reference': 'controller:escalate', 'reason': 'Observed recovery impact',
+            'assessment_reference': 'controller:local-output'},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:escalate'}}
+
+    def test_escalation_response_loss_reuses_snapshot_and_rejects_forged_replay(self):
+        from unittest.mock import patch
+        self.begin_direct()
+        (self.flow / 'impl.py').write_text('inherited\n')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        request = self.direct_escalation_request()
+        actual = fixture.progress.dispatch.checkpoint
+        def lost(*args, **kwargs):
+            actual(*args, **kwargs)
+            raise OSError('lost read-only control response')
+        with patch.object(fixture.progress.dispatch, 'checkpoint', side_effect=lost):
+            self.assertEqual(self.invoke('control', request)['status'], 'blocked')
+        transaction = next(iter(self.state()['control_transactions'].values()))
+        snapshot = copy.deepcopy(transaction['request']['evidence']['snapshot'])
+        self.invoke('control', request)
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(checkpoint['implementation_policy'], {'mode': 'full'})
+        self.assertEqual(checkpoint['implementation_escalation']['snapshot'], snapshot)
+        self.assertTrue(self.invoke('control', request)['acknowledged'])
+        forged = copy.deepcopy(request)
+        forged['evidence']['snapshot'] = {'head': 'f' * 40}
+        self.assertEqual(self.invoke('control', forged)['status'], 'blocked')
+        (self.flow / 'impl.py').write_text('drift\n')
+        self.assertEqual(self.invoke('control', request)['status'], 'blocked')
+
+    def test_unknown_escalation_does_not_refreeze_drifted_bytes(self):
+        from unittest.mock import patch
+        self.begin_direct()
+        (self.flow / 'impl.py').write_text('original\n')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        request = self.direct_escalation_request()
+        actual = fixture.progress.dispatch.checkpoint
+        def lost(*args, **kwargs):
+            actual(*args, **kwargs)
+            raise OSError('lost response')
+        with patch.object(fixture.progress.dispatch, 'checkpoint', side_effect=lost):
+            self.invoke('control', request)
+        before = next(iter(self.state()['control_transactions'].values()))['request']['evidence']['snapshot']
+        (self.flow / 'impl.py').write_text('foreign after intent\n')
+        self.assertEqual(self.invoke('control', request)['status'], 'blocked')
+        self.assertEqual(next(iter(self.state()['control_transactions'].values()))['request']['evidence']['snapshot'], before)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['implementation_policy']['mode'], 'direct')
+
+    def test_cancelled_direct_cannot_escalate_or_allocate(self):
+        self.begin_direct()
+        self.invoke('cancel')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        with self.assertRaises(fixture.transfer.entry.PreparationError):
+            self.invoke('control', self.direct_escalation_request())
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'cancelled')
+
+    def test_scripted_direct_requires_authenticated_controller_decision(self):
+        self.settings['thread_id'] = 'scripted-runtime'
+        self.request['host'].update(thread_id='scripted-runtime', role='scripted-carrier', source_ref='task')
+        value = self.input_for(3)
+        value['semantic']['implementation_policy'] = self.direct_policy(value)
+        with self.assertRaises(fixture.transfer.entry.PreparationError):
+            fixture.transfer.handoff.handle(value)
+        decision = {'controller_ref': 'task', 'reference': 'controller:local-output',
+                    'policy_digest': control.digest(value['semantic']['implementation_policy']), 'receipt': 'host:controller-decision'}
+        value['entry']['host']['implementation_decision'] = decision
+        value['expected_entry'] = fixture.transfer.entry.resolve(value['entry'])
+        saved = fixture.transfer.handoff.handle(value)
+        self.assertEqual(saved['semantic']['implementation_policy'], value['semantic']['implementation_policy'])
+        value['entry']['host']['implementation_decision']['policy_digest'] = 'f' * 64
+        value['expected_entry'] = fixture.transfer.entry.resolve(value['entry'])
+        with self.assertRaises(fixture.transfer.entry.PreparationError):
+            fixture.transfer.handoff.handle(value)
+
+    def test_direct_candidate_fingerprints_add_delete_and_executable_mode(self):
+        for name in ('remove.py', 'executable.py'):
+            (self.root / name).write_text('baseline\n')
+        self.git('add', 'remove.py', 'executable.py'); self.git('commit', '-qm', 'baseline files')
+        self.flow_git('merge', '--ff-only', 'main')
+        self.context = self.context_for(3)
+        value = self.input_for(3)
+        locations = ['executable.py', 'impl.py', 'remove.py']
+        value['scope']['implementation_paths'] = locations
+        value['scope']['owned_paths'] = locations
+        value['authorization']['scope_digest'] = control.digest(value['scope'])
+        policy = self.direct_policy(value)
+        policy['assessment']['implementation_paths'] = locations
+        value['semantic']['implementation_policy'] = policy
+        self.begin('continuous', value)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        (self.flow / 'remove.py').unlink()
+        (self.flow / 'executable.py').chmod(0o755)
+        (self.flow / 'impl.py').write_text('new output\n')
+        self.flow_git('add', *locations); self.flow_git('commit', '-qm', 'direct changes')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        result = self.invoke('control', self.direct_candidate_request())
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(checkpoint['state'], 'reviewable', result)
+        proof = checkpoint['candidate_evidence']['direct_provenance']
+        self.assertEqual(proof['paths'], locations)
+        self.assertIsNone(proof['fingerprints']['remove.py'])
+        self.assertEqual(set(proof['fingerprints']), set(locations))
+
+    def test_direct_start_rejects_existing_unaccepted_bytes(self):
+        (self.flow / 'impl.py').write_text('pre-existing unowned bytes\n')
+        self.context = self.context_for(3)
+        value = self.input_for(3)
+        value['semantic']['implementation_policy'] = self.direct_policy(value)
+        with self.assertRaises(control.ControlError):
+            self.invoke('start', {'handoff': value, 'control': {'context': self.context, 'discussion': None}})
+        self.assertIsNone(self.state()['control']['context']['carrier'])
+
+    def test_ordinary_full_allocation_cannot_adopt_without_direct_snapshot(self):
+        self.begin_dispatcher()
+        execution = self.execution_input()
+        execution['semantic'].update(adopt_paths=['impl.py'], adoption_snapshot_digest='a' * 64)
+        response = self.invoke('allocation', {'allocation_id': 'invalid-adopt', 'operation': 'prepare', 'handoff': execution})
+        self.assertEqual(response['status'], 'blocked', response)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['executions'], [])
+
+    def test_direct_cannot_allocate_an_executor_before_escalation(self):
+        self.begin_direct()
+        execution = self.execution_input()
+        response = self.invoke('allocation', {'allocation_id': 'invalid-direct', 'operation': 'prepare', 'handoff': execution})
+        self.assertEqual(response['status'], 'blocked', response)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['executions'], [])
+
+    def test_paused_direct_escalates_without_resuming_until_explicit_resume(self):
+        self.begin_direct()
+        (self.flow / 'impl.py').write_text('retained\n')
+        self.invoke('pause')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        result = self.invoke('control', self.direct_escalation_request())
+        self.assertEqual(self.state()['status'], 'paused', result)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['implementation_policy'], {'mode': 'full'})
+        self.assertNotEqual((result.get('next_action') or {}).get('operation'), 'continue-host')
+        resumed = self.invoke('resume')
+        self.assertEqual(resumed['next_action']['operation'], 'inspect-host-state', resumed)
+        continued = self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        self.assertEqual(continued['next_action']['operation'], 'continue-host', continued)
+        self.assertEqual(continued['next_action']['payload']['ref'], 'native:dispatcher')
+
+    def test_direct_target_advance_blocks_business_followup_before_edit(self):
+        self.begin_direct()
+        (self.root / 'unrelated.txt').write_text('target advanced\n')
+        self.git('add', 'unrelated.txt'); self.git('commit', '-qm', 'advance target')
+        result = self.invoke('observe', self.observation('idle', 'result',
+            {'delivery_id': 'continue-local', 'status': 'continue', 'payload': {'progress': 'next local step'}},
+            ref='native:dispatcher'))
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertNotEqual((result.get('next_action') or {}).get('operation'), 'continue-host')
+
     def test_focused_candidate_can_review_but_cannot_complete(self):
         candidate, evidence = self.ready_candidate()
         for axis in ('standards','spec'):

@@ -190,6 +190,39 @@ class AttachedFlowTests(fixtures.ProgressTests):
                     with self.assertRaises(runner.WorkflowError):
                         runner._validate_record(changed)
 
+    def test_attached_stage3_direct_policy_reaches_review_without_execution(self):
+        from test_review_first_validation import ReviewFirstTests
+        self.begin('stepwise')
+        self.invoke('observe', self.observation())
+        self.activate_designer()
+        (self.flow / 'docs/spec.md').write_text('approved design\n')
+        self.flow_git('add', 'docs/spec.md'); self.flow_git('commit', '-qm', 'planning')
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        self.ready_publication(candidate, 'controller:planning')
+        self.invoke('publication', {'candidate_commit': candidate, 'reference': 'controller:planning'})
+        pending = self.invoke('receive-publication')['pending']
+        self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
+            'answer': 'accept', 'reference': 'controller:accept-plan'})
+        self.complete_phase()
+        pending = self.state()['pending']
+        self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
+            'answer': 'confirm', 'reference': 'controller:enter-stage3'})
+        value = self.input_for(3, self.state()['accepted'])
+        self.plan = lambda: value['semantic']['validation_plan']
+        value['semantic']['implementation_policy'] = ReviewFirstTests.direct_policy(self, value)
+        self.context = self.context_for(3)
+        self.begin('stepwise', value)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        (self.flow / 'impl.py').write_text("print('attached')\n")
+        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'direct attached output')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        result = self.invoke('control', ReviewFirstTests.direct_candidate_request(self))
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(checkpoint['state'], 'reviewable', result)
+        self.assertEqual(checkpoint['executions'], [])
+        self.assertEqual(self.state()['handoff']['authorization']['phase'], value['authorization']['phase'])
+        self.assertIsNone(self.state()['dispatch']['delivery'])
+
     def test_attached_flow_publication_cleanup_acceptance_and_phase_replay(self):
         self.begin('stepwise')
         self.invoke('observe', self.observation())
