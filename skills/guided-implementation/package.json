@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "e83ae3ce2c8243f4aaa95fe8abb88e464857d8a0245e5cfcd80def98e8f65058",
+  "bundle_digest": "b07a3c07151f184fbd89fe245d7816bfade638792030d281a621bbe9933755a3",
   "compatibility_key": {
     "control": 5,
     "discussion_request": 1,
@@ -36,7 +36,7 @@
     },
     "SKILL.md": {
       "mode": "0644",
-      "sha256": "66f70a61dfe851dda2fdaf09eda52d66ca7a26a395f71ed28a35d49cb4f0eadb"
+      "sha256": "451dc093dd056843064f60cfda5f50f785f7e538e42df713813f5d7e2c29f4e2"
     },
     "agents/openai.yaml": {
       "mode": "0644",
