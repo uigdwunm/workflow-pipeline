@@ -280,4 +280,4 @@ Use the anomaly protocol for execution failures, unexpected
 workspace state, and recovery decisions. Never repeat completed design, review,
 or publication work.
 
-An authenticated accepted result handoff retains the old carrier until successor readiness and attached activation; the controller then archives it.
+An authenticated accepted result handoff retains the old carrier until successor readiness and attached activation; the Controller commits takeover and then attempts archive once; failure or unknown is sidebar cleanup only.

@@ -397,7 +397,7 @@ def validate_progress(progress):
         validate_review(progress['candidate'], progress['review'], progress['verification'], progress['dispatcher_ref'])
     else:
         allowed = {'state', 'plan', 'decision', 'creation_status', 'delivery', 'delivery_digest', 'successor', 'archive_ref', 'archive_status'}
-        require(state in {'prepared', 'creation-pending', 'current-task', 'cancelled', 'creation-failed', 'carrier-bound', 'result-received', 'result-accepted', 'successor-ready', 'archive-pending', 'archived'}, 'invalid dedicated state')
+        require(state in {'prepared', 'creation-pending', 'current-task', 'cancelled', 'creation-failed', 'carrier-bound', 'result-received', 'result-accepted', 'successor-ready', 'archive-pending', 'archived', 'handoff-complete'}, 'invalid dedicated state')
         plan = progress.get('plan')
         keys(plan, {'target', 'project', 'title', 'missing_context', 'configuration', 'next_step', 'archive_ref', 'gate_open', 'stage', 'controller_ref', 'topic_ref', 'requirement_identity', 'task_count', 'plan_id', 'entry_authority'})
         validate_entry_authority(plan['entry_authority'])
@@ -464,13 +464,41 @@ def validate_recovery(recovery, progress):
 
 
 def validate_context(context):
-    require(isinstance(context, dict) and CONTEXT_FIELDS <= set(context) <= CONTEXT_FIELDS | {'successor_control'}, 'invalid context fields')
+    require(isinstance(context, dict) and CONTEXT_FIELDS <= set(context) <= CONTEXT_FIELDS | {'successor_control', 'retired_handoffs'}, 'invalid context fields')
+    require(len(json.dumps(context).encode()) <= MAX_BYTES, 'control history exceeds byte limit')
     if context.get('successor_control') is not None:
         successor = context['successor_control']
-        require(isinstance(successor, dict) and 'successor_control' not in successor, 'only one successor slot allowed')
+        require(isinstance(successor, dict) and not ({'successor_control', 'retired_handoffs'} & set(successor)), 'only one successor slot and top-level history allowed')
         validate_context(successor)
         require(successor['controller_ref'] == context['controller_ref'] and successor['topic_ref'] == context['topic_ref'], 'successor controller/topic mismatch')
-    require(type(context['schema_version']) is int and context['schema_version'] == 3, 'legacy_run_requires_original_runtime: control schema ' + str(context.get('schema_version')))
+    require(type(context['schema_version']) is int and context['schema_version'] == 4, 'legacy_run_requires_original_runtime: control schema ' + str(context.get('schema_version')))
+    require(isinstance(context.get('retired_handoffs', {}), dict), 'invalid retired handoff history')
+    for handoff_id, retired in context.get('retired_handoffs', {}).items():
+        keys(retired, {'controller_ref', 'topic_ref', 'stage', 'carrier', 'requirement_identity', 'plan',
+            'delivery', 'delivery_digest', 'successor', 'handoff_completed', 'archive_status', 'operations', 'conflicts'})
+        require(retired['controller_ref'] == context['controller_ref'] and retired['topic_ref'] == context['topic_ref'], 'retired handoff owner mismatch')
+        require(retired['handoff_completed'] is True and retired['carrier']['kind'] == 'dedicated-stage', 'invalid retired carrier')
+        require(retired['delivery_digest'] == digest(retired['delivery']), 'retired delivery changed')
+        require(retired['requirement_identity'] == retired['delivery']['requirement_identity'] and
+                retired['delivery']['source_ref'] == retired['carrier']['ref'] and
+                retired['delivery']['attempt'] == retired['carrier']['attempt'] and
+                retired['successor']['input_digest'] == retired['delivery_digest'], 'retired delivery identity mismatch')
+        require(retired['plan']['plan_id'] == digest({k:v for k,v in retired['plan'].items() if k != 'plan_id'}), 'retired plan changed')
+        require(handoff_id == digest({k:retired[k] for k in ('controller_ref', 'topic_ref', 'carrier', 'delivery_digest')} | {'plan_id': retired['plan']['plan_id']}), 'retired handoff identity changed')
+        validate_takeover_proof(retired['successor']['takeover_proof'], retired['carrier'])
+        require(retired['archive_status'] in {'not-requested', 'requested', 'unknown', 'failed', 'not-archived', 'archived'}, 'invalid retired archive status')
+        require(isinstance(retired['operations'], list) and isinstance(retired['conflicts'], list), 'invalid archive audit')
+        predecessor = None
+        for sequence, operation in enumerate(retired['operations'], 1):
+            keys(operation, {'operation_id', 'kind', 'ref', 'sequence', 'predecessor', 'status', 'receipt', 'invocation'})
+            require(operation['kind'] in {'archive', 'read-archive-state'} and operation['ref'] == retired['carrier']['ref'] and operation['sequence'] == sequence and operation['predecessor'] == predecessor, 'archive operation chain changed')
+            require(operation['operation_id'] == digest({'handoff_id': handoff_id, 'sequence': sequence, 'kind': operation['kind'], 'ref': operation['ref']}), 'archive operation identity changed')
+            require(operation['status'] in {'intent', 'issued', 'unknown', 'failed', 'not-archived', 'archived'}, 'invalid archive operation status')
+            if operation['invocation'] is not None:
+                keys(operation['invocation'], {'adapter', 'invocation_id', 'operation_id', 'ref', 'receipt'})
+                require(operation['invocation']['operation_id'] == operation['operation_id'] and operation['invocation']['ref'] == operation['ref'], 'archive invocation changed')
+            require(operation['status'] == 'intent' or operation['invocation'] is not None, 'archive operation lost invocation')
+            predecessor = operation['operation_id']
     text(context['controller_ref'])
     if context['topic_ref'] is not None:
         text(context['topic_ref'])
@@ -582,7 +610,7 @@ def select_configuration(evidence, available_pairs=None):
 
 def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     keys(request, {'schema_version', 'action', 'actor_ref', 'context', 'evidence'})
-    require(type(request['schema_version']) is int and request['schema_version'] == 3, 'legacy_run_requires_original_runtime: control request schema ' + str(request.get('schema_version')))
+    require(type(request['schema_version']) is int and request['schema_version'] == 4, 'legacy_run_requires_original_runtime: control request schema ' + str(request.get('schema_version')))
     context = copy.deepcopy(request['context'])
     validate_context(context)
     require(request['actor_ref'] == context['controller_ref'], 'only authenticated controller writes control checkpoints')
@@ -1125,7 +1153,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                 progress['delivery_digest'] == evidence['delivery_digest'], 'result must be verified before acceptance')
         progress['state'] = 'result-accepted'
     elif action == 'successor-ready':
-        keys(evidence, {'ref', 'stage', 'input_digest', 'role', 'binding_verified', 'activated', 'confirmed', 'archive_ref'})
+        keys(evidence, {'ref', 'stage', 'input_digest', 'role', 'binding_verified', 'activated', 'confirmed', 'archive_ref', 'takeover_proof'})
+        require(context['carrier'] is not None and context['carrier']['kind'] == 'dedicated-stage', 'visible task takeover requires a dedicated carrier; native stages use accepted/start')
         require(progress and progress['state'] == 'result-accepted', 'accept before successor takeover')
         require(evidence['input_digest'] == progress['delivery_digest'] and evidence['confirmed'] is True,
                 'successor frozen input or confirmation mismatch')
@@ -1135,23 +1164,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         text(evidence['ref'])
         require(evidence['role'] in {1: {'dedicated-problem-framing', 'current-problem-framing'}, 2: {'solution-designer'}, 3: {'implementation-dispatcher'}, 4: {'closure-agent'}}[evidence['stage']] and evidence['ref'] != context['carrier']['ref'], 'successor role or identity mismatch')
         require(evidence['archive_ref'] == context['carrier']['ref'], 'archive target must be the current visible carrier')
-        progress.update(state='successor-ready', successor=evidence, archive_ref=evidence['archive_ref'])
-    elif action == 'archive':
-        keys(evidence, set())
-        require(progress and progress['state'] in {'successor-ready', 'archive-pending', 'archived'}, 'verified takeover required before archive')
-        if progress['state'] != 'archived':
-            old = progress['archive_ref']
-            require(old is not None and old == context['carrier']['ref'], 'archive target is not the frozen old task')
-            operation = 'read-archive-state' if progress.get('archive_status') in {'unknown', 'requested'} else 'archive'
-            progress.update(state='archive-pending', archive_status='requested')
-            effects = [{'operation': operation, 'ref': old}]
-    elif action == 'archive-result':
-        keys(evidence, {'ref', 'status'})
-        require(progress and progress['state'] == 'archive-pending' and evidence['ref'] == progress['archive_ref'], 'archive result mismatch')
-        require(evidence['status'] in {'archived', 'not-archived', 'unknown', 'failed'}, 'invalid archive evidence')
-        progress['archive_status'] = evidence['status']
-        if evidence['status'] == 'archived':
-            progress['state'] = 'archived'
+        validate_takeover_proof(evidence['takeover_proof'], context['carrier'])
+        progress.update(state='handoff-complete', successor=evidence, archive_ref=evidence['archive_ref'])
     elif action == 'choose-dedicated':
         keys(evidence, {'intent'})
         require(evidence['intent'] == 'explicit-dedicated' and (progress is None or progress['state'] in {'prepared', 'current-task', 'cancelled', 'creation-failed'}), 'new explicit choice requires a stopped or unlaunched carrier')
@@ -1182,6 +1196,99 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     return {'ok': True, 'context': context, 'effects': effects}
 
 
+def validate_takeover_proof(proof, carrier):
+    keys(proof, {'ref', 'attempt', 'adapter', 'host_ref', 'invocation_id', 'response_id', 'stop_receipt', 'business_calls_digest'})
+    require(proof['ref'] == carrier['ref'] and proof['attempt'] == carrier['attempt'], 'stop proof carrier mismatch')
+    for field in ('adapter', 'host_ref', 'invocation_id', 'response_id', 'business_calls_digest'):
+        text(proof[field])
+    require(isinstance(proof['stop_receipt'], dict) and proof['stop_receipt'], 'causal stop receipt required')
+
+
+def archive_transition(context, action, evidence):
+    allowed = {'handoff_id'} if action == 'archive' else {'handoff_id', 'operation_id', 'ref', 'status', 'receipt'}
+    keys(evidence, allowed | ({'control_plan_id'} if 'control_plan_id' in evidence else set()) |
+         ({'call_lookup'} if action == 'archive' and 'call_lookup' in evidence else set()))
+    handoff_id = text(evidence['handoff_id'])
+    retired = context.get('retired_handoffs', {}).get(handoff_id)
+    require(retired is not None and retired['handoff_completed'], 'unknown completed handoff')
+    require(evidence.get('control_plan_id', retired['plan']['plan_id']) == retired['plan']['plan_id'], 'conflicting archive selector')
+    ref = retired['carrier']['ref']
+    operations = retired['operations']
+    result = {'ok': True, 'context': context, 'effects': [], 'handoff_id': handoff_id, 'handoff_completed': True}
+    if action == 'archive':
+        require('call_lookup' not in evidence or operations and operations[-1]['status'] == 'intent', 'lookup does not name a pending intent')
+        if retired['archive_status'] == 'archived':
+            return {**result, 'acknowledged': True}
+        if operations and operations[-1]['status'] in {'intent', 'issued'}:
+            pending = operations[-1]
+            if 'call_lookup' in evidence:
+                lookup = evidence['call_lookup']
+                keys(lookup, {'operation_id', 'ref', 'adapter', 'invocation_id', 'response_id', 'status', 'raw'})
+                require(lookup['operation_id'] == pending['operation_id'] and lookup['ref'] == ref and
+                        lookup['status'] == 'not-issued' and pending['status'] == 'intent', 'original unissued intent proof required')
+                for field in ('adapter', 'invocation_id', 'response_id'):
+                    text(lookup[field])
+                require(isinstance(lookup['raw'], dict) and lookup['raw'], 'original call lookup response required')
+                return {**result, 'effects': [{'operation': pending['kind'], 'ref': ref,
+                    'handoff_id': handoff_id, 'operation_id': pending['operation_id']}], 'reconciled_unissued': True}
+            if pending['status'] == 'intent' or pending['kind'] == 'read-archive-state':
+                return {**result, 'acknowledged': True, 'pending_operation_id': pending['operation_id']}
+            pending['status'] = 'unknown'
+        kind = 'read-archive-state' if retired['archive_status'] in {'requested', 'unknown'} else 'archive'
+        sequence = len(operations) + 1
+        operation_id = digest({'handoff_id': handoff_id, 'sequence': sequence, 'kind': kind, 'ref': ref})
+        operations.append({'operation_id': operation_id, 'kind': kind, 'ref': ref, 'sequence': sequence,
+            'predecessor': operations[-1]['operation_id'] if operations else None, 'status': 'intent', 'receipt': None, 'invocation': None})
+        retired['archive_status'] = 'requested'
+        result['effects'] = [{'operation': kind, 'ref': ref, 'handoff_id': handoff_id, 'operation_id': operation_id}]
+        return result
+    require(evidence['ref'] == ref, 'archive result target mismatch')
+    matches = [op for op in operations if op['operation_id'] == evidence['operation_id']]
+    require(len(matches) == 1, 'unknown archive operation')
+    operation = matches[0]
+    receipt = evidence['receipt']
+    require(isinstance(receipt, dict), 'archive receipt required')
+    keys(receipt, {'adapter', 'invocation_id', 'response_id', 'ref', 'raw', 'no_write'})
+    for field in ('adapter', 'invocation_id', 'response_id'):
+        text(receipt[field])
+    require(receipt['ref'] == ref and isinstance(receipt['raw'], dict) and type(receipt['no_write']) is bool, 'invalid archive receipt')
+    require(evidence['status'] in {'issued', 'archived', 'not-archived', 'unknown', 'failed'}, 'invalid archive status')
+    invocation = {'adapter': receipt['adapter'], 'invocation_id': receipt['invocation_id'],
+                  'operation_id': operation['operation_id'], 'ref': ref}
+    if evidence['status'] == 'issued':
+        require(receipt['raw'] == {'operation_id': operation['operation_id'], 'operation': operation['kind'], 'ref': ref}, 'archive invocation must retain exact request')
+        if operation['invocation'] is not None:
+            require(operation['invocation'] == {**invocation, 'receipt': receipt}, 'conflicting archive invocation')
+            return {**result, 'acknowledged': True}
+        require(operation is operations[-1] and operation['status'] == 'intent', 'archive intent is no longer current')
+        operation.update(status='issued', invocation={**invocation, 'receipt': copy.deepcopy(receipt)})
+        return result
+    require(operation['invocation'] is not None and all(operation['invocation'][key] == value for key, value in invocation.items()), 'archive receipt has no matching persisted invocation')
+    frozen = {k: copy.deepcopy(evidence[k]) for k in ('status', 'receipt')}
+    response_conflict = False
+    for previous in operations:
+        previous_receipt = (previous['receipt'] or {}).get('receipt')
+        if previous_receipt and (previous_receipt['adapter'], previous_receipt['response_id']) == (receipt['adapter'], receipt['response_id']):
+            response_conflict = previous is not operation or previous['receipt'] != frozen
+    if operation['receipt'] == frozen:
+        return {**result, 'acknowledged': True}
+    if response_conflict or operation['receipt'] is not None or operation is not operations[-1]:
+        conflict = {'operation_id': operation['operation_id'], **frozen}
+        if conflict not in retired['conflicts']:
+            retired['conflicts'].append(conflict)
+        if retired['archive_status'] != 'archived':
+            retired['archive_status'] = 'unknown'
+        return {**result, 'ok': False, 'error': 'conflicting archive receipt; exact readback required'}
+    require(evidence['status'] != 'not-archived' or operation['kind'] == 'read-archive-state', 'not-archived requires readback')
+    status = evidence['status']
+    if status == 'failed' and not receipt['no_write']:
+        status = 'unknown'
+    operation.update(status=status, receipt=frozen)
+    if retired['archive_status'] != 'archived':
+        retired['archive_status'] = status
+    return result
+
+
 def selected_control(context, evidence):
     """Select a bounded slot using an exact plan or delivery identity."""
     successor = context.get('successor_control')
@@ -1209,6 +1316,19 @@ def transition(request: dict[str, Any]) -> dict[str, Any]:
     evidence = copy.deepcopy(request['evidence'])
     require(isinstance(evidence, dict), 'evidence must be an object')
     action = request['action']
+    require(type(request['schema_version']) is int and request['schema_version'] == 4, 'legacy_run_requires_original_runtime: control request schema')
+    require(request['actor_ref'] == context['controller_ref'], 'only authenticated controller writes control checkpoints')
+    if action in {'archive', 'archive-result'}:
+        result = archive_transition(context, action, evidence)
+        validate_context(result['context'])
+        return result
+    if action == 'successor-ready':
+        for handoff_id, retired in context.get('retired_handoffs', {}).items():
+            if retired['delivery_digest'] == evidence.get('input_digest'):
+                replay = dict(evidence)
+                selector = replay.pop('control_plan_id', retired['plan']['plan_id'])
+                require(selector == retired['plan']['plan_id'] and replay == retired['successor'], 'conflicting successor takeover')
+                return {'ok': True, 'context': context, 'effects': [], 'handoff_id': handoff_id, 'handoff_completed': True, 'acknowledged': True}
     authority = evidence.get('entry_authority') if action == 'prepare' else None
     if authority is not None:
         validate_entry_authority(authority)
@@ -1223,7 +1343,7 @@ def transition(request: dict[str, Any]) -> dict[str, Any]:
             old = existing.get('handoff_progress') or {}
             stopped = old.get('state') in {'cancelled', 'creation-failed'} or (not old and existing['carrier'] is None)
             require(stopped and old.get('plan', {}).get('entry_authority') != authority, 'successor slot already occupied')
-        selected = {k: copy.deepcopy(v) for k, v in context.items() if k != 'successor_control'}
+        selected = {k: copy.deepcopy(v) for k, v in context.items() if k not in {'successor_control', 'retired_handoffs'}}
         selected.update(stage=authority['stage'], carrier=None, handoff_progress=None,
             preference={'topic_current': context['preference']['topic_current'], 'stage_current': False})
         context['successor_control'] = selected
@@ -1238,10 +1358,25 @@ def transition(request: dict[str, Any]) -> dict[str, Any]:
         context = result['context']
         if successor is not None:
             context['successor_control'] = successor
-            if action == 'archive-result' and evidence.get('status') == 'archived':
-                context = successor
+
     else:
         context['successor_control'] = result['context']
+    if action == 'successor-ready':
+        require(selected is not context.get('successor_control'), 'successor cannot retire before promotion')
+        old = result['context']
+        progress = old['handoff_progress']
+        frozen = {k: copy.deepcopy(old[k]) for k in ('controller_ref', 'topic_ref', 'stage', 'carrier', 'requirement_identity')}
+        frozen.update({k: copy.deepcopy(progress[k]) for k in ('plan', 'delivery', 'delivery_digest', 'successor')})
+        frozen['handoff_completed'] = True
+        handoff_id = digest({k: frozen[k] for k in ('controller_ref', 'topic_ref', 'carrier', 'delivery_digest')} | {'plan_id': frozen['plan']['plan_id']})
+        history = copy.deepcopy(context.get('retired_handoffs', {}))
+        require(handoff_id not in history, 'conflicting retired handoff')
+        history[handoff_id] = {**frozen, 'archive_status': 'not-requested', 'operations': [], 'conflicts': []}
+        context = context.get('successor_control', context)
+        context.pop('successor_control', None)
+        context['retired_handoffs'] = history
+        result.update(handoff_id=handoff_id, handoff_completed=True)
+    require(len(json.dumps(context).encode()) <= MAX_BYTES, 'control history exceeds byte limit')
     return {**result, 'context': context}
 
 

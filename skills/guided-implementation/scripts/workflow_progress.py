@@ -30,7 +30,7 @@ import workflow_control_git as control_git
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v9"
+PROTOCOL = "workflow-progress-v10"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -144,6 +144,18 @@ def validate_state(state):
     require(isinstance(state.get("retained_host_actions", []), list),
             "invalid_checkpoint", "retained host actions must be an ordered list")
     control.validate_context(state["control"]["context"])
+    for identity, transaction in state.get('control_transactions', {}).items():
+        require(entry.digest(transaction['request']) == identity, 'invalid_checkpoint', 'control transaction identity changed')
+        if transaction.get('scope') == 'archive':
+            retired = state['control']['context'].get('retired_handoffs', {}).get(transaction.get('handoff_id'))
+            require(retired is not None and retired['handoff_completed'] and
+                    transaction.get('handoff_completed') is True and
+                    transaction['request']['action'] in {'archive', 'archive-result'} and
+                    transaction['request']['evidence']['handoff_id'] == transaction['handoff_id'],
+                    'invalid_checkpoint', 'archive transaction lacks committed handoff authority')
+            require(transaction.get('intent_persisted') is not True or transaction.get('result') is not None or
+                    any(op['operation_id'] == transaction.get('operation_id') for op in retired['operations']),
+                    'invalid_checkpoint', 'archive intent has no durable result')
     for pin in state["packages"].values():
         skill_preflight.verify_identity(pin)
     return state
@@ -599,6 +611,7 @@ class Progress:
         retry = old is not None and old["status"] == "cancelled" and (old.get("dispatch") or {}).get("status") == "not-created" and not old.get("stop_requested")
         if old is not None:
             validate_state(old)
+            self.require_controls_reconciled()
             require(old.get('transport_loss') is None, 'host_recovery_required', 'retain the original foreground host recovery point')
             require(old["status"] == "accepted" or retry, "run_active", "finish the current stage or reconcile non-creation before a new attempt")
             if not retry:
@@ -673,6 +686,24 @@ class Progress:
             context.update(stage=request["stage"], carrier=None, handoff_progress=None,
                            requirement_identity=old["handoff"]["requirement_identity"] if retry else old["accepted"]["requirement_identity"])
             port = {"context": context, "discussion": None}
+        if old is not None:
+            previous_history = old['control']['context'].get('retired_handoffs', {})
+            if old['control']['discussion'] is not None:
+                query = {key: value for key, value in old['control']['discussion'].items()
+                         if key not in {'expected_ledger_revision', 'expected_topic_revision', 'idempotency_key'}}
+                authoritative = dispatch.discussion_protocol.handle({**query, 'operation': 'read-topic'})['workflow_control']
+                require(authoritative is not None, 'authority_missing', 'original attached control is unavailable')
+                control.validate_context(authoritative)
+                latest_history = authoritative.get('retired_handoffs', {})
+                require(all(key in latest_history and all(latest_history[key][field] == value[field]
+                        for field in ('carrier', 'plan', 'delivery', 'successor')) for key, value in previous_history.items()),
+                        'control_context_changed', 'original authority lost retired handoff evidence')
+                previous_history = latest_history
+            supplied_history = port['context'].get('retired_handoffs', {})
+            require(all(key not in supplied_history or supplied_history[key] == value for key, value in previous_history.items()),
+                    'control_context_changed', 'retired handoff projection conflicts with original authority')
+            port = copy.deepcopy(port)
+            port['context']['retired_handoffs'] = {**previous_history, **supplied_history}
         control.validate_context(port["context"])
         next_stage = data.get("next_stage", old["next_stage"] if retry else 2 if request["stage"] == 0 and mode == "continuous" else request["stage"] + 1)
         require(request["stage"] == 4 or (request["stage"], next_stage) in {(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)},
@@ -912,7 +943,8 @@ class Progress:
 
     def unresolved_control_transactions(self):
         return {identity:value for identity,value in self.state.get('control_transactions',{}).items()
-                if value.get('result') is None and value.get('rejection') is None}
+                if value.get('result') is None and value.get('rejection') is None and not
+                (value.get('scope') == 'archive' and value.get('handoff_completed') is True and value.get('intent_persisted') is True)}
 
     def require_controls_reconciled(self, replay_identity=None):
         require(not (set(self.unresolved_control_transactions()) - {replay_identity}),
@@ -1704,6 +1736,29 @@ class Progress:
                 "invalid_operation", "use the original bounded control recovery/closure operation")
         require(isinstance(data["receipt"], dict) and data["receipt"], "host_evidence_missing", "original authenticated host/controller evidence required")
         s = self.state
+        if data['action'] in {'archive', 'archive-result'}:
+            return self.archive_action(data)
+        if data['action'] == 'successor-ready':
+            original = copy.deepcopy(data)
+            retained = [v for v in s.get('control_transactions', {}).values() if v.get('takeover_input') == original]
+            if retained:
+                data = copy.deepcopy(retained[0]['request'])
+            else:
+                require('takeover_proof' not in data['evidence'], 'invalid_evidence', 'takeover proof is derived from saved host evidence')
+                self.require_business_ready()
+                require(s.get('stopped') and not self.stop_barrier_pending(), 'host_evidence_missing', 'settle original writer and calls before takeover')
+                stop = s['host'].get('last_stop')
+                require(s['host']['status'] == 'stopped' and stop and stop.get('provenance') and
+                        stop == s['host'].get('observation'), 'host_evidence_missing', 'fresh causal original host stop required')
+                selected = control.selected_control(s['control']['context'], data['evidence'])
+                carrier = selected['carrier']
+                require(stop['receipt'].get('ref') == carrier['ref'], 'identity_mismatch', 'stop belongs to another carrier')
+                data = copy.deepcopy(data)
+                data['evidence']['takeover_proof'] = {'ref': carrier['ref'], 'attempt': carrier['attempt'],
+                    'adapter': stop['receipt']['adapter'], 'host_ref': s['handoff']['expected_entry']['actor']['thread_id'],
+                    'invocation_id': stop['provenance']['call_ref'], 'response_id': stop['provenance']['response_ref'],
+                    'stop_receipt': copy.deepcopy(stop['receipt']), 'business_calls_digest': entry.digest(s['host']['calls'])}
+            takeover_input = original
         if data['action'] == 'escalate-implementation':
             escalation_paused = (s['status'] == 'paused' or s['status'] == 'blocked' and s.get('blocked_from') == 'paused') and s.get('stopped') is True and self.stop_intent() == 'pausing'
             if not escalation_paused:
@@ -1874,6 +1929,11 @@ class Progress:
         if previous and previous.get("result") is not None:
             if data['action'] == 'dispatch-recovery-intent':
                 return self.recovery_view(acknowledged=True)
+            if data['action'] == 'successor-ready':
+                handoff_id = previous['result']['handoff_id']
+                if s['control']['context']['retired_handoffs'][handoff_id]['archive_status'] == 'not-requested':
+                    return self.archive_action({'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+                        'receipt': {'controller_ref': s['control']['context']['controller_ref'], 'handoff_transaction': identity}})
             return _view(s, {"operation": "control-effects", "result": previous["result"]}, acknowledged=True)
         self.require_controls_reconciled(identity)
         require(s['transaction'] is None and not any(slot.get('transaction') is not None for slot in s.get('allocations',{}).values()),
@@ -1883,6 +1943,8 @@ class Progress:
                                             "business_block_id": (s.get("business_block") or {}).get("id")})
         require(transactions[identity]['port']['context'] == s['control']['context'],
                 'control_context_changed', 'retain the original result without overwriting newer control authority')
+        if data['action'] == 'successor-ready':
+            transactions[identity]['takeover_input'] = takeover_input
         if data['action'] == 'escalate-implementation':
             transactions[identity]['escalation_input'] = escalation_input
         self.save()
@@ -1952,7 +2014,87 @@ class Progress:
             return _view(s)
         if data['action'] in {'validation-start', 'escalate-implementation'}:
             return self.advance()
+        if data['action'] == 'successor-ready' and not result.get('acknowledged'):
+            return self.archive_action({'action': 'archive', 'evidence': {'handoff_id': result['handoff_id']},
+                'receipt': {'controller_ref': s['control']['context']['controller_ref'], 'handoff_transaction': identity}})
         return _view(s, {"operation": "control-effects", "result": result})
+
+    def archive_action(self, data):
+        """Use immutable audit routes, but mutate only the latest original authority."""
+        s = self.state
+        handoff_id = data['evidence'].get('handoff_id')
+        current = s['control']['context']
+        retired = current.get('retired_handoffs', {}).get(handoff_id)
+        require(retired is not None and retired.get('handoff_completed'), 'identity_mismatch', 'exact completed handoff required')
+        identity = entry.digest(data)
+        self.require_controls_reconciled(identity)
+        transactions = s.setdefault('control_transactions', {})
+        original = None
+        for state in [s, *s.get('history', [])]:
+            for transaction_id, transaction in state.get('control_transactions', {}).items():
+                if transaction_id == identity:
+                    require(original is None or all(original.get(key) == transaction.get(key) for key in
+                            ('request', 'port', 'handoff', 'handoff_id', 'operation_id')),
+                            'identity_mismatch', 'conflicting historical archive request')
+                    if original is not None and original.get('result') is not None and transaction.get('result') is not None:
+                        require(original['result'] == transaction['result'], 'identity_mismatch', 'conflicting historical archive result')
+                    if original is None or original.get('result') is None:
+                        original = transaction
+        if original is not None and original.get('result') is not None:
+            return _view(s, {'operation': 'control-effects', 'result': {**original['result'], 'context': current, 'effects': []}}, acknowledged=True)
+        if identity not in transactions:
+            if original is not None:
+                transactions[identity] = copy.deepcopy(original)
+                transactions[identity]['original_transaction'] = identity
+            else:
+                routes = []
+                for state in [s, *s.get('history', [])]:
+                    port = state['control']
+                    if port['discussion'] is not None and port['context']['controller_ref'] == retired['controller_ref'] and port['context']['topic_ref'] == retired['topic_ref']:
+                        routes.append((port, state['handoff']))
+                if retired['topic_ref'] is not None:
+                    require(routes, 'authority_missing', 'original attached archive authority unavailable')
+                    port, saved = copy.deepcopy(routes[0])
+                    route_keys = ('project_path', 'project_id', 'tree_id', 'actor_topic_id', 'actor_conversation_ref')
+                    require(all(all(other['discussion'][key] == port['discussion'][key] for key in route_keys) for other, _ in routes), 'identity_mismatch', 'conflicting original archive authority')
+                    query = {key: value for key, value in port['discussion'].items() if key in {*route_keys, 'protocol_version'}}
+                    latest = dispatch.discussion_protocol.handle({**query, 'operation': 'read-topic'})
+                    port['context'] = latest['workflow_control']
+                    require(port['context'] is not None, 'authority_missing', 'original archive checkpoint unavailable')
+                    port['discussion'].update(expected_ledger_revision=latest['ledger_revision'], expected_topic_revision=latest['record_revision'], idempotency_key=str(uuid.uuid4()))
+                else:
+                    port, saved = copy.deepcopy(s['control']), copy.deepcopy(s['handoff'])
+                authoritative = port['context'].get('retired_handoffs', {}).get(handoff_id)
+                require(authoritative is not None and all(authoritative[key] == retired[key] for key in ('controller_ref', 'topic_ref', 'carrier', 'plan', 'delivery', 'delivery_digest', 'successor')), 'identity_mismatch', 'original frozen handoff changed')
+                transactions[identity] = {'request': copy.deepcopy(data), 'port': port, 'handoff': saved,
+                    'scope': 'archive', 'handoff_id': handoff_id, 'operation_id': data['evidence'].get('operation_id'),
+                    'handoff_completed': True, 'intent_persisted': data['action'] == 'archive-result' and
+                        any(op['operation_id'] == data['evidence'].get('operation_id') for op in authoritative['operations']), 'result': None}
+            self.save()
+        transaction = transactions[identity]
+        if data['action'] == 'archive-result':
+            require(data['receipt'] == data['evidence'].get('receipt'), 'host_evidence_missing', 'retain exact authenticated archive receipt')
+        elif 'call_lookup' in data['evidence']:
+            require(data['receipt'] == data['evidence']['call_lookup'], 'host_evidence_missing', 'retain authenticated original invocation lookup')
+        execution_port = copy.deepcopy(transaction['port'])
+        if execution_port['discussion'] is None:
+            execution_port['context'] = copy.deepcopy(current)
+        result, applied = dispatch.checkpoint(execution_port, transaction['handoff'], data['action'], data['evidence'])
+        updated = result['context']['retired_handoffs'][handoff_id]
+        if transaction['port']['discussion'] is not None:
+            query = {key: value for key, value in transaction['port']['discussion'].items()
+                     if key not in {'expected_ledger_revision', 'expected_topic_revision', 'idempotency_key'}}
+            latest = dispatch.discussion_protocol.handle({**query, 'operation': 'read-topic'})
+            updated = latest['workflow_control']['retired_handoffs'][handoff_id]
+        # A retired business port can never replace current execution authority.
+        current.setdefault('retired_handoffs', {})[handoff_id] = copy.deepcopy(updated)
+        transaction['result'] = {**result, 'context': copy.deepcopy(current)}
+        transaction['applied'] = applied
+        transaction['intent_persisted'] = True
+        if result['effects']:
+            transaction['operation_id'] = result['effects'][0]['operation_id']
+        self.save()
+        return _view(s, {'operation': 'control-effects', 'result': transaction['result']})
 
     def recovery_view(self, *, issued=False, acknowledged=False):
         recovery = self.state['control']['context']['handoff_progress']['recovery']
@@ -2540,7 +2682,7 @@ def handle(path, request):
                 (pinned_protocol is None or pinned_protocol == PROTOCOL),
                 "legacy_run_requires_original_runtime", "all operations require the original pinned progression runtime")
         if member is not None:
-            require(member.get("control",{}).get("context",{}).get("schema_version") == 3,
+            require(member.get("control",{}).get("context",{}).get("schema_version") == 4,
                     "legacy_run_requires_original_runtime", "retain the original embedded control runtime")
         if request["operation"] == "deliver-requirement":
             return deliver_requirement(path, outer, request.get("data", {}))
@@ -2600,6 +2742,10 @@ def handle(path, request):
             if operation == "resume": return owner.resume()
             raise entry.PreparationError("invalid_operation", "unknown progression operation")
         except entry.ERROR_TYPES + (control.ControlError,) as error:
+            if operation == 'control' and data.get('action') in {'archive', 'archive-result'}:
+                return _view(owner.state, {'operation': 'control-effects', 'result': {'ok': False,
+                    'handoff_id': data['evidence'].get('handoff_id'),
+                    'error': {'code': getattr(error, 'code', 'archive_recovery_required'), 'message': entry.error_message(error)}}})
             if operation == "decide" and owner.stop_intent() is not None and getattr(error, "code", None) in {"stale_decision", "decision_conflict", "invalid_request"}:
                 raise
             if owner.state["status"] in {"accepted", "cancelled"} or getattr(error, "code", None) == "progression_suspended":

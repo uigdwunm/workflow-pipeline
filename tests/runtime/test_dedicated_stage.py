@@ -255,10 +255,13 @@ class DedicatedStageTests(EntrySupport, DiscussionProtocolScenarioFixture, Discu
         mutate('complete-phase-run', **phase_fields, evidence=phase['evidence'])
         mutate('finalize-phase-run', **phase_fields, evidence=phase['evidence'])
         ready = mutate('workflow-control', action='successor-ready', evidence={'ref': successor, 'stage': 2, 'role': 'solution-designer',
-            'input_digest': received['delivery_digest'], 'binding_verified': True, 'activated': True, 'confirmed': True, 'archive_ref': new_ref})['control']
+            'input_digest': received['delivery_digest'], 'binding_verified': True, 'activated': True, 'confirmed': True, 'archive_ref': new_ref,
+            'takeover_proof': {'ref': new_ref, 'attempt': received['context']['carrier']['attempt'],
+                'adapter': 'fixture', 'host_ref': 'host', 'invocation_id': 'stop-call', 'response_id': 'stop-response',
+                'stop_receipt': {'stopped': True}, 'business_calls_digest': 'settled'}})['control']
         self.assertEqual(ready['context']['carrier']['ref'], new_ref)
-        archived = mutate('workflow-control', action='archive', evidence={})['control']
-        self.assertEqual(archived['effects'], [{'operation': 'archive', 'ref': new_ref}])
+        archived = mutate('workflow-control', action='archive', evidence={'handoff_id': ready['handoff_id']})['control']
+        self.assertEqual(archived['effects'][0]['ref'], new_ref)
 
         duplicate = mutate('workflow-control', action='receive', evidence=received['context']['handoff_progress']['delivery'])['control']
         self.assertTrue(duplicate['acknowledged'])
@@ -326,10 +329,13 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
     def test_wrapper_control_delivery_before_finalize_and_replay_after(self):
         self.run_wrapper_control_delivery()
 
-    def test_accepted_stage_zero_successor_keeps_both_slots_until_archive(self):
+    def test_accepted_stage_zero_successor_advances_before_archive(self):
         self.run_wrapper_control_delivery(predecessor=True)
 
-    def run_wrapper_control_delivery(self, predecessor=False):
+    def test_archive_failure_does_not_block_stage_one_completion(self):
+        self.run_wrapper_control_delivery(predecessor=True, archive_status='failed')
+
+    def run_wrapper_control_delivery(self, predecessor=False, archive_status='unknown'):
         import hashlib
         import subprocess
         project = self.make_project('wrapper-control', git=True)
@@ -377,21 +383,30 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
         if predecessor:
             self.mutate(topic, 'prepare-topic-update', owner='previous', success=False,
                 mutation={'type': 'confirm-decision', 'summary': 'Old writer', 'rationale': 'Revoked'})
-            self.mutate(topic, 'workflow-control', action='successor-ready', evidence={
+            takeover = self.mutate(topic, 'workflow-control', action='successor-ready', evidence={
                 'ref': 'dedicated', 'stage': 1, 'role': 'dedicated-problem-framing',
                 'input_digest': old_delivery['delivery_digest'], 'binding_verified': True,
-                'activated': True, 'confirmed': True, 'archive_ref': 'previous'})
-            archive_fields = {'control_plan_id': old_plan['plan_id']}
-            self.mutate(topic, 'workflow-control', action='archive', evidence=archive_fields)
+                'activated': True, 'confirmed': True, 'archive_ref': 'previous',
+                'takeover_proof': {'ref': 'previous', 'attempt': old_plan['plan_id'], 'adapter': 'fixture',
+                    'host_ref': 'fixture-host', 'invocation_id': 'stop-call', 'response_id': 'stop-response',
+                    'stop_receipt': {'stopped': True}, 'business_calls_digest': 'settled'}})
+            self.assertEqual(takeover['control']['context']['stage'], 1)
+            self.assertNotIn('successor_control', takeover['control']['context'])
+            archive_fields = {'handoff_id': takeover['control']['handoff_id'], 'control_plan_id': old_plan['plan_id']}
+            intent = self.mutate(topic, 'workflow-control', action='archive', evidence=archive_fields)['control']
+            effect = intent['effects'][0]
+            self.mutate(topic, 'workflow-control', action='archive-result', evidence={
+                **archive_fields, 'operation_id': effect['operation_id'], 'ref': 'previous', 'status': 'issued',
+                'receipt': {'adapter': 'fixture', 'invocation_id': 'archive-call', 'response_id': 'intent',
+                    'ref': 'previous', 'raw': {'operation_id': effect['operation_id'], 'operation': 'archive', 'ref': 'previous'}, 'no_write': True}})
             unknown = self.mutate(topic, 'workflow-control', action='archive-result', evidence={
-                **archive_fields, 'ref': 'previous', 'status': 'unknown'})['control']
-            self.assertIn('successor_control', unknown['context'])
-            retry = self.mutate(topic, 'workflow-control', action='archive', evidence=archive_fields)['control']
-            self.assertEqual(retry['effects'], [{'operation': 'read-archive-state', 'ref': 'previous'}])
-            promoted = self.mutate(topic, 'workflow-control', action='archive-result', evidence={
-                **archive_fields, 'ref': 'previous', 'status': 'archived'})['control']
-            self.assertNotIn('successor_control', promoted['context'])
-            self.assertEqual(promoted['context']['carrier']['ref'], 'dedicated')
+                **archive_fields, 'operation_id': effect['operation_id'], 'ref': 'previous', 'status': archive_status,
+                'receipt': {'adapter': 'fixture', 'invocation_id': 'archive-call', 'response_id': 'archive-response',
+                    'ref': 'previous', 'raw': {'status': archive_status}, 'no_write': archive_status == 'failed'}})['control']
+            self.assertNotIn('successor_control', unknown['context'])
+            self.assertEqual(unknown['context']['carrier']['ref'], 'dedicated')
+            self.mutate(topic, 'prepare-topic-update', owner='previous', success=False,
+                mutation={'type': 'confirm-decision', 'summary': 'Old writer after failure', 'rationale': 'Revoked'})
         written = self.write_requirement(topic)
         output = {**phase['evidence'], 'source': written['after_sha256']}
         git('add', '-f', str(document)); git('commit', '-qm', 'output')
@@ -412,11 +427,100 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
         self.assertTrue(replay['acknowledged'])
         self.assertEqual(replay['effects'], [])
         cp = self.mutate(topic, 'prepare-checkpoint', purpose='stage-entry', base_ref='HEAD')
-        self.mutate(topic, 'publish-git-checkpoint', checkpoint_id=cp['checkpoint_id'],
+        next_checkpoint = self.mutate(topic, 'publish-git-checkpoint', checkpoint_id=cp['checkpoint_id'],
             expected_checkpoint_revision=cp['checkpoint_record_revision'])
-        self.mutate(topic, 'prepare-wrapper-phase-run', from_phase=1, to_phase=2,
+        next_phase = self.mutate(topic, 'prepare-wrapper-phase-run', from_phase=1, to_phase=2,
             route='1->2', carrier_kind='solution-designer', source_checkpoint_id=cp['checkpoint_id'],
             flow_mode='stepwise', flow_mode_source='explicit-stage-confirmation', scope=['requirements'])
+        next_fields = {'phase_run_id': next_phase['phase_run_id'], 'attempt_id': next_phase['attempt_id']}
+        self.mutate(topic, 'authorize-phase-carrier', **next_fields, carrier_ref='native:stage2')
+        self.mutate(topic, 'claim-phase-carrier', owner='native:stage2', **next_fields,
+            carrier_ref='native:stage2', source_checkpoint_id=cp['checkpoint_id'],
+            source_checkpoint_identity=next_checkpoint['commit_id'])
+        self.mutate(topic, 'phase-ready', owner='native:stage2', **next_fields,
+            carrier_ref='native:stage2', evidence=next_phase['evidence'])
+        self.mutate(topic, 'phase-activate', **next_fields, evidence=next_phase['evidence'])
+        next_ready = self.mutate(topic, 'workflow-control', action='successor-ready', evidence={
+            'ref': 'native:stage2', 'stage': 2, 'role': 'solution-designer',
+            'input_digest': received['delivery_digest'], 'binding_verified': True,
+            'activated': True, 'confirmed': True, 'archive_ref': 'dedicated',
+            'takeover_proof': {'ref': 'dedicated', 'attempt': plan['plan']['plan_id'], 'adapter': 'fixture',
+                'host_ref': 'fixture-host', 'invocation_id': 'next-stop', 'response_id': 'next-stopped',
+                'stop_receipt': {'stopped': True}, 'business_calls_digest': 'settled'}})['control']
+        self.assertTrue(next_ready['handoff_completed'])
+        if predecessor:
+            self.assertEqual(next_ready['context']['retired_handoffs'][takeover['control']['handoff_id']]['archive_status'], archive_status)
+            if archive_status == 'unknown':
+                self.recover_attached_archive(topic, project, next_ready['context'], takeover['control']['handoff_id'])
+
+    def recover_attached_archive(self, topic, project, source_context, handoff_id):
+        """A persisted downstream checkpoint routes cleanup through the real original ledger."""
+        import copy
+        import tempfile
+        from unittest.mock import patch
+        import workflow_progress as progression
+        base = self.evolution_request(topic, operation='read-topic')
+        base.pop('operation')
+        latest = progression.dispatch.discussion_protocol.handle({**base, 'operation': 'read-topic'})
+        attachment = {key: base[key] for key in ('project_id', 'tree_id', 'actor_topic_id', 'actor_conversation_ref')}
+        repository = progression.entry.repository_facts(str(project))
+        discussion_project, _ = progression.entry.resolve_discussion_project(repository, attachment)
+        saved = {'controller_ref': 'discussion-task', 'entry': {'source': {'attachment': attachment}},
+            'expected_entry': {'repository': repository, 'discussion_project': discussion_project,
+                'requirement': {'attachment': attachment}}}
+        port = {'context': copy.deepcopy(source_context), 'discussion': {**base,
+            'expected_ledger_revision': latest['ledger_revision'], 'expected_topic_revision': latest['record_revision'],
+            'idempotency_key': str(uuid.uuid4())}}
+        current = copy.deepcopy(source_context)
+        current.update(stage=2, carrier=None, handoff_progress=None)
+        state = {'protocol': progression.PROTOCOL, 'revision': 0, 'mode': 'continuous', 'stage': 2,
+            'status': 'active', 'step': 'prepare-dispatch', 'control': {'context': current, 'discussion': None},
+            'handoff': saved, 'packages': {}, 'dispatch': None, 'transaction': None,
+            'transaction_source': None, 'transaction_result': None, 'history': [{'control': port, 'handoff': saved}],
+            'host': {'generation': 0, 'status': 'unknown', 'seen': {}, 'calls': {}, 'proof': None, 'query': None, 'last_stop': None}}
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        checkpoint = Path(temporary.name) / 'downstream.json'
+        progression.atomic_save(checkpoint, {progression.KEY: state})
+        def invoke(data):
+            revision = progression.read_record(checkpoint)[progression.KEY]['revision']
+            return progression.handle(checkpoint, {'protocol': progression.PROTOCOL, 'operation': 'control',
+                'expected_revision': revision, 'data': data})
+        request = {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+            'receipt': {'controller_ref': 'discussion-task', 'reference': 'recover-old-task'}}
+        original_save = progression.Progress.save
+        saves = []
+        def crash_after_ledger(owner):
+            saves.append(True)
+            if len(saves) == 2:
+                raise KeyboardInterrupt('ledger committed before C response save')
+            original_save(owner)
+        with patch.object(progression.Progress, 'save', crash_after_ledger):
+            with self.assertRaises(KeyboardInterrupt):
+                invoke(request)
+        ledger_after_commit = Path(topic['ledger_path']).read_bytes()
+        recovered = invoke(request)
+        self.assertIsNotNone(recovered['next_action'], recovered)
+        effect = recovered['next_action']['result']['effects'][0]
+        self.assertEqual(Path(topic['ledger_path']).read_bytes(), ledger_after_commit)
+        self.assertEqual((effect['operation'], effect['ref']), ('read-archive-state', 'previous'))
+        def result(status):
+            receipt = {'adapter': 'fixture', 'invocation_id': 'read-old-call', 'response_id': 'read-old-' + status,
+                'ref': 'previous', 'no_write': status == 'issued',
+                'raw': {key: effect[key] for key in ('operation_id', 'operation', 'ref')} if status == 'issued' else {'status': status}}
+            return {'action': 'archive-result', 'evidence': {'handoff_id': handoff_id, 'operation_id': effect['operation_id'],
+                'ref': 'previous', 'status': status, 'receipt': receipt}, 'receipt': receipt}
+        invoke(result('issued'))
+        invoke(result('archived'))
+        conflict = invoke(result('not-archived'))
+        self.assertFalse(conflict['next_action']['result']['ok'])
+        restored = progression.read_record(checkpoint)[progression.KEY]
+        self.assertEqual(restored['history'], state['history'])
+        self.assertEqual({key:value for key,value in restored['control']['context'].items() if key != 'retired_handoffs'},
+            {key:value for key,value in current.items() if key != 'retired_handoffs'})
+        authoritative = progression.dispatch.discussion_protocol.handle({**base, 'operation': 'read-topic'})['workflow_control']
+        self.assertEqual(authoritative['retired_handoffs'][handoff_id]['archive_status'], 'archived')
+        self.assertEqual(len(authoritative['retired_handoffs'][handoff_id]['conflicts']), 1)
 
     def test_dedicated_accept_rechecks_gate_and_baseline_without_accepting(self):
         for obstruction in ('gate', 'document'):

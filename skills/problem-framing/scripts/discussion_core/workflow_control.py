@@ -97,7 +97,7 @@ def workflow_control(request):
         if matches:
             record = matches[0]
             context = _json_field(record, 'data_json', 'workflow control')
-            if context.get('schema_version') != 3:
+            if context.get('schema_version') != 4:
                 raise ProtocolError('legacy_run_requires_original_runtime', 'retain original package for embedded control schema ' + str(context.get('schema_version')))
             if context['controller_ref'] != owner_ref:
                 raise ProtocolError('document_ownership_conflict', 'controller identity changed')
@@ -105,7 +105,7 @@ def workflow_control(request):
             record = {'result_id': 'WC-' + request['actor_topic_id'], 'result_kind': 'workflow-control',
                       'topic_id': request['actor_topic_id'], 'record_revision': 0, 'state': 'active'}
             records['Phase Results'].append(record)
-            context = {'schema_version': 3, 'controller_ref': owner_ref,
+            context = {'schema_version': 4, 'controller_ref': owner_ref,
                        'topic_ref': request['actor_topic_id'], 'stage': topic['current_phase'],
                        'carrier': None, 'preference': {'topic_current': False, 'stage_current': False},
                        'flow_authority': None, 'requirement_identity': identity, 'handoff_progress': None}
@@ -122,6 +122,11 @@ def workflow_control(request):
                         context['handoff_progress'] = None
                     context['requirement_identity'] = identity
                 selected = context
+            elif action in {'archive', 'archive-result'}:
+                selected = context
+            elif action == 'successor-ready' and any(r['delivery_digest'] == evidence.get('input_digest') for r in context.get('retired_handoffs', {}).values()):
+                retired = next(r for r in context['retired_handoffs'].values() if r['delivery_digest'] == evidence['input_digest'])
+                selected = {**retired, 'handoff_progress': {'plan': retired['plan']}}
             else:
                 selected = _control.selected_control(context, evidence)
             progress = selected['handoff_progress'] or {}
@@ -183,7 +188,7 @@ def workflow_control(request):
                     evidence['verified_commit_hash'] = identity['sha256']
                 else:
                     _git.verify_delivery(project, evidence['commit'], evidence)
-            control = _control.transition({'schema_version': 3, 'actor_ref': owner_ref,
+            control = _control.transition({'schema_version': 4, 'actor_ref': owner_ref,
                 'context': context, 'action': action, 'evidence': evidence})
         except _control.ControlError as error:
             raise ProtocolError('invalid_request', str(error)) from error

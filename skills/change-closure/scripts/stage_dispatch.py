@@ -51,8 +51,13 @@ their exact idempotency key and revisions must be retained on an unknown result.
     # Downstream Phase Runs own lifecycle, while execution control stays in the
     # caller checkpoint. Attached dedicated-stage mutations must use the ledger.
     require(context["topic_ref"] is None or context["stage"] >= 2, "authority_missing", "attached dedicated control requires its ledger adapter")
-    payload = {"schema_version": 3, "actor_ref": context["controller_ref"], "context": context,
+    payload = {"schema_version": 4, "actor_ref": context["controller_ref"], "context": context,
                "action": action, "evidence": evidence}
+    if action in {'archive', 'archive-result'}:
+        # Retired task cleanup has no Git authority. Historical stage baselines
+        # must not be compared against the current native writer's baseline.
+        require(context['topic_ref'] is None, 'authority_missing', 'attached archive recovery requires the original discussion ledger')
+        return control.transition(payload), None
     if context["stage"] >= 2 or action == "receive":
         repository = request["binding"]["repository"] if action == "closure-result" else request["expected_entry"]["repository"]["root"]
         baseline = request['scope']['baseline']

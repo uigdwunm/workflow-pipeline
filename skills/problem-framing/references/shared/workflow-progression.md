@@ -1,5 +1,29 @@
 # Workflow progression
 
+## Retired visible task archive recovery
+
+C v10 keeps retired_handoffs in the current control projection across start and
+retains original control_transactions and host evidence in immutable history.
+successor-ready derives takeover_proof from the saved causal stop; unresolved
+business calls, B/allocation transactions and stop barriers still block takeover
+and next-stage start. The committed takeover is followed by one archive intent.
+Only a confirmed handoff plus a persisted archive intent is cleanup scope.
+
+Archive recovery names handoff_id and operation_id. Attached recovery reads the
+original topic's latest ledger with its original Controller authority and updates
+only that retired record; current native execution context is unchanged. Late
+transactions enter the current collection without mutating historical snapshots.
+
+Before host invocation, persist archive-result(status=issued) with its exact
+adapter/invocation identity. A replayed effect never permits another invocation.
+After an interruption with an unissued intent, query original host call history.
+An authenticated archive call_lookup with operation_id, ref, adapter,
+invocation_id, response_id, status:not-issued and raw can re-emit that same
+operation. C retains and ACKs repeated lookup responses. Issued without result
+or unknown requires read-archive-state; pending queries do not issue duplicates.
+Failed/unknown readbacks wait for another user-triggered recovery. No timer or
+background worker exists.
+
 Use the pinned `scripts/workflow_progress.py CHECKPOINT` at the A/B seam in
 both interactive and foreground-carrier execution. CHECKPOINT is the original
 conversation or runner checkpoint, an absolute path outside the repository and
@@ -28,7 +52,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v9","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v10","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -478,7 +502,7 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 6 and pin workflow-progress-v9 /
+New runner records use outer version 6 and pin workflow-progress-v10 /
 workflow-stage-transfer-v6 / flow-worktree-v2 packages with control compatibility
 key 5. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
