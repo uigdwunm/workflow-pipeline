@@ -1,14 +1,16 @@
 # Package execution and action preflight
 
 Registration provenance and controlled recovery require preparation=workflow-preparation-v3,
-stage_transfer=workflow-stage-transfer-v5 and workflow_progress=workflow-progress-v8.
+stage_transfer=workflow-stage-transfer-v6 and workflow_progress=workflow-progress-v9.
 Entry requests use workflow-entry-v3 and requirement requests use requirement-freeze-v2.
 Old pinned runs keep their original packages and records; new packages reject
 incompatible exchanges instead of filling missing identity fields or migrating runs.
-Runner outer version 6 requires workflow-progress-v8, workflow-stage-transfer-v5
-and control compatibility key 4 (JSON schema 3). Discussion request/ledger, requirement-freeze, thread-settings and
+Runner outer version 6 requires workflow-progress-v9, workflow-stage-transfer-v6
+and control compatibility key 5 (JSON schema 3). Discussion request/ledger, requirement-freeze, thread-settings and
 supervision flow-worktree-v2 retain their existing versions. Older records require
-their original pinned runtime without mutation.
+their original pinned runtime without mutation. Missing implementation_policy in
+compatible new input means full; it never supplies direct provenance to an old
+candidate. This change does not install packages or update active registrations.
 
 Use the [entry adapter]({{resource:shared/references/entry-preparation.md}}) to
 collect repository, task, source, settings and action dependencies before this
