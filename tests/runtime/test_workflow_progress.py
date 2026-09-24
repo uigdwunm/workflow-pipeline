@@ -440,6 +440,7 @@ class ProgressTests(transfer.StageTransferTests):
                 state["controller_decision"] = queued
                 self.checkpoint = self.checkpoint.resolve()
                 progress.atomic_save(self.checkpoint, {**shared, **state, "workflow_requirements": {"keep": "C-owned"}})
+                state.refresh(progress.read_record(self.checkpoint))
                 result = {"result": "needs_input", "artifacts": [], "evidence": [], "handoff_json": "{}",
                           "handoff": {}, "question": "Next choice?", "message": "", "needs_input_kind": "user_decision"}
                 receipt = {"run_record": str(self.checkpoint), "stage": "stage2", "turn": 1, "invocation_id": reason,
@@ -1401,10 +1402,561 @@ class PhaseProgressTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTe
         self.assertIsNone(progress.Progress(checkpoint, progress.read_record(checkpoint)).phase_action())
 
 
+class RunnerCheckpointMutationTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.checkpoint = Path(temporary.name) / 'run.json'
+        self.state = runner._new_state({})
+        runner._atomic_save(self.checkpoint, self.state)
+
+    def test_runner_patch_preserves_newer_checkpoint_fields(self):
+        newer = progress.read_record(self.checkpoint)
+        newer['future_c_field'] = {'evidence': 'retained'}
+        newer['transport'] = {'instance': 'original', 'state': 'live'}
+        progress.atomic_save(self.checkpoint, newer)
+        self.state['status'] = 'paused'
+        runner._atomic_save(self.checkpoint, self.state)
+        saved = progress.read_record(self.checkpoint)
+        self.assertEqual(saved['future_c_field'], {'evidence': 'retained'})
+        self.assertEqual(saved['transport'], newer['transport'])
+        self.assertEqual(self.state, saved)
+
+    def test_runner_patch_combines_independent_nested_updates(self):
+        self.state['confirmed'] = {'flow_mode': 'stepwise', 'registry_input': 'first'}
+        runner._atomic_save(self.checkpoint, self.state)
+        newer = progress.read_record(self.checkpoint)
+        newer['confirmed']['registry_input'] = 'second'
+        progress.atomic_save(self.checkpoint, newer)
+        self.state['confirmed']['flow_mode'] = 'continuous'
+        runner._atomic_save(self.checkpoint, self.state)
+        self.assertEqual(progress.read_record(self.checkpoint)['confirmed'],
+                         {'flow_mode': 'continuous', 'registry_input': 'second'})
+
+    def test_runner_patch_retains_queued_decision_until_exact_consumption(self):
+        decision = {'decision_id': 'choice', 'answer': 'yes'}
+        newer = progress.read_record(self.checkpoint)
+        newer['controller_decision'] = decision
+        progress.atomic_save(self.checkpoint, newer)
+        self.state['status'] = 'paused'
+        runner._atomic_save(self.checkpoint, self.state)
+        self.assertEqual(progress.read_record(self.checkpoint)['controller_decision'], decision)
+        newer = progress.read_record(self.checkpoint)
+        newer[progress.KEY] = {'decisions': {'choice': decision}, 'history': []}
+        progress.atomic_save(self.checkpoint, newer)
+        self.state['status'] = 'active'
+        runner._atomic_save(self.checkpoint, self.state)
+        self.assertNotIn('controller_decision', progress.read_record(self.checkpoint))
+
+    def test_runner_patch_rejects_conflicting_status_change(self):
+        newer = progress.read_record(self.checkpoint)
+        newer['status'] = 'needs_input'
+        progress.atomic_save(self.checkpoint, newer)
+        self.state['status'] = 'paused'
+        with self.assertRaisesRegex(runner.WorkflowError, 'checkpoint_conflict: status'):
+            runner._atomic_save(self.checkpoint, self.state)
+        self.assertEqual(progress.read_record(self.checkpoint), newer)
+
+    def test_original_host_request_keeps_pending_input_priority(self):
+        host_pending = {'kind': 'host-request', 'decision_id': 'host'}
+        newer = progress.read_record(self.checkpoint)
+        newer['transport'] = {'server_requests': {'host': {'id': 'host'}}}
+        newer['pending_input'] = host_pending
+        progress.atomic_save(self.checkpoint, newer)
+        self.state['pending_input'] = {'kind': 'user-decision', 'decision_id': 'business'}
+        runner._atomic_save(self.checkpoint, self.state)
+        self.assertEqual(progress.read_record(self.checkpoint)['pending_input'], host_pending)
+        self.assertEqual(self.state['pending_input'], host_pending)
+
+    def test_cancel_dominates_new_host_request_status(self):
+        self.state['launch']['state'] = 'launched'
+        self.state['sessions']['stage2'] = 'carrier'
+        runner._atomic_save(self.checkpoint, self.state)
+        newer = progress.read_record(self.checkpoint)
+        newer['status'] = 'needs_input'
+        newer['pending_input'] = {'kind': 'host-request', 'decision_id': 'host'}
+        newer['transport'] = {'server_requests': {'host': {'id': 'host'}}}
+        newer['runner_request'] = {'operation': 'cancel', 'request_id': 'stop'}
+        progress.atomic_save(self.checkpoint, newer)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(runner._advance(self.state, self.checkpoint), 0)
+        saved = progress.read_record(self.checkpoint)
+        self.assertEqual(saved['status'], 'cancelling')
+        self.assertEqual(saved['pending_input'], newer['pending_input'])
+        self.assertEqual(saved['runner_request'], newer['runner_request'])
+
+    def test_pause_waits_despite_new_host_request_status(self):
+        self.state['launch']['state'] = 'launched'
+        self.state['sessions']['stage2'] = 'carrier'
+        runner._atomic_save(self.checkpoint, self.state)
+        newer = progress.read_record(self.checkpoint)
+        newer['status'] = 'needs_input'
+        newer['pending_input'] = {'kind': 'host-request', 'decision_id': 'host'}
+        newer['transport'] = {'server_requests': {'host': {'id': 'host'}}}
+        newer['runner_request'] = {'operation': 'pause', 'request_id': 'stop'}
+        progress.atomic_save(self.checkpoint, newer)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(runner._advance(self.state, self.checkpoint), 0)
+        saved = progress.read_record(self.checkpoint)
+        self.assertEqual(saved['status'], 'pausing')
+        self.assertEqual(saved['pending_input'], newer['pending_input'])
+        self.assertEqual(saved['runner_request'], newer['runner_request'])
+
+    def test_late_cancel_supersedes_newer_paused_status(self):
+        self.state['launch']['state'] = 'launched'
+        self.state['sessions']['stage2'] = 'carrier'
+        runner._atomic_save(self.checkpoint, self.state)
+        newer = progress.read_record(self.checkpoint)
+        newer['status'] = 'paused'
+        newer['runner_request'] = {'operation': 'cancel', 'request_id': 'stop'}
+        progress.atomic_save(self.checkpoint, newer)
+        self.state['status'] = 'cancelling'
+        runner._atomic_save(self.checkpoint, self.state)
+        saved = progress.read_record(self.checkpoint)
+        self.assertEqual(saved['status'], 'cancelling')
+        self.assertEqual(saved['runner_request'], newer['runner_request'])
+
+    def test_stale_pause_cannot_downgrade_cancelling_status(self):
+        self.state['launch']['state'] = 'launched'
+        self.state['sessions']['stage2'] = 'carrier'
+        runner._atomic_save(self.checkpoint, self.state)
+        newer = progress.read_record(self.checkpoint)
+        newer['status'] = 'cancelling'
+        newer['runner_request'] = {'operation': 'pause', 'request_id': 'stale-pause'}
+        progress.atomic_save(self.checkpoint, newer)
+        self.state['status'] = 'pausing'
+        with self.assertRaisesRegex(runner.WorkflowError, 'checkpoint_conflict: status'):
+            runner._atomic_save(self.checkpoint, self.state)
+        self.assertEqual(progress.read_record(self.checkpoint), newer)
+
+    def test_runner_patch_does_not_recreate_a_missing_checkpoint(self):
+        self.checkpoint.unlink()
+        self.state['status'] = 'paused'
+        with self.assertRaisesRegex(runner.WorkflowError, 'checkpoint_missing'):
+            runner._atomic_save(self.checkpoint, self.state)
+        with self.assertRaisesRegex(runner.WorkflowError, 'checkpoint_missing'):
+            self.state.refresh(progress.read_record(self.checkpoint))
+        self.assertFalse(self.checkpoint.exists())
+
+    def test_launch_receipt_survives_checkpoint_write_failure(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+
+        class Host:
+            instance = 'original-host'
+            process = None
+
+            def start(self, diagnostics):
+                self.process = object()
+
+            def start_carrier(self, stage, settings):
+                return 'original-carrier'
+
+            def run_turn(self, *args):
+                raise AssertionError('the uncertain launch must not issue a turn')
+
+        original_save = runner._atomic_save
+
+        def fail_launched_save(path, state, **options):
+            if state['launch']['state'] == 'launched':
+                raise OSError('checkpoint write failed')
+            return original_save(path, state, **options)
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'), \
+                patch.object(runner, '_atomic_save', side_effect=fail_launched_save):
+            with self.assertRaisesRegex(runner.CheckpointPendingError, 'reconcile the original launch'):
+                runner._invoke(self.state, self.checkpoint, None, False, Host())
+        saved = progress.read_record(self.checkpoint)
+        receipt_path = runner._carrier_receipt_path(self.checkpoint, 'stage2', 1)
+        receipt = progress.read_record(receipt_path)
+        self.assertEqual(saved['launch']['state'], 'spawning')
+        self.assertEqual(receipt['events'], [{'type': 'thread.started', 'thread_id': 'original-carrier'}])
+        recovered = runner.CheckpointState(saved)
+        with self.assertRaisesRegex(runner.WorkflowError, 'carrier outcome unresolved'):
+            runner._recover_carrier_receipt(recovered, self.checkpoint)
+        self.assertEqual(progress.read_record(self.checkpoint)['sessions']['stage2'], 'original-carrier')
+
+    def test_queued_stop_before_launch_intent_prevents_new_carrier(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+        queued = progress.read_record(self.checkpoint)
+        queued['runner_request'] = {'operation': 'cancel', 'request_id': 'queued-before-launch'}
+        queued['status'] = 'cancelled'
+        progress.atomic_save(self.checkpoint, queued)
+
+        class Host:
+            instance = 'original-host'
+            process = None
+            started = False
+
+            def start(self, diagnostics):
+                self.started = True
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('a queued stop must prevent carrier creation')
+
+        host = Host()
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'):
+            with self.assertRaisesRegex(runner.WorkflowError, 'launch_deferred'):
+                runner._invoke(self.state, self.checkpoint, None, False, host)
+        self.assertFalse(host.started)
+        self.assertEqual(progress.read_record(self.checkpoint), queued)
+
+    def test_accepted_stage_before_launch_intent_prevents_extra_turn(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+        newer = progress.read_record(self.checkpoint)
+        newer[progress.KEY] = {'stage': 2, 'status': 'accepted', 'phase_complete': True}
+        progress.atomic_save(self.checkpoint, newer)
+
+        class Host:
+            instance = 'original-host'
+            process = object()
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('accepted stage must not issue another turn')
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'):
+            with self.assertRaisesRegex(runner.WorkflowError, 'launch_deferred'):
+                runner._invoke(self.state, self.checkpoint, None, False, Host())
+
+    def test_pending_decision_before_launch_intent_prevents_extra_turn(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+        newer = progress.read_record(self.checkpoint)
+        newer[progress.KEY] = {'stage': 2, 'status': 'needs_input', 'pending': {'decision_id': 'choice'}}
+        progress.atomic_save(self.checkpoint, newer)
+
+        class Host:
+            instance = 'original-host'
+            process = object()
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('pending decision must not issue another turn')
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'):
+            with self.assertRaisesRegex(runner.WorkflowError, 'launch_deferred'):
+                runner._invoke(self.state, self.checkpoint, None, False, Host())
+
+    def test_business_block_before_launch_intent_prevents_extra_turn(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+        newer = progress.read_record(self.checkpoint)
+        newer[progress.KEY] = {'stage': 2, 'status': 'active',
+                               'business_block': {'id': 'original-block'}}
+        progress.atomic_save(self.checkpoint, newer)
+
+        class Host:
+            instance = 'original-host'
+            process = object()
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('business block must not issue another turn')
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'):
+            with self.assertRaisesRegex(runner.WorkflowError, 'launch_deferred'):
+                runner._invoke(self.state, self.checkpoint, None, False, Host())
+
+    def test_blocked_progress_before_launch_intent_prevents_extra_turn(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+        newer = progress.read_record(self.checkpoint)
+        newer[progress.KEY] = {'stage': 2, 'status': 'blocked'}
+        progress.atomic_save(self.checkpoint, newer)
+
+        class Host:
+            instance = 'original-host'
+            process = object()
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('blocked progress must not issue another turn')
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'):
+            with self.assertRaisesRegex(runner.WorkflowError, 'launch_deferred'):
+                runner._invoke(self.state, self.checkpoint, None, False, Host())
+
+    def test_consumed_old_decision_cannot_answer_new_pending_input(self):
+        old_decision = {'decision_id': 'old', 'subject': {'stage': 2}, 'answer': 'first',
+                        'reference': 'controller-answer:old'}
+        pending = {'kind': 'user-decision', 'decision_id': 'new', 'subject': {'stage': 2},
+                   'question': 'Choose again'}
+        self.state['controller_decision'] = old_decision
+        runner._atomic_save(self.checkpoint, self.state)
+        saved = progress.read_record(self.checkpoint)
+        saved[progress.KEY] = {'stage': 2, 'status': 'needs_input', 'pending': pending,
+                               'decisions': {'old': old_decision}, 'history': []}
+        progress.atomic_save(self.checkpoint, saved)
+        with patch.object(runner, '_invoke', side_effect=AssertionError('new question needs an answer')), \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(runner._advance_in_host(self.state, self.checkpoint, None, object()), 0)
+        latest = progress.read_record(self.checkpoint)
+        self.assertEqual(latest['pending_input'], pending)
+        self.assertNotIn('controller_decision', latest)
+
+    def test_control_turn_can_use_existing_carrier_after_stop_is_queued(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        self.state['sessions']['stage2'] = 'original-carrier'
+        self.state['launch'] = {'stage': 'stage2', 'state': 'completed_turn', 'turn': 1}
+        runner._atomic_save(self.checkpoint, self.state)
+        queued = progress.read_record(self.checkpoint)
+        queued['runner_request'] = {'operation': 'pause', 'request_id': 'stop'}
+        progress.atomic_save(self.checkpoint, queued)
+
+        class Host:
+            instance = 'original-host'
+            process = object()
+
+            def start_carrier(self, stage, settings):
+                return 'original-carrier'
+
+            def run_turn(self, *args):
+                raise AssertionError('control turn reached the original carrier')
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='stop prompt'):
+            with self.assertRaisesRegex(AssertionError, 'control turn reached the original carrier'):
+                runner._invoke(self.state, self.checkpoint, None, True, Host(), control_turn=True)
+
+    def test_normal_turn_rechecks_stop_queued_after_progress_read(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+
+        class Host:
+            instance = 'original-host'
+            process = None
+            started = False
+
+            def start(self, diagnostics):
+                self.started = True
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('a queued stop must prevent carrier creation')
+
+        host = Host()
+        original_invoke = runner._invoke
+
+        def queue_before_issue(*args, **kwargs):
+            with progress.record_lock(self.checkpoint):
+                queued = progress.read_record(self.checkpoint)
+                queued['runner_request'] = {'operation': 'cancel', 'request_id': 'queued-after-read'}
+                queued['status'] = 'cancelled'
+                progress.atomic_save(self.checkpoint, queued)
+            return original_invoke(*args, **kwargs)
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'), \
+                patch.object(runner, '_invoke', side_effect=queue_before_issue), redirect_stdout(io.StringIO()):
+            self.assertEqual(runner._advance_in_host(self.state, self.checkpoint, None, host), 0)
+        self.assertFalse(host.started)
+        saved = progress.read_record(self.checkpoint)
+        self.assertEqual(saved['status'], 'cancelled')
+        self.assertEqual(saved['runner_request']['request_id'], 'queued-after-read')
+
+    def test_normal_turn_rechecks_decision_queued_after_progress_read(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+        pending = {'kind': 'user-decision', 'decision_id': 'choice', 'subject': {'stage': 2},
+                   'question': 'Choose next step'}
+        original_invoke = runner._invoke
+
+        def queue_before_issue(*args, **kwargs):
+            with progress.record_lock(self.checkpoint):
+                newer = progress.read_record(self.checkpoint)
+                newer[progress.KEY] = {'stage': 2, 'status': 'needs_input', 'pending': pending}
+                progress.atomic_save(self.checkpoint, newer)
+            return original_invoke(*args, **kwargs)
+
+        class Host:
+            instance = 'original-host'
+            process = object()
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('pending decision must not issue another turn')
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'), \
+                patch.object(runner, '_invoke', side_effect=queue_before_issue), redirect_stdout(io.StringIO()):
+            self.assertEqual(runner._advance_in_host(self.state, self.checkpoint, None, Host()), 0)
+        self.assertEqual(progress.read_record(self.checkpoint)['pending_input'], pending)
+
+    def test_normal_turn_rechecks_acceptance_after_progress_read(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+        original_invoke = runner._invoke
+
+        def accept_before_issue(*args, **kwargs):
+            with progress.record_lock(self.checkpoint):
+                newer = progress.read_record(self.checkpoint)
+                newer[progress.KEY] = {'stage': 2, 'status': 'accepted', 'phase_complete': True,
+                                       'accepted': {'digest': 'accepted'}}
+                progress.atomic_save(self.checkpoint, newer)
+            return original_invoke(*args, **kwargs)
+
+        class Host:
+            instance = 'original-host'
+            process = object()
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('accepted stage must not issue another turn')
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'), \
+                patch.object(runner, '_invoke', side_effect=accept_before_issue), \
+                patch.object(runner.stage_handoff, 'render',
+                             side_effect=AssertionError('accepted projection reached')):
+            with self.assertRaisesRegex(AssertionError, 'accepted projection reached'):
+                runner._advance_in_host(self.state, self.checkpoint, None, Host())
+
+    def test_normal_turn_rechecks_business_block_after_progress_read(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+        original_invoke = runner._invoke
+
+        def block_before_issue(*args, **kwargs):
+            with progress.record_lock(self.checkpoint):
+                newer = progress.read_record(self.checkpoint)
+                newer[progress.KEY] = {'stage': 2, 'status': 'active',
+                                       'business_block': {'id': 'original-block'}}
+                progress.atomic_save(self.checkpoint, newer)
+            return original_invoke(*args, **kwargs)
+
+        class Host:
+            instance = 'original-host'
+            process = object()
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('business block must not issue another turn')
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'), \
+                patch.object(runner, '_invoke', side_effect=block_before_issue), redirect_stdout(io.StringIO()):
+            self.assertEqual(runner._advance_in_host(self.state, self.checkpoint, None, Host()), 1)
+        latest = progress.read_record(self.checkpoint)
+        self.assertEqual(latest['status'], 'failed')
+        self.assertEqual(latest['error']['business_block_id'], 'original-block')
+
+    def test_prior_stage_stop_does_not_block_next_stage_launch(self):
+        self.state['current_stage'] = 'stage3'
+        self.state['launch'] = {'stage': 'stage3', 'state': 'prelaunch', 'turn': 0}
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage3': {}},
+                                   'stages': {'stage3': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+        saved = progress.read_record(self.checkpoint)
+        saved[progress.KEY] = {'stage': 2, 'status': 'accepted', 'stop_requested': 'pausing'}
+        progress.atomic_save(self.checkpoint, saved)
+
+        class Host:
+            instance = 'original-host'
+            process = object()
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('next-stage launch was reached')
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'):
+            with self.assertRaisesRegex(AssertionError, 'next-stage launch was reached'):
+                runner._invoke(self.state, self.checkpoint, None, False, Host())
+
+    def test_noncreation_outcome_is_not_a_user_stop_request(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        runner._atomic_save(self.checkpoint, self.state)
+        saved = progress.read_record(self.checkpoint)
+        saved[progress.KEY] = {'stage': 2, 'status': 'cancelled', 'stopped': True}
+        progress.atomic_save(self.checkpoint, saved)
+
+        class Host:
+            instance = 'original-host'
+            process = object()
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('noncreation path reached the carrier')
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='prompt'):
+            with self.assertRaisesRegex(AssertionError, 'noncreation path reached the carrier'):
+                runner._invoke(self.state, self.checkpoint, None, False, Host())
+
+    def test_saved_resume_can_reenter_paused_original_carrier(self):
+        self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
+                                   'stages': {'stage2': {}}}
+        self.state['sessions']['stage2'] = 'original-carrier'
+        self.state['launch'] = {'stage': 'stage2', 'state': 'completed_turn', 'turn': 1}
+        self.state['resume_progression'] = True
+        runner._atomic_save(self.checkpoint, self.state)
+        saved = progress.read_record(self.checkpoint)
+        saved[progress.KEY] = {'stage': 2, 'status': 'paused', 'stop_requested': 'pausing'}
+        progress.atomic_save(self.checkpoint, saved)
+
+        class Host:
+            instance = 'original-host'
+            process = object()
+
+            def start_carrier(self, stage, settings):
+                raise AssertionError('resume reached the original carrier')
+
+        with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
+                patch.object(runner, '_stage_prompt', return_value='resume prompt'):
+            with self.assertRaisesRegex(AssertionError, 'resume reached the original carrier'):
+                runner._invoke(self.state, self.checkpoint, None, True, Host())
+
+    def test_new_pause_after_saved_resume_prevents_normal_turn(self):
+        self.state['sessions']['stage2'] = 'original-carrier'
+        self.state['launch'] = {'stage': 'stage2', 'state': 'completed_turn', 'turn': 1}
+        self.state['resume_progression'] = True
+        runner._atomic_save(self.checkpoint, self.state)
+        saved = progress.read_record(self.checkpoint)
+        saved[progress.KEY] = {'stage': 2, 'status': 'pausing', 'stop_requested': 'pausing'}
+        progress.atomic_save(self.checkpoint, saved)
+        with patch.object(runner, '_invoke', side_effect=AssertionError('normal turn must not start')), \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(runner._advance_in_host(self.state, self.checkpoint, None, object()), 0)
+        self.assertEqual(progress.read_record(self.checkpoint)['status'], 'pausing')
+
+    def test_cancellation_upgrades_saved_pause_resume(self):
+        self.state['sessions']['stage2'] = 'original-carrier'
+        self.state['launch'] = {'stage': 'stage2', 'state': 'completed_turn', 'turn': 1}
+        self.state['resume_progression'] = True
+        runner._atomic_save(self.checkpoint, self.state)
+        saved = progress.read_record(self.checkpoint)
+        saved[progress.KEY] = {'stage': 2, 'status': 'paused', 'stop_requested': 'cancelling'}
+        progress.atomic_save(self.checkpoint, saved)
+        with patch.object(runner, '_invoke', side_effect=AssertionError('normal turn must not start')), \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(runner._advance_in_host(self.state, self.checkpoint, None, object()), 0)
+        self.assertEqual(progress.read_record(self.checkpoint)['status'], 'cancelling')
+
+    def test_unhandled_launch_deferral_does_not_spin(self):
+        blocked = runner.LaunchDeferred('launch_deferred')
+        with patch.object(runner, '_invoke', side_effect=[blocked, blocked,
+                                                          AssertionError('unexpected third retry')]) as invoked:
+            with self.assertRaisesRegex(runner.WorkflowError, 'did not reach a ready branch'):
+                runner._advance_in_host(self.state, self.checkpoint, None, object())
+        self.assertEqual(invoked.call_count, 2)
+
+
 def load_tests(loader, tests, pattern):
     # B's tests run in their own module; inherit only its real fixture helpers.
     suite = unittest.TestSuite(ProgressTests(name) for name in loader.getTestCaseNames(ProgressTests) if name in ProgressTests.__dict__)
     for cls in (AttachedProgressTests, NonGitProgressTests):
         suite.addTests(cls(name) for name in loader.getTestCaseNames(cls) if name in AttachedProgressTests.__dict__)
     suite.addTests(loader.loadTestsFromTestCase(PhaseProgressTests))
+    suite.addTests(loader.loadTestsFromTestCase(RunnerCheckpointMutationTests))
     return suite
