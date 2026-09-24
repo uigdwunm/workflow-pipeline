@@ -55,11 +55,23 @@ takes delivery_digest. Then confirm the successor and actual old task archive_re
 successor-ready requires ref, stage, input_digest, role, binding_verified, activated,
 confirmed, archive_ref and takeover_proof. The proof names the old ref/attempt,
 adapter/host_ref, invocation_id/response_id, raw stop_receipt and reconciled
-business_calls_digest. C derives it from saved causal host observations and
+business_calls_digest. stop_receipt is the complete existing host observation:
+event_id, action_id, provenance, action_resolution and the full B receipt. Its
+normalized status must be stopped, its original raw response must be present,
+and ref/attempt/role/configuration must match the frozen old plan. business_calls
+contains the original host invocations and response fingerprints plus unresolved;
+unresolved must be empty. Both stop call and response must occur in this exact
+projection and its digest must match. Boolean stopped claims and opaque strings
+cannot replace these records. C derives it from saved causal host observations and
 rechecks stopped writers and outstanding calls; callers cannot supply derived
 proofs. Interactive Controllers authenticate original tool evidence before
 activation and again before takeover. Pure validation does not authenticate
 arbitrary strings; Git and archive receipts never prove a writer stopped.
+The same trusted Controller/host ingress as B/C authenticates actual tool origin;
+this JSON protocol verifies causal consistency, not a cryptographic host identity.
+If original raw responses or complete call reconciliation cannot be obtained,
+interactive Controllers must stop before activation or successor-ready. Test
+adapter records do not count as real host verification.
 
 The durable takeover atomically retains a top-level retired_handoffs record,
 sets handoff_completed and promotes an existing successor slot. Without a slot,

@@ -1082,13 +1082,17 @@ def _check_completion_evidence(
             context = _json_field(record, "data_json", "workflow control")
             retired = [{'handoff_progress': {**record, 'state': 'handoff-complete'}}
                        for record in context.get('retired_handoffs', {}).values()]
+            matched = False
             for slot in (context, context.get("successor_control"), *retired):
                 progress = (slot or {}).get("handoff_progress") or {}
                 authority = progress.get("plan", {}).get("entry_authority", {})
                 if authority.get("run_id") == data["run_id"] and authority.get("attempt_id") == attempt["attempt_id"]:
+                    matched = True
                     if (progress.get("state") not in {"result-accepted", "successor-ready", "archive-pending", "archived", "handoff-complete"}
                             or progress.get("delivery", {}).get("requirement_identity", {}).get("sha256") != attempt["output_evidence"]["source"]):
                         raise ProtocolError("phase_completion_not_claimed", "controller must accept the frozen output delivery before completion")
+            if data.get('carrier_kind') == 'dedicated-grilling' and not matched:
+                raise ProtocolError('phase_completion_not_claimed', 'original control acceptance evidence is missing')
     _phase_check_evidence(frozen, supplied)
     _phase_check_evidence(frozen, _authoritative_phase_evidence(topic_path, records, topic))
 

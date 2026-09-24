@@ -1,12 +1,32 @@
 """Observable workflow controller plans through its JSON process boundary."""
 import json
 import copy
+import hashlib
 from pathlib import Path
 import subprocess
 import sys
 import unittest
 
 CLI = Path(__file__).resolve().parents[2] / "src/shared/scripts/workflow_control.py"
+
+def takeover_proof(ref, attempt, stage=0, model='supported', effort='high'):
+    """Controlled host adapter evidence, never a claim of real tool authentication."""
+    def digest(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    provenance = {'call_ref': 'stop-call:' + ref, 'response_ref': 'stop-response:' + ref, 'action_id': 'stop-action:' + ref}
+    receipt = {'adapter': 'fixture-host', 'receipt_ref': 'raw-stop:' + ref, 'request_digest': 'fixture-dispatch:' + attempt,
+        'attempt': attempt, 'role': 'dedicated-discussion' if stage == 0 else 'dedicated-problem-framing',
+        'event': 'lookup', 'status': 'stopped', 'ref': ref, 'pending_id': None,
+        'configuration': {'model': model, 'effort': effort}, 'raw': {'threadId': ref, 'status': 'stopped'}}
+    observation = {'event_id': 'observed:' + ref, 'receipt': receipt, 'action_id': provenance['action_id'],
+        'provenance': provenance, 'action_resolution': None}
+    calls = {'invocations': {digest([receipt['adapter'], provenance['call_ref']]): provenance['action_id']},
+        'responses': {digest([receipt['adapter'], provenance['response_ref']]): digest({'provenance': provenance,
+            'receipt': {key:value for key,value in receipt.items() if key != 'receipt_ref'}, 'action_resolution': None})},
+        'unresolved': []}
+    return {'ref': ref, 'attempt': attempt, 'adapter': receipt['adapter'], 'host_ref': 'fixture-host-instance',
+        'invocation_id': provenance['call_ref'], 'response_id': provenance['response_ref'], 'stop_receipt': observation,
+        'business_calls': calls, 'business_calls_digest': digest(calls)}
 
 def plan_for(cwd):
     def item(identity, category):
@@ -126,14 +146,26 @@ class WorkflowControlTests(unittest.TestCase):
         takeover = {'ref': 'successor', 'stage': 2,
             'input_digest': received['delivery_digest'], 'role': 'solution-designer',
             'binding_verified': True, 'activated': False, 'confirmed': True, 'archive_ref': 'old',
-            'takeover_proof': {'ref': 'old', 'attempt': ctx['carrier']['attempt'], 'adapter': 'fixture',
-                'host_ref': 'host', 'invocation_id': 'stop-call', 'response_id': 'stop-response',
-                'stop_receipt': {'stopped': True}, 'business_calls_digest': 'settled'}}
+            'takeover_proof': takeover_proof('old', ctx['carrier']['attempt'])}
         missing_proof = {k:v for k,v in takeover.items() if k != 'takeover_proof'}
         self.assertFalse(self.call('successor-ready', missing_proof, accepted['context'])['ok'])
         wrong_proof = copy.deepcopy(takeover)
         wrong_proof['takeover_proof']['ref'] = 'other-task'
         self.assertFalse(self.call('successor-ready', wrong_proof, accepted['context'])['ok'])
+        for obstruction in ('boolean-only', 'no-raw', 'running', 'unresolved', 'wrong-cause'):
+            invalid = copy.deepcopy(takeover)
+            proof = invalid['takeover_proof']
+            if obstruction == 'boolean-only':
+                proof['stop_receipt'] = {'stopped': True}
+            elif obstruction == 'no-raw':
+                proof['stop_receipt']['receipt']['raw'] = {}
+            elif obstruction == 'running':
+                proof['stop_receipt']['receipt']['status'] = 'running'
+            elif obstruction == 'unresolved':
+                proof['business_calls']['unresolved'] = [{'action_id': 'pending-write'}]
+            else:
+                proof['stop_receipt']['provenance']['call_ref'] = 'unrelated-call'
+            self.assertFalse(self.call('successor-ready', invalid, accepted['context'])['ok'], obstruction)
         ready = self.call('successor-ready', takeover, accepted['context'])
         self.assertTrue(ready['ok'], ready)
         self.assertEqual(ready['context']['handoff_progress']['state'], 'handoff-complete')

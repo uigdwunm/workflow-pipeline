@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "1eec3763c31175a078001d8cd02e9fc4a04f144d3277d3005aa431db5ba9647d",
+  "bundle_digest": "1f17c6b7e9d2c64697847f5446ba54f05637e9471e5ff0f5dddb66f524af8359",
   "compatibility_key": {
     "control": 6,
     "discussion_request": 1,
@@ -84,7 +84,7 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "5fed6b86c0bb9ce89eae9bccaaf43427d014a52317902ab8a8fb7cc2fea126e3"
+      "sha256": "1939866276d733e38ed8b206eeb85f4fa7622c72e272da222fb4fdd967fe1549"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
@@ -104,7 +104,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "55095088814a280b187f3b556c1e823461bd3d46e03fbece0d6a9f7d06fb17d8"
+      "sha256": "62da94d9bb9d6b0442df87e79cbf8a7dd08e47d6f7d1c9682229858cf03549a2"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -128,7 +128,7 @@
     },
     "scripts/discussion_core/phase_runs.py": {
       "mode": "0644",
-      "sha256": "331d8acec0e668109df5eb30266c839c85f390e94d7b4dc20d29f94ab5346c9c"
+      "sha256": "5aa09b48377e2c7672f303509e259b498c7150de8b5a3599be1b29bd4ca63f42"
     },
     "scripts/discussion_core/question_resolution.py": {
       "mode": "0644",
@@ -168,7 +168,7 @@
     },
     "scripts/discussion_core/workflow_control.py": {
       "mode": "0644",
-      "sha256": "aa90f7e67f689056e73a59b14e17122e3974e5bd5b731aae7fcfaa12dfe48615"
+      "sha256": "778268f1ed6428382056dfb777ad2189ce28dcae134ef7bf986e7cff646f100e"
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
@@ -224,7 +224,7 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "791754170bbbcafe70e1d57509161ee45b2961d14c63f94ab60ae5501a0d71f8"
+      "sha256": "16b8816cbe748c123db800643e0228abb301762912a7307c996f8b07350b8b2c"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
@@ -232,7 +232,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "3546e179f5e10ca21b66140ebaa94fcfe74ddf47ca9306186093feca069e597c"
+      "sha256": "c021a860ab5cda8cdf4eb6fda6cb3b8f72458d14e41614e41f8267fb9322a7af"
     }
   },
   "format_version": 1,

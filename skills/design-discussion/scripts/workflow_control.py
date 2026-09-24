@@ -485,7 +485,7 @@ def validate_context(context):
                 retired['successor']['input_digest'] == retired['delivery_digest'], 'retired delivery identity mismatch')
         require(retired['plan']['plan_id'] == digest({k:v for k,v in retired['plan'].items() if k != 'plan_id'}), 'retired plan changed')
         require(handoff_id == digest({k:retired[k] for k in ('controller_ref', 'topic_ref', 'carrier', 'delivery_digest')} | {'plan_id': retired['plan']['plan_id']}), 'retired handoff identity changed')
-        validate_takeover_proof(retired['successor']['takeover_proof'], retired['carrier'])
+        validate_takeover_proof(retired['successor']['takeover_proof'], retired['carrier'], retired['plan'])
         require(retired['archive_status'] in {'not-requested', 'requested', 'unknown', 'failed', 'not-archived', 'archived'}, 'invalid retired archive status')
         require(isinstance(retired['operations'], list) and isinstance(retired['conflicts'], list), 'invalid archive audit')
         predecessor = None
@@ -1164,7 +1164,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         text(evidence['ref'])
         require(evidence['role'] in {1: {'dedicated-problem-framing', 'current-problem-framing'}, 2: {'solution-designer'}, 3: {'implementation-dispatcher'}, 4: {'closure-agent'}}[evidence['stage']] and evidence['ref'] != context['carrier']['ref'], 'successor role or identity mismatch')
         require(evidence['archive_ref'] == context['carrier']['ref'], 'archive target must be the current visible carrier')
-        validate_takeover_proof(evidence['takeover_proof'], context['carrier'])
+        validate_takeover_proof(evidence['takeover_proof'], context['carrier'], progress['plan'])
         progress.update(state='handoff-complete', successor=evidence, archive_ref=evidence['archive_ref'])
     elif action == 'choose-dedicated':
         keys(evidence, {'intent'})
@@ -1196,12 +1196,47 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     return {'ok': True, 'context': context, 'effects': effects}
 
 
-def validate_takeover_proof(proof, carrier):
-    keys(proof, {'ref', 'attempt', 'adapter', 'host_ref', 'invocation_id', 'response_id', 'stop_receipt', 'business_calls_digest'})
+def validate_takeover_proof(proof, carrier, plan):
+    """Check causal evidence consistency; the existing trusted host ingress authenticates its origin."""
+    def host_digest(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+            separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    keys(proof, {'ref', 'attempt', 'adapter', 'host_ref', 'invocation_id', 'response_id', 'stop_receipt', 'business_calls', 'business_calls_digest'})
     require(proof['ref'] == carrier['ref'] and proof['attempt'] == carrier['attempt'], 'stop proof carrier mismatch')
     for field in ('adapter', 'host_ref', 'invocation_id', 'response_id', 'business_calls_digest'):
         text(proof[field])
-    require(isinstance(proof['stop_receipt'], dict) and proof['stop_receipt'], 'causal stop receipt required')
+    observation = proof['stop_receipt']
+    keys(observation, {'event_id', 'receipt', 'action_id', 'provenance', 'action_resolution'})
+    receipt = observation['receipt']
+    keys(receipt, {'adapter', 'receipt_ref', 'request_digest', 'attempt', 'role', 'event', 'status', 'ref', 'pending_id', 'configuration', 'raw'})
+    provenance = observation['provenance']
+    keys(provenance, {'call_ref', 'response_ref', 'action_id'})
+    for field in ('event_id', 'action_id'):
+        text(observation[field])
+    for field in ('receipt_ref', 'request_digest'):
+        text(receipt[field])
+    require(receipt['adapter'] == proof['adapter'] and receipt['ref'] == carrier['ref'] and receipt['attempt'] == carrier['attempt'] and
+            receipt['role'] == ('dedicated-discussion' if plan['stage'] == 0 else 'dedicated-problem-framing') and
+            receipt['configuration'] == {key: plan['configuration'][key] for key in ('model', 'effort')} and
+            receipt['status'] == 'stopped' and receipt['pending_id'] is None and receipt['event'] in {'result', 'lookup'}, 'original stopped host receipt required')
+    require(isinstance(receipt['raw'], dict) and receipt['raw'], 'original raw stop response required')
+    require(provenance == {'call_ref': proof['invocation_id'], 'response_ref': proof['response_id'], 'action_id': observation['action_id']}, 'stop response has no exact causal invocation')
+    calls = proof['business_calls']
+    keys(calls, {'invocations', 'responses', 'unresolved'})
+    require(isinstance(calls['invocations'], dict) and isinstance(calls['responses'], dict) and calls['unresolved'] == [], 'unresolved business calls prevent takeover')
+    for collection in ('invocations', 'responses'):
+        for identity, value in calls[collection].items():
+            require(isinstance(identity, str) and re.fullmatch('[0-9a-f]{64}', identity), 'invalid host call identity')
+            text(value)
+    if observation['action_resolution'] is not None:
+        keys(observation['action_resolution'], {'action_id', 'outcome'})
+        text(observation['action_resolution']['action_id'])
+        require(observation['action_resolution']['outcome'] in {'completed', 'not-issued', 'cancelled'}, 'unresolved original action prevents takeover')
+    require(calls['invocations'].get(host_digest([proof['adapter'], proof['invocation_id']])) == observation['action_id'], 'stop invocation is absent from reconciled calls')
+    fingerprint = host_digest({'provenance': provenance, 'receipt': {key:value for key,value in receipt.items() if key != 'receipt_ref'},
+                          'action_resolution': observation['action_resolution']})
+    require(calls['responses'].get(host_digest([proof['adapter'], proof['response_id']])) == fingerprint and
+            proof['business_calls_digest'] == host_digest(calls), 'stop response or business call reconciliation changed')
 
 
 def archive_transition(context, action, evidence):

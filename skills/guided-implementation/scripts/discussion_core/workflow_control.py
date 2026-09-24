@@ -162,6 +162,16 @@ def workflow_control(request):
                 if not valid:
                     raise ProtocolError('handoff_identity_conflict', 'result does not match the exact authorized carrier')
             if action == 'successor-ready':
+                if entry is None:
+                    raise ProtocolError('handoff_identity_conflict', 'takeover has no original entry authority')
+                _, old_data, old_attempt = entry
+                if authority['kind'] == 'dedicated-stage' and not (
+                        old_attempt.get('delivery_frozen') and old_attempt.get('delivery_accepted') and
+                        (evidence.get('stage') != 1 or old_attempt.get('binding_eligible') is False)):
+                    raise ProtocolError('phase_authorization_required', 'old dedicated delivery must be frozen, accepted and revoked before a writable successor')
+                if authority['kind'] == 'wrapper-phase-run' and not (
+                        old_attempt.get('state') == 'completed' and old_data.get('state') == 'completed'):
+                    raise ProtocolError('phase_authorization_required', 'old wrapper must be completed without live writing authority')
                 matching = []
                 for item in records['Phase Runs']:
                     if item.get('run_kind') != 'phase-run':

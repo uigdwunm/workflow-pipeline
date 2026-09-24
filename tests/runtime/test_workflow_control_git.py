@@ -60,10 +60,7 @@ class WorkflowGitTests(unittest.TestCase):
         accepted = self.call('accept', {'delivery_digest': received['delivery_digest']}, received['context'])
         ready = self.call('successor-ready', {'ref': 'native-successor', 'stage': 2, 'role': 'solution-designer',
             'input_digest': received['delivery_digest'], 'binding_verified': True, 'activated': False,
-            'confirmed': True, 'archive_ref': 'old', 'takeover_proof': {
-                'ref': 'old', 'attempt': ctx['carrier']['attempt'], 'adapter': 'fixture', 'host_ref': 'host',
-                'invocation_id': 'stop-call', 'response_id': 'stop-response', 'stop_receipt': {'stopped': True},
-                'business_calls_digest': 'settled'}}, accepted['context'])
+            'confirmed': True, 'archive_ref': 'old', 'takeover_proof': test_workflow_control.takeover_proof('old', ctx['carrier']['attempt'])}, accepted['context'])
         archived = self.call('archive', {'handoff_id': ready['handoff_id']}, ready['context'])
         self.assertEqual(archived['effects'][0]['ref'], 'old')
         delivery['commit'] = self.base

@@ -5,9 +5,66 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/shared/scripts"))
 
 import uuid
+from test_workflow_control import takeover_proof
 from test_discussion_protocol import DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport
 
 class EntrySupport:
+    def commit_takeover(self, topic, project, evidence):
+        """Real C/checkpoint/ledger path with a controlled persisted host observation."""
+        import copy
+        import tempfile
+        from unittest.mock import patch
+        import workflow_progress as progression
+        base = self.evolution_request(topic, operation='read-topic')
+        latest = progression.dispatch.discussion_protocol.handle(base)
+        base.pop('operation')
+        context = latest['workflow_control']
+        plan = context['handoff_progress']['plan']
+        proof = takeover_proof(context['carrier']['ref'], context['carrier']['attempt'], context['stage'],
+            plan['configuration']['model'], plan['configuration']['effort'])
+        attachment = {key: base[key] for key in ('project_id', 'tree_id', 'actor_topic_id', 'actor_conversation_ref')}
+        repository = progression.entry.repository_facts(str(project))
+        discussion_project, _ = progression.entry.resolve_discussion_project(repository, attachment)
+        saved = {'controller_ref': 'discussion-task', 'entry': {'source': {'attachment': attachment}},
+            'expected_entry': {'repository': repository, 'discussion_project': discussion_project,
+                'requirement': {'attachment': attachment}, 'actor': {'thread_id': proof['host_ref']}}}
+        state = {'protocol': progression.PROTOCOL, 'revision': 0, 'mode': 'continuous', 'stage': context['stage'],
+            'status': 'active', 'step': 'bound', 'control': {'context': context, 'discussion': {**base,
+                'expected_ledger_revision': latest['ledger_revision'], 'expected_topic_revision': latest['record_revision'],
+                'idempotency_key': str(uuid.uuid4())}}, 'handoff': saved, 'packages': {}, 'dispatch': None,
+            'transaction': None, 'transaction_source': None, 'transaction_result': None, 'history': [], 'stopped': True,
+            'host': {'generation': 0, 'status': 'stopped', 'seen': proof['business_calls']['responses'],
+                'calls': proof['business_calls']['invocations'], 'proof': None, 'query': None,
+                'last_stop': proof['stop_receipt'], 'observation': copy.deepcopy(proof['stop_receipt'])}}
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        checkpoint = Path(temporary.name) / 'takeover.json'
+        progression.atomic_save(checkpoint, {progression.KEY: state})
+        request = {'action': 'successor-ready', 'evidence': evidence, 'receipt': {'controller_ref': 'discussion-task', 'reference': 'takeover'}}
+        def invoke():
+            revision = progression.read_record(checkpoint)[progression.KEY]['revision']
+            return progression.handle(checkpoint, {'protocol': progression.PROTOCOL, 'operation': 'control',
+                'expected_revision': revision, 'data': request})
+        original_save = progression.Progress.save
+        calls = []
+        def lose_commit_response(owner):
+            calls.append(True)
+            if len(calls) == 2:
+                raise KeyboardInterrupt('takeover committed before C save')
+            original_save(owner)
+        with patch.object(progression.Progress, 'save', lose_commit_response):
+            with self.assertRaises(KeyboardInterrupt):
+                invoke()
+        committed = progression.dispatch.discussion_protocol.handle({**base, 'operation': 'read-topic'})['workflow_control']
+        self.assertEqual(committed['stage'], 1)
+        self.assertNotIn('successor_control', committed)
+        result = invoke()
+        self.assertTrue(result['next_action']['result']['ok'], result)
+        replay = invoke()
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertEqual(replay['next_action']['result']['effects'], [])
+        return {'control': result['next_action']['result']}
+
     def mutate(self, topic, operation, owner='discussion-task', success=True, **parameters):
         code, current, err = self.run_cli(self.evolution_request(topic, operation='read-topic'))
         self.assertEqual(code, 0, (current, err))
@@ -256,9 +313,7 @@ class DedicatedStageTests(EntrySupport, DiscussionProtocolScenarioFixture, Discu
         mutate('finalize-phase-run', **phase_fields, evidence=phase['evidence'])
         ready = mutate('workflow-control', action='successor-ready', evidence={'ref': successor, 'stage': 2, 'role': 'solution-designer',
             'input_digest': received['delivery_digest'], 'binding_verified': True, 'activated': True, 'confirmed': True, 'archive_ref': new_ref,
-            'takeover_proof': {'ref': new_ref, 'attempt': received['context']['carrier']['attempt'],
-                'adapter': 'fixture', 'host_ref': 'host', 'invocation_id': 'stop-call', 'response_id': 'stop-response',
-                'stop_receipt': {'stopped': True}, 'business_calls_digest': 'settled'}})['control']
+            'takeover_proof': takeover_proof(new_ref, received['context']['carrier']['attempt'])})['control']
         self.assertEqual(ready['context']['carrier']['ref'], new_ref)
         archived = mutate('workflow-control', action='archive', evidence={'handoff_id': ready['handoff_id']})['control']
         self.assertEqual(archived['effects'][0]['ref'], new_ref)
@@ -383,17 +438,18 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
         if predecessor:
             self.mutate(topic, 'prepare-topic-update', owner='previous', success=False,
                 mutation={'type': 'confirm-decision', 'summary': 'Old writer', 'rationale': 'Revoked'})
-            takeover = self.mutate(topic, 'workflow-control', action='successor-ready', evidence={
+            takeover = self.commit_takeover(topic, project, evidence={
                 'ref': 'dedicated', 'stage': 1, 'role': 'dedicated-problem-framing',
                 'input_digest': old_delivery['delivery_digest'], 'binding_verified': True,
-                'activated': True, 'confirmed': True, 'archive_ref': 'previous',
-                'takeover_proof': {'ref': 'previous', 'attempt': old_plan['plan_id'], 'adapter': 'fixture',
-                    'host_ref': 'fixture-host', 'invocation_id': 'stop-call', 'response_id': 'stop-response',
-                    'stop_receipt': {'stopped': True}, 'business_calls_digest': 'settled'}})
+                'activated': True, 'confirmed': True, 'archive_ref': 'previous'})
             self.assertEqual(takeover['control']['context']['stage'], 1)
             self.assertNotIn('successor_control', takeover['control']['context'])
+            import workflow_progress as progression
+            progression.verify_phase_completed({'stage': 0, 'handoff': {'authorization': {}},
+                'control': {'context': takeover['control']['context']},
+                'dispatch': {'request': {'attempt': old_plan['plan_id']}}})
             archive_fields = {'handoff_id': takeover['control']['handoff_id'], 'control_plan_id': old_plan['plan_id']}
-            intent = self.mutate(topic, 'workflow-control', action='archive', evidence=archive_fields)['control']
+            intent = takeover['control']
             effect = intent['effects'][0]
             self.mutate(topic, 'workflow-control', action='archive-result', evidence={
                 **archive_fields, 'operation_id': effect['operation_id'], 'ref': 'previous', 'status': 'issued',
@@ -444,9 +500,7 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
             'ref': 'native:stage2', 'stage': 2, 'role': 'solution-designer',
             'input_digest': received['delivery_digest'], 'binding_verified': True,
             'activated': True, 'confirmed': True, 'archive_ref': 'dedicated',
-            'takeover_proof': {'ref': 'dedicated', 'attempt': plan['plan']['plan_id'], 'adapter': 'fixture',
-                'host_ref': 'fixture-host', 'invocation_id': 'next-stop', 'response_id': 'next-stopped',
-                'stop_receipt': {'stopped': True}, 'business_calls_digest': 'settled'}})['control']
+            'takeover_proof': takeover_proof('dedicated', plan['plan']['plan_id'], stage=1)})['control']
         self.assertTrue(next_ready['handoff_completed'])
         if predecessor:
             self.assertEqual(next_ready['context']['retired_handoffs'][takeover['control']['handoff_id']]['archive_status'], archive_status)

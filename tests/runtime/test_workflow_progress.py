@@ -54,10 +54,15 @@ class ProgressTests(transfer.StageTransferTests):
         apply('accept', {'delivery_digest': received['delivery_digest']})
         ready = apply('successor-ready', {'ref': 'native:designer', 'stage': 2, 'role': 'solution-designer',
             'input_digest': received['delivery_digest'], 'binding_verified': True, 'activated': False,
-            'confirmed': True, 'archive_ref': 'old-task', 'takeover_proof': {'ref': 'old-task', 'attempt': attempt,
-                'adapter': 'fixture', 'host_ref': 'host', 'invocation_id': 'stop', 'response_id': 'stopped',
-                'stop_receipt': {'stopped': True}, 'business_calls_digest': 'settled'}})
+            'confirmed': True, 'archive_ref': 'old-task', 'takeover_proof': test_workflow_control.takeover_proof('old-task', attempt)})
         self.context['retired_handoffs'] = context['retired_handoffs']
+        evidence = context['retired_handoffs'][ready['handoff_id']]['successor']
+        request = {'action': 'successor-ready', 'evidence': evidence,
+                   'receipt': {'controller_ref': 'task', 'reference': 'old-takeover'}}
+        self.takeover_input = copy.deepcopy(request)
+        self.takeover_input['evidence'].pop('takeover_proof')
+        self.takeover_transaction = {'request': request, 'takeover_input': self.takeover_input,
+            'result': ready, 'port': {'context': context, 'discussion': None}}
         return ready['handoff_id']
 
     def archive_receipt(self, effect, status):
@@ -70,6 +75,9 @@ class ProgressTests(transfer.StageTransferTests):
     def test_retired_archive_after_start_preserves_current_native_context(self):
         handoff_id = self.retired_fixture()
         self.finish_design('continuous')
+        outer = progress.read_record(self.checkpoint)
+        outer[progress.KEY].setdefault('control_transactions', {})[transfer.entry.digest(self.takeover_transaction['request'])] = self.takeover_transaction
+        progress.atomic_save(self.checkpoint, outer)
         intent = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
             'receipt': {'controller_ref': 'task', 'reference': 'automatic'}})
         effect = intent['next_action']['result']['effects'][0]
@@ -102,6 +110,10 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(saved['control']['context']['retired_handoffs'][handoff_id]['archive_status'], 'archived')
         self.assertEqual(len(saved['control']['context']['retired_handoffs'][handoff_id]['conflicts']), 1)
         self.assertEqual(saved['history'], history)
+        replayed_takeover = self.invoke('control', self.takeover_input)
+        self.assertTrue(replayed_takeover['acknowledged'])
+        self.assertEqual(replayed_takeover['next_action']['result']['effects'], [])
+        self.assertEqual(self.state()['control']['context'], saved['control']['context'])
 
     def test_archive_intent_crash_replays_without_duplicate_operation(self):
         handoff_id = self.retired_fixture()

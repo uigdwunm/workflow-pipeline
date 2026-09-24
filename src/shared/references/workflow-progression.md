@@ -504,7 +504,7 @@ Git facts, without recreating a Flow. The discussion owner must remain available
 
 New runner records use outer version 6 and pin workflow-progress-v10 /
 workflow-stage-transfer-v6 / flow-worktree-v2 packages with control compatibility
-key 5. Earlier progress protocols and runner records require their original
+key 6. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete
 registration is required for live actions. No installation is implied.

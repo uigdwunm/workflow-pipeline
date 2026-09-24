@@ -218,9 +218,15 @@ def verify_phase_completed(state):
     phase = saved["authorization"].get("phase")
     if phase is None:
         # 0/1 wrapper identity lives in the original selected control plan.
-        selected = control.selected_control(state["control"]["context"],
-            {"attempt": state["dispatch"]["request"]["attempt"]})
-        authority = (selected.get("handoff_progress") or {}).get("plan", {}).get("entry_authority", {})
+        context = state['control']['context']
+        attempt = state['dispatch']['request']['attempt']
+        plans = [(slot.get('handoff_progress') or {}).get('plan', {})
+                 for slot in (context, context.get('successor_control', {}))]
+        plans.extend(record['plan'] for record in context.get('retired_handoffs', {}).values())
+        matches = [plan['entry_authority'] for plan in plans if plan.get('plan_id') == attempt]
+        require(state['stage'] >= 2 or matches, 'identity_mismatch', 'original dedicated completion authority unavailable')
+        require(not matches or all(item == matches[0] for item in matches), 'identity_mismatch', 'conflicting original completion authority')
+        authority = matches[0] if matches else {}
         if authority.get("kind") != "wrapper-phase-run":
             return
         phase = {"run_id": authority["run_id"], "attempt_id": authority["attempt_id"]}
@@ -1740,8 +1746,26 @@ class Progress:
             return self.archive_action(data)
         if data['action'] == 'successor-ready':
             original = copy.deepcopy(data)
-            retained = [v for v in s.get('control_transactions', {}).values() if v.get('takeover_input') == original]
+            retained = [value for state in [s, *s.get('history', [])]
+                        for value in state.get('control_transactions', {}).values() if value.get('takeover_input') == original]
             if retained:
+                require(all(value['request'] == retained[0]['request'] for value in retained),
+                        'identity_mismatch', 'conflicting original takeover request')
+                completed = [value['result'] for value in retained if value.get('result') is not None]
+                if completed:
+                    require(all(value == completed[0] for value in completed), 'identity_mismatch', 'conflicting original takeover result')
+                    handoff_id = completed[0]['handoff_id']
+                    retired = s['control']['context'].get('retired_handoffs', {}).get(handoff_id)
+                    frozen_evidence = retained[0]['request']['evidence']
+                    require(retired is not None and retired['successor'] == {key:value for key,value in frozen_evidence.items() if key != 'control_plan_id'} and
+                            frozen_evidence.get('control_plan_id', retired['plan']['plan_id']) == retired['plan']['plan_id'],
+                            'identity_mismatch', 'completed takeover no longer matches its retired evidence')
+                    if retired['archive_status'] == 'not-requested':
+                        return self.archive_action({'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+                            'receipt': {'controller_ref': s['control']['context']['controller_ref'],
+                                'handoff_transaction': entry.digest(retained[0]['request'])}})
+                    return _view(s, {'operation': 'control-effects', 'result': {**completed[0],
+                        'context': s['control']['context'], 'effects': []}}, acknowledged=True)
                 data = copy.deepcopy(retained[0]['request'])
             else:
                 require('takeover_proof' not in data['evidence'], 'invalid_evidence', 'takeover proof is derived from saved host evidence')
@@ -1753,11 +1777,13 @@ class Progress:
                 selected = control.selected_control(s['control']['context'], data['evidence'])
                 carrier = selected['carrier']
                 require(stop['receipt'].get('ref') == carrier['ref'], 'identity_mismatch', 'stop belongs to another carrier')
+                calls = {'invocations': copy.deepcopy(s['host']['calls']), 'responses': copy.deepcopy(s['host']['seen']),
+                         'unresolved': self.unresolved_host_actions()}
                 data = copy.deepcopy(data)
                 data['evidence']['takeover_proof'] = {'ref': carrier['ref'], 'attempt': carrier['attempt'],
                     'adapter': stop['receipt']['adapter'], 'host_ref': s['handoff']['expected_entry']['actor']['thread_id'],
                     'invocation_id': stop['provenance']['call_ref'], 'response_id': stop['provenance']['response_ref'],
-                    'stop_receipt': copy.deepcopy(stop['receipt']), 'business_calls_digest': entry.digest(s['host']['calls'])}
+                    'stop_receipt': copy.deepcopy(stop), 'business_calls': calls, 'business_calls_digest': entry.digest(calls)}
             takeover_input = original
         if data['action'] == 'escalate-implementation':
             escalation_paused = (s['status'] == 'paused' or s['status'] == 'blocked' and s.get('blocked_from') == 'paused') and s.get('stopped') is True and self.stop_intent() == 'pausing'
