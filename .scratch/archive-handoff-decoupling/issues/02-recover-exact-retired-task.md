@@ -5,7 +5,8 @@
 **Blocked by:** 01 — 接管完成后继续阶段并独立归档旧任务。
 
 Status: ready-for-agent
-Publication: published to local tracker; ticket review accepted; Stage 3 entry not authorized
+Lifecycle: completed
+Publication: published to local tracker; implementation completed on isolated branch; final integration pending
 Review ID: archive-handoff-decoupling-tickets-20260924-01
 Spec: 旧 Codex 任务归档与阶段交接解耦，已批准 solution review archive-handoff-decoupling-solution-20260924-01；本特性 PRD。
 
@@ -30,3 +31,7 @@ Spec: 旧 Codex 任务归档与阶段交接解耦，已批准 solution review ar
 覆盖 Spec D2 的历史不可变性、D4 的安全/整理分界、D5 全部重试与回执矩阵、D6 全部中断及跨 start 恢复、D7 的保留原运行时；验收 A3、A5、A6，补齐 A2/A4/A7 的恢复负例，回归 01 的 A1。沿用现有 progression 持久重启 seam 和 discussion_protocol 原子 ledger seam 注入提交边界/丢响应，纯控制 seam 覆盖严格回执矩阵；不引入新宿主系统。
 
 观察原旧 ref 的 readback→条件写入顺序、确切调用次数、唯一提升、错误码、旧交付完整性及当前业务上下文不变。真实宿主现场验证另需明确授权；本 Ticket 的受控故障注入不代表已验证真实账户工具行为。
+
+## Comments
+
+- 实现提交：`f1ac8e5583d511a65eb6f4d6b4a8bbbbaa080716`。完整 `bash scripts/validate.sh` 退出码 0；804 项测试通过、1 项跳过。真实宿主归档与停止回执仍未现场验证。

@@ -5,7 +5,8 @@
 **Blocked by:** None — can start immediately.
 
 Status: ready-for-agent
-Publication: published to local tracker; ticket review accepted; Stage 3 entry not authorized
+Lifecycle: completed
+Publication: published to local tracker; implementation completed on isolated branch; final integration pending
 Review ID: archive-handoff-decoupling-tickets-20260924-01
 Spec: 旧 Codex 任务归档与阶段交接解耦，已批准 solution review archive-handoff-decoupling-solution-20260924-01；本特性 PRD。
 
@@ -29,3 +30,7 @@ Spec: 旧 Codex 任务归档与阶段交接解耦，已批准 solution review ar
 覆盖 Spec D1–D4、D5 的首次操作与正常响应、D6 的正常持久提交及 start 保留、D7–D8；验收 A1、A2、A4、A7、非故障路径，A3 的正常幂等基线。主 seam 是现有 discussion_protocol 临时项目的完整 0→1→2，补充现有纯控制和 progression 的正常持久路径；宿主事实用受控适配器注入。观察授权、当前 carrier/stage、调用次数与恢复身份，不镜像实现结构。
 
 先取得原双槽阻塞的失败回归，再通过新路径；运行受影响控制/discussion/progression 测试、兼容拒绝测试及包构建验证。真实宿主现场尚未验证，不将 fixture 回执声称为真实停止或归档。
+
+## Comments
+
+- 实现提交：`f1ac8e5583d511a65eb6f4d6b4a8bbbbaa080716`。完整 `bash scripts/validate.sh` 退出码 0；804 项测试通过、1 项跳过。真实宿主归档与停止回执仍未现场验证。
