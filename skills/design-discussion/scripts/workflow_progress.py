@@ -1723,8 +1723,9 @@ class Progress:
                 data = copy.deepcopy(retained[0]['request'])
                 if retained[0].get('result') is not None:
                     current = s['control']['context']['handoff_progress']
-                    require(control_git.recovery_snapshot(Path(current['binding']['worktree']), current)[0] == data['evidence']['snapshot'],
-                            'snapshot_changed', 'completed escalation snapshot has drifted')
+                    worktree = Path(current['binding']['worktree'])
+                    control_git.verify_stopped_snapshot(worktree, data['evidence']['snapshot'],
+                                                        control_git.recovery_snapshot(worktree, current)[0])
                     if escalation_paused:
                         return _view(s, acknowledged=True)
                     return _view(s, {'operation': 'control-effects', 'result': retained[0]['result']}, acknowledged=True)
@@ -1802,8 +1803,9 @@ class Progress:
             data = copy.deepcopy(data)
             checkpoint = s['control']['context']['handoff_progress']
             if control.direct_implementation(checkpoint):
-                require(stop.get('git_snapshot') == control_git.recovery_snapshot(Path(checkpoint['binding']['worktree']), checkpoint)[0],
-                        'snapshot_changed', 'direct recovery bytes changed after original native stop')
+                worktree = Path(checkpoint['binding']['worktree'])
+                control_git.verify_stopped_snapshot(worktree, stop.get('git_snapshot'),
+                                                    control_git.recovery_snapshot(worktree, checkpoint)[0])
             data['evidence']['host_evidence'] = {'stopped_refs': sorted(set(refs)),
                 'stop_receipts': evidence['stop_receipts'], 'call_receipts': evidence['call_receipts'],
                 'lifecycle_digest': entry.digest(s['lifecycle_snapshot']),

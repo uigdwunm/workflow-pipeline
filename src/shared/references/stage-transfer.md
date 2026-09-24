@@ -247,7 +247,8 @@ ready resolution, stopped-writer proof and lost-response lookup need separate
 field acceptance. Do not launch business tasks just to manufacture that evidence.
 
 Only Stage-3 Dispatcher `semantic` may additionally carry the Controller-approved
-`implementation_policy`; omission means full. Freeze it in the sealed handoff and
+`implementation_policy`; omission means full. Direct requires the authenticated
+Controller as the preparing actor; a scripted carrier uses full. Freeze the policy in the sealed handoff and
 start-dispatch attempt. Execution Agent semantics may carry explicit `adopt_paths`
 and `adoption_snapshot_digest` only for eligible inherited-byte verification.
 [Workflow Control Protocol](guided-implementation/workflow-control-protocol.md#bounded-direct-implementation)

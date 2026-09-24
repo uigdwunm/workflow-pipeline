@@ -228,14 +228,17 @@ recovery and persisted contracts and therefore must be implemented through full.
 
 The sealed handoff and start-dispatch attempt freeze this decision. Only Stage 3's
 implementation-dispatcher semantic input accepts it; Stage 2/4 and Execution Agent
-requests reject it. Interactive, attached and foreground routes share the rule;
-a scripted carrier forwards the authenticated Controller decision. The Controller
+requests reject it. An interactive or discussion-attached Controller may select
+direct when it can supply the frozen assessment. The foreground scripted carrier
+uses full because its confirmed runner input has no original Controller direct
+decision to verify. The Controller
 briefly discloses the concrete reason within existing authorization, without a
 new user approval. Scripts verify structure, identity, scope and evidence linkage;
 they do not infer low semantic risk or test sufficiency from a diff. The Controller
 reads the frozen plan and relevant production code, subject to independent review.
 
-Direct dispatch starts from the clean original baseline; existing unexplained
+Direct dispatch requires both the Flow Worktree and target branch at the same
+clean original baseline; existing unexplained
 implementation bytes cannot acquire direct authority. Direct write authority
 starts only after actual Dispatcher binding. `executions`
 stays empty and plan-execution is rejected until conversion. The same Dispatcher
@@ -271,7 +274,10 @@ candidate already entered review/validation, use existing invalidate-candidate
 first. Evidence is `{dispatcher_ref,attempt,reference,reason,assessment_reference}`;
 the authenticated Controller receipt matches `controller_ref` and `reference`.
 C derives the original stop and snapshot and retains the exact control transaction.
-Git checks the stopped snapshot's HEAD, branch, index, original base, target and
+Git checks the stopped snapshot's HEAD, branch, index and original base. If the
+target advances after that stop, its old commit must remain an ancestor of the
+current target; only this target field may differ from the stopped snapshot.
+Git also checks
 all allowed/protected content/presence/mode, including staged, unstaged and
 untracked changes separately. Unknown or out-of-scope changes block rather than
 becoming inherited authority.

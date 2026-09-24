@@ -162,6 +162,16 @@ def recovery_snapshot(repository, progress):
                     'dispatcher': sorted(changed - set(owners))}, sorted(revalidate)
 
 
+def verify_stopped_snapshot(repository, stopped, current):
+    """Keep stopped bytes fixed while allowing an ordinary target advance."""
+    require(isinstance(stopped, dict) and isinstance(current, dict) and set(stopped) == set(current),
+            'stopped snapshot fields changed')
+    require(all(stopped[key] == current[key] for key in stopped if key != 'target'),
+            'stopped implementation bytes or Git state changed')
+    old_target, new_target = commit(stopped['target']), commit(current['target'])
+    git(repository, 'merge-base', '--is-ancestor', old_target, new_target)
+
+
 def verify_execution_start(repository, progress):
     """Require every pre-allocation implementation byte to have an owner."""
     baseline = commit(progress['git_baseline_commit'])
@@ -264,6 +274,8 @@ def verified_transition(payload):
             if policy['mode'] == 'direct':
                 require(snapshot(repository)['head'] == payload['baseline'] and not git(repository, 'status', '--porcelain'),
                         'direct dispatch requires the clean original baseline; unaccepted bytes require full')
+                require(git(repository, 'rev-parse', evidence['binding']['target_branch']).decode().strip() == payload['baseline'],
+                        'direct dispatch requires the original target baseline; use full after target movement')
                 assessment = policy['assessment']
                 require(set(assessment['implementation_paths'] + assessment['test_paths']) <= set(evidence['allowed_paths']),
                         'direct assessment paths escape implementation scope')
@@ -277,7 +289,7 @@ def verified_transition(payload):
         require(set(changed_paths(repository, scope_base)) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
     if action == 'escalate-implementation':
         actual = recovery_snapshot(repository, progress)[0]
-        require(evidence['snapshot'] == actual, 'escalation snapshot changed before transaction')
+        verify_stopped_snapshot(repository, evidence['snapshot'], actual)
         evidence['pending_paths'] = sorted(p for p in progress['allowed_paths'] if actual['files'][p] !=
             committed_fingerprint(repository, progress['git_baseline_commit'], p))
     if action == 'prepare-dispatch-recovery':

@@ -78,6 +78,8 @@ The payload's `flow_mode` field (`continuous` or `stepwise`) is the already-auth
 entry. It preserves the payload's explicit model/effort pair for the carrier;
 the dedicated native executor still follows the existing task-settings protocol.
 Use only the pending decisions selected by the shared progression contract.
+This carrier uses the default full implementation path because its confirmed
+runner input contains no original Controller decision for direct work.
 
 The runner holds one foreground app-server across carrier turns, waiting for
 native roles, decisions, and pauses. Follow the shared progression contract's

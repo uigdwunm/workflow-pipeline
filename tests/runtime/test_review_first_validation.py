@@ -108,7 +108,8 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.assertEqual(closed['status'], 'accepted', closed)
         self.assertFalse(self.flow.exists())
 
-    def escalate_and_adopt(self, storage, advance_target=False, drift_mode=False):
+    def escalate_and_adopt(self, storage, advance_target=False, drift_mode=False,
+                           advance_target_after_stop=False):
         import hashlib
         self.context = self.context_for(3)
         value = self.input_for(3)
@@ -121,12 +122,16 @@ class ReviewFirstTests(fixture.ProgressTests):
             self.flow_git('add', 'impl.py')
         if storage == 'committed':
             self.flow_git('commit', '-qm', 'retained direct commit')
-        if advance_target:
+        if advance_target and not advance_target_after_stop:
             (self.root / 'unrelated.txt').write_text('upstream\n')
             self.git('add', 'unrelated.txt')
             self.git('commit', '-qm', 'unrelated upstream change')
         before = self.flow_git('rev-parse', 'HEAD'), self.flow_git('ls-files', '--stage')
         self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        if advance_target and advance_target_after_stop:
+            (self.root / 'unrelated.txt').write_text('upstream\n')
+            self.git('add', 'unrelated.txt')
+            self.git('commit', '-qm', 'unrelated upstream change')
         context = self.state()['control']['context']
         request = {'action': 'escalate-implementation', 'evidence': {
             'dispatcher_ref': 'native:dispatcher', 'attempt': context['carrier']['attempt'],
@@ -216,6 +221,10 @@ class ReviewFirstTests(fixture.ProgressTests):
     def test_direct_escalates_before_integrating_unrelated_target_then_adopts(self):
         self.escalate_and_adopt('committed', advance_target=True)
 
+    def test_direct_escalates_when_target_advances_after_dispatcher_stop(self):
+        self.escalate_and_adopt('committed', advance_target=True,
+                                advance_target_after_stop=True)
+
     def test_dirty_direct_escalates_before_integrating_unrelated_target_then_adopts(self):
         self.escalate_and_adopt('dirty', advance_target=True)
 
@@ -232,6 +241,12 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.escalate_and_adopt('committed')
 
     def test_direct_replacement_defaults_full_and_requires_real_adoption(self):
+        self.direct_replacement_and_adoption()
+
+    def test_direct_replacement_after_target_advances_during_stop(self):
+        self.direct_replacement_and_adoption(advance_target_after_stop=True)
+
+    def direct_replacement_and_adoption(self, advance_target_after_stop=False):
         self.context = self.context_for(3)
         value = self.input_for(3)
         value['semantic']['implementation_policy'] = self.direct_policy(value)
@@ -242,6 +257,9 @@ class ReviewFirstTests(fixture.ProgressTests):
         stopped = self.observation('stopped', 'result', ref='native:dispatcher')
         stopped['receipt']['raw'].update(resumable=False, dispatch_available=True)
         self.invoke('observe', stopped)
+        if advance_target_after_stop:
+            (self.root / 'unrelated.txt').write_text('upstream after stop\n')
+            self.git('add', 'unrelated.txt'); self.git('commit', '-qm', 'advance target after stop')
         context = self.state()['control']['context']
         result = self.invoke('control', {'action': 'prepare-dispatch-recovery', 'evidence': {
             'dispatcher_ref': 'native:dispatcher', 'attempt': context['carrier']['attempt'],
@@ -271,6 +289,8 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.assertEqual(checkpoint['implementation_policy'], {'mode': 'full'}, result)
         self.assertEqual(checkpoint['recovery']['direct_policy'], value['semantic']['implementation_policy'])
         self.assertEqual(checkpoint['git_baseline_commit'], value['scope']['baseline'])
+        if advance_target_after_stop:
+            self.flow_git('merge', '--no-edit', 'main')
         execution = self.execution_input()
         execution['entry']['host']['actor_ref'] = 'native:replacement'
         execution['expected_entry'] = fixture.transfer.entry.resolve(execution['entry'])
@@ -454,7 +474,7 @@ class ReviewFirstTests(fixture.ProgressTests):
             self.invoke('control', self.direct_escalation_request())
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'cancelled')
 
-    def test_scripted_direct_requires_authenticated_controller_decision(self):
+    def test_scripted_carrier_cannot_self_authorize_direct_implementation(self):
         self.settings['thread_id'] = 'scripted-runtime'
         self.request['host'].update(thread_id='scripted-runtime', role='scripted-carrier', source_ref='task')
         value = self.input_for(3)
@@ -464,13 +484,13 @@ class ReviewFirstTests(fixture.ProgressTests):
         decision = {'controller_ref': 'task', 'reference': 'controller:local-output',
                     'policy_digest': control.digest(value['semantic']['implementation_policy']), 'receipt': 'host:controller-decision'}
         value['entry']['host']['implementation_decision'] = decision
-        value['expected_entry'] = fixture.transfer.entry.resolve(value['entry'])
-        saved = fixture.transfer.handoff.handle(value)
-        self.assertEqual(saved['semantic']['implementation_policy'], value['semantic']['implementation_policy'])
-        value['entry']['host']['implementation_decision']['policy_digest'] = 'f' * 64
-        value['expected_entry'] = fixture.transfer.entry.resolve(value['entry'])
         with self.assertRaises(fixture.transfer.entry.PreparationError):
             fixture.transfer.handoff.handle(value)
+        value['entry']['host'].pop('implementation_decision')
+        value['semantic'].pop('implementation_policy')
+        value['expected_entry'] = fixture.transfer.entry.resolve(value['entry'])
+        saved = fixture.transfer.handoff.handle(value)
+        self.assertNotIn('implementation_policy', saved['semantic'])
 
     def test_direct_candidate_fingerprints_add_delete_and_executable_mode(self):
         for name in ('remove.py', 'executable.py'):
@@ -509,6 +529,16 @@ class ReviewFirstTests(fixture.ProgressTests):
         with self.assertRaises(control.ControlError):
             self.invoke('start', {'handoff': value, 'control': {'context': self.context, 'discussion': None}})
         self.assertIsNone(self.state()['control']['context']['carrier'])
+
+    def test_direct_start_rejects_target_already_ahead_of_original_baseline(self):
+        self.context = self.context_for(3)
+        value = self.input_for(3)
+        value['semantic']['implementation_policy'] = self.direct_policy(value)
+        (self.root / 'unrelated.txt').write_text('upstream before direct launch\n')
+        self.git('add', 'unrelated.txt')
+        self.git('commit', '-qm', 'advance target before dispatcher launch')
+        with self.assertRaises((control.ControlError, fixture.transfer.entry.PreparationError)):
+            self.begin('continuous', value)
 
     def test_ordinary_full_allocation_cannot_adopt_without_direct_snapshot(self):
         self.begin_dispatcher()

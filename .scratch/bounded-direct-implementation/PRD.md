@@ -49,7 +49,7 @@ Lifecycle: completed
 
 Controller 只在已有授权范围内作此技术判断，不新增用户审批。完整流程不要求提交四项冗长论证；只有申请例外才需完整证据。用户要求 full 优先；“很简单”“只有一行”、Dispatcher 自荐或缺字段均不能构成 direct 授权。格式错误/冲突的显式 direct 请求拒绝并要求修正为 full 或补齐现有证据，不静默丢弃输入。
 
-所有证据绑定进现有 sealed handoff 和 start-dispatch attempt；绑定后不可改 direct 事实、路径或模式。新字段只对 Stage 3 的 implementation-dispatcher 有意义；Execution Agent、Stage 2/4 的直接请求拒绝。入口检查需覆盖普通交互、附着讨论和 foreground scripted carrier；carrier 仅转递 Controller 的已认证决定，不以自己的声明代替 Controller。
+所有证据绑定进现有 sealed handoff 和 start-dispatch attempt；绑定后不可改 direct 事实、路径或模式。新字段只对 Stage 3 的 implementation-dispatcher 有意义；Execution Agent、Stage 2/4 的直接请求拒绝。交互和附着讨论的原 Controller 可以批准 direct。当前 foreground scripted carrier 的已冻结 runner 输入没有原 Controller 的 direct 决定，因此始终使用 full；不把 carrier 自填的字段或回执视为 Controller 授权。若将来宿主能提供可核验的原始决定，再单独设计该入口。
 
 脚本能机械证明字段、来源 identity/hash、scope、Controller receipt、绑定、文件快照、检查结果和真实角色；不能从 diff 自动证明“单一职责”“没有状态机影响”或测试语义充分。后者由 Controller 阅读冻结方案和相关生产代码判断，并接受独立审查复核。验收声明不得把结构通过说成自动风险证明。
 

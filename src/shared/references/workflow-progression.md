@@ -195,9 +195,10 @@ Every `continue-host` issuance checks consumed business intent, original
 authority/identity/source, stop intent and current unused proof. The same save
 consumes proof and records issuance; repeating advance returns exact lookup.
 
-Stage-3 `start` preserves the Controller-approved implementation policy from the
-sealed handoff; omission means full. A foreground carrier transports that decision
-and cannot approve its own direct exception. Read [Bounded direct implementation](guided-implementation/workflow-control-protocol.md#bounded-direct-implementation)
+Stage-3 `start` preserves the implementation policy from the sealed handoff;
+omission means full. The foreground scripted carrier has no frozen Controller
+direct decision in its confirmed runner input and therefore uses full. Read
+[Bounded direct implementation](guided-implementation/workflow-control-protocol.md#bounded-direct-implementation)
 for admission and candidate-source rules. C retains the original native
 Dispatcher result/stop and Git snapshot for direct candidate provenance; zero
 allocations never close the stop barrier on their own.
