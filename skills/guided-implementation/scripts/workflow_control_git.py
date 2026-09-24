@@ -124,10 +124,12 @@ def recovery_snapshot(repository, progress):
     target = git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip()
     git(repository, 'merge-base', '--is-ancestor', baseline, actual['head'])
     git(repository, 'merge-base', '--is-ancestor', progress['binding']['base_commit'], actual['head'])
-    changed = set(changed_paths(repository, target))
+    # Unmerged target additions are not deletions authored by this dispatcher.
+    scope_base = git(repository, 'merge-base', target, actual['head']).decode().strip()
+    changed = set(changed_paths(repository, scope_base))
     # A committed addition followed by an unstaged deletion must not cancel out
     # scope evidence. Inspect committed, staged and unstaged deltas separately.
-    for arguments in (('diff', '--name-only', '-z', target, 'HEAD'),
+    for arguments in (('diff', '--name-only', '-z', scope_base, 'HEAD'),
                       ('diff', '--cached', '--name-only', '-z'), ('diff', '--name-only', '-z')):
         changed.update(filter(None, git(repository, *arguments).decode().split('\0')))
     for relative in progress['allowed_paths'] + progress['protected_paths']:
@@ -168,7 +170,16 @@ def verify_execution_start(repository, progress):
     escalation = progress.get('implementation_escalation')
     if escalation is not None:
         if not progress['executions']:
-            require(recovery_snapshot(repository, progress)[0] == escalation['snapshot'], 'initial inherited snapshot changed before allocation')
+            current = recovery_snapshot(repository, progress)[0]
+            inherited = escalation['snapshot']
+            if current != inherited:
+                # Dispatcher integration may change HEAD/index after escalation,
+                # but cannot replace or accept any inherited implementation bytes.
+                require(current['files'] == inherited['files'] and
+                        current['branch'] == inherited['branch'] and current['base'] == inherited['base'],
+                        'initial inherited snapshot changed before allocation')
+                git(repository, 'merge-base', '--is-ancestor', inherited['head'], current['head'])
+                git(repository, 'merge-base', '--is-ancestor', current['target'], current['head'])
         expected.update({p: escalation['snapshot']['files'][p] for p in escalation['pending_paths']})
     recovery = progress.get('recovery')
     historical_refs = (set(recovery['host_evidence']['stopped_refs'])
@@ -260,7 +271,10 @@ def verified_transition(payload):
     if action in {'plan-execution', 'assign', 'execution-result', 'accept-execution', 'prepare-dispatch-recovery', 'recover-dispatch', 'candidate-ready', 'escalate-implementation'}:
         require(progress is not None, 'missing dispatcher checkpoint')
         verify_binding(repository, progress['binding'])
-        require(set(changed_paths(repository, git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip())) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
+        scope_base = git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip()
+        if action in {'escalate-implementation', 'prepare-dispatch-recovery', 'recover-dispatch'}:
+            scope_base = git(repository, 'merge-base', scope_base, 'HEAD').decode().strip()
+        require(set(changed_paths(repository, scope_base)) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
     if action == 'escalate-implementation':
         actual = recovery_snapshot(repository, progress)[0]
         require(evidence['snapshot'] == actual, 'escalation snapshot changed before transaction')

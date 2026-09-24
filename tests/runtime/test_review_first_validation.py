@@ -108,7 +108,7 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.assertEqual(closed['status'], 'accepted', closed)
         self.assertFalse(self.flow.exists())
 
-    def escalate_and_adopt(self, storage):
+    def escalate_and_adopt(self, storage, advance_target=False, drift_mode=False):
         import hashlib
         self.context = self.context_for(3)
         value = self.input_for(3)
@@ -121,6 +121,10 @@ class ReviewFirstTests(fixture.ProgressTests):
             self.flow_git('add', 'impl.py')
         if storage == 'committed':
             self.flow_git('commit', '-qm', 'retained direct commit')
+        if advance_target:
+            (self.root / 'unrelated.txt').write_text('upstream\n')
+            self.git('add', 'unrelated.txt')
+            self.git('commit', '-qm', 'unrelated upstream change')
         before = self.flow_git('rev-parse', 'HEAD'), self.flow_git('ls-files', '--stage')
         self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
         context = self.state()['control']['context']
@@ -142,11 +146,24 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.assertEqual(continued['next_action']['operation'], 'continue-host', continued)
         self.assertEqual(continued['next_action']['payload']['ref'], 'native:dispatcher')
         self.invoke('observe', self.observation('running', 'result', ref='native:dispatcher'))
+        if advance_target:
+            if storage != 'committed':
+                self.flow_git('add', 'impl.py')
+                self.flow_git('commit', '-qm', 'preserve unaccepted direct bytes before integration')
+            self.flow_git('merge', '--no-edit', 'main')
+            self.assertEqual((self.flow / 'impl.py').read_bytes(), data)
         execution = self.execution_input()
         execution['semantic']['adopt_paths'] = ['impl.py']
         execution['semantic']['adoption_snapshot_digest'] = escalation['snapshot_digest']
+        if drift_mode:
+            (self.flow / 'impl.py').chmod(0o755)
         prepared = self.invoke('allocation', {'allocation_id': 'adopt', 'operation': 'prepare', 'handoff': execution})
+        if drift_mode:
+            self.assertEqual(prepared['status'], 'blocked', prepared)
+            self.assertEqual(self.state()['control']['context']['handoff_progress']['executions'], [])
+            return
         self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['implementation_escalation'], escalation)
         slot = self.state()['allocations']['adopt']
         self.invoke('allocation', {'allocation_id': 'adopt', 'operation': 'bind',
             'receipt': self.receipt(slot['record'], ref='native:executor')})
@@ -184,7 +201,7 @@ class ReviewFirstTests(fixture.ProgressTests):
         checkpoint = self.state()['control']['context']['handoff_progress']
         self.assertEqual(checkpoint['executions'][0]['state'], 'accepted', accepted)
         self.assertEqual(checkpoint['git_baseline_commit'], value['scope']['baseline'])
-        if storage != 'committed':
+        if storage != 'committed' and not advance_target:
             self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'accepted inherited bytes')
         self.settings['thread_id'] = 'task'
         self.request['host'].update(thread_id='task', role='controller', source_ref=None)
@@ -195,6 +212,15 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.assertEqual(checkpoint['state'], 'reviewable', result)
         self.assertEqual(checkpoint['candidate_evidence']['changed_paths'], ['impl.py'])
         self.assertEqual(checkpoint['git_baseline_commit'], value['scope']['baseline'])
+
+    def test_direct_escalates_before_integrating_unrelated_target_then_adopts(self):
+        self.escalate_and_adopt('committed', advance_target=True)
+
+    def test_dirty_direct_escalates_before_integrating_unrelated_target_then_adopts(self):
+        self.escalate_and_adopt('dirty', advance_target=True)
+
+    def test_direct_integration_does_not_authorize_inherited_mode_drift(self):
+        self.escalate_and_adopt('committed', advance_target=True, drift_mode=True)
 
     def test_direct_escalation_retains_staged_bytes_and_accepts_explicit_adoption(self):
         self.escalate_and_adopt('staged')
@@ -299,6 +325,29 @@ class ReviewFirstTests(fixture.ProgressTests):
         result = self.invoke('control', self.direct_candidate_request())
         self.assertEqual(result['status'], 'blocked', result)
         self.assertIsNone(self.state()['control']['context']['handoff_progress']['candidate'])
+
+    def rejected_net_zero_foreign_write(self, committed):
+        self.begin_direct()
+        (self.root / 'unrelated.txt').write_text('upstream\n')
+        self.git('add', 'unrelated.txt'); self.git('commit', '-qm', 'upstream')
+        foreign = self.flow / 'foreign.py'
+        foreign.write_text('outside approved scope\n')
+        self.flow_git('add', 'foreign.py')
+        if committed:
+            self.flow_git('commit', '-qm', 'unauthorized foreign write')
+        foreign.unlink()
+        before = self.flow_git('rev-parse', 'HEAD'), self.flow_git('ls-files', '--stage')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        result = self.invoke('control', self.direct_escalation_request())
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['implementation_policy']['mode'], 'direct')
+        self.assertEqual(before, (self.flow_git('rev-parse', 'HEAD'), self.flow_git('ls-files', '--stage')))
+
+    def test_direct_target_advance_does_not_hide_committed_foreign_addition_then_deletion(self):
+        self.rejected_net_zero_foreign_write(committed=True)
+
+    def test_direct_target_advance_does_not_hide_staged_foreign_addition_then_deletion(self):
+        self.rejected_net_zero_foreign_write(committed=False)
 
     def test_direct_target_advance_requires_full_even_after_clean_merge(self):
         self.begin_direct()
