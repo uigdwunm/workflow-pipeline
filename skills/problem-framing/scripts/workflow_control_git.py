@@ -16,7 +16,7 @@ import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from workflow_control import ControlError, MAX_BYTES, keys, path, require, transition, decode_json, validate_context, execution_record
+from workflow_control import ControlError, MAX_BYTES, keys, path, require, transition, decode_json, validate_context, execution_record, direct_implementation, adoption_source, implementation_policy
 
 
 def git(repository, *arguments):
@@ -105,8 +105,9 @@ def execution_delta(repository, progress, execution, *, accepting=False):
         require(active, 'full allocation delta contains unassigned or unverified changes: ' + p)
         require(not accepting, 'parallel changes require matching stopped peer evidence before acceptance: ' + p)
         pending.update(peer['agent_ref'] for peer in active)
+    delivered = {**own, **{p: actual[p] for p in execution.get('adopt_paths', [])}}
     if accepting:
-        require(own == execution.get('git_result_snapshot'), 'received execution bytes or modes changed before acceptance')
+        require(delivered == execution.get('git_result_snapshot'), 'received execution bytes or modes changed before acceptance')
     return own, sorted(pending)
 
 
@@ -123,10 +124,12 @@ def recovery_snapshot(repository, progress):
     target = git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip()
     git(repository, 'merge-base', '--is-ancestor', baseline, actual['head'])
     git(repository, 'merge-base', '--is-ancestor', progress['binding']['base_commit'], actual['head'])
-    changed = set(changed_paths(repository, target))
+    # Unmerged target additions are not deletions authored by this dispatcher.
+    scope_base = git(repository, 'merge-base', target, actual['head']).decode().strip()
+    changed = set(changed_paths(repository, scope_base))
     # A committed addition followed by an unstaged deletion must not cancel out
     # scope evidence. Inspect committed, staged and unstaged deltas separately.
-    for arguments in (('diff', '--name-only', '-z', target, 'HEAD'),
+    for arguments in (('diff', '--name-only', '-z', scope_base, 'HEAD'),
                       ('diff', '--cached', '--name-only', '-z'), ('diff', '--name-only', '-z')):
         changed.update(filter(None, git(repository, *arguments).decode().split('\0')))
     for relative in progress['allowed_paths'] + progress['protected_paths']:
@@ -164,6 +167,20 @@ def verify_execution_start(repository, progress):
     baseline = commit(progress['git_baseline_commit'])
     expected = {p: committed_fingerprint(repository, baseline, p)
                 for p in progress['allowed_paths']}
+    escalation = progress.get('implementation_escalation')
+    if escalation is not None:
+        if not progress['executions']:
+            current = recovery_snapshot(repository, progress)[0]
+            inherited = escalation['snapshot']
+            if current != inherited:
+                # Dispatcher integration may change HEAD/index after escalation,
+                # but cannot replace or accept any inherited implementation bytes.
+                require(current['files'] == inherited['files'] and
+                        current['branch'] == inherited['branch'] and current['base'] == inherited['base'],
+                        'initial inherited snapshot changed before allocation')
+                git(repository, 'merge-base', '--is-ancestor', inherited['head'], current['head'])
+                git(repository, 'merge-base', '--is-ancestor', current['target'], current['head'])
+        expected.update({p: escalation['snapshot']['files'][p] for p in escalation['pending_paths']})
     recovery = progress.get('recovery')
     historical_refs = (set(recovery['host_evidence']['stopped_refs'])
                        if recovery is not None and recovery['state'] == 'activated' else set())
@@ -243,15 +260,37 @@ def verified_transition(payload):
     if action in {'start-dispatch', 'start-design'}:
         verify_binding(repository, evidence['binding'])
         if action == 'start-dispatch':
+            policy = implementation_policy(evidence.get('implementation_policy'), baseline=payload['baseline'])
+            if policy['mode'] == 'direct':
+                require(snapshot(repository)['head'] == payload['baseline'] and not git(repository, 'status', '--porcelain'),
+                        'direct dispatch requires the clean original baseline; unaccepted bytes require full')
+                assessment = policy['assessment']
+                require(set(assessment['implementation_paths'] + assessment['test_paths']) <= set(evidence['allowed_paths']),
+                        'direct assessment paths escape implementation scope')
             evidence['binding_verified'] = True
-    if action in {'plan-execution', 'assign', 'execution-result', 'accept-execution', 'prepare-dispatch-recovery', 'recover-dispatch', 'candidate-ready'}:
+    if action in {'plan-execution', 'assign', 'execution-result', 'accept-execution', 'prepare-dispatch-recovery', 'recover-dispatch', 'candidate-ready', 'escalate-implementation'}:
         require(progress is not None, 'missing dispatcher checkpoint')
         verify_binding(repository, progress['binding'])
-        require(set(changed_paths(repository, git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip())) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
+        scope_base = git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip()
+        if action in {'escalate-implementation', 'prepare-dispatch-recovery', 'recover-dispatch'}:
+            scope_base = git(repository, 'merge-base', scope_base, 'HEAD').decode().strip()
+        require(set(changed_paths(repository, scope_base)) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
+    if action == 'escalate-implementation':
+        actual = recovery_snapshot(repository, progress)[0]
+        require(evidence['snapshot'] == actual, 'escalation snapshot changed before transaction')
+        evidence['pending_paths'] = sorted(p for p in progress['allowed_paths'] if actual['files'][p] !=
+            committed_fingerprint(repository, progress['git_baseline_commit'], p))
     if action == 'prepare-dispatch-recovery':
         actual, ownership, revalidate = recovery_snapshot(repository, progress)
         evidence.update(snapshot=actual, ownership=ownership, revalidate=revalidate)
     if action == 'plan-execution':
+        if evidence.get('adopt_paths'):
+            source = adoption_source(progress)
+            require(source is not None, 'adoption requires an escalated direct snapshot')
+            require(set(evidence['adopt_paths']) <= set(source['pending_paths']), 'unknown inherited paths')
+            evidence['adoption_fingerprints'] = {p: source['snapshot']['files'][p] for p in evidence['adopt_paths']}
+            require(all(file_fingerprint(repository, p) == fingerprint for p, fingerprint in evidence['adoption_fingerprints'].items()),
+                    'adopted bytes changed since the Controller snapshot')
         verify_execution_start(repository, progress)
         before = snapshot(repository)
         before['files'] = {p: file_fingerprint(repository, p) for p in progress['allowed_paths']}
@@ -272,8 +311,10 @@ def verified_transition(payload):
     if action == 'execution-result':
         execution = execution_record(progress, evidence['agent_ref'])
         result_snapshot, pending_peers = execution_delta(repository, progress, execution)
+        actual_changes = set(result_snapshot)
+        result_snapshot.update({p: file_fingerprint(repository, p) for p in execution.get('adopt_paths', [])})
         actual_hashes = {p: implementation_hash(repository, p) for p in result_snapshot}
-        require(set(evidence['changed_paths']) == set(actual_hashes) and evidence['file_hashes'] == actual_hashes,
+        require(set(evidence['changed_paths']) == actual_changes and evidence['file_hashes'] == actual_hashes,
                 'reported changes must exactly match the actual allocation delta')
         evidence['git_unchanged'] = True
     if action == 'recover-dispatch':
@@ -296,6 +337,7 @@ def verified_transition(payload):
         require(not git(repository, 'status', '--porcelain'), 'candidate working tree is dirty')
         actual_commit = snapshot(repository)['head']
         require(evidence['commit'] == actual_commit, 'candidate is not actual HEAD')
+        git(repository, 'merge-base', '--is-ancestor', progress['git_baseline_commit'], evidence['commit'])
         candidate_paths = changed_paths(repository, evidence['expected_target_head'])
         accepted_fingerprints = {}
         for execution in progress['executions']:
@@ -303,6 +345,15 @@ def verified_transition(payload):
                 require('git_result_snapshot' in execution,
                         'accepted execution has no verified result snapshot')
                 accepted_fingerprints.update(execution['git_result_snapshot'])
+        if direct_implementation(progress):
+            require(evidence['expected_target_head'] == progress.get('implementation_target_head'),
+                    'direct target advanced; escalate to full before integration')
+            require('direct_provenance' in evidence, 'actual native dispatcher provenance required')
+            require(evidence['direct_provenance']['stop'].get('git_snapshot') == recovery_snapshot(repository, progress)[0],
+                    'direct bytes or Git state changed after native stop')
+            accepted_fingerprints = {p: committed_fingerprint(repository, actual_commit, p) for p in candidate_paths}
+            evidence['direct_provenance']['fingerprints'] = accepted_fingerprints
+            evidence['direct_provenance']['paths'] = candidate_paths
         require(all(relative in accepted_fingerprints and
                     file_fingerprint(repository, relative) == accepted_fingerprints[relative]
                     for relative in candidate_paths),
@@ -321,6 +372,8 @@ def verified_transition(payload):
     if action in {'start-dispatch', 'start-design', 'start-closure'}:
         git(repository, 'merge-base', '--is-ancestor', commit(payload['baseline']), 'HEAD')
         result['context']['handoff_progress']['git_baseline_commit'] = payload['baseline']
+        if action == 'start-dispatch' and direct_implementation(result['context']['handoff_progress']):
+            result['context']['handoff_progress']['implementation_target_head'] = git(repository, 'rev-parse', evidence['binding']['target_branch']).decode().strip()
     if action == 'execution-result':
         recorded = execution_record(result['context']['handoff_progress'], evidence['agent_ref'])
         recorded['git_result_snapshot'] = result_snapshot

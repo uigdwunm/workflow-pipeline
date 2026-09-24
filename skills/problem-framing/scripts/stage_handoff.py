@@ -19,7 +19,7 @@ import model_inventory
 import workflow_control as control
 import workflow_control_git as control_git
 
-PROTOCOL = "workflow-stage-transfer-v5"
+PROTOCOL = "workflow-stage-transfer-v6"
 ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution-designer",
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",
@@ -340,9 +340,31 @@ def prepare(request, selection_catalog=None):
     require(authority["flow_mode"] in {"stepwise", "continuous"} and authority["scope_digest"] == entry.digest(scope),
             "authorization_changed", "authorization must bind the exact scope and flow mode")
     semantic = request["semantic"]
-    entry.fields(semantic, {"objective", "testing_basis", "completion_criteria", "constraints"}, {"validation_plan"})
+    entry.fields(semantic, {"objective", "testing_basis", "completion_criteria", "constraints"}, {"validation_plan", "implementation_policy", "adopt_paths", "adoption_snapshot_digest"})
     if stage == 3 and request["role"] == "implementation-dispatcher":
         control.validate_validation_plan(semantic.get("validation_plan"), request["binding"])
+    if 'adopt_paths' in semantic or 'adoption_snapshot_digest' in semantic:
+        require(role == 'execution-agent', 'invalid_policy', 'adoption belongs only to Execution Agents')
+        control.paths(semantic.get('adopt_paths'), empty=True)
+        if semantic['adopt_paths']:
+            entry.nonempty(semantic.get('adoption_snapshot_digest'))
+        else:
+            require('adoption_snapshot_digest' not in semantic, 'invalid_policy', 'empty adoption cannot claim a snapshot')
+    if 'implementation_policy' in semantic:
+        require(isinstance(semantic['implementation_policy'], dict), 'invalid_policy', 'explicit policy must be an object')
+        require(stage == 3 and role == 'implementation-dispatcher', 'invalid_policy', 'policy only belongs to the Stage-3 Dispatcher')
+        require(current['actor']['role'] in {'controller', 'scripted-carrier'}, 'identity_mismatch', 'Dispatcher cannot approve direct implementation')
+        control.implementation_policy(semantic['implementation_policy'], controller_ref=current['actor']['controller_ref'],
+            requirement_identity=identity, scope_digest=authority['scope_digest'], baseline=scope['baseline'])
+        if semantic['implementation_policy']['mode'] == 'direct':
+            assessment = semantic['implementation_policy']['assessment']
+            if current['actor']['role'] == 'scripted-carrier':
+                decision = current['actor'].get('implementation_decision')
+                require(isinstance(decision, dict) and decision.get('controller_ref') == current['actor']['controller_ref'] and
+                        decision.get('reference') == assessment['reference'] and decision.get('policy_digest') == control.digest(semantic['implementation_policy']),
+                        'identity_mismatch', 'scripted carrier must relay an authenticated Controller policy decision')
+            require(set(assessment['implementation_paths'] + assessment['test_paths']) <= set(scope['implementation_paths']),
+                    'invalid_scope', 'direct locations must be in the authorized implementation scope')
     entry.nonempty(semantic["objective"]); entry.nonempty(semantic["testing_basis"])
     strings(semantic["completion_criteria"]); strings(semantic["constraints"])
     phase_evidence(request)

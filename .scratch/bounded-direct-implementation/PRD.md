@@ -2,6 +2,7 @@
 
 Status: ready-for-agent
 Review state: accepted
+Lifecycle: completed
 
 用户已确认本方案及 Testing Decisions，并授权按完整 Stage-3 流程实施。本文件是实施依据；实现由主任务编排，Stage 2 仅发布规划。
 
@@ -150,3 +151,12 @@ ADR-0007 目前将 Stage 3 描述为 Dispatcher with bounded Execution Agents；
 发现并解决的矛盾：安装中的旧 Stage-2 包文档写 optional Execution Agents，但当前源码明确强制至少一个；设计以当前源码为基准。只改提示会撞到 control和Git双门禁。只改mode会撞到verify_execution_start；本方案保存未验收快照并通过真实adopt验证解决。把当前HEAD作为新的总基线会漏审direct提交；本方案固定原基线。复用replacement recovery做正常升级会改变Dispatcher；本方案只在原implementing内增加有界控制动作。
 
 方案就绪：所有变化均有owner、输入输出/失败及测试seam；已覆盖默认优先、单向升级、未知/停止优先、候选不可漂移、恢复和旧包兼容。当前设计无未决产品选择。Testing Decisions 与 ADR-0007/Stage3 约束修订已获用户确认；Stage 2 未修改 ADR 或执行实现。
+
+
+### 实施与归档完成记录
+
+实现候选：`f063106075cb13d0675451dec12900e71541916f`。Controller 已接受独立 Standards 与 Spec 双轴审查；两轴均针对该候选通过。有限 direct 准入、真实 provenance、单向升级与继承字节复核、恢复及协议兼容已完成实现，本功能自身按完整执行流程交付。
+
+最终验证：该候选执行 `./scripts/validate.sh` 退出码 0，792 项测试通过（1 项按协议条件跳过），五个发布包验证通过，仓库检查 `valid` 且 `issues` 为空。跳过项为 `NonGitAttachedTransferTests.test_successor_dispatch_uses_real_ledger_slot_without_promoting_old_carrier`，原因是 wrapper transfer 使用 Git stage-entry checkpoint。验证前后候选提交一致，工作区干净。
+
+归档仅追加完成记录，保留原方案、验收标准和冻结需求；本次交付限本地 Git 发布与 Flow Worktree 清理，不含 push、安装或部署。

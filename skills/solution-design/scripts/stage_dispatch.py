@@ -130,11 +130,15 @@ def prepared(request):
             action = "start-dispatch"
             evidence.update(binding=saved["binding"], binding_verified=True, allowed_paths=scope["implementation_paths"],
                             protected_paths=scope["protected_paths"], authority_digest=saved["authorization"]["scope_digest"],
-                            testing_basis=saved["semantic"]["testing_basis"], validation_plan=saved["semantic"]["validation_plan"])
+                            testing_basis=saved["semantic"]["testing_basis"], validation_plan=saved["semantic"]["validation_plan"],
+                            implementation_policy=control.implementation_policy(saved["semantic"].get("implementation_policy")))
         elif role == "execution-agent":
             action = "plan-execution"
             evidence.update(task_id=str(uuid.uuid4()), paths=scope["owned_paths"], read_only=scope["protected_paths"],
                             behavior=saved["semantic"]["objective"], tests=saved["semantic"]["completion_criteria"], git_operations=[])
+            if saved['semantic'].get('adopt_paths'):
+                evidence.update(adopt_paths=saved['semantic']['adopt_paths'],
+                    adoption_snapshot_digest=saved['semantic']['adoption_snapshot_digest'])
         else:
             action = "start-closure"
             prior = saved["predecessor"]
@@ -144,6 +148,12 @@ def prepared(request):
         result, applied = checkpoint(request["control"], saved, action, evidence)
         attempt = result.get("allocation_digest", result["context"]["carrier"]["attempt"])
     payload = handoff.render(saved)["payload"]
+    if role == 'execution-agent' and saved['semantic'].get('adopt_paths'):
+        progress = result['context']['handoff_progress']
+        source = control.adoption_source(progress)
+        payload['inherited_implementation'] = {'baseline': progress['git_baseline_commit'],
+            'snapshot': copy.deepcopy(source['snapshot']), 'snapshot_digest': source['snapshot_digest'],
+            'adopt_paths': saved['semantic']['adopt_paths'], 'pending_paths': source['pending_paths'], 'accepted': False}
     native = saved["stage"] >= 2
     launch = handoff.seal({"kind": "native" if native else "visible-task", "role": role,
                           "controller_ref": saved["controller_ref"], "attempt": attempt,
@@ -380,10 +390,12 @@ def received(request):
         if stage >= 2:
             handoff.source(current, saved["requirement"], stage)
     if saved["role"] == "execution-agent":
-        entry.fields(payload, {"changed_paths", "file_hashes", "tests", "write_release"})
+        entry.fields(payload, {"changed_paths", "file_hashes", "tests", "write_release"}, {"adopted_paths"})
         require(payload['write_release'] == execution_release_token(record),
                 'authorization_changed', 'Execution Agent did not receive its bound write release')
         evidence = {key: payload[key] for key in ("changed_paths", "file_hashes", "tests")}
+        if 'adopted_paths' in payload:
+            evidence['adopted_paths'] = payload['adopted_paths']
         evidence.update(agent_ref=ref, stopped=True, git_unchanged=True)
         action = "execution-result"
     else:

@@ -5,7 +5,9 @@ Mechanical A/B execution uses [Workflow progression]({{resource:shared/reference
 The Workflow Controller retains confirmation, routing, result acceptance and
 recovery. Dedicated Discussion Task and Dedicated Problem Framing Task are visible
 0/1 carriers. Stage 2 uses one native solution-designer; stage 3 one Implementation
-Dispatcher and at least one Execution Agent with accepted implementation bytes; stage 4 one Closure Agent. A split child
+Dispatcher and, by default, at least one real Execution Agent with accepted
+implementation bytes. The bounded direct exception below changes only that
+implementation-source branch; stage 4 uses one Closure Agent. A split child
 is one independent Workflow Controller and inherits no preferences or authority.
 
 `workflow_control.py` accepts bounded strict JSON with schema_version=3, action,
@@ -110,10 +112,11 @@ low-complexity standalone implementation needs complete behavior/failure, accept
 scope and testing seam; it is unattached and performs no ledger write.
 
 start-dispatch freezes verified binding, allowed_paths, protected_paths,
-authority_digest, testing_basis and configuration; dispatcher-bound records actual
-native ref/attempt. The dispatcher integrates Git and runs the full $implement
-and $tdd workflow. Its first Execution Agent implements a real production-boundary
-red/green slice; later implementation and repair edits also use allocations.
+authority_digest, testing_basis, configuration and implementation_policy; dispatcher-bound records actual
+native ref/attempt. Both modes retain the complete $implement and $tdd workflow.
+Under default full, the dispatcher integrates Git; its first Execution Agent
+implements a real production-boundary red/green slice, and later implementation
+and repair edits also use allocations.
 plan-execution reserves task_id, exact paths, read_only dependencies, behavior,
 tests, git_operations=[] and execution-agent configuration before native spawn.
 assign binds its actual agent_ref/task_id/allocation_digest. Expand directories and
@@ -130,7 +133,7 @@ successful bound receipt; its completed result must echo the bound release.
 Execution Agents never mutate index, commits, branches, merges, worktrees or cleanup.
 execution-result reports stopped, diff/hashes, tests and Git state; the Git adapter
 compares actual allocation snapshot. accept-execution rechecks bytes and file modes. candidate-ready
-requires at least one accepted Execution Agent, every changed implementation path
+in full mode requires at least one accepted Execution Agent, every changed implementation path
 covered by the latest accepted allocation with matching final bytes and mode, all writers stopped,
 frozen review-required checks and clean verified HEAD. The controller owns
 two independent review axes on that exact candidate. Recovery proves all old writers
@@ -193,6 +196,125 @@ distinct identities and outcomes.
 execution-dispatch-result reconciles a pending task_id/allocation_digest with unknown
 (read-native-state) or authenticated not-created (release allocation). A late ref
 cannot bind a released allocation. Never treat an empty ref as stopped proof.
+
+## Bounded direct implementation
+
+Only the Controller may select `semantic.implementation_policy` before Stage-3
+Dispatcher launch. Omission is `{"mode":"full"}`; explicit full has only `mode`.
+An explicit direct policy has exactly `mode:"direct"` and `assessment`. The
+assessment contains `reference`, `controller_ref`, `requirement_identity`,
+`scope_digest`, `baseline`, `responsibility`, `implementation_paths`, `test_paths`,
+`behavior_ref`, `acceptance_ref`, `checks`, `testing_seam`, `conditions` and
+`exclusions`. Bind the decision to the original Controller, frozen requirement,
+exact authorized scope and baseline. Name exact located implementation/test files
+within that scope and actual behavior, acceptance and focused-check evidence.
+Assessment `checks` must name commands from the frozen validation plan's
+`review_required` list; they do not replace that plan or final validation.
+
+All four `conditions` must contain `satisfied:true` and a nonempty factual
+`evidence`: `behavior_fixed` (behavior and acceptance settled, no design gap),
+`single_responsibility` (one responsibility without cross-boundary change),
+`focused_verification` (a sufficient focused seam without multi-party integration),
+and `locations_known` (located changes without exploratory expansion).
+Each `exclusions` entry must contain `present:false` and factual `evidence`:
+`state_machine`, `concurrency`, `recovery`, `migration`, `public_interface`,
+`cross_module_interface`, `data_format`, `permissions`, and `workflow_state`.
+Unknown facts, a failed condition or any exclusion select full. File/line counts,
+a claim that work is simple, or Dispatcher self-assessment never establish direct.
+User-requested full takes priority. A malformed/conflicting explicit direct input
+is rejected; correct it to full or supply existing evidence rather than silently
+discarding it. Full needs no direct assessment. This feature itself changes
+recovery and persisted contracts and therefore must be implemented through full.
+
+The sealed handoff and start-dispatch attempt freeze this decision. Only Stage 3's
+implementation-dispatcher semantic input accepts it; Stage 2/4 and Execution Agent
+requests reject it. Interactive, attached and foreground routes share the rule;
+a scripted carrier forwards the authenticated Controller decision. The Controller
+briefly discloses the concrete reason within existing authorization, without a
+new user approval. Scripts verify structure, identity, scope and evidence linkage;
+they do not infer low semantic risk or test sufficiency from a diff. The Controller
+reads the frozen plan and relevant production code, subject to independent review.
+
+Direct dispatch starts from the clean original baseline; existing unexplained
+implementation bytes cannot acquire direct authority. Direct write authority
+starts only after actual Dispatcher binding. `executions`
+stays empty and plan-execution is rejected until conversion. The same Dispatcher
+performs implement/tdd, checks and commits; the Controller remains a nonwriter.
+Candidate evidence retains `direct_provenance` from the original causal native
+result/stop, policy digest, Dispatcher ref/attempt, original baseline and actual
+candidate. On the causal stopped observation, C freezes the real Git snapshot;
+candidate-ready rejects any later byte or Git-state drift. Git verifies that snapshot,
+clean exact HEAD, allowed cumulative paths and complete content/presence/mode
+fingerprints against commit objects. Baseline/target ancestry, current target,
+protected bytes and frozen review checks still apply. Direct start-dispatch also
+freezes `implementation_target_head`; target movement requires conversion to full
+before integration. Candidate paths keep the original target-diff semantics, with
+the original implementation baseline still required as an ancestor. Self-reported clean/hash,
+child prose or an empty roster cannot substitute for these facts. Provenance
+establishes authorized role and observed Git state, not forensic keyboard authorship;
+unexplained external changes remain an anomaly.
+
+Both independent review axes and final validation retain the same exact-candidate
+checks. The Dispatcher cannot be either reviewer. Remediation first stops old
+review activity and invalidates the old candidate; direct work continues only
+while the original eligibility remains true. Every replacement candidate requires
+new affected checks, both review axes and final validation. Target movement,
+integration, conflicts or recovery cannot broaden direct authority.
+
+### One-way conversion and inherited bytes
+
+On loss of eligibility, the Dispatcher stops edits and reports the concrete new
+fact. The Controller uses C `control` with action `escalate-implementation` in
+`implementing`, after the original causal stopped receipt and all native calls,
+allocations, reviews, validation and publication activity are reconciled. If a
+candidate already entered review/validation, use existing invalidate-candidate
+first. Evidence is `{dispatcher_ref,attempt,reference,reason,assessment_reference}`;
+the authenticated Controller receipt matches `controller_ref` and `reference`.
+C derives the original stop and snapshot and retains the exact control transaction.
+Git checks the stopped snapshot's HEAD, branch, index, original base, target and
+all allowed/protected content/presence/mode, including staged, unstaged and
+untracked changes separately. Unknown or out-of-scope changes block rather than
+becoming inherited authority.
+
+Successful conversion records immutable assessment/revocation and snapshot history,
+sets full and records continuation intent for the same Dispatcher, attempt,
+Flow Worktree and original `git_baseline_commit`. Preserve dirty index, files
+and commits; no reset, stash,
+new Dispatcher or widened scope. Identical completed transactions ACK; drift or
+conflicting replay is rejected. Direct cannot be reinstated in that attempt.
+A snapshot preserves unaccepted bytes; it is never accepted implementation.
+C advance inspects the original host and requires current same-ref resumability
+before issuing continue-host; conversion itself is not a native continuation receipt.
+Conversion while paused preserves pause and returns no follow-up action, including
+on an identical retry. Only explicit resume permits inspection and continuation;
+conversion cannot revive cancellation.
+
+Only paths pending revalidation from that conversion, or retained direct-source
+replacement recovery, may use explicit allocation `adopt_paths`. They must be a
+subset of exact assigned paths and bind `adoption_snapshot_digest` and complete
+inherited fingerprints. The real bound Execution Agent receives the cumulative
+original-baseline change, behavior/acceptance target and tests. Its native payload
+includes `inherited_implementation` with `baseline`, `snapshot`, `snapshot_digest`,
+`adopt_paths`, `pending_paths` and `accepted:false`; inherited bytes still require
+verification. It reports actual
+new `changed_paths` separately from `adopted_paths`; result fingerprints cover
+their union. Even without new edits, adoption needs its real stopped result,
+checks of inherited behavior and matching current bytes/modes at acceptance.
+Ordinary allocations have no adoption authority. Existing whole-delta, peer,
+nonoverlap, bound-release and Git-unchanged checks remain mandatory.
+
+Full candidate intake still requires real accepted Execution delivery for every
+cumulatively changed path, including direct commits. A restored baseline path
+needs no invented delivery; retain its provenance history. Dispatcher Git
+integration waits for relevant writers to stop. Pause/resume retains policy and
+exact identity only with unchanged evidence; cancel cannot be revived by conversion.
+Unknown native or publication outcomes retain their original lookup path.
+
+Unrecoverable Dispatcher replacement uses the controlled recovery below, not
+ordinary conversion. A successor is full and never inherits direct eligibility.
+Direct-origin ownership remains unaccepted until real Execution Agents adopt and
+verify it; original baseline, independent review and final validation remain.
+Historical ordinary allocation release/revalidation rules are unchanged.
 
 ## Prepared freshness and execution attribution
 
@@ -275,8 +397,8 @@ No implementation contract, tests, generated package or protected source belongs
 to closure scope. After a recorded merge, reconcile publication/cleanup instead
 of demanding a new validation or merge.
 
-New records use runner 6, C workflow-progress-v8, B workflow-stage-transfer-v5
-and control compatibility key 4 (JSON schema 3). Old executable records fail with
+New records use runner 6, C workflow-progress-v9, B workflow-stage-transfer-v6
+and control compatibility key 5 (JSON schema 3). Old executable records fail with
 legacy_run_requires_original_runtime before writes or host calls. Embedded old
 control keeps the ledger outer version and bytes; resume with its original pinned
 package. Never migrate checks strings into passed evidence.

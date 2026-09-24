@@ -24,7 +24,7 @@ Interpret user replies through
 
 Read [Workflow Control Protocol]({{resource:guided-implementation/references/workflow-control-protocol.md}}) before role preparation or transition. This stage uses Implementation Dispatcher and preserves the Workflow Controller.
 
-An authenticated non-root native implementation-dispatcher with the complete bound Stage-3 envelope follows {{resource:guided-implementation/references/execution-protocol.md}} directly. It never creates another dispatcher or a visible implementation task. Only the Workflow Controller performs the launch and independent review portions below. The dispatcher allocates implementation writes to ordinary Execution Agents under the shared exact-file contract; a candidate without accepted Execution Agent deliveries cannot pass the scripted gate.
+An authenticated non-root native implementation-dispatcher with the complete bound Stage-3 envelope follows {{resource:guided-implementation/references/execution-protocol.md}} directly. It never creates another dispatcher or a visible implementation task. Only the Workflow Controller performs the launch and independent review portions below. The default `full` policy allocates implementation writes to real Execution Agents under the shared exact-file contract and requires accepted deliveries. Only a Controller-approved, frozen `direct` policy permits the bound Dispatcher to implement itself. Read the bounded-direct rules in the Workflow Control Protocol before selecting that exception or converting it to full; the Controller never becomes an implementation writer.
 
 ## Entry
 
@@ -194,11 +194,13 @@ work.
 - Work only inside the verified worktree. Invoke the complete native
   `$implement` workflow, including `$tdd`, focused and affected checks, typecheck,
   lint or build where applicable, and commit a clean candidate.
-- Allocate the first real production-boundary TDD slice to an Execution Agent
-  before implementation edits. Allocate subsequent implementation and repair
-  edits through the same scripted execution contract. The dispatcher integrates
-  accepted bytes, runs checks and commits; the candidate gate requires every
-  changed implementation path to match an accepted Execution Agent delivery.
+- Under `full`, allocate the first real production-boundary TDD slice and all
+  subsequent implementation or repair edits to Execution Agents. The dispatcher
+  integrates accepted bytes, runs checks and commits; every changed implementation
+  path must match an accepted delivery. Under a frozen `direct` policy, the same
+  Dispatcher performs that work with zero allocations and real candidate provenance.
+  Loss of eligibility stops edits and returns to the Controller for the one-way
+  conversion defined in the Workflow Control Protocol.
 - The Implementation Dispatcher must not dispatch Standards or Spec review
   agents or receive the parent Session or CLI. It reports the exact candidate
   commit, changed paths, focused and full checks, remaining risks, and any
@@ -233,8 +235,9 @@ work.
   authoritative originating-task protocol before review or recovery.
 
 If the target branch advances, inspect the committed changes since the binding
-base. A changed source path stops for user direction. Otherwise merge the new
-target HEAD into the Flow Worktree, repair ordinary conflicts there,
+base. A changed source path stops for user direction. For an unchanged source,
+convert direct to full before integration, then merge the new target HEAD into
+the Flow Worktree, repair ordinary conflicts there,
 rerun affected checks, and commit the replacement candidate. The Originating
 Task handles its review under the authoritative role contract.
 

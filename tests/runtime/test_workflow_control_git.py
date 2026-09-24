@@ -14,7 +14,7 @@ import test_workflow_control
 import workflow_control as control
 import workflow_control_git as control_git
 
-CLI = Path(__file__).resolve().parents[2] / "skills/guided-implementation/scripts/workflow_control_git.py"
+CLI = Path(__file__).resolve().parents[2] / "src/shared/scripts/workflow_control_git.py"
 
 class WorkflowGitTests(unittest.TestCase):
     def setUp(self):

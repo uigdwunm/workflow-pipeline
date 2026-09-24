@@ -262,13 +262,19 @@ def resolve(request):
         require(isinstance(request.get("expected"), dict), "invalid_evidence", "original entry evidence required")
     host = request["host"]
     fields(host, {"project_path", "project_id", "thread_id", "controller_ref", "role", "source_ref", "receipt"},
-           {"supported_configurations", "actor_ref"})
+           {"supported_configurations", "actor_ref", "implementation_decision"})
     for key in ("project_id", "thread_id", "controller_ref", "role", "receipt"):
         nonempty(host[key])
     if host["source_ref"] is not None:
         nonempty(host["source_ref"])
     if "actor_ref" in host:
         nonempty(host["actor_ref"])
+    if 'implementation_decision' in host:
+        decision = host['implementation_decision']
+        fields(decision, {'controller_ref', 'reference', 'policy_digest', 'receipt'})
+        for value in decision.values():
+            nonempty(value)
+        require(decision['controller_ref'] == host['controller_ref'], 'identity_mismatch', 'Controller decision source differs')
     facts = repository_facts(os.getcwd())
     require(Path(host["project_path"]).is_absolute() and str(Path(host["project_path"]).resolve()) == facts["cwd"], "project_mismatch", "host project differs from actual cwd")
     settings = thread_settings.resolve_current_thread_settings()

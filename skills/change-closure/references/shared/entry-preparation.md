@@ -100,6 +100,15 @@ native solution-designer identity. A scripted carrier must name its authenticate
 launch source and external controller; neither may identify the current carrier.
 It retains the runner's authority and does not gain controller permissions.
 
+A Stage-3 scripted carrier relaying a direct implementation decision supplies
+`host.implementation_decision` with exactly `controller_ref`, `reference`,
+`policy_digest` and `receipt`. These are the external Controller's authenticated
+decision and original evidence, not the carrier's assessment. Entry preserves
+them in actor evidence; B matches the Controller, assessment reference and sealed
+policy digest before admitting direct. A reference or digest alone does not
+authenticate that decision. See [Bounded direct implementation](guided-implementation/workflow-control-protocol.md#bounded-direct-implementation)
+for the semantic policy; entry preparation remains a fact adapter.
+
 Source kinds:
 
 - `none`: no requirement selected; not a complete downstream launch input.
