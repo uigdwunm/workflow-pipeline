@@ -16,8 +16,9 @@ nor proof that descendants stopped. Follow the shared progression next action.
 
 Mechanical A/B execution uses [Workflow progression](../workflow-progression.md). Supply semantic decisions and authenticated raw host responses; the shared adapter retains intents, exact attempts, receipts and recovery steps. The role, review and authorization rules below remain binding.
 
-Use its allocation operation for every implementation and repair edit by an
-ordinary Execution Agent, with the original
+Read the bound `implementation_policy` before editing; absence means `full`.
+Under `full`, use its allocation operation for every implementation and repair
+edit by an ordinary Execution Agent, with the original
 checkpoint passed by the controller. Do not start a second workflow for each
 child or copy the dispatcher's control into another authoritative record.
 The child starts with `write_authority: await-bound-release` and reads only.
@@ -30,6 +31,15 @@ the originating task's candidate intake. Existing native governance still owns
 real launch, waits, stopped-writer proofs and interruption.
 
 Before this role acts, execute [Package execution preflight](../package-execution.md) using the inherited registration_input fields from the verified handoff. Pass them unchanged to entry_prepare.py with this role’s actual host identity and cwd; keep registration_identity as the frozen source identity. File evidence is reread by the adapter, while inline registry/context remain paired. Missing evidence stops before work. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
+
+Under an approved `direct` policy, this bound Dispatcher performs the same
+`$implement`/`$tdd`, checks and Git work itself, with zero Execution allocations.
+Read [Bounded direct implementation](workflow-control-protocol.md#bounded-direct-implementation)
+for the frozen scope, real candidate provenance and one-way escalation contract.
+The Dispatcher cannot approve or rewrite that policy. Stop edits as soon as a
+condition becomes unknown or an exclusion appears; report the new fact to the
+Controller and retain all bytes and commits. Continue full work only after the
+original checkpoint records the conversion.
 
 The dispatcher accepts the verified Flow Worktree binding inherited from
 Stage 2 or created by a qualified standalone Stage-3 entry. It must run
@@ -146,7 +156,8 @@ It performs no push, pull request, deployment, release, tracker write or other
 remote mutation without separate explicit authority.
 
 If the originating task reports a newer unrelated target HEAD, merge that
-target in this worktree, resolve conflicts here, rerun affected checks and
+target in this worktree only after converting a direct attempt to full. Resolve
+conflicts here, rerun affected checks and
 report the replacement candidate. The authoritative role contract determines
 the Originating Task's review action. A changed planning source, material
 semantic conflict, or standalone-brief conflict stops for user direction.
@@ -155,9 +166,13 @@ The dispatcher never updates the target branch and never removes the Flow
 Worktree or branch. It returns the clean accepted candidate in that retained
 worktree for Stage 4.
 
-Execution Agents use plan-execution before native spawn and assign after the actual
+In full mode, Execution Agents use plan-execution before native spawn and assign after the actual
 receipt as specified in [workflow-control-protocol.md](workflow-control-protocol.md).
 They have no Git mutation authority; the dispatcher integrates verified bytes.
+For an explicit inherited-byte adoption allocation, give the real Execution Agent
+the original-baseline cumulative change, acceptance target and tests. Its result
+separates actual `changed_paths` from `adopted_paths`; unchanged inherited bytes
+need explicit verification and acceptance, not a fabricated edit.
 
 ## Review-first final validation
 

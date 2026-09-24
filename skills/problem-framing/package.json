@@ -1,7 +1,7 @@
 {
-  "bundle_digest": "92e581653cbc1abf20b4060fe949a6afa5e8b87f4a42ba9b969ef193feb34d39",
+  "bundle_digest": "f5974279a665e856a9a38891fe80063b1b2e96195c63fc5bacb16030e0ea8488",
   "compatibility_key": {
-    "control": 4,
+    "control": 5,
     "discussion_request": 1,
     "entry": "workflow-entry-v3",
     "handoff": "workflow-controller-v1",
@@ -14,10 +14,10 @@
     "preparation": "workflow-preparation-v3",
     "requirement_delivery": "requirement-delivery-v1",
     "runner": 6,
-    "stage_transfer": "workflow-stage-transfer-v5",
+    "stage_transfer": "workflow-stage-transfer-v6",
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
-    "workflow_progress": "workflow-progress-v8"
+    "workflow_progress": "workflow-progress-v9"
   },
   "external_actions": {
     "grill-with-docs": [
@@ -76,7 +76,7 @@
     },
     "references/shared/entry-preparation.md": {
       "mode": "0644",
-      "sha256": "31007f30cd390bdecdc70aa779276f132b899ce7a9fc147a9a76530a215438aa"
+      "sha256": "bacf0fcd34a9749a5d8e43d1f3cf8fc624592210e0efb9d2d9c1099185515b6c"
     },
     "references/shared/guided-implementation/thread-settings-protocol.md": {
       "mode": "0644",
@@ -84,11 +84,11 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "6a537492dd7d593c2119c3315c69a4ed66dcc3565b78b3cdd0bee6ea35e0552c"
+      "sha256": "77668249a440984cf6a9f63c698df2f490ff0cfb7002b8c56aefc04a7bf4cdb8"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "f22ec6ef5d58841b3ee273ca0939e44d04435de7f3a062993f5ce05ea7ced150"
+      "sha256": "a99122d973cbbf85ab89eb66bf4c73381737d4dc2d5c0ad5f2ca3f35d685923b"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -100,11 +100,11 @@
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
-      "sha256": "50cfa5c93b5110da58ad73b32e470d9cc4e607bdf687775b3de55e8de1eb0b74"
+      "sha256": "5430807a2b1e2cc148e24df000efd22ff5eec75dc1db247f422c1cb572f7f3ae"
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "65718accd61b5a4742949bb657571ea82adb4e81ab69f7e7164a640ada59627c"
+      "sha256": "68ff9b78fcb682aa7c146742cdcb900bbf8a5d6570140dee03b0606c09181ce1"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -176,7 +176,7 @@
     },
     "scripts/entry_prepare.py": {
       "mode": "0644",
-      "sha256": "9b9afb11381fa29f9ecd2fa151554f7efc29334a3a89a379f80f4fc537c3ed1e"
+      "sha256": "0c2c947f5990ce610f189c9fc0f276517b6d29ed58c994b860883504359100ff"
     },
     "scripts/host_skill_registry.py": {
       "mode": "0644",
@@ -200,11 +200,11 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "06357e32978f7effc4322af40489c8f0285f79386992f54c620562656a8e6baf"
+      "sha256": "53275f675dd68bddb95c83c13094fff27806393e708cdac8c0ef11865d5f742d"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "7bff4251717ed63e407068a63f90685454468553afe123d1f4e8fe96197ff6f4"
+      "sha256": "daa73bd18ed9e25884f8ef638c65b179a5fe4e54c265b14a7f38c7b2b0dc8ae9"
     },
     "scripts/supervision_core/__init__.py": {
       "mode": "0644",
@@ -224,15 +224,15 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "659a08b4833fa17f3167c093c0df426e44b8ab3d3d1f78085f1830923faacf73"
+      "sha256": "23a594d7fd84b08c929993aa1a8722996592ba4f16fb75f529333d4e0e1e79ab"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "f38312d9e7e86bf106161e4ca62df4f328e34ef32ae0316d0d32f6e10feb218b"
+      "sha256": "903e6bb66ba4095982a39e270330c3b69b6f29ef5071e0cee940ac1980c440ff"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "025f0d793f738917247657ca6d724a47670b2b67e35d9fbec3500bf65da92dd2"
+      "sha256": "4f340d9a4b687d7915e84e829b7799ddbede30aa3b38351081f38a57218f626c"
     }
   },
   "format_version": 1,

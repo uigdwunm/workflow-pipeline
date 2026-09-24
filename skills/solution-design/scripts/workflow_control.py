@@ -88,6 +88,61 @@ def hashes(value):
         require(h is None or isinstance(h, str) and re.fullmatch('[0-9a-f]{64}', h), 'invalid file hash')
 
 
+IMPLEMENTATION_CONDITIONS = {'behavior_fixed', 'single_responsibility', 'focused_verification', 'locations_known'}
+IMPLEMENTATION_EXCLUSIONS = {'state_machine', 'concurrency', 'recovery', 'migration', 'public_interface',
+    'cross_module_interface', 'data_format', 'permissions', 'workflow_state'}
+
+
+def implementation_policy(value=None, *, controller_ref=None, requirement_identity=None, scope_digest=None, baseline=None):
+    """Validate Controller evidence; semantic risk remains a reviewed judgment."""
+    if value is None:
+        return {'mode': 'full'}
+    require(isinstance(value, dict), 'implementation policy must be an object')
+    if value.get('mode') == 'full':
+        keys(value, {'mode'})
+        return copy.deepcopy(value)
+    keys(value, {'mode', 'assessment'})
+    require(value['mode'] == 'direct', 'unknown implementation mode')
+    assessment = value['assessment']
+    keys(assessment, {'reference', 'controller_ref', 'requirement_identity', 'scope_digest', 'baseline',
+        'responsibility', 'implementation_paths', 'test_paths', 'behavior_ref', 'acceptance_ref',
+        'checks', 'testing_seam', 'conditions', 'exclusions'})
+    for key in ('reference', 'controller_ref', 'scope_digest', 'baseline', 'responsibility',
+                'behavior_ref', 'acceptance_ref', 'testing_seam'):
+        text(assessment[key])
+    paths(assessment['implementation_paths']); paths(assessment['test_paths'])
+    require(isinstance(assessment['checks'], list) and assessment['checks'], 'direct checks required')
+    for check in assessment['checks']:
+        text(check)
+    for field, names, verdict, expected in (('conditions', IMPLEMENTATION_CONDITIONS, 'satisfied', True),
+                                          ('exclusions', IMPLEMENTATION_EXCLUSIONS, 'present', False)):
+        keys(assessment[field], names)
+        for fact in assessment[field].values():
+            keys(fact, {verdict, 'evidence'})
+            require(fact[verdict] is expected, 'direct eligibility is unknown or excluded; use full')
+            text(fact['evidence'])
+    for name, expected in (('controller_ref', controller_ref), ('requirement_identity', requirement_identity),
+                           ('scope_digest', scope_digest), ('baseline', baseline)):
+        if expected is not None:
+            require(assessment[name] == expected, 'direct assessment ' + name + ' mismatch')
+    return copy.deepcopy(value)
+
+
+def direct_implementation(progress):
+    return progress.get('implementation_policy', {'mode': 'full'})['mode'] == 'direct'
+
+
+def adoption_source(progress):
+    escalation = progress.get('implementation_escalation')
+    if escalation is not None:
+        return escalation
+    recovery = progress.get('recovery')
+    if recovery and recovery['state'] == 'activated' and recovery.get('direct_policy'):
+        return {'snapshot': recovery['snapshot'], 'snapshot_digest': recovery['snapshot_digest'],
+                'pending_paths': recovery['ownership']['dispatcher']}
+    return None
+
+
 def execution_record(progress, ref):
     text(ref)
     require(progress is not None and 'executions' in progress, 'no execution checkpoint')
@@ -291,10 +346,23 @@ def validate_progress(progress):
         validate_binding(progress['binding'])
         paths(progress['allowed_paths']); paths(progress['protected_paths'], empty=True)
     elif 'executions' in progress:
-        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history'}
+        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head'}
         require(state in {'dispatcher-pending', 'implementing', 'reviewable', 'reviewing', 'final-validation-pending', 'validating', 'final-validation-failed', 'deliverable', 'cancelled'}, 'invalid dispatcher state')
         validate_binding(progress['binding'])
         paths(progress['allowed_paths']); paths(progress['protected_paths'], empty=True)
+        require('implementation_policy' not in progress or isinstance(progress['implementation_policy'], dict), 'invalid checkpoint implementation policy')
+        implementation_policy(progress.get('implementation_policy'))
+        if 'implementation_escalation' in progress:
+            escalation = progress['implementation_escalation']
+            keys(escalation, {'dispatcher_ref', 'attempt', 'reference', 'reason', 'assessment_reference', 'stop',
+                'snapshot', 'pending_paths', 'policy', 'snapshot_digest'})
+            require(not direct_implementation(progress) and escalation['snapshot_digest'] == digest(escalation['snapshot']),
+                    'escalation history changed')
+            original = implementation_policy(escalation['policy'])
+            require(original['mode'] == 'direct' and original['assessment']['reference'] == escalation['assessment_reference'],
+                    'escalation policy changed')
+            require(set(paths(escalation['pending_paths'], empty=True)) <= set(progress['allowed_paths']), 'escalation paths changed')
+            require(escalation['stop'].get('git_snapshot') == escalation['snapshot'], 'escalation stop snapshot changed')
         validate_validation_plan(progress['validation_plan'], progress['binding'])
         require(progress['plan_digest'] == digest(progress['validation_plan']), 'frozen validation plan changed')
         if 'attempts' in progress:
@@ -308,7 +376,7 @@ def validate_progress(progress):
         require(isinstance(progress['executions'], list), 'executions must be a list')
         for execution in progress['executions']:
             required = {'task_id', 'paths', 'read_only', 'behavior', 'tests', 'git_operations', 'configuration', 'agent_ref', 'state', 'stopped', 'file_hashes', 'allocation_digest'}
-            require(isinstance(execution, dict) and required <= set(execution) <= required | {'git_snapshot', 'git_result_snapshot'}, 'invalid execution envelope fields')
+            require(isinstance(execution, dict) and required <= set(execution) <= required | {'git_snapshot', 'git_result_snapshot', 'adopt_paths', 'adoption_snapshot_digest', 'adoption_fingerprints', 'changed_paths', 'adopted_paths'}, 'invalid execution envelope fields')
             require(execution['state'] in {'dispatch-pending', 'assigned', 'received', 'accepted', 'cancelled'} and type(execution['stopped']) is bool, 'invalid execution state')
             validate_selection(execution['configuration'])
             text(execution['task_id']); text(execution['behavior']); text(execution['allocation_digest'])
@@ -341,8 +409,12 @@ def validate_progress(progress):
 
 
 def validate_recovery(recovery, progress):
+    require(isinstance(recovery, dict), 'invalid recovery checkpoint')
     frozen_keys = {'dispatcher_ref', 'attempt', 'reference', 'reason', 'stop_receipts', 'call_receipts',
                    'host_evidence', 'snapshot', 'ownership', 'revalidate', 'authority_digest', 'remaining_paths'}
+    if 'direct_policy' in recovery:
+        frozen_keys.add('direct_policy')
+        require(implementation_policy(recovery['direct_policy'])['mode'] == 'direct', 'invalid recovered direct policy')
     required = frozen_keys | {'recovery_id', 'snapshot_digest', 'state', 'decision', 'intent', 'receipts', 'activation'}
     require(isinstance(recovery, dict) and required <= set(recovery) <= required | {'releases'}, 'invalid recovery checkpoint')
     require(recovery['recovery_id'] == digest({k:recovery[k] for k in frozen_keys}) and
@@ -670,7 +742,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         context.update(stage=3, topic_ref=None, carrier=None, flow_authority=None, handoff_progress=None,
                        preference={'topic_current': False, 'stage_current': False})
     elif action == 'start-dispatch':
-        keys(evidence, {'binding', 'binding_verified', 'allowed_paths', 'protected_paths', 'authority_digest', 'testing_basis', 'validation_plan', 'configuration'})
+        require('implementation_policy' not in evidence or isinstance(evidence['implementation_policy'], dict), 'explicit policy must be an object')
+        keys(evidence, {'binding', 'binding_verified', 'allowed_paths', 'protected_paths', 'authority_digest', 'testing_basis', 'validation_plan', 'configuration'} | ({'implementation_policy'} if 'implementation_policy' in evidence else set()))
         require(context['stage'] == 3 and progress is None and context['carrier'] is None, 'only one implementation dispatcher')
         require(evidence['binding_verified'] is True and isinstance(evidence['binding'], dict) and evidence['binding'], 'verified worktree required')
         validate_binding(evidence['binding'])
@@ -678,11 +751,17 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         require(not set(allowed) & set(protected), 'protected scope overlap')
         text(evidence['testing_basis'])
         validate_validation_plan(evidence['validation_plan'], evidence['binding'])
+        policy = implementation_policy(evidence.get('implementation_policy'), controller_ref=context['controller_ref'],
+            requirement_identity=context['requirement_identity'], scope_digest=evidence['authority_digest'])
+        if policy['mode'] == 'direct':
+            require(set(policy['assessment']['checks']) <= {v['command'] for v in evidence['validation_plan']['review_required']},
+                    'assessed checks must be covered by frozen review checks')
         attempt = digest(evidence)
         context['carrier'] = {'kind': 'implementation-dispatcher', 'ref': None, 'attempt': attempt}
         context['handoff_progress'] = {'state': 'dispatcher-pending', 'binding': evidence['binding'],
             'allowed_paths': allowed, 'protected_paths': protected, 'authority_digest': evidence['authority_digest'],
             'executions': [], 'candidate': None, 'tests': [], 'configuration': evidence['configuration'],
+            'implementation_policy': policy,
             'validation_plan': evidence['validation_plan'], 'plan_digest': digest(evidence['validation_plan'])}
         return {'ok': True, 'context': context, 'attempt': attempt,
                 'effects': [{'operation': 'spawn_native', 'role': 'implementation-dispatcher', 'configuration': evidence['configuration']}]}
@@ -691,11 +770,43 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         require(progress and progress['state'] == 'dispatcher-pending' and evidence['attempt'] == context['carrier']['attempt'], 'wrong dispatcher attempt')
         context['carrier']['ref'] = text(evidence['ref'])
         progress['state'] = 'implementing'
+    elif action == 'escalate-implementation':
+        keys(evidence, {'dispatcher_ref', 'attempt', 'reference', 'reason', 'assessment_reference', 'stop', 'snapshot', 'pending_paths'})
+        require(progress and progress['state'] == 'implementing', 'escalation requires implementing state')
+        require(evidence['dispatcher_ref'] == context['carrier']['ref'] and evidence['attempt'] == context['carrier']['attempt'],
+                'escalation retains the original Dispatcher identity')
+        require(direct_implementation(progress) and not progress.get('implementation_escalation') and not progress['executions'],
+                'only one direct to full escalation is permitted')
+        policy = progress['implementation_policy']
+        require(evidence['assessment_reference'] == policy['assessment']['reference'], 'wrong direct assessment')
+        text(evidence['reference']); text(evidence['reason'])
+        stop = evidence['stop']
+        require(stop.get('provenance') and stop.get('receipt', {}).get('status') == 'stopped' and
+                stop['receipt'].get('ref') == context['carrier']['ref'] and stop.get('git_snapshot') == evidence['snapshot'],
+                'escalation requires the original stopped byte snapshot')
+        pending = paths(evidence['pending_paths'], empty=True)
+        require(set(pending) <= set(progress['allowed_paths']), 'inherited paths escape scope')
+        progress['implementation_escalation'] = {**copy.deepcopy(evidence), 'policy': copy.deepcopy(policy),
+            'snapshot_digest': digest(evidence['snapshot']), 'pending_paths': pending}
+        progress['implementation_policy'] = {'mode': 'full'}
+        effects = [{'operation': 'continue-host', 'ref': context['carrier']['ref'], 'implementation_mode': 'full'}]
     elif action == 'plan-execution':
-        keys(evidence, {'task_id', 'paths', 'read_only', 'behavior', 'tests', 'git_operations', 'configuration'})
+        keys(evidence, {'task_id', 'paths', 'read_only', 'behavior', 'tests', 'git_operations', 'configuration'} |
+             (set(evidence) & {'adopt_paths', 'adoption_snapshot_digest', 'adoption_fingerprints'}))
         require(progress and progress['state'] == 'implementing', 'dispatcher is not accepting assignments')
+        require(not direct_implementation(progress), 'direct implementation must escalate before execution allocation')
         text(evidence['task_id']); text(evidence['behavior'])
         assigned = paths(evidence['paths'])
+        adopted = paths(evidence.get('adopt_paths', []), empty=True)
+        if adopted:
+            source = adoption_source(progress)
+            require(source is not None and set(adopted) <= set(assigned) & set(source['pending_paths']) and
+                    evidence.get('adoption_snapshot_digest') == source['snapshot_digest'], 'invalid inherited adoption scope or snapshot')
+            require(evidence.get('adoption_fingerprints') == {p: source['snapshot']['files'][p] for p in adopted},
+                    'adoption must bind original complete fingerprints')
+        else:
+            require(not evidence.get('adoption_snapshot_digest') and not evidence.get('adoption_fingerprints'),
+                    'ordinary allocations cannot claim adoption evidence')
         paths(evidence['read_only'], empty=True)
         require(isinstance(evidence['tests'], list) and evidence['tests'], 'testing requirement is missing')
         require(evidence['git_operations'] == [], 'execution agents cannot mutate Git')
@@ -731,15 +842,20 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         require(ref != context['carrier']['ref'] and all(e['agent_ref'] != ref for e in progress['executions']), 'native identity reused')
         matches[0].update(agent_ref=ref, state='assigned')
     elif action == 'execution-result':
-        keys(evidence, {'agent_ref', 'stopped', 'changed_paths', 'file_hashes', 'tests', 'git_unchanged'})
+        keys(evidence, {'agent_ref', 'stopped', 'changed_paths', 'file_hashes', 'tests', 'git_unchanged'} |
+             ({'adopted_paths'} if 'adopted_paths' in evidence else set()))
         execution = execution_record(progress, evidence['agent_ref'])
         require(execution['state'] in {'assigned', 'received'}, 'execution result requires an actual bound writer')
         require(evidence['stopped'] is True and evidence['git_unchanged'] is True, 'execution must stop without Git mutations')
         require(set(paths(evidence['changed_paths'], empty=True)) <= set(execution['paths']), 'actual diff escapes allocation')
         hashes(evidence['file_hashes'])
-        require(set(evidence['file_hashes']) == set(evidence['changed_paths']), 'diff hashes incomplete')
+        adopted = paths(evidence.get('adopted_paths', []), empty=True)
+        require(set(adopted) == set(execution.get('adopt_paths', [])), 'explicit allocated adoption result required')
+        require(set(evidence['file_hashes']) == set(evidence['changed_paths']) | set(adopted), 'diff and adopted hashes incomplete')
         require(isinstance(evidence['tests'], list) and evidence['tests'], 'execution test evidence missing')
         execution.update(state='received', stopped=True, file_hashes=evidence['file_hashes'], tests=evidence['tests'])
+        if adopted:
+            execution.update(changed_paths=evidence['changed_paths'], adopted_paths=adopted)
     elif action == 'accept-execution':
         keys(evidence, {'agent_ref', 'file_hashes'})
         execution = execution_record(progress, evidence['agent_ref'])
@@ -765,6 +881,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                 host['call_receipts'] == evidence['call_receipts'], 'complete original host evidence required')
         frozen = {**evidence, 'authority_digest': progress['authority_digest'],
                   'remaining_paths': sorted(set(progress['allowed_paths']) - set(evidence['ownership']['accepted']))}
+        if direct_implementation(progress):
+            frozen['direct_policy'] = copy.deepcopy(progress['implementation_policy'])
         identity = digest(frozen)
         recovery = {**frozen, 'recovery_id': identity, 'snapshot_digest': digest(evidence['snapshot']),
                     'state': 'prepared', 'decision': None, 'intent': None, 'receipts': [], 'activation': None}
@@ -856,6 +974,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                 require(context['carrier']['ref'] == recovery['dispatcher_ref'] and context['carrier']['attempt'] == recovery['attempt'], 'original dispatcher changed')
                 context['carrier'].update(ref=evidence['replacement_ref'], attempt=digest([recovery['recovery_id'], evidence['replacement_ref']]))
                 recovery.update(state='activated', activation=activation)
+                if recovery.get('direct_policy'):
+                    progress['implementation_policy'] = {'mode': 'full'}
                 # Previous checks are diagnostic history, never evidence for the new attempt.
                 progress.setdefault('validation_history', []).append({k:copy.deepcopy(progress[k]) for k in
                     ('candidate', 'tests', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts') if k in progress})
@@ -867,7 +987,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         return {'ok': True, 'context': context, 'effects': effects, 'recovery': recovery,
                 'remaining_paths': recovery['remaining_paths'], 'revalidate': recovery['revalidate']}
     elif action == 'candidate-ready':
-        keys(evidence, {'dispatcher_ref', 'attempt', 'commit', 'expected_target_head', 'binding', 'plan_digest', 'checks', 'source', 'clean', 'changed_paths', 'file_hashes'})
+        keys(evidence, {'dispatcher_ref', 'attempt', 'commit', 'expected_target_head', 'binding', 'plan_digest', 'checks', 'source', 'clean', 'changed_paths', 'file_hashes'} | ({'direct_provenance'} if 'direct_provenance' in evidence else set()))
         require(progress and evidence['dispatcher_ref'] == context['carrier']['ref'] and evidence['attempt'] == context['carrier']['attempt'], 'wrong dispatcher identity or attempt')
         if progress.get('candidate_evidence') is not None:
             require(progress['candidate_evidence'] == evidence, 'candidate identity cannot change; invalidate explicitly')
@@ -875,19 +995,39 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         require(progress['state'] == 'implementing', 'candidate is not implementing')
         require(all(e['stopped'] and e['state'] in {'accepted', 'cancelled'} for e in progress['executions']), 'all executions must stop and be accepted')
         accepted = [e for e in progress['executions'] if e['state'] == 'accepted' and e['agent_ref'] is not None]
-        require(accepted, 'Stage-3 candidate requires an accepted Execution Agent')
+        if direct_implementation(progress):
+            require(not progress['executions'], 'direct candidate cannot contain Execution allocations')
+            proof = evidence.get('direct_provenance')
+            require(isinstance(proof, dict) and proof.get('policy_digest') == digest(progress['implementation_policy']) and
+                    proof.get('dispatcher_ref') == context['carrier']['ref'] and proof.get('attempt') == context['carrier']['attempt'] and
+                    proof.get('baseline') == progress['git_baseline_commit'] and proof.get('candidate') == evidence['commit'],
+                    'actual bound dispatcher provenance required')
+            require(proof.get('stop', {}).get('receipt', {}).get('status') == 'stopped' and
+                    proof['stop']['receipt'].get('ref') == context['carrier']['ref'] and proof['stop'].get('provenance'),
+                    'causal native dispatcher stop required')
+        else:
+            require('direct_provenance' not in evidence, 'full candidates require execution provenance')
+            require(accepted, 'Stage-3 candidate requires an accepted Execution Agent')
         require(evidence['clean'] is True and evidence['binding'] == progress['binding'], 'candidate must be clean in bound worktree')
         changed = set(paths(evidence['changed_paths']))
+        if direct_implementation(progress):
+            assessment = progress['implementation_policy']['assessment']
+            require(changed <= set(assessment['implementation_paths'] + assessment['test_paths']), 'direct change escapes assessed locations')
         require(changed <= set(progress['allowed_paths']), 'candidate diff escapes scope')
         require(re.fullmatch('[0-9a-f]{40}', evidence['commit']) and evidence['plan_digest'] == progress['plan_digest'], 'candidate commit or plan changed')
         validate_checks(progress['validation_plan']['review_required'], evidence['checks'], evidence['commit'])
         validate_result_source(evidence['source'], evidence['checks'], context['carrier']['ref'])
-        accepted_hashes = {}
-        for execution in accepted:
-            accepted_hashes.update(execution['file_hashes'])
-        require(changed <= set(accepted_hashes), 'candidate contains implementation paths without accepted Execution Agent delivery')
-        require(all(evidence['file_hashes'].get(p) == accepted_hashes[p] for p in changed),
-                'candidate bytes differ from accepted Execution Agent delivery')
+        if direct_implementation(progress):
+            require(set(proof.get('paths', [])) == changed and proof.get('fingerprints') ==
+                    {p: proof['stop']['git_snapshot']['files'][p] for p in changed},
+                    'direct candidate paths or fingerprints differ from its stopped snapshot')
+        else:
+            accepted_hashes = {}
+            for execution in accepted:
+                accepted_hashes.update(execution['file_hashes'])
+            require(changed <= set(accepted_hashes), 'candidate contains implementation paths without accepted Execution Agent delivery')
+            require(all(evidence['file_hashes'].get(p) == accepted_hashes[p] for p in changed),
+                    'candidate bytes differ from accepted Execution Agent delivery')
         progress.update(state='reviewable', candidate=evidence['commit'], tests=evidence['checks'],
                         expected_target_head=evidence['expected_target_head'], candidate_evidence=evidence)
     elif action == 'review-start':

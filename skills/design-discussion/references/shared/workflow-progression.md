@@ -28,7 +28,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v8","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v9","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -195,7 +195,19 @@ Every `continue-host` issuance checks consumed business intent, original
 authority/identity/source, stop intent and current unused proof. The same save
 consumes proof and records issuance; repeating advance returns exact lookup.
 
+Stage-3 `start` preserves the Controller-approved implementation policy from the
+sealed handoff; omission means full. A foreground carrier transports that decision
+and cannot approve its own direct exception. Read [Bounded direct implementation](guided-implementation/workflow-control-protocol.md#bounded-direct-implementation)
+for admission and candidate-source rules. C retains the original native
+Dispatcher result/stop and Git snapshot for direct candidate provenance; zero
+allocations never close the stop barrier on their own.
+
 ## Dispatcher allocations
+
+Allocations require full mode. Direct converts through the original control
+transaction before any allocation; explicit inherited-byte adoption then uses
+the same B allocation path, result and acceptance, with separate changed/adopted
+paths and the frozen adoption snapshot.
 
 Pass the returned `checkpoint` to the native dispatcher alongside B's unchanged
 bootstrap payload. Its `allocation` operation uses
@@ -422,7 +434,12 @@ process, effect plan, missing result or publication-only receipt never establish
 overall completion. Standalone stages have no synthetic discussion lifecycle.
 
 `control`: data is `{action,evidence,receipt}` for the original successor-ready,
-archive, archive-result, candidate/review/validation or recover-dispatch seam.
+archive, archive-result, candidate/review/validation, escalate-implementation or
+recover-dispatch seam. For escalation, retain the original authenticated
+Controller decision and causal stopped-byte snapshot in that transaction.
+Identical completed requests ACK without a new snapshot or followup issuance;
+unknown outcomes reconcile the saved request. Stop intent and unresolved native,
+B, allocation, review or validation work keep conversion closed.
 Execution dispatch, result and acceptance belong exclusively to `allocation`'s
 native B bind/receive/accept path; the public control action rejects them. C saves the original port and evidence, invokes its
 existing ledger/Git/control adapter, and retains effects and actual result. Host
@@ -460,14 +477,14 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 4 and pin workflow-progress-v8 /
-flow-worktree-v2 packages. A workflow-progress-v1 through v5 member is rejected;
-retain its original runtime and pinned packages. Version 1/2/3 runner records likewise
-require their original runtime; neither new APIs nor registry refresh migrate
+New runner records use outer version 6 and pin workflow-progress-v9 /
+workflow-stage-transfer-v6 / flow-worktree-v2 packages with control compatibility
+key 5. Earlier progress protocols and runner records require their original
+runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete
 registration is required for live actions. No installation is implied.
 
-Version-4 confirmed input retains the existing frozen_requirement display tuple
+Confirmed input retains the existing frozen_requirement display tuple
 and additionally requires `requirement`, the complete successful A frozen or
 attached Git checkpoint result. Its original path, commit, hash and positive
 version must match; partial completed_evidence cannot be substituted. The carrier

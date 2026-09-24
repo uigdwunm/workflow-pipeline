@@ -26,10 +26,11 @@ import requirement_delivery
 import stage_handoff as handoff
 import stage_dispatch as dispatch
 import workflow_control as control
+import workflow_control_git as control_git
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v8"
+PROTOCOL = "workflow-progress-v9"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -871,6 +872,13 @@ class Progress:
         observation = {"event_id": data["event_id"], "receipt": copy.deepcopy(receipt),
                        "action_id": data.get("action_id"), "provenance": copy.deepcopy(provenance),
                        "action_resolution": copy.deepcopy(data.get("action_resolution"))}
+        if receipt["status"] == "stopped" and causal:
+            checkpoint = s['control']['context'].get('handoff_progress') or {}
+            if control.direct_implementation(checkpoint):
+                try:
+                    observation['git_snapshot'] = control_git.recovery_snapshot(Path(checkpoint['binding']['worktree']), checkpoint)[0]
+                except control.ControlError as error:
+                    observation['snapshot_error'] = str(error)
         if receipt["status"] == "stopped":
             host["last_stop"] = copy.deepcopy(observation)
         if status in {"stopped", "unknown"} or conflict:
@@ -999,6 +1007,14 @@ class Progress:
                 "cannot_continue", "continuation requires consumed business intent")
         require(s.get("continuation_intent") is not None or s.get("resume_intent") is not None,
                 "cannot_continue", "a host receipt alone cannot authorize business continuation")
+        implementation = s['control']['context'].get('handoff_progress') or {}
+        if control.direct_implementation(implementation):
+            target = control_git.git(Path(implementation['binding']['worktree']), 'rev-parse',
+                                     implementation['binding']['target_branch']).decode().strip()
+            require(target == implementation.get('implementation_target_head'), 'implementation_escalation_required',
+                    'target advanced; escalate to full before continuing direct implementation')
+        if (s.get('resume_intent') or {}).get('operation') == 'resume-original-paused-scope':
+            self.verify_direct_resume()
         require(self.bound_ref() is not None, "identity_mismatch", "retain the original bound identity")
         authority = {"record": s["dispatch"], "control": copy.deepcopy(s["control"])}
         dispatch.record_for(authority)
@@ -1684,10 +1700,45 @@ class Progress:
         entry.fields(data, {"action", "evidence", "receipt"})
         entry.nonempty(data["action"])
         require(data["action"] in {"successor-ready", "archive", "archive-result",
-                    "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
+                    "escalate-implementation", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
                 "invalid_operation", "use the original bounded control recovery/closure operation")
         require(isinstance(data["receipt"], dict) and data["receipt"], "host_evidence_missing", "original authenticated host/controller evidence required")
         s = self.state
+        if data['action'] == 'escalate-implementation':
+            escalation_paused = (s['status'] == 'paused' or s['status'] == 'blocked' and s.get('blocked_from') == 'paused') and s.get('stopped') is True and self.stop_intent() == 'pausing'
+            if not escalation_paused:
+                self.require_not_stopping()
+            handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
+            require(data['receipt'].get('controller_ref') == s['control']['context']['controller_ref'] and
+                    data['receipt'].get('reference') == data['evidence']['reference'],
+                    'identity_mismatch', 'original Controller escalation receipt required')
+            original = copy.deepcopy(data)
+            for field in ('stop', 'snapshot'):
+                original['evidence'].pop(field, None)
+            retained = [v for v in s.get('control_transactions', {}).values()
+                        if v.get('escalation_input') == original]
+            if retained:
+                require(all(field not in data['evidence'] or data['evidence'][field] == retained[0]['request']['evidence'][field]
+                            for field in ('stop', 'snapshot')), 'snapshot_changed', 'caller changed derived escalation evidence')
+                data = copy.deepcopy(retained[0]['request'])
+                if retained[0].get('result') is not None:
+                    current = s['control']['context']['handoff_progress']
+                    require(control_git.recovery_snapshot(Path(current['binding']['worktree']), current)[0] == data['evidence']['snapshot'],
+                            'snapshot_changed', 'completed escalation snapshot has drifted')
+                    if escalation_paused:
+                        return _view(s, acknowledged=True)
+                    return _view(s, {'operation': 'control-effects', 'result': retained[0]['result']}, acknowledged=True)
+            else:
+                require(not ({'stop', 'snapshot'} & set(data['evidence'])), 'invalid_evidence', 'escalation snapshot is derived from saved native evidence')
+                stop = s['host'].get('last_stop')
+                require(s['host']['status'] == 'stopped' and stop and stop.get('provenance') and stop.get('git_snapshot'),
+                        'host_evidence_missing', 'escalation requires a saved causal stop and byte snapshot')
+                data = copy.deepcopy(data)
+                data['evidence'].update(stop=copy.deepcopy(stop), snapshot=copy.deepcopy(stop['git_snapshot']))
+            require(not s.get('publication') and not s.get('transport_loss') and not self.unresolved_host_actions() and
+                    not self.stop_barrier_pending() and all(v.get('stopped') for v in s.get('review_activity', {}).values()),
+                    'host_action_pending', 'settle all native, review and publication activity before escalation')
+            escalation_input = original
         if data['action'] == 'release-recovery-allocation':
             self.require_not_stopping()
             handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
@@ -1749,6 +1800,10 @@ class Progress:
                     evidence['call_receipts'] == [stop['provenance']['response_ref']],
                     'host_evidence_missing', 'references must name actual saved stop and invocation receipts')
             data = copy.deepcopy(data)
+            checkpoint = s['control']['context']['handoff_progress']
+            if control.direct_implementation(checkpoint):
+                require(stop.get('git_snapshot') == control_git.recovery_snapshot(Path(checkpoint['binding']['worktree']), checkpoint)[0],
+                        'snapshot_changed', 'direct recovery bytes changed after original native stop')
             data['evidence']['host_evidence'] = {'stopped_refs': sorted(set(refs)),
                 'stop_receipts': evidence['stop_receipts'], 'call_receipts': evidence['call_receipts'],
                 'lifecycle_digest': entry.digest(s['lifecycle_snapshot']),
@@ -1784,6 +1839,22 @@ class Progress:
                 data['evidence']['native_evidence'] = native
             if data['action'] in {'candidate-ready', 'validation-result'}:
                 data['evidence']['source'] = copy.deepcopy(data['receipt'])
+                if data['action'] == 'candidate-ready' and control.direct_implementation(s['control']['context']['handoff_progress']):
+                    stop = s['host'].get('last_stop')
+                    require(s['host']['status'] == 'stopped' and stop is not None and stop.get('provenance') and
+                            not self.unresolved_host_actions() and not self.stop_barrier_pending(),
+                            'host_evidence_missing', 'direct candidate requires saved causal native stop and complete barrier')
+                    require(stop['receipt']['attempt'] == s['dispatch']['request']['attempt'] and
+                            stop['receipt']['request_digest'] == s['dispatch']['request']['digest'],
+                            'identity_mismatch', 'direct stop belongs to another dispatch attempt')
+                    checkpoint = s['control']['context']['handoff_progress']
+                    proof = {'policy_digest': control.digest(checkpoint['implementation_policy']),
+                        'dispatcher_ref': self.bound_ref(), 'attempt': s['control']['context']['carrier']['attempt'],
+                        'baseline': checkpoint['git_baseline_commit'], 'candidate': data['evidence']['commit'],
+                        'stop': copy.deepcopy(stop), 'request_digest': s['dispatch']['request']['digest']}
+                    require('direct_provenance' not in data['evidence'] or data['evidence']['direct_provenance'] == proof,
+                            'identity_mismatch', 'direct provenance is derived from the original host')
+                    data['evidence']['direct_provenance'] = proof
             if data['action'] == 'invalidate-candidate' and (s['control']['context'].get('handoff_progress') or {}).get('state') == 'validating':
                 require(data['receipt'].get('raw',{}).get('stopped') is True, 'host_evidence_missing', 'stop and reconcile the validation command before invalidation')
                 data['evidence']['stopped'] = True
@@ -1810,6 +1881,8 @@ class Progress:
                                             "business_block_id": (s.get("business_block") or {}).get("id")})
         require(transactions[identity]['port']['context'] == s['control']['context'],
                 'control_context_changed', 'retain the original result without overwriting newer control authority')
+        if data['action'] == 'escalate-implementation':
+            transactions[identity]['escalation_input'] = escalation_input
         self.save()
         # Retain exact ledger envelope on a lost response; never promote slots by hand.
         try:
@@ -1855,6 +1928,13 @@ class Progress:
             remaining = [e for e in (s["control"]["context"].get("handoff_progress") or {}).get("executions", []) if not e["stopped"]]
             if not remaining:
                 s["status"], s["stop_effects"] = "cancelled", []
+        if data['action'] == 'escalate-implementation':
+            s['continuation_intent'] = {'kind':'implementation-escalation',
+                'snapshot_digest':result['context']['handoff_progress']['implementation_escalation']['snapshot_digest']}
+            if escalation_paused:
+                s['suspended_step'] = 'continue'
+            else:
+                s.update(step='continue', status='active')
         if data['action'] == 'validation-start':
             s.update(step='continue', status='active', continuation_intent={'kind':'final-validation', 'attempt_id':data['evidence']['attempt_id']})
         if data['action'] == 'dispatch-recovery-result' and s.get('transport_loss'):
@@ -1866,7 +1946,9 @@ class Progress:
             return _view(s, s['recovery_action'])
         if data['action'] == 'dispatch-recovery-intent':
             return self.recovery_view(issued=bool(result['effects']))
-        if data['action'] == 'validation-start':
+        if data['action'] == 'escalate-implementation' and escalation_paused:
+            return _view(s)
+        if data['action'] in {'validation-start', 'escalate-implementation'}:
             return self.advance()
         return _view(s, {"operation": "control-effects", "result": result})
 
@@ -2130,6 +2212,19 @@ class Progress:
             return self.resume()
         return result
 
+    def verify_direct_resume(self):
+        s = self.state
+        checkpoint = s['control']['context'].get('handoff_progress') or {}
+        if not control.direct_implementation(checkpoint):
+            return
+        stop = s['host'].get('last_stop') or {}
+        require(checkpoint['implementation_policy'] == s['handoff']['semantic'].get('implementation_policy') and
+                stop.get('receipt', {}).get('ref') == self.bound_ref() and
+                stop['receipt'].get('attempt') == s['control']['context']['carrier']['attempt'] and stop.get('provenance'),
+                'implementation_escalation_required', 'direct resume requires unchanged original policy and stopped identity')
+        require(stop.get('git_snapshot') == control_git.recovery_snapshot(Path(checkpoint['binding']['worktree']), checkpoint)[0],
+                'implementation_escalation_required', 'direct resume snapshot changed; reconcile provenance and escalate before editing')
+
     def resume(self):
         s = self.state
         if self.outer.get("runner_request", {}).get("operation") in {"pause", "cancel"}:
@@ -2168,6 +2263,7 @@ class Progress:
             return self.advance_stop("pausing")
         if s["status"] == "paused":
             require(s["stopped"] is True, "host_evidence_missing", "completed pause requires original stopped-writer evidence")
+            self.verify_direct_resume()
         # Explicit resume may retry an ended query only after stop admission.
         # Do this before any business replay/accepted/publication early return.
         # Advance and duplicate receipts never refresh a negative query.

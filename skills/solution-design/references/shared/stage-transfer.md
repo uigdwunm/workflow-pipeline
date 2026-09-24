@@ -2,7 +2,7 @@
 
 Use the pinned `scripts/stage_handoff.py` and `scripts/stage_dispatch.py`.
 Both take one bounded strict JSON object on stdin. Protocol is
-`workflow-stage-transfer-v5`. Success is `{ok:true,result:...}` (exit 0);
+`workflow-stage-transfer-v6`. Success is `{ok:true,result:...}` (exit 0);
 failure is `{ok:false,error:{code,operation,message,downstream_ready:false,
 completed_evidence,recovery}}` (exit 1). A digest detects changes, never
 authenticates a caller, receipt, user decision or semantic conclusion.
@@ -212,7 +212,7 @@ Completed payloads are strict:
 | 0/1 | artifacts, checks, requirement (successful A result), delivery (proof or null) |
 | 2 | artifacts, checks, planning_commit, planning_merge_commit, planning_paths |
 | 3 dispatcher | artifacts, checks, candidate_commit, review, verification |
-| execution-agent | changed_paths, file_hashes, tests |
+| execution-agent | changed_paths, file_hashes, tests; adopted_paths for an explicit adoption allocation |
 | 4 | artifacts, checks, candidate_commit, merge_commit, changed_paths, cleanup |
 
 Artifacts/checks are nonempty text lists, not proof that commands ran. Review uses
@@ -236,7 +236,7 @@ rejected, not rewritten. Flow bindings prove execution Git identity and share th
 discussion's common directory; they do not select its owner. Stage-4 intake reads
 the surviving discussion project without refreshing the removed execution checkout.
 
-Packages add stage_transfer=workflow-stage-transfer-v5 to their exact compatibility
+Packages add stage_transfer=workflow-stage-transfer-v6 to their exact compatibility
 key. Old runs keep original pinned runtime/records; no migration. Full A evidence
 stays outside strict control context. Only necessary design and launch transitions
 extend the existing control checkpoint.
@@ -245,6 +245,14 @@ Real Git/A/ledger tests validate local evidence. Fixture host responses validate
 the adapter contract, not actual native tool behavior. Real creation, asynchronous
 ready resolution, stopped-writer proof and lost-response lookup need separate
 field acceptance. Do not launch business tasks just to manufacture that evidence.
+
+Only Stage-3 Dispatcher `semantic` may additionally carry the Controller-approved
+`implementation_policy`; omission means full. Freeze it in the sealed handoff and
+start-dispatch attempt. Execution Agent semantics may carry explicit `adopt_paths`
+and `adoption_snapshot_digest` only for eligible inherited-byte verification.
+[Workflow Control Protocol](guided-implementation/workflow-control-protocol.md#bounded-direct-implementation)
+owns admission, one-way conversion and adoption; B checks and transfers that
+authority, never creates an assessment or synthetic execution receipt.
 
 Stage-3 `semantic` includes the Controller-approved validation_plan described in
 [Workflow Control Protocol](guided-implementation/workflow-control-protocol.md).
