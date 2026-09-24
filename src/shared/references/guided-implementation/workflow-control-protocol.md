@@ -90,6 +90,9 @@ Issued-without-result/unknown requires read-archive-state on demand. A pending
 intent/query is acknowledged without another effect; reconcile its exact original
 call. Only a not-archived readback or failed/no_write permits another archive.
 Same receipts ACK; conflicts persist without reversing archived or business.
+Conflict evidence records the last issued operation sequence. A readback issued
+before that conflict cannot settle it; require a fresh query after the conflict.
+Replaying the same conflict preserves the existing barrier without starting work.
 No background retry, queue, migration or unarchive is implemented.
 
 ## Entry authority and bounded successor control

@@ -22,6 +22,12 @@ class EntrySupport:
         plan = context['handoff_progress']['plan']
         proof = takeover_proof(context['carrier']['ref'], context['carrier']['attempt'], context['stage'],
             plan['configuration']['model'], plan['configuration']['effort'])
+        incomplete = copy.deepcopy(proof)
+        incomplete['stop_receipt'] = {'stopped': True}
+        ledger_before = Path(topic['ledger_path']).read_bytes()
+        self.mutate(topic, 'workflow-control', action='successor-ready', success=False,
+            evidence={**evidence, 'takeover_proof': incomplete})
+        self.assertEqual(Path(topic['ledger_path']).read_bytes(), ledger_before)
         attachment = {key: base[key] for key in ('project_id', 'tree_id', 'actor_topic_id', 'actor_conversation_ref')}
         repository = progression.entry.repository_facts(str(project))
         discussion_project, _ = progression.entry.resolve_discussion_project(repository, attachment)

@@ -499,6 +499,10 @@ def validate_context(context):
                 require(operation['invocation']['operation_id'] == operation['operation_id'] and operation['invocation']['ref'] == operation['ref'], 'archive invocation changed')
             require(operation['status'] == 'intent' or operation['invocation'] is not None, 'archive operation lost invocation')
             predecessor = operation['operation_id']
+        for conflict in retired['conflicts']:
+            keys(conflict, {'operation_id', 'status', 'receipt', 'after_sequence'})
+            require(type(conflict['after_sequence']) is int and 0 < conflict['after_sequence'] <= len(retired['operations']) and
+                    any(op['operation_id'] == conflict['operation_id'] for op in retired['operations']), 'invalid archive conflict provenance')
     text(context['controller_ref'])
     if context['topic_ref'] is not None:
         text(context['topic_ref'])
@@ -1309,8 +1313,9 @@ def archive_transition(context, action, evidence):
         return {**result, 'acknowledged': True}
     if response_conflict or operation['receipt'] is not None or operation is not operations[-1]:
         conflict = {'operation_id': operation['operation_id'], **frozen}
-        if conflict not in retired['conflicts']:
-            retired['conflicts'].append(conflict)
+        if any(all(previous[key] == value for key, value in conflict.items()) for previous in retired['conflicts']):
+            return {**result, 'ok': False, 'acknowledged': True, 'error': 'conflicting archive receipt retained'}
+        retired['conflicts'].append({**conflict, 'after_sequence': len(operations)})
         if retired['archive_status'] != 'archived':
             retired['archive_status'] = 'unknown'
         return {**result, 'ok': False, 'error': 'conflicting archive receipt; exact readback required'}
@@ -1320,7 +1325,10 @@ def archive_transition(context, action, evidence):
         status = 'unknown'
     operation.update(status=status, receipt=frozen)
     if retired['archive_status'] != 'archived':
-        retired['archive_status'] = status
+        # A query issued before a late conflicting write receipt cannot settle
+        # that conflict. Only an operation begun after it can establish state.
+        barrier = max((item['after_sequence'] for item in retired['conflicts']), default=0)
+        retired['archive_status'] = status if operation['sequence'] > barrier else 'unknown'
     return result
 
 

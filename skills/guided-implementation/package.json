@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "d20554f15350f436a0a0c973e768fe73d86d866b112df2ad8fe09702b30e9133",
+  "bundle_digest": "53ca2d0d78a3b6821f1e38403ffe98b2c25a0f3bfa34ce01e4b94d9e3882ceae",
   "compatibility_key": {
     "control": 6,
     "discussion_request": 1,
@@ -72,7 +72,7 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "1939866276d733e38ed8b206eeb85f4fa7622c72e272da222fb4fdd967fe1549"
+      "sha256": "cad1d9a004b12d326f2e9d2f39ede8eed52ab4442ee7a912d25aa678ffe6e3f2"
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
@@ -224,7 +224,7 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "16b8816cbe748c123db800643e0228abb301762912a7307c996f8b07350b8b2c"
+      "sha256": "c30e664dbff36fd5d9002fa3044e5fa4911483cd2036383809ea19d2d316de14"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
