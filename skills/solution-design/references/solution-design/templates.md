@@ -1,6 +1,8 @@
 # Fixed Formats
 
-Use these formats verbatim and replace every placeholder. Interpret user replies
+Use these formats verbatim and replace every placeholder, except for the
+conditional continuous launch disclosure below. Read only the formats needed
+by the current role and seam. Interpret user replies
 through
 [`../shared/design-discussion/confirmation-contract.md`](../shared/design-discussion/confirmation-contract.md).
 
@@ -10,6 +12,13 @@ only a saved answer, and the original carrier consumes it. Apply the shared
 progression lifecycle gate before any native followup or host release.
 
 ## Stepwise subagent launch confirmation
+
+If offering continuous mode here, first disclose the concrete remaining standard
+stages and effects on the exact target, including implementation, local merge,
+cleanup and any external writes. Selecting that disclosed route later needs no
+second approval. Without that disclosure, a request for continuous mode requires
+one confirmation of the additional scope; the Stage-2 block alone does not
+authorize Stage 3 or 4.
 
 ```text
 确认事项：启动 2方案子 agent
@@ -38,29 +47,33 @@ Worktree：确认后调用 `start-worktree` 创建；路径=<canonical path>; �
 
 ## Continuous automatic launch disclosure
 
-Show any disclosure required by the current orchestration adapter immediately
-before this block. This block must remain the final user-visible commentary
-before child launch.
+Show the current adapter's required disclosure unchanged, followed by a compact
+stage supplement. Together they are the final user-visible commentary before
+child launch. Omit a supplement field only if the adapter disclosure already
+states the same complete value; do not repeat facts or add another introduction.
+If disclosures disagree, resolve the mismatch before launch, never hide it by
+omitting a field. This rendering rule does not shorten the child payload.
+
+The combined disclosure must cover the goal, semantic role, requirement path,
+commit and hash, project/repository, exact planning target, full Worktree binding,
+model and effort with their source/receipt, isolated context, dispatch method,
+permissions, completion conditions, anomaly rule and authorized flow mode.
+Add any of these missing facts to the supplement, grouping related facts on one
+line. If there is no adapter disclosure, render all of them in the supplement.
+Model and effort may share one configuration line; neither may disappear.
+
+Use this supplement skeleton, removing already-covered facts and filling any
+missing facts from the coverage list above. A field is not covered merely because
+it appeared in an earlier turn or in the machine payload.
 
 ```text
 连续模式自动动作：启动 2方案子 agent
-本次目标：<goal>
 需求来源：<immutable draft path, commit and hash>
-目标项目：projectId=<id or none>; path=<absolute path>
-目标仓库：<repository identity>
+目标：<goal>; 角色=solution_designer; 项目=<project identity>; 仓库=<repository identity>
 规划载体：<exact target>
-业务角色：solution_designer
-派发方式：<current native-subagent orchestration adapter>
-目标模型：<selected supported model>
-模型来源：<selection source: user | confirmed | role | inherited; current adapter receipt>
-推理强度：<selected supported reasoning effort>
-强度来源：<selection source: user | confirmed | role | inherited; current adapter receipt>
-上下文方式：隔离上下文；不继承历史；仅读取需求来源和明确交接材料
-执行环境：已创建 Flow Worktree
-Worktree：路径=<canonical path>; 分支=<branch>; 绑定=<exact binding>
-允许动作：执行标准 $to-spec、ADR、$ask-matt、$to-tickets、原生发布；只写入并提交本阶段拥有的本地规划文档
-禁止动作：修改实现代码、创建 PR、部署、发布版本、进入 3实现或处理无关任务
-异常规则：执行失败、结果或副作用不确定、意外情况、与原计划不符或需要调整计划时停止并报告
+Worktree：已创建；绑定=<exact binding including canonical path and branch>
+配置补充：<only missing model/effort, source/receipt, isolated context or dispatch facts>
+权限补充：<only missing allowed/forbidden actions, completion conditions and anomaly rule>
 流程模式：连续执行后续全部流程
 执行状态：本条披露后立即启动；不等待阶段确认
 ```
@@ -317,6 +330,13 @@ Matt 原生发布：Spec=<child-reported path or URL>; Tickets=<child-reported p
 ```
 
 ## Pre-launch anomaly
+
+First classify the failure through the protocol's **Pre-launch recovery**.
+Use this decision block only when the user must choose changed facts or grant
+missing authority. For unresolved technical evidence or adapter restrictions,
+report the original error, retained state and required recovery evidence without
+asking for a ritual retry phrase. A permitted technical retry needs only a short
+progress update before the normal launch disclosure.
 
 A direct conversation entry prepares its snapshot before this gate. Missing
 conversation decisions use targeted questions; snapshot write/commit failures

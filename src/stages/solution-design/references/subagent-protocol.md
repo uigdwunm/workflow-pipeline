@@ -4,8 +4,22 @@ Mechanical A/B execution uses [Workflow progression]({{resource:shared/reference
 
 Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using the inherited registration_input fields from the verified handoff. Pass them unchanged to entry_prepare.py with this role’s actual host identity and cwd; keep registration_identity as the frozen source identity. File evidence is reread by the adapter, while inline registry/context remain paired. Missing evidence stops before work. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
-Read this file completely before launching, resuming, or accepting the stage-2
-subagent.
+## Reading guide
+
+Both roles read **Trusted source and stage identity** and **Anomaly contract**.
+The primary then reads only the sections needed at its current seam:
+
+| Seam | Additional sections and template blocks |
+| --- | --- |
+| Initial launch | Launch and model inheritance; Flow Worktree binding; stepwise launch confirmation or continuous automatic launch disclosure; canonical child bootstrap payload |
+| Failed launch | Pre-launch recovery; pre-launch anomaly only when a user decision is needed |
+| Review or resume | Waiting, decisions, and recovery; the matching review, anomaly and parent-decision blocks |
+| Completion | Repository and publication boundaries; Completion intake and stage transition; completion and the matching success/handoff block |
+
+The child reads this complete protocol before execution, plus the bootstrap,
+started, anomaly, completion and current-mode review/decision formats. Neither
+role rereads unchanged sections from the same pinned package merely because a
+new tool call or turn began. Load an unread recovery section when it is needed.
 
 Interpret user confirmation through
 [`{{resource:design-discussion/references/confirmation-contract.md}}`]({{resource:design-discussion/references/confirmation-contract.md}}).
@@ -14,13 +28,14 @@ Interpret user confirmation through
 
 1. Trusted source and stage identity
 2. Launch and model inheritance
-3. Child responsibilities and document authority
-4. Stepwise review flow
-5. Continuous exception-only flow
-6. Anomaly contract
-7. Repository and publication boundaries
-8. Waiting, decisions, and recovery
-9. Completion intake and stage transition
+3. Pre-launch recovery
+4. Child responsibilities and document authority
+5. Stepwise review flow
+6. Continuous exception-only flow
+7. Anomaly contract
+8. Repository and publication boundaries
+9. Waiting, decisions, and recovery
+10. Completion intake and stage transition
 
 ## Trusted source and stage identity
 
@@ -100,15 +115,52 @@ before launch; it is a disclosure, not another confirmation gate.
 
 In continuous mode, use `resolve --current`, create the Flow Worktree, and submit
 the semantic dispatch request before the automatic launch disclosure. Show any
-adapter-required disclosure first, then make the continuous automatic launch
-block the final user-visible commentary before launch in the same turn. Never
-omit either model routing value.
+adapter-required disclosure first, then only the missing stage facts using the
+continuous automatic launch format. Together they are the final user-visible
+commentary before launch in the same turn. Both model routing values, their
+selection source and receipt must appear once across that combined disclosure.
+Prepare the stage facts before submitting the dispatch request; after the
+adapter returns, disclose and use its exact invocation without unrelated reads
+or re-deriving the payload. Keep the complete canonical child payload unchanged.
 
-If dispatch explicitly fails without creating a child, report the failed launch.
-If creation is uncertain, stop without retrying. On success, save the one child
+If dispatch fails, classify it through **Pre-launch recovery** before deciding
+whether user input is needed. If creation is uncertain, stop without retrying.
+On success, save the one child
 identity returned by the adapter as the trusted child. An unconfirmed or
 unreconciled identity is an anomaly; never infer or replace it from title,
 ordering, timestamps or child text.
+
+## Pre-launch recovery
+
+Preserve the exact failed invocation, original error, returned evidence, pinned
+packages, frozen requirement and any created Flow Worktree binding. A Hook
+rejection, expired preparation or absent child message alone does not prove
+non-creation. Use the adapter's supported reconciliation before classifying:
+
+- **Proven not created:** under existing continuous authorization, the original
+  Controller may make one technical retry decision without asking the user to
+  repeat that authorization. Require authenticated non-creation evidence, an
+  adapter-permitted recovery, and unchanged source, target, scope, permissions,
+  model/effort, package pins and binding. Revalidate the retained Worktree; never
+  call `start-worktree` again or discard it. Use Workflow progression's existing
+  same-stage `start` recovery with a fresh Controller retry reference and retain
+  the failed attempt evidence. The new reference records this recovery decision;
+  it does not manufacture host evidence or bypass a governance conflict.
+- **Unknown creation or identity conflict:** stop dependent dispatch, preserve
+  state and reconcile the original invocation through the adapter. Do not
+  prepare another launch or infer a target. Report the known failure and the
+  exact missing evidence; a user saying retry is not a substitute for that proof.
+- **Changed facts, unresolved adapter restriction, or failed technical retry:**
+  stop automatic recovery and report the blocker and retained state. Ask for a
+  user decision only when a target, scope, configuration or authority choice is
+  required; otherwise report the technical evidence or adapter recovery needed.
+
+Allow at most one automatic technical retry per authorized launch, using the
+existing Controller checkpoint/decision history to retain that fact across
+turns. A second failure does not reset the allowance or start a retry loop.
+Stepwise mode retains its existing launch confirmation; cancellation never
+authorizes this recovery. If a child actually exists, use the original child's
+continuation/reconciliation path instead. No cleanup or replacement is implicit.
 
 ## Child responsibilities and document authority
 
@@ -186,7 +238,7 @@ return to its source owner. The child never rewrites the frozen source.
 
 ## Continuous exception-only flow
 
-The exact user-selected mode `执行后续全部流程` is advance authorization for
+The normalized continuous intent, displayed as `连续执行后续全部流程`, is advance authorization for
 standard stage-2 decisions and native review questions on the frozen target.
 The child must:
 
@@ -237,7 +289,13 @@ On anomaly:
 - do not choose a different target or action silently; and
 - wait for `PARENT_DECISION` from the primary agent.
 
+Before a child exists, the primary uses **Pre-launch recovery** instead of a
+child anomaly message. Its permitted technical retry does not change the plan
+or add a user confirmation; all child-side anomaly rules remain binding.
+
 ## Repository and publication boundaries
+
+### Flow Worktree binding
 
 The primary creates one Flow Worktree with `start-worktree` before launching the
 child. The child receives the exact binding, runs in that worktree, and calls
@@ -251,6 +309,8 @@ JSON object and send those bytes to `supervision_protocol.py` on stdin. Do not
 create a temporary request file or pass `--input`, `/dev/stdin`, `/dev/fd/*`, a
 FIFO, or process substitution. The shared worktree execution contract owns this
 command interface.
+
+### Planning writes and publication
 
 Continue design from committed objects. Before each Spec, ADR, or Ticket write,
 verify the path is stage-owned and its baseline has not changed. When design and

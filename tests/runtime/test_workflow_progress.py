@@ -108,6 +108,8 @@ class ProgressTests(transfer.StageTransferTests):
 
     def test_proven_noncreation_can_retry_only_with_new_controller_request(self):
         self.begin("continuous")
+        original_binding = copy.deepcopy(self.state()["handoff"]["binding"])
+        original_requirement = (self.flow / self.requirement_path).read_bytes()
         old_request = self.state()["dispatch"]["request"]
         self.invoke("observe", self.observation("not-created", "lookup", ref=None))
         retry = copy.deepcopy(self.input)
@@ -115,12 +117,43 @@ class ProgressTests(transfer.StageTransferTests):
         with self.assertRaises(transfer.entry.PreparationError):
             self.invoke("start", {"handoff": retry})
         retry["authorization"]["reference"] = "controller:retry-proven-not-created"
-        started = self.invoke("start", {"handoff": retry})
+        with patch.object(transfer.supervision, "start_worktree", wraps=transfer.supervision.start_worktree) as create:
+            started = self.invoke("start", {"handoff": retry})
+            create.assert_not_called()
         self.assertEqual(started["next_action"]["operation"], "invoke-host")
+        self.assertEqual(self.state()["handoff"]["binding"], original_binding)
+        self.assertEqual((self.flow / self.requirement_path).read_bytes(), original_requirement)
         self.assertNotEqual(self.state()["dispatch"]["request"]["digest"], old_request["digest"])
         late = self.observation()
         late["receipt"]["request_digest"] = old_request["digest"]
         self.assertEqual(self.invoke("observe", late)["status"], "blocked")
+
+    def test_noncreation_retry_cannot_change_work_or_target(self):
+        self.begin("continuous")
+        self.invoke("observe", self.observation("not-created", "lookup", ref=None))
+        before = self.checkpoint.read_bytes()
+        changes = (("scope", "owned_paths", ["docs/other.md"]),
+                   ("target", "branch", "other-target"),
+                   ("binding", "worktree", str(self.flow) + "-replacement"),
+                   ("semantic", "objective", "different work"))
+        for field, key, value in changes:
+            with self.subTest(field=field):
+                retry = copy.deepcopy(self.input)
+                retry["authorization"].update(flow_mode="continuous", reference="controller:retry")
+                retry[field][key] = value
+                with self.assertRaisesRegex(transfer.entry.PreparationError, "original work"):
+                    self.invoke("start", {"handoff": retry})
+                self.assertEqual(self.checkpoint.read_bytes(), before)
+
+    def test_unknown_creation_cannot_retry_with_fresh_controller_authorization(self):
+        self.begin("continuous")
+        self.invoke("observe", self.observation("unknown", ref=None))
+        before = self.checkpoint.read_bytes()
+        retry = copy.deepcopy(self.input)
+        retry["authorization"].update(flow_mode="continuous", reference="controller:retry")
+        with self.assertRaisesRegex(transfer.entry.PreparationError, "reconcile non-creation"):
+            self.invoke("start", {"handoff": retry})
+        self.assertEqual(self.checkpoint.read_bytes(), before)
 
     def test_continue_uses_same_identity_and_no_duplicate_send(self):
         self.begin()

@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "b07a3c07151f184fbd89fe245d7816bfade638792030d281a621bbe9933755a3",
+  "bundle_digest": "83c645b19e0bea771609a3a1a65881b339c9a51c11be869ac4f4e54fe2bfdf96",
   "compatibility_key": {
     "control": 5,
     "discussion_request": 1,
@@ -44,7 +44,7 @@
     },
     "references/shared/design-discussion/confirmation-contract.md": {
       "mode": "0644",
-      "sha256": "4ab9109abb1cfbb9c62f4315e33f1b3f3c3f927c81eacbbc43c50bd58c3cc54f"
+      "sha256": "b423fea244ea899fa38e904688ab75c1929a54696f0c5ce9ac5da3ff1b1b4a50"
     },
     "references/shared/design-discussion/ledger-protocol.md": {
       "mode": "0644",
