@@ -31,6 +31,145 @@ class ProgressTests(transfer.StageTransferTests):
     def state(self):
         return progress.read_record(self.checkpoint)[progress.KEY]
 
+    def retired_fixture(self):
+        import test_workflow_control
+        helper = test_workflow_control.WorkflowControlTests()
+        context = helper.context()
+        context['controller_ref'] = 'task'
+        def apply(action, evidence):
+            nonlocal context
+            result = progress.control.transition({'schema_version': 4, 'actor_ref': 'task',
+                'context': context, 'action': action, 'evidence': evidence})
+            context = result['context']
+            return result
+        planned = apply('prepare', {'target': 'local', 'project': 'project', 'title': 'Old requirement',
+            'missing_context': [], 'configuration': helper.configuration(), 'next_step': 'stage2',
+            'archive_ref': None, 'gate_open': True})
+        attempt = planned['plan']['plan_id']
+        apply('decide', {'plan_id': attempt, 'intent': 'confirm'})
+        apply('creation-result', {'status': 'ready', 'ref': 'old-task', 'attempt': attempt})
+        received = apply('receive', {'delivery_id': 'old-delivery', 'source_ref': 'old-task', 'attempt': attempt,
+            'requirement_identity': context['requirement_identity'], 'commit': 'b' * 40,
+            'verified_commit_hash': context['requirement_identity']['sha256']})
+        apply('accept', {'delivery_digest': received['delivery_digest']})
+        ready = apply('successor-ready', {'ref': 'native:designer', 'stage': 2, 'role': 'solution-designer',
+            'input_digest': received['delivery_digest'], 'binding_verified': True, 'activated': False,
+            'confirmed': True, 'archive_ref': 'old-task', 'takeover_proof': test_workflow_control.takeover_proof('old-task', attempt)})
+        self.context['retired_handoffs'] = context['retired_handoffs']
+        evidence = context['retired_handoffs'][ready['handoff_id']]['successor']
+        request = {'action': 'successor-ready', 'evidence': evidence,
+                   'receipt': {'controller_ref': 'task', 'reference': 'old-takeover'}}
+        self.takeover_input = copy.deepcopy(request)
+        self.takeover_input['evidence'].pop('takeover_proof')
+        self.takeover_transaction = {'request': request, 'takeover_input': self.takeover_input,
+            'result': ready, 'port': {'context': context, 'discussion': None}}
+        return ready['handoff_id']
+
+    def archive_receipt(self, effect, status):
+        receipt = {'adapter': 'fixture', 'invocation_id': 'call:' + effect['operation_id'],
+            'response_id': status + ':' + effect['operation_id'], 'ref': effect['ref'], 'no_write': status == 'issued',
+            'raw': {key: effect[key] for key in ('operation_id', 'operation', 'ref')} if status == 'issued' else {'status': status}}
+        return {'action': 'archive-result', 'evidence': {'handoff_id': effect['handoff_id'],
+            'operation_id': effect['operation_id'], 'ref': effect['ref'], 'status': status, 'receipt': receipt}, 'receipt': receipt}
+
+    def test_retired_archive_after_start_preserves_current_native_context(self):
+        handoff_id = self.retired_fixture()
+        self.finish_design('continuous')
+        outer = progress.read_record(self.checkpoint)
+        outer[progress.KEY].setdefault('control_transactions', {})[transfer.entry.digest(self.takeover_transaction['request'])] = self.takeover_transaction
+        progress.atomic_save(self.checkpoint, outer)
+        intent = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+            'receipt': {'controller_ref': 'task', 'reference': 'automatic'}})
+        effect = intent['next_action']['result']['effects'][0]
+        self.invoke('control', self.archive_receipt(effect, 'issued'))
+        with patch.object(progress.dispatch, 'checkpoint', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('control', self.archive_receipt(effect, 'unknown'))
+        self.assertFalse(progress.Progress(self.checkpoint, progress.read_record(self.checkpoint)).unresolved_control_transactions())
+        predecessor = self.state()['accepted']
+        self.context = self.context_for(3)
+        self.begin('continuous', self.input_for(3, predecessor))
+        before = copy.deepcopy(self.state()['control']['context'])
+        history = copy.deepcopy(self.state()['history'])
+        late = self.invoke('control', self.archive_receipt(effect, 'unknown'))
+        after = self.state()['control']['context']
+        self.assertEqual({k:v for k,v in before.items() if k != 'retired_handoffs'},
+                         {k:v for k,v in after.items() if k != 'retired_handoffs'})
+        self.assertEqual(self.state()['history'], history)
+        query = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+            'receipt': {'controller_ref': 'task', 'reference': 'user-recovery'}})['next_action']['result']['effects'][0]
+        self.assertEqual((query['operation'], query['ref']), ('read-archive-state', 'old-task'))
+        self.invoke('control', self.archive_receipt(query, 'issued'))
+        self.invoke('control', self.archive_receipt(query, 'archived'))
+        replay = self.invoke('control', self.archive_receipt(effect, 'unknown'))
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertEqual(self.state()['control']['context']['retired_handoffs'][handoff_id]['archive_status'], 'archived')
+        conflict = self.invoke('control', self.archive_receipt(effect, 'archived'))
+        self.assertFalse(conflict['next_action']['result']['ok'])
+        saved = self.state()
+        self.assertEqual(saved['control']['context']['retired_handoffs'][handoff_id]['archive_status'], 'archived')
+        self.assertEqual(len(saved['control']['context']['retired_handoffs'][handoff_id]['conflicts']), 1)
+        self.assertEqual(saved['history'], history)
+        replayed_takeover = self.invoke('control', self.takeover_input)
+        self.assertTrue(replayed_takeover['acknowledged'])
+        self.assertEqual(replayed_takeover['next_action']['result']['effects'], [])
+        self.assertEqual(self.state()['control']['context'], saved['control']['context'])
+
+    def test_archive_intent_crash_replays_without_duplicate_operation(self):
+        handoff_id = self.retired_fixture()
+        self.begin()
+        request = {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+                   'receipt': {'controller_ref': 'task', 'reference': 'automatic'}}
+        with patch.object(progress.dispatch, 'checkpoint', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('control', request)
+        self.assertTrue(progress.Progress(self.checkpoint, progress.read_record(self.checkpoint)).unresolved_control_transactions())
+        first = self.invoke('control', request)['next_action']['result']['effects'][0]
+        replay = self.invoke('control', request)
+        self.assertEqual(replay['next_action']['result']['effects'], [])
+        self.assertEqual(len(self.state()['control']['context']['retired_handoffs'][handoff_id]['operations']), 1)
+        self.assertEqual(first['ref'], 'old-task')
+        lookup = {'operation_id': first['operation_id'], 'ref': 'old-task', 'adapter': 'fixture',
+            'invocation_id': 'lookup-call', 'response_id': 'lookup-response', 'status': 'not-issued',
+            'raw': {'calls': []}}
+        recovered = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id,
+            'call_lookup': lookup}, 'receipt': lookup})
+        self.assertEqual(recovered['next_action']['result']['effects'], [first])
+        self.invoke('control', self.archive_receipt(first, 'issued'))
+        query = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+            'receipt': {'controller_ref': 'task', 'reference': 'lost-response'}})
+        self.assertEqual(query['next_action']['result']['effects'][0]['operation'], 'read-archive-state')
+
+    def test_new_runtime_rejects_old_control_and_c_without_writes(self):
+        self.begin()
+        saved = progress.read_record(self.checkpoint)
+        for version in ('control', 'progress'):
+            old = copy.deepcopy(saved)
+            if version == 'control':
+                old[progress.KEY]['control']['context']['schema_version'] = 3
+            else:
+                old[progress.KEY]['protocol'] = 'workflow-progress-v9'
+            progress.atomic_save(self.checkpoint, old)
+            before = self.checkpoint.read_bytes()
+            with self.assertRaises(transfer.entry.PreparationError) as error:
+                self.invoke('inspect')
+            self.assertEqual(error.exception.code, 'legacy_run_requires_original_runtime')
+            self.assertEqual(self.checkpoint.read_bytes(), before)
+
+    def test_unknown_business_control_blocks_start_and_supplied_stop_is_rejected(self):
+        self.begin()
+        rejected = self.invoke('control', {'action': 'successor-ready', 'evidence': {'takeover_proof': {'stopped': True}},
+            'receipt': {'controller_ref': 'task'}})
+        self.assertEqual(rejected['error']['code'], 'invalid_evidence')
+        outer = progress.read_record(self.checkpoint)
+        request = {'action': 'successor-ready', 'evidence': {}, 'receipt': {'controller_ref': 'task'}}
+        outer[progress.KEY]['control_transactions'] = {transfer.entry.digest(request): {
+            'request': request, 'port': outer[progress.KEY]['control'], 'result': None}}
+        progress.atomic_save(self.checkpoint, outer)
+        with self.assertRaises(transfer.entry.PreparationError) as error:
+            self.invoke('start', {'handoff': self.input})
+        self.assertEqual(error.exception.code, 'control_outcome_unknown')
+
     def invoke(self, operation, data=None, revision=None):
         current = progress.read_record(self.checkpoint).get(progress.KEY, {}).get("revision", 0)
         return progress.handle(self.checkpoint, {"protocol": progress.PROTOCOL, "operation": operation,

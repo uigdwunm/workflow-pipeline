@@ -1,11 +1,32 @@
 """Observable workflow controller plans through its JSON process boundary."""
 import json
+import copy
+import hashlib
 from pathlib import Path
 import subprocess
 import sys
 import unittest
 
 CLI = Path(__file__).resolve().parents[2] / "src/shared/scripts/workflow_control.py"
+
+def takeover_proof(ref, attempt, stage=0, model='supported', effort='high'):
+    """Controlled host adapter evidence, never a claim of real tool authentication."""
+    def digest(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    provenance = {'call_ref': 'stop-call:' + ref, 'response_ref': 'stop-response:' + ref, 'action_id': 'stop-action:' + ref}
+    receipt = {'adapter': 'fixture-host', 'receipt_ref': 'raw-stop:' + ref, 'request_digest': 'fixture-dispatch:' + attempt,
+        'attempt': attempt, 'role': 'dedicated-discussion' if stage == 0 else 'dedicated-problem-framing',
+        'event': 'lookup', 'status': 'stopped', 'ref': ref, 'pending_id': None,
+        'configuration': {'model': model, 'effort': effort}, 'raw': {'threadId': ref, 'status': 'stopped'}}
+    observation = {'event_id': 'observed:' + ref, 'receipt': receipt, 'action_id': provenance['action_id'],
+        'provenance': provenance, 'action_resolution': None}
+    calls = {'invocations': {digest([receipt['adapter'], provenance['call_ref']]): provenance['action_id']},
+        'responses': {digest([receipt['adapter'], provenance['response_ref']]): digest({'provenance': provenance,
+            'receipt': {key:value for key,value in receipt.items() if key != 'receipt_ref'}, 'action_resolution': None})},
+        'unresolved': []}
+    return {'ref': ref, 'attempt': attempt, 'adapter': receipt['adapter'], 'host_ref': 'fixture-host-instance',
+        'invocation_id': provenance['call_ref'], 'response_id': provenance['response_ref'], 'stop_receipt': observation,
+        'business_calls': calls, 'business_calls_digest': digest(calls)}
 
 def plan_for(cwd):
     def item(identity, category):
@@ -47,7 +68,7 @@ def verification_fixture(candidate, dispatcher, cwd, target):
 
 class WorkflowControlTests(unittest.TestCase):
     def call(self, action, evidence=None, context=None):
-        request = {'schema_version': 3, 'action': action,
+        request = {'schema_version': 4, 'action': action,
                    'actor_ref': 'controller', 'context': context or self.context(),
                    'evidence': evidence or {}}
         result = subprocess.run([sys.executable, str(CLI)], input=json.dumps(request),
@@ -68,7 +89,7 @@ class WorkflowControlTests(unittest.TestCase):
                 'inherited': None, 'upgrade_attempted': False}
 
     def context(self):
-        return {'schema_version': 3, 'controller_ref': 'controller', 'topic_ref': None,
+        return {'schema_version': 4, 'controller_ref': 'controller', 'topic_ref': None,
                 'stage': 0, 'carrier': None,
                 'preference': {'topic_current': False, 'stage_current': False},
                 'flow_authority': None, 'requirement_identity': {'path': 'docs/draft.md',
@@ -122,17 +143,68 @@ class WorkflowControlTests(unittest.TestCase):
         self.assertTrue(accepted['ok'])
         replay = self.call('receive', delivery, accepted['context'])
         self.assertTrue(replay['acknowledged'])
-        ready = self.call('successor-ready', {'ref': 'successor', 'stage': 2,
+        takeover = {'ref': 'successor', 'stage': 2,
             'input_digest': received['delivery_digest'], 'role': 'solution-designer',
-            'binding_verified': True, 'activated': False, 'confirmed': True, 'archive_ref': 'old'}, accepted['context'])
-        self.assertTrue(ready['ok'])
-        archive = self.call('archive', {}, ready['context'])
-        self.assertEqual(archive['effects'], [{'operation': 'archive', 'ref': 'old'}])
-        unknown = self.call('archive-result', {'ref': 'old', 'status': 'unknown'}, archive['context'])
-        self.assertEqual(self.call('archive', {}, unknown['context'])['effects'], [{'operation': 'read-archive-state', 'ref': 'old'}])
-        done = self.call('archive-result', {'ref': 'old', 'status': 'archived'}, unknown['context'])
-        self.assertEqual(done['context']['handoff_progress']['state'], 'archived')
-        self.assertEqual(self.call('archive', {}, done['context'])['effects'], [])
+            'binding_verified': True, 'activated': False, 'confirmed': True, 'archive_ref': 'old',
+            'takeover_proof': takeover_proof('old', ctx['carrier']['attempt'])}
+        missing_proof = {k:v for k,v in takeover.items() if k != 'takeover_proof'}
+        self.assertFalse(self.call('successor-ready', missing_proof, accepted['context'])['ok'])
+        wrong_proof = copy.deepcopy(takeover)
+        wrong_proof['takeover_proof']['ref'] = 'other-task'
+        self.assertFalse(self.call('successor-ready', wrong_proof, accepted['context'])['ok'])
+        for obstruction in ('boolean-only', 'no-raw', 'running', 'unresolved', 'wrong-cause'):
+            invalid = copy.deepcopy(takeover)
+            proof = invalid['takeover_proof']
+            if obstruction == 'boolean-only':
+                proof['stop_receipt'] = {'stopped': True}
+            elif obstruction == 'no-raw':
+                proof['stop_receipt']['receipt']['raw'] = {}
+            elif obstruction == 'running':
+                proof['stop_receipt']['receipt']['status'] = 'running'
+            elif obstruction == 'unresolved':
+                proof['business_calls']['unresolved'] = [{'action_id': 'pending-write'}]
+            else:
+                proof['stop_receipt']['provenance']['call_ref'] = 'unrelated-call'
+            self.assertFalse(self.call('successor-ready', invalid, accepted['context'])['ok'], obstruction)
+        ready = self.call('successor-ready', takeover, accepted['context'])
+        self.assertTrue(ready['ok'], ready)
+        self.assertEqual(ready['context']['handoff_progress']['state'], 'handoff-complete')
+        self.assertTrue(self.call('successor-ready', takeover, ready['context'])['acknowledged'])
+        conflicting = {**takeover, 'ref': 'another-successor'}
+        self.assertFalse(self.call('successor-ready', conflicting, ready['context'])['ok'])
+        selector = {'handoff_id': ready['handoff_id']}
+        archive = self.call('archive', selector, ready['context'])
+        self.assertEqual(archive['effects'][0]['operation'], 'archive')
+        self.assertEqual(self.call('archive', selector, archive['context'])['effects'], [])
+        self.assertFalse(self.call('archive', {'handoff_id': 'unknown'}, archive['context'])['ok'])
+        self.assertFalse(self.call('archive', {**selector, 'control_plan_id': 'wrong'}, archive['context'])['ok'])
+        def receipt(intent, status):
+            return {**selector, 'operation_id': intent['effects'][0]['operation_id'], 'ref': 'old', 'status': status,
+                'receipt': {'adapter': 'fixture', 'invocation_id': 'call-' + intent['effects'][0]['operation_id'],
+                    'response_id': 'response-' + intent['effects'][0]['operation_id'], 'ref': 'old',
+                    'raw': {'status': status}, 'no_write': False}}
+        def issue(intent):
+            sent = receipt(intent, 'issued')
+            sent['receipt']['raw'] = {key: intent['effects'][0][key] for key in ('operation_id', 'operation', 'ref')}
+            return self.call('archive-result', sent, intent['context'])['context']
+        self.assertFalse(self.call('archive-result', receipt(archive, 'archived'), archive['context'])['ok'])
+        unknown = self.call('archive-result', receipt(archive, 'unknown'), issue(archive))
+        query = self.call('archive', selector, unknown['context'])
+        self.assertEqual(query['effects'][0]['operation'], 'read-archive-state')
+        self.assertEqual(self.call('archive', selector, query['context'])['effects'], [])
+        issued_query = issue(query)
+        delayed = self.call('archive-result', receipt(archive, 'archived'), issued_query)
+        stale_read = self.call('archive-result', receipt(query, 'not-archived'), delayed['context'])
+        self.assertEqual(stale_read['context']['retired_handoffs'][ready['handoff_id']]['archive_status'], 'unknown')
+        self.assertEqual(self.call('archive', selector, stale_read['context'])['effects'][0]['operation'], 'read-archive-state')
+        done = self.call('archive-result', receipt(query, 'archived'), issued_query)
+        self.assertEqual(done['context']['retired_handoffs'][ready['handoff_id']]['archive_status'], 'archived')
+        self.assertEqual(self.call('archive', selector, done['context'])['effects'], [])
+        self.assertTrue(self.call('archive-result', receipt(query, 'archived'), done['context'])['acknowledged'])
+        conflict = self.call('archive-result', receipt(archive, 'archived'), done['context'])
+        self.assertFalse(conflict['ok'])
+        self.assertEqual(conflict['context']['retired_handoffs'][ready['handoff_id']]['archive_status'], 'archived')
+        self.assertEqual(len(conflict['context']['retired_handoffs'][ready['handoff_id']]['conflicts']), 1)
 
     def test_single_dispatcher_exact_files_and_stopped_writer_recovery(self):
         ctx = self.context()

@@ -67,7 +67,7 @@ ref; target delivery is a separate bounded Git transaction by the authorized act
 It neither changes working/output evidence nor grants source Phase authority.
 Pending DW, closed gates and revoked or foreign carriers still block delivery.
 Same-stage acceptance, wrapper finalization and successor-ready/activate/archive
-retain their current owners. Non-Git CP remains snapshot-only, without Git success.
+retain their current owners. Takeover atomically saves retired_handoffs and promotes a prepared successor; sidebar archive is independent and never grants writer authority. Non-Git CP remains snapshot-only, without Git success.
 
 The controller cannot prepare/apply requirement writes while a dedicated
 carrier holds them. A wrapper waits through ready; revoked, completion-claimed

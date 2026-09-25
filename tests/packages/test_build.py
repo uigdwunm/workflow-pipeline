@@ -16,7 +16,7 @@ class PackageBuildTests(unittest.TestCase):
         config = json.loads((ROOT / 'build/skill-packages.json').read_text())
         key = config['compatibility_key']
         self.assertEqual((key['control'], key['stage_transfer'], key['workflow_progress']),
-                         (5, 'workflow-stage-transfer-v6', 'workflow-progress-v9'))
+                         (6, 'workflow-stage-transfer-v6', 'workflow-progress-v10'))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / 'packages'

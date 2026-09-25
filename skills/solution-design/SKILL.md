@@ -295,4 +295,4 @@ protocol's **Pre-launch recovery** classification, including its bounded
 Controller recovery under existing continuous authorization. Never repeat completed design, review,
 or publication work.
 
-An authenticated accepted result handoff retains the old carrier until successor readiness and attached activation; the controller then archives it.
+An authenticated accepted result handoff retains the old carrier until successor readiness and attached activation; the Controller commits takeover and then attempts archive once; failure or unknown is sidebar cleanup only.

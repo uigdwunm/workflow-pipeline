@@ -269,7 +269,7 @@ semantically re-review the grilling result.
 After receive/accept, finalize an attached 0→1 wrapper and verify `current_phase: 1` before showing the dedicated success footer. A same-stage transfer has no wrapper to finalize. A stepwise or continuous
 confirmation enters solution-design using the accepted result. Keep the old carrier
 available until successor-ready verifies input/binding and applicable source
-activation; then archive the frozen old task. Archive failure recovers archive only.
+activation and fresh stop/call proof; commit handoff completion, then automatically attempt the frozen old task archive once. Archive failure leaves the successor free to advance; recover only the exact retired handoff.
 A dedicated-task delivery always routes to Phase 2.
 
-After accepted delivery, successor-ready proves takeover before archive.
+After accepted delivery, successor-ready durably completes takeover before the one automatic archive attempt. Failed or unknown archive does not block the next stage.

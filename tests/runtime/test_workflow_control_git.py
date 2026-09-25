@@ -38,7 +38,7 @@ class WorkflowGitTests(unittest.TestCase):
     def call(self, action, evidence, context):
         result = subprocess.run([sys.executable, str(CLI)], text=True, capture_output=True,
             input=json.dumps({'repository': str(self.repo), 'baseline': self.base,
-                'request': {'schema_version': 3, 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
+                'request': {'schema_version': 4, 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
         self.assertTrue(result.stdout, result.stderr)
         return json.loads(result.stdout)
 
@@ -60,9 +60,9 @@ class WorkflowGitTests(unittest.TestCase):
         accepted = self.call('accept', {'delivery_digest': received['delivery_digest']}, received['context'])
         ready = self.call('successor-ready', {'ref': 'native-successor', 'stage': 2, 'role': 'solution-designer',
             'input_digest': received['delivery_digest'], 'binding_verified': True, 'activated': False,
-            'confirmed': True, 'archive_ref': 'old'}, accepted['context'])
-        archived = self.call('archive', {}, ready['context'])
-        self.assertEqual(archived['effects'], [{'operation': 'archive', 'ref': 'old'}])
+            'confirmed': True, 'archive_ref': 'old', 'takeover_proof': test_workflow_control.takeover_proof('old', ctx['carrier']['attempt'])}, accepted['context'])
+        archived = self.call('archive', {'handoff_id': ready['handoff_id']}, ready['context'])
+        self.assertEqual(archived['effects'][0]['ref'], 'old')
         delivery['commit'] = self.base
         self.assertFalse(self.call('receive', delivery, ctx)['ok'])
 
