@@ -1410,6 +1410,31 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
         self.state = runner._new_state({})
         runner._atomic_save(self.checkpoint, self.state)
 
+    def test_prior_transfer_runtime_cannot_mutate_checkpoint(self):
+        old_pin = {'compatibility_key': {'workflow_progress': 'workflow-progress-v9',
+                                        'stage_transfer': 'workflow-stage-transfer-v6'}}
+        records = [runner._new_state({'packages': {'runner': old_pin}}),
+                   {progress.KEY: {'protocol': 'workflow-progress-v9',
+                                   'control': {'context': {'schema_version': 3}}}}]
+        for record in records:
+            for operation in ('pause', 'cancel', 'resume', 'prepare-requirement',
+                              'deliver-requirement', 'lifecycle'):
+                with self.subTest(entry='progress', operation=operation, pinned='confirmed' in record):
+                    progress.atomic_save(self.checkpoint, record)
+                    before = self.checkpoint.read_bytes()
+                    with self.assertRaisesRegex(progress.entry.PreparationError, 'original.*runtime'):
+                        progress.handle(self.checkpoint, {'protocol': progress.PROTOCOL,
+                            'operation': operation, 'expected_revision': 0, 'data': {}})
+                    self.assertEqual(self.checkpoint.read_bytes(), before)
+        for live in (False, True):
+            for operation in ('pause', 'cancel'):
+                with self.subTest(entry='runner', operation=operation, live=live):
+                    progress.atomic_save(self.checkpoint, records[0])
+                    before = self.checkpoint.read_bytes()
+                    with self.assertRaisesRegex(runner.WorkflowError, 'legacy_run_requires_original_runtime'):
+                        runner._request_control(self.checkpoint, operation, live=live)
+                    self.assertEqual(self.checkpoint.read_bytes(), before)
+
     def test_runner_patch_preserves_newer_checkpoint_fields(self):
         newer = progress.read_record(self.checkpoint)
         newer['future_c_field'] = {'evidence': 'retained'}

@@ -26,10 +26,10 @@ STAGE3_DEFAULT_CONFIGURATIONS = frozenset({
 })
 
 
-def stage3_eligible_defaults(supported, required_capability, available_pairs):
+def stage3_eligible_defaults(supported, required_capability):
     capabilities = {(item['model'], item['effort']): item['capability'] for item in supported}
-    return {pair for pair in STAGE3_DEFAULT_CONFIGURATIONS & set(available_pairs)
-            if pair not in capabilities or required_capability is None or
+    return {pair for pair in STAGE3_DEFAULT_CONFIGURATIONS & capabilities.keys()
+            if required_capability is None or
             capabilities[pair] is None or capabilities[pair] >= required_capability}
 
 class ControlError(ValueError):
@@ -500,7 +500,7 @@ def validate_context(context):
     require(type(identity['version']) is int and identity['version'] > 0, 'invalid requirement version')
 
 
-def select_configuration(evidence, available_pairs=None):
+def select_configuration(evidence):
     required = {'role', 'required_capability', 'supported', 'user', 'frozen', 'previous',
                 'receipt', 'can_override', 'inherited', 'upgrade_attempted'}
     require(isinstance(evidence, dict) and required <= set(evidence) <= required | {'preferred', 'preference_reason'},
@@ -542,10 +542,8 @@ def select_configuration(evidence, available_pairs=None):
         preferred = resolve(evidence.get('preferred'))
         require(preferred is not None, 'Stage-3 role must select an available model and effort')
         basis = text(evidence.get('preference_reason'))
-        native_pairs = {(item['model'], item['effort']) for item in supported}
         eligible = stage3_eligible_defaults(
-            supported, evidence['required_capability'],
-            native_pairs if available_pairs is None else native_pairs & set(available_pairs))
+            supported, evidence['required_capability'])
         defaults = [item for item in supported if (item['model'], item['effort']) in eligible]
         require(not defaults or preferred in defaults,
                 'available Stage-3 default configurations take precedence')

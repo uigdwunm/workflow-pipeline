@@ -30,7 +30,7 @@ import workflow_control_git as control_git
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v9"
+PROTOCOL = "workflow-progress-v10"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',

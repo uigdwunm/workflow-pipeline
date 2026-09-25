@@ -15,11 +15,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import entry_prepare as entry
 import requirement_prepare as requirement
-import model_inventory
 import workflow_control as control
 import workflow_control_git as control_git
 
-PROTOCOL = "workflow-stage-transfer-v6"
+PROTOCOL = "workflow-stage-transfer-v7"
 ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution-designer",
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",
@@ -293,7 +292,7 @@ def verify_result(stage, payload, binding, scope, root, role_ref):
                 "source_changed", "protected source changed")
 
 
-def prepare(request, selection_catalog=None):
+def prepare(request):
     require(request.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime", "retain original stage-transfer runtime: " + str(request.get("protocol")))
     entry.fields(request, FIELDS | {"operation"})
     stage, role = request["stage"], request["role"]
@@ -365,22 +364,7 @@ def prepare(request, selection_catalog=None):
     strings(semantic["completion_criteria"]); strings(semantic["constraints"])
     phase_evidence(request)
     stage3_role = stage == 3 and role in {'implementation-dispatcher', 'execution-agent'}
-    current_catalog = None
-    if stage3_role:
-        try:
-            current_catalog = model_inventory.available_pairs()
-        except model_inventory.ModelInventoryError as error:
-            require(False, 'configuration_unavailable', str(error))
-    if selection_catalog is not None:
-        require(stage3_role and isinstance(selection_catalog, list) and
-                all(isinstance(pair, list) and len(pair) == 2 and
-                    all(isinstance(value, str) and value for value in pair)
-                    for pair in selection_catalog),
-                'invalid_evidence', 'invalid frozen Stage-3 model inventory')
-    catalog_basis = (set(map(tuple, selection_catalog)) if selection_catalog is not None
-                     else current_catalog)
-    configuration = control.select_configuration(request["configuration"], catalog_basis)
-    saved_catalog = None
+    configuration = control.select_configuration(request["configuration"])
     if stage3_role:
         advertised = current['actor'].get('supported_configurations')
         require(isinstance(advertised, list) and advertised,
@@ -391,17 +375,6 @@ def prepare(request, selection_catalog=None):
                 'configuration_changed', 'selection must use the complete current native adapter inventory')
         require(request['configuration']['can_override'] or len(advertised) == 1,
                 'configuration_changed', 'multiple native configurations require override support')
-        saved_catalog = [list(pair) for pair in sorted(catalog_basis & available_pairs)]
-        explicit_choice = (request['configuration']['user'] is not None or
-                           configuration['source'] == 'confirmed')
-        if request['operation'] == 'prepare' and not explicit_choice:
-            eligible_defaults = control.stage3_eligible_defaults(
-                request['configuration']['supported'],
-                request['configuration']['required_capability'], current_catalog)
-            require(not eligible_defaults or (configuration['model'], configuration['effort']) in eligible_defaults,
-                    'configuration_changed', 'account-visible default requires a supported native choice')
-        require((configuration['model'], configuration['effort']) in current_catalog,
-                'configuration_unsupported', 'selected model is absent from the current account catalog')
     require(request["configuration"]["role"] == role and not configuration["needs_decision"],
             "configuration_changed", "role configuration requires a controller decision")
     predecessor = request["predecessor"]
@@ -434,8 +407,7 @@ def prepare(request, selection_catalog=None):
     require(stage != 4 or predecessor is not None, "predecessor_incomplete", "inherited closure requires an accepted implementation result")
     return seal({**{k: copy.deepcopy(request[k]) for k in FIELDS}, "kind": "stage-input",
                  "controller_ref": current["actor"]["controller_ref"], "requirement_identity": identity,
-                 "source_commit": source_commit, "delivery_facts": delivered, "selection": configuration,
-                 "selection_catalog": saved_catalog})
+                 "source_commit": source_commit, "delivery_facts": delivered, "selection": configuration})
 
 
 def require_current_protocol(value):
@@ -449,8 +421,8 @@ def require_current_protocol(value):
 def verify(saved):
     body = unseal(saved)
     require_current_protocol(body)
-    entry.fields(body, FIELDS | {"kind", "controller_ref", "requirement_identity", "source_commit", "delivery_facts", "selection", "selection_catalog"})
-    actual = prepare({**{k: body[k] for k in FIELDS}, "operation": "verify"}, body['selection_catalog'])
+    entry.fields(body, FIELDS | {"kind", "controller_ref", "requirement_identity", "source_commit", "delivery_facts", "selection"})
+    actual = prepare({**{k: body[k] for k in FIELDS}, "operation": "verify"})
     require(actual == saved, "handoff_changed", "stage input facts changed; retain the original handoff")
     return actual
 

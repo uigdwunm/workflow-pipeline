@@ -16,6 +16,7 @@ import test_entry_prepare
 import entry_prepare as entry
 import requirement_prepare as requirement
 import stage_handoff as handoff
+import model_inventory
 import stage_dispatch as dispatch
 import supervision_protocol as supervision
 import workflow_control as control
@@ -37,8 +38,8 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         super().setUp()
         self.request['host']['supported_configurations'] = [
             {'model': 'fixture-model', 'reasoning_effort': 'high'}]
-        catalog_patch = patch.object(handoff.model_inventory, 'available_pairs',
-                                     return_value={('fixture-model', 'high')})
+        catalog_patch = patch.object(model_inventory, 'available_pairs',
+                                     side_effect=AssertionError('normal transfer must not query the account catalog'))
         catalog_patch.start()
         self.addCleanup(catalog_patch.stop)
         self.requirement_path = "docs/requirements/a.md"
@@ -273,8 +274,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         selected['supported'].append({**selected['supported'][0],
                                       'model': 'gpt-6-sol'})
         implementation['configuration'] = selected
-        catalog = {('fixture-model', 'high'), ('gpt-6-sol', 'high')}
-        with patch.object(handoff.model_inventory, 'available_pairs', return_value=catalog):
+        with patch.object(model_inventory, 'available_pairs', side_effect=model_inventory.ModelInventoryError('offline')) as inventory:
             self.assertTrue(handoff.handle(implementation))
             incomplete = copy.deepcopy(implementation)
             incomplete['configuration']['supported'] = selected['supported'][:1]
@@ -284,19 +284,20 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
             filtered['entry']['host']['supported_configurations'] = [
                 {'model': 'fixture-model', 'reasoning_effort': 'high'}]
             filtered['expected_entry'] = entry.resolve(filtered['entry'])
-            self.assert_code('configuration_changed', lambda: handoff.handle(filtered))
+            self.assertEqual(handoff.handle(filtered)['selection']['model'], 'fixture-model')
             unsupported_frozen = copy.deepcopy(filtered)
             unsupported_frozen['configuration']['frozen'] = {'model': 'unavailable', 'effort': 'high'}
-            self.assert_code('configuration_changed', lambda: handoff.handle(unsupported_frozen))
+            self.assertEqual(handoff.handle(unsupported_frozen)['selection']['model'], 'fixture-model')
             inherited = copy.deepcopy(filtered)
             inherited['configuration'] = configuration('implementation-dispatcher')
-            self.assert_code('configuration_changed', lambda: handoff.handle(inherited))
+            self.assertEqual(handoff.handle(inherited)['selection']['source'], 'inherited')
             inconsistent = copy.deepcopy(implementation)
             inconsistent['configuration']['can_override'] = False
             inconsistent['configuration']['inherited'] = {'model': 'fixture-model', 'effort': 'high'}
             self.assert_code('configuration_changed', lambda: handoff.handle(inconsistent))
+            inventory.assert_not_called()
 
-    def test_stage3_selects_native_default_from_account_catalog_intersection(self):
+    def test_stage3_selects_native_default_without_account_catalog(self):
         accepted = self.complete_design()
         self.request['host']['supported_configurations'] = [
             {'model': 'fixture-model', 'reasoning_effort': 'high'},
@@ -310,39 +311,50 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         selected['supported'].append({**selected['supported'][0],
                                       'model': 'gpt-6-sol', 'effort': 'medium'})
         implementation['configuration'] = selected
-        catalog = {('fixture-model', 'high'), ('gpt-6-sol', 'medium'),
-                   ('gpt-6-luna', 'high')}
-        with patch.object(handoff.model_inventory, 'available_pairs', return_value=catalog):
-            prepared = handoff.handle(implementation)
+        prepared = handoff.handle(implementation)
         self.assertEqual(prepared['selection']['model'], 'gpt-6-sol')
         self.assertEqual(prepared['selection']['effort'], 'medium')
 
     def test_stage3_explicit_supported_user_choice_overrides_default_pool(self):
         accepted = self.complete_design()
+        self.request['host']['supported_configurations'].append(
+            {'model': 'gpt-6-sol', 'reasoning_effort': 'high'})
         implementation = self.input_for(3, accepted['accepted'])
-        implementation['configuration']['user'] = {'model': 'fixture-model', 'effort': 'high'}
-        catalog = {('fixture-model', 'high'), ('gpt-6-sol', 'high')}
-        with patch.object(handoff.model_inventory, 'available_pairs', return_value=catalog):
-            prepared = handoff.handle(implementation)
-        self.assertEqual(prepared['selection']['model'], 'fixture-model')
-        self.assertEqual(prepared['selection']['source'], 'inherited')
+        selected = implementation['configuration']
+        selected['can_override'] = True
+        selected['supported'].append({**selected['supported'][0], 'model': 'gpt-6-sol'})
+        for field, source in [('user', 'user'), ('frozen', 'confirmed')]:
+            with self.subTest(field=field):
+                selected['user'] = selected['frozen'] = None
+                selected[field] = {'model': 'fixture-model', 'effort': 'high'}
+                prepared = handoff.handle(implementation)
+                self.assertEqual(prepared['selection']['model'], 'fixture-model')
+                self.assertEqual(prepared['selection']['source'], source)
+                self.assertEqual(handoff.verify(prepared), prepared)
 
-    def test_frozen_stage3_handoff_tolerates_newly_available_default(self):
+    def test_frozen_stage3_handoff_ignores_account_catalog_changes(self):
         accepted = self.complete_design()
         self.request['host']['supported_configurations'] = [
-            {'model': 'fixture-model', 'reasoning_effort': 'high'},
-            {'model': 'gpt-6-sol', 'reasoning_effort': 'high'}]
+            {'model': 'fixture-model', 'reasoning_effort': 'high'}]
         implementation = self.input_for(3, accepted['accepted'])
         selected = configuration('implementation-dispatcher')
         selected.update(can_override=True, preferred={'model': 'fixture-model', 'effort': 'high'},
                         preference_reason='no default pair is currently available')
-        selected['supported'].append({**selected['supported'][0], 'model': 'gpt-6-sol'})
         implementation['configuration'] = selected
-        with patch.object(handoff.model_inventory, 'available_pairs',
+        with patch.object(model_inventory, 'available_pairs',
                           side_effect=[{('fixture-model', 'high')},
-                                       {('fixture-model', 'high'), ('gpt-6-sol', 'high')} ]):
+                                       {('fixture-model', 'high'), ('gpt-6-sol', 'high')} ]) as inventory:
             frozen = handoff.handle(implementation)
             self.assertEqual(handoff.verify(frozen), frozen)
+            self.assertNotIn('selection_catalog', frozen)
+            inventory.assert_not_called()
+
+    def test_legacy_catalog_handoff_requires_original_runtime(self):
+        saved = handoff.unseal(handoff.handle(self.input))
+        saved.update(protocol='workflow-stage-transfer-v6', selection_catalog=None)
+        saved = handoff.seal(saved)
+        for operation in (handoff.verify, handoff.render):
+            self.assert_code('legacy_run_requires_original_runtime', lambda: operation(saved))
 
     def test_accepted_design_consumed_by_stage3_and_actual_candidate_review(self):
         accepted = self.complete_design()["accepted"]

@@ -28,7 +28,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v9","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v10","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -478,8 +478,8 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 6 and pin workflow-progress-v9 /
-workflow-stage-transfer-v6 / flow-worktree-v2 packages with control compatibility
+New runner records use outer version 6 and pin workflow-progress-v10 /
+workflow-stage-transfer-v7 / flow-worktree-v2 packages with control compatibility
 key 5. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete

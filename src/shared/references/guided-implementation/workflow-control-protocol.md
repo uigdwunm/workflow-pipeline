@@ -156,15 +156,14 @@ have model/effort/capability/cost/permission/visible_identity; unknown cost or c
 Use current target adapter evidence, explicit user choice and supported frozen choice.
 For a Stage-3 dispatcher or Execution Agent with override support and no such choice,
 the controller or dispatcher supplies an exact preferred pair and task-specific
-preference_reason. The Stage-3 handoff requires the complete current native adapter
-inventory, independently reads the account's visible paginated Codex `model/list` catalog,
-and blocks a nondefault automatic choice while an account-visible default may be eligible.
-The native declaration cannot establish that an account-visible default is unavailable;
-such a mismatch blocks automatic fallback. The catalog intersection used for the
-original selection is frozen with the handoff, so a newly listed default does not
-rewrite an already prepared choice.
+preference_reason. The Stage-3 handoff requires the complete current target native adapter
+inventory from authenticated host evidence; never invent a supported list. Preparation,
+verification and recovery do not query the account's `model/list` catalog. The separate
+account inventory helper is diagnostic only and does not authorize or block selection.
+The original native inventory and selection are retained with the handoff; account
+catalog changes do not rewrite an already prepared choice.
 Select the pair from the
-supported intersection not known to be inadequate with the default
+native supported intersection not known to be inadequate with the default
 pool: gpt-6-luna/high, gpt-6-luna/xhigh, gpt-6-sol/medium, gpt-6-sol/high and
 gpt-6-sol/xhigh. A default with known capability below the role requirement is
 not eligible. If that intersection is empty, select an exact pair from the
@@ -404,7 +403,7 @@ No implementation contract, tests, generated package or protected source belongs
 to closure scope. After a recorded merge, reconcile publication/cleanup instead
 of demanding a new validation or merge.
 
-New records use runner 6, C workflow-progress-v9, B workflow-stage-transfer-v6
+New records use runner 6, C workflow-progress-v10, B workflow-stage-transfer-v7
 and control compatibility key 5 (JSON schema 3). Old executable records fail with
 legacy_run_requires_original_runtime before writes or host calls. Embedded old
 control keeps the ledger outer version and bytes; resume with its original pinned

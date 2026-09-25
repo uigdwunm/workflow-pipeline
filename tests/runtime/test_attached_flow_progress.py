@@ -22,8 +22,8 @@ class AttachedFlowTests(fixtures.ProgressTests):
         test_entry_prepare.EntrySupport.setUp(self)
         self.request['host']['supported_configurations'] = [
             {'model': 'fixture-model', 'reasoning_effort': 'high'}]
-        catalog_patch = patch.object(fixtures.transfer.handoff.model_inventory, 'available_pairs',
-                                     return_value={('fixture-model', 'high')})
+        catalog_patch = patch.object(fixtures.transfer.model_inventory, 'available_pairs',
+                                     side_effect=AssertionError('normal progression must not query the account catalog'))
         catalog_patch.start()
         self.addCleanup(catalog_patch.stop)
         topic = protocol.handle({'protocol_version': 1, 'operation': 'bootstrap', 'project_path': str(self.root),

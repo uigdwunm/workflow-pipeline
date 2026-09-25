@@ -17,8 +17,8 @@
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v3",
-    "stage_transfer": "workflow-stage-transfer-v6",
-    "workflow_progress": "workflow-progress-v9",
+    "stage_transfer": "workflow-stage-transfer-v7",
+    "workflow_progress": "workflow-progress-v10",
     "requirement_delivery": "requirement-delivery-v1"
   },
   "resources": {
