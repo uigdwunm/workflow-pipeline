@@ -1,20 +1,20 @@
 # Package execution and action preflight
 
 Registration provenance and controlled recovery require preparation=workflow-preparation-v3,
-stage_transfer=workflow-stage-transfer-v7 and workflow_progress=workflow-progress-v10.
+stage_transfer=workflow-stage-transfer-v7 and workflow_progress=workflow-progress-v11.
 Entry requests use workflow-entry-v3 and requirement requests use requirement-freeze-v2.
 Old pinned runs keep their original packages and records; new packages reject
 incompatible exchanges instead of filling missing identity fields or migrating runs.
-Runner outer version 6 requires workflow-progress-v10, workflow-stage-transfer-v7
-and control compatibility key 5 (JSON schema 3). Discussion request/ledger, requirement-freeze, thread-settings and
+Runner outer version 6 requires workflow-progress-v11, workflow-stage-transfer-v7
+and control compatibility key 6 (JSON schema 4). Discussion request/ledger, requirement-freeze, thread-settings and
 supervision flow-worktree-v2 retain their existing versions. Older records require
 their original pinned runtime without mutation. Missing implementation_policy in
 compatible new input means full; it never supplies direct provenance to an old
 candidate. This change does not install packages or update active registrations.
 
-Progression v10 accompanies Stage Transfer v7 so old v9 checkpoints and runner
+Progression v11 combines Stage Transfer v7 with archive handoff decoupling, so old v9/v10 checkpoints and runner
 pins are rejected before any operation, including pause/cancel and requirement
-or lifecycle transactions. Runner outer version 6 and control schema 3 are unchanged.
+or lifecycle transactions. Runner outer version 6 and control schema 4 are unchanged from the archive handoff release.
 
 Use the [entry adapter](entry-preparation.md) to
 collect repository, task, source, settings and action dependencies before this

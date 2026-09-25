@@ -16,7 +16,7 @@ class PackageBuildTests(unittest.TestCase):
         config = json.loads((ROOT / 'build/skill-packages.json').read_text())
         key = config['compatibility_key']
         self.assertEqual((key['control'], key['stage_transfer'], key['workflow_progress']),
-                         (5, 'workflow-stage-transfer-v7', 'workflow-progress-v10'))
+                         (6, 'workflow-stage-transfer-v7', 'workflow-progress-v11'))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / 'packages'
@@ -30,6 +30,8 @@ class PackageBuildTests(unittest.TestCase):
                         ('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v6', 'operation': 'prepare'}),
                         ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
                          {'protocol': 'workflow-progress-v9', 'operation': 'inspect', 'expected_revision': 0, 'data': {}}),
+                        ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
+                         {'protocol': 'workflow-progress-v10', 'operation': 'inspect', 'expected_revision': 0, 'data': {}}),
                         ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
                          {'protocol': 'workflow-progress-v8', 'operation': 'inspect', 'expected_revision': 0, 'data': {}})]
             for script, args, request in requests:

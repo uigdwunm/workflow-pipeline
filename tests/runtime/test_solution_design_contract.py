@@ -384,16 +384,15 @@ class SolutionDesignContractTests(unittest.TestCase):
             self.assertNotIn(leaked_mechanic, PROTOCOL)
             self.assertNotIn(leaked_mechanic, TEMPLATES)
 
-    def test_continuous_launch_discloses_adapter_before_final_stage_block(self) -> None:
+    def test_continuous_launch_supplement_keeps_required_stage_identity(self) -> None:
         disclosure = section(
             TEMPLATES,
             "## Continuous automatic launch disclosure",
             "## Canonical child bootstrap payload",
         )
-        self.assertIn("disclosure required by the current orchestration adapter immediately\nbefore this block", disclosure)
-        self.assertIn("final user-visible commentary", disclosure)
-        self.assertIn("执行环境：已创建 Flow Worktree", disclosure)
-        self.assertIn("绑定=<exact binding>", disclosure)
+        self.assertIn("final user-visible commentary", compact(disclosure))
+        for field in ("需求来源：", "规划载体：", "绑定=", "流程模式：", "执行状态："):
+            self.assertIn(field, disclosure)
         self.assertNotIn("本条披露后调用 `start-worktree`", disclosure)
 
 

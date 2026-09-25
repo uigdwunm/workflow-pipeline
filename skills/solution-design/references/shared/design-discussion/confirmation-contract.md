@@ -29,6 +29,13 @@ risk, or expected effect is a modification request, even if it begins with an
 affirmative phrase. Incorporate the requested change, refresh every affected
 field and evidence value, and present the resulting pending action again.
 
+A mode-only request follows **Normalize flow intent** when the stage supports
+that route. Selecting continuous execution of already disclosed, unchanged
+remaining stages does not require approval a second time. If later stages or
+their effects have not been disclosed, present that scope and obtain one
+confirmation before enabling it. A mode request never authorizes an
+undisclosed action or overrides a stage's entry conditions.
+
 Meaning-preserving wording does not require a refreshed block. If the reply
 could refer to more than one pending action, mixes approval with an unclear
 condition, or leaves the requested action uncertain, ask one concise question

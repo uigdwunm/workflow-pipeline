@@ -10,10 +10,10 @@ implementation bytes. The bounded direct exception below changes only that
 implementation-source branch; stage 4 uses one Closure Agent. A split child
 is one independent Workflow Controller and inherits no preferences or authority.
 
-`workflow_control.py` accepts bounded strict JSON with schema_version=3, action,
+`workflow_control.py` accepts bounded strict JSON with schema_version=4, action,
 actor_ref, context and evidence. Context contains schema_version, controller_ref,
 topic_ref, stage, carrier, preference, flow_authority, requirement_identity and
-handoff_progress, plus at most one optional successor_control slot. The caller authenticates actor_ref and persists the returned
+handoff_progress, optional top-level retired_handoffs, and at most one temporary successor_control slot. The caller authenticates actor_ref and persists the returned
 context in the existing conversation or runner. No new registry or monitor exists.
 Effects are plans, never tool receipts. Use actual native/task identities and
 termination evidence; reconcile unknown outcomes before retry.
@@ -53,10 +53,47 @@ identity remains in the plan; completion may advance hash/version on the same pa
 Identical deliveries ACK; a received/accepted delivery cannot be replaced. accept
 takes delivery_digest. Then confirm the successor and actual old task archive_ref.
 successor-ready requires ref, stage, input_digest, role, binding_verified, activated,
-confirmed and archive_ref. Verify frozen input and binding and attached source
-activation before archive. Phase advancement retains the pending old carrier and
-accepted delivery. archive-result has ref/status; unknown/requested means readback
-before mutation. Archive failure never restarts a successor already ready.
+confirmed, archive_ref and takeover_proof. The proof names the old ref/attempt,
+adapter/host_ref, invocation_id/response_id, raw stop_receipt and reconciled
+business_calls_digest. stop_receipt is the complete existing host observation:
+event_id, action_id, provenance, action_resolution and the full B receipt. Its
+normalized status must be stopped, its original raw response must be present,
+and ref/attempt/role/configuration must match the frozen old plan. business_calls
+contains the original host invocations and response fingerprints plus unresolved;
+unresolved must be empty. Both stop call and response must occur in this exact
+projection and its digest must match. Boolean stopped claims and opaque strings
+cannot replace these records. C derives it from saved causal host observations and
+rechecks stopped writers and outstanding calls; callers cannot supply derived
+proofs. Interactive Controllers authenticate original tool evidence before
+activation and again before takeover. Pure validation does not authenticate
+arbitrary strings; Git and archive receipts never prove a writer stopped.
+The same trusted Controller/host ingress as B/C authenticates actual tool origin;
+this JSON protocol verifies causal consistency, not a cryptographic host identity.
+If original raw responses or complete call reconciliation cannot be obtained,
+interactive Controllers must stop before activation or successor-ready. Test
+adapter records do not count as real host verification.
+
+The durable takeover atomically retains a top-level retired_handoffs record,
+sets handoff_completed and promotes an existing successor slot. Without a slot,
+the old progress becomes handoff-complete until the normal next-stage start.
+History never grants writer authority. After this commit, C automatically
+requests archive once; interactive Controllers do the same. Failed/unknown
+archive reports “交接已完成；旧任务尚未确认归档” and does not block business.
+
+archive requires handoff_id. archive-result requires handoff_id, operation_id,
+ref, status and receipt; optional control_plan_id must agree. Intent effects name
+the exact original ref and operation_id. Before the host call, persist an
+archive-result(status=issued) with its adapter and invocation_id; raw must retain
+{operation_id, operation, ref}. A normal receipt must match that invocation.
+Receipts retain adapter, invocation_id, response_id, ref, raw and no_write.
+Issued-without-result/unknown requires read-archive-state on demand. A pending
+intent/query is acknowledged without another effect; reconcile its exact original
+call. Only a not-archived readback or failed/no_write permits another archive.
+Same receipts ACK; conflicts persist without reversing archived or business.
+Conflict evidence records the last issued operation sequence. A readback issued
+before that conflict cannot settle it; require a fresh query after the conflict.
+Replaying the same conflict preserves the existing barrier without starting work.
+No background retry, queue, migration or unarchive is implemented.
 
 ## Entry authority and bounded successor control
 
@@ -89,18 +126,17 @@ Stage-1 plan in one `successor_control` context inside the existing checkpoint.
 The root retains the old result and archive evidence; the successor keeps its
 own plan, binding and delivery. No nested successor, queue or registry exists.
 With two slots, select by exact `plan_id` / `attempt` or `delivery_digest` /
-`input_digest`. For actions without such a field (including cancel, archive,
-archive-result or choose-dedicated), add `control_plan_id` to evidence. Ambiguous
+`input_digest`. For actions without such a field (including cancel or choose-dedicated), add `control_plan_id` to evidence. Ambiguous
 or conflicting selectors fail; task recency is not a selector.
 
-After claim/ready and real source activation, use the old delivery's digest for
-`successor-ready`, then archive the frozen old task. Only an actual
-`archive-result(status=archived)` promotes the successor to the root. Unknown or
-failed archive retains both slots and prevents further successor dispatch;
-recover archive without recreating the active task. Cancelling the pending
-successor preserves the old accepted result; a verified replacement authority
-can reuse the bounded slot after cancellation/failure. With no old dedicated
+After claim/ready, actual source activation and fresh stop/call proof, use the
+old delivery digest for successor-ready. The same ledger commit freezes the old
+handoff and promotes Stage 1. Archive updates only that retired record and never
+selects a business slot. Failed/unknown archive leaves Stage 1 able to proceed.
+Cancelling an unactivated successor preserves the old accepted result; a verified
+replacement authority can reuse its temporary slot. With no old dedicated
 carrier, use the normal single context.
+
 
 ## Downstream execution
 
@@ -403,8 +439,8 @@ No implementation contract, tests, generated package or protected source belongs
 to closure scope. After a recorded merge, reconcile publication/cleanup instead
 of demanding a new validation or merge.
 
-New records use runner 6, C workflow-progress-v10, B workflow-stage-transfer-v7
-and control compatibility key 5 (JSON schema 3). Old executable records fail with
+New records use runner 6, C workflow-progress-v11, B workflow-stage-transfer-v7
+and control compatibility key 6 (JSON schema 4). Old executable records fail with
 legacy_run_requires_original_runtime before writes or host calls. Embedded old
 control keeps the ledger outer version and bytes; resume with its original pinned
 package. Never migrate checks strings into passed evidence.
