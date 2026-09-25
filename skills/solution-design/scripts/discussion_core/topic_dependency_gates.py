@@ -31,10 +31,10 @@ class GateOperationPolicy:
 
 
 GATE_OPERATION_POLICIES = {
-    "discussion-update": GateOperationPolicy(frozenset({0, 1})),
     "stage-entry-checkpoint": GateOperationPolicy(frozenset({0, 1})),
     "prepare-handoff": GateOperationPolicy(frozenset({0, 1})),
-    "authorize-handoff-discussion": GateOperationPolicy(frozenset({0, 1})),
+    "dedicated-handoff": GateOperationPolicy(frozenset({0, 1})),
+    "child-result": GateOperationPolicy(frozenset({0, 1})),
     "phase-transition": GateOperationPolicy(frozenset({0, 1})),
     "decision-impact": GateOperationPolicy(reclose_directly_affected=True),
     "checkpoint-broken": GateOperationPolicy(reclose_directly_affected=True),
@@ -49,7 +49,7 @@ def apply_gate_policy(
 ) -> list[str]:
     """Enforce or reclose through the one declared operation policy.
 
-    The boundary keeps all public operations on the same Phase-0/1 rule while
+    The boundary keeps advancement checks on the same Phase-0/1 rule while
     leaving Phase 2+ and transitions already outside that domain untouched.
     """
     policy = GATE_OPERATION_POLICIES.get(operation)

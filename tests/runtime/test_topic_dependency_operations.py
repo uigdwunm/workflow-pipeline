@@ -180,7 +180,7 @@ class TopicDependencyOperationCliTests(DiscussionProtocolScenarioFixture, Discus
         self.assertEqual(code, 0, stderr)
         self.assertEqual(current["derived_gate_state"], "open")
 
-    def test_ticket07_closed_gate_blocks_decision_impact_resolution_via_cli(self) -> None:
+    def test_closed_gate_allows_decision_impact_resolution_without_releasing_gate(self) -> None:
         for action in ("adjust", "replace", "discard"):
             with self.subTest(action=action):
                 project = self.make_project(
@@ -214,19 +214,22 @@ class TopicDependencyOperationCliTests(DiscussionProtocolScenarioFixture, Discus
                     }),
                 })
                 ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
-                before = ledger.read_bytes()
                 request = self.evolution_request(
                     topic, operation="prepare-topic-update", expected_revision=2,
                     expected_topic_revision=1, mutation={
                         "type": "resolve-impact", "impact_id": impact_id,
                         "decision_id": decision_id, "action": action,
-                        "summary": f"{action} requires the gate to be open.",
+                        "summary": f"{action} updates this decision while the prerequisite remains pending.",
                     },
                 )
-                code, rejected, _ = self.run_cli(request)
-                self.assertEqual(code, 1)
-                self.assertEqual(rejected["error"]["code"], "topic_gate_closed")
-                self.assertEqual(ledger.read_bytes(), before)
+                code, prepared, stderr = self.run_cli(request)
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(prepared["impact_action"], action)
+                code, current, stderr = self.run_cli(self.evolution_request(
+                    topic, operation="read-topic"
+                ))
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(current["derived_gate_state"], "closed")
 
     def test_ticket07_source_initial_dependency_rejects_published_authority_via_cli(self) -> None:
         for phase in (0, 1):

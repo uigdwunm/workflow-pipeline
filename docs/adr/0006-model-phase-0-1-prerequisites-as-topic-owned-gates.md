@@ -1,6 +1,6 @@
 # ADR-0006: Model Phase-0/1 prerequisites as topic-owned gates
 
-Status: Accepted
+Status: Superseded in part by ADR-0010
 
 ## Context
 

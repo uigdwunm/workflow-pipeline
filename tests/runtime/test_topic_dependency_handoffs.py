@@ -282,7 +282,7 @@ class TopicDependencyHandoffCliTests(DiscussionProtocolScenarioFixture, Discussi
         self.assertEqual(code, 0, stderr)
         self.assertEqual(released["state"], "open")
 
-    def test_ticket07_only_closed_prerequisite_child_impact_bypasses_parent_gate_via_cli(self) -> None:
+    def test_closed_gate_allows_other_child_impact_without_releasing_dependency(self) -> None:
         project = self.make_project("ticket07-impact-source-gate", git=False)
         topic = self.bootstrap_topic(project)
         ledger = Path(str(topic["ledger_path"]))
@@ -368,26 +368,57 @@ class TopicDependencyHandoffCliTests(DiscussionProtocolScenarioFixture, Discussi
         prerequisite_impact, revision = submit_and_impact(
             prerequisite, "codex-thread:prerequisite-child", "D-prerequisite", revision
         )
-        before = ledger.read_bytes()
-        code, rejected, _ = self.run_cli(self.evolution_request(
+        code, prepared, stderr = self.run_cli(self.evolution_request(
             topic, operation="prepare-topic-update", expected_revision=revision,
             expected_topic_revision=1, mutation={
                 "type": "resolve-impact", "impact_id": unrelated_impact["impact_id"],
-                "action": "accept", "summary": "Unrelated child cannot bypass this gate.",
-            },
-        ))
-        self.assertEqual(code, 1)
-        self.assertEqual(rejected["error"]["code"], "topic_gate_closed")
-        self.assertEqual(ledger.read_bytes(), before)
-        code, accepted, stderr = self.run_cli(self.evolution_request(
-            topic, operation="prepare-topic-update", expected_revision=revision,
-            expected_topic_revision=1, mutation={
-                "type": "resolve-impact", "impact_id": prerequisite_impact["impact_id"],
-                "action": "accept", "summary": "The prerequisite child may unblock its gate.",
+                "action": "accept", "summary": "Unrelated child impact can be reviewed.",
             },
         ))
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(accepted["impact_action"], "accept")
+        self.assertEqual(prepared["impact_action"], "accept")
+        code, current, stderr = self.run_cli(self.evolution_request(
+            topic, operation="read-topic"
+        ))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(current["derived_gate_state"], "closed")
+        self.assertTrue(any(
+            impact["impact_id"] == prerequisite_impact["impact_id"]
+            and impact["state"] == "pending"
+            for impact in current["impacts"]
+        ))
+
+    def test_parent_cannot_record_child_result_after_child_gate_closes(self) -> None:
+        project = self.make_project("child-gate-closes-after-result", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared, child_ref = self.activate_child_handoff(topic)
+        child = {**topic, "topic_id": prepared["target_topic_id"]}
+        code, claimed, stderr = self.run_cli(self.handoff_request(
+            child, operation="submit-child-result", ledger_revision=5,
+            owner_ref=child_ref, handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"], result_scope=["api"],
+            summary="Scoped child result.",
+        ))
+        self.assertEqual(code, 0, stderr)
+        code, _, stderr = self.run_cli(self.evolution_request(
+            child, operation="update-topic-dependency", expected_revision=6,
+            expected_topic_revision=1, owner_ref=child_ref, action="create",
+            prerequisite_topic_id=topic["topic_id"],
+            requirement_kind="confirmed-decision",
+            requirement_summary="Parent decision must precede child completion.",
+        ))
+        self.assertEqual(code, 0, stderr)
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        self.assert_topic_gate_blocked(
+            self.run_cli(self.handoff_request(
+                topic, operation="record-child-result", ledger_revision=7,
+                handoff_id=prepared["handoff_id"],
+                child_result_id=claimed["child_result_id"], effect="impact",
+            )),
+            ledger=ledger, before=before,
+            prerequisite_topic_id=str(topic["topic_id"]),
+        )
 
     def test_ticket07_absorb_release_replace_preserves_historical_child_basis_via_cli(self) -> None:
         project = self.make_project("ticket07-absorb-replace-history", git=False)

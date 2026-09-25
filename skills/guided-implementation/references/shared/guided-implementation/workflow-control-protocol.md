@@ -40,8 +40,9 @@ suppresses repeated offers for that scope. choose-dedicated is an explicit new c
 A dedicated carrier never recursively creates another. Dedicated-stage acceptance
 at phase 0 or 1 becomes active immediately after baseline, identity, pending-DW
 and gate checks; child/continuation keeps later-turn authorization. A closed
-gate blocks preparation, creation, writes and progression until
-a later user-triggered continuation rechecks dependencies.
+gate blocks dedicated-stage preparation, creation, delivery and progression.
+Ordinary child and continuation discussions may resume after a later
+user-triggered gate read while the dependency remains unresolved.
 
 creation-result binds current plan attempt and only an actual ready task ref.
 The attached caller first authorizes the exact wrapper carrier or binds the

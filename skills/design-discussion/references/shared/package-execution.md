@@ -1,7 +1,9 @@
 # Package execution and action preflight
 
 Registration provenance and controlled recovery require preparation=workflow-preparation-v3,
-stage_transfer=workflow-stage-transfer-v7 and workflow_progress=workflow-progress-v11.
+stage_transfer=workflow-stage-transfer-v7, workflow_progress=workflow-progress-v11,
+and topic_gate=phase-0-1-discussion-v2. The topic gate key separates packages
+that allow discussion behind a closed dependency from the older blanket guard.
 Entry requests use workflow-entry-v3 and requirement requests use requirement-freeze-v2.
 Old pinned runs keep their original packages and records; new packages reject
 incompatible exchanges instead of filling missing identity fields or migrating runs.

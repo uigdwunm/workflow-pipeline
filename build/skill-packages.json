@@ -11,6 +11,7 @@
       3
     ],
     "ledger_write": 3,
+    "topic_gate": "phase-0-1-discussion-v2",
     "control": 6,
     "entry": "workflow-entry-v3",
     "runner": 6,

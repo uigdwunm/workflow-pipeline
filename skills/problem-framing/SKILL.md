@@ -98,8 +98,9 @@ Phase Run operation. Phase 1 routes only to Phase 2. A continuous request from 0
 Apply the shared split/gate contract above in Phase 1. A dedicated grilling carrier
 may return only a bounded split proposal to its Phase Source Task; it
 must never prepare, release, or change Topic Dependencies. The source topic
-retains both confirmations and resumes Phase-1 questioning only after the
-shared gate sequence permits substantive work.
+retains both confirmations. In an active Phase 1, it may continue questioning
+about unaffected requirements while a gate is closed; complete requirement
+delivery and Phase-2 entry still require the shared gate release sequence.
 
 ## Enter the stage
 

@@ -81,12 +81,16 @@ ordinary one-question discussion loop. A first-turn attempt to authorize must
 surface `handoff_next_turn_required`; never hide it by changing the turn number.
 
 If a topic has a closed gate, first-turn acceptance remains allowed. On a later
-user-triggered turn, apply the shared
-[split and requirements-gate contract](split-gate-contract.md) before
-authorizing substantive discussion; this child protocol adds only the
-first-turn acceptance exception.
+user-triggered turn, read the current gate and apply the shared
+[split and requirements-gate contract](split-gate-contract.md).
+The child may then authorize discussion of unaffected requirements without
+releasing the gate; stage entry remains blocked.
 
 ## Return and absorb results
+
+While the child is in Phase 0 or 1, its gate must be open before it submits a
+result and when the parent records that result. Unaffected discussion can
+continue while the gate is closed, but it is not a completed child result.
 
 The active child submits one scoped result through `submit-child-result`. It
 constructs `authority_selection` from exactly one current-topic candidate
@@ -155,4 +159,4 @@ handoff until current authority is resolved.
 At every recovery step, reread `read-handoff` and use the returned ledger and
 record revisions. Reusing an idempotency key is valid only for an exact replay.
 
-The child is one independent Workflow Controller. It inherits no parent preference or continuous authorization. Its first turn only accepts the handoff; a closed gate blocks preparation, creation, writes and entry until a later user-triggered continuation rechecks dependencies.
+The child is one independent Workflow Controller. It inherits no parent preference or continuous authorization. Its first turn only accepts the handoff. On a later user-triggered turn, it rechecks dependencies and may discuss and write unaffected requirements while the gate is closed; stage entry and complete requirement delivery still require an open gate.

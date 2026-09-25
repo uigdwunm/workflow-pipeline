@@ -938,6 +938,8 @@ def _publish_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
                 "checkpoint is not the expected prepared intent",
                 context=_checkpoint_authority_context(request, ledger_revision, checkpoint),
             )
+        if checkpoint["purpose"] == "stage-entry":
+            apply_gate_policy(records, "stage-entry-checkpoint", request["actor_topic_id"])
         try:
             paths, _, digests = checkpoint_artifact_fields(checkpoint)
         except CheckpointAuthorityCorrupt as error:
@@ -1146,6 +1148,8 @@ def _publish_non_git_checkpoint(request: dict[str, Any]) -> dict[str, Any]:
                 "checkpoint is not the expected prepared intent",
                 context=_checkpoint_authority_context(request, ledger_revision, checkpoint),
             )
+        if checkpoint["purpose"] == "stage-entry":
+            apply_gate_policy(records, "stage-entry-checkpoint", request["actor_topic_id"])
         try:
             paths, _, digests = checkpoint_artifact_fields(checkpoint)
         except CheckpointAuthorityCorrupt as error:

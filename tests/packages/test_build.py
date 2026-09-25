@@ -17,6 +17,7 @@ class PackageBuildTests(unittest.TestCase):
         key = config['compatibility_key']
         self.assertEqual((key['control'], key['stage_transfer'], key['workflow_progress']),
                          (6, 'workflow-stage-transfer-v7', 'workflow-progress-v11'))
+        self.assertEqual(key['topic_gate'], 'phase-0-1-discussion-v2')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / 'packages'
@@ -42,7 +43,7 @@ class PackageBuildTests(unittest.TestCase):
                     self.assertEqual(json.loads(response.stdout)['error']['code'], 'legacy_run_requires_original_runtime')
             self.assertFalse((root / 'old-checkpoint.json').exists())
 
-    def test_delivery_capability_key_rejects_mixed_release(self):
+    def test_delivery_and_topic_gate_keys_reject_mixed_release(self):
         import shutil
         config = json.loads((ROOT / 'build/skill-packages.json').read_text())
         self.assertEqual(config['compatibility_key'].get('requirement_delivery'), 'requirement-delivery-v1')
@@ -66,6 +67,14 @@ class PackageBuildTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertEqual(json.loads(result.stdout)['error']['code'], 'incompatible_package')
             config['compatibility_key']['requirement_delivery'] = 'requirement-delivery-v1'
+            config['compatibility_key'].pop('topic_gate')
+            (fixture / 'build/skill-packages.json').write_text(json.dumps(config))
+            subprocess.run([sys.executable, str(fixture / 'scripts/build_skills.py'), '--output', str(root / 'legacy')], check=True)
+            result = subprocess.run([sys.executable, str(ROOT / 'skills/design-discussion/scripts/skill_preflight.py')],
+                input=json.dumps(request), text=True, capture_output=True)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['error']['code'], 'incompatible_package')
+            config['compatibility_key']['topic_gate'] = 'phase-0-1-discussion-v2'
             config['compatibility_key']['control'] = 1
             config['compatibility_key']['stage_transfer'] = 'workflow-stage-transfer-v2'
             config['compatibility_key']['workflow_progress'] = 'workflow-progress-v6'

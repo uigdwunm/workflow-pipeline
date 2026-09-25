@@ -713,7 +713,7 @@ def _accept_handoff(request: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError("handoff_identity_conflict", "handoff payload or source digest verification failed")
         dedicated = handoff["kind"] == "dedicated-stage"
         if dedicated:
-            apply_gate_policy(records, "authorize-handoff-discussion", request["actor_topic_id"])
+            apply_gate_policy(records, "dedicated-handoff", request["actor_topic_id"])
             if _active_pending_write(records) is not None:
                 raise ProtocolError("document_write_reconciliation_required", "complete the pending document write before accepting")
             project = Path(request["project_path"])
@@ -758,9 +758,6 @@ def _authorize_handoff_discussion(request: dict[str, Any]) -> dict[str, Any]:
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(records, request["actor_topic_id"], owner_ref, operation=request["operation"])
-        apply_gate_policy(
-            records, "authorize-handoff-discussion", request["actor_topic_id"]
-        )
         record = _handoff_record(records, request["handoff_id"])
         handoff = _handoff_data(record)
         attempt = _handoff_attempt(handoff, request["attempt_id"])
@@ -979,6 +976,7 @@ def _submit_child_result(request: dict[str, Any]) -> dict[str, Any]:
                 "child_result_state_conflict",
                 "result does not originate from this child topic",
             )
+        apply_gate_policy(records, "child-result", request["actor_topic_id"])
         active_binding = [
             binding for binding in records["Conversation Bindings"]
             if binding.get("topic_id") == request["actor_topic_id"]
@@ -1086,6 +1084,7 @@ def _record_child_result(request: dict[str, Any]) -> dict[str, Any]:
             or claim.get("state") != "pending"
         ):
             raise ProtocolError("child_result_state_conflict", "child result claim is not pending for this parent")
+        apply_gate_policy(records, "child-result", handoff["target_topic_id"])
         result_scope = _json_field(claim, "result_scope_json", "child result")
         summary = claim["summary"]
         within_scope = set(result_scope).issubset(set(handoff["scope"]))

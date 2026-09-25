@@ -1073,31 +1073,6 @@ def _prepare_topic_update(request: dict[str, Any], *, lock_held: bool = False) -
                                   if b.get("topic_id") == request["actor_topic_id"] and b.get("binding_state") == "active"), None)
         if owner_ref != active_controller and mutation["type"] == "resolve-impact":
             raise ProtocolError("document_ownership_conflict", "dedicated carriers cannot accept impacts or release gates")
-        child_result_impact_acceptance = False
-        if mutation["type"] == "resolve-impact":
-            impact_record = _record_by_id(
-                records["Impacts"], "impact_id", mutation["impact_id"], "impact_id"
-            )
-            impact = _json_field(impact_record, "data_json", "impact")
-            child_result_impact_acceptance = (
-                "decision_id" not in impact
-                and mutation.get("action") == "accept"
-                and impact.get("state") == "pending"
-                and impact.get("target_topic_id") == request["actor_topic_id"]
-                and all(
-                    isinstance(impact.get(field), str) and impact[field]
-                    for field in ("impact_id", "source_topic_id", "handoff_id")
-                )
-                and any(
-                    dependency.get("dependent_topic_id") == request["actor_topic_id"]
-                    and dependency.get("prerequisite_topic_id") == impact["source_topic_id"]
-                    and dependency.get("relation_state") == "active"
-                    and dependency.get("gate_state") == "closed"
-                    for dependency in records["Topic Dependencies"]
-                )
-            )
-        if not child_result_impact_acceptance:
-            apply_gate_policy(records, "discussion-update", request["actor_topic_id"])
         active_write = _active_pending_write(records)
         if active_write is not None:
             raise ProtocolError(

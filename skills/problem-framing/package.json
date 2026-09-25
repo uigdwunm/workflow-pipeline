@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "a6a2012ba3cc7e4062b1ebc44b5437ced32ab0114992c9e1ed558c3a0172c640",
+  "bundle_digest": "3844033d39390a05a5a88e4124e87cd47bdf8c85012f6677ab45693169b2598f",
   "compatibility_key": {
     "control": 6,
     "discussion_request": 1,
@@ -17,6 +17,7 @@
     "stage_transfer": "workflow-stage-transfer-v7",
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
+    "topic_gate": "phase-0-1-discussion-v2",
     "workflow_progress": "workflow-progress-v11"
   },
   "external_actions": {
@@ -36,7 +37,7 @@
     },
     "SKILL.md": {
       "mode": "0644",
-      "sha256": "b0241d1ad20669b21ee996b8a0fc4fed0e53d08b092220fca5a091839e2d038b"
+      "sha256": "1324e1548f05a5602b28ae097d7febc16c4f9325878971919ea757e126a1e07f"
     },
     "agents/openai.yaml": {
       "mode": "0644",
@@ -64,7 +65,7 @@
     },
     "references/shared/design-discussion/lifecycle-integration.md": {
       "mode": "0644",
-      "sha256": "deba819108b7276c82a34febdced656dc0218d1d60c22cf0ba1878a204796247"
+      "sha256": "917e0d12059221dc13a80cc895c3856ef91b8140e6024257fcf369b94715050a"
     },
     "references/shared/design-discussion/requirement-document-contract.md": {
       "mode": "0644",
@@ -72,7 +73,7 @@
     },
     "references/shared/design-discussion/split-gate-contract.md": {
       "mode": "0644",
-      "sha256": "08d3b27d736d59de20523d7a35b075efa9204c9804ddc9d481ba038a4f0f6378"
+      "sha256": "5e2c7e469fb234e16118858af65ad0bc1f03af5da64c9670fd766567e6e5d509"
     },
     "references/shared/entry-preparation.md": {
       "mode": "0644",
@@ -84,11 +85,11 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "b454e4e4355eda0b8701abdd994d42256b8f244c35206322aa56d4b1c1cc3c84"
+      "sha256": "ae6a1ab20283d8259a664c60bd2af8b08fbe142b7e3efd427a1abe347222525c"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "882f184ccc1d21ba910571e6406fd5fe07ab30a1371a9e272e6f1a74c75bcb80"
+      "sha256": "ad59792863d40a26c8371c268464cbd984f8fa22c53af5838cae9dcd178e0a5e"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -120,11 +121,11 @@
     },
     "scripts/discussion_core/checkpoints.py": {
       "mode": "0644",
-      "sha256": "74f5909a9c31626ee746c1706a53114fbc6888986723f458edfd5ec8a26766ec"
+      "sha256": "b83c848193675c18be950a594103c3322281f56e61e64ab8572ab301883a2e7d"
     },
     "scripts/discussion_core/handoffs.py": {
       "mode": "0644",
-      "sha256": "51d304d4a3e02903572953ecac3441cfdcd076bc60fd4c4c5cae957d2a425a19"
+      "sha256": "47ed099d267c5b32174d357b2f3abd5cda051609f588d64fc552f20572b191b5"
     },
     "scripts/discussion_core/phase_runs.py": {
       "mode": "0644",
@@ -156,7 +157,7 @@
     },
     "scripts/discussion_core/topic_dependency_gates.py": {
       "mode": "0644",
-      "sha256": "f5d57d60979de9f7b93adb55ec87ac5004aea98b989d417596d7d97bb3c92155"
+      "sha256": "3e6d64291ead0e53713074bf2c8a4853a1d430895c280126d8993a189acf6727"
     },
     "scripts/discussion_core/topic_dependency_lifecycle.py": {
       "mode": "0644",
@@ -168,11 +169,11 @@
     },
     "scripts/discussion_core/workflow_control.py": {
       "mode": "0644",
-      "sha256": "778268f1ed6428382056dfb777ad2189ce28dcae134ef7bf986e7cff646f100e"
+      "sha256": "9568d29171c1cf90e1da465a096b2c714eb94446f75a1e59efa247204722b23d"
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
-      "sha256": "387c4f73050db2a508f555d86be7be7215b309ac8cf73f0c27534ac3a9e6f3bf"
+      "sha256": "38e926998c2a34d5ef838c9b9263c15211a4cde2a006d650df4a765773859ba3"
     },
     "scripts/entry_prepare.py": {
       "mode": "0644",

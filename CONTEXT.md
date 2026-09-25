@@ -75,9 +75,11 @@ names one same-tree prerequisite and is mutable only in Discussion Phase 0 or
 _Avoid_: Parent relation, implementation dependency
 
 **Topic Gate**:
-The derived Phase-0/1 permission to begin substantive work or advance a topic.
-It is closed while any active Topic Dependency is closed, is checked when the
-user asks to continue, and is not consulted by Workflow Stages 2–4.
+The derived Phase-0/1 permission to publish stage-entry authority or advance a
+topic. It is closed while any active Topic Dependency is closed. A closed gate
+allows discussion of unaffected requirements, while dependent conclusions stay
+unresolved. It is checked when the user asks to continue and is not consulted
+by Workflow Stages 2–4.
 _Avoid_: Background monitor, implementation blocker
 
 ## Workflow roles

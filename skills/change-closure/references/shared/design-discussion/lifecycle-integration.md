@@ -46,7 +46,8 @@ and application advance it. Each DW binds its exact run/attempt and expected
 before/after evidence. A file-written/ledger-uncommitted failure replays the
 same DW. External edits or unrelated evidence drift require reconciliation;
 never refresh hashes to bless them. Apply a pending DW to finish consistency
-even if its mutation closed the gate; subsequent work still requires open gates.
+even if its mutation closed the gate; unaffected discussion may continue, while
+stage entry and requirement completion still require an open gate.
 
 After user completion confirmation, finish DW/impacts and commit the actual
 output. Read `working_evidence` from `read-phase-run` and use it for

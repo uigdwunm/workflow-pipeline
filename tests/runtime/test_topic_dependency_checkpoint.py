@@ -14,6 +14,49 @@ from test_topic_dependency_support import (
 
 
 class TopicDependencyCheckpointCliTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport):
+    def test_stage_entry_publication_rechecks_gate_after_preparation(self) -> None:
+        for git in (False, True):
+            with self.subTest(storage_kind="git" if git else "non-git"):
+                project = self.make_project(f"stage-entry-gate-race-{git}", git=git)
+                if git:
+                    (project / "base.txt").write_text("base\n", encoding="utf-8")
+                    subprocess.run(["git", "-C", str(project), "add", "base.txt"], check=True)
+                    subprocess.run(
+                        ["git", "-C", str(project), "-c", "user.name=Test",
+                         "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+                        check=True,
+                    )
+                topic = self.bootstrap_topic(project)
+                checkpoint = self.prepare_checkpoint(
+                    topic, ledger_revision=1, purpose="stage-entry",
+                    base_ref="HEAD" if git else "project-root",
+                )
+                ledger = Path(str(topic["ledger_path"]))
+                frontmatter, records = PROTOCOL._load_records(ledger)
+                prerequisite_id = "topic-" + uuid.uuid4().hex
+                add_topic(records, topic_id=prerequisite_id, root_slug="pending-rule",
+                          parent_topic_id=str(topic["topic_id"]))
+                ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                code, _, stderr = self.run_cli(self.evolution_request(
+                    topic, operation="update-topic-dependency", expected_revision=2,
+                    expected_topic_revision=1, action="create",
+                    prerequisite_topic_id=prerequisite_id,
+                    requirement_kind="confirmed-decision",
+                    requirement_summary="The rule must be settled before stage entry.",
+                ))
+                self.assertEqual(code, 0, stderr)
+                before = ledger.read_bytes()
+                operation = "publish-git-checkpoint" if git else "publish-non-git-checkpoint"
+                self.assert_topic_gate_blocked(
+                    self.run_cli(self.checkpoint_request(
+                        topic, operation=operation, ledger_revision=3,
+                        checkpoint_id=checkpoint["checkpoint_id"],
+                        expected_checkpoint_revision=checkpoint["checkpoint_record_revision"],
+                    )),
+                    ledger=ledger, before=before,
+                    prerequisite_topic_id=prerequisite_id,
+                )
+
     def test_ticket07_cross_topic_checkpoint_mutation_is_rejected_atomically_via_cli(self) -> None:
         project = self.make_project("ticket07-cross-topic-checkpoint", git=False)
         topic = self.bootstrap_topic(project)

@@ -188,7 +188,7 @@ def workflow_control(request):
             if action == 'receive':
                 if _active_pending_write(records) is not None:
                     raise ProtocolError('document_write_reconciliation_required', 'complete the pending document write before delivery')
-                apply_gate_policy(records, 'authorize-handoff-discussion', topic['topic_id'])
+                apply_gate_policy(records, 'dedicated-handoff', topic['topic_id'])
                 if evidence.get('requirement_identity') != identity:
                     raise ProtocolError('phase_source_drift', 'delivery version differs from current topic document')
                 if evidence['commit'] is None:

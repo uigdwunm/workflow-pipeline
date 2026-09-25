@@ -17,15 +17,28 @@ parent, continuation, or executable dependency edge.
 
 On every later user-requested Phase-0/1 turn for a topic with Topic
 Dependencies, first call `read-topic` and inspect its current
-`derived_gate_state` before substantive work. This mandatory per-turn read
-observes an upstream reclosure that occurred between turns. If the derived gate
-is open, proceed without reevaluating evidence. If it is closed, call
-`evaluate-topic-gate`. Report the exact waiting condition if blocked. If it is
-releasable, show the selected current bases, obtain fresh confirmation, and
-call `release-topic-gate` for the complete closed set before substantive work.
-First-turn handoff acceptance, read-only inspection, and recovery remain
-available while closed. Do not poll, notify, or wake an open gate; Phase 2 and
-later do not consult Topic Dependencies.
+`derived_gate_state`. This mandatory per-turn read observes an upstream
+reclosure that occurred between turns. If the gate is closed, identify the
+unresolved prerequisite and its effect on the current discussion. Continue
+Phase-0/1 discussion and record decisions proved unaffected by that
+prerequisite; keep dependent assumptions and conclusions explicitly unresolved.
+Do not present the topic as complete, publish a `stage-entry` checkpoint,
+submit or absorb a child result, or start Stage 1 or 2 while the gate is closed.
+An already activated Phase Run follows its existing completion rules. Ordinary
+child and continuation topics may authorize later-turn discussion after handoff
+acceptance. The first turn still only accepts the handoff. A closed source
+topic cannot prepare a new child or dedicated-stage handoff.
+
+Call `evaluate-topic-gate` when the user asks what is blocking advancement or
+when preparing to release the gate. Report its exact waiting condition if
+blocked. If releasable, show the selected current bases, obtain fresh
+confirmation, and call `release-topic-gate` for the complete closed set before
+an advancing action. Read-only inspection and recovery remain available while
+closed. Do not poll, notify, or wake an open gate; Phase 2 and later do not
+consult Topic Dependencies. The protocol does not map each discussion sentence
+or decision to a dependency: the discussion owner must keep affected conclusions
+unresolved, while stage-entry and completion checks mechanically prevent
+advancement with a closed gate.
 
 The Phase Source Task owns split preparation and creation confirmations. A
 dedicated grilling carrier may return only a bounded proposal; it never

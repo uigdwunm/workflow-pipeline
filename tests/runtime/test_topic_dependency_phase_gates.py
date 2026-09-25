@@ -17,8 +17,8 @@ from test_topic_dependency_support import (
 class TopicDependencyPhaseGateCliTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport):
     def test_ticket07_gate_operation_policy_declares_every_boundary(self) -> None:
         enforcing = {
-            "discussion-update", "stage-entry-checkpoint", "prepare-handoff",
-            "authorize-handoff-discussion", "phase-transition",
+            "stage-entry-checkpoint", "prepare-handoff", "dedicated-handoff", "child-result",
+            "phase-transition",
         }
         reclosing = {"decision-impact", "checkpoint-broken", "checkpoint-superseded", "phase-reopen"}
         self.assertEqual(set(GATE_OPERATION_POLICIES), enforcing | reclosing)
@@ -46,17 +46,6 @@ class TopicDependencyPhaseGateCliTests(DiscussionProtocolScenarioFixture, Discus
         ledger = Path(str(topic["ledger_path"]))
         before = ledger.read_bytes()
         blocked = [
-            self.evolution_request(
-                topic,
-                operation="prepare-topic-update",
-                expected_revision=2,
-                expected_topic_revision=1,
-                mutation={
-                    "type": "confirm-decision",
-                    "summary": "A substantive update.",
-                    "rationale": "It would change Phase 0 work.",
-                },
-            ),
             self.checkpoint_request(
                 topic,
                 operation="prepare-checkpoint",
@@ -104,6 +93,42 @@ class TopicDependencyPhaseGateCliTests(DiscussionProtocolScenarioFixture, Discus
         code, recovered, stderr = self.run_cli(continuation)
         self.assertEqual(code, 0, stderr)
         self.assertEqual(recovered["state"], "setup-pending")
+        continuation_ref = "codex-thread:closed-continuation"
+        code, _, stderr = self.run_cli(self.handoff_request(
+            topic, operation="bind-handoff", ledger_revision=3,
+            handoff_id=recovered["handoff_id"], attempt_id=recovered["attempt_id"],
+            conversation_ref=continuation_ref,
+            verified_identity={
+                "project_id": topic["project_id"], "tree_id": topic["tree_id"],
+                "topic_id": recovered["target_topic_id"],
+                "handoff_id": recovered["handoff_id"],
+                "attempt_id": recovered["attempt_id"],
+                "payload_sha256": recovered["payload_sha256"],
+            },
+        ))
+        self.assertEqual(code, 0, stderr)
+        code, accepted, stderr = self.run_cli(self.handoff_request(
+            topic, operation="accept-handoff", ledger_revision=4,
+            owner_ref=continuation_ref, handoff_id=recovered["handoff_id"],
+            attempt_id=recovered["attempt_id"],
+            payload_sha256=recovered["payload_sha256"],
+            source_reference_sha256=recovered["authoritative_references_sha256"],
+            turn_number=1,
+        ))
+        self.assertEqual(code, 0, stderr)
+        self.assertFalse(accepted["substantive_discussion_allowed"])
+        code, authorized, stderr = self.run_cli(self.handoff_request(
+            topic, operation="authorize-handoff-discussion", ledger_revision=5,
+            owner_ref=continuation_ref, handoff_id=recovered["handoff_id"],
+            attempt_id=recovered["attempt_id"], turn_number=2,
+        ))
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(authorized["substantive_discussion_allowed"])
+        code, current, stderr = self.run_cli(self.evolution_request(
+            topic, operation="read-topic", owner_ref=continuation_ref,
+        ))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(current["derived_gate_state"], "closed")
 
         phase_one_project = self.make_project("ticket07-closed-one-to-two", git=False)
         phase_one_topic = self.bootstrap_topic(phase_one_project)
@@ -150,6 +175,53 @@ class TopicDependencyPhaseGateCliTests(DiscussionProtocolScenarioFixture, Discus
             ledger=phase_one_ledger,
             before=phase_one_before,
             prerequisite_topic_id=str(child["target_topic_id"]),
+        )
+        self.complete_update(
+            phase_one_project, phase_one_topic,
+            ledger_revision=revision + 2, topic_revision=topic_revision,
+            mutation={
+                "type": "confirm-decision", "summary": "Search ordering uses relevance.",
+                "rationale": "Ordering can be decided before the prerequisite result.",
+            },
+        )
+        code, current, stderr = self.run_cli(self.evolution_request(
+            phase_one_topic, operation="read-topic"
+        ))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(current["derived_gate_state"], "closed")
+
+    def test_closed_gate_allows_discussion_update_but_blocks_stage_entry(self) -> None:
+        project = self.make_project("closed-gate-discussion-update", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic, initial_dependencies=[{
+            "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
+            "requirement_kind": "confirmed-decision",
+            "requirement_summary": "Permission behavior is still pending.",
+        }])
+        _, revision, topic_revision = self.complete_update(
+            project, topic, ledger_revision=2, topic_revision=1,
+            mutation={
+                "type": "confirm-decision", "summary": "Search results have an empty state.",
+                "rationale": "This presentation decision does not depend on permissions.",
+            },
+        )
+        code, current, stderr = self.run_cli(
+            self.evolution_request(topic, operation="read-topic")
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(current["derived_gate_state"], "closed")
+        self.assertEqual(current["topic_dependencies"][0]["prerequisite_topic_id"], prepared["target_topic_id"])
+        self.assertTrue(any(item["summary"] == "Search results have an empty state."
+                            for item in current["decisions"]))
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        self.assert_topic_gate_blocked(
+            self.run_cli(self.checkpoint_request(
+                topic, operation="prepare-checkpoint", ledger_revision=revision,
+                topic_revision=topic_revision, purpose="stage-entry", base_ref="project-root",
+            )),
+            ledger=ledger, before=before,
+            prerequisite_topic_id=str(prepared["target_topic_id"]),
         )
 
     def test_closed_gate_continuation_rejects_suspended_question_resolution_without_advancing(self) -> None:
@@ -374,6 +446,34 @@ class TopicDependencyPhaseGateCliTests(DiscussionProtocolScenarioFixture, Discus
         code, accepted, stderr = self.run_cli(accept)
         self.assertEqual(code, 0, stderr)
         self.assertEqual(accepted["state"], "accepted-awaiting-next-turn")
+        authorize = self.handoff_request(
+            topic, operation="authorize-handoff-discussion", ledger_revision=4,
+            owner_ref=child_ref, handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"], turn_number=2,
+        )
+        authorize["actor_topic_id"] = prepared["target_topic_id"]
+        code, authorized, stderr = self.run_cli(authorize)
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(authorized["substantive_discussion_allowed"])
+        code, current_child, stderr = self.run_cli(self.evolution_request(
+            {**topic, "topic_id": prepared["target_topic_id"]},
+            operation="read-topic", owner_ref=child_ref,
+        ))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(current_child["derived_gate_state"], "closed")
+        child_result = self.handoff_request(
+            topic, operation="submit-child-result", ledger_revision=5,
+            owner_ref=child_ref, handoff_id=prepared["handoff_id"],
+            attempt_id=prepared["attempt_id"], result_scope=["requirements"],
+            summary="Incomplete requirement result.",
+        )
+        child_result["actor_topic_id"] = prepared["target_topic_id"]
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        self.assert_topic_gate_blocked(
+            self.run_cli(child_result), ledger=ledger, before=before,
+            prerequisite_topic_id=str(topic["topic_id"]),
+        )
 
         gated_project = self.make_project("ticket07-closed-read-recovery", git=False)
         gated_topic = self.bootstrap_topic(gated_project)

@@ -68,7 +68,11 @@ class RepositoryValidationTests(unittest.TestCase):
             self.assertIn(marker, discussion)
         for marker in ("split-gate-contract.md", "dedicated grilling carrier", "Topic Dependencies"):
             self.assertIn(marker, framing)
-        for marker in ("independent, nameable goal", "read-topic", "derived_gate_state", "evaluate-topic-gate", "release-topic-gate", "First-turn handoff acceptance"):
+        for marker in (
+            "independent, nameable goal", "read-topic", "derived_gate_state",
+            "evaluate-topic-gate", "release-topic-gate", "later-turn discussion",
+            "The first turn still only accepts the handoff",
+        ):
             self.assertIn(marker, split_gate)
         for marker in ("initial_dependencies", "authority_selection", "dependency_releases", "first-turn acceptance remains allowed", "split-gate-contract.md"):
             self.assertIn(marker, handoff)
