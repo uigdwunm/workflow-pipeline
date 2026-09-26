@@ -67,7 +67,8 @@ other files; it validates only the declared path boundary.
 
 Unrelated unstaged changes in the primary checkout are preserved. Staged
 primary-checkout changes and ignored paths that overlap candidate paths stop
-before the target merge; unrelated ignored paths remain untouched. If any
+before the target merge; candidate filenames are checked literally even when
+they contain Git pathspec syntax. Unrelated ignored paths remain untouched. If any
 pre-publication check or merge fails, the Flow Worktree returns to the exact
 accepted `planning_commit`, so the same request remains retryable. A Flow
 Worktree edit that appears during publication is preserved and returns

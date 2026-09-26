@@ -151,6 +151,36 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         confirmed.write_text(json.dumps(raw))
         return host, log, confirmed
 
+    def test_shared_run_record_directory_blocks_before_host_launch(self):
+        host, log, confirmed = self.fixture()
+        shared = self.checkpoint.parent / 'shared'
+        shared.mkdir()
+        shared.chmod(0o777)
+        protected = self.checkpoint.parent / 'protected.json'
+        protected.write_text('original private bytes')
+        (shared / 'run.json.stage2.turn-1.json').symlink_to(protected)
+        value = json.loads(confirmed.read_text())
+        value['run_record'] = str(shared / 'run.json')
+        confirmed.write_text(json.dumps(value))
+        with patch.object(runner, '__file__', str(cli.SCRIPT)), \
+             patch.dict(os.environ, {'CODEX_BIN':str(host), 'HOST_LOG':str(log)}), \
+             patch.object(runner.foreground_host.ForegroundHost, 'start', side_effect=AssertionError('host launched')):
+            with self.assertRaisesRegex(runner.WorkflowError, 'private run record directory'):
+                runner.start(confirmed)
+        self.assertEqual(protected.read_text(), 'original private bytes')
+        self.assertFalse((shared / 'run.json').exists())
+
+    def test_host_event_link_does_not_redirect_raw_events(self):
+        host, log, confirmed = self.fixture()
+        protected = self.checkpoint.parent / 'protected.log'
+        protected.write_text('original private bytes')
+        (self.checkpoint.parent / (self.checkpoint.name + '.host.events.jsonl')).symlink_to(protected)
+        with patch.object(runner, '__file__', str(cli.SCRIPT)), \
+             patch.dict(os.environ, {'CODEX_BIN':str(host), 'HOST_LOG':str(log)}):
+            with self.assertRaisesRegex(runner.WorkflowError, 'host event log'):
+                runner.start(confirmed)
+        self.assertEqual(protected.read_text(), 'original private bytes')
+
     def run_running_carrier(self, expected_error="invalid needs_input_kind", script=None):
         host, log, confirmed = self.fixture()
         host.write_text((script or HOST).replace("'technical_error'", "'invalid-kind'"))
@@ -193,6 +223,8 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
 
     def test_continue_running_keeps_one_host_and_original_native_ref(self):
         created, log, confirmed = self.run_running_carrier()
+        self.assertEqual((self.checkpoint.parent / (self.checkpoint.name + '.host.events.jsonl')).stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.checkpoint.parent / (self.checkpoint.name + '.host.stderr')).stat().st_mode & 0o777, 0o600)
         self.assertEqual(len(created), 1, 'continue while C reports running must retain its foreground host')
         self.assertEqual(self.state()['control']['context']['carrier']['ref'], 'native:designer')
         self.assertEqual(self.state()['host']['status'], 'unknown')
@@ -693,6 +725,15 @@ class HostProtocolTests(unittest.TestCase):
         self.host = runner.foreground_host.ForegroundHost(self.configuration, str(self.root), self.events.append,
                                                          executable=str(self.executable))
         self.addCleanup(self.host.close)
+
+    def test_host_stderr_does_not_follow_preexisting_symlink(self):
+        protected = self.root / 'protected.log'
+        protected.write_text('original private bytes')
+        diagnostics = self.root / 'stderr'
+        diagnostics.symlink_to(protected)
+        with self.assertRaisesRegex(runner.foreground_host.HostError, 'diagnostic'):
+            self.host.start(diagnostics)
+        self.assertEqual(protected.read_text(), 'original private bytes')
 
     @contextmanager
     def pipe_transport(self):

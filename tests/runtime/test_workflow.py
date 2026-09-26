@@ -65,6 +65,26 @@ class WorkflowCliTests(unittest.TestCase):
         value['run_record'] = str(self.worktree / 'record.json')
         self.reject_before_launch(value, 'outside')
 
+    def test_stage_artifact_does_not_follow_preexisting_symlink(self):
+        output = self.root / 'run.json.stage2.turn-1.json'
+        protected = self.root / 'protected.json'
+        protected.write_text('original private bytes')
+        output.symlink_to(protected)
+        self.runner._write_stage_output(output, '{"result":"continue"}')
+        self.assertFalse(output.is_symlink())
+        self.assertEqual(protected.read_text(), 'original private bytes')
+        self.assertEqual(output.read_text(), '{"result":"continue"}')
+
+    def test_run_lock_rejects_preexisting_symlink(self):
+        protected = self.root / 'protected.lock'
+        protected.write_text('original private bytes')
+        lock = self.root / 'run.json.runner.lock'
+        lock.symlink_to(protected)
+        with self.assertRaisesRegex(self.runner.WorkflowError, 'run lock'):
+            with self.runner.RunLock(self.record):
+                pass
+        self.assertEqual(protected.read_text(), 'original private bytes')
+
     def test_requirement_identity_cannot_drift(self):
         value = self.confirmed_input()
         value['frozen_requirement']['sha256'] = 'c' * 64

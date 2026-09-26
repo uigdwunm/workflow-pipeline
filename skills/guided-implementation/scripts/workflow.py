@@ -16,7 +16,9 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import sys
+import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import time
 import uuid
@@ -61,8 +63,21 @@ class RunLock:
         self.stream: Any | None = None
 
     def __enter__(self) -> "RunLock":
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.stream = self.path.open("a+", encoding="utf-8")
+        parent = self.path.parent
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        current = os.stat(parent, follow_symlinks=False)
+        if (not stat.S_ISDIR(current.st_mode) or current.st_uid != os.geteuid()
+                or stat.S_IMODE(current.st_mode) & 0o077):
+            raise WorkflowError("private run record directory required: use an owner-only directory")
+        try:
+            descriptor = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        except OSError as error:
+            raise WorkflowError("run lock cannot be opened safely") from error
+        identity = os.fstat(descriptor)
+        if not stat.S_ISREG(identity.st_mode) or identity.st_uid != os.geteuid() or identity.st_nlink != 1:
+            os.close(descriptor)
+            raise WorkflowError("run lock must be an owner-owned regular file")
+        self.stream = os.fdopen(descriptor, "r+", encoding="utf-8")
         try:
             fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -790,6 +805,27 @@ def _artifact_path(record_path: Path, stage: str, turn: int) -> Path:
     return record_path.parent / f"{record_path.name}.{stage}.turn-{turn}.json"
 
 
+def _write_stage_output(path: Path, content: str) -> None:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="." + path.name + ".", delete=False) as stream:
+            temporary = stream.name
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
+
+
 def _carrier_receipt_path(record_path, stage, turn):
     return _artifact_path(record_path, stage, turn).with_suffix(".carrier.json")
 
@@ -930,7 +966,7 @@ def _recover_transport(state, record_path):
             if request['params'].get('input') != expected_input:
                 raise WorkflowError('transport_uncertain: turn does not match the saved launch')
             output = _artifact_path(record_path,state['current_stage'],launch['turn'])
-            output.write_text(final,encoding='utf-8')
+            _write_stage_output(output, final)
             result = _read_stage_result(output,state['current_stage'])
             recovered = {'run_record':str(record_path),'stage':state['current_stage'],'turn':launch['turn'],
                 'invocation_id':launch['invocation_id'],'request_digest':entry_prepare.digest(launch['request']),
@@ -1005,7 +1041,7 @@ def _invoke(state, record_path, answer, continuing, host, *, control_turn=False)
         text, host_turn = host.run_turn(session, prompt, confirmed['stages'][stage],
             _read_json(SCHEMA_PATH, 'stage schema'), on_progress)
         receipt['events'].append({'type':'turn.completed','thread_id':session,'turn_id':host_turn})
-        output.write_text(text, encoding='utf-8')
+        _write_stage_output(output, text)
         result = _read_stage_result(output, stage)
         receipt.update(outcome='completed_turn', result=result)
         try:
@@ -1058,7 +1094,15 @@ def _advance(state, record_path, answer=None):
         event = {**event, 'run_record':str(record_path), 'stage':state['current_stage'],
                  'invocation_id':state.get('launch', {}).get('invocation_id')}
         receipt = record_path.with_name(record_path.name + '.host.events.jsonl')
-        with receipt.open('a', encoding='utf-8') as stream:
+        try:
+            descriptor = os.open(receipt, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        except OSError as error:
+            raise WorkflowError('host event log cannot be opened safely') from error
+        identity = os.fstat(descriptor)
+        if not stat.S_ISREG(identity.st_mode) or identity.st_uid != os.geteuid() or identity.st_nlink != 1:
+            os.close(descriptor)
+            raise WorkflowError('host event log must be an owner-owned regular file')
+        with os.fdopen(descriptor, 'a', encoding='utf-8') as stream:
             stream.write(json.dumps(event, ensure_ascii=False) + '\n')
             stream.flush()
             os.fsync(stream.fileno())

@@ -538,6 +538,14 @@ followup. Carrier turn completion, native completion, B acceptance and Git
 publication are separate facts. Stable running waits do not consume the
 unchanged-business-progress counter. Reads use bounded intervals up to 60 seconds.
 
+The `run_record` must live outside the repository and Flow Worktree in an
+owner-only directory (mode `0700`). The runner creates a missing record directory
+with that mode, rejects an existing directory accessible to other users, and
+checks the run lock before starting a host. Stage result artifacts use atomic
+replacement rather than following existing links; raw host event and diagnostic
+files are created with owner-only permissions and reject symbolic links. Old
+runs continue with their original pinned runtime.
+
 `workflow.py pause RECORD` and `cancel RECORD` queue an exact request when an
 owner holds RunLock. The owner reads it outside RPC/checkpoint locks, steers an
 active carrier or delivers it at the next turn boundary, and consumes C's

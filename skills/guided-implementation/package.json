@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "964a6064c1949f951874576948bf56b15ca80f654f90b778b8001ab10f7693fe",
+  "bundle_digest": "3aedce45010a55a3f6140fd6c9bb2dc3e105087201aa20a3c9cb04f9f3ae473f",
   "compatibility_key": {
     "control": 6,
     "discussion_request": 1,
@@ -77,7 +77,7 @@
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "59d273ee2ae087fc24815475b9ae8402cc1b75fc54d5814254cd42b25dbb0a44"
+      "sha256": "ed8986965bff2467a9e0730be7a0c98e8a6fa7fd0017fa6b33f1ce425d85bf5c"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
@@ -97,7 +97,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "ff1acc50f6c8133c0253c5c9aa017aa6ea3b04018f6361856f51f88fde4b1826"
+      "sha256": "6281f78848fe2f4e6b8d2050e048c3341ab77e0526c19ab6d736548e8af55ff3"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -173,7 +173,7 @@
     },
     "scripts/foreground_host.py": {
       "mode": "0644",
-      "sha256": "623944f519ba0c2ea6e007bed8c5f9f96764f1725725d50dcc70eace7ed4c84a"
+      "sha256": "1986cf88169772f7916569fbf2f7229299c9644ebca8494402d77d23a0ff88ef"
     },
     "scripts/host_skill_registry.py": {
       "mode": "0644",
@@ -213,7 +213,7 @@
     },
     "scripts/supervision_protocol.py": {
       "mode": "0644",
-      "sha256": "e5fe0b5fe7c5af02db2902aa43d70139579987fe98445e3f58e6bafd2910e44f"
+      "sha256": "b52b972002bcf3186d9dd34bd000801756ded18f6e73b5e2b6b5873fae44ce2b"
     },
     "scripts/thread_settings.py": {
       "mode": "0644",
@@ -221,7 +221,7 @@
     },
     "scripts/workflow.py": {
       "mode": "0644",
-      "sha256": "576ca770748ab908ab843e4990fecc21179a6a039f71b4761814b902b665502a"
+      "sha256": "7c074acdd5291e4475f931829e6bb4712fc098a19fa35cd3710f312a3a5c650f"
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
@@ -242,7 +242,7 @@
   },
   "format_version": 1,
   "name": "guided-implementation",
-  "release": "1.1.0",
+  "release": "1.2.0",
   "resources": [
     "design-discussion/references/confirmation-contract.md",
     "design-discussion/references/ledger-protocol.md",
@@ -297,6 +297,6 @@
     "shared/scripts/workflow_progress.py",
     "solution-design/references/conversation-source.md"
   ],
-  "source_revision": "workflow-pipeline-v1.1.0",
+  "source_revision": "workflow-pipeline-v1.2.0",
   "stage": 3
 }

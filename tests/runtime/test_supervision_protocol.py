@@ -694,6 +694,35 @@ class WorktreeProtocolTests(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=worktree), planning_commit)
         self.assertTrue(worktree.is_dir())
 
+    def test_publish_planning_treats_git_magic_filename_as_literal_ignored_path(self) -> None:
+        name = ":(icase)private.md"
+        (self.repository / ".gitignore").write_text("*private*\n", encoding="utf-8")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "ignore local documents")
+        binding = self.start("planning-literal-ignored")
+        worktree = Path(str(binding["worktree"]))
+        (worktree / name).write_text("candidate document\n", encoding="utf-8")
+        self.git("--literal-pathspecs", "add", "-f", "--", name, cwd=worktree)
+        self.git("commit", "-q", "-m", "add candidate document", cwd=worktree)
+        planning_commit = self.git("rev-parse", "HEAD", cwd=worktree)
+        target_head = self.git("rev-parse", "main")
+        (self.repository / name).write_text("private local document\n", encoding="utf-8")
+
+        with self.assertRaises(PROTOCOL.ProtocolError) as raised:
+            PROTOCOL.publish_planning(
+                self.publish_input(
+                    "planning-literal-ignored",
+                    binding,
+                    planning_commit,
+                    allowed_paths=[name],
+                )
+            )
+
+        self.assertEqual(raised.exception.code, "checkout_not_clean")
+        self.assertEqual(raised.exception.context["paths"], [name])
+        self.assertEqual((self.repository / name).read_text(encoding="utf-8"), "private local document\n")
+        self.assertEqual(self.git("rev-parse", "main"), target_head)
+
     def test_publish_planning_rejects_ignored_flow_collision_without_touching_it(self) -> None:
         (self.repository / ".gitignore").write_text("flow-secret.txt\n", encoding="utf-8")
         self.git("add", ".gitignore")

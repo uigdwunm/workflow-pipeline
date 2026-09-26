@@ -271,6 +271,7 @@ def _ignored_paths(repository: Path, candidate_paths: list[str]) -> list[str]:
     completed = subprocess.run(
         [
             "git",
+            "--literal-pathspecs",
             "ls-files",
             "--others",
             "--ignored",

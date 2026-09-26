@@ -1,6 +1,6 @@
 # Workflow Pipeline
 
-当前版本：**v1.1.0** · [更新日志](CHANGELOG.md) · [发布说明](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v1.1.0)
+当前版本：**v1.2.0** · [更新日志](CHANGELOG.md) · [版本源码](https://github.com/uigdwunm/workflow-pipeline/tree/v1.2.0)
 
 五个可独立安装、按需组合的 Codex 工程工作流 Skill，覆盖讨论、需求、方案、实现与归档。可选的持久化设计讨论位于既有四阶段之前；没有唯一、可验证讨论上下文时，1—4 保持原有流程：
 
@@ -13,6 +13,8 @@
 五个 Skill 可分别安装，每包自带本阶段所需规则和脚本。只有进入其他阶段时，才从当前宿主有效 Skill registry 解析目标包；跨包协议兼容键必须完全相等，发布版本可以不同。共享 `thread-settings-v5` 位于各包内部，不再要求安装 `guided-implementation` 才能读取配置。
 
 这些 Skill 来自一个真实使用中的工作流，重点是阶段边界、Git worktree 隔离、并发合并校验，以及让文档与实现各自拥有明确的写入权限。
+
+v1.2.0 增加 Phase 0/1 话题依赖门禁、可验证的需求交付与更完整的阶段恢复。1拷问冻结用户可观察的需求契约，2方案负责解决不改变该契约的工程问题；3实现支持经 Controller 批准的有界直接实现。已完成的阶段交接不会因旧任务侧边栏归档失败而回退。
 
 ## 环境要求
 
@@ -46,15 +48,17 @@ Matt 内容不随包分发，也不会自动安装。需要某项能力时另行
 
 每次运行固定包的真实根、摘要和协议键，脚本启动、恢复、交接前复核。升级应安装到新的不可变目录，再切换新任务的注册链接；保留旧目录直到旧运行结束。原地覆盖导致 `package_changed`，缺失旧包导致 `package_unavailable`；不得把同一运行偷偷换到新版本。
 
-前台 runner 仅在 `guided-implementation` 包内。新记录为 v4，C 协议为 workflow-progress-v6，固定 runner 与 Stage 2/3/4 身份。start 的 confirmed JSON 包含可信当前 `registry`；runner 将该文件固定为 `registry_input`，每次 executor 启动前重读其中证据，resume 重验剩余目标。宿主/控制器须在注册变化后刷新该文件，或显式改用新证据文件：
+前台 runner 仅在 `guided-implementation` 包内。新记录为 v6，工作流进度协议为 `workflow-progress-v11`，固定 runner 与 Stage 2/3/4 身份。start 的 confirmed JSON 包含可信当前 `registry`；runner 将该文件固定为 `registry_input`，每次 executor 启动前重读其中证据，resume 重验剩余目标。宿主/控制器须在注册变化后刷新该文件，或显式改用新证据文件：
 
 ```bash
 python3 <固定包根>/scripts/workflow.py resume <record> <answer> --registry-input <current-evidence.json>
 ```
 
-新文件须包含当前 `registry` 对象；这只更新注册证据，不替换原固定包身份。旧 v1/v2/v3 记录返回 `legacy_run_requires_original_runtime`，必须用保留的原 runner 和原安装树恢复；新 runner 不猜测迁移、重启阶段或清理 worktree。
+新文件须包含当前 `registry` 对象；这只更新注册证据，不替换原固定包身份。旧 v1–v5 记录返回 `legacy_run_requires_original_runtime`，必须用保留的原 runner 和原安装树恢复；新 runner 不猜测迁移、重启阶段或清理 worktree。
 
 新运行在一个前台 app-server 内跨轮执行。confirmed input 还需冻结 Controller 提供的实际 CLI 版本、权限配置和来源；首次业务轮前回读 model/effort/cwd/权限，不能推断默认值。完整字段见[前台生命周期协议](src/shared/references/workflow-progression.md#foreground-carrier-and-compatibility)。等待子角色、问题答案或暂停时，前台进程继续持有宿主。
+
+前台 runner 的 `run_record` 须放在仓库和 Flow Worktree 之外、由当前用户独占的目录（建议权限 `0700`）。新目录由 runner 按此权限创建；已存在的目录若对其他用户开放，会在启动宿主前被拒绝。宿主原始日志和阶段结果可能包含敏感内容，务必保留这个目录及旧运行固定的安装包。
 
 另一终端可用 `resume RECORD ANSWER --decision-id ID` 提交答案，返回 `queued` 只表示已保存；同一 carrier 经 C 消费后才生效。裸 `resume RECORD` 明确请求解除已完成的暂停，单纯答案不会解除暂停。`pause RECORD` 和 `cancel RECORD` 由原 owner 消费；取消必须等所有已绑定角色、执行者和审查者及未解决调用闭合后结束。宿主丢失保留现场并返回 `await-host-recovery`，不会启动第二宿主或重复派发。单层真实宿主验收与外部嵌套待验证项分别记录于 `tests/host/`，不把传输替身通过当成真实宿主通过。
 
@@ -95,7 +99,7 @@ $problem-framing 帮我明确这次需求
 
 该命令校验生成漂移、五包入口/引用/资源闭包，运行 `tests/runtime` 与 `tests/packages` 的源测试和五包快速验证。开发编辑 `src/` 与 `build/skill-packages.json`，再运行 `python3 scripts/build_skills.py`；不要手改 `skills/` 生成副本。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-v1.1.0 的独立安装实现通过 368 项自动测试及双轴审查；`skills@1.6.0` 在临时项目的发现与五次单包安装通过。T13/T14 真实宿主 Agent 单包、组合及附着讨论恢复验收尚未执行，不以脚本测试或临时安装替代。`python3 scripts/field_acceptance.py` 输出现场步骤与证据表；安装同步需单独授权，本次未改用户安装。
+v1.2.0 的仓库检查运行了 820 项测试：819 项通过、1 项按既有条件跳过；本机专用部署器另有 23 项隔离测试通过。`skills@1.6.0` 的临时项目发现与五次单包安装验证属于 v1.1.0 的既有证据，不能代表本次候选。真实嵌套 Agent 集成仍待外部依赖验收；本次候选的现场宿主验收须与自动测试分开记录。`python3 scripts/field_acceptance.py` 输出现场步骤与证据表。
 
 ## 许可证
 

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import selectors
 import signal
+import stat
 import subprocess
 import time
 import uuid
@@ -107,7 +108,15 @@ class ForegroundHost:
         if actual != self.configuration['cli_version']:
             raise HostPrelaunchError('host_version_changed: revalidate the confirmed CLI schema/configuration')
         self.journal({'kind':'host-intent', 'instance':self.instance, 'protocol':PROTOCOL, 'cli_version':actual})
-        self.stderr = open(diagnostics, 'ab')
+        try:
+            descriptor = os.open(diagnostics, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        except OSError as error:
+            raise HostError('host diagnostic file cannot be opened safely') from error
+        identity = os.fstat(descriptor)
+        if not stat.S_ISREG(identity.st_mode) or identity.st_uid != os.geteuid() or identity.st_nlink != 1:
+            os.close(descriptor)
+            raise HostError('host diagnostic file must be an owner-owned regular file')
+        self.stderr = os.fdopen(descriptor, 'ab')
         self.process = subprocess.Popen([self.executable, 'app-server', '--listen', 'stdio://'], cwd=self.cwd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, start_new_session=True)
         self.selector.register(self.process.stdout, selectors.EVENT_READ)
