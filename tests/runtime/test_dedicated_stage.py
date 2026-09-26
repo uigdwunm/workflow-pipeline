@@ -534,6 +534,7 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
         current = copy.deepcopy(source_context)
         current.update(stage=2, carrier=None, handoff_progress=None)
         state = {'protocol': progression.PROTOCOL, 'revision': 0, 'mode': 'continuous', 'stage': 2,
+            'native_host': {'adapter': 'app-server', 'instance': 'fixture-downstream-host'},
             'status': 'active', 'step': 'prepare-dispatch', 'control': {'context': current, 'discussion': None},
             'handoff': saved, 'packages': {}, 'dispatch': None, 'transaction': None,
             'transaction_source': None, 'transaction_result': None, 'history': [{'control': port, 'handoff': saved}],

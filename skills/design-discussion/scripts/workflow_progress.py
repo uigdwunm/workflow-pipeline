@@ -12,6 +12,7 @@ import copy
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -30,7 +31,7 @@ import workflow_control_git as control_git
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v11"
+PROTOCOL = "workflow-progress-v12"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -54,6 +55,98 @@ def validate_snapshot_events(snapshot):
             'invalid_result', 'raw lifecycle events must be a list')
     for event in snapshot['events']:
         validate_native_event(event)
+
+
+def collaboration_inventory(value):
+    """Validate the native tool's unmodified whole-tree response, not RPC pages."""
+    entry.fields(value, {'adapter', 'controller_ref', 'request', 'response'})
+    require(value['adapter'] == 'collaboration' and
+            value['request'] == {'tool': 'collaboration.list_agents', 'arguments': {}},
+            'host_capability_missing', 'use the unfiltered collaboration.list_agents tool')
+    require(isinstance(value['controller_ref'], str) and
+            re.fullmatch(r'/root(?:/[a-z0-9_]+)*', value['controller_ref']),
+            'identity_mismatch', 'retain the runtime controller agent path')
+    response = value['response']
+    require(isinstance(response, dict) and set(response) == {'agents'} and isinstance(response['agents'], list),
+            'host_capability_missing', 'complete raw collaboration agent inventory required')
+    agents = {}
+    for agent in response['agents']:
+        require(isinstance(agent, dict) and set(agent) == {'agent_name', 'agent_status'} and
+                isinstance(agent['agent_name'], str) and re.fullmatch(r'/root(?:/[a-z0-9_]+)*', agent['agent_name']) and
+                agent['agent_name'] not in agents and isinstance(agent['agent_status'], (str, dict)),
+                'invalid_result', 'native inventory requires unique canonical agent paths and raw statuses')
+        agents[agent['agent_name']] = agent['agent_status']
+    require(value['controller_ref'] in agents, 'identity_mismatch', 'inventory must include the current controller')
+    return agents
+
+
+def collaboration_inventory_pending(inventory, expected):
+    agents = collaboration_inventory(inventory)
+    actual = set(agents) - {inventory['controller_ref']}
+    pending = []
+    if actual != expected:
+        pending.append({'kind': 'unreconciled-descendants', 'expected': sorted(expected), 'actual': sorted(actual)})
+    for ref in sorted(actual):
+        status = agents[ref]
+        if not (isinstance(status, dict) and set(status) == {'completed'} and isinstance(status['completed'], str)):
+            pending.append({'kind': 'native-turn-not-stopped', 'ref': ref, 'status': status})
+    return pending
+
+
+def native_host_preflight(value):
+    require(isinstance(value, dict), 'host_capability_missing',
+            'check native lifecycle support before worktree creation or dispatch; supply native_host evidence')
+    if value.get('adapter') == 'collaboration':
+        agents = collaboration_inventory(value)
+        require(not collaboration_inventory_pending(value, set(agents) - {value['controller_ref']}),
+                'host_evidence_missing', 'finish existing native agents before admitting this workflow')
+        return {'adapter': 'collaboration', 'controller_ref': value['controller_ref']}
+    require(value.get('adapter') == 'app-server', 'host_capability_missing', 'unsupported native lifecycle adapter')
+    entry.fields(value, {'adapter', 'snapshot'})
+    snapshot = value['snapshot']
+    require(isinstance(snapshot, dict), 'host_capability_missing', 'raw app-server lifecycle lookup required')
+    validate_rpc_lifecycle(snapshot, snapshot.get('carrier_thread'))
+    return {'adapter': 'app-server', 'instance': snapshot['instance']}
+
+
+def validate_rpc_lifecycle(snapshot, expected):
+    entry.fields(snapshot, {'instance','carrier_thread','sequence','pages','events'})
+    entry.nonempty(snapshot['instance'])
+    entry.nonempty(expected)
+    require(snapshot['carrier_thread'] == expected, 'identity_mismatch', 'lookup must retain the original carrier ancestor')
+    require(type(snapshot['sequence']) is int and snapshot['sequence'] >= 0 and isinstance(snapshot['events'], list) and
+            isinstance(snapshot['pages'], list) and snapshot['pages'], 'invalid_result', 'complete raw lifecycle lookup required')
+    validate_snapshot_events(snapshot)
+    cursor, seen, cursors = None, set(), set()
+    archived, complete = False, False
+    for page in snapshot['pages']:
+        entry.fields(page, {'request','response'})
+        request, response = page['request'], page['response']
+        require(isinstance(request,dict) and isinstance(request.get('params'),dict) and isinstance(response,dict),
+                'invalid_result', 'lookup request and response must be objects')
+        params = request['params']
+        kinds = params.get('sourceKinds')
+        require(not complete and request.get('method') == 'thread/list' and params.get('ancestorThreadId') == expected and
+                set(params) <= {'ancestorThreadId','archived','sourceKinds','modelProviders','limit','cursor'} and
+                params.get('modelProviders') == [] and
+                params.get('archived') is archived and isinstance(kinds,list) and len(kinds) == len(NATIVE_SOURCE_KINDS) and
+                all(isinstance(kind,str) for kind in kinds) and set(kinds) == set(NATIVE_SOURCE_KINDS) and
+                params.get('cursor') == cursor and isinstance(response.get('data'), list),
+                'host_evidence_missing', 'retain every exact descendant lookup page')
+        for thread in response['data']:
+            require(isinstance(thread, dict) and isinstance(thread.get('id'), str) and thread['id'] not in seen,
+                    'host_evidence_missing', 'descendant identities must be unique')
+            seen.add(thread['id'])
+        cursor = response.get('nextCursor')
+        if cursor is None:
+            if archived:
+                complete = True
+            archived, cursors = True, set()
+        else:
+            require(isinstance(cursor,str) and cursor and cursor not in cursors,
+                    'host_evidence_missing', 'pagination must be contiguous without repeated cursors')
+            cursors.add(cursor)
+    require(complete and cursor is None, 'host_evidence_missing', 'both archived and non-archived descendant lookups must be complete')
 
 
 @contextmanager
@@ -131,6 +224,22 @@ def validate_state(state):
     require(type(state.get("revision")) is int and state["revision"] >= 0,
             "invalid_checkpoint", "checkpoint revision is invalid")
     require(state.get("mode") in {"stepwise", "continuous"}, "invalid_checkpoint", "invalid mode")
+    native_host = state.get('native_host')
+    if state.get('stage', 0) >= 2:
+        require(isinstance(native_host, dict) and native_host.get('adapter') in {'collaboration', 'app-server'} and
+                isinstance(native_host.get('instance'), str) and bool(native_host['instance']),
+                'invalid_checkpoint', 'v12 requires the originally admitted native host')
+        if native_host['adapter'] == 'collaboration':
+            require(set(native_host) == {'adapter', 'instance', 'controller_ref', 'baseline_refs'} and
+                    isinstance(native_host['controller_ref'], str) and
+                    re.fullmatch(r'/root(?:/[a-z0-9_]+)*', native_host['controller_ref']) and
+                    isinstance(native_host['baseline_refs'], list) and
+                    all(isinstance(ref, str) and ref != native_host['controller_ref'] and
+                        re.fullmatch(r'/root(?:/[a-z0-9_]+)*', ref) for ref in native_host['baseline_refs']) and
+                    native_host['baseline_refs'] == sorted(set(native_host['baseline_refs'])),
+                    'invalid_checkpoint', 'retain the original collaboration controller identity')
+        else:
+            require(set(native_host) == {'adapter', 'instance'}, 'invalid_checkpoint', 'retain the app-server connection identity')
     host = state.get("host")
     require(isinstance(host, dict) and type(host.get("generation")) is int and host["generation"] >= 0 and
             host.get("status") in {"unknown", "running", "idle", "turn-completed", "stopped"} and
@@ -326,6 +435,8 @@ class Progress:
                 if slot is not None and not slot.get('stopped'):
                     pending.append({'kind':'reviewer', 'axis':axis, 'ref':slot.get('ref'), 'action_id':slot['action_id']})
         if s.get('stage', 0) >= 2 and s.get('dispatch') and self.bound_ref() is not None:
+            if s.get('native_host', {}).get('adapter') == 'collaboration':
+                return pending + self.collaboration_pending()
             snapshot = s.get('lifecycle_snapshot')
             transport = self.outer.get('transport')
             if transport and transport.get('lookup_blocked'):
@@ -375,48 +486,123 @@ class Progress:
                     pending.append({'kind':'native-calls-pending', 'calls':sorted(calls)})
         return pending
 
+    def native_refs(self, state=None):
+        """Registered writers, including replaced roles and historical reviewers."""
+        s = self.state if state is None else state
+        refs = set()
+        if s.get('stage', 0) < 2:
+            return refs
+        if s.get('dispatch') and s['dispatch'].get('request'):
+            selected = control.selected_control(s['control']['context'], {'attempt': s['dispatch']['request']['attempt']})
+            carrier = selected.get('carrier')
+            if s['handoff']['role'] == 'execution-agent':
+                ref, _, _ = dispatch.matching(s['dispatch'], s['control']['context'])
+                if ref:
+                    refs.add(ref)
+            elif carrier and carrier.get('ref'):
+                refs.add(carrier['ref'])
+        else:
+            selected = s.get('control', {}).get('context', {})
+        progress = selected.get('handoff_progress') or {}
+        refs.update(item['agent_ref'] for item in progress.get('executions', []) if item.get('agent_ref'))
+        recovery = progress.get('recovery')
+        if recovery and recovery['state'] == 'ready':
+            refs.add(recovery['receipts'][-1]['ref'])
+        for transaction in s.get('control_transactions', {}).values():
+            if transaction.get('result') is not None and transaction['request']['action'] == 'recover-dispatch':
+                refs.update(transaction['result']['recovery']['host_evidence']['stopped_refs'])
+        for group in [s.get('review_activity', {}), *s.get('review_history', [])]:
+            refs.update(slot['ref'] for slot in group.values() if slot and slot.get('ref'))
+        return refs
+
+    def collaboration_guard(self):
+        # Business readiness/acceptance saves do not change liveness. New host
+        # calls, allocations, reviews and adverse observations do.
+        s = self.state
+        selected = control.selected_control(s['control']['context'], {'attempt': s['dispatch']['request']['attempt']})
+        return entry.digest({key: s.get(key) for key in (
+            'host', 'host_action', 'retained_host_actions', 'allocations', 'review_activity',
+            'review_history', 'native_adverse', 'prior_carrier_activity')} | {
+                'refs': sorted(self.native_refs()),
+                'executions': (selected.get('handoff_progress') or {}).get('executions', [])})
+
+    def collaboration_pending(self):
+        s = self.state
+        snapshot = s.get('lifecycle_snapshot')
+        if snapshot is None:
+            return [{'kind': 'current-descendants-missing'}]
+        if snapshot.get('guard') != self.collaboration_guard():
+            return [{'kind': 'current-descendants-stale'}]
+        expected = set(s['native_host']['baseline_refs']) | self.native_refs()
+        expected.update(ref for old in s.get('history', []) for ref in self.native_refs(old))
+        return collaboration_inventory_pending(snapshot['inventory'], expected)
+
+    def lifecycle_query(self, data):
+        entry.fields(data, set())
+        require(self.state.get('native_host', {}).get('adapter') == 'collaboration' and
+                self.state.get('dispatch') and self.native_refs(),
+                'host_capability_missing', 'interactive inventory query requires the original bound collaboration host')
+        query = {'query_id': str(uuid.uuid4()), 'guard': self.collaboration_guard()}
+        self.state['lifecycle_query'] = query
+        # A failed or interrupted lookup cannot reuse the preceding snapshot.
+        self.state['lifecycle_snapshot'] = None
+        self.save()
+        return _view(self.state, {'operation': 'invoke-lifecycle-query', 'query_id': query['query_id'],
+                                 'tool': 'collaboration.list_agents', 'arguments': {}})
+
+    def collaboration_lifecycle(self, data, *, advance):
+        s = self.state
+        previous = s.get('lifecycle_snapshot')
+        if (previous is not None and previous.get('guard') == self.collaboration_guard() and
+                data == {key: previous[key] for key in ('query_id', 'call_ref', 'response_ref', 'inventory')}):
+            result = self.finish_lifecycle(advance)
+            result['acknowledged'] = True
+            return result
+        # Even a late or malformed lookup cannot hide newly observed activity.
+        # Consume its query as well: replaying an older completed response after
+        # a rejection must never restore the old proof.
+        query = s.pop('lifecycle_query', None)
+        s['lifecycle_snapshot'] = None
+        self.save()
+        entry.fields(data, {'query_id', 'call_ref', 'response_ref', 'inventory'})
+        for key in ('query_id', 'call_ref', 'response_ref'):
+            entry.nonempty(data[key])
+        collaboration_inventory(data['inventory'])
+        require(data['inventory']['controller_ref'] == s['native_host']['controller_ref'],
+                'identity_mismatch', 'retain the original controller agent path')
+        # Trusted ingress authenticates these actual tool identities. Never
+        # relabel cached raw bytes as a new call to refresh a stale barrier.
+        # Keep conflicts as observations too, without overwriting the original
+        # query's receipt or allowing rejected provenance to be recycled.
+        s.setdefault('collaboration_lookups', {})[entry.digest(data)] = copy.deepcopy(data)
+        self.save()
+        for state in [s, *s.get('history', [])]:
+            for previous in state.get('collaboration_lookups', {}).values():
+                if (previous['query_id'] == data['query_id'] or previous['call_ref'] == data['call_ref'] or
+                        previous['response_ref'] == data['response_ref']):
+                    require(previous == data, 'host_provenance_conflict', 'inventory response cannot be rebound to a new query')
+        require(query is not None and query['query_id'] == data['query_id'] and
+                query['guard'] == self.collaboration_guard(),
+                'host_evidence_missing', 'obtain a new inventory after native activity or changed writer bindings')
+        s['lifecycle_snapshot'] = {**copy.deepcopy(data), 'guard': query['guard'],
+                                   'instance': s['native_host']['instance']}
+        self.save()
+        return self.finish_lifecycle(advance)
+
     def lifecycle_state(self, snapshot, *, advance=True):
-        entry.fields(snapshot, {'instance','carrier_thread','sequence','pages','events'})
-        entry.nonempty(snapshot['instance'])
+        if self.state.get('native_host', {}).get('adapter') == 'collaboration':
+            return self.collaboration_lifecycle(snapshot, advance=advance)
         expected = self.outer.get('sessions', {}).get('stage' + str(self.state['stage'])) or self.state['handoff']['expected_entry']['actor']['thread_id']
-        require(snapshot['carrier_thread'] == expected, 'identity_mismatch', 'lookup must retain the original carrier ancestor')
+        validate_rpc_lifecycle(snapshot, expected)
+        require(not self.state.get('native_host') or snapshot['instance'] == self.state['native_host']['instance'],
+                'host_recovery_required', 'lifecycle evidence must retain the admitted app-server connection')
         previous = self.state.get('lifecycle_snapshot')
         require(previous is None or previous['instance'] == snapshot['instance'], 'host_recovery_required', 'a new host cannot replace current native evidence')
-        require(type(snapshot['sequence']) is int and snapshot['sequence'] >= 0 and isinstance(snapshot['events'], list) and
-                isinstance(snapshot['pages'], list) and snapshot['pages'], 'invalid_result', 'complete raw lifecycle lookup required')
-        validate_snapshot_events(snapshot)
-        cursor, seen, cursors = None, set(), set()
-        archived, complete = False, False
-        for page in snapshot['pages']:
-            entry.fields(page, {'request','response'})
-            request, response = page['request'], page['response']
-            require(isinstance(request,dict) and isinstance(request.get('params'),dict) and isinstance(response,dict),
-                    'invalid_result', 'lookup request and response must be objects')
-            params = request['params']
-            kinds = params.get('sourceKinds')
-            require(not complete and request.get('method') == 'thread/list' and params.get('ancestorThreadId') == expected and
-                    set(params) <= {'ancestorThreadId','archived','sourceKinds','modelProviders','limit','cursor'} and
-                    params.get('modelProviders') == [] and
-                    params.get('archived') is archived and isinstance(kinds,list) and len(kinds) == len(NATIVE_SOURCE_KINDS) and
-                    all(isinstance(kind,str) for kind in kinds) and set(kinds) == set(NATIVE_SOURCE_KINDS) and
-                    params.get('cursor') == cursor and isinstance(response.get('data'), list),
-                    'host_evidence_missing', 'retain every exact descendant lookup page')
-            for thread in response['data']:
-                require(isinstance(thread, dict) and isinstance(thread.get('id'), str) and thread['id'] not in seen,
-                        'host_evidence_missing', 'descendant identities must be unique')
-                seen.add(thread['id'])
-            cursor = response.get('nextCursor')
-            if cursor is None:
-                if archived:
-                    complete = True
-                archived, cursors = True, set()
-            else:
-                require(isinstance(cursor,str) and cursor and cursor not in cursors,
-                        'host_evidence_missing', 'pagination must be contiguous without repeated cursors')
-                cursors.add(cursor)
-        require(complete and cursor is None, 'host_evidence_missing', 'both archived and non-archived descendant lookups must be complete')
         self.state['lifecycle_snapshot'] = copy.deepcopy(snapshot)
         self.save()
+        return self.finish_lifecycle(advance)
+
+    def finish_lifecycle(self, advance):
         if (self.state['status'] == 'blocked' and self.state.get('error', {}).get('code') == 'host_evidence_missing' and
                 not self.state.get('business_block') and not self.stop_barrier_pending()):
             self.state['status'] = self.state.get('blocked_from', 'active')
@@ -610,7 +796,7 @@ class Progress:
 
     def start(self, data):
         require(self.outer.get('transport', {}).get('state') != 'lost', 'host_recovery_required', 'lost foreground transport cannot create a native role')
-        entry.fields(data, {"handoff"}, {"control", "next_stage", "requirement_transaction"})
+        entry.fields(data, {"handoff"}, {"control", "next_stage", "requirement_transaction", "native_host"})
         request = copy.deepcopy(data["handoff"])
         require(request.get("operation") == "prepare", "invalid_request", "handoff prepare input required")
         old = self.state
@@ -648,6 +834,34 @@ class Progress:
                     "source_changed", "requirement differs from saved A transaction")
             request["requirement"] = transaction["result"]
         retained = copy.deepcopy(old["packages"] if old else {})
+        native_host = {}
+        if request.get('stage', 0) >= 2:
+            transport = self.outer.get('transport') or {}
+            if 'native_host' in data:
+                native_host = native_host_preflight(data['native_host'])
+                if native_host['adapter'] == 'app-server':
+                    require(data['native_host']['snapshot']['carrier_thread'] == request['entry']['host']['thread_id'],
+                            'identity_mismatch', 'preflight must inspect the original carrier')
+                    require(not transport or native_host['instance'] == transport.get('instance'),
+                            'identity_mismatch', 'preflight must retain the actual foreground connection')
+                else:
+                    require(not transport, 'identity_mismatch', 'a foreground connection cannot switch to collaboration evidence')
+                    native_host['instance'] = request['entry']['host']['thread_id']
+                    agents = collaboration_inventory(data['native_host'])
+                    expected = self.native_refs(old) if old else set()
+                    historical = set().union(*(self.native_refs(item) for item in (old or {}).get('history', [])))
+                    actual = set(agents) - {native_host['controller_ref']}
+                    native_host['baseline_refs'] = (old['native_host']['baseline_refs'] if old and
+                        old.get('native_host', {}).get('adapter') == 'collaboration' else sorted(actual))
+                    require(not collaboration_inventory_pending(data['native_host'],
+                            expected | historical | set(native_host['baseline_refs'])),
+                            'host_evidence_missing', 'reconcile existing native agents before starting this stage')
+            elif transport.get('state') == 'live' and transport.get('instance'):
+                native_host = {'adapter': 'app-server', 'instance': transport['instance']}
+            else:
+                native_host_preflight(None)
+            if old and old.get('stage', 0) >= 2 and old.get('native_host'):
+                require(native_host == old['native_host'], 'host_recovery_required', 'retain the original native host across stages')
         for identity in self.outer.get("confirmed", {}).get("packages", {}).values():
             if "name" in identity:
                 retained[identity["name"]] = identity
@@ -727,6 +941,8 @@ class Progress:
             "events": {}, "observations": [], "transaction": None, "transaction_source": None,
             "transaction_result": None, "stopped": False,
             "retained_host_actions": [],
+            "native_host": native_host,
+            "host_preflight": copy.deepcopy(data.get('native_host')),
             "host": {"generation": 0, "status": "unknown", "proof": None, "query": None,
                      "seen": {}, "calls": {}, "last_stop": None},
             "history": (old["history"] + [{k: copy.deepcopy(value) for k, value in old.items() if k != "history"}]) if old else []}
@@ -2697,6 +2913,10 @@ def handle(path, request):
     entry.fields(request, {"protocol", "operation", "expected_revision"}, {"data"})
     require(request["protocol"] == PROTOCOL, "legacy_run_requires_original_runtime", "retain original progression runtime " + str(request.get("protocol")))
     require(type(request["expected_revision"]) is int, "invalid_request", "exact revision required")
+    if request['operation'] == 'host-preflight':
+        # Read-only capability check, usable before creating a flow or checkpoint.
+        return {'protocol': PROTOCOL, 'status': 'host-ready',
+                'native_host': native_host_preflight(request.get('data'))}
     path = Path(path)
     require(path.is_absolute(), "invalid_checkpoint", "absolute checkpoint path required")
     with record_lock(path):
@@ -2740,9 +2960,11 @@ def handle(path, request):
         if operation == 'host-event':
             require(isinstance(data,dict), 'invalid_result', 'native event data must be an object')
             validate_native_event(data.get('event'))
-        elif operation == 'lifecycle-state':
+        elif operation == 'lifecycle-state' and owner.state.get('native_host', {}).get('adapter') != 'collaboration':
             validate_snapshot_events(data)
         elif operation == 'observe' and isinstance(data,dict) and 'lifecycle' in data:
+            require(owner.state.get('native_host', {}).get('adapter') != 'collaboration',
+                    'invalid_result', 'record collaboration inventory through lifecycle-query and lifecycle-state')
             validate_snapshot_events(data['lifecycle'])
         try:
             if operation == "advance": return owner.advance()
@@ -2760,6 +2982,7 @@ def handle(path, request):
             if operation == "allocation": return owner.allocation(data)
             if operation == 'review-activity': return owner.review_activity(data)
             if operation == 'lifecycle-state': return owner.lifecycle_state(data)
+            if operation == 'lifecycle-query': return owner.lifecycle_query(data)
             if operation == 'host-event': return owner.host_event(data)
             if operation == 'transport-lost': return owner.transport_lost(data)
             if operation == 'carrier-failure': return owner.carrier_failure(data)

@@ -52,7 +52,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v11","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v12","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -75,7 +75,7 @@ digests, child assertions, names and timestamps are not authentication.
   Stops and unresolved side effects block new writes; only read-only reconciliation
   remains available until the original attempt resumes. A failed result remains
   downstream_ready=false and never becomes B acceptance.
-- `start`: data is `{handoff: <B semantic prepare input>, control?: <original B control port>, requirement_transaction?: <exact A transaction ID>, next_stage?: <confirmed successor>}`.
+- `start`: data is `{handoff: <B semantic prepare input>, control?: <original B control port>, requirement_transaction?: <exact A transaction ID>, next_stage?: <confirmed successor>, native_host?: <raw host preflight evidence>}`.
   C resolves omitted expected_entry from A, reuses the exact saved A transaction
   when selected, and derives predecessor/requirement from its prior acceptance.
   Native 2→3→4 also derives the next control context when omitted; initial and
@@ -135,6 +135,80 @@ waits. `continue-host` resumes the exact ref; it is not a fresh dispatch.
 `lookup-exact-action` requires request/attempt or exact pending identity.
 Absent lookup support is unknown, not permission to search by title or reissue.
 No background monitor or private governance schema is added.
+
+## Native host admission
+
+Before a Controller creates a Stage-2/3/4 Flow Worktree or launches its native
+role, inspect the actual current host. Run `host-preflight` with the raw evidence
+below as `data`; it is read-only and creates no checkpoint. Pass the same evidence
+as `start.data.native_host`, refreshed on a successor. `start` checks it before
+B preparation/reservation. Missing support returns `host_capability_missing`
+before native work begins. Preserve any existing work and report the missing
+capability; an ordinary in-conversation implementation remains a separate,
+explicit user choice.
+
+For interactive collaboration, call the actual `collaboration.list_agents({})`
+without a path filter. Retain this envelope:
+
+```json
+{"adapter":"collaboration","controller_ref":"/root",
+ "request":{"tool":"collaboration.list_agents","arguments":{}},
+ "response":{"agents":[{"agent_name":"/root","agent_status":"running"}]}}
+```
+
+The response above illustrates shape only; always supply the actual complete
+response. `controller_ref` is the caller's runtime canonical agent path. The
+original Controller authenticates its own tool invocation and the checkpoint's
+conversation identity. Another conversation cannot adopt an old checkpoint by
+copying `/root` or relabelling tool receipts. This adapter uses the native
+whole-tree inventory and existing registered role/allocation/reviewer bindings;
+it does not manufacture `thread/list` pages, archived records or RPC events.
+Preflight requires every existing non-controller agent to be completed. On
+initial admission, `start` freezes those existing identities as `baseline_refs`
+in the native host binding. They receive no workflow role or write authority;
+they remain part of subsequent stop checks. Successors preserve that baseline
+and require all prior workflow identities as well. A later unknown identity
+must be reconciled through the existing dispatch/allocation contracts.
+
+An app-server adapter supplies `{adapter:"app-server",snapshot:<raw lifecycle
+snapshot>}` using the full lookup contract below. The foreground runner retains
+its existing live connection identity instead of taking interactive evidence.
+Adapter identity remains fixed across native stages. Installed v11 runs retain
+their original pinned runtime; v12 neither reseals their evidence nor migrates
+their checkpoints.
+
+### Interactive completion
+
+Record the original bound role's actual stopped result through `observe`, with
+its existing causal call/response provenance and candidate/result evidence.
+Then use `lifecycle-query` with empty data. Its `next_action` names the read-only
+`collaboration.list_agents({})` call and `query_id`. Call that tool and submit
+`lifecycle-state` with `{query_id,call_ref,response_ref,inventory}`; inventory has
+the same envelope as preflight, containing this new unmodified response.
+Keep actual invocation/response references. A cached list with fresh labels is
+not evidence. Use this separate operation, not `observe.lifecycle` RPC snapshots.
+
+Only the raw `{completed:<final text>}` status establishes terminal native turns
+for this adapter. `running`, `idle`, errors, unknown statuses, missing registered
+writers or extra unregistered agents keep publication/acceptance blocked. The
+Controller itself may be running. Current execution allocations, both review
+axes and previous review attempts remain part of the writer set. Every admitted
+baseline identity and every prior stage's native identity must still appear and
+be completed; a missing identity is unavailable evidence, not a stopped writer.
+All unresolved control/native
+calls must still be reconciled through their original parents.
+
+Every query revokes the previous snapshot immediately. New host activity,
+changed allocations/review bindings or outstanding calls invalidate its saved
+guard. After failure or changed activity, use a new query and real response;
+each response consumes its query, and a rejected or late response also revokes
+any outstanding query. Only an identical replay of the still-current snapshot
+ACKs; it completes any interrupted stop transition, otherwise leaving state
+unchanged. After revocation, querying again is required; replaying
+any earlier completed response cannot refresh proof. A completed inventory is point-in-time
+turn evidence, not a claim that detached shell processes have stopped: native
+writers must finish their allocated commands before returning their result.
+Controllers keep the original ownership of dispatch and continuation.
 
 For current execution proof, `observe.provenance` is
 `{call_ref,response_ref,action_id}`. The trusted adapter captures these references
@@ -502,7 +576,7 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 6 and pin workflow-progress-v11 /
+New runner records use outer version 6 and pin workflow-progress-v12 /
 workflow-stage-transfer-v7 / flow-worktree-v2 packages with control compatibility
 key 6. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
@@ -656,7 +730,7 @@ Duplicates ACK, conflicting receipts fail, and a new candidate waits for both
 old axes to stop before retaining their receipts in review_history. These slots
 grant no file allocation, implementation or candidate-acceptance authority.
 
-`lifecycle-state` receives the current adapter's complete raw descendant lookup:
+For the app-server adapter, `lifecycle-state` receives the current adapter's complete raw descendant lookup:
 `{instance, carrier_thread, sequence, pages, events}`. Each page retains its
 thread/list request and response, exact ancestor, all sourceKinds (including unknown),
 modelProviders=[] to include every provider, and an explicit

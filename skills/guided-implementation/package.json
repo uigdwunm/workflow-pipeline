@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "aca9c20565a7877970e88206081fef203b39f9be56b4c6204276d587708fcacd",
+  "bundle_digest": "8137383923a480221c7aa5beb485533ccd20ff6645dee59fdc4f845fb9300955",
   "compatibility_key": {
     "control": 6,
     "discussion_request": 1,
@@ -18,7 +18,7 @@
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
     "topic_gate": "phase-0-1-discussion-v2",
-    "workflow_progress": "workflow-progress-v11"
+    "workflow_progress": "workflow-progress-v12"
   },
   "external_actions": {
     "dispatch": [
@@ -73,15 +73,15 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "ae6a1ab20283d8259a664c60bd2af8b08fbe142b7e3efd427a1abe347222525c"
+      "sha256": "3992545409d2d04735f46f5e3a44f6a5b91ddd27f77b747a5df1c8fd6ae5ec59"
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "78acddf37402782adbcf2c7fcde1d1ef8e5bd0165d5dde60f62407ffa1154080"
+      "sha256": "af65cf4c421713afcf396c3a34a48d6dbc5d9be75987de534e42e602682e63e9"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "ad59792863d40a26c8371c268464cbd984f8fa22c53af5838cae9dcd178e0a5e"
+      "sha256": "0d89717163eb74a3815b8391395a992411847d60e1333d29da7e17f4448d0e4c"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -97,7 +97,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "6281f78848fe2f4e6b8d2050e048c3341ab77e0526c19ab6d736548e8af55ff3"
+      "sha256": "c200642612e1fa09cc49896ec0232e5ebf79ccccce8b33c504157461067a6dd3"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -233,11 +233,11 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "48171642f0a7315af238ee3bafa8127d4a69a3d80580cdc4bad55a38314a176b"
+      "sha256": "c003d9875d28f6ecc50c1bcd6ff4833397ee6e78b23d289fe1499a59091cb472"
     },
     "scripts/workflow_stage_result.schema.json": {
       "mode": "0644",
-      "sha256": "021e8cbb460c9302e84a693b61a2b8e407b1aa32adb38fffa720a53daa1471e8"
+      "sha256": "a99041a609ac293f056a1ebd5628e3e36393ab640a4a6b1eb0e8246353142a13"
     }
   },
   "format_version": 1,

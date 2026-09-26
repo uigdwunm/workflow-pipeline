@@ -48,7 +48,7 @@ Matt 内容不随包分发，也不会自动安装。需要某项能力时另行
 
 每次运行固定包的真实根、摘要和协议键，脚本启动、恢复、交接前复核。升级应安装到新的不可变目录，再切换新任务的注册链接；保留旧目录直到旧运行结束。原地覆盖导致 `package_changed`，缺失旧包导致 `package_unavailable`；不得把同一运行偷偷换到新版本。
 
-前台 runner 仅在 `guided-implementation` 包内。新记录为 v6，工作流进度协议为 `workflow-progress-v11`，固定 runner 与 Stage 2/3/4 身份。start 的 confirmed JSON 包含可信当前 `registry`；runner 将该文件固定为 `registry_input`，每次 executor 启动前重读其中证据，resume 重验剩余目标。宿主/控制器须在注册变化后刷新该文件，或显式改用新证据文件：
+前台 runner 仅在 `guided-implementation` 包内。新记录为 v6，工作流进度协议为 `workflow-progress-v12`，固定 runner 与 Stage 2/3/4 身份。start 的 confirmed JSON 包含可信当前 `registry`；runner 将该文件固定为 `registry_input`，每次 executor 启动前重读其中证据，resume 重验剩余目标。宿主/控制器须在注册变化后刷新该文件，或显式改用新证据文件：
 
 ```bash
 python3 <固定包根>/scripts/workflow.py resume <record> <answer> --registry-input <current-evidence.json>

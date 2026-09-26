@@ -550,14 +550,15 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         executable.write_text(HOST.replace("else: raise RuntimeError(method)", """elif method == 'thread/list':
         response = {'data':([{'id':'archived-grandchild','status':{'type':'active'}}] if p.get('archived') else [{'id':'native:designer','status':{'type':'idle'}}]),'nextCursor':None}
     else: raise RuntimeError(method)"""))
-        self.begin('continuous')
-        self.invoke('observe',self.observation())
-        self.invoke('pause')
         host = runner.foreground_host.ForegroundHost(json.loads(confirmed.read_text())['host'],str(self.flow),lambda event:None,
                                                      executable=str(executable))
         try:
             with patch.dict(os.environ,{'HOST_LOG':str(log)}):
                 host.start(self.checkpoint.parent/'archive-host.stderr')
+                progress.atomic_save(self.checkpoint, {'transport': {'instance': host.instance, 'state': 'live'}})
+                self.begin('continuous')
+                self.invoke('observe', self.observation())
+                self.invoke('pause')
                 thread = host.start_carrier('stage2',{'model':'fixture-model','reasoning_effort':'high'})
                 saved = progress.read_record(self.checkpoint)
                 saved['sessions'] = {'stage2':thread}
@@ -682,14 +683,15 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
             continue
         response = {'data':[{'id':'native:designer','status':{'type':'idle'}}],'nextCursor':None}
     else: raise RuntimeError(method)"""))
-        self.begin('continuous')
-        self.invoke('observe',self.observation())
-        self.invoke('pause')
         host = runner.foreground_host.ForegroundHost(json.loads(confirmed.read_text())['host'],str(self.flow),lambda event:None,
                                                      executable=str(executable))
         try:
             with patch.dict(os.environ,{'HOST_LOG':str(log)}):
                 host.start(self.checkpoint.parent/'failed-lookup.stderr')
+                progress.atomic_save(self.checkpoint, {'transport': {'instance': host.instance, 'state': 'live'}})
+                self.begin('continuous')
+                self.invoke('observe', self.observation())
+                self.invoke('pause')
                 thread = host.start_carrier('stage2',{'model':'fixture-model','reasoning_effort':'high'})
                 saved = progress.read_record(self.checkpoint)
                 saved.update(current_stage='stage2',sessions={'stage2':thread},

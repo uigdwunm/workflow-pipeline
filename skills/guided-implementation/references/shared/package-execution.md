@@ -1,22 +1,29 @@
 # Package execution and action preflight
 
 Registration provenance and controlled recovery require preparation=workflow-preparation-v3,
-stage_transfer=workflow-stage-transfer-v7, workflow_progress=workflow-progress-v11,
+stage_transfer=workflow-stage-transfer-v7, workflow_progress=workflow-progress-v12,
 and topic_gate=phase-0-1-discussion-v2. The topic gate key separates packages
 that allow discussion behind a closed dependency from the older blanket guard.
 Entry requests use workflow-entry-v3 and requirement requests use requirement-freeze-v2.
 Old pinned runs keep their original packages and records; new packages reject
 incompatible exchanges instead of filling missing identity fields or migrating runs.
-Runner outer version 6 requires workflow-progress-v11, workflow-stage-transfer-v7
+Runner outer version 6 requires workflow-progress-v12, workflow-stage-transfer-v7
 and control compatibility key 6 (JSON schema 4). Discussion request/ledger, requirement-freeze, thread-settings and
 supervision flow-worktree-v2 retain their existing versions. Older records require
 their original pinned runtime without mutation. Missing implementation_policy in
 compatible new input means full; it never supplies direct provenance to an old
 candidate. This change does not install packages or update active registrations.
 
-Progression v11 combines Stage Transfer v7 with archive handoff decoupling, so old v9/v10 checkpoints and runner
+Progression v12 adds native lifecycle adapter admission and interactive collaboration
+inventory evidence. Old v9/v10/v11 checkpoints and runner
 pins are rejected before any operation, including pause/cancel and requirement
 or lifecycle transactions. Runner outer version 6 and control schema 4 are unchanged from the archive handoff release.
+
+For a Stage-2/3/4 Controller, also run the
+[native host preflight](workflow-progression.md#native-host-admission)
+before creating a Flow Worktree or dispatching a native role. Package registration
+proves Skill availability, not native lifecycle support. A delegated child uses
+its Controller's admitted host and does not launch a second preflight or workflow.
 
 Use the [entry adapter](entry-preparation.md) to
 collect repository, task, source, settings and action dependencies before this

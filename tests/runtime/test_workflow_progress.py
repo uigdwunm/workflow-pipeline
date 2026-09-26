@@ -143,12 +143,12 @@ class ProgressTests(transfer.StageTransferTests):
     def test_new_runtime_rejects_old_control_and_c_without_writes(self):
         self.begin()
         saved = progress.read_record(self.checkpoint)
-        for version in ('control', 'progress'):
+        for version in ('control', 'workflow-progress-v9', 'workflow-progress-v11'):
             old = copy.deepcopy(saved)
             if version == 'control':
                 old[progress.KEY]['control']['context']['schema_version'] = 3
             else:
-                old[progress.KEY]['protocol'] = 'workflow-progress-v9'
+                old[progress.KEY]['protocol'] = version
             progress.atomic_save(self.checkpoint, old)
             before = self.checkpoint.read_bytes()
             with self.assertRaises(transfer.entry.PreparationError) as error:
@@ -171,6 +171,15 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(error.exception.code, 'control_outcome_unknown')
 
     def invoke(self, operation, data=None, revision=None):
+        if operation == 'start' and data['handoff'].get('stage', 0) >= 2 and 'native_host' not in data:
+            carrier = data['handoff']['entry']['host']['thread_id']
+            data = {**data, 'native_host': {'adapter': 'app-server', 'snapshot': {
+                'instance': (progress.read_record(self.checkpoint).get('transport') or {}).get('instance', 'fixture-host'),
+                'carrier_thread': carrier, 'sequence': 0, 'events': [],
+                'pages': [{'request': {'method': 'thread/list', 'params': {
+                    'ancestorThreadId': carrier, 'archived': archived,
+                    'sourceKinds': list(progress.NATIVE_SOURCE_KINDS), 'modelProviders': []}},
+                    'response': {'data': [], 'nextCursor': None}} for archived in (False, True)]}}}
         current = progress.read_record(self.checkpoint).get(progress.KEY, {}).get("revision", 0)
         return progress.handle(self.checkpoint, {"protocol": progress.PROTOCOL, "operation": operation,
             "expected_revision": current if revision is None else revision, "data": data or {}})
