@@ -917,6 +917,10 @@ def _apply_mutation_to_records(
         if action not in QUESTION_ACTIONS:
             raise ProtocolError("invalid_request", "question action is unsupported")
         record = _record_by_id(records["Pending Items"], "item_id", mutation["question_id"], "question_id")
+        if record.get("topic_id") != topic_id:
+            raise ProtocolError("topic_identity_conflict", "question does not belong to the current topic")
+        if record.get("item_kind") != "question":
+            raise ProtocolError("invalid_request", "question_id must identify a question")
         data = _json_field(record, "data_json", "question")
         if data["state"] != "suspended":
             raise ProtocolError("question_state_conflict", "only a suspended question can be resolved")
@@ -1005,6 +1009,8 @@ def _apply_mutation_to_records(
         if not isinstance(mutation, dict) or not isinstance(mutation.get("impact_id"), str):
             raise ProtocolError("invalid_request", "resolve-impact mutation is invalid")
         record = _record_by_id(records["Impacts"], "impact_id", mutation["impact_id"], "impact_id")
+        if record.get("topic_id") != topic_id:
+            raise ProtocolError("topic_identity_conflict", "impact does not belong to the current topic")
         impact = _json_field(record, "data_json", "impact")
         if "decision_id" not in impact:
             _expect_keys(mutation, {"type", "impact_id", "action", "summary"}, "resolve-impact mutation")
@@ -1022,12 +1028,16 @@ def _apply_mutation_to_records(
             raise ProtocolError("invalid_request", "impact action is unsupported")
         if impact["decision_id"] != mutation["decision_id"] or impact["state"] != "pending":
             raise ProtocolError("impact_state_conflict", "impact is not pending for this decision")
+        decision_record = _record_by_id(records["Pending Items"], "item_id", mutation["decision_id"], "decision_id")
+        if decision_record.get("topic_id") != topic_id:
+            raise ProtocolError("topic_identity_conflict", "decision does not belong to the current topic")
+        if decision_record.get("item_kind") != "decision":
+            raise ProtocolError("invalid_request", "decision_id must identify a decision")
+        decision = _json_field(decision_record, "data_json", "decision")
+        summary = _expect_string(mutation["summary"], "mutation.summary", max_bytes=4096)
         impact["state"] = "resolved"
         impact["action"] = action
         record["data_json"] = _canonical_json(impact)
-        decision_record = _record_by_id(records["Pending Items"], "item_id", mutation["decision_id"], "decision_id")
-        decision = _json_field(decision_record, "data_json", "decision")
-        summary = _expect_string(mutation["summary"], "mutation.summary", max_bytes=4096)
         if action == "adjust":
             decision["summary"] = summary
             decision["evolution"] = f"adjusted: {summary}"

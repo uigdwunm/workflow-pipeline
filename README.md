@@ -1,6 +1,6 @@
 # Workflow Pipeline
 
-当前版本：**v1.2.1** · [更新日志](CHANGELOG.md) · [版本源码](https://github.com/uigdwunm/workflow-pipeline/tree/v1.2.1)
+当前版本：**v1.2.2** · [更新日志](CHANGELOG.md) · [版本源码](https://github.com/uigdwunm/workflow-pipeline/tree/v1.2.2)
 
 五个可独立安装、按需组合的 Codex 工程工作流 Skill，覆盖讨论、需求、方案、实现与归档。可选的持久化设计讨论位于既有四阶段之前；没有唯一、可验证讨论上下文时，1—4 保持原有流程：
 

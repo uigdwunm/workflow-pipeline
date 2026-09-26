@@ -4082,6 +4082,16 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolScenarioFixture, Discus
         self.assertEqual(impact["state"], "pending-impact")
         self.assertRegex(str(impact["impact_id"]), r"^IMP-[0-9a-f]{32}$")
 
+        resolved, _, _ = self.complete_update(
+            project, topic, ledger_revision=9, topic_revision=1,
+            mutation={"type": "resolve-impact", "impact_id": impact["impact_id"],
+                      "action": "accept", "summary": "Accept the impact on this parent topic."},
+        )
+        self.assertEqual(resolved["impact_action"], "accept")
+        code, current, stderr = self.run_cli(self.evolution_request(topic, operation="read-topic"))
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(current["impacts"][0]["state"], "resolved")
+
     def test_fully_absorbed_child_implementation_records_no_code_integration_phase_three(self) -> None:
         project = self.make_project("no-code-integration", git=False)
         topic = self.bootstrap_topic(project)
@@ -5263,6 +5273,63 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolScenarioFixture, Discus
         self.assertEqual(returncode, 0, stderr)
         self.assertEqual(response["ledger_revision"], ledger_revision)
         self.assertEqual(response["record_revision"], topic_revision)
+
+    def test_topic_mutations_reject_foreign_records_without_writes(self) -> None:
+        cases = (
+            ("question", "foreign", "foreign", "question"),
+            ("decision-impact", "foreign", "foreign", "decision"),
+            ("child-impact", "foreign", "foreign", "decision"),
+            ("decision-impact", "local", "foreign", "decision"),
+            ("question", "local", "local", "idea"),
+            ("decision-impact", "local", "local", "question"),
+        )
+        for operation in ("prepare-topic-update", "update-topic"):
+            for index, (kind, target, decision_target, item_kind) in enumerate(cases):
+                with self.subTest(operation=operation, kind=kind, target=target,
+                                  decision_target=decision_target, item_kind=item_kind):
+                    project = self.make_project(f"{operation}-{index}", git=False)
+                    topic = self.bootstrap_topic(project)
+                    child = self.prepare_child_handoff(topic)
+                    topics = {"local": topic["topic_id"], "foreign": child["target_topic_id"]}
+                    ledger_path = Path(str(topic["ledger_path"]))
+                    frontmatter, records = PROTOCOL._load_records(ledger_path)
+                    if kind == "question":
+                        records["Pending Items"].append({
+                            "item_id": "Q-target", "item_kind": item_kind,
+                            "topic_id": topics[target],
+                            "data_json": json.dumps({"question_id": "Q-target", "state": "suspended",
+                                                     "prompt": "Keep this question unchanged.",
+                                                     **({"idea_id": "Q-target"} if item_kind == "idea" else {})}),
+                        })
+                        mutation = {"type": "resolve-inserted-idea", "question_id": "Q-target",
+                                    "action": "resume"}
+                    else:
+                        impact = {"impact_id": "IMP-target", "state": "pending", "action": None}
+                        mutation = {"type": "resolve-impact", "impact_id": "IMP-target",
+                                    "action": "accept", "summary": "Do not change another topic."}
+                        if kind == "decision-impact":
+                            records["Pending Items"].append({
+                                "item_id": "D-target", "item_kind": item_kind,
+                                "topic_id": topics[decision_target],
+                                "data_json": json.dumps({"decision_id": "D-target", "state": "confirmed",
+                                                         "summary": "Original decision.", "evolution": "confirmed",
+                                                         **({"question_id": "D-target"} if item_kind == "question" else {})}),
+                            })
+                            impact["decision_id"] = "D-target"
+                            mutation.update(decision_id="D-target", action="adjust")
+                        records["Impacts"].append({"impact_id": "IMP-target", "topic_id": topics[target],
+                                                  "data_json": json.dumps(impact)})
+                    ledger_path.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+                    before = {p.relative_to(project): p.read_bytes() for p in project.rglob("*") if p.is_file()}
+                    code, rejected, _ = self.run_cli(self.evolution_request(
+                        topic, operation=operation, expected_revision=2, expected_topic_revision=1,
+                        mutation=mutation,
+                    ))
+                    self.assertEqual(code, 1, rejected)
+                    expected_error = "topic_identity_conflict" if "foreign" in (target, decision_target) else "invalid_request"
+                    self.assertEqual(rejected["error"]["code"], expected_error)
+                    after = {p.relative_to(project): p.read_bytes() for p in project.rglob("*") if p.is_file()}
+                    self.assertEqual(after, before, "rejected mutation must preserve ledger, documents and pending writes")
 
     def test_inserted_idea_suspends_then_adjusts_the_only_active_question(self) -> None:
         project = self.make_project("inserted-idea", git=True)

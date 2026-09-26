@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "815fc8c584d0ce8fb8006312709adfc077b22b21b15e279bf23cef6466a4fc90",
+  "bundle_digest": "0f1b3482a3ce867a49ce8e7c90706eaf1b0a860be72dff77c945e59a1e98abd6",
   "compatibility_key": {
     "control": 6,
     "discussion_request": 1,
@@ -178,7 +178,7 @@
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
-      "sha256": "38e926998c2a34d5ef838c9b9263c15211a4cde2a006d650df4a765773859ba3"
+      "sha256": "a886548d70ab8885d00ff78e405173f313793537438a81f41bb13de6911314d9"
     },
     "scripts/entry_prepare.py": {
       "mode": "0644",
@@ -243,7 +243,7 @@
   },
   "format_version": 1,
   "name": "design-discussion",
-  "release": "1.2.1",
+  "release": "1.2.2",
   "resources": [
     "design-discussion/SKILL.md",
     "design-discussion/agents/openai.yaml",
@@ -300,6 +300,6 @@
     "shared/scripts/workflow_progress.py",
     "solution-design/references/conversation-source.md"
   ],
-  "source_revision": "workflow-pipeline-v1.2.1",
+  "source_revision": "workflow-pipeline-v1.2.2",
   "stage": 0
 }

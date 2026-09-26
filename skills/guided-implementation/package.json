@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "99eab68e806bc754ed0a2ee1e2d372899b72419c1f2c4264377e5c0773112e1d",
+  "bundle_digest": "aca9c20565a7877970e88206081fef203b39f9be56b4c6204276d587708fcacd",
   "compatibility_key": {
     "control": 6,
     "discussion_request": 1,
@@ -165,7 +165,7 @@
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
-      "sha256": "38e926998c2a34d5ef838c9b9263c15211a4cde2a006d650df4a765773859ba3"
+      "sha256": "a886548d70ab8885d00ff78e405173f313793537438a81f41bb13de6911314d9"
     },
     "scripts/entry_prepare.py": {
       "mode": "0644",
@@ -242,7 +242,7 @@
   },
   "format_version": 1,
   "name": "guided-implementation",
-  "release": "1.2.1",
+  "release": "1.2.2",
   "resources": [
     "design-discussion/references/confirmation-contract.md",
     "design-discussion/references/ledger-protocol.md",
@@ -297,6 +297,6 @@
     "shared/scripts/workflow_progress.py",
     "solution-design/references/conversation-source.md"
   ],
-  "source_revision": "workflow-pipeline-v1.2.1",
+  "source_revision": "workflow-pipeline-v1.2.2",
   "stage": 3
 }

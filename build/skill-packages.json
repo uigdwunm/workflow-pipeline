@@ -1,7 +1,7 @@
 {
   "format_version": 1,
-  "release": "1.2.1",
-  "source_revision": "workflow-pipeline-v1.2.1",
+  "release": "1.2.2",
+  "source_revision": "workflow-pipeline-v1.2.2",
   "compatibility_key": {
     "handoff": "workflow-controller-v1",
     "discussion_request": 1,
