@@ -70,7 +70,9 @@ reconciled. Only one task owns writes at a time. A retry or migration reuses the
 same document identity and current bytes.
 
 Phase 1 completes only after the document is internally consistent, contains no
-unresolved question that could materially change Phase-2 output, passes the
+unresolved user choice that could materially change its requirement contract,
+and records Stage-2-owned engineering questions with the behavior and constraints
+they must preserve. It then passes the
 repository-aware checks, is committed, and is frozen by path, commit, and
 SHA-256, and its Stage-1 owner has verified
 [target delivery]({{resource:shared/references/requirement-delivery.md}}). Source

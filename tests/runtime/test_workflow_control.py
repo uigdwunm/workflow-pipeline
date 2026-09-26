@@ -206,6 +206,58 @@ class WorkflowControlTests(unittest.TestCase):
         self.assertEqual(conflict['context']['retired_handoffs'][ready['handoff_id']]['archive_status'], 'archived')
         self.assertEqual(len(conflict['context']['retired_handoffs'][ready['handoff_id']]['conflicts']), 1)
 
+    def test_failed_archive_readback_cannot_authorize_another_write(self):
+        ctx = self.bound()
+        delivery = {'delivery_id': 'delivery', 'source_ref': 'old', 'attempt': ctx['carrier']['attempt'],
+                    'requirement_identity': {**ctx['requirement_identity'], 'version': 2, 'sha256': 'f' * 64},
+                    'commit': 'b' * 40, 'verified_commit_hash': 'f' * 64}
+        received = self.call('receive', delivery, ctx)
+        self.assertTrue(received['ok'], received)
+        accepted = self.call('accept', {'delivery_digest': received['delivery_digest']}, received['context'])
+        self.assertTrue(accepted['ok'], accepted)
+        ready = self.call('successor-ready', {
+            'ref': 'successor', 'stage': 2, 'input_digest': received['delivery_digest'],
+            'role': 'solution-designer', 'binding_verified': True, 'activated': False,
+            'confirmed': True, 'archive_ref': 'old',
+            'takeover_proof': takeover_proof('old', ctx['carrier']['attempt']),
+        }, accepted['context'])
+        self.assertTrue(ready['ok'], ready)
+        selector = {'handoff_id': ready['handoff_id']}
+
+        def finish(intent, status, no_write=False):
+            effect = intent['effects'][0]
+            receipt = {'adapter': 'fixture', 'invocation_id': 'call-' + effect['operation_id'],
+                       'response_id': 'response-' + effect['operation_id'], 'ref': 'old',
+                       'raw': {key: effect[key] for key in ('operation_id', 'operation', 'ref')},
+                       'no_write': False}
+            evidence = {**selector, 'operation_id': effect['operation_id'], 'ref': 'old',
+                        'status': 'issued', 'receipt': receipt}
+            issued = self.call('archive-result', evidence, intent['context'])
+            self.assertTrue(issued['ok'], issued)
+            result = self.call('archive-result', {**evidence, 'status': status,
+                'receipt': {**receipt, 'raw': {'status': status}, 'no_write': no_write}}, issued['context'])
+            self.assertTrue(result['ok'], result)
+            return result
+
+        archive = self.call('archive', selector, ready['context'])
+        unknown = finish(archive, 'unknown')
+        query = self.call('archive', selector, unknown['context'])
+        self.assertEqual(query['effects'][0]['operation'], 'read-archive-state')
+        for no_write in (True, False):
+            with self.subTest(read_no_write=no_write):
+                failed = finish(query, 'failed', no_write)
+                self.assertEqual(failed['context']['retired_handoffs'][ready['handoff_id']]['archive_status'], 'unknown')
+                retry = self.call('archive', selector, failed['context'])
+                self.assertEqual(retry['effects'][0]['operation'], 'read-archive-state')
+                readback = finish(retry, 'not-archived', True)
+                permitted = self.call('archive', selector, readback['context'])
+                self.assertEqual(permitted['effects'][0]['operation'], 'archive')
+        for no_write, operation in ((True, 'archive'), (False, 'read-archive-state')):
+            with self.subTest(archive_no_write=no_write):
+                failed = finish(archive, 'failed', no_write)
+                retry = self.call('archive', selector, failed['context'])
+                self.assertEqual(retry['effects'][0]['operation'], operation)
+
     def test_single_dispatcher_exact_files_and_stopped_writer_recovery(self):
         ctx = self.context()
         ctx['stage'] = 3

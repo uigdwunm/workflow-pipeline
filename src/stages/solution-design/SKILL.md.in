@@ -178,8 +178,9 @@ authorization in continuous mode covers only choices inside the accepted
 requirement source. Never incorporate or publish an expansion first and
 disclose it later.
 
-Resolve every material product, scope, behavior, architecture, compatibility,
-data, and testing-seam decision in stage 2. Leave stage 3 only ordinary
+Resolve every Stage-1-deferred engineering question and every material product,
+scope, behavior, architecture, compatibility, data, and testing-seam decision
+in the Spec during stage 2. Leave stage 3 only ordinary
 technical choices that repository evidence can resolve without changing the
 confirmed boundary. If implementation would still need the user to choose a
 material outcome, the solution is not complete.

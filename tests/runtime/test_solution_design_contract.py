@@ -15,6 +15,20 @@ TEMPLATES = (SKILL_ROOT / "references/solution-design" / "templates.md").read_te
     encoding="utf-8"
 )
 READINESS_PATH = SKILL_ROOT / "references/solution-design" / "design-readiness.md"
+CONVERSATION_SOURCE = (
+    SKILL_ROOT / "references/solution-design" / "conversation-source.md"
+).read_text(encoding="utf-8")
+PROBLEM_ROOT = SKILL_ROOT.parent / "problem-framing"
+PROBLEM_SKILL = (PROBLEM_ROOT / "SKILL.md").read_text(encoding="utf-8")
+PROBLEM_PROTOCOL = (
+    PROBLEM_ROOT / "references/problem-framing/dedicated-grilling-protocol.md"
+).read_text(encoding="utf-8")
+PROBLEM_TEMPLATES = (
+    PROBLEM_ROOT / "references/problem-framing/templates.md"
+).read_text(encoding="utf-8")
+REQUIREMENT_CONTRACT = (
+    PROBLEM_ROOT / "references/shared/design-discussion/requirement-document-contract.md"
+).read_text(encoding="utf-8")
 GUIDED_ROOT = SKILL_ROOT.parent / "guided-implementation"
 GUIDED_SKILL = (GUIDED_ROOT / "SKILL.md").read_text(encoding="utf-8")
 GUIDED_EXECUTION = (
@@ -48,6 +62,35 @@ def compact(document: str) -> str:
 
 
 class SolutionDesignContractTests(unittest.TestCase):
+    def test_stage_one_freezes_observable_contract_and_assigns_engineering_to_stage_two(self) -> None:
+        boundary = section(PROBLEM_SKILL, "## Freeze the requirement contract before design", "Continuously improve")
+        for obligation in (
+            "what the user retains after cancellation",
+            "permissions, charges, and actions required of the user",
+            "idempotency key, transaction boundary, and recovery mechanism",
+            "Stage 2 must close these design questions",
+        ):
+            self.assertIn(obligation, compact(boundary))
+        self.assertIn("Stage 2 as its owner", PROBLEM_PROTOCOL)
+        self.assertIn("取消后保留什么", PROBLEM_TEMPLATES)
+        self.assertEqual(PROBLEM_TEMPLATES.count("不存在会实质改变需求契约的未决用户选择"), 2)
+        self.assertIn("unresolved user choice", REQUIREMENT_CONTRACT)
+        self.assertNotIn("materially change Phase-2 output", REQUIREMENT_CONTRACT)
+
+    def test_stage_two_closes_deferred_mechanisms_before_publication(self) -> None:
+        readiness = READINESS_PATH.read_text(encoding="utf-8")
+        self.assertIn("Stage-1-deferred engineering question", SKILL)
+        self.assertIn("Resolve every Stage-1-deferred engineering question", readiness)
+        self.assertLess(
+            readiness.index("Resolve every Stage-1-deferred engineering question"),
+            readiness.index("1. **Module ownership:**"),
+        )
+        self.assertIn("do not pass an open mechanism to Stage 3", readiness)
+        self.assertIn("SOLUTION_DESIGN_ANOMALY", readiness)
+        self.assertIn("frozen requirement remains read-only", compact(readiness))
+        self.assertIn("user choice would materially change the requirement", CONVERSATION_SOURCE)
+        self.assertIn("engineering questions for the designer to resolve in", CONVERSATION_SOURCE)
+
     def test_change_contract_preflight_covers_real_contract_dimensions_before_review(self) -> None:
         readiness = READINESS_PATH.read_text(encoding="utf-8")
         preflight = section(readiness, "## Bounded change-contract preflight", "## Spec readiness")

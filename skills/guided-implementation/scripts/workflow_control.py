@@ -1319,7 +1319,9 @@ def archive_transition(context, action, evidence):
         return {**result, 'ok': False, 'error': 'conflicting archive receipt; exact readback required'}
     require(evidence['status'] != 'not-archived' or operation['kind'] == 'read-archive-state', 'not-archived requires readback')
     status = evidence['status']
-    if status == 'failed' and not receipt['no_write']:
+    # A failed read cannot establish whether an earlier archive wrote anything.
+    # Only the archive operation itself can prove its failure had no write.
+    if status == 'failed' and (operation['kind'] == 'read-archive-state' or not receipt['no_write']):
         status = 'unknown'
     operation.update(status=status, receipt=frozen)
     if retired['archive_status'] != 'archived':

@@ -41,6 +41,16 @@ review or direct publication seam. Record each applicable result in the Spec's
 existing Implementation Decisions or Testing Decisions; do not add ceremonial
 sections when the existing structure already carries the decision.
 
+Resolve every Stage-1-deferred engineering question in the Spec before this
+check passes. Choose and justify the mechanism against the frozen behavior and
+constraints; do not pass an open mechanism to Stage 3. For example, after the
+requirement confirms retry without repeated side effects, specify the
+idempotency key, transaction boundary, and recovery mechanism here. If a
+mechanism changes data retention, permission, charges, required user actions,
+or another requirement promise, stop through the existing
+`SOLUTION_DESIGN_ANOMALY` route for a user decision. The frozen requirement
+remains read-only until its source owner resolves that decision.
+
 1. **Module ownership:** Every changed behavior has one named owning module or
    component. State where shared policy lives and which callers consume it.
 2. **Interface and seam:** Define the boundary through which each owner is used,

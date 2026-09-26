@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "4eb44dbd83a0ec62743d4f4c2d630c940c8174bc54d6c1e673fbc9995e519a95",
+  "bundle_digest": "5fb066505e693da696e14252dff9185c0f456fda4e3a6e05cc8d983d0b480441",
   "compatibility_key": {
     "control": 6,
     "discussion_request": 1,
@@ -38,11 +38,11 @@
     },
     "references/problem-framing/dedicated-grilling-protocol.md": {
       "mode": "0644",
-      "sha256": "f59c164c83aaf756d011ccf322d3f2447d12d058c0d073c0fcfcc5e33487747e"
+      "sha256": "02a3bdb0307e537d57816f04296cdfd5bbbf74bf562bd62ccc605ac8ba52c231"
     },
     "references/problem-framing/templates.md": {
       "mode": "0644",
-      "sha256": "d5e203525c6d66fc35ddc3dda6077dcbba28815ff74d0b0f268b12c00a20a091"
+      "sha256": "8fbd1ed7a00f5fbfb1fb5cd6ad30f76fb6ba370b7a0c86303c6b24f2cdabf701"
     },
     "references/shared/design-discussion/checkpoint-protocol.md": {
       "mode": "0644",
@@ -66,7 +66,7 @@
     },
     "references/shared/design-discussion/requirement-document-contract.md": {
       "mode": "0644",
-      "sha256": "f9c4f0309cf3622c42e8e3065ec6bde163b41d47febdd42690f3d3b9bcdf9011"
+      "sha256": "340d12c95f6a40fdae9c5b2a7a893451ac421cf444cfd80d03434307781fa8e4"
     },
     "references/shared/design-discussion/split-gate-contract.md": {
       "mode": "0644",
@@ -114,7 +114,7 @@
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
-      "sha256": "4cfd480a5cbb47f12f173e1f0326ac8e7e86d618b93818e8d1c108faf8d52706"
+      "sha256": "8ce2361d13254da150589f5e446384c35277d72e390566885920d0c658b61349"
     },
     "scripts/discussion_core/__init__.py": {
       "mode": "0644",
@@ -230,7 +230,7 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "5366ac83aa0e3baa09287475261a2eb17a8549eec0cb9b748489167de0f2dc54"
+      "sha256": "a9ee934a61e0d45a09a32d3e036e93b4019c976eed201c1e0d883492d5a81cb9"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",

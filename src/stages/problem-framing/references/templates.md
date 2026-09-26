@@ -89,7 +89,7 @@ entry_authority：<exact typed plan authority>
 入口执行：<wrapper: claim-phase-carrier → phase-ready → 等来源 phase-activate | same-stage: accept-handoff 成功即开始 | standalone: 认证后维护唯一 write_owner>
 本任务的目的：仅针对「<goal>」完成一次专用问题拷问，使草案足以进入 `$solution-design`。
 专用范围：本任务只用于本次拷问，不选择工程实现或编写实现代码，不处理无关工作。
-阶段边界：本阶段不选择工程实现，但必须确定所有用户可见结果、模型和工具调用次数、继续与终止、授权与失败语义、状态迁移以及会影响这些行为的权威责任。不得仅因问题涉及客户端、服务端、工具、提示词、API、Schema 或 UI 就延期到 2方案；只有保持上述行为契约不变的技术承载、文件拆分、精确字段命名和测试组织可以延期。
+阶段边界：本阶段冻结目标、范围、非目标、约束、验收条件和用户可观察行为，包括取消后保留什么、重试和失败的可见结果、权限、收费及所需用户操作。模型或工具调用、状态责任与恢复机制在改变这些承诺时也须在本阶段决定。工程机制问题可记入草案现有“未决问题与延期项”并由 2方案 解决；已确认重试无重复副作用后，幂等键、事务边界和恢复机制属于 2方案。不得仅因问题提到客户端、服务端、工具、提示词、API、Schema 或 UI 就延期用户选择。
 草案文件：<absolute-draft-path>
 草案存储：repository-document-zone
 固定参考：branch=<pinned-branch>; HEAD=<pinned-head>
@@ -220,7 +220,7 @@ context_disclosure:
 
 ## 未决问题与延期项
 
-每个延期项必须注明未来负责阶段、不可改变的行为契约，以及为什么剩余选择只涉及实现机制。任何可能改变用户可见结果、模型或工具调用、继续或终止、授权或失败语义、状态迁移、权威责任或验收结果的问题都必须在本次拷问解决，不能延期。
+每个延期工程问题注明负责的 2方案、必须保持的行为与约束。目标、范围、验收、取消后数据保留、权限、收费、用户操作及其他可观察承诺所需的用户选择须在本次拷问解决；工程机制在 2方案 完成前闭合。技术名词本身不是延期用户选择的依据。
 
 ## 原生文档索引
 
@@ -252,9 +252,9 @@ records semantic confirmation only; stage completion requires verified target de
 
 ```text
 确认事项：完成本次专用 1拷问并交付草案
-完成判断：目标、范围、非目标、场景、事实、约束、术语和验收条件已清楚；不存在会实质改变目标、范围、约束、验收条件或方案方向的未回答问题
-行为契约检查：用户可见结果、模型和工具调用、继续与终止、授权与失败语义、状态迁移及行为相关权威责任均已明确
-延期检查：<only implementation-mechanical items with their invariant behavior contracts | none>
+完成判断：目标、范围、非目标、场景、事实、约束、术语和验收条件已清楚；不存在会实质改变需求契约的未决用户选择
+行为契约检查：可观察结果、取消后数据保留、重试与失败结果、权限、收费、用户操作及相关责任均已明确
+延期检查：<由 2方案 解决的工程问题及其不可改变的行为与约束 | none>
 草案文件：<absolute path>
 草案当前 SHA-256：<sha256 before final completion marker>
 本次结论摘要：<concise summary>
@@ -274,9 +274,9 @@ records semantic confirmation only; stage completion requires verified target de
 
 ```text
 确认事项：完成本次 1拷问并立即提交交付
-完成判断：目标、范围、非目标、场景、事实、约束、术语和验收条件已清楚；不存在会实质改变目标、范围、约束、验收条件或方案方向的未回答问题
-行为契约检查：用户可见结果、模型和工具调用、继续与终止、授权与失败语义、状态迁移及行为相关权威责任均已明确
-延期检查：<only implementation-mechanical items with their invariant behavior contracts | none>
+完成判断：目标、范围、非目标、场景、事实、约束、术语和验收条件已清楚；不存在会实质改变需求契约的未决用户选择
+行为契约检查：可观察结果、取消后数据保留、重试与失败结果、权限、收费、用户操作及相关责任均已明确
+延期检查：<由 2方案 解决的工程问题及其不可改变的行为与约束 | none>
 草案文件：<absolute repository documentation path>
 草案当前 SHA-256：<sha256 before final completion marker>
 固定参考：branch=<pinned branch>; HEAD=<pinned sha>

@@ -160,34 +160,29 @@ or domain-modeling behavior. Do not invoke `$to-spec`, `$to-tickets`, or
 `$implement` from this stage. Treat those recommendations only as routing
 signals for a later stage.
 
-## Resolve behavior before deferring implementation
+## Freeze the requirement contract before design
 
 Interpret the stage boundary by effect, not by whether a question mentions a
 client, server, tool, prompt, API, schema, or UI.
 
-Stage 1 must settle every decision that can change:
+Stage 1 settles the user's goal, scope, non-goals, constraints, acceptance
+conditions, and every open user choice that changes the requirement contract.
+Freeze observable results, messages, choices and interaction flow, including
+what the user retains after cancellation, what happens on retry or failure,
+permissions, charges, and actions required of the user. Model/tool invocation,
+state ownership, ordering, and recovery belong here when they change those
+promises. Decide the observable promise without requiring a particular carrier.
 
-- user-visible results, messages, choices, or interaction flow;
-- whether, when, or how many times the model or a tool is invoked;
-- continuation, termination, retry, cancellation, or failure semantics;
-- authorization, validation, safety, and recovery behavior;
-- business or session state transitions, ordering, atomicity, or idempotency;
-- the authoritative source or responsible component when that choice changes
-  any behavior above; or
-- acceptance conditions and externally testable outcomes.
-
-Do not defer one of these decisions merely because the alternatives are named
-after technical carriers such as `show_content`, a client renderer, a server
-event, or a new result type. First freeze the observable behavior and semantic
-responsibility. Never reopen that decision by listing incompatible carriers as
-stage-2 alternatives.
-
-Stage 2 may choose only implementation mechanics that preserve the frozen
-behavior contract, such as file and module boundaries, internal adapters, exact
-field or endpoint names, code sequence, and test organization. For every
-deferred item, record the invariant behavior it must preserve and why the
-remaining alternatives cannot change stage-1 semantics. If that cannot be
-shown, keep questioning in stage 1.
+Record engineering questions in the existing unresolved/deferred section for
+Stage 2, with the frozen behavior and constraints they must preserve. For
+example, after confirming that a retry causes no repeated side effects, Stage 2
+chooses the idempotency key, transaction boundary, and recovery mechanism.
+Stage 2 must close these design questions before its solution is complete; they
+are not Stage-3 implementation decisions. A mechanism that changes data
+retention, permission, charges, user actions, or another frozen promise needs a
+user decision before the requirement contract can change. Do not defer a user
+choice merely because it is described using a client, server, tool, prompt,
+API, schema, or UI term.
 
 Continuously improve the one requirement document throughout the entire
 questioning process. After every material answer, clarification, confirmation,

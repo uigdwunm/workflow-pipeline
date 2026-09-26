@@ -13,8 +13,10 @@ technical facts. Distinguish user decisions from repository facts and open
 choices; assistant suggestions, silence and tentative assumptions are not
 confirmed requirements.
 
-If a missing or conflicting decision would materially change the solution,
-ask only that question here, then incorporate the answer. Reuse settled answers.
+If a missing or conflicting user choice would materially change the requirement
+contract, ask only that question here, then incorporate the answer. Reuse
+settled answers. Record engineering questions for the designer to resolve in
+the Spec under the frozen behavior and constraints.
 A missing draft alone is not a reason to ask questions or enter stages 0/1.
 If context is unavailable, request the missing facts rather than inventing them.
 Ordinary implementation design choices belong in the Spec, not this snapshot.

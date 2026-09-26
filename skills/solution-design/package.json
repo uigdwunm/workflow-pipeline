@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "d4b0c931cafca224519c2739ff92baba49faac637899bd1973440bb8b7eb8aaf",
+  "bundle_digest": "fb8f5ee9bfcf8c5e3f0b935f3c8f17aa47d5ce5b1297d6b154af32bfbcafc032",
   "compatibility_key": {
     "control": 6,
     "discussion_request": 1,
@@ -41,7 +41,7 @@
     },
     "SKILL.md": {
       "mode": "0644",
-      "sha256": "143e2e02844b5d14e097e7e3f1f3fe66dbf3ee02e74159b860148dcc74d78e6e"
+      "sha256": "442d1611d5c7ad5f257114e8bd732320894f304cca2eb5249bab87906bc62d37"
     },
     "agents/openai.yaml": {
       "mode": "0644",
@@ -53,7 +53,7 @@
     },
     "references/shared/design-discussion/requirement-document-contract.md": {
       "mode": "0644",
-      "sha256": "f9c4f0309cf3622c42e8e3065ec6bde163b41d47febdd42690f3d3b9bcdf9011"
+      "sha256": "340d12c95f6a40fdae9c5b2a7a893451ac421cf444cfd80d03434307781fa8e4"
     },
     "references/shared/entry-preparation.md": {
       "mode": "0644",
@@ -93,11 +93,11 @@
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
-      "sha256": "4cfd480a5cbb47f12f173e1f0326ac8e7e86d618b93818e8d1c108faf8d52706"
+      "sha256": "8ce2361d13254da150589f5e446384c35277d72e390566885920d0c658b61349"
     },
     "references/solution-design/design-readiness.md": {
       "mode": "0644",
-      "sha256": "a803fb59c4c1612106d6826e0cc731a0450a13c1c1451f62af58ab698b51795a"
+      "sha256": "80a124c3f41c5a098356bad499d20d4b83c0c8bf02306316e1e06fefdfdfc73a"
     },
     "references/solution-design/subagent-protocol.md": {
       "mode": "0644",
@@ -221,7 +221,7 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "5366ac83aa0e3baa09287475261a2eb17a8549eec0cb9b748489167de0f2dc54"
+      "sha256": "a9ee934a61e0d45a09a32d3e036e93b4019c976eed201c1e0d883492d5a81cb9"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",

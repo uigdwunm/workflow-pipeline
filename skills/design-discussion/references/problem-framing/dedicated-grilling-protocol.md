@@ -153,14 +153,12 @@ Propose completion only when:
 - confirmed facts and constraints are recorded;
 - acceptance conditions are testable enough for stage 2;
 - material terminology ambiguities are resolved;
-- no unanswered question would materially change the goal, scope, constraints,
-  acceptance conditions, or solution direction;
-- user-visible results, model/tool invocation and termination, authorization,
-  failure semantics, state transitions, and behavior-affecting responsibility
-  are all resolved;
-- every deferred question records the stage that owns it, the invariant
-  behavior contract it must preserve, and evidence that the remaining choices
-  are implementation-mechanical only; and
+- no unanswered user choice would materially change the goal, scope,
+  constraints, acceptance conditions, or observable behavior;
+- user-visible results, cancellation and retry outcomes, permissions, charges,
+  user actions, and other behavior-affecting responsibilities are resolved;
+- every deferred engineering question names Stage 2 as its owner and records
+  the frozen behavior and constraints it must preserve; and
 - no question is deferred merely because it mentions a client, server, tool,
   prompt, API, schema, or UI; and
 - the draft is internally consistent and sufficient for `$solution-design`.

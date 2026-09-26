@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "040c0d949b15553b969a4875a44fc07a7aa2fe598cca9fcf57bc4505b86bfca5",
+  "bundle_digest": "964a6064c1949f951874576948bf56b15ca80f654f90b778b8001ab10f7693fe",
   "compatibility_key": {
     "control": 6,
     "discussion_request": 1,
@@ -101,7 +101,7 @@
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
-      "sha256": "4cfd480a5cbb47f12f173e1f0326ac8e7e86d618b93818e8d1c108faf8d52706"
+      "sha256": "8ce2361d13254da150589f5e446384c35277d72e390566885920d0c658b61349"
     },
     "scripts/discussion_core/__init__.py": {
       "mode": "0644",
@@ -225,7 +225,7 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "5366ac83aa0e3baa09287475261a2eb17a8549eec0cb9b748489167de0f2dc54"
+      "sha256": "a9ee934a61e0d45a09a32d3e036e93b4019c976eed201c1e0d883492d5a81cb9"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
