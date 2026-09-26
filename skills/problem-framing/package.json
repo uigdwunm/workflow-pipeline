@@ -238,7 +238,7 @@
   },
   "format_version": 1,
   "name": "problem-framing",
-  "release": "1.2.0",
+  "release": "1.2.1",
   "resources": [
     "design-discussion/references/confirmation-contract.md",
     "design-discussion/references/ledger-protocol.md",
@@ -292,6 +292,6 @@
     "shared/scripts/workflow_progress.py",
     "solution-design/references/conversation-source.md"
   ],
-  "source_revision": "workflow-pipeline-v1.2.0",
+  "source_revision": "workflow-pipeline-v1.2.1",
   "stage": 1
 }

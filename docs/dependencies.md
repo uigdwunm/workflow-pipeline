@@ -33,7 +33,7 @@ Pin real package roots, entry paths, digests and protocol keys in the existing c
 
 Continuous mode checks the entire remaining route before new carriers/worktrees or activation, then rechecks at handoff. Missing targets never authorize a silent single-stage fallback or premature archive/Phase advance. A stage already authorized and running completes and retains its result. Stage 3 never publishes in place of missing Stage 4; merge-success recovery remains cleanup-only.
 
-Runner v2 pins its own and Stage 2/3/4 identities. Its `registry_input` points to the confirmed JSON evidence file, reread before executor launches and on resume. The trusted host/controller must refresh its `registry` when registrations change. `resume <record> <answer> --registry-input <file>` selects a new current evidence file containing `registry`, without changing pinned identities. v1 records are read-only to the new runner and return `legacy_run_requires_original_runtime`; use the retained original runtime and installation tree, without migration or restart.
+Runner v6 pins its own and Stage 2/3/4 identities. Its `registry_input` points to the confirmed JSON evidence file, reread before executor launches and on resume. The trusted host/controller must refresh its `registry` when registrations change. `resume <record> <answer> --registry-input <file>` selects a new current evidence file containing `registry`, without changing pinned identities. v1–v5 records are read-only to the new runner and return `legacy_run_requires_original_runtime`; use the retained original runtime and installation tree, without migration or restart.
 
 See the source [package execution contract](../src/shared/references/package-execution.md) for the preflight JSON interface.
 

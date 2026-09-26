@@ -243,7 +243,7 @@
   },
   "format_version": 1,
   "name": "design-discussion",
-  "release": "1.2.0",
+  "release": "1.2.1",
   "resources": [
     "design-discussion/SKILL.md",
     "design-discussion/agents/openai.yaml",
@@ -300,6 +300,6 @@
     "shared/scripts/workflow_progress.py",
     "solution-design/references/conversation-source.md"
   ],
-  "source_revision": "workflow-pipeline-v1.2.0",
+  "source_revision": "workflow-pipeline-v1.2.1",
   "stage": 0
 }

@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "ebe4ff786626d053094068ed34f3fb3702f733845695a95f3b6fa3fb81301a4c",
+  "bundle_digest": "45100fba011baadd7a62ffb7414bb648d99179ed106548fa8b923704b0280ad6",
   "compatibility_key": {
     "control": 6,
     "discussion_request": 1,
@@ -69,7 +69,7 @@
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "ed8986965bff2467a9e0730be7a0c98e8a6fa7fd0017fa6b33f1ce425d85bf5c"
+      "sha256": "78acddf37402782adbcf2c7fcde1d1ef8e5bd0165d5dde60f62407ffa1154080"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
@@ -234,7 +234,7 @@
   },
   "format_version": 1,
   "name": "solution-design",
-  "release": "1.2.0",
+  "release": "1.2.1",
   "resources": [
     "design-discussion/references/confirmation-contract.md",
     "design-discussion/references/requirement-document-contract.md",
@@ -286,6 +286,6 @@
     "solution-design/references/subagent-protocol.md",
     "solution-design/references/templates.md"
   ],
-  "source_revision": "workflow-pipeline-v1.2.0",
+  "source_revision": "workflow-pipeline-v1.2.1",
   "stage": 2
 }
