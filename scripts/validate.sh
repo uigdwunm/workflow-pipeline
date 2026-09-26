@@ -17,18 +17,7 @@ for skill_dir in "$repo_root"/skills/*; do
   python3 "$validator" "$skill_dir"
 done
 
-early_tests=()
-test_files=()
-while IFS= read -r test_file; do
-  case "$test_file" in
-    */tests/runtime/test_repository_validation.py|*/tests/runtime/test_solution_design_contract.py)
-      early_tests+=("$test_file") ;;
-    *)
-      test_files+=("$test_file") ;;
-  esac
-done < <(python3 "$repository_validator" --repository "$repo_root" --list-tests)
-
-python3 -m unittest "${early_tests[@]}" "${test_files[@]}"
+python3 "$repo_root/scripts/run_tests.py" --repository "$repo_root" "$@"
 python3 "$repository_validator" --repository "$repo_root"
 
 printf 'Validation complete.\n'
