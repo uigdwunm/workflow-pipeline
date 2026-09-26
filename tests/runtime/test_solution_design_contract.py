@@ -257,6 +257,13 @@ class SolutionDesignContractTests(unittest.TestCase):
         for block in blocks:
             for field in EVIDENCE_FIELDS:
                 self.assertIn(field, block)
+        for block in blocks[1:]:
+            footer_lines = block.split("```", 2)[1].splitlines()[1:]
+            for field in ("方案合并提交：", "Flow Worktree："):
+                self.assertTrue(
+                    any(line.startswith(field) and line[len(field):].strip() for line in footer_lines),
+                    field,
+                )
 
     def test_complete_planning_path_manifest_reaches_publication_and_handoffs(self) -> None:
         blocks = (

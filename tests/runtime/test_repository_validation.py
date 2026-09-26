@@ -278,9 +278,6 @@ or
         solution = (
             REPOSITORY / "skills/solution-design/SKILL.md"
         ).read_text(encoding="utf-8")
-        solution_templates = (
-            REPOSITORY / "skills/solution-design/references/solution-design/templates.md"
-        ).read_text(encoding="utf-8")
         guided = (
             REPOSITORY / "skills/guided-implementation/SKILL.md"
         ).read_text(encoding="utf-8")
@@ -290,19 +287,18 @@ or
 
         self.assertIn("`start-worktree`", solution)
         self.assertIn("`publish-planning`", solution)
-        self.assertIn("retains the Flow Worktree", solution)
-        self.assertIn("方案合并提交：<planning merge commit>", solution_templates)
-        self.assertIn(
-            "Flow Worktree：<exact retained binding at planning merge commit>",
-            solution_templates,
-        )
         self.assertIn("An inherited entry must reuse its Flow Worktree", guided)
         self.assertIn("For a qualified standalone entry, call", guided)
         self.assertIn("`start-worktree` once", guided)
         self.assertIn("never create a replacement", guided)
         self.assertNotIn("calls `complete-worktree`", guided)
         self.assertIn("passes the retained Flow Worktree", guided)
-        self.assertIn("Flow Worktree：<exact retained binding>", guided)
+        success_footers = [
+            block for block in guided.split("```")[1::2]
+            if "实现结果：成功" in block
+        ]
+        self.assertEqual(len(success_footers), 1)
+        self.assertRegex(success_footers[0], r"(?m)^Flow Worktree：[^\S\n]*\S")
         self.assertIn("inherited Flow Worktree", closure)
         self.assertIn("`complete-worktree`", closure)
         self.assertIn("removes the Flow Worktree and branch", closure)
