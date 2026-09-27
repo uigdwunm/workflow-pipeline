@@ -35,7 +35,7 @@ launch adapter must verify its selected child configuration before launch.
 
 ```json
 {
-  "protocol": "workflow-entry-v3",
+  "protocol": "workflow-entry-v4",
   "operation": "resolve",
   "stage": 1,
   "action": "entry",
@@ -120,7 +120,13 @@ Source kinds:
 Target may be omitted for read-only/non-Git discussion entry. A Flow Worktree uses
 `{kind:"flow",binding:<existing exact binding>}`. Do not create another worktree
 to satisfy entry preparation. Standalone document mutations require the explicit
-planning target and execution at its checkout root.
+planning target. For an authorized standalone Stage-2 conversation snapshot,
+`target={kind:"planning",repository:TARGET_CHECKOUT,branch:TARGET_BRANCH}` pins
+its real delivery target while host project identity and actual cwd remain the
+independent source checkout. Both must be registered checkouts of the same Git
+common directory on distinct named branches. Keep this source identity for freeze
+and bounded delivery; never substitute target cwd to satisfy a host check. Finalize
+Flow binding only after source and target proof are verified.
 
 ## Result and freshness
 

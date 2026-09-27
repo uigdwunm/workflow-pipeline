@@ -1,6 +1,6 @@
 # Worktree Execution
 
-`supervision_protocol.py` has exactly four public operations. One Flow
+`supervision_protocol.py` validates and publishes one bound workspace. One Flow
 Worktree may carry stages 2, 3, and 4. Git is the only worktree registry; no
 separate ownership state is created.
 
@@ -23,6 +23,66 @@ JSON
 Input decoding, size checks, and schema validation complete before an operation
 performs any Git action.
 
+## Select and bind one workspace
+
+Use this sequence for Stage 2 and standalone Stage 3/4; inherited stages and
+retries verify their exact original binding. An invalid inherited binding is a
+recovery condition, not permission to create a replacement.
+
+1. Inspect the current independent worktree, then suitable attached worktrees.
+   Check Git identity, baseline, branch, task ownership and active writers. A clean
+   directory alone does not prove it is free. Preserve unrelated work; choose another
+   workspace when a different task owns it. Ask only if ownership of this task's
+   existing work cannot be resolved from evidence.
+2. Reuse a suitable workspace. When none is available, use the host's managed
+   creation tool with the exact target commit. Record its actual result in the
+   existing Controller checkpoint. An uncertain result requires inspecting the
+   original operation and attachments before another create. For a detached return,
+   create the task branch only after exclusivity and state checks; preserve HEAD.
+3. Call `bind-worktree` after any required source preparation and target delivery.
+   It reads `{repository,target_branch,worktree,branch,base_commit,allowed_paths,
+   lifecycle}` and returns the verified binding. `allowed_paths` accounts for all
+   existing task commits since the explicit base, including each incoming commit's
+   paths and merge deltas, not only the final tree diff. A change later reverted still
+   belongs to incoming history; never choose a newer base to hide it. The registered worktree must share the Git common directory, be separate
+   from the target checkout, and contain no unrelated history or ambiguous edits.
+4. Only when the host capability is unavailable and applicable rules allow it, or
+   the user explicitly requests script creation, use `start-worktree`. The Controller
+   chooses this mechanical route under existing authority; it does not ask the user
+   to resolve an internal tool preference.
+
+`lifecycle` has exactly `origin` (`created` or `reused`), `manager` (`host` or
+`git`), `disposition` (`retain` or `delete`), `evidence_ref` and `creation_receipt`.
+The evidence reference points to actual selection and host evidence saved in the
+existing Controller checkpoint, not a caller's exclusivity assertion.
+For initial C `start` with a retained workspace, supply `workspace_evidence` as
+`{controller_ref,reference,worktree,receipts:[{tool,request,response}]}`. Keep the
+actual tool requests and raw responses covering selection and occupancy; the
+reference and path must match the binding. C persists it at
+`workflow_progress.workspace_evidence` and carries it unchanged through stages
+and retries. Authentication and the suitability decision belong to the trusted
+host/Controller; Git cannot prove another conversation is idle. Script-created
+workspaces use the exact creation receipt returned in their binding, persisted
+in that same checkpoint slot. Raw supervision CLI inputs do not grant authority.
+`bind-worktree` accepts only `retain` and a null creation receipt. Host-created
+and reused workspaces retain both worktree and branch. `start-worktree` supplies
+`created/git/delete` and an immutable Git resource identity receipt; preserve the
+whole binding. No new ownership registry is introduced. Missing lifecycle evidence
+cannot authorize deletion. Later host archival is a separate host operation, not a
+condition of workflow completion.
+
+For a clean workspace behind the target, synchronize the target before binding
+when its updates do not conflict with task-owned work; preserve task commits and
+inspect real conflicts through the existing decision path. The immutable binding
+does not authorize discarding content to make a workspace eligible.
+
+The foreground runner freezes the actual selected workspace path in confirmed
+input. Select/reuse or host-create it before starting the runner, and retain
+`workspace_evidence` in confirmed input for C's first Stage-2 start. A host-returned
+path cannot be substituted midway through a running record. An explicitly
+authorized script fallback may reserve its exact not-yet-created path; the
+Stage-2 carrier then creates that path once and records the returned binding.
+
 ## `start-worktree`
 
 Input fields are `repository`, `worktree`, `branch`, and `target_branch`. The
@@ -31,11 +91,9 @@ branch. Uncommitted primary-checkout changes do not block creation and are not
 copied, staged, stashed, or removed. The command resolves the exact target
 `HEAD` and runs `git worktree add -b` from that object ID.
 
-Stage 2 calls this operation before its first planning write. Stage 3 reuses a
-valid inherited binding or calls this operation once after a standalone request
-passes its implementation-authority gate. An absent or invalid claimed binding
-is an anomaly and must not fall back to a new worktree. Retry always reuses the
-retained binding.
+Use only the script-creation fallback above, after the applicable stage authority
+gate. Stage 2 binds before the designer's first planning write. Stage 3 and 4
+inherit that binding unchanged. Retry always reuses the original binding.
 
 ## `verify-worktree`
 
@@ -89,10 +147,14 @@ path, and leave protected paths unchanged. The target must still equal
 
 Stage 4 is the normal owner of this operation. It creates one no-fast-forward
 merge commit containing the accepted implementation and any closure-document
-updates, removes the worktree without force, and deletes the unchanged merged
-branch through a guarded Git reference transaction. It retains the non-force
-merged/upstream/checked-out protections described below, and returns the candidate,
-merge commit, and changed paths.
+updates, then verifies the binding's disposition. `retain` preserves and verifies
+the same worktree and branch with the candidate included in the target; it does
+not reset the branch. `delete` removes the script-created temporary worktree without
+force and deletes its unchanged merged branch through the guarded transaction below.
+The cleanup result records `disposition` (`retained` or `deleted`),
+`disposition_verified:true`, and actual `worktree_removed` and `branch_removed`
+booleans. Completion requires verified delivery and disposition, not unconditional
+absence of resources. The operation also returns candidate, merge and changed paths.
 
 The command holds one process-local publication file lock only while checking
 and updating the shared checkout. If the lock is unavailable for five seconds,
@@ -109,9 +171,9 @@ point and reruns both Standards and Spec axes, then authorizes the same
 dispatcher to complete the frozen final validation before retrying. There is no
 scheduler or queue.
 
-## Exact publication recovery (flow-worktree-v2)
+## Exact publication recovery (flow-worktree-v3)
 
-The stage owner uses workflow-progress-v12 for durable publication. The Python
+The stage owner uses workflow-progress-v13 for durable publication. The Python
 publishers accept a `record` callback that persists each immutable fact in the
 existing owner checkpoint before the next effect. A callback failure stops the
 operation; lost response recovery reads Git before deciding what remains. Raw
@@ -128,7 +190,9 @@ history; current target HEAD need not still be the merge. An uncertain result,
 unmatched ancestry or unfinished merge blocks retry.
 
 `cleanup-only` consumes the same transaction, requires a verified final
-publication, and removes only remaining unchanged resources. Resource device/inode,
+publication, and completes only the original disposition. A retained binding is
+reverified without deletion; recovery cannot change retain to delete. For a delete
+binding it removes only remaining unchanged resources. Resource device/inode,
 Git directory and branch ref/reflog evidence prevent deleting a replacement
 Worktree or a recreated/moved branch, including a recreated branch at the same
 commit. New files or changes are preserved. Cleanup uses non-forced worktree

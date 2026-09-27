@@ -104,7 +104,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                     **({"validation_plan":plan_for(self.flow)} if stage == 3 else {})}}
 
     def context_for(self, stage):
-        return {"schema_version": 4, "controller_ref": "task", "topic_ref": None, "stage": stage,
+        return {"schema_version": 5, "controller_ref": "task", "topic_ref": None, "stage": stage,
                 "carrier": None, "preference": {"topic_current": False, "stage_current": False}, "flow_authority": None,
                 "requirement_identity": self.frozen["requirement_identity"], "handoff_progress": None}
 
@@ -393,7 +393,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                     "allowed_paths": ["impl.py"], "protected_paths": closure["scope"]["protected_paths"]})
         payload = {"artifacts": ["impl.py"], "checks": ["publication verified"], "candidate_commit": candidate,
                    "merge_commit": self.git("rev-parse", "HEAD"), "changed_paths": ["impl.py"],
-                   "cleanup": {"worktree_removed": True, "branch_removed": True}}
+                   "cleanup": {"worktree_removed": True, "branch_removed": True, "disposition": "deleted", "disposition_verified": True}}
         received = self.call("receive", bound["record"], receipt=self.receipt(bound["record"], "stopped", "result", "native:closure"),
                              result={"delivery_id": "closure", "status": "completed", "payload": payload})
         accepted = self.call("accept", received["record"], decision={"reference": "closed", "delivery_digest": received["record"]["delivery"]["digest"]})
@@ -457,7 +457,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         ctx = self.context_for(1)
         def transition(action, evidence):
             nonlocal ctx
-            result = control.transition({"schema_version": 4, "actor_ref": "task", "context": ctx, "action": action, "evidence": evidence})
+            result = control.transition({"schema_version": 5, "actor_ref": "task", "context": ctx, "action": action, "evidence": evidence})
             ctx = result["context"]
             return result
         prepared = transition("prepare", {"target": "local", "project": "project", "title": "Discuss", "missing_context": [],
@@ -502,7 +502,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         execution = self.input_for(3)
         execution.update(role="execution-agent", configuration=configuration("execution-agent"))
         pending = self.launch(execution)["record"]
-        self.context = control.transition({"schema_version": 4, "actor_ref": "task", "context": self.context,
+        self.context = control.transition({"schema_version": 5, "actor_ref": "task", "context": self.context,
                                            "action": "cancel", "evidence": {}})["context"]
         unknown = self.call("reconcile", pending, receipt=self.receipt(pending, "unknown", "lookup", None))
         self.assertEqual(self.context["handoff_progress"]["executions"][0]["state"], "dispatch-pending")
@@ -515,7 +515,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         import workflow_control_git
         def recover(stopped):
             return workflow_control_git.verified_transition({"repository": str(self.flow), "baseline": execution["scope"]["baseline"],
-                "request": {"schema_version": 4, "actor_ref": "task", "context": self.context, "action": "recover-dispatch",
+                "request": {"schema_version": 5, "actor_ref": "task", "context": self.context, "action": "recover-dispatch",
                             "evidence": {"stopped_refs": stopped, "file_hashes": {}, "replacement_ref": "native:replacement"}}})
         with self.assertRaises(control.ControlError):
             recover([])
@@ -590,7 +590,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
             self.git("merge", "--ff-only", self.binding["branch"])
             wrong_result = {"artifacts": [forbidden], "checks": ["claimed"], "candidate_commit": candidate,
                             "merge_commit": self.git("rev-parse", "HEAD"), "changed_paths": [forbidden],
-                            "cleanup": {"worktree_removed": True, "branch_removed": True}}
+                            "cleanup": {"worktree_removed": True, "branch_removed": True, "disposition": "deleted", "disposition_verified": True}}
             self.assert_code("invalid_scope", lambda: self.call("receive", bound["record"],
                 receipt=self.receipt(bound["record"], "stopped", "result", "native:closure"),
                 result={"delivery_id": "bad-closure", "status": "completed", "payload": wrong_result}))
@@ -603,7 +603,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                     "allowed_paths": ["docs/spec.md", "impl.py"], "protected_paths": closure["scope"]["protected_paths"]})
         payload = {"artifacts": ["docs/spec.md"], "checks": ["publication verified"], "candidate_commit": candidate,
                    "merge_commit": self.git("rev-parse", "HEAD"), "changed_paths": ["docs/spec.md", "impl.py"],
-                   "cleanup": {"worktree_removed": True, "branch_removed": True}}
+                   "cleanup": {"worktree_removed": True, "branch_removed": True, "disposition": "deleted", "disposition_verified": True}}
         received = self.call("receive", bound["record"], receipt=self.receipt(bound["record"], "stopped", "result", "native:closure"),
                              result={"delivery_id": "closure", "status": "completed", "payload": payload})
         self.assertTrue(self.call("accept", received["record"], decision={"reference": "closed", "delivery_digest": received["record"]["delivery"]["digest"]})["downstream_ready"])

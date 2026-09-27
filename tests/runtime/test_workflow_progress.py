@@ -38,7 +38,7 @@ class ProgressTests(transfer.StageTransferTests):
         context['controller_ref'] = 'task'
         def apply(action, evidence):
             nonlocal context
-            result = progress.control.transition({'schema_version': 4, 'actor_ref': 'task',
+            result = progress.control.transition({'schema_version': 5, 'actor_ref': 'task',
                 'context': context, 'action': action, 'evidence': evidence})
             context = result['context']
             return result
@@ -1096,7 +1096,7 @@ class ProgressTests(transfer.StageTransferTests):
             self.assertTrue(published["next_action"]["publication"]["result"]["ok"], published)
             payload = {"artifacts": ["impl.py"], "checks": ["publication verified"], "candidate_commit": candidate,
                 "merge_commit": self.git("rev-parse", "HEAD"), "changed_paths": ["impl.py"],
-                "cleanup": {"worktree_removed": True, "branch_removed": True}}
+                "cleanup": {"worktree_removed": True, "branch_removed": True, "disposition": "deleted", "disposition_verified": True}}
         return self.accept_current(payload, role)
 
     def run_real_chain(self, mode):
@@ -1432,7 +1432,7 @@ class ProgressTests(transfer.StageTransferTests):
         receipt = self.observation("stopped", "result", ref="native:closure")
         receipt["closure"] = {"ref": "native:closure", "candidate": candidate, "merge": merged, "ancestor_verified": True,
             "changed_paths": ["impl.py"], "binding": self.binding, "checks": ["published"],
-            "worktree_removed": False, "branch_removed": False, "implementation_problem": None}
+            "worktree_removed": False, "branch_removed": False, "disposition": "deleted", "disposition_verified": False, "implementation_problem": None}
         self.invoke("observe", receipt)
         self.assertEqual(self.state()["closure_effects"][0]["operation"], "cleanup-only")
         self.assertEqual(self.state()["control"]["context"]["handoff_progress"]["merge"], merged)
@@ -1452,7 +1452,7 @@ class ProgressTests(transfer.StageTransferTests):
         observed = self.observation("stopped", "result", ref="native:closure")
         observed["closure"] = {"ref": "native:closure", "candidate": predecessor["payload"]["candidate_commit"],
             "merge": None, "ancestor_verified": False, "changed_paths": [], "binding": self.binding,
-            "checks": [], "worktree_removed": False, "branch_removed": False,
+            "checks": [], "worktree_removed": False, "branch_removed": False, "disposition": "deleted", "disposition_verified": False,
             "implementation_problem": "accepted behavior needs controller recovery"}
         result = self.invoke("observe", observed)
         self.assertEqual(result["status"], "blocked")

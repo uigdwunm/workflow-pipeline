@@ -375,7 +375,7 @@ class PublicationProgressTests(unittest.TestCase):
         observed = f.observation("stopped", "result", ref="native:closure")
         observed["closure"] = {"ref": "native:closure", "candidate": candidate, "merge": None,
                                "ancestor_verified": False, "changed_paths": [], "binding": f.binding,
-                               "checks": [], "worktree_removed": False, "branch_removed": False,
+                               "checks": [], "disposition": "deleted", "disposition_verified": False, "worktree_removed": False, "branch_removed": False,
                                "implementation_problem": "late report"}
         result = f.invoke("observe", observed)
         self.assertEqual(result["error"]["code"], "already_published")

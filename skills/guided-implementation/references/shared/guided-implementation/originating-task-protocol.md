@@ -15,7 +15,8 @@ handoff and Flow Worktree. A missing or invalid claimed binding is an anomaly
 and never falls back to standalone.
 
 For an explicit standalone entry, finish the standalone-authority gate in
-`SKILL.md`, then call `start-worktree` once from the target `HEAD`. Freeze the
+`SKILL.md`, then select and bind one workspace under the shared worktree execution
+contract, reusing a suitable independent workspace before creating one. Freeze the
 exact user request and implementation brief, record the returned base as the
 standalone base and scope base, and use no planning source or protected source
 unless the brief explicitly identifies one. The explicit invocation authorizes

@@ -16,7 +16,7 @@ import skill_preflight
 import thread_settings
 from supervision_protocol import _binding, _verify_binding, ProtocolError as SupervisionError
 
-PROTOCOL = "workflow-entry-v3"
+PROTOCOL = "workflow-entry-v4"
 MAX_BYTES = 2 * 1024 * 1024
 
 
@@ -196,6 +196,29 @@ def reject_attached_standalone(project, source, actor_refs):
                 raise PreparationError("source_changed", "current actor has a discussion binding; use its existing document")
 
 
+def conversation_preparation(request):
+    """Only the original Stage-2 Controller may prepare outside its target."""
+    return (request.get("stage") == 2 and request.get("source", {}).get("kind") == "conversation"
+            and request.get("host", {}).get("role") == "controller"
+            and request.get("target", {}).get("kind") == "planning")
+
+
+def verify_planning_checkout(facts, target, *, allow_isolated=False):
+    destination = repository_facts(target["repository"])
+    require(destination["kind"] == "git" and destination["root"] == target["repository"]
+            and destination["cwd"] == destination["root"] and destination["branch"] == target["branch"]
+            and destination["git_common_dir"] == facts["git_common_dir"],
+            "target_mismatch", "planning target identity differs")
+    if destination["root"] == facts["root"]:
+        return
+    require(allow_isolated and facts["cwd"] == facts["root"] and facts["branch"] is not None
+            and destination["branch"] is not None and facts["branch"] != destination["branch"],
+            "target_mismatch", "only the Stage-2 Controller may freeze in an independent source checkout")
+    registrations = git(facts["root"], "worktree", "list", "--porcelain", "-z").stdout.split(b"\0")
+    require(all(("worktree " + root).encode() in registrations for root in (facts["root"], destination["root"])),
+            "target_mismatch", "source and target must be registered worktrees")
+
+
 def registration_inputs(request, facts=None):
     """Resolve one current registry source without changing the execution cwd."""
     host = request["host"]
@@ -235,7 +258,8 @@ def registration_inputs(request, facts=None):
             (owner.get("git_common_dir") == facts.get("git_common_dir") if facts["kind"] == "git"
              else owner["root"] == facts["root"]), "registration_identity_changed", "registration belongs to another project")
     binding = (request.get("target") or {}).get("binding")
-    require(owner['root'] == facts['root'] or binding is not None,
+    require(owner['root'] == facts['root'] or binding is not None or
+            (conversation_preparation(request) and owner['root'] == request['target']['repository']),
             'registration_identity_changed', 'cross-checkout entry requires its exact Flow binding')
     require(host.get('role') not in {'solution-designer', 'implementation-dispatcher', 'execution-agent', 'closure-agent'} or
             (request.get('target') or {}).get('kind') == 'flow', 'target_mismatch', 'native stage role requires its exact Flow binding')
@@ -334,8 +358,7 @@ def resolve(request):
         else:
             fields(target, {"kind", "repository", "branch"})
             require(target["kind"] == "planning" and facts["kind"] == "git", "target_mismatch", "Git planning target required")
-            require(str(Path(target["repository"]).resolve()) == facts["root"] and target["branch"] == facts["branch"],
-                    "target_mismatch", "planning checkout or branch differs")
+            verify_planning_checkout(facts, target, allow_isolated=conversation_preparation(request))
     preflight = {"stage": stage, "action": request["action"]}
     preflight.update({k: request[k] for k in ("target_stages", "required_skills") if k in request})
     registration, registration_context = registration_inputs(request, facts)

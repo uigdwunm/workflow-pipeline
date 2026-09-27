@@ -36,13 +36,15 @@ _Avoid_: Implementation run, worktree run
 
 **Change Closure**:
 The Stage 4 responsibility of reconciling closure-owned documentation and
-publishing and cleaning a handed-off Flow Worktree after a verified
+publishing and verifying the bound disposition of a Flow Worktree after a verified
 implementation result. It never repairs implementation code.
 _Avoid_: Implementation repair
 
 **Flow Worktree**:
-The one isolated Git worktree created at Stage 2, or by a standalone Stage 3,
-and retained through Stage 4 for one delivery. Stage 2 may publish its planning
+The one isolated Git worktree selected and bound at Stage 2, or by a standalone
+Stage 3/4, for one delivery. Suitable existing workspaces are reused before creation;
+reused and host-managed workspaces remain after delivery, while script-created
+temporary resources follow their recorded deletion disposition. Stage 2 may publish its planning
 checkpoint without ending the Flow Worktree.
 _Avoid_: Stage-2 worktree, implementation worktree, closure worktree
 
@@ -121,7 +123,8 @@ _Avoid_: Workflow Controller
 
 **Worktree Binding**:
 The verified Git identity that ties one Flow Worktree to its repository, branch,
-target, and committed ancestry across Stage handoffs and retries.
+target, committed ancestry and evidence-backed retain/delete lifecycle across Stage
+handoffs and retries. Its origin and management mode do not alone grant deletion authority.
 _Avoid_: Conversation Binding
 
 Workflow Controller retains confirmation, routing and acceptance. Dedicated Discussion Task and Dedicated Problem Framing Task are visible 0/1 carriers. solution-designer, Implementation Dispatcher, Execution Agent and Closure Agent are native roles. See [Workflow Control Protocol](src/shared/references/guided-implementation/workflow-control-protocol.md).

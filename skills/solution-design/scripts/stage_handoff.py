@@ -17,8 +17,9 @@ import entry_prepare as entry
 import requirement_prepare as requirement
 import workflow_control as control
 import workflow_control_git as control_git
+import supervision_protocol as supervision
 
-PROTOCOL = "workflow-stage-transfer-v7"
+PROTOCOL = "workflow-stage-transfer-v8"
 ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution-designer",
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",
@@ -155,7 +156,7 @@ def verify_discussion_binding(current, binding):
             "discussion_identity_conflict", "disposable Flow cannot own the persistent discussion")
 
 
-def phase_evidence(saved, *, role_ref=None, receiving=False):
+def phase_evidence(saved, *, role_ref=None, receiving=False, control_context=None):
     source_request = saved["entry"]["source"]
     if source_request["kind"] != "discussion":
         require("phase" not in saved["authorization"], "authority_missing", "standalone input cannot claim a discussion phase")
@@ -187,7 +188,44 @@ def phase_evidence(saved, *, role_ref=None, receiving=False):
                 run["source_checkpoint_id"] == saved["requirement"]["checkpoint"]["checkpoint_id"],
                 "authority_missing", "designer must consume the exact authorized wrapper checkpoint")
         if role_ref is not None:
-            require(attempt.get("authorization") is True and attempt.get("carrier_ref") == role_ref,
+            carrier_ref = attempt.get("carrier_ref")
+            # Downstream execution control is persisted in C, while this ledger
+            # owns the original Phase Run. C/B pass their verified control slot;
+            # no replacement is inferred from an unbound native identity.
+            authority = control_context
+            if authority is not None:
+                control.validate_context(authority)
+                slots = [authority] + ([authority['successor_control']] if authority.get('successor_control') else [])
+                matching = [slot for slot in slots if slot['stage'] == 2 and
+                    (slot.get('handoff_progress') or {}).get('design_input') == saved['digest']]
+                require(len(matching) <= 1, "identity_mismatch", "ambiguous designer recovery authority")
+                if matching:
+                    selected = matching[0]
+                    checkpoint = selected['handoff_progress']
+                    recovery = checkpoint.get('recovery')
+                    if recovery is not None:
+                        require(selected['controller_ref'] == saved['controller_ref'] and
+                                selected['topic_ref'] == attachment['actor_topic_id'] and
+                                selected['requirement_identity'] == saved['requirement_identity'] and
+                                checkpoint['binding'] == saved['binding'] and
+                                checkpoint['allowed_paths'] == saved['scope']['owned_paths'] and
+                                checkpoint['protected_paths'] == saved['scope']['protected_paths'],
+                                "identity_mismatch", "designer recovery differs from original phase authority")
+                        expected_attempt = control.digest({key: checkpoint[key] for key in
+                            ('design_input', 'binding', 'allowed_paths', 'protected_paths', 'configuration')})
+                        for recovered in [*checkpoint.get('recovery_history', []), recovery]:
+                            require(recovered['state'] == 'activated' and recovered['dispatcher_ref'] == carrier_ref and
+                                    recovered['attempt'] == expected_attempt and recovered['intent']['role'] == 'solution-designer',
+                                    "identity_mismatch", "designer recovery lineage is not activated or contiguous")
+                            carrier_ref = recovered['activation']['replacement_ref']
+                            require(recovered['receipts'][-1]['status'] == 'ready' and
+                                    recovered['receipts'][-1]['ref'] == carrier_ref,
+                                    "identity_mismatch", "designer recovery lost the actual native replacement")
+                            expected_attempt = control.digest([recovered['recovery_id'], carrier_ref])
+                        require(selected['carrier'] == {'kind': 'solution-designer', 'ref': carrier_ref,
+                                                       'attempt': expected_attempt},
+                                "identity_mismatch", "designer recovery is not the current authorized carrier")
+            require(attempt.get("authorization") is True and carrier_ref == role_ref,
                     "identity_mismatch", "phase carrier differs from native result")
     else:
         actor = saved["expected_entry"]["actor"]
@@ -279,12 +317,11 @@ def verify_result(stage, payload, binding, scope, root, role_ref):
         require(changed <= set(scope["closure_paths"]), "invalid_scope", "closure changed implementation or protected paths")
         actual = sorted(set(entry.git(primary, "diff", "--name-only", "-z", entry.git_text(primary,"rev-parse",merged+"^1"), merged).stdout.decode().split("\0")) - {""})
         require(payload["changed_paths"] == actual, "result_changed", "closure paths differ from Git")
-        registered = entry.git_text(primary, "worktree", "list", "--porcelain").splitlines()
-        branch = entry.git(primary, "show-ref", "--verify", "--quiet", "refs/heads/" + binding["branch"], check=False)
-        require(branch.returncode in {0, 1}, "git_failed", "cannot verify branch removal")
-        cleanup = {"worktree_removed": not Path(binding["worktree"]).exists() and "worktree " + binding["worktree"] not in registered,
-                   "branch_removed": branch.returncode == 1}
-        require(payload["cleanup"] == cleanup and all(cleanup.values()), "cleanup_pending", "publication retained; cleanup is incomplete")
+        published = entry.git_text(primary, "rev-parse", merged + "^2")
+        ancestor(primary, candidate, published)
+        cleanup = supervision.verify_disposition(binding, published, merged)
+        require(payload["cleanup"] == cleanup and cleanup["disposition_verified"],
+                "cleanup_pending", "publication retained; workspace disposition is incomplete")
         root, protected_revision = primary, merged
     for relative in scope["protected_paths"]:
         require(blob(root, scope["baseline"], relative) == blob(root, protected_revision, relative) and

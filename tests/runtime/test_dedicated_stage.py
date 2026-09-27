@@ -519,13 +519,23 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
         import tempfile
         from unittest.mock import patch
         import workflow_progress as progression
+        import supervision_protocol
+        import subprocess
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        flow = Path(temporary.name) / 'flow'
+        target_branch = subprocess.run(['git', '-C', str(project), 'branch', '--show-current'],
+                                       capture_output=True, text=True, check=True).stdout.strip()
+        binding = supervision_protocol.start_worktree({'repository': str(project.resolve()),
+            'worktree': str(flow.resolve()), 'branch': 'codex/archive-fixture', 'target_branch': target_branch})['binding']
+        self.addCleanup(lambda: subprocess.run(['git', '-C', str(project), 'worktree', 'remove', '--force', str(flow)], capture_output=True))
         base = self.evolution_request(topic, operation='read-topic')
         base.pop('operation')
         latest = progression.dispatch.discussion_protocol.handle({**base, 'operation': 'read-topic'})
         attachment = {key: base[key] for key in ('project_id', 'tree_id', 'actor_topic_id', 'actor_conversation_ref')}
         repository = progression.entry.repository_facts(str(project))
         discussion_project, _ = progression.entry.resolve_discussion_project(repository, attachment)
-        saved = {'controller_ref': 'discussion-task', 'entry': {'source': {'attachment': attachment}},
+        saved = {'controller_ref': 'discussion-task', 'binding': binding, 'entry': {'source': {'attachment': attachment}},
             'expected_entry': {'repository': repository, 'discussion_project': discussion_project,
                 'requirement': {'attachment': attachment}}}
         port = {'context': copy.deepcopy(source_context), 'discussion': {**base,
@@ -534,13 +544,12 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
         current = copy.deepcopy(source_context)
         current.update(stage=2, carrier=None, handoff_progress=None)
         state = {'protocol': progression.PROTOCOL, 'revision': 0, 'mode': 'continuous', 'stage': 2,
+            'workspace_evidence': progression.workspace_evidence(binding, 'discussion-task', None),
             'native_host': {'adapter': 'app-server', 'instance': 'fixture-downstream-host'},
             'status': 'active', 'step': 'prepare-dispatch', 'control': {'context': current, 'discussion': None},
             'handoff': saved, 'packages': {}, 'dispatch': None, 'transaction': None,
             'transaction_source': None, 'transaction_result': None, 'history': [{'control': port, 'handoff': saved}],
             'host': {'generation': 0, 'status': 'unknown', 'seen': {}, 'calls': {}, 'proof': None, 'query': None, 'last_stop': None}}
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
         checkpoint = Path(temporary.name) / 'downstream.json'
         progression.atomic_save(checkpoint, {progression.KEY: state})
         def invoke(data):

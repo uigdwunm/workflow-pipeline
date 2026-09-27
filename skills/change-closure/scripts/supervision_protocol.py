@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Create, verify, integrate, and clean one isolated Git worktree."""
+"""Bind, verify, publish, and honor the lifecycle of one isolated Git worktree."""
 
 from __future__ import annotations
 
@@ -368,12 +368,38 @@ def _changed_paths(repository: Path, older: str, newer: str) -> list[str]:
         raise ProtocolError("git_failed", "changed path is not valid UTF-8") from error
 
 
+def _lifecycle(value):
+    if not isinstance(value, dict):
+        raise ProtocolError("invalid_input", "binding lifecycle is required")
+    _expect_keys(value, {"origin", "manager", "disposition", "evidence_ref", "creation_receipt"}, "lifecycle")
+    if (any(not isinstance(value[key], str) for key in ("origin", "manager", "disposition")) or
+            value["origin"] not in {"created", "reused"} or value["manager"] not in {"host", "git"} or
+            value["disposition"] not in {"retain", "delete"}):
+        raise ProtocolError("invalid_input", "invalid worktree lifecycle")
+    _expect_string(value["evidence_ref"], "lifecycle evidence_ref")
+    receipt = value["creation_receipt"]
+    if value["disposition"] == "delete":
+        if value["origin"] != "created" or value["manager"] != "git" or not isinstance(receipt, dict):
+            raise ProtocolError("invalid_input", "deletion requires script creation provenance")
+        _expect_keys(receipt, {"worktree", "gitdir", "gitdir_identity", "branch", "base_commit"}, "creation receipt")
+        for name in ("worktree", "gitdir_identity"):
+            if not isinstance(receipt[name], list) or len(receipt[name]) != 2 or any(type(n) is not int or n < 0 for n in receipt[name]):
+                raise ProtocolError("invalid_input", "invalid creation resource identity")
+        _canonical_absolute_path(receipt["gitdir"], "creation gitdir", must_exist=False)
+        _expect_string(receipt["branch"], "creation branch")
+        _expect_oid(receipt["base_commit"], "creation base_commit")
+    elif receipt is not None:
+        raise ProtocolError("invalid_input", "retained worktrees cannot claim script deletion provenance")
+    return copy.deepcopy(value)
+
+
 def _binding(value: Any, *, removed: bool = False) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProtocolError("invalid_input", "binding must be an object")
     _expect_keys(
         value,
         {
+            "lifecycle",
             "base_commit",
             "branch",
             "git_common_dir",
@@ -394,7 +420,11 @@ def _binding(value: Any, *, removed: bool = False) -> dict[str, Any]:
     target_branch = _validate_branch(repository, value["target_branch"], "target_branch")
     if branch == target_branch:
         raise ProtocolError("invalid_input", "worktree and target branches must differ")
+    lifecycle = _lifecycle(value["lifecycle"])
+    if lifecycle["creation_receipt"] is not None and (lifecycle["creation_receipt"]["branch"] != branch or lifecycle["creation_receipt"]["base_commit"] != value["base_commit"]):
+        raise ProtocolError("worktree_mismatch", "creation receipt differs from binding")
     return {
+        "lifecycle": lifecycle,
         "base_commit": _expect_oid(value["base_commit"], "base_commit"),
         "branch": branch,
         "git_common_dir": str(common),
@@ -419,6 +449,9 @@ def _verify_binding(binding: dict[str, Any], *, platform_cwd: Path | None = None
         )
     except ProtocolError as error:
         raise ProtocolError("worktree_mismatch", "bound worktree is not usable") from error
+    registered = _git_text(repository, ["worktree", "list", "--porcelain"]).splitlines()
+    if "worktree " + str(worktree) not in registered:
+        raise ProtocolError("worktree_mismatch", "bound worktree is not registered")
     if observed_top != worktree or observed_common != common:
         raise ProtocolError("worktree_mismatch", "worktree registration does not match binding")
     if _current_branch(worktree) != binding["branch"]:
@@ -430,7 +463,55 @@ def _verify_binding(binding: dict[str, Any], *, platform_cwd: Path | None = None
         raise ProtocolError("worktree_mismatch", "worktree no longer descends from its base")
     if _branch_oid(repository, binding["target_branch"]) is None:
         raise ProtocolError("target_changed", "target branch no longer exists")
+    _verify_creation_identity(binding)
     return {"current_commit": head, "verified": True}
+
+
+def _verify_creation_identity(binding):
+    receipt = binding["lifecycle"]["creation_receipt"]
+    if receipt is not None and Path(binding["worktree"]).exists():
+        actual = _publication_resources(binding)
+        if any(actual[key] != receipt[key] for key in ("worktree", "gitdir", "gitdir_identity")):
+            raise ProtocolError("worktree_mismatch", "script-created workspace identity changed; preserve it")
+
+
+def bind_worktree(request):
+    """Inspect an existing workspace. Host ownership is pinned by its Controller."""
+    _expect_keys(request, {"repository", "target_branch", "worktree", "branch", "base_commit", "allowed_paths", "lifecycle"}, "bind-worktree input")
+    lifecycle = _lifecycle(request["lifecycle"])
+    if lifecycle["disposition"] != "retain":
+        raise ProtocolError("invalid_input", "adopted worktrees must be retained")
+    repository, common = _canonical_repository(request["repository"])
+    binding = _binding({key: request[key] for key in ("repository", "target_branch", "worktree", "branch", "base_commit", "lifecycle")} | {"git_common_dir": str(common)})
+    worktree = Path(binding["worktree"])
+    if worktree == repository or Path(_git_text(worktree, ["rev-parse", "--absolute-git-dir"])) == common or _current_branch(repository) != binding["target_branch"]:
+        raise ProtocolError("worktree_mismatch", "adoption requires an independent workspace and target checkout")
+    registered = _git_text(repository, ["worktree", "list", "--porcelain"]).splitlines()
+    if "worktree " + str(worktree) not in registered:
+        raise ProtocolError("worktree_mismatch", "workspace is not registered")
+    report = _verify_binding(binding, platform_cwd=worktree)
+    if _full_status(worktree):
+        raise ProtocolError("worktree_not_clean", "account for and commit authorized work before adoption")
+    target = _branch_oid(repository, binding["target_branch"])
+    if not _is_ancestor(repository, binding["base_commit"], target):
+        raise ProtocolError("target_changed", "workspace baseline must belong to target history")
+    allowed = _normalize_relative_paths(request["allowed_paths"], "allowed_paths")
+    changed = set(_changed_paths(repository, target, report["current_commit"]))
+    # Final trees alone hide reverted work. Inspect every incoming commit too.
+    # For merges, paths differing from every parent are the merge's own changes;
+    # ordinary target integration is already accounted for by target history.
+    commits = _git_text(repository, ["rev-list", "--parents", target + ".." + report["current_commit"]])
+    for line in commits.splitlines():
+        commit, *parents = line.split()
+        if not parents:
+            raise ProtocolError("path_outside_scope", "incoming history has an unrelated root")
+        introduced = set(_changed_paths(repository, parents[0], commit))
+        for parent in parents[1:]:
+            introduced.intersection_update(_changed_paths(repository, parent, commit))
+        changed.update(introduced)
+    if any(not _path_matches(path, allowed) for path in changed):
+        raise ProtocolError("path_outside_scope", "existing workspace history escapes declared task scope")
+    return {"binding": binding, "ok": True, "state": "bound"}
 
 
 def start_worktree(request: dict[str, Any]) -> dict[str, Any]:
@@ -479,6 +560,10 @@ def start_worktree(request: dict[str, Any]) -> dict[str, Any]:
             "worktree_create_failed",
             created.stderr.strip() or created.stdout.strip() or "git worktree add failed",
         )
+    resources = _publication_resources(binding)
+    binding["lifecycle"] = {"origin": "created", "manager": "git", "disposition": "delete",
+                            "evidence_ref": "start-worktree:" + resources["gitdir"],
+                            "creation_receipt": {key: resources[key] for key in ("worktree", "gitdir", "gitdir_identity")} | {"branch": branch, "base_commit": base_commit}}
     try:
         _verify_binding(_binding(binding), platform_cwd=worktree)
     except ProtocolError:
@@ -954,9 +1039,10 @@ def complete_worktree(request: dict[str, Any], *, record=None) -> dict[str, Any]
         )
         if record is not None:
             record({"event": "merged", "merge_commit": merge_commit})
-    _cleanup_published(binding, candidate, merge_commit, resources, record=record)
+    cleanup = _cleanup_published(binding, candidate, merge_commit, resources, record=record)
 
     return {
+        "cleanup": cleanup,
         "candidate_commit": candidate,
         "changed_paths": changed,
         "merge_commit": merge_commit,
@@ -1100,7 +1186,7 @@ def _delete_published_branch(binding, candidate, merge_commit, resources):
 
 
 def _cleanup_published(binding, candidate, merge_commit, resources, *, record=None):
-    """Remove only unchanged published resources; never force or prune."""
+    """Verify retention or remove only script-created resources; never force or prune."""
     repository, worktree = Path(binding["repository"]), Path(binding["worktree"])
     if not _is_ancestor(repository, merge_commit, binding["target_branch"]):
         raise ProtocolError("integration_unverified", "published merge is no longer on target")
@@ -1108,6 +1194,9 @@ def _cleanup_published(binding, candidate, merge_commit, resources, *, record=No
     if branch is not None and branch != candidate:
         raise ProtocolError("cleanup_pending", "published branch changed; preserve it", context={"merge_commit": merge_commit})
     _verify_resource_identity(binding, resources)
+    if binding["lifecycle"]["disposition"] == "retain":
+        return _retention_facts(binding, candidate, resources)
+    _verify_creation_identity(binding)
     registered = _git_text(repository, ["worktree", "list", "--porcelain"]).splitlines()
     if worktree.exists():
         if "worktree " + str(worktree) not in registered:
@@ -1136,7 +1225,16 @@ def _cleanup_published(binding, candidate, merge_commit, resources, *, record=No
     cleanup = _cleanup_facts(binding)
     if not all(cleanup.values()):
         raise ProtocolError("cleanup_pending", "published resources remain", context={"merge_commit": merge_commit})
-    return cleanup
+    return {**cleanup, "disposition": "deleted", "disposition_verified": True}
+
+
+def _retention_facts(binding, candidate, resources):
+    report = _verify_binding(binding, platform_cwd=Path(binding["worktree"]))
+    _verify_resource_identity(binding, resources)
+    if report["current_commit"] != candidate or _full_status(Path(binding["worktree"])):
+        raise ProtocolError("cleanup_pending", "retained workspace changed after publication")
+    return {"disposition": "retained", "disposition_verified": True,
+            "worktree_removed": False, "branch_removed": False}
 
 
 def _cleanup_facts(binding):
@@ -1147,6 +1245,27 @@ def _cleanup_facts(binding):
             "branch_removed": _branch_oid(repository, binding["branch"]) is None and
             not os.path.lexists(Path(binding["git_common_dir"]) / "refs/heads" / binding["branch"]) and
             not os.path.lexists(Path(binding["git_common_dir"]) / "logs/refs/heads" / binding["branch"])}
+
+
+def verify_disposition(value, candidate_commit, merge_commit, *, resources=None):
+    """Read actual final Git state; Controller owns original binding authority."""
+    binding = _binding(value, removed=True)
+    candidate = _expect_oid(candidate_commit, "candidate_commit")
+    merge = _expect_oid(merge_commit, "merge_commit")
+    repository = Path(binding["repository"])
+    if not _is_ancestor(repository, candidate, merge) or not _is_ancestor(repository, merge, binding["target_branch"]):
+        raise ProtocolError("integration_unverified", "published candidate is not on target")
+    if binding["lifecycle"]["disposition"] == "retain":
+        report = _verify_binding(binding, platform_cwd=Path(binding["worktree"]))
+        registered = _git_text(repository, ["worktree", "list", "--porcelain"]).splitlines()
+        if "worktree " + binding["worktree"] not in registered or report["current_commit"] != candidate or _full_status(Path(binding["worktree"])):
+            raise ProtocolError("cleanup_pending", "retained resources do not match published candidate")
+        if resources is not None:
+            _verify_resource_identity(binding, resources)
+        return {"disposition": "retained", "disposition_verified": True,
+                "worktree_removed": False, "branch_removed": False}
+    facts = _cleanup_facts(binding)
+    return {**facts, "disposition": "deleted", "disposition_verified": all(facts.values())}
 
 
 def _publication_input(transaction):
@@ -1249,8 +1368,12 @@ def _inspect_publication(transaction):
             result.update(binding=binding, planning_commit=request["planning_commit"], current_commit=flow["current_commit"],
                           state="planning_published" if flow["current_commit"] == merge and not _full_status(Path(binding["worktree"])) else "flow-advance-pending")
         else:
-            result["cleanup"] = _cleanup_facts(binding)
-            result["state"] = "completed" if all(result["cleanup"].values()) else "cleanup-pending"
+            if binding["lifecycle"]["disposition"] == "retain":
+                result["cleanup"] = _retention_facts(binding, prepared["candidate"], prepared["resources"])
+            else:
+                cleanup = _cleanup_facts(binding)
+                result["cleanup"] = {**cleanup, "disposition": "deleted", "disposition_verified": all(cleanup.values())}
+            result["state"] = "completed" if result["cleanup"]["disposition_verified"] else "cleanup-pending"
         return result
     # Absence of a matching merge alone does not authorize retry.
     original = request.get("planning_commit", request.get("candidate_commit"))
@@ -1357,6 +1480,7 @@ def _emit_json(value: Any) -> None:
 def _build_command_registry() -> CommandRegistry:
     return CommandRegistry(
         [
+            CommandSpec("bind-worktree", lambda a: bind_worktree(a.request)),
             CommandSpec("start-worktree", lambda a: start_worktree(a.request)),
             CommandSpec("verify-worktree", lambda a: verify_worktree(a.request)),
             CommandSpec("publish-planning", lambda a: publish_planning(a.request)),

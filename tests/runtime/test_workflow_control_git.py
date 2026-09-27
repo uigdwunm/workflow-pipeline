@@ -38,7 +38,7 @@ class WorkflowGitTests(unittest.TestCase):
     def call(self, action, evidence, context):
         result = subprocess.run([sys.executable, str(CLI)], text=True, capture_output=True,
             input=json.dumps({'repository': str(self.repo), 'baseline': self.base,
-                'request': {'schema_version': 4, 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
+                'request': {'schema_version': 5, 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
         self.assertTrue(result.stdout, result.stderr)
         return json.loads(result.stdout)
 
@@ -309,7 +309,7 @@ class WorkflowGitTests(unittest.TestCase):
         bound = self.call('closure-bound', {'ref': 'closure', 'attempt': started['attempt']}, started['context'])
         result = {'ref': 'closure', 'candidate': candidate, 'merge': candidate, 'ancestor_verified': True,
             'changed_paths': ['code.py'], 'binding': binding, 'checks': ['full suite'],
-            'worktree_removed': True, 'branch_removed': True, 'implementation_problem': None}
+            'worktree_removed': True, 'branch_removed': True, 'disposition': 'deleted', 'disposition_verified': True, 'implementation_problem': None}
         premature = self.call('closure-result', result, bound['context'])
         self.assertFalse(premature['ok'], premature)
         (self.repo / 'README.md').write_text('Document the behavior\n')

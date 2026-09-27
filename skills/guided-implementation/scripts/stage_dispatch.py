@@ -51,7 +51,7 @@ their exact idempotency key and revisions must be retained on an unknown result.
     # Downstream Phase Runs own lifecycle, while execution control stays in the
     # caller checkpoint. Attached dedicated-stage mutations must use the ledger.
     require(context["topic_ref"] is None or context["stage"] >= 2, "authority_missing", "attached dedicated control requires its ledger adapter")
-    payload = {"schema_version": 4, "actor_ref": context["controller_ref"], "context": context,
+    payload = {"schema_version": 5, "actor_ref": context["controller_ref"], "context": context,
                "action": action, "evidence": evidence}
     if action in {'archive', 'archive-result'}:
         # Retired task cleanup has no Git authority. Historical stage baselines
@@ -244,9 +244,10 @@ def bind_discussion(port, record, receipt):
     if saved["stage"] == 2 and saved["entry"]["source"]["kind"] == "discussion":
         phase = handoff.phase_evidence(saved)
         known = phase["attempt"].get("carrier_ref")
-        require(known is None or known == receipt["ref"], "identity_mismatch", "wrapper already binds another designer")
         if known is not None:
-            require(phase["attempt"].get("authorization") is True, "authority_missing", "wrapper carrier authorization was revoked")
+            # A recovered designer inherits this exact original Phase Run via
+            # the persisted control lineage; never rebind or create a new run.
+            handoff.phase_evidence(saved, role_ref=receipt["ref"], control_context=port["context"])
             return port, None
         binding = saved["authorization"]["phase"]
         applied = discussion_protocol.handle({"protocol_version": 1, "operation": "authorize-phase-carrier",
@@ -388,7 +389,7 @@ def received(request):
     saved = record["handoff"]
     stage, payload = saved["stage"], message["payload"]
     if stage >= 2:
-        handoff.phase_evidence(saved, role_ref=ref, receiving=True)
+        handoff.phase_evidence(saved, role_ref=ref, receiving=True, control_context=request["control"]["context"])
     root = saved["expected_entry"]["repository"]["root"]
     if stage != 4:
         current = handoff.refresh(saved["entry"], saved["expected_entry"], after_work=True)
@@ -456,7 +457,7 @@ def accepted(request):
         stage = saved["stage"]
         root = saved["expected_entry"]["repository"]["root"]
         if stage >= 2:
-            handoff.phase_evidence(saved, role_ref=ref, receiving=True)
+            handoff.phase_evidence(saved, role_ref=ref, receiving=True, control_context=request["control"]["context"])
             if stage != 4:
                 current = handoff.refresh(saved["entry"], saved["expected_entry"], after_work=True)
                 handoff.source(current, saved["requirement"], stage)

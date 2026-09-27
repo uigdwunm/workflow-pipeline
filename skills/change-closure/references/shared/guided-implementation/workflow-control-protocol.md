@@ -10,7 +10,7 @@ implementation bytes. The bounded direct exception below changes only that
 implementation-source branch; stage 4 uses one Closure Agent. A split child
 is one independent Workflow Controller and inherits no preferences or authority.
 
-`workflow_control.py` accepts bounded strict JSON with schema_version=4, action,
+`workflow_control.py` accepts bounded strict JSON with schema_version=5, action,
 actor_ref, context and evidence. Context contains schema_version, controller_ref,
 topic_ref, stage, carrier, preference, flow_authority, requirement_identity and
 handoff_progress, optional top-level retired_handoffs, and at most one temporary successor_control slot. The caller authenticates actor_ref and persists the returned
@@ -221,7 +221,8 @@ solution-designer, implementation-dispatcher or closure-agent. Stage 3 includes 
 the strict review/final-verification projection below. Nonempty text checks alone
 never establish reviewability or delivery.
 Stage 4 includes changed_paths, same accepted candidate_commit/binding, merge_commit,
-ancestry and both cleanup facts. Partial cleanup returns continue or technical_error.
+ancestry and the binding’s verified disposition. Retain requires matching live resources;
+delete requires both removal facts. Partial disposition returns continue or technical_error.
 continue returns to C's next action in the same foreground host; a running role
 is waited on, and only current proof permits followup to its exact identity.
 needs_input keeps that host while the Controller answers the exact pending
@@ -440,8 +441,8 @@ No implementation contract, tests, generated package or protected source belongs
 to closure scope. After a recorded merge, reconcile publication/cleanup instead
 of demanding a new validation or merge.
 
-New records use runner 6, C workflow-progress-v12, B workflow-stage-transfer-v7
-and control compatibility key 6 (JSON schema 4). Old executable records fail with
+New records use runner 7, C workflow-progress-v13, B workflow-stage-transfer-v8
+and control compatibility key 7 (JSON schema 5). Old executable records fail with
 legacy_run_requires_original_runtime before writes or host calls. Embedded old
 control keeps the ledger outer version and bytes; resume with its original pinned
 package. Never migrate checks strings into passed evidence.

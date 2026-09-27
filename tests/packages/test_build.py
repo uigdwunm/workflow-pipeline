@@ -16,7 +16,7 @@ class PackageBuildTests(unittest.TestCase):
         config = json.loads((ROOT / 'build/skill-packages.json').read_text())
         key = config['compatibility_key']
         self.assertEqual((key['control'], key['stage_transfer'], key['workflow_progress']),
-                         (6, 'workflow-stage-transfer-v7', 'workflow-progress-v12'))
+                         (7, 'workflow-stage-transfer-v8', 'workflow-progress-v13'))
         self.assertEqual(key['topic_gate'], 'phase-0-1-discussion-v2')
         self.assertEqual(key['confirmation'], 'goal-scoped-confirmation-v3')
         with tempfile.TemporaryDirectory() as temporary:
@@ -47,7 +47,7 @@ class PackageBuildTests(unittest.TestCase):
     def test_delivery_and_topic_gate_keys_reject_mixed_release(self):
         import shutil
         config = json.loads((ROOT / 'build/skill-packages.json').read_text())
-        self.assertEqual(config['compatibility_key'].get('requirement_delivery'), 'requirement-delivery-v1')
+        self.assertEqual(config['compatibility_key'].get('requirement_delivery'), 'requirement-delivery-v2')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fixture = root / 'source'
@@ -67,7 +67,7 @@ class PackageBuildTests(unittest.TestCase):
                 input=json.dumps(request), text=True, capture_output=True)
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertEqual(json.loads(result.stdout)['error']['code'], 'incompatible_package')
-            config['compatibility_key']['requirement_delivery'] = 'requirement-delivery-v1'
+            config['compatibility_key']['requirement_delivery'] = 'requirement-delivery-v2'
             config['compatibility_key'].pop('topic_gate')
             (fixture / 'build/skill-packages.json').write_text(json.dumps(config))
             subprocess.run([sys.executable, str(fixture / 'scripts/build_skills.py'), '--output', str(root / 'legacy')], check=True)

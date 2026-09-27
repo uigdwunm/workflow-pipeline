@@ -297,12 +297,46 @@ def validate_deliverable(progress, candidate, review, verification, dispatcher_r
 
 
 def validate_binding(binding):
-    keys(binding, {'repository', 'worktree', 'git_common_dir', 'branch', 'target_branch', 'base_commit'})
+    keys(binding, {'repository', 'worktree', 'git_common_dir', 'branch', 'target_branch', 'base_commit', 'lifecycle'})
     for field in ('repository', 'worktree', 'git_common_dir'):
         value = text(binding[field])
         require(PurePosixPath(value).is_absolute() and '..' not in PurePosixPath(value).parts, 'binding paths must be absolute and normalized')
     text(binding['branch']); text(binding['target_branch'])
     require(re.fullmatch('[0-9a-f]{40}', binding['base_commit']), 'invalid worktree base commit')
+    lifecycle = binding['lifecycle']
+    keys(lifecycle, {'origin', 'manager', 'disposition', 'evidence_ref', 'creation_receipt'})
+    require(all(isinstance(lifecycle[key], str) for key in ('origin', 'manager', 'disposition')) and
+            lifecycle['origin'] in {'created', 'reused'} and lifecycle['manager'] in {'host', 'git'} and
+            lifecycle['disposition'] in {'retain', 'delete'}, 'invalid worktree lifecycle')
+    text(lifecycle['evidence_ref'])
+    receipt = lifecycle['creation_receipt']
+    if lifecycle['disposition'] == 'delete':
+        require(lifecycle['origin'] == 'created' and lifecycle['manager'] == 'git', 'only script-created resources may be deleted')
+        keys(receipt, {'worktree', 'gitdir', 'gitdir_identity', 'branch', 'base_commit'})
+        require(receipt['branch'] == binding['branch'] and receipt['base_commit'] == binding['base_commit'],
+                'creation receipt differs from binding')
+        require(PurePosixPath(text(receipt['gitdir'])).is_absolute() and '..' not in PurePosixPath(receipt['gitdir']).parts,
+                'creation Git directory must be absolute and normalized')
+        for field in ('worktree', 'gitdir_identity'):
+            require(isinstance(receipt[field], list) and len(receipt[field]) == 2 and
+                    all(type(item) is int and item >= 0 for item in receipt[field]), 'invalid creation resource identity')
+    else:
+        require(receipt is None, 'retained workspaces cannot claim deletion provenance')
+
+
+def validate_disposition(binding, evidence):
+    """Validate the shape of Git-derived disposition; the Git adapter proves it."""
+    names = {'disposition', 'disposition_verified', 'worktree_removed', 'branch_removed'}
+    require(isinstance(evidence, dict) and names <= set(evidence), 'worktree disposition evidence missing')
+    require(all(type(evidence[name]) is bool for name in names - {'disposition'}), 'invalid disposition evidence')
+    expected = 'retained' if binding['lifecycle']['disposition'] == 'retain' else 'deleted'
+    require(evidence['disposition'] == expected, 'worktree disposition changed')
+    removed = evidence['worktree_removed'] and evidence['branch_removed']
+    if expected == 'retained':
+        require(not evidence['worktree_removed'] and not evidence['branch_removed'], 'retained workspace was removed')
+    if evidence['disposition_verified']:
+        require(expected == 'retained' or removed, 'deletion is incomplete')
+    return evidence['disposition_verified']
 
 
 def validate_selection(value):
@@ -340,9 +374,15 @@ def validate_progress(progress):
     if 'configuration' in progress:
         validate_selection(progress['configuration'])
     if 'design_input' in progress:
-        allowed = {'state', 'design_input', 'binding', 'allowed_paths', 'protected_paths', 'configuration', 'result_digest', 'git_baseline_commit'}
+        allowed = {'state', 'design_input', 'binding', 'allowed_paths', 'protected_paths', 'configuration', 'result_digest', 'git_baseline_commit', 'recovery', 'recovery_history'}
         require(state in {'designer-pending', 'designing', 'design-received', 'design-accepted', 'cancelled'}, 'invalid designer state')
         text(progress['design_input'])
+        if 'recovery' in progress:
+            validate_recovery(progress['recovery'], progress)
+        if 'recovery_history' in progress:
+            require(isinstance(progress['recovery_history'], list) and len(progress['recovery_history']) <= 32, 'invalid recovery history')
+            for recovery in progress['recovery_history']:
+                validate_recovery(recovery, progress)
         validate_binding(progress['binding'])
         paths(progress['allowed_paths']); paths(progress['protected_paths'], empty=True)
     elif 'executions' in progress:
@@ -408,6 +448,18 @@ def validate_progress(progress):
     require(set(progress) <= allowed | {'launch_input'}, 'unknown checkpoint fields')
 
 
+def recovery_authority(progress):
+    return progress['design_input'] if 'design_input' in progress else progress['authority_digest']
+
+
+def recovery_owner(progress):
+    return 'designer' if 'design_input' in progress else 'dispatcher'
+
+
+def recovery_role(progress):
+    return 'solution-designer' if 'design_input' in progress else 'implementation-dispatcher'
+
+
 def validate_recovery(recovery, progress):
     require(isinstance(recovery, dict), 'invalid recovery checkpoint')
     frozen_keys = {'dispatcher_ref', 'attempt', 'reference', 'reason', 'stop_receipts', 'call_receipts',
@@ -419,7 +471,7 @@ def validate_recovery(recovery, progress):
     require(isinstance(recovery, dict) and required <= set(recovery) <= required | {'releases'}, 'invalid recovery checkpoint')
     require(recovery['recovery_id'] == digest({k:recovery[k] for k in frozen_keys}) and
             recovery['snapshot_digest'] == digest(recovery['snapshot']), 'prepared recovery fingerprint changed')
-    require(recovery['authority_digest'] == progress['authority_digest'], 'recovery authority changed')
+    require(recovery['authority_digest'] == recovery_authority(progress), 'recovery authority changed')
     require(recovery['state'] in {'prepared', 'dispatch-pending', 'dispatch-unknown', 'not-created', 'ready', 'activated'}, 'invalid recovery state')
     for key in ('dispatcher_ref', 'attempt', 'reference', 'reason'):
         text(recovery[key])
@@ -431,27 +483,28 @@ def validate_recovery(recovery, progress):
         require(isinstance(snapshot[key], str) and re.fullmatch('[0-9a-f]{40}', snapshot[key]), 'invalid recovery commit')
     require(isinstance(snapshot['index_hash'], str) and re.fullmatch('[0-9a-f]{64}', snapshot['index_hash']), 'invalid recovery index')
     ownership = recovery['ownership']
-    keys(ownership, {'accepted', 'unaccepted', 'dispatcher'})
+    keys(ownership, {'designer'} if 'design_input' in progress else {'accepted', 'unaccepted', 'dispatcher'})
     seen = set()
     for values in ownership.values():
         current = set(paths(values, empty=True))
         require(not current & seen and current <= set(progress['allowed_paths']), 'conflicting recovery ownership')
         seen.update(current)
-    require(recovery['remaining_paths'] == sorted(set(progress['allowed_paths']) - set(ownership['accepted'])), 'remaining recovery scope changed')
+    require(recovery['remaining_paths'] == sorted(set(progress['allowed_paths']) - set(ownership.get('accepted', []))), 'remaining recovery scope changed')
     require(isinstance(recovery['receipts'], list) and len(recovery['receipts']) <= 64, 'invalid recovery receipts')
-    require(isinstance(recovery.get('releases', []), list) and len(recovery.get('releases', [])) <= len(progress['executions']), 'invalid ownership releases')
+    require(isinstance(recovery.get('releases', []), list) and len(recovery.get('releases', [])) <= len(progress.get('executions', [])), 'invalid ownership releases')
     if recovery['state'] != 'prepared':
         decision, intent = recovery['decision'], recovery['intent']
         keys(decision, {'reference', 'authority_digest', 'attempt', 'remaining_paths', 'assume_paths'})
         text(decision['reference'])
         require(decision['authority_digest'] == recovery['authority_digest'] and decision['attempt'] == recovery['attempt'] and
-                decision['remaining_paths'] == recovery['remaining_paths'] and decision['assume_paths'] == ownership['dispatcher'], 'recovery decision drifted')
+                decision['remaining_paths'] == recovery['remaining_paths'] and decision['assume_paths'] == ownership[recovery_owner(progress)], 'recovery decision drifted')
         keys(intent, {'intent_id','recovery_id','snapshot_digest','role','write_authority','configuration','binding',
-            'authority_digest','plan_digest','allowed_paths','protected_paths','remaining_paths','revalidate','ownership','original_ref','original_attempt'})
+            'authority_digest', ('design_input' if 'design_input' in progress else 'plan_digest'),'allowed_paths','protected_paths','remaining_paths','revalidate','ownership','original_ref','original_attempt'})
         require(intent['intent_id'] == digest([recovery['recovery_id'], decision]) and intent['recovery_id'] == recovery['recovery_id'] and
                 intent['snapshot_digest'] == recovery['snapshot_digest'] and intent['write_authority'] is False and
-                intent['role'] == 'implementation-dispatcher', 'invalid recovery dispatch intent')
-        for key in ('configuration','binding','authority_digest','plan_digest','allowed_paths','protected_paths'):
+                intent['role'] == recovery_role(progress), 'invalid recovery dispatch intent')
+        require(intent['authority_digest'] == recovery_authority(progress), 'recovery authority changed')
+        for key in ('configuration','binding', ('design_input' if 'design_input' in progress else 'plan_digest'),'allowed_paths','protected_paths'):
             require(intent[key] == progress[key], 'recovery dispatch authority drifted')
         for key in ('remaining_paths','revalidate','ownership'):
             require(intent[key] == recovery[key], 'recovery dispatch scope drifted')
@@ -471,7 +524,7 @@ def validate_context(context):
         require(isinstance(successor, dict) and not ({'successor_control', 'retired_handoffs'} & set(successor)), 'only one successor slot and top-level history allowed')
         validate_context(successor)
         require(successor['controller_ref'] == context['controller_ref'] and successor['topic_ref'] == context['topic_ref'], 'successor controller/topic mismatch')
-    require(type(context['schema_version']) is int and context['schema_version'] == 4, 'legacy_run_requires_original_runtime: control schema ' + str(context.get('schema_version')))
+    require(type(context['schema_version']) is int and context['schema_version'] == 5, 'legacy_run_requires_original_runtime: control schema ' + str(context.get('schema_version')))
     require(isinstance(context.get('retired_handoffs', {}), dict), 'invalid retired handoff history')
     for handoff_id, retired in context.get('retired_handoffs', {}).items():
         keys(retired, {'controller_ref', 'topic_ref', 'stage', 'carrier', 'requirement_identity', 'plan',
@@ -612,7 +665,7 @@ def select_configuration(evidence):
 
 def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     keys(request, {'schema_version', 'action', 'actor_ref', 'context', 'evidence'})
-    require(type(request['schema_version']) is int and request['schema_version'] == 4, 'legacy_run_requires_original_runtime: control request schema ' + str(request.get('schema_version')))
+    require(type(request['schema_version']) is int and request['schema_version'] == 5, 'legacy_run_requires_original_runtime: control request schema ' + str(request.get('schema_version')))
     context = copy.deepcopy(request['context'])
     validate_context(context)
     require(request['actor_ref'] == context['controller_ref'], 'only authenticated controller writes control checkpoints')
@@ -740,7 +793,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         progress['state'] = 'closing'
     elif action == 'closure-result':
         keys(evidence, {'ref', 'candidate', 'merge', 'ancestor_verified', 'changed_paths', 'binding',
-                        'checks', 'worktree_removed', 'branch_removed', 'implementation_problem'})
+                        'checks', 'worktree_removed', 'branch_removed', 'disposition', 'disposition_verified', 'implementation_problem'})
         require(progress and progress['state'] in {'closing', 'cleanup-pending'} and evidence['ref'] == context['carrier']['ref'], 'wrong closure identity/state')
         require(evidence['candidate'] == progress['candidate'] and evidence['binding'] == progress['binding'], 'closure candidate or binding mismatch')
         if evidence['implementation_problem'] is not None:
@@ -753,7 +806,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         require(set(paths(evidence['changed_paths'])) <= set(progress['implementation_paths'] + progress['closure_paths']), 'closure changed paths escape scope')
         require(progress['merge'] is None or progress['merge'] == evidence['merge'], 'cleanup recovery must not republish')
         progress['merge'] = evidence['merge']
-        if evidence['worktree_removed'] is True and evidence['branch_removed'] is True:
+        if validate_disposition(progress['binding'], evidence):
             progress['state'] = 'completed'
         else:
             progress['state'] = 'cleanup-pending'
@@ -895,8 +948,10 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     elif action == 'prepare-dispatch-recovery':
         keys(evidence, {'dispatcher_ref', 'attempt', 'reference', 'reason', 'stop_receipts', 'call_receipts',
                         'host_evidence', 'snapshot', 'ownership', 'revalidate'})
-        require(context['stage'] == 3 and context['carrier']['kind'] == 'implementation-dispatcher' and progress and
-                'executions' in progress, 'recovery is only for the original Stage-3 dispatcher')
+        require(progress and context['stage'] in {2, 3} and context['carrier']['kind'] == recovery_role(progress),
+                'recovery requires the original native stage role')
+        require('design_input' not in progress or progress['state'] == 'designing',
+                'received or accepted design must reconcile its existing publication')
         require(evidence['dispatcher_ref'] == context['carrier']['ref'] and evidence['attempt'] == context['carrier']['attempt'],
                 'recovery must retain the original dispatcher attempt')
         require(progress['state'] not in {'cancelled', 'deliverable', 'validating'},
@@ -904,13 +959,13 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         text(evidence['reference']); text(evidence['reason'])
         host = evidence['host_evidence']
         keys(host, {'stopped_refs', 'stop_receipts', 'call_receipts', 'lifecycle_digest', 'original_host'})
-        required = {context['carrier']['ref']} | {e['agent_ref'] for e in progress['executions'] if e['agent_ref']}
-        require(all(e['agent_ref'] is not None or e['state'] == 'cancelled' and e['stopped'] for e in progress['executions']),
+        required = {context['carrier']['ref']} | {e['agent_ref'] for e in progress.get('executions', []) if e['agent_ref']}
+        require(all(e['agent_ref'] is not None or e['state'] == 'cancelled' and e['stopped'] for e in progress.get('executions', [])),
                 'unbound native call requires reconciliation')
         require(required <= set(host['stopped_refs']) and host['stop_receipts'] == evidence['stop_receipts'] and
                 host['call_receipts'] == evidence['call_receipts'], 'complete original host evidence required')
-        frozen = {**evidence, 'authority_digest': progress['authority_digest'],
-                  'remaining_paths': sorted(set(progress['allowed_paths']) - set(evidence['ownership']['accepted']))}
+        frozen = {**evidence, 'authority_digest': recovery_authority(progress),
+                  'remaining_paths': sorted(set(progress['allowed_paths']) - set(evidence['ownership'].get('accepted', [])))}
         if direct_implementation(progress):
             frozen['direct_policy'] = copy.deepcopy(progress['implementation_policy'])
         identity = digest(frozen)
@@ -944,7 +999,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         recovery.setdefault('releases', []).append(evidence)
     elif action in {'dispatch-recovery-intent', 'dispatch-recovery-result', 'recover-dispatch'}:
         recovery = (progress or {}).get('recovery')
-        require(context['stage'] == 3 and recovery is not None and evidence.get('recovery_id') == recovery['recovery_id'],
+        require(context['stage'] in {2, 3} and recovery is not None and evidence.get('recovery_id') == recovery['recovery_id'],
                 'exact prepared recovery required')
         if action == 'dispatch-recovery-result':
             keys(evidence, {'recovery_id', 'receipt'})
@@ -975,9 +1030,9 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             keys(decision, {'reference', 'authority_digest', 'attempt', 'remaining_paths', 'assume_paths'})
             text(decision['reference'])
             require(evidence['snapshot_digest'] == recovery['snapshot_digest'] and
-                    decision['authority_digest'] == recovery['authority_digest'] == progress['authority_digest'] and
+                    decision['authority_digest'] == recovery['authority_digest'] == recovery_authority(progress) and
                     decision['attempt'] == recovery['attempt'] and decision['remaining_paths'] == recovery['remaining_paths'] and
-                    decision['assume_paths'] == recovery['ownership']['dispatcher'], 'Controller must assume the exact prepared snapshot and scope')
+                    decision['assume_paths'] == recovery['ownership'][recovery_owner(progress)], 'Controller must assume the exact prepared snapshot and scope')
             require(recovery['decision'] is None or recovery['decision'] == decision, 'recovery decision cannot change')
             if action == 'dispatch-recovery-intent':
                 if recovery['intent'] is not None and recovery['state'] != 'not-created':
@@ -986,9 +1041,10 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                 recovery['decision'] = decision
                 recovery['intent'] = {'intent_id': digest([recovery['recovery_id'], decision]),
                     'recovery_id': recovery['recovery_id'], 'snapshot_digest': recovery['snapshot_digest'],
-                    'role': 'implementation-dispatcher', 'write_authority': False,
+                    'role': recovery_role(progress), 'write_authority': False,
                     'configuration': progress['configuration'], 'binding': progress['binding'],
-                    'authority_digest': progress['authority_digest'], 'plan_digest': progress['plan_digest'],
+                    'authority_digest': recovery_authority(progress),
+                    ('design_input' if 'design_input' in progress else 'plan_digest'): progress.get('design_input', progress.get('plan_digest')),
                     'allowed_paths': progress['allowed_paths'], 'protected_paths': progress['protected_paths'],
                     'remaining_paths': recovery['remaining_paths'], 'revalidate': recovery['revalidate'],
                     'ownership': recovery['ownership'], 'original_ref': recovery['dispatcher_ref'], 'original_attempt': recovery['attempt']}
@@ -1006,14 +1062,18 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                 recovery.update(state='activated', activation=activation)
                 if recovery.get('direct_policy'):
                     progress['implementation_policy'] = {'mode': 'full'}
-                # Previous checks are diagnostic history, never evidence for the new attempt.
-                progress.setdefault('validation_history', []).append({k:copy.deepcopy(progress[k]) for k in
-                    ('candidate', 'tests', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts') if k in progress})
-                for key in ('candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'accepted_delivery'):
-                    progress.pop(key, None)
-                progress.update(state='implementing', candidate=None, tests=[])
-                for execution in progress['executions']:
-                    execution['stopped'] = True
+                if 'design_input' in progress:
+                    # Planning has no implementation candidate or Execution roster.
+                    progress['state'] = 'designing'
+                else:
+                    # Previous checks are diagnostic history, never evidence for the new attempt.
+                    progress.setdefault('validation_history', []).append({k:copy.deepcopy(progress[k]) for k in
+                        ('candidate', 'tests', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts') if k in progress})
+                    for key in ('candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'accepted_delivery'):
+                        progress.pop(key, None)
+                    progress.update(state='implementing', candidate=None, tests=[])
+                    for execution in progress['executions']:
+                        execution['stopped'] = True
         return {'ok': True, 'context': context, 'effects': effects, 'recovery': recovery,
                 'remaining_paths': recovery['remaining_paths'], 'revalidate': recovery['revalidate']}
     elif action == 'candidate-ready':
@@ -1359,7 +1419,7 @@ def transition(request: dict[str, Any]) -> dict[str, Any]:
     evidence = copy.deepcopy(request['evidence'])
     require(isinstance(evidence, dict), 'evidence must be an object')
     action = request['action']
-    require(type(request['schema_version']) is int and request['schema_version'] == 4, 'legacy_run_requires_original_runtime: control request schema')
+    require(type(request['schema_version']) is int and request['schema_version'] == 5, 'legacy_run_requires_original_runtime: control request schema')
     require(request['actor_ref'] == context['controller_ref'], 'only authenticated controller writes control checkpoints')
     if action in {'archive', 'archive-result'}:
         result = archive_transition(context, action, evidence)

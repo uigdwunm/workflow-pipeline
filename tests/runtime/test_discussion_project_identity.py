@@ -18,6 +18,7 @@ class DiscussionProjectTests(AttachedTransferTests):
         request = copy.deepcopy(self.request)
         request['target'] = {'kind':'flow', 'binding':{'repository':str(self.root), 'worktree':str(flow),
             'git_common_dir':self.git('rev-parse','--path-format=absolute','--git-common-dir'),
+            'lifecycle': {'origin':'reused','manager':'git','disposition':'retain','evidence_ref':'fixture:host','creation_receipt':None},
             'branch':'identity-flow','target_branch':'main','base_commit':self.git('rev-parse','HEAD')}}
         request['host']['project_path'] = str(flow)
         entry.os.getcwd.return_value = str(flow)
@@ -102,6 +103,7 @@ class DiscussionProjectTests(AttachedTransferTests):
         request = copy.deepcopy(self.request)
         request['target'] = {'kind':'flow', 'binding':{'repository':str(self.root), 'worktree':str(flow),
             'git_common_dir':self.git('rev-parse','--path-format=absolute','--git-common-dir'),
+            'lifecycle': {'origin':'reused','manager':'git','disposition':'retain','evidence_ref':'fixture:linked-flow','creation_receipt':None},
             'branch':'linked-execution','target_branch':'main','base_commit':self.git('rev-parse','HEAD')}}
         request['host']['project_path'] = str(flow)
         request['source']['attachment'] = {'project_id': topic['project_id'], 'tree_id': topic['tree_id'],

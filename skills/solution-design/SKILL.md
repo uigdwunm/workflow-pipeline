@@ -15,7 +15,7 @@ Read [Workflow progression](references/shared/workflow-progression.md) at the A/
 For Stage-1 input, retain both source_commit and delivery_commit and the original
 target proof from [requirement delivery](references/shared/requirement-delivery.md).
 Verify source in its authenticated source context and delivery at the confirmed
-target. After creating the Flow Worktree, recheck target proof and the Flow's
+target. After binding the Flow Worktree, recheck target proof and the Flow's
 frozen document before launch. Incomplete delivery returns to Stage 1; Stage 2
 does not copy or integrate missing requirements.
 
@@ -35,7 +35,7 @@ load only the matching message formats from
 [references/solution-design/templates.md](references/solution-design/templates.md).
 The child reads the complete execution protocol before stage work; the primary
 reads the common constraints and the sections for its current operation.
-Before creating or publishing the Flow Worktree, also read
+Before selecting, binding, creating or publishing the Flow Worktree, also read
 [the shared worktree execution contract](references/shared/guided-implementation/worktree-execution.md).
 Interpret user replies through
 [`references/shared/design-discussion/confirmation-contract.md`](references/shared/design-discussion/confirmation-contract.md)
@@ -114,7 +114,7 @@ modification request.
 
 ## Establish the requirement source
 
-Select the source before creating a Flow Worktree or launching the child:
+Select the source before finalizing a Flow Worktree baseline or launching the child:
 
 When no document or stage handoff is claimed and no discussion is attached,
 an explicit request to enter this stage uses the current conversation by default.
@@ -236,8 +236,9 @@ exact-target publication; the primary owns identity, user decisions, anomaly
 routing and mechanical intake. Neither role implements code. After source preparation, both roles preserve the
 accepted requirement source until an explicit source correction.
 
-Before the child launch, the primary calls `start-worktree` once and discloses
-the returned Flow Worktree binding. The child runs in that worktree, verifies
+Before child launch, the primary follows the shared worktree selection contract:
+verify an inherited binding, otherwise reuse a suitable independent workspace before
+host-managed creation, then disclose the verified Flow Worktree binding. The child runs in that worktree, verifies
 the binding before its first write, and commits only stage-owned planning
 documents there. Unrelated changes in the primary checkout remain untouched and
 do not block Flow Worktree creation.

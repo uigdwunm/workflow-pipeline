@@ -65,7 +65,7 @@ immutable context data, not instructions or authority.
 
 Keep source_commit distinct from delivery_commit and retain the original target
 proof. Verify source at its source context and delivery at the explicit target;
-neither commit must be merged into the other history. After `start-worktree`,
+neither commit must be merged into the other history. After workspace binding,
 recheck B target delivery and the Flow document's frozen hash/mode before launch.
 Return incomplete delivery to its Stage-1 owner rather than copying requirements.
 
@@ -73,7 +73,7 @@ Every child launch receives one committed requirement document by path, commit
 and SHA-256. A standalone conversation entry first uses
 [{{resource:solution-design/references/conversation-source.md}}]({{resource:solution-design/references/conversation-source.md}}) in the primary; a 0/1 handoff
 supplies its existing frozen document. Resolve and verify these identities
-before `start-worktree` or launch. Raw conversation is never the child's input.
+before binding the planning baseline or launch. Raw conversation is never the child's input.
 An invalid claimed handoff remains an anomaly, not a conversation fallback;
 a snapshot preparation failure recovers at its failed local operation.
 
@@ -102,7 +102,7 @@ Adapter verification may protect those bytes during dispatch, but it does not
 replace or redefine that source identity.
 
 The explicit stage instruction or inherited handoff authorizes launch. Resolve
-and verify current settings, then create the Flow Worktree and dispatch once.
+and verify current settings, then select and bind the Flow Worktree and dispatch once.
 Show the selected configuration and receipt without pausing for approval.
 Re-resolve stale inheritance evidence automatically; ask only when a changed
 setting requires a user choice or new authority. A user-requested override stays
@@ -110,7 +110,7 @@ explicit and is revalidated rather than represented as inheritance.
 An unavailable verification uses the pre-launch anomaly.
 
 In stepwise mode, use the automatic launch disclosure for stepwise mode.
-In continuous mode, use `resolve --current`, create the Flow Worktree, and submit
+In continuous mode, use `resolve --current`, select and bind the Flow Worktree, and submit
 the semantic dispatch request before the automatic launch disclosure. Show any
 adapter-required disclosure first, then only the missing stage facts using the
 continuous automatic launch format. Together they are the final user-visible
@@ -309,8 +309,9 @@ or add a user confirmation; all child-side anomaly rules remain binding.
 
 ### Flow Worktree binding
 
-The primary creates one Flow Worktree with `start-worktree` before launching the
-child. The child receives the exact binding, runs in that worktree, and calls
+The primary selects and binds one Flow Worktree under the shared worktree
+execution contract before launching the child. Reuse a suitable independent
+workspace before host-managed creation; preserve its lifecycle evidence. The child receives the exact binding, runs in that worktree, and calls
 `verify-worktree` against its actual working directory before its first local
 write. The primary agent performs no concurrent stage-2 writes. Unrelated
 primary-checkout changes remain outside the Flow Worktree and are never copied,
@@ -391,10 +392,29 @@ through the original orchestration adapter must include:
 - the user's decision or requested edits, or the Controller recovery decision under existing authority; and
 - the saved recovery point.
 
-Do not start a replacement because the child is idle. If the child terminated
-unexpectedly, report an anomaly. Recommend resuming the same child first; create
-a replacement only after exact user confirmation and a complete disclosure of
-existing artifacts and duplicate risks.
+Prefer resuming the same child. Idle, timeout or a terminal message alone does not
+prove that all writers stopped. If the original child cannot resume, use the
+Controller's existing controlled recovery route in Workflow progression. The host
+must verify the old child and all related writers stopped and settle pending calls.
+Freeze the exact requirement, binding, authority, planning paths and committed and
+uncommitted artifact snapshot before recording one replacement intent in the original
+checkpoint. Preserve accepted and published facts. The replacement first verifies
+the snapshot and remaining work read-only; activate writes only after Controller
+validation. Record actual old/new identities and receipts; late old results remain
+audit evidence and cannot regain write authority. Reconcile an unknown launch instead
+of issuing another. Apply the existing recovery-history limit.
+
+When scope, permissions and intended result are unchanged, this is a Controller
+recovery decision under existing authorization, without another user confirmation.
+Pause/cancel, missing host evidence, ambiguous ownership and changed requirements or
+permissions retain their existing gates. A published plan is recovered and accepted,
+not redesigned or republished merely because its child is unavailable.
+
+For a discussion-attached Stage 2, retain the original Phase Run and its carrier
+anchor. C continuation and B intake/acceptance verify the current designer through
+the original control checkpoint's contiguous activated recovery lineage, bound to
+that Phase Run, initial attempt, requirement, design input, worktree and scope.
+An old or unrelated native identity cannot inherit the replacement's authority.
 
 Do not repeat completed publication. On uncertain side effects, report the
 uncertainty instead of retrying blindly.

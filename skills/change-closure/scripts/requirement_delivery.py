@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deliver frozen Stage-1 Markdown; callers persist the transaction identity."""
+"""Deliver authorized frozen requirements; callers persist transaction identity."""
 from __future__ import annotations
 import os
 import json
@@ -16,7 +16,7 @@ import discussion_protocol
 from discussion_core.state import _requirement_phase_attempts
 from supervision_protocol import PUBLICATION_LOCK_FILENAME, _flock_with_timeout
 
-PROTOCOL = "requirement-delivery-v1"
+PROTOCOL = "requirement-delivery-v2"
 
 
 def user_work(root, paths):
@@ -54,8 +54,15 @@ def target(current, value):
 
 
 def source(current, evidence, paths):
-    entry.require(current["entry"]["stage"] == 1, "invalid_stage", "only Stage 1 delivers requirements")
+    stage2 = current["entry"]["stage"] == 2
+    entry.require(current["entry"]["stage"] == 1 or
+                  (stage2 and current["actor"]["role"] == "controller"
+                   and current["requirement"]["kind"] == "conversation"
+                   and evidence.get("source_kind") == "conversation"),
+                  "invalid_stage", "delivery requires Stage 1 or the original Stage-2 conversation Controller")
     identity, commit = handoff.source(current, evidence, 2)
+    if stage2:
+        entry.require(paths == [identity["path"]], "invalid_paths", "conversation delivery owns only its frozen snapshot")
     entry.require(commit is not None, "git_required", "non-Git checkpoint cannot authorize Git delivery")
     if evidence.get("source_kind") == "discussion":
         entry.require(paths == [identity["path"]], "invalid_paths", "delivery is limited to the completed checkpoint path")
@@ -88,6 +95,9 @@ def prepare(current, request):
                   and paths == sorted(set(paths)), "invalid_paths", "sorted unique Markdown paths required")
     identity, commit = source(current, request["requirement"], paths)
     entry.require(identity["path"] in paths, "invalid_paths", "requirement must be owned")
+    if current["entry"]["stage"] == 2:
+        entry.require(current["target"] == {"kind": "planning", **request["target"]},
+                      "target_mismatch", "conversation delivery must retain its prepared planning target")
     root, head = target(current, request["target"])
     previous = None
     if request.get("previous") is not None:
@@ -142,6 +152,9 @@ def validate(current, intent):
     requirement.bind(current, intent["entry"])
     identity, commit = source(current, intent["requirement"], paths)
     entry.require(identity == intent["requirement_identity"] and commit == intent["source_commit"], "source_changed", "frozen source changed")
+    if current["entry"]["stage"] == 2:
+        entry.require(current["target"] == {"kind": "planning", **intent["target"]},
+                      "target_mismatch", "conversation delivery target differs from the frozen target")
     root, head = target(current, intent["target"])
     handoff.commit(intent["target_head"])
     handoff.commit(intent["baseline"])

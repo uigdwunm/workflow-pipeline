@@ -31,7 +31,7 @@ import workflow_control_git as control_git
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v12"
+PROTOCOL = "workflow-progress-v13"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -218,6 +218,30 @@ def stage_boundary(mode, stage, accepted, next_stage=None):
         "Confirm entry to Stage " + str(next_stage if next_stage is not None else stage + 1))
 
 
+def workspace_evidence(binding, controller_ref, supplied):
+    """Retain original host observations in C; raw tools are not an authority store."""
+    lifecycle = binding['lifecycle']
+    if lifecycle['disposition'] == 'delete':
+        expected = {'controller_ref': controller_ref, 'reference': lifecycle['evidence_ref'],
+                    'worktree': binding['worktree'], 'creation_receipt': lifecycle['creation_receipt']}
+        require(supplied is None or supplied == expected, 'workspace_evidence_changed', 'retain the script creation receipt')
+        return copy.deepcopy(expected)
+    entry.fields(supplied, {'controller_ref', 'reference', 'worktree', 'receipts'})
+    require(supplied['controller_ref'] == controller_ref and supplied['reference'] == lifecycle['evidence_ref']
+            and supplied['worktree'] == binding['worktree'], 'workspace_evidence_changed',
+            'workspace observation must name the original Controller, reference and exact path')
+    receipts = supplied['receipts']
+    require(isinstance(receipts, list) and 0 < len(receipts) <= 16, 'host_evidence_missing',
+            'retain actual workspace selection and occupancy observations')
+    for receipt in receipts:
+        entry.fields(receipt, {'tool', 'request', 'response'})
+        entry.nonempty(receipt['tool'])
+        require(isinstance(receipt['request'], dict) and
+                isinstance(receipt['response'], (dict, list, str)) and bool(receipt['response']),
+                'host_evidence_missing', 'complete workspace tool request and raw response required')
+    return copy.deepcopy(supplied)
+
+
 def validate_state(state):
     require(isinstance(state, dict) and state.get("protocol") == PROTOCOL,
             "legacy_run_requires_original_runtime", "use original " + str(state.get("protocol") if isinstance(state,dict) else None) + "; package digests " + str({k:v.get("bundle_digest") for k,v in (state.get("packages",{}) if isinstance(state,dict) else {}).items()}))
@@ -226,9 +250,11 @@ def validate_state(state):
     require(state.get("mode") in {"stepwise", "continuous"}, "invalid_checkpoint", "invalid mode")
     native_host = state.get('native_host')
     if state.get('stage', 0) >= 2:
+        require('workspace_evidence' in state, 'host_evidence_missing', 'original workspace evidence is missing')
+        workspace_evidence(state['handoff']['binding'], state['handoff']['controller_ref'], state['workspace_evidence'])
         require(isinstance(native_host, dict) and native_host.get('adapter') in {'collaboration', 'app-server'} and
                 isinstance(native_host.get('instance'), str) and bool(native_host['instance']),
-                'invalid_checkpoint', 'v12 requires the originally admitted native host')
+                'invalid_checkpoint', 'v13 requires the originally admitted native host')
         if native_host['adapter'] == 'collaboration':
             require(set(native_host) == {'adapter', 'instance', 'controller_ref', 'baseline_refs'} and
                     isinstance(native_host['controller_ref'], str) and
@@ -796,7 +822,7 @@ class Progress:
 
     def start(self, data):
         require(self.outer.get('transport', {}).get('state') != 'lost', 'host_recovery_required', 'lost foreground transport cannot create a native role')
-        entry.fields(data, {"handoff"}, {"control", "next_stage", "requirement_transaction", "native_host"})
+        entry.fields(data, {"handoff"}, {"control", "next_stage", "requirement_transaction", "native_host", "workspace_evidence"})
         request = copy.deepcopy(data["handoff"])
         require(request.get("operation") == "prepare", "invalid_request", "handoff prepare input required")
         old = self.state
@@ -874,6 +900,14 @@ class Progress:
             require(root is None or not self.path.resolve().is_relative_to(Path(root).resolve()),
                     "unsafe_checkpoint", "checkpoint must live outside repository and disposable worktree")
         saved = handoff.handle(request)
+        selection = None
+        if request['stage'] >= 2:
+            previous_selection = old.get('workspace_evidence') if old and old['stage'] >= 2 else None
+            supplied_selection = data.get('workspace_evidence', previous_selection or
+                                           self.outer.get('confirmed', {}).get('workspace_evidence'))
+            selection = workspace_evidence(saved['binding'], saved['controller_ref'], supplied_selection)
+            require(previous_selection is None or selection == previous_selection,
+                    'workspace_evidence_changed', 'retain the original workspace selection across stages and retries')
         confirmed = self.outer.get("confirmed")
         if confirmed is not None:
             require(self.outer.get("current_stage") == "stage" + str(saved["stage"]),
@@ -942,6 +976,7 @@ class Progress:
             "transaction_result": None, "stopped": False,
             "retained_host_actions": [],
             "native_host": native_host,
+            "workspace_evidence": selection,
             "host_preflight": copy.deepcopy(data.get('native_host')),
             "host": {"generation": 0, "status": "unknown", "proof": None, "query": None,
                      "seen": {}, "calls": {}, "last_stop": None},
@@ -1127,7 +1162,7 @@ class Progress:
                        "action_resolution": copy.deepcopy(data.get("action_resolution"))}
         if receipt["status"] == "stopped" and causal:
             checkpoint = s['control']['context'].get('handoff_progress') or {}
-            if control.direct_implementation(checkpoint):
+            if control.direct_implementation(checkpoint) or 'design_input' in checkpoint:
                 try:
                     observation['git_snapshot'] = control_git.recovery_snapshot(Path(checkpoint['binding']['worktree']), checkpoint)[0]
                 except control.ControlError as error:
@@ -1281,7 +1316,7 @@ class Progress:
         current = handoff.refresh(s["handoff"]["entry"], s["handoff"]["expected_entry"], after_work=True)
         if s["stage"] >= 2:
             handoff.source(current, s["handoff"]["requirement"], s["stage"])
-        handoff.phase_evidence(s["handoff"], role_ref=self.bound_ref())
+        handoff.phase_evidence(s["handoff"], role_ref=self.bound_ref(), control_context=s["control"]["context"])
         outstanding = s.get("host_action")
         if (outstanding is not None and outstanding["operation"] == "continue-host" and
                 not outstanding.get("resolved")):
@@ -1842,7 +1877,8 @@ class Progress:
         else:
             binding, scope = s["handoff"]["binding"], s["handoff"]["scope"]
             payload.update(candidate_commit=s["handoff"]["predecessor"]["payload"]["candidate_commit"],
-                           merge_commit=result["merge_commit"], cleanup=supervision._cleanup_facts(binding),
+                           merge_commit=result["merge_commit"],
+                           cleanup=supervision.verify_disposition(binding, result["candidate_commit"], result["merge_commit"]),
                            changed_paths=supervision._changed_paths(Path(binding["repository"]), scope["baseline"], result["merge_commit"]))
         return payload
 
@@ -2084,7 +2120,7 @@ class Progress:
                         'host_evidence_missing', 'current complete old-writer stop barrier required')
         if data['action'] == 'prepare-dispatch-recovery':
             self.require_not_stopping()
-            require(s['stage'] == 3 and not s.get('publication') and not s.get('transport_loss'),
+            require(s['stage'] in {2, 3} and not s.get('publication') and not s.get('transport_loss'),
                     'host_recovery_required', 'retain original host and stage; publication must reconcile first')
             handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
             require(not self.unresolved_host_actions() and not self.stop_barrier_pending(),
@@ -2110,7 +2146,7 @@ class Progress:
                     'host_evidence_missing', 'references must name actual saved stop and invocation receipts')
             data = copy.deepcopy(data)
             checkpoint = s['control']['context']['handoff_progress']
-            if control.direct_implementation(checkpoint):
+            if control.direct_implementation(checkpoint) or 'design_input' in checkpoint:
                 worktree = Path(checkpoint['binding']['worktree'])
                 control_git.verify_stopped_snapshot(worktree, stop.get('git_snapshot'),
                                                     control_git.recovery_snapshot(worktree, checkpoint)[0])
@@ -2932,14 +2968,14 @@ def handle(path, request):
     require(path.is_absolute(), "invalid_checkpoint", "absolute checkpoint path required")
     with record_lock(path):
         outer = read_record(path)
-        require(outer.get("version") not in {1, 2, 3, 4}, "legacy_run_requires_original_runtime", "retain the original runner and record")
+        require(outer.get("version") not in {1, 2, 3, 4, 5, 6}, "legacy_run_requires_original_runtime", "retain the original runner and record")
         member = outer.get(KEY)
         pinned_protocol = outer.get("confirmed", {}).get("packages", {}).get("runner", {}).get("compatibility_key", {}).get("workflow_progress")
         require((member is None or isinstance(member, dict) and member.get("protocol") == PROTOCOL) and
                 (pinned_protocol is None or pinned_protocol == PROTOCOL),
                 "legacy_run_requires_original_runtime", "all operations require the original pinned progression runtime")
         if member is not None:
-            require(member.get("control",{}).get("context",{}).get("schema_version") == 4,
+            require(member.get("control",{}).get("context",{}).get("schema_version") == 5,
                     "legacy_run_requires_original_runtime", "retain the original embedded control runtime")
         if request["operation"] == "deliver-requirement":
             return deliver_requirement(path, outer, request.get("data", {}))

@@ -40,15 +40,27 @@ An explicit request to enter Stage 2 authorizes this bounded local preparation:
    a requirement document, not a transcript or proposed solution. Disclose its
    path and scope summary while continuing; saving settled decisions needs no
    additional confirmation.
-3. Before `start-worktree`, commit only this snapshot on the verified planning
-   target checkout. Check the exact path's baseline and index state, preserve
-   all unrelated staged and unstaged changes, and verify the commit's changed
-   paths contain only the snapshot. Never use a blanket add or commit.
-4. Read the committed bytes, compute SHA-256, and record absolute path, commit
-   and hash. Require the working document to match. The source commit must be
-   an ancestor of the target used by `start-worktree`, so its bytes are present
-   in the one Flow Worktree. Include the snapshot in `protected_paths`, not the
-   child's planning `allowed_paths`.
+3. Record the actual preparation checkout separately from the planning target.
+   A suitable existing independent workspace may freeze this snapshot there; the
+   target-checkout route remains valid. Commit only this snapshot after checking
+   its baseline and index; preserve unrelated staged and unstaged changes. Verify
+   the commit's changed paths contain only the snapshot.
+4. Retain the adapter's committed source identity and require working bytes to
+   match. Reuse verified existing frozen evidence. If the source is outside target
+   history, use the existing [bounded target delivery](../shared/requirement-delivery.md)
+   for this Stage-2 conversation snapshot under the original Controller authority.
+   Keep source and delivery commits distinct; deliver only the authorized document,
+   never unrelated source history. Stage-1 and discussion source ownership is unchanged.
+5. Verify the same source in the chosen Flow Worktree and target proof before
+   finalizing its planning baseline. If controlled source and target delivery
+   commits forked, integrate the target only with writers stopped and a clean
+   workspace, verifying the delta stays within authorized content. Real content
+   conflicts use the existing decision path. Bind `base_commit` to the verified
+   target delivery HEAD, not the source's integration HEAD. Binding `allowed_paths`
+   must include the frozen requirement path: its incoming source commit remains in
+   history even when source and target final bytes are identical. After binding, the
+   frozen requirement belongs in `protected_paths`, not designer planning
+   `allowed_paths`; its preparation commit is not new planning output.
 
 A failed write, commit or verification uses the existing pre-launch anomaly
 with the exact failed operation and recovery point. Preserve successful writes;

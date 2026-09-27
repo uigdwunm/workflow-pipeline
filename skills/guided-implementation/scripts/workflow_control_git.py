@@ -132,7 +132,7 @@ def recovery_snapshot(repository, progress):
     for arguments in (('diff', '--name-only', '-z', scope_base, 'HEAD'),
                       ('diff', '--cached', '--name-only', '-z'), ('diff', '--name-only', '-z')):
         changed.update(filter(None, git(repository, *arguments).decode().split('\0')))
-    if direct_implementation(progress):
+    if direct_implementation(progress) or 'design_input' in progress:
         # Final-tree diffs cannot reveal a committed out-of-scope addition
         # followed by a separate commit that removes it again.
         revisions = git(repository, 'rev-list', baseline + '..HEAD').decode().splitlines()
@@ -147,6 +147,8 @@ def recovery_snapshot(repository, progress):
             'recovery diff escapes authority or changes protected sources')
     actual.update(base=baseline, target=target,
         files={p: file_fingerprint(repository, p) for p in progress['allowed_paths'] + progress['protected_paths']})
+    if 'design_input' in progress:
+        return actual, {'designer': sorted(changed)}, []
     owners, accepted_fingerprints, revalidate = {}, {}, []
     for execution in progress['executions']:
         if execution['state'] == 'cancelled':
@@ -275,12 +277,14 @@ def verified_transition(payload):
         closure_changes = set(git(primary, 'diff', '--name-only', accepted, merge).decode().splitlines())
         require(closure_changes <= set(progress['closure_paths']), 'closure changed implementation or protected paths')
         all_changes = git(primary, 'diff', '--name-only', commit(progress['verification']['expected_target_head']), merge).decode().splitlines()
-        registered = git(primary, 'worktree', 'list', '--porcelain').decode().splitlines()
-        branch = subprocess.run(['git', '-C', str(primary), 'show-ref', '--verify', '--quiet', 'refs/heads/' + binding['branch']], capture_output=True)
-        require(branch.returncode in {0, 1}, 'cannot verify branch cleanup')
-        evidence.update(ancestor_verified=True, changed_paths=all_changes,
-            worktree_removed=not Path(binding['worktree']).exists() and 'worktree ' + binding['worktree'] not in registered,
-            branch_removed=branch.returncode == 1)
+        import supervision_protocol as supervision
+        published = git(primary, 'rev-parse', merge + '^2').decode().strip()
+        git(primary, 'merge-base', '--is-ancestor', accepted, published)
+        try:
+            disposition = supervision.verify_disposition(binding, published, merge)
+        except supervision.ProtocolError as error:
+            raise ControlError('worktree disposition verification failed: ' + error.message) from error
+        evidence.update(ancestor_verified=True, changed_paths=all_changes, **disposition)
     if action in {'start-dispatch', 'start-design'}:
         verify_binding(repository, evidence['binding'])
         if action == 'start-dispatch':

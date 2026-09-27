@@ -112,8 +112,9 @@ retains exactly `{path,sha256,version}`; commit remains separate for current con
 
 ## Existing frozen input
 
-Stage-1 freeze proves the source, not target delivery. Before a completed footer
-or dedicated result, use [target delivery](requirement-delivery.md).
+Freeze proves the source, not target delivery. Stage 1 uses target delivery before
+a completed footer or dedicated result; standalone Stage 2 uses it for its own
+conversation snapshot when prepared outside target history. Use [target delivery](requirement-delivery.md).
 Its transaction retains this original receipt and the owned path scope.
 
 Use source.kind=frozen and source.path, operation=verify and evidence=<original

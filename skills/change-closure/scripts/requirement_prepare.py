@@ -108,7 +108,7 @@ def standalone(current):
     entry.require(current["requirement"]["kind"] in {"stage1", "conversation"}, "invalid_source", "mutable standalone requirement source required")
     target = current["target"]
     entry.require(target is not None and target["kind"] == "planning", "target_required", "explicit planning checkout required")
-    entry.require(current["repository"]["cwd"] == current["repository"]["root"], "target_mismatch", "run document preparation at planning checkout root")
+    entry.require(current["repository"]["cwd"] == current["repository"]["root"], "target_mismatch", "run document preparation at the actual source checkout root")
     return Path(current["repository"]["root"])
 
 

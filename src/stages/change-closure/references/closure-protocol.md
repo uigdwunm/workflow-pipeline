@@ -56,7 +56,7 @@ and never repeat the Git closure. A verified documentation merge with cleanup
 remaining is likewise cleaned rather than merged again. Explicit user
 cancellation cancels the active Phase Run and leaves the topic at phase 3.
 
-The Closure Agent writes only the supplied documentation scope. The Workflow Controller uses workflow_control_git.py to verify candidate ancestry, changed paths and actual worktree/branch cleanup. Code defects return to stage 3. Partial cleanup retains the verified merge and uses cleanup-only, never another publication.
+The Closure Agent writes only the supplied documentation scope. The Workflow Controller uses workflow_control_git.py to verify candidate ancestry, changed paths and actual worktree/branch disposition according to the original binding. Code defects return to stage 3. Partial cleanup retains the verified merge and uses cleanup-only, never another publication.
 
 Inherited Stage-3 delivery requires the strict schema-2 final verification on
 implementation commit I and the unchanged expected target. Closure commit D is

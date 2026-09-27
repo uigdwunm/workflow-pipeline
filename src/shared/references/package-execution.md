@@ -1,26 +1,29 @@
 # Package execution and action preflight
 
-Registration provenance and controlled recovery require preparation=workflow-preparation-v4,
-stage_transfer=workflow-stage-transfer-v7, workflow_progress=workflow-progress-v12,
+Registration provenance and controlled recovery require preparation=workflow-preparation-v5,
+stage_transfer=workflow-stage-transfer-v8, workflow_progress=workflow-progress-v13,
 and topic_gate=phase-0-1-discussion-v2. The topic gate key separates packages
 that allow discussion behind a closed dependency from the older blanket guard.
-Preparation v4 separates controller model and refreshed host observations from
-stable actor identity. Requirement freeze preserves unrelated edits made since
+Preparation v5 retains stable actor identity and permits the original Stage-2
+conversation Controller to freeze in a verified independent source checkout. Requirement freeze preserves unrelated edits made since
 preparation and checks for unexpected changes only across its own Git mutations.
-Entry requests use workflow-entry-v3 and requirement requests use requirement-freeze-v2.
+Entry requests use workflow-entry-v4 and requirement requests use requirement-freeze-v2.
 Old pinned runs keep their original packages and records; new packages reject
 incompatible exchanges instead of filling missing identity fields or migrating runs.
-Runner outer version 6 requires workflow-progress-v12, workflow-stage-transfer-v7
-and control compatibility key 6 (JSON schema 4). Discussion request/ledger, requirement-freeze, thread-settings and
-supervision flow-worktree-v2 retain their existing versions. Older records require
+Runner outer version 7 requires workflow-progress-v13, workflow-stage-transfer-v8
+and control compatibility key 7 (JSON schema 5). Supervision flow-worktree-v3
+requires lifecycle provenance and disposition; requirement-delivery-v2 accepts
+bounded Stage-2 conversation delivery. Discussion request/ledger, requirement-freeze
+and thread-settings retain their existing versions. Older records require
 their original pinned runtime without mutation. Missing implementation_policy in
 compatible new input means full; it never supplies direct provenance to an old
 candidate. This change does not install packages or update active registrations.
 
-Progression v12 adds native lifecycle adapter admission and interactive collaboration
-inventory evidence. Old v9/v10/v11 checkpoints and runner
-pins are rejected before any operation, including pause/cancel and requirement
-or lifecycle transactions. Runner outer version 6 and control schema 4 are unchanged from the archive handoff release.
+Progression v13 retains native lifecycle admission and adds controlled Stage-2
+recovery and lifecycle-aware completion. All earlier progress checkpoints and
+runner pins are rejected before any operation, including pause/cancel and
+requirement or lifecycle transactions. Runner v7 and control schema 5 prevent
+old deletion-only bindings from being interpreted as current authority.
 
 For a Stage-2/3/4 Controller, also run the
 [native host preflight]({{resource:shared/references/workflow-progression.md}}#native-host-admission)
@@ -133,6 +136,6 @@ new controller evidence file, use `resume <record> <answer> --registry-input <fi
 the file must contain current paired `registry` and `registry_context` objects. This changes evidence only:
 execution retains the original package realpaths and identities. Missing,
 ambiguous or incompatible current targets block without launching an executor.
-Resume retains the record lock, sessions and completed results. Version 1–5 records
+Resume retains the record lock, sessions and completed results. Version 1–6 records
 are read-only: `legacy_run_requires_original_runtime` means use the retained original
 runner and installation tree; never guess identities or migrate/restart the run.

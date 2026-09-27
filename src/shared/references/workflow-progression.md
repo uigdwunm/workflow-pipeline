@@ -52,7 +52,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v12","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v13","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -174,7 +174,7 @@ An app-server adapter supplies `{adapter:"app-server",snapshot:<raw lifecycle
 snapshot>}` using the full lookup contract below. The foreground runner retains
 its existing live connection identity instead of taking interactive evidence.
 Adapter identity remains fixed across native stages. Installed v11 runs retain
-their original pinned runtime; v12 neither reseals their evidence nor migrates
+their original pinned runtime; v13 neither reseals their evidence nor migrates
 their checkpoints.
 
 ### Interactive completion
@@ -412,9 +412,17 @@ The existing `control/recover-dispatch` remains a separate, explicit Controller
 recovery under B's stopped-writer, accepted-byte and replacement rules. Its C
 journal binds the active business block ID before calling B; only successful
 recovery of that exact block clears it and records the control decision in
-business history. It cannot clear a subsequently created block or serve as a
-design-stage recovery. This preserves existing replacement authority; the new
-`recover-business` operation never grants replacement authority.
+business history. It cannot clear a subsequently created block. Stage-2 replacement
+uses the same stopped-writer, snapshot and durable intent/receipt discipline with
+its solution-designer role and planning state, without fabricated implementation
+Dispatcher or Execution records. It uses `prepare-dispatch-recovery`,
+`dispatch-recovery-intent`, `dispatch-recovery-result` and `recover-dispatch`.
+The existing `dispatcher_ref` evidence key identifies the original designer;
+Stage-2 intent role is `solution-designer`, with frozen `design_input` instead of
+`plan_digest`, `ownership={designer:[paths]}`, empty `revalidate`, and decision
+`assume_paths` equal to the designer paths. The original Controller owns an in-scope recovery
+decision; no extra human approval is added. The `recover-business` operation itself
+never grants replacement authority.
 
 Recovery atomically records `recovery_decisions` and `business_history`, clears
 the exact block, starts a new no-progress counting episode and revokes old host
@@ -594,9 +602,9 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 6 and pin workflow-progress-v12 /
-workflow-stage-transfer-v7 / flow-worktree-v2 packages with control compatibility
-key 6. Earlier progress protocols and runner records require their original
+New runner records use outer version 7 and pin workflow-progress-v13 /
+workflow-stage-transfer-v8 / flow-worktree-v3 packages with control compatibility
+key 7. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete
 registration is required for live actions. No installation is implied.

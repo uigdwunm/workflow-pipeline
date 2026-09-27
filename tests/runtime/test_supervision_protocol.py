@@ -155,10 +155,129 @@ class WorktreeProtocolTests(unittest.TestCase):
         self.assertTrue(failed_advance)
         return raised.exception
 
+    def test_bind_existing_worktree_retains_published_resources(self):
+        worktree = self.root / "existing"
+        base = self.git("rev-parse", "HEAD")
+        self.git("worktree", "add", "-b", "codex/existing", str(worktree), base)
+        request = {"repository": str(self.repository), "target_branch": "main",
+                   "worktree": str(worktree), "branch": "codex/existing", "base_commit": base,
+                   "allowed_paths": ["a.txt"], "lifecycle": {
+                       "origin": "reused", "manager": "git", "disposition": "retain",
+                       "evidence_ref": "controller:selection-1", "creation_receipt": None}}
+        binding = PROTOCOL.bind_worktree(request)["binding"]
+        candidate = self.commit(worktree, "a.txt", "new\n", "change")
+        result = PROTOCOL.complete_worktree(self.complete_input("existing", binding, candidate, base))
+        self.assertEqual(result["cleanup"], {"disposition": "retained", "disposition_verified": True,
+                                            "worktree_removed": False, "branch_removed": False})
+        self.assertTrue(PROTOCOL.verify_worktree({"binding": binding, "platform_cwd": str(worktree)})["verified"])
+        self.assertEqual(self.git("rev-parse", "codex/existing"), candidate)
+        self.assertEqual(PROTOCOL.verify_disposition(binding, candidate, result["merge_commit"]), result["cleanup"])
+        self.commit(worktree, "a.txt", "later work\n", "later")
+        with self.assertRaises(PROTOCOL.ProtocolError):
+            PROTOCOL.verify_disposition(binding, candidate, result["merge_commit"])
+
+    def test_missing_or_forged_deletion_provenance_preserves_workspace(self):
+        binding = self.start("provenance")
+        worktree = Path(binding["worktree"])
+        candidate = self.commit(worktree, "a.txt", "changed\n", "change")
+        legacy = dict(binding)
+        del legacy["lifecycle"]
+        with self.assertRaises(PROTOCOL.ProtocolError):
+            PROTOCOL.complete_worktree(self.complete_input("x", legacy, candidate, binding["base_commit"]))
+        binding["lifecycle"]["creation_receipt"]["worktree"][1] += 1
+        with self.assertRaises(PROTOCOL.ProtocolError):
+            PROTOCOL.complete_worktree(self.complete_input("x", binding, candidate, binding["base_commit"]))
+        self.assertTrue(worktree.exists())
+        self.assertEqual(self.git("rev-parse", binding["branch"]), candidate)
+        self.assertEqual(self.git("rev-parse", "main"), binding["base_commit"])
+
+    def test_malformed_lifecycle_returns_protocol_error_without_mutating_git(self):
+        binding = self.start("malformed-lifecycle")
+        head = self.git("rev-parse", "HEAD")
+        for field in ("origin", "manager", "disposition"):
+            malformed = dict(binding)
+            malformed["lifecycle"] = {**binding["lifecycle"], field: {"unexpected": "object"}}
+            result = self.run_cli("verify-worktree", json.dumps({
+                "binding": malformed, "platform_cwd": binding["worktree"]}).encode())
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(json.loads(result.stdout)["error"]["code"], "invalid_input")
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertTrue(Path(binding["worktree"]).is_dir())
+
+    def test_retained_publication_recovery_does_not_republish_or_delete(self):
+        binding = self.start("retained-recovery")
+        binding["lifecycle"] = {"origin": "created", "manager": "host", "disposition": "retain",
+                                "evidence_ref": "host:workspace-1", "creation_receipt": None}
+        worktree = Path(binding["worktree"])
+        candidate = self.commit(worktree, "a.txt", "changed\n", "change")
+        request = self.complete_input("x", binding, candidate, binding["base_commit"])
+        facts = []
+        def stop_after_merge(fact):
+            facts.append(fact)
+            if fact["event"] == "merged":
+                raise RuntimeError("interrupted")
+        with self.assertRaises(RuntimeError):
+            PROTOCOL.complete_worktree(request, record=stop_after_merge)
+        target = self.git("rev-parse", "main")
+        transaction = {"operation": "complete-worktree", "request": request, "facts": facts}
+        result = PROTOCOL.cleanup_publication(transaction)
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(result["cleanup"]["disposition"], "retained")
+        self.assertEqual(self.git("rev-parse", "main"), target)
+        self.assertTrue(worktree.exists())
+
+    def test_adoption_rejects_unrelated_history_even_when_reverted(self):
+        binding = self.start("hidden-history")
+        worktree = Path(binding["worktree"])
+        self.commit(worktree, "unrelated.txt", "another task\n", "unrelated work")
+        self.git("rm", "unrelated.txt", cwd=worktree)
+        self.git("commit", "-q", "-m", "remove unrelated work", cwd=worktree)
+        request = {key: binding[key] for key in ("repository", "target_branch", "worktree", "branch", "base_commit")}
+        request.update(allowed_paths=["a.txt"], lifecycle={"origin": "reused", "manager": "git", "disposition": "retain",
+                                                       "evidence_ref": "controller:selection", "creation_receipt": None})
+        with self.assertRaises(PROTOCOL.ProtocolError) as error:
+            PROTOCOL.bind_worktree(request)
+        self.assertEqual(error.exception.code, "path_outside_scope")
+        self.assertTrue(worktree.exists())
+
+    def test_adoption_allows_scoped_history_and_target_integration(self):
+        binding = self.start("integrated-history")
+        worktree = Path(binding["worktree"])
+        self.commit(worktree, "a.txt", "authorized\n", "task work")
+        self.commit(self.repository, "b.txt", "target update\n", "target work")
+        self.git("merge", "--no-edit", "main", cwd=worktree)
+        request = {key: binding[key] for key in ("repository", "target_branch", "worktree", "branch", "base_commit")}
+        request.update(allowed_paths=["a.txt"], lifecycle={"origin": "reused", "manager": "git", "disposition": "retain",
+                                                       "evidence_ref": "controller:selection", "creation_receipt": None})
+        result = PROTOCOL.bind_worktree(request)
+        self.assertEqual(result["state"], "bound")
+        self.assertEqual(result["binding"]["base_commit"], binding["base_commit"])
+
+    def test_adoption_rejects_unknown_history_dirty_workspace_and_delete_policy(self):
+        binding = self.start("adoption-guards")
+        worktree = Path(binding["worktree"])
+        request = {key: binding[key] for key in ("repository", "target_branch", "worktree", "branch", "base_commit")}
+        request.update(allowed_paths=["a.txt"], lifecycle={"origin": "reused", "manager": "git", "disposition": "retain",
+                                                       "evidence_ref": "controller:selection", "creation_receipt": None})
+        self.commit(worktree, "b.txt", "unrelated\n", "another task")
+        with self.assertRaises(PROTOCOL.ProtocolError) as error:
+            PROTOCOL.bind_worktree(request)
+        self.assertEqual(error.exception.code, "path_outside_scope")
+        request["allowed_paths"] = ["a.txt", "b.txt"]
+        (worktree / "a.txt").write_text("uncommitted\n")
+        with self.assertRaises(PROTOCOL.ProtocolError) as error:
+            PROTOCOL.bind_worktree(request)
+        self.assertEqual(error.exception.code, "worktree_not_clean")
+        request["lifecycle"] = binding["lifecycle"]
+        with self.assertRaises(PROTOCOL.ProtocolError):
+            PROTOCOL.bind_worktree(request)
+        self.assertTrue(worktree.exists())
+
     def test_public_interface_contains_worktree_and_recovery_operations(self) -> None:
         self.assertEqual(
             PROTOCOL.COMMAND_REGISTRY.names,
             (
+                "bind-worktree",
                 "start-worktree",
                 "verify-worktree",
                 "publish-planning",

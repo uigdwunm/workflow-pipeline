@@ -1,6 +1,6 @@
 ---
 name: change-closure
-description: Use when the user explicitly invokes $change-closure (4归档), confirms entry from a successful $guided-implementation footer, automatically continues from a verified continuous-flow footer, or invokes $change-closure 重试 in the same task after this Skill's retained-worktree footer. Reuse the inherited Flow Worktree, commit closure-owned planning updates there, then publish implementation and closure together and clean the flow; standalone closure creates a short-lived documentation worktree only when needed.
+description: Use when the user explicitly invokes $change-closure (4归档), confirms entry from a successful $guided-implementation footer, automatically continues from a verified continuous-flow footer, or invokes $change-closure 重试 in the same task after this Skill's retained-worktree footer. Reuse the inherited Flow Worktree, commit closure-owned planning updates there, then publish implementation and closure together and clean the flow; standalone closure selects and binds a workspace only when documentation changes are needed.
 ---
 
 Before any stage action, read and execute [Package execution preflight]({{resource:shared/references/package-execution.md}}). This entry is stage 4 (`change-closure`). Pin this package first; check the current action before its side effects.
@@ -87,7 +87,7 @@ decision, derives binding, scope base, allowed and protected paths, and invokes 
 existing `complete-worktree` once. Inspect uncertain outcomes with
 `reconcile-publication`, use `resume` for remaining authorized effects, and
 `receive-publication` for B intake. This publishes the accepted implementation plus closure updates and
-removes the Flow Worktree and branch.
+verifies the binding’s original retain or delete disposition.
 
 If the target advanced, inspect the committed delta. A changed protected source
 or material semantic conflict requires user direction. Otherwise return the
@@ -98,8 +98,9 @@ frozen final validation, recheck any closure-document result and
 retry final completion. Stage 4 never repairs implementation code itself.
 
 For explicit standalone Stage 4, read documents from the current target. If
-bytes change, call `start-worktree` for one short-lived documentation worktree,
-call `verify-worktree`, edit and commit only the declared closure paths, then
+bytes change, follow the shared worktree selection contract, reusing a suitable
+independent workspace before host-managed creation. Verify its binding, edit and
+commit only the declared closure paths, then
 call `complete-worktree`. If no bytes change, create no worktree or empty
 commit.
 
@@ -110,8 +111,9 @@ failure.
 
 ## Finish
 
-Verify the final target HEAD, preserved primary-checkout state, and absence of
-the completed Flow Worktree and branch. For an attached discussion, finish and
+Verify the final target HEAD, preserved primary-checkout state, and the original
+binding's disposition: retained resources still match, or temporary resources were
+deleted with verified evidence. For an attached discussion, finish and
 verify the `3→4` run only after those Git checks succeed, including the
 no-document-change path. Local closure
 grants no push, tracker update or other remote write; each requires separate
@@ -134,7 +136,7 @@ or blocker. Emit the success footer only after the recheck passes.
 实现提交：<accepted candidate>
 归档提交：<closure candidate commit | none>
 最终合并：<merge commit | none when standalone and unchanged>
-流程清理：Flow Worktree and branch removed | standalone worktree removed | not created
+流程清理：retained and verified | deleted and verified | not created
 讨论阶段：<current_phase 4 | standalone>
 远程操作：<performed actions | none>
 ```

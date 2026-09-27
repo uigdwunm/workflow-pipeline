@@ -285,11 +285,13 @@ or
             REPOSITORY / "skills/change-closure/SKILL.md"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("`start-worktree`", solution)
+        self.assertIn("reuse a suitable independent workspace", solution)
+        self.assertIn("host-managed creation", solution)
         self.assertIn("`publish-planning`", solution)
         self.assertIn("An inherited entry must reuse its Flow Worktree", guided)
-        self.assertIn("For a qualified standalone entry, call", guided)
-        self.assertIn("`start-worktree` once", guided)
+        self.assertIn("For a qualified standalone entry, follow", guided)
+        self.assertIn("reuse and bind a suitable independent", guided)
+        self.assertIn("account for existing task commits", guided)
         self.assertIn("never create a replacement", guided)
         self.assertNotIn("calls `complete-worktree`", guided)
         self.assertIn("passes the retained Flow Worktree", guided)
@@ -301,7 +303,8 @@ or
         self.assertRegex(success_footers[0], r"(?m)^Flow Worktree：[^\S\n]*\S")
         self.assertIn("inherited Flow Worktree", closure)
         self.assertIn("`complete-worktree`", closure)
-        self.assertIn("removes the Flow Worktree and branch", closure)
+        self.assertIn("original retain or delete disposition", closure)
+        self.assertIn("retained and verified | deleted and verified", closure)
 
     def test_stage_four_uses_the_existing_topic_local_three_to_four_run(self) -> None:
         closure = (
@@ -361,7 +364,7 @@ or
             REPOSITORY / "skills/change-closure/references/change-closure/closure-actions.md"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("`verify-worktree`", closure)
+        self.assertIn("Verify its binding", closure)
         self.assertIn("`verify-worktree`", actions)
         self.assertIn("$ask-matt", closure)
         self.assertIn("representation", closure)
@@ -428,7 +431,9 @@ or
         self.assertIn("进入结果：未进入", guided)
         self.assertIn("For an explicit standalone entry", originating)
         self.assertIn("qualified standalone Stage-3 entry", execution)
-        self.assertIn("standalone request", worktree)
+        self.assertIn("standalone Stage 3/4", worktree)
+        self.assertIn("after the applicable stage authority", worktree)
+        self.assertIn("`bind-worktree` accepts only `retain`", worktree)
         self.assertIn("Supersedes: ADR-0004", adr)
         self.assertIn("lifecycle-integration.md", guided)
         for marker in (
@@ -466,9 +471,9 @@ or
         self.assertIn("at most one current concise change note", requirement_contract)
         self.assertIn("one committed requirement document", solution_protocol)
         self.assertIn("The child neither supplements it from chat", solution)
-        self.assertIn("before creating a Flow Worktree", solution)
+        self.assertIn("before finalizing a Flow Worktree baseline", solution)
         self.assertIn("pre-launch anomaly", solution)
-        self.assertIn("before `start-worktree` or launch", solution_protocol)
+        self.assertIn("before binding the planning baseline or launch", solution_protocol)
         self.assertIn("An invalid claimed handoff remains an anomaly", solution_protocol)
         self.assertNotIn("current-task accepted handoff", solution_templates)
         self.assertNotIn("current-task-handoff", solution_templates)

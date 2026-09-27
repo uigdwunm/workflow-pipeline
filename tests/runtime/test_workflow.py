@@ -42,6 +42,20 @@ class WorkflowCliTests(unittest.TestCase):
         value.pop('requirement')
         self.reject_before_launch(value, 'missing')
 
+    def test_stage_two_prompt_uses_preselected_workspace_and_saved_observations(self):
+        confirmed = self.confirmed_input()
+        confirmed.update(flow_mode='continuous', registry_input=str(self.confirmed),
+                         registration_context=confirmed['registry_context'],
+                         packages={stage: {'entry': '/fixture/' + stage + '/SKILL.md'}
+                                   for stage in self.runner.STAGES})
+        prompt = self.runner._stage_prompt({'confirmed': confirmed, 'stage_results': {}}, 'stage2', None, False)
+        self.assertIn('selects the actual workspace before freezing runner input', prompt)
+        self.assertIn('Verify and bind that exact workspace', prompt)
+        self.assertNotIn('create it once with the existing start-worktree', prompt)
+        payload = json.loads(prompt.rsplit('\n', 1)[1])
+        self.assertEqual(payload['worktree'], str(self.worktree))
+        self.assertEqual(payload['workspace_evidence']['field'], 'confirmed.workspace_evidence')
+
     def test_unconfirmed_model_is_rejected(self):
         value = self.confirmed_input()
         value['stages']['stage2']['model'] = 'unconfirmed'
@@ -100,7 +114,7 @@ class WorkflowCliTests(unittest.TestCase):
         # A freezing and Git through test_workflow_progress, not this fixture.
         def seal(value, field="digest"):
             return {**value, field: hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()}
-        original_entry = seal({"protocol": "workflow-entry-v3", "repository": {"root": str(self.repository)},
+        original_entry = seal({"protocol": "workflow-entry-v4", "repository": {"root": str(self.repository)},
             "actor": {"controller_ref": "controller"}, "entry": {"stage": 1, "action": "entry"},
             "target": {"repository": str(self.repository), "branch": "main"}, "packages": {}, "external": {},
             "configuration": {}, "requirement": {"kind": "stage1"}}, "evidence_digest")
@@ -149,7 +163,7 @@ class BusinessRecoveryTransportTests(unittest.TestCase):
                          "reference": "controller-review", "diagnosis": "fixed input", "instruction": "continue",
                          "expected_progress": "produce candidate"}
         self.decision_path.write_text(json.dumps(self.decision))
-        self.state = {"version": 6, "status": "failed", "current_stage": "stage3", "sessions": {"stage3": "original-cli"},
+        self.state = {"version": 7, "status": "failed", "current_stage": "stage3", "sessions": {"stage3": "original-cli"},
                       "stage_results": {}, "confirmed": {}, "launch": {"state": "completed_turn"},
                       self.runner.progression.KEY: {"revision": 7, "stage": 3, "status": "blocked", "business_block": {"id": "block-1"}}}
         self.record.write_text(json.dumps(self.state))

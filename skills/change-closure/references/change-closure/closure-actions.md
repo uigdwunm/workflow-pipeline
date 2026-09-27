@@ -17,8 +17,9 @@
    for that candidate. This preserves Closure Agent responsibility for the final
    documentation candidate and publication request; C executes only its mechanical
    effects under the original Controller authority.
-6. For standalone closure with changed bytes, call `start-worktree`, call
-   `verify-worktree`, edit and commit only closure paths, then call
+6. For standalone closure with changed bytes, use the shared selection and binding
+   contract, reusing a suitable workspace first. Call `verify-worktree`, edit and
+   commit only closure paths, then call
    `complete-worktree`. With no changed bytes, create no worktree or commit.
 7. For the managed flow use C `reconcile-publication` to inspect uncertain results
    and `resume` to perform only remaining authorized effects. Use `receive-publication`

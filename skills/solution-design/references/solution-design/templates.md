@@ -94,7 +94,7 @@ $solution-design
 目标仓库：<repository identity>
 规划载体：<exact target>
 任务设置：model=<exact model>; reasoning_effort=<exact effort>; source=<selection source and current adapter receipt>; context=isolated
-Flow Worktree：<exact binding returned by start-worktree>
+Flow Worktree：<exact verified binding, including lifecycle>
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
 工作区要求：在首次写入前以实际工作目录调用 `verify-worktree`；所有本地规划写入和提交只在该 Flow Worktree 内完成。
 交付复查：创建 Flow 后核验原目标 proof 与 Flow 中冻结需求的字节和模式；不足时回交付责任方，不自行补交付。

@@ -13,15 +13,15 @@
     ],
     "ledger_write": 3,
     "topic_gate": "phase-0-1-discussion-v2",
-    "control": 6,
-    "entry": "workflow-entry-v3",
-    "runner": 6,
-    "supervision": "flow-worktree-v2",
+    "control": 7,
+    "entry": "workflow-entry-v4",
+    "runner": 7,
+    "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
-    "preparation": "workflow-preparation-v4",
-    "stage_transfer": "workflow-stage-transfer-v7",
-    "workflow_progress": "workflow-progress-v12",
-    "requirement_delivery": "requirement-delivery-v1"
+    "preparation": "workflow-preparation-v5",
+    "stage_transfer": "workflow-stage-transfer-v8",
+    "workflow_progress": "workflow-progress-v13",
+    "requirement_delivery": "requirement-delivery-v2"
   },
   "resources": {
     "design-discussion/SKILL.md": {

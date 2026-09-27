@@ -68,7 +68,7 @@ def verification_fixture(candidate, dispatcher, cwd, target):
 
 class WorkflowControlTests(unittest.TestCase):
     def call(self, action, evidence=None, context=None):
-        request = {'schema_version': 4, 'action': action,
+        request = {'schema_version': 5, 'action': action,
                    'actor_ref': 'controller', 'context': context or self.context(),
                    'evidence': evidence or {}}
         result = subprocess.run([sys.executable, str(CLI)], input=json.dumps(request),
@@ -78,7 +78,11 @@ class WorkflowControlTests(unittest.TestCase):
 
     def binding(self):
         return {'repository': '/tmp/repository', 'worktree': '/tmp/flow', 'git_common_dir': '/tmp/repository/.git',
-                'branch': 'codex/flow', 'target_branch': 'main', 'base_commit': 'a' * 40}
+                'branch': 'codex/flow', 'target_branch': 'main', 'base_commit': 'a' * 40,
+                'lifecycle': {'origin': 'created', 'manager': 'git', 'disposition': 'delete',
+                    'evidence_ref': 'fixture:script-created', 'creation_receipt': {
+                        'worktree': [1, 2], 'gitdir': '/tmp/repository/.git/worktrees/flow',
+                        'gitdir_identity': [1, 3], 'branch': 'codex/flow', 'base_commit': 'a' * 40}}}
 
     def configuration(self, role='dedicated-discussion'):
         return {'role': role, 'required_capability': 2,
@@ -89,7 +93,7 @@ class WorkflowControlTests(unittest.TestCase):
                 'inherited': None, 'upgrade_attempted': False}
 
     def context(self):
-        return {'schema_version': 4, 'controller_ref': 'controller', 'topic_ref': None,
+        return {'schema_version': 5, 'controller_ref': 'controller', 'topic_ref': None,
                 'stage': 0, 'carrier': None,
                 'preference': {'topic_current': False, 'stage_current': False},
                 'flow_authority': None, 'requirement_identity': {'path': 'docs/draft.md',
@@ -369,13 +373,13 @@ class WorkflowControlTests(unittest.TestCase):
         bound = self.call('closure-bound', {'ref': 'closure', 'attempt': started['attempt']}, started['context'])
         result = {'ref': 'closure', 'candidate': candidate, 'merge': 'c' * 40, 'ancestor_verified': True,
             'changed_paths': ['src/a.py', 'README.md'], 'binding': evidence['binding'],
-            'checks': ['full suite'], 'worktree_removed': False, 'branch_removed': False,
+            'checks': ['full suite'], 'disposition': 'deleted', 'disposition_verified': False, 'worktree_removed': False, 'branch_removed': False,
             'implementation_problem': None}
         partial = self.call('closure-result', result, bound['context'])
         self.assertTrue(partial['ok'])
         self.assertEqual(partial['context']['handoff_progress']['state'], 'cleanup-pending')
         self.assertEqual(partial['effects'][0]['operation'], 'cleanup-only')
-        result['worktree_removed'] = result['branch_removed'] = True
+        result['worktree_removed'] = result['branch_removed'] = result['disposition_verified'] = True
         complete = self.call('closure-result', result, partial['context'])
         self.assertEqual(complete['context']['handoff_progress']['state'], 'completed')
 

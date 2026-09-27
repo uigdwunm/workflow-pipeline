@@ -54,7 +54,7 @@ When a missing or insufficient setting or a native limit prevents the planned di
   Every protected source path must exist at the implementation scope base.
 - Verify and reuse the Flow Worktree supplied by Stage 2. If an inherited
   binding is missing, invalid, or points elsewhere, stop as an anomaly and do
-  not create a replacement. A standalone entry creates one Flow Worktree only
+  not create a replacement. A standalone entry selects and binds one Flow Worktree only
   after its implementation brief passes the gate below. Retry always reuses
   the retained binding.
 - Uncommitted primary-checkout files stay outside the Flow Worktree and are
@@ -176,9 +176,10 @@ creates no discussion Phase Run, performs none of these calls and carries
 
 For a valid Stage-2 handoff, call `verify-worktree` with its exact binding and
 use that Flow Worktree without creating another one. The worktree must be clean
-at the reported planning merge commit. For a qualified standalone entry, call
-`start-worktree` once from the exact target `HEAD`; record that commit as the
-standalone base and implementation scope base. Neither route creates a lease,
+at the reported planning merge commit. For a qualified standalone entry, follow
+the shared worktree selection contract: reuse and bind a suitable independent
+workspace before host-managed creation. Record the verified scope baseline as the
+standalone base and implementation scope base; account for existing task commits. Neither route creates a lease,
 claim, queue entry, or mutable run record.
 
 An inherited entry must reuse its Flow Worktree. An invalid claimed binding

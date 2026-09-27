@@ -1,7 +1,9 @@
 # Frozen requirement delivery
 
 Stage 1 owns delivery after semantic confirmation and A freeze/CP, before a
-completed footer or B receive. At entry record the source checkout, explicit
+completed footer or B receive. Explicit standalone Stage 2 may also deliver its own
+current-conversation snapshot after freeze under the original Controller authority;
+this does not grant it ownership of Stage-1 or attached discussion sources. At entry record the source checkout, explicit
 target checkout/branch, exact owned Markdown paths and current delivery actor in
 the existing controller checkpoint. Prefer preparing ordinary requirements in
 that target. A detached source retains its own entry and commit identity.
@@ -10,19 +12,19 @@ Use C's `deliver-requirement` with `data={request: PREPARE}`. The prepare reques
 for `scripts/requirement_delivery.py` is:
 
 ```text
-{protocol:"requirement-delivery-v1",operation:"prepare",entry:ENTRY,
+{protocol:"requirement-delivery-v2",operation:"prepare",entry:ENTRY,
  requirement:FROZEN_RESULT,target:{repository:TARGET_CHECKOUT,branch:TARGET_BRANCH},
  owned_paths:SORTED_MARKDOWN_PATHS,authorization:ORIGINAL_CONTROLLER_REFERENCE}
 ```
 
-ENTRY is the current Stage-1 entry request; FROZEN_RESULT is the complete A result,
+ENTRY is the current eligible source-stage entry request; FROZEN_RESULT is the complete A result,
 not a supplied hash. The owned paths include the requirement and stay within the
 freeze receipt's ownership (at most 32). An attached Git CP owns exactly its
 checkpoint document. Non-Git CP retains its snapshot and cannot satisfy Git
 Stage-2 entry. Stage 0 gains no delivery authority.
 
 All five packages declare compatibility_key.requirement_delivery as
-`requirement-delivery-v1`. Their exact-key preflight rejects a mixed route whose
+`requirement-delivery-v2`. Their exact-key preflight rejects a mixed route whose
 older package lacks these delivery semantics. Existing running package pins stay fixed.
 
 When the original trusted checkpoint already holds a different successful delivery,
@@ -97,6 +99,6 @@ archive. Wrapper claim/CP order follows the existing lifecycle contract.
 
 Stepwise mode waits only at the existing Stage-2 choice; continuous mode proceeds
 after verified delivery without another integration confirmation. Stage 2 verifies
-source at its source context and delivery at the explicit target, then creates
-its usual Flow Worktree and rechecks target proof plus the Flow document. Stage 2
+source at its source context and delivery at the explicit target, then selects and binds
+its Flow Worktree and rechecks target proof plus the Flow document. Stage 2
 does not complete a missing Stage-1 delivery.

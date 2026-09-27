@@ -6,9 +6,9 @@
 
 0. **0讨论 — `$design-discussion`（可选）**：为需要跨对话延续的设计讨论维护可验证话题、文档与检查点。
 1. **1拷问 — `$problem-framing`**：创建或继承唯一需求草案，通过追问持续更新并冻结目标、范围、行为契约与验收条件。
-2. **2方案 — `$solution-design`**：创建 Flow Worktree，把已确认需求转成 Spec、ADR 和必要的 Tickets，并把方案合并到目标分支。
-3. **3实现 — `$guided-implementation`**：依据2方案产物复用其 Flow Worktree，或根据明确、完整的显式请求独立创建一个，完成实现与验收并保留候选。
-4. **4归档 — `$change-closure`**：继续复用 Flow Worktree，对齐归档文档，统一合并实现与归档并清理。
+2. **2方案 — `$solution-design`**：优先复用并绑定独立 Flow Worktree，把已确认需求转成 Spec、ADR 和必要的 Tickets，并把方案合并到目标分支。
+3. **3实现 — `$guided-implementation`**：依据2方案产物复用其 Flow Worktree，或根据明确、完整的显式请求独立选择并绑定一个，完成实现与验收并保留候选。
+4. **4归档 — `$change-closure`**：继续复用 Flow Worktree，对齐归档文档，统一合并实现与归档，核验工作区按绑定保留或清理。
 
 五个 Skill 可分别安装，每包自带本阶段所需规则和脚本。只有进入其他阶段时，才从当前宿主有效 Skill registry 解析目标包；跨包协议兼容键必须完全相等，发布版本可以不同。共享 `thread-settings-v5` 位于各包内部，不再要求安装 `guided-implementation` 才能读取配置。
 
@@ -48,13 +48,13 @@ Matt 内容不随包分发，也不会自动安装。需要某项能力时另行
 
 每次运行固定包的真实根、摘要和协议键，脚本启动、恢复、交接前复核。升级应安装到新的不可变目录，再切换新任务的注册链接；保留旧目录直到旧运行结束。原地覆盖导致 `package_changed`，缺失旧包导致 `package_unavailable`；不得把同一运行偷偷换到新版本。
 
-前台 runner 仅在 `guided-implementation` 包内。新记录为 v6，工作流进度协议为 `workflow-progress-v12`，固定 runner 与 Stage 2/3/4 身份。start 的 confirmed JSON 包含可信当前 `registry`；runner 将该文件固定为 `registry_input`，每次 executor 启动前重读其中证据，resume 重验剩余目标。宿主/控制器须在注册变化后刷新该文件，或显式改用新证据文件：
+前台 runner 仅在 `guided-implementation` 包内。新记录为 v7，工作流进度协议为 `workflow-progress-v13`，固定 runner 与 Stage 2/3/4 身份。start 的 confirmed JSON 包含可信当前 `registry`；runner 将该文件固定为 `registry_input`，每次 executor 启动前重读其中证据，resume 重验剩余目标。宿主/控制器须在注册变化后刷新该文件，或显式改用新证据文件：
 
 ```bash
 python3 <固定包根>/scripts/workflow.py resume <record> <answer> --registry-input <current-evidence.json>
 ```
 
-新文件须包含当前 `registry` 对象；这只更新注册证据，不替换原固定包身份。旧 v1–v5 记录返回 `legacy_run_requires_original_runtime`，必须用保留的原 runner 和原安装树恢复；新 runner 不猜测迁移、重启阶段或清理 worktree。
+新文件须包含当前 `registry` 对象；这只更新注册证据，不替换原固定包身份。旧 v1–v6 记录返回 `legacy_run_requires_original_runtime`，必须用保留的原 runner 和原安装树恢复；新 runner 不猜测迁移、重启阶段或清理 worktree。
 
 新运行在一个前台 app-server 内跨轮执行。confirmed input 还需冻结 Controller 提供的实际 CLI 版本、权限配置和来源；首次业务轮前回读 model/effort/cwd/权限，不能推断默认值。完整字段见[前台生命周期协议](src/shared/references/workflow-progression.md#foreground-carrier-and-compatibility)。等待子角色、问题答案或暂停时，前台进程继续持有宿主。
 
@@ -108,3 +108,5 @@ v1.2.0 的仓库检查运行了 820 项测试：819 项通过、1 项按既有�
 [MIT](LICENSE)
 
 Workflow Controller retains confirmation, routing and acceptance. Dedicated Discussion Task and Dedicated Problem Framing Task are visible 0/1 carriers. solution-designer, Implementation Dispatcher, Execution Agent and Closure Agent are native roles. See [Workflow Control Protocol](src/shared/references/guided-implementation/workflow-control-protocol.md).
+
+工作区选择遵循“先验证原绑定，再复用可用独立空间，最后按需创建”。新建优先使用宿主管理工具，明确指定目标提交；脚本创建只作宿主规则允许的后备路径。复用空间和宿主管理空间完成后保留，只有本流程脚本创建且证据齐全的临时空间执行删除。需求可在合适的既有空间冻结，再通过有界文档交付到目标；范围不变的方案执行者恢复由 Controller 核验停写与成果后处理。第 1 阶段专用对话及普通子话题首轮交接门槛保持原行为。见 [工作区生命周期决策](docs/adr/0012-bind-existing-workspaces-and-preserve-lifecycle.md)。

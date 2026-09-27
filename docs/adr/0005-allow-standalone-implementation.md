@@ -2,6 +2,7 @@
 
 Status: Accepted
 Supersedes: ADR-0004
+Amended by: ADR-0012 for worktree selection and lifecycle disposition; standalone entry authority remains unchanged.
 
 Stage 2 remains the required source for Stage 3 in the normal staged and
 discussion-attached flows. Its committed planning artifacts and retained Flow

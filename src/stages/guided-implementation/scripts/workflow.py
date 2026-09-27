@@ -25,7 +25,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Any
 
-from workflow_control import ControlError, validate_review, select_configuration, paths
+from workflow_control import ControlError, validate_review, select_configuration, paths, validate_binding, validate_disposition
 from skill_preflight import PreflightError, package_identity, preflight, verify_identity
 import workflow_progress as progression
 import stage_handoff
@@ -264,6 +264,7 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[
         "git_common_dir": str(git_common_dir), "target_branch": raw["target_branch"],
         "authority_scope": authority, "run_record": str(record_path), "stages": normalized_stages,
         "packages": packages,
+        "workspace_evidence": copy.deepcopy(raw.get("workspace_evidence")),
         "flow_mode": raw.get("flow_mode", "continuous"),
         "registry_input": str(_absolute_path(raw.get('registry_input'), 'registry_input')),
     }
@@ -539,7 +540,7 @@ def _host_pending(instance, request):
 
 def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
     return CheckpointState({
-        "version": 6,
+        "version": 7,
         "confirmed": confirmed,
         "status": "active",
         "current_stage": "stage2",
@@ -551,9 +552,9 @@ def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_record(state: dict[str, Any]) -> dict[str, Any]:
-    if state.get("version") in {1, 2, 3, 4, 5}:
+    if state.get("version") in {1, 2, 3, 4, 5, 6}:
         raise WorkflowError('legacy_run_requires_original_runtime: record version ' + str(state.get('version')) + '; retain original package digests ' + str({k:v.get('bundle_digest') for k,v in state.get('confirmed',{}).get('packages',{}).items()}))
-    if state.get("version") != 6:
+    if state.get("version") != 7:
         raise WorkflowError("unsupported run record version")
     confirmed = validate_confirmed(state.get("confirmed") if isinstance(state.get("confirmed"), dict) else {}, restoring=True)
     if state.get("status") not in {"active", "needs_input", "completed", "failed", "interrupted", "paused", "pausing", "cancelling", "cancelled"}:
@@ -590,8 +591,11 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
             "You are the explicit foreground Stage-2 carrier, not a native child. Follow the exact "
             "solution-design Skill path below. Use the native collaboration child only where that Skill "
             "requires its solution_designer role; do not claim that the foreground carrier itself is that native role. "
-            "The requested worktree is not yet a binding: create it once with the existing start-worktree "
-            "protocol and return the actual binding in your completed handoff."
+            "The Controller selects the actual workspace before freezing runner input. Verify and bind that "
+            "exact workspace under the shared worktree selection contract, preserving its lifecycle and original "
+            "workspace_evidence. Reuse an existing binding on continuation; do not create a second workspace. "
+            "If the selected path is absent, only an already-authorized script fallback may create it; "
+            "otherwise retain this checkpoint for Controller recovery. Return the actual binding in the handoff."
         ),
         "stage3": (
             "You are the Stage-3 Originating Task / stage carrier, not the implementation executor. Follow the "
@@ -608,6 +612,7 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "requirement": {"checkpoint": confirmed["run_record"], "field": "confirmed.requirement"},
         "repository": confirmed["repository"],
         "worktree": confirmed["worktree"],
+        "workspace_evidence": {"checkpoint": confirmed["run_record"], "field": "confirmed.workspace_evidence"},
         "git_common_dir": confirmed["git_common_dir"],
         "target_branch": confirmed["target_branch"],
         "authority_scope": confirmed["authority_scope"],
@@ -739,9 +744,10 @@ def _require_handoff(stage: str, result: dict[str, Any]) -> None:
     except ControlError as error:
         raise WorkflowError(str(error)) from error
     binding = handoff["binding"]
-    binding_fields = {"base_commit", "branch", "git_common_dir", "repository", "target_branch", "worktree"}
-    if not binding_fields <= set(binding) or not all(isinstance(binding[field], str) and binding[field] for field in binding_fields):
-        raise WorkflowError(f"{stage} handoff.binding is incomplete")
+    try:
+        validate_binding(binding)
+    except ControlError as error:
+        raise WorkflowError(f"{stage} handoff.binding is invalid: {error}") from error
     if stage == "stage2":
         if not _is_git_sha(handoff["planning_commit"]):
             raise WorkflowError("stage2 handoff.planning_commit must be a string")
@@ -749,7 +755,11 @@ def _require_handoff(stage: str, result: dict[str, Any]) -> None:
         if not isinstance(handoff["protected_paths"], list) or not all(isinstance(item, str) for item in handoff["protected_paths"]):
             raise WorkflowError("stage2 handoff.protected_paths must be a string list")
     elif stage == "stage4":
-        if not _is_git_sha(handoff["candidate_commit"]) or not _is_git_sha(handoff["merge_commit"]) or handoff["ancestor_verified"] is not True or handoff["cleanup"] != {"worktree_removed": True, "branch_removed": True}:
+        try:
+            complete = validate_disposition(binding, handoff["cleanup"])
+        except ControlError as error:
+            raise WorkflowError("stage4 disposition is invalid: " + str(error)) from error
+        if not _is_git_sha(handoff["candidate_commit"]) or not _is_git_sha(handoff["merge_commit"]) or handoff["ancestor_verified"] is not True or not complete:
             raise WorkflowError("stage4 publication or cleanup is incomplete")
     else:
         try:
@@ -781,8 +791,7 @@ def _validate_handoff_continuity(
         prior_binding = stage2_result.get("handoff", {}).get("binding")
         if not isinstance(prior_binding, dict):
             raise WorkflowError("stage3 handoff requires a valid prior stage2 binding")
-        binding_fields = ("base_commit", "branch", "git_common_dir", "repository", "target_branch", "worktree")
-        if any(binding[field] != prior_binding.get(field) for field in binding_fields):
+        if binding != prior_binding:
             raise WorkflowError("stage3 handoff.binding differs from the stage2 binding")
 
 
@@ -1714,8 +1723,8 @@ def _request_control(record_path, operation, *, live):
     record_path = _absolute_path(str(record_path), "run_record")
     with progression.record_lock(record_path):
         state = progression.read_record(record_path)
-        if state.get("version") != 6:
-            raise WorkflowError("legacy_run_requires_original_runtime: control requires the original version-5 record")
+        if state.get("version") != 7:
+            raise WorkflowError("legacy_run_requires_original_runtime: control requires the original pinned record")
         member = state.get(progression.KEY)
         pin = state.get("confirmed", {}).get("packages", {}).get("runner")
         if ((member is not None and member.get("protocol") != progression.PROTOCOL) or
