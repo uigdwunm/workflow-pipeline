@@ -7,7 +7,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/shared/scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -67,6 +66,26 @@ class StageScopeTransferTests(unittest.TestCase):
         return {"state": "sealed", "revision": 1, "scope": scope,
                 "candidate_commit": self.candidate, "proposal_digest": "proposal-digest",
                 "seal_ref": "seal-reference", "proposal": {"generated_outputs": {}}}
+
+    def test_removed_bridge_is_not_an_accepted_stage_result(self):
+        bridge = handoff.seal({"protocol": handoff.PROTOCOL,
+                              "kind": "legacy-supplemental-acceptance"})
+        with self.assertRaises(entry.PreparationError):
+            handoff.render(bridge)
+
+    def test_control_rejects_removed_takeover_and_stage_three_revision(self):
+        context = {"schema_version": 5, "controller_ref": "controller:test", "topic_ref": None,
+                   "stage": 3, "carrier": None, "preference": {"topic_current": False,
+                   "stage_current": False}, "flow_authority": None, "handoff_progress": None,
+                   "requirement_identity": {"path": "docs/requirement.md", "sha256": "a" * 64,
+                                            "version": 1}}
+        for action in ("scope-revise", "start-dispatch-revision", "scope-recover-legacy",
+                       "scope-recover-legacy-reserve", "scope-recover-legacy-supersede"):
+            with self.subTest(action=action), self.assertRaises(handoff.control.ControlError):
+                handoff.control.transition({"schema_version": 5, "actor_ref": "controller:test",
+                                            "context": context, "action": action, "evidence": {}})
+        with self.assertRaises(handoff.control.ControlError):
+            handoff.control.validate_context({**context, "legacy_takeover": {}})
 
     def test_sealed_manifest_creates_exact_stage_three_ceiling(self):
         sealed = handoff.effective_scope(self.original, self.authority())
@@ -249,77 +268,6 @@ class StageScopeTransferTests(unittest.TestCase):
         finally:
             scenario.doCleanups()
 
-    def test_legacy_supplement_keeps_old_acceptance_and_is_not_ready_by_itself(self):
-        old = {"protocol": "workflow-stage-transfer-v7", "status": "accepted",
-               "digest": "original-v7-digest", "payload": {"artifacts": ["docs/spec.md"],
-               "checks": ["reviewed"], "planning_commit": self.candidate,
-               "planning_merge_commit": self.candidate, "planning_paths": ["docs/spec.md"]}}
-        bridge = handoff.seal({"protocol": handoff.PROTOCOL,
-            "kind": "legacy-supplemental-acceptance", "recovery_id": "recovery-1",
-            "original_snapshot_sha256": "original-bytes-sha", "original_accepted_digest": old["digest"],
-            "legacy_accepted": old, "controller_ref": "controller:test",
-            "requirement_identity": {"path": "docs/requirement.md"},
-            "binding": {"worktree": str(self.root)}, "scope_authority": self.authority(),
-            "payload": copy.deepcopy(old["payload"]), "planning_complete": True,
-            "downstream_ready": False})
-        rendered = handoff.render(bridge)
-        self.assertFalse(rendered["downstream_ready"])
-        self.assertIsNone(rendered["payload"]["allowed_paths"])
-        self.assertEqual(bridge["legacy_accepted"], old)
-
-    def test_legacy_bridge_binds_old_digest_and_current_supplement(self):
-        authority = self.authority()
-        payload = {"artifacts": ["docs/spec.md"], "checks": ["reviewed"],
-                   "planning_commit": self.candidate, "planning_merge_commit": self.candidate,
-                   "planning_paths": ["docs/spec.md"]}
-        old = {"protocol": "workflow-stage-transfer-v7", "status": "accepted",
-               "digest": "old-accepted", "payload": copy.deepcopy(payload)}
-        bridge = handoff.seal({"protocol": handoff.PROTOCOL,
-            "kind": "legacy-supplemental-acceptance", "recovery_id": "recovery-1",
-            "original_snapshot_sha256": "old-snapshot", "original_accepted_digest": old["digest"],
-            "legacy_accepted": old, "controller_ref": "controller:test",
-            "requirement_identity": {"path": "docs/requirement.md"},
-            "binding": {"worktree": str(self.root)}, "scope_authority": authority,
-            "payload": payload, "planning_complete": True, "downstream_ready": False})
-        scope = copy.deepcopy(authority["scope"])
-        scope.update(baseline=self.candidate, owned_paths=scope["implementation_paths"],
-                     protected_paths=["docs/requirement.md", "docs/spec.md"])
-        readiness = {"legacy_recovery_id": "recovery-1", "accepted_digest": bridge["digest"],
-                     "original_snapshot_sha256": "old-snapshot", "original_accepted_digest": old["digest"],
-                     "scope_authority": authority}
-        request = {"stage": 3, "role": "implementation-dispatcher", "scope": scope,
-                   "binding": {"worktree": str(self.root)}, "readiness": readiness,
-                   "target": {"repository": str(self.root), "branch": "main"}}
-        current = {"actor": {"controller_ref": "controller:test"},
-                   "repository": {"root": str(self.root),
-                                  "git_common_dir": entry.repository_facts(str(self.root))["git_common_dir"]}}
-        state = {"scope_recoveries": {"recovery-1": {"bridge": bridge,
-                "supplemental_authority": authority}}}
-        with patch.object(handoff, "current_readiness", return_value=state):
-            self.assertEqual(handoff.verify_legacy_bridge(bridge, handoff.unseal(bridge),
-                request, current, {"path": "docs/requirement.md"}), authority["scope"])
-            request["readiness"] = {**readiness, "original_accepted_digest": "tampered"}
-            with self.assertRaises(entry.PreparationError):
-                handoff.verify_legacy_bridge(bridge, handoff.unseal(bridge),
-                    request, current, {"path": "docs/requirement.md"})
-            revised = copy.deepcopy(authority)
-            revised["revision"] = 2
-            revised["seal_ref"] = "revision-seal"
-            revised["proposal_digest"] = "revision-proposal"
-            revised["scope"]["downstream"].update(revision=2, seal_ref="revision-seal",
-                proposal_ref="revision-proposal")
-            revised["scope"]["downstream"]["manifest"].append({
-                "path": "tests/test_scope.py", "owner": "implementation", "kind": "test",
-                "operation": "add", "basis": {"commit": self.candidate,
-                    "path": "docs/spec.md", "section": "Approved file decision"}})
-            revised["scope"]["implementation_paths"].append("tests/test_scope.py")
-            request["scope"]["downstream"] = copy.deepcopy(revised["scope"]["downstream"])
-            request["scope"]["implementation_paths"] = copy.deepcopy(revised["scope"]["implementation_paths"])
-            request["scope"]["owned_paths"] = copy.deepcopy(revised["scope"]["implementation_paths"])
-            request["readiness"] = {**readiness, "scope_authority": revised,
-                                    "revision_transaction_ref": "authorized-revision"}
-            self.assertEqual(handoff.verify_legacy_bridge(bridge, handoff.unseal(bridge),
-                request, current, {"path": "docs/requirement.md"}), revised["scope"])
 
 
 if __name__ == "__main__":

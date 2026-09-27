@@ -13,14 +13,14 @@
     ],
     "ledger_write": 3,
     "topic_gate": "phase-0-1-discussion-v2",
-    "control": 8,
+    "control": 9,
     "entry": "workflow-entry-v4",
-    "runner": 8,
+    "runner": 9,
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v5",
-    "stage_transfer": "workflow-stage-transfer-v9",
-    "workflow_progress": "workflow-progress-v14",
+    "stage_transfer": "workflow-stage-transfer-v10",
+    "workflow_progress": "workflow-progress-v15",
     "requirement_delivery": "requirement-delivery-v2"
   },
   "resources": {

@@ -168,53 +168,13 @@ target, Flow Worktree and scope revision. Stage 4 consumes the revision bound to
 its accepted Stage-3 predecessor. The independent Stage-3 route supplies a
 self-contained sealed manifest from its frozen input.
 
-For an accepted design with a missing file, C `scope-revise` keeps the original
-Controller and checkpoint. The Controller's `scope-revise` action binds the
-expected revision and old scope digest, exact manifest diff and new scope
-digest, accepted planning commits, requirement and binding, stopped-writer
-evidence and Git snapshot digest. C first closes the old write lease and waits
-for original host calls and writers to settle; the control decision cannot
-substitute for that proof. A Stage-2 accepted record may activate the sealed
-revision after snapshot recheck. An active Stage-3 record must bind a new B
-attempt before it writes under the revision. Earlier acceptance, candidate and
-review records remain historical evidence rather than current authority.
-
-The narrow legacy Stage-2 recovery is a separate Controller action. For an
-attached Topic, the original `discussion_protocol.py workflow-control` route
-checks the existing Phase-2 boundary and absence of a Stage-3 Phase Run. Its
-`scope-recover-legacy` transaction saves the old control JSON verbatim as
-`legacy_control_json` and changes the one current control context from schema 4
-to schema 5 `legacy_takeover.state=pending`, using the original Controller,
-Topic binding, old-control digest, expected revisions and idempotency key.
-A second exact transaction activates that same context after local takeover
-proof; C retains each exact request and returned receipt for interrupted
-reconciliation. Pending
-control grants no Stage-3 writer permission. The old bytes remain available for
-audit and are not rewritten as a new Controller decision.
-
-After takeover is active, an attached Stage-3 launch uses the same Topic ledger
-for `scope-recover-legacy-reserve`. The actual current `2→3` Phase Run and
-attempt must be prepared first. Evidence contains `recovery_id`, canonical
-`checkpoint_path`, `original_checkpoint_sha256`, supplemental `bridge_digest`,
-`phase_run_id`, `phase_attempt_id`, original `controller_ref`, and
-`reservation_id`. The ledger accepts one reservation only while the original
-Topic remains in active Phase 2 with no competing Stage-3 run or pending
-document write. It saves the reservation in the active `legacy_takeover`
-control context; an identical retry ACKs and a conflicting one fails. C saves
-the request and receipt, then reads the Topic back before local consumption.
-Only that verified reservation, current sealed readiness and new host admission
-may lead to a Stage-3 Dispatcher launch; takeover activation alone cannot.
-
-An unconsumed supplement can be explicitly superseded before that reservation.
-The original Controller names the exact previous takeover transaction and scope
-seal, retains the original checkpoint/source/accepted identities, and supplies
-the replacement manifest and decision. The Topic action
-`scope-recover-legacy-supersede` stores the previous current control bytes in
-append-only history and changes the one current control context to the new
-pending takeover; it does not overwrite `legacy_control_json`. The subsequent
-activate transaction and Stage-3 reservation must bind the replacement.
-An existing reservation, consumed launch or unsettled attached ledger outcome
-blocks supersede.
+An accepted Stage-2 manifest may be corrected through the original Controller's
+`scope-revise` decision only before any saved Stage-3 preparation, launch intent
+or session. The decision binds the previous revision/digest, exact manifest diff,
+accepted planning commits, requirement, Flow binding and revalidated Git evidence.
+A saved Stage-3 boundary rejects the request without changing writer authority,
+rolling back a stage or creating another attempt. Original business, host and
+dispatcher recovery retain their existing contracts within the sealed scope.
 
 ## Downstream execution
 
@@ -518,8 +478,8 @@ No implementation contract, tests, generated package or protected source belongs
 to closure scope. After a recorded merge, reconcile publication/cleanup instead
 of demanding a new validation or merge.
 
-New records use runner 8, C workflow-progress-v14, B workflow-stage-transfer-v9
-and control compatibility key 8 (JSON schema 5). Old executable records fail with
+New records use runner 9, C workflow-progress-v15, B workflow-stage-transfer-v10
+and control compatibility key 9 (JSON schema 5). Old executable records fail with
 legacy_run_requires_original_runtime before writes or host calls. Embedded old
 control keeps the ledger outer version and bytes; resume with its original pinned
 package. Never migrate checks strings into passed evidence.

@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import copy
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -130,58 +129,14 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
 
 
 def _host_events_path(record_path: Path, state: dict[str, Any]) -> Path:
-    """Keep a recovered runner's transport receipts separate from outer-v6 bytes."""
-    recovery = state.get("recovery_source")
-    if recovery is None:
-        return record_path.with_name(record_path.name + ".host.events.jsonl")
-    return record_path.with_name(record_path.name + ".recovery-" +
-        entry_prepare.digest(recovery)[:16] + ".host.events.jsonl")
+    return record_path.with_name(record_path.name + ".host.events.jsonl")
 
 
 def _host_stderr_path(record_path: Path, state: dict[str, Any]) -> Path:
-    recovery = state.get("recovery_source")
-    if recovery is None:
-        return record_path.with_name(record_path.name + ".host.stderr")
-    return record_path.with_name(record_path.name + ".recovery-" +
-        entry_prepare.digest(recovery)[:16] + ".host.stderr")
+    return record_path.with_name(record_path.name + ".host.stderr")
 
 
-def _recovery_provenance(outer: dict[str, Any], record_path: Path | None = None) -> dict[str, Any] | None:
-    source = outer.get("recovery_source")
-    if source is None:
-        return None
-    if (not isinstance(source, dict) or set(source) != {"recovery_id", "original_checkpoint_sha256"} or
-            not isinstance(source["recovery_id"], str) or not source["recovery_id"] or
-            not isinstance(source["original_checkpoint_sha256"], str) or
-            len(source["original_checkpoint_sha256"]) != 64 or
-            any(char not in "0123456789abcdef" for char in source["original_checkpoint_sha256"])):
-        raise WorkflowError("invalid legacy recovery source")
-    try:
-        proof = progression.verify_legacy_recovery(outer, checkpoint_path=record_path)
-    except entry_prepare.ERROR_TYPES + (ControlError,) as error:
-        raise WorkflowError("legacy recovery changed: " + entry_prepare.error_message(error)) from error
-    if (not isinstance(proof, dict) or proof.get("recovery_id") != source["recovery_id"] or
-            proof.get("original_checkpoint_sha256") != source["original_checkpoint_sha256"] or
-            proof.get("state") not in {"takeover-pending", "authorized", "consumed"}):
-        raise WorkflowError("legacy recovery provenance differs from current C checkpoint")
-    return proof
-
-
-def _require_record_identity(record_path: Path, state: dict[str, Any]) -> None:
-    if state.get("recovery_source") is None:
-        return
-    expected = (state.get("confirmed") or {}).get("run_record")
-    if expected != str(record_path.resolve()):
-        raise WorkflowError("checkpoint_identity_changed: use the original canonical run record")
-    current = state.get(progression.KEY) or {}
-    if current.get("checkpoint_path") != expected:
-        raise WorkflowError("checkpoint_identity_changed: legacy recovery belongs to another checkpoint")
-
-
-def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False,
-                       legacy_recovery: bool = False) -> dict[str, Any]:
-    if legacy_recovery and not restoring:
-        raise WorkflowError("legacy recovery validation requires a retained checkpoint")
+def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False) -> dict[str, Any]:
     required = {
         "frozen_requirement", "repository", "worktree", "git_common_dir",
         "target_branch", "authority_scope", "run_record", "stages", "controller_ref", "requirement",
@@ -228,8 +183,7 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False,
                                   "requirement_incomplete", "complete A source fields required")
             original_entry = source["entry"]
             entry_prepare.require(isinstance(original_entry, dict) and
-                original_entry.get("protocol") in ({entry_prepare.PROTOCOL, "workflow-entry-v3"}
-                    if legacy_recovery else {entry_prepare.PROTOCOL}) and
+                original_entry.get("protocol") == entry_prepare.PROTOCOL and
                 original_entry.get("evidence_digest") == entry_prepare.digest({k: v for k, v in original_entry.items() if k != "evidence_digest"}),
                 "requirement_incomplete", "retain the original complete A entry evidence")
         identity = source.get("requirement_identity")
@@ -245,12 +199,6 @@ def validate_confirmed(raw: dict[str, Any], *, restoring: bool = False,
             _is_git_sha(source.get("blob")) and
             type(identity["version"]) is int and identity["version"] > 0,
             "requirement_incomplete", "v3 requires the complete successful A frozen result matching the confirmed source")
-        if legacy_recovery:
-            frozen_bytes = stage_handoff.blob(str(repository), commit, identity["path"])
-            entry_prepare.require(hashlib.sha256(frozen_bytes).hexdigest() == digest and
-                stage_handoff.mode(str(repository), commit, identity["path"]) == b"100644" and
-                entry_prepare.git(str(repository), "rev-parse", commit + ":" + identity["path"]).stdout.decode().strip() == source["blob"],
-                "source_changed", "legacy frozen requirement Git bytes, mode or blob changed")
     except (*entry_prepare.ERROR_TYPES, ControlError) as error:
         raise WorkflowError("invalid complete A requirement evidence") from error
     record_path = _absolute_path(raw["run_record"], "run_record")
@@ -409,15 +357,6 @@ def _runner_route(saved: dict[str, Any], state: dict[str, Any]) -> str:
     current = saved.get(progression.KEY)
     if not current or current.get('stage') != int(state['current_stage'][-1]):
         return 'invoke'
-    revision = current.get('scope_revision_transaction')
-    stop_overrides_revision = (current.get('stop_requested') or
-        current.get('status') in {'cancelling', 'cancelled'} or
-        current.get('status') in {'paused', 'pausing'} and not state.get('resume_progression'))
-    if current.get('stage') == 3 and isinstance(revision, dict) and not stop_overrides_revision:
-        if revision.get('state') == 'authorized':
-            return 'scope_revision_activation'
-        if revision.get('state') in {'proposed', 'stopping', 'quiescent'}:
-            return 'scope_revision_control'
     status = current.get('status')
     cancelling = current.get('stop_requested') == 'cancelling'
     resuming_pause = state.get('resume_progression') and status == 'paused' and not cancelling
@@ -642,7 +581,7 @@ def _host_pending(instance, request):
 
 def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
     return CheckpointState({
-        "version": 8,
+        "version": 9,
         "confirmed": confirmed,
         "status": "active",
         "current_stage": "stage2",
@@ -653,30 +592,21 @@ def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
     }, original={})
 
 
-def _validate_record(state: dict[str, Any], *, record_path: Path | None = None) -> dict[str, Any]:
-    if state.get("version") in {1, 2, 3, 4, 5, 6, 7}:
+def _validate_record(state: dict[str, Any]) -> dict[str, Any]:
+    if state.get("version") in {1, 2, 3, 4, 5, 6, 7, 8}:
         raise WorkflowError('legacy_run_requires_original_runtime: record version ' + str(state.get('version')) + '; retain original package digests ' + str({k:v.get('bundle_digest') for k,v in state.get('confirmed',{}).get('packages',{}).items()}))
-    if state.get("version") != 8:
+    if state.get("version") != 9:
         raise WorkflowError("unsupported run record version")
+    if "recovery_source" in state:
+        raise WorkflowError("unsupported run record recovery_source")
     confirmed = validate_confirmed(state.get("confirmed") if isinstance(state.get("confirmed"), dict) else {},
-                                   restoring=True, legacy_recovery=state.get("recovery_source") is not None)
-    if state.get("status") not in {"active", "needs_input", "completed", "planning_only", "recovery_pending", "failed", "interrupted", "paused", "pausing", "cancelling", "cancelled"}:
+                                   restoring=True)
+    if state.get("status") not in {"active", "needs_input", "completed", "planning_only", "failed", "interrupted", "paused", "pausing", "cancelling", "cancelled"}:
         raise WorkflowError("invalid run record status")
     if state.get("current_stage") not in STAGES:
         raise WorkflowError("invalid run record current_stage")
     if not isinstance(state.get("sessions"), dict) or not isinstance(state.get("stage_results"), dict):
         raise WorkflowError("invalid run record state")
-    recovery = _recovery_provenance(state, record_path)
-    if recovery is not None:
-        if (state["current_stage"] not in {"stage3", "stage4"} or "stage2" in state["stage_results"] or
-                state["status"] != "recovery_pending" and recovery["state"] == "takeover-pending" or
-                state["status"] == "recovery_pending" and
-                (recovery["state"] != "takeover-pending" or state["current_stage"] != "stage3" or
-                 state["sessions"] or state["stage_results"] or
-                 state.get("launch") != {"stage": "stage3", "state": "prelaunch", "turn": 0})):
-            raise WorkflowError("invalid recovered runner checkpoint")
-    elif state["status"] == "recovery_pending":
-        raise WorkflowError("recovery_pending requires verified legacy provenance")
     for stage in STAGES:
         result = state["stage_results"].get(stage)
         if result is not None:
@@ -684,7 +614,7 @@ def _validate_record(state: dict[str, Any], *, record_path: Path | None = None) 
                 raise WorkflowError(f"invalid {stage} result in run record")
             _require_handoff(stage, result)
             _validate_handoff_continuity(
-                stage, result, confirmed, state["stage_results"].get("stage2"), recovery
+                stage, result, confirmed, state["stage_results"].get("stage2")
             )
     if state["status"] == "planning_only":
         if (state["current_stage"] != "stage2" or set(state["stage_results"]) != {"stage2"} or
@@ -697,35 +627,22 @@ def _validate_record(state: dict[str, Any], *, record_path: Path | None = None) 
     return state
 
 
-def _validate_record_at(record_path: Path, state: dict[str, Any]) -> dict[str, Any]:
-    return (_validate_record(state, record_path=record_path) if state.get("recovery_source") is not None
-            else _validate_record(state))
-
-
 def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continuing: bool) -> str:
     confirmed = state["confirmed"]
     current_progress = progression.read_record(Path(confirmed["run_record"])).get(progression.KEY)
     readiness = None
-    scope_revision = (current_progress or {}).get("scope_revision_transaction") if stage == "stage3" else None
     if stage == "stage3":
         if current_progress is None:
             raise WorkflowError("scope_incomplete: current C checkpoint is required before Stage 3")
         if current_progress.get("stage") == 2:
-            readiness = (progression.legacy_scope_readiness(current_progress, confirmed["run_record"])
-                         if state.get("recovery_source") else
-                         progression.scope_readiness(current_progress, confirmed["run_record"]))
+            readiness = progression.scope_readiness(current_progress, confirmed["run_record"])
             if readiness is None:
                 raise WorkflowError("scope_incomplete: current sealed Stage-2 handoff is not ready; inspect C and use scope-propose or scope-revise")
         elif current_progress.get("stage") != 3 or (current_progress.get("scope_authority") or {}).get("state") != "sealed":
             raise WorkflowError("scope_changed: Stage 3 requires its consumed sealed scope authority")
         else:
-            revision_state = (scope_revision or {}).get("state")
-            revised = (current_progress.get("consumed_readiness") or {}).get("revision_transaction_ref")
-            if revision_state == "authorized" or revised:
-                readiness = progression.revision_scope_readiness(current_progress, confirmed["run_record"])
-            else:
-                readiness = progression.consumed_scope_readiness(current_progress, confirmed["run_record"])
-            if readiness is None and revision_state != "authorized":
+            readiness = progression.consumed_scope_readiness(current_progress, confirmed["run_record"])
+            if readiness is None:
                 raise WorkflowError("scope_changed: Stage 3 consumed readiness no longer matches its saved authority")
     prior = {
         name: state["stage_results"][name]
@@ -766,11 +683,6 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "current_scope_authority": (current_progress.get("scope_authority") if stage in {"stage3", "stage4"}
                                     and current_progress is not None else None),
         "stage3_readiness": readiness,
-        "legacy_recovery": ({"checkpoint": confirmed["run_record"], "field": "recovery_source"}
-                            if state.get("recovery_source") else None),
-        "scope_revision": ({"state": scope_revision.get("state"),
-                            "revision_id": scope_revision.get("input", {}).get("revision_id")}
-                           if isinstance(scope_revision, dict) else None),
         "settings": settings,
         "flow_mode": confirmed["flow_mode"],
         "progression_checkpoint": confirmed["run_record"],
@@ -793,10 +705,6 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         f"Stage {stage[-1]} foreground workflow execution. {role}\n"
         "The root conversation owns user decisions. Stay within the supplied frozen requirement and current C scope authority. "
         "The confirmed Stage-2 planning boundary is not a Stage-3 ceiling; Stage 3 consumes the latest sealed C readiness. "
-        "While a Stage-3 scope revision is stopping, make only control and original-host reconciliation calls. "
-        "When its state is authorized, prepare the new Stage-3 handoff and call C activate-scope-revision for the exact revision ID; wait for C's same-ref continue-host response before any implementation, allocation, review, or candidate work. "
-        "The revised handoff uses the original accepted Stage-2 planning result as predecessor and the revised readiness as scope authority; the previous Stage-3 handoff remains historical. "
-        "For an explicit legacy recovery, use C's supplemental accepted planning bridge and its current readiness; the old accepted Stage-2 bytes are read-only provenance, not a new B acceptance. "
         "Use the saved flow_mode and exact pending decisions; continuous mode skips only existing human stage gates. "
         "Do not start a daemon, scheduler, monitor, project, or discussion ledger. A carrier turn result never releases its foreground host.\n"
         "At the end, write exactly one JSON result matching the supplied output schema. Every schema field is required. "
@@ -942,7 +850,6 @@ def _validate_handoff_continuity(
     result: dict[str, Any],
     confirmed: dict[str, Any],
     stage2_result: dict[str, Any] | None,
-    recovery: dict[str, Any] | None = None,
 ) -> None:
     if result["handoff"]["controller_ref"] != confirmed["controller_ref"]:
         raise WorkflowError("handoff controller differs from confirmed controller")
@@ -954,10 +861,8 @@ def _validate_handoff_continuity(
     if stage in {"stage3", "stage4"}:
         if isinstance(stage2_result, dict):
             prior_binding = stage2_result.get("handoff", {}).get("binding")
-        elif recovery is not None and recovery.get("state") in {"authorized", "consumed"}:
-            prior_binding = recovery.get("binding")
         else:
-            raise WorkflowError("stage3 handoff requires the prior stage2 handoff or verified recovery")
+            raise WorkflowError("stage3 handoff requires the prior stage2 handoff")
         if not isinstance(prior_binding, dict):
             raise WorkflowError("stage3 handoff requires a valid prior stage2 binding")
         if binding != prior_binding:
@@ -1459,19 +1364,10 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
                 state["turn_result"] = {**projected, "handoff": json.loads(projected["handoff_json"])}
         # A recorded turn is received before any later transport instruction.
         # An unconsumed decision remains queued; it cannot make us run that turn again.
-        if route in {'scope_revision_control', 'scope_revision_activation'} and state.get('turn_result') is not None:
-            # The old completion belongs to the prior scope. Retain its bytes
-            # for audit, but never let it bypass the new C/B attempt.
-            state.setdefault('revision_displaced_results', []).append(state.pop('turn_result'))
-            _atomic_save(record_path, state)
         result = state.get("turn_result")
         if result is None:
             try:
-                if route in {'scope_revision_control', 'scope_revision_activation'}:
-                    result = _invoke(state, record_path, resume_answer, stage in state["sessions"], host,
-                                     control_turn=True)
-                else:
-                    result = _invoke(state, record_path, resume_answer, stage in state["sessions"], host)
+                result = _invoke(state, record_path, resume_answer, stage in state["sessions"], host)
             except LaunchDeferred:
                 latest = progression.read_record(record_path)
                 latest_progress = latest.get(progression.KEY) or {}
@@ -1531,8 +1427,7 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
             try:
                 accepted = _accepted_stage(record_path, stage, result, state["confirmed"])
                 _validate_handoff_continuity(
-                    stage, result, state["confirmed"], state["stage_results"].get("stage2"),
-                    _recovery_provenance(progression.read_record(record_path), record_path) if state.get("recovery_source") else None
+                    stage, result, state["confirmed"], state["stage_results"].get("stage2")
                 )
             except WorkflowError as exc:
                 _mark_failure(state, record_path, "handoff_validation_error", str(exc), False)
@@ -1614,12 +1509,8 @@ def _pending_stage_entry(mode, stage, accepted, current):
 def _verify_run_completion(record_path, state):
     try:
         outer = progression.read_record(record_path)
-        recovery = _recovery_provenance(outer, record_path)
-        entry_prepare.require(all(stage in state["stage_results"] for stage in
-            (STAGES[1:] if recovery is not None else STAGES)),
+        entry_prepare.require(all(stage in state["stage_results"] for stage in STAGES),
                               "result_incomplete", "every required stage must be accepted")
-        entry_prepare.require(recovery is None or recovery["state"] == "consumed",
-                              "recovery_pending", "legacy supplement must be consumed by Stage 3")
         current = outer.get(progression.KEY)
         progression.validate_state(current)
         entry_prepare.require(not progression.Progress(record_path,outer).stop_barrier_pending(),
@@ -1686,17 +1577,12 @@ def _answer_decision(pending, answer, decision_id, flow_intent):
 
 
 def _queue_resume(record_path, answer, registry_input, decision_id, flow_intent=None):
-    observed = _validate_record_at(record_path, _read_json(record_path, 'run record'))
-    _require_record_identity(record_path, observed)
-    if observed['status'] == 'recovery_pending':
-        print(json.dumps({'status':'recovery_pending','run_record':str(record_path),
-                          'recovery_id':observed['recovery_source']['recovery_id']}))
-        return 0
+    observed = _validate_record(_read_json(record_path, 'run record'))
     if registry_input is not None:
         observed['confirmed']['registry_input'] = str(registry_input.resolve())
     _check_current_registry(observed['confirmed'], [int(s[-1]) for s in STAGES[STAGES.index(observed['current_stage']):]])
     with progression.record_lock(record_path):
-        state = _validate_record_at(record_path, progression.read_record(record_path))
+        state = _validate_record(progression.read_record(record_path))
         if state['status'] == 'completed':
             _verify_run_completion(record_path, state)
             print(json.dumps({'status':'completed','acknowledged':True,'run_record':str(record_path)}))
@@ -1764,13 +1650,7 @@ def resume(record_path, answer=None, registry_input=None, decision_id=None, flow
 
 def _resume_owned(record_path: Path, answer: str | None = None, registry_input: Path | None = None, decision_id: str | None = None, flow_intent: str | None = None) -> int:
     record_path = _absolute_path(str(record_path), "run_record")
-    state = CheckpointState(_validate_record_at(record_path, _read_json(record_path, "run record")))
-    _require_record_identity(record_path, state)
-    if state['status'] == 'recovery_pending':
-        print(json.dumps({'status':'recovery_pending','run_record':str(record_path),
-                          'recovery_id':state['recovery_source']['recovery_id'],
-                          'next_action':{'operation':'scope-recover-legacy','action':'activate'}}))
-        return 0
+    state = CheckpointState(_validate_record(_read_json(record_path, "run record")))
     _recover_transport(state, record_path)
     _recover_carrier_receipt(state, record_path)
     status = state["status"]
@@ -1924,8 +1804,7 @@ def _recover_business(record_path: Path, decision_path: Path, *, live=False) -> 
     """Submit in the original Controller context; never launch a CLI carrier."""
     record_path = _absolute_path(str(record_path), "run_record")
     decision = _read_json(decision_path, "business recovery decision")
-    state = _validate_record_at(record_path, _read_json(record_path, "run record"))
-    _require_record_identity(record_path, state)
+    state = _validate_record(_read_json(record_path, "run record"))
     current = state.get(progression.KEY)
     if current is None:
         raise WorkflowError("missing_checkpoint: business recovery requires the retained C checkpoint")
@@ -1960,11 +1839,8 @@ def _request_control(record_path, operation, *, live):
     record_path = _absolute_path(str(record_path), "run_record")
     with progression.record_lock(record_path):
         state = progression.read_record(record_path)
-        if state.get("version") != 8:
+        if state.get("version") != 9:
             raise WorkflowError("legacy_run_requires_original_runtime: control requires the original pinned record")
-        _require_record_identity(record_path, state)
-        if state.get("status") == "recovery_pending":
-            raise WorkflowError("scope_recovery_pending: activate the original takeover before runner control")
         member = state.get(progression.KEY)
         pin = state.get("confirmed", {}).get("packages", {}).get("runner")
         if ((member is not None and member.get("protocol") != progression.PROTOCOL) or

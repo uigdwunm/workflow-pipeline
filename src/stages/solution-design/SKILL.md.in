@@ -92,19 +92,9 @@ the stage.
 
 ## Enter the stage
 
-An already accepted, published v12/v7 Stage-2 run with no Stage-3 intent uses
-the original Controller's narrow `scope-recover-legacy` path under [Workflow
-progression]({{resource:shared/references/workflow-progression.md}}). Verify the
-old package, checkpoint, stopped host and Git proof first. Preserve its Spec,
-Tickets, publication and Flow Worktree; establish supplemental scope authority
-in the same checkpoint before Stage-3 entry. This is recovery of accepted
-planning, not a new solution-designer run.
-If the supplemental file manifest needs correction before Stage-3 consumption,
-the original Controller uses the explicit `supersede` action with the current
-takeover transaction and seal references; the old planning publication and
-accepted result stay in history. A reserved launch must be reconciled through
-its original transaction; after consumption, use the ordinary Stage-3
-scope-revision path for later omissions.
+Old accepted runs retain their original pinned runtime. For current accepted
+Stage-2 planning, correct a missing scope file only before any saved Stage-3
+preparation, launch intent or session, following [Workflow progression]({{resource:shared/references/workflow-progression.md}}).
 
 Enter from exactly one route:
 

@@ -171,34 +171,20 @@ def recovery_snapshot(repository, progress):
                     'dispatcher': sorted(changed - set(owners))}, sorted(revalidate)
 
 
-def scope_revision_snapshot(repository, baseline, allowed_paths, protected_paths, proposed_paths):
-    """Read the full old write history before granting any proposed new path."""
+def scope_revision_snapshot(repository, baseline, protected_paths, proposed_paths):
+    """Require an unchanged published workspace before planning correction."""
     repository = Path(repository)
     baseline = commit(baseline)
-    allowed, protected, proposed = (set(paths(value, empty=True)) for value in
-                                    (allowed_paths, protected_paths, proposed_paths))
-    require(not allowed & protected and not proposed & protected,
-            'scope revision includes protected source')
+    protected, proposed = (set(paths(value, empty=True)) for value in
+                           (protected_paths, proposed_paths))
+    require(not proposed & protected, 'scope correction includes protected source')
     actual = snapshot(repository)
-    git(repository, 'merge-base', '--is-ancestor', baseline, actual['head'])
-    touched = set()
-    revisions = git(repository, 'rev-list', baseline + '..' + actual['head']).decode().splitlines()
-    for revision in revisions:
-        parents = git(repository, 'rev-list', '--parents', '-n', '1', revision).decode().split()
-        require(len(parents) >= 2, 'scope history has no parent')
-        touched.update(filter(None, git(repository, 'diff', '--no-renames', '--name-only', '-z',
-                                        parents[1], revision).decode().split('\0')))
-    for arguments in (('diff', '--cached', '--name-only', '-z'),
-                      ('diff', '--name-only', '-z'),
-                      ('ls-files', '--others', '--exclude-standard', '-z')):
-        touched.update(filter(None, git(repository, *arguments).decode().split('\0')))
-    require(touched <= allowed and not touched & protected,
-            'scope revision cannot authorize earlier out-of-scope changes: ' +
-            ', '.join(sorted(touched - allowed)))
+    require(actual['head'] == baseline and not git(repository, 'status', '--porcelain'),
+            'scope correction requires the unchanged clean planning baseline')
     files = {relative: file_fingerprint(repository, relative)
-             for relative in sorted(allowed | protected | proposed)}
+             for relative in sorted(protected | proposed)}
     return {**actual, 'baseline': baseline, 'files': files,
-            'touched': sorted(touched), 'proposed_paths': sorted(proposed)}
+            'proposed_paths': sorted(proposed)}
 
 
 def verify_stopped_snapshot(repository, stopped, current):
@@ -288,7 +274,7 @@ def verified_transition(payload):
     action, evidence = request.get('action'), request.get('evidence', {})
     context = request.get('context', {})
     progress = context.get('handoff_progress')
-    if progress and 'git_baseline_commit' in progress and action != 'start-dispatch-revision':
+    if progress and 'git_baseline_commit' in progress:
         require(payload['baseline'] == progress['git_baseline_commit'], 'frozen Git baseline changed')
     if action == 'receive':
         verify_delivery(repository, payload['baseline'], evidence)
@@ -315,15 +301,9 @@ def verified_transition(payload):
         except supervision.ProtocolError as error:
             raise ControlError('worktree disposition verification failed: ' + error.message) from error
         evidence.update(ancestor_verified=True, changed_paths=all_changes, **disposition)
-    if action in {'start-dispatch', 'start-dispatch-revision', 'start-design'}:
+    if action in {'start-dispatch', 'start-design'}:
         verify_binding(repository, evidence['binding'])
-        if action in {'start-dispatch', 'start-dispatch-revision'}:
-            if action == 'start-dispatch-revision':
-                require(progress is not None and evidence['binding'] == progress['binding'] and
-                        evidence['old_ref'] == context['carrier']['ref'] and
-                        evidence['old_attempt'] == context['carrier']['attempt'] and
-                        snapshot(repository)['head'] == payload['baseline'],
-                        'revision must retain the stopped Dispatcher at the current Git snapshot')
+        if action == 'start-dispatch':
             policy = implementation_policy(evidence.get('implementation_policy'), baseline=payload['baseline'])
             if policy['mode'] == 'direct':
                 require(snapshot(repository)['head'] == payload['baseline'] and not git(repository, 'status', '--porcelain'),
@@ -435,10 +415,10 @@ def verified_transition(payload):
         if action in {'validation-start', 'validation-result'}:
             evidence['source_snapshot'] = {p:file_fingerprint(repository, p) for p in progress['allowed_paths'] + progress['protected_paths']}
     result = transition(request)
-    if action in {'start-dispatch', 'start-dispatch-revision', 'start-design', 'start-closure'}:
+    if action in {'start-dispatch', 'start-design', 'start-closure'}:
         git(repository, 'merge-base', '--is-ancestor', commit(payload['baseline']), 'HEAD')
         result['context']['handoff_progress']['git_baseline_commit'] = payload['baseline']
-        if action in {'start-dispatch', 'start-dispatch-revision'} and direct_implementation(result['context']['handoff_progress']):
+        if action == 'start-dispatch' and direct_implementation(result['context']['handoff_progress']):
             result['context']['handoff_progress']['implementation_target_head'] = payload['baseline']
     if action == 'execution-result':
         recorded = execution_record(result['context']['handoff_progress'], evidence['agent_ref'])

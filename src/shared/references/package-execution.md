@@ -1,7 +1,7 @@
 # Package execution and action preflight
 
 Registration provenance and controlled recovery require preparation=workflow-preparation-v5,
-stage_transfer=workflow-stage-transfer-v9, workflow_progress=workflow-progress-v14,
+stage_transfer=workflow-stage-transfer-v10, workflow_progress=workflow-progress-v15,
 and topic_gate=phase-0-1-discussion-v2. The topic gate key separates packages
 that allow discussion behind a closed dependency from the older blanket guard.
 Preparation v5 retains stable actor identity and permits the original Stage-2
@@ -10,9 +10,9 @@ preparation and checks for unexpected changes only across its own Git mutations.
 Entry requests use workflow-entry-v4 and requirement requests use requirement-freeze-v2.
 Old pinned runs keep their original packages and records; ordinary new-package
 operations reject incompatible exchanges instead of filling missing identity
-fields. The narrow legacy scope takeover below is an explicit exception.
-Runner outer version 8 requires workflow-progress-v14, workflow-stage-transfer-v9
-and control compatibility key 8 (JSON schema 5). Supervision flow-worktree-v3
+fields.
+Runner outer version 9 requires workflow-progress-v15, workflow-stage-transfer-v10
+and control compatibility key 9 (JSON schema 5). Supervision flow-worktree-v3
 requires lifecycle provenance and disposition; requirement-delivery-v2 accepts
 bounded Stage-2 conversation delivery. Discussion request/ledger, requirement-freeze
 and thread-settings retain their existing versions. Older records require
@@ -20,22 +20,13 @@ their original pinned runtime for ordinary execution. Missing implementation_pol
 compatible new input means full; it never supplies direct provenance to an old
 candidate. This change does not install packages or update active registrations.
 
-Progression v14 retains native lifecycle admission and adds a sealed Stage-2
-downstream scope with controlled revision/recovery and lifecycle-aware completion.
-The scope envelope has internal `version:1`; its manifest is the source for
-implementation and closure path projections. Normal operations reject older
-progress checkpoints and runner pins, including pause/cancel and requirement or
-lifecycle transactions. Only the dedicated `scope-recover-legacy` entry runs
-before the normal guard: `inspect` is read-only, `prepare-takeover` verifies
-the explicitly supported old pin combination and atomically retains its raw
-snapshot in one new current checkpoint, and `activate` completes the exact
-pending takeover. `supersede` replaces only an unconsumed, unreserved
-supplemental decision while retaining its prior audit record. All four use
-the original canonical checkpoint.
-An attached Stage-3 successor also reserves its current Phase Run in the
-original Topic ledger before the recovered v14 checkpoint consumes the bridge.
-Runner v8 and control key 8 prevent old bindings from being interpreted as
-current authority. The five package roots include `scripts/stage_scope.py`.
+Progression v15 retains native lifecycle admission, sealed Stage-2 downstream
+scope and lifecycle-aware completion. The scope envelope has internal `version:1`;
+its manifest supplies implementation and closure path projections. Corrections
+are limited to accepted Stage 2 before any saved Stage-3 preparation, launch
+intent or session. Old checkpoints and pins fail the normal protocol guard and
+require their original runtime; there is no compatibility takeover entry.
+The five package roots include `scripts/stage_scope.py`.
 
 For a Stage-2/3/4 Controller, also run the
 [native host preflight]({{resource:shared/references/workflow-progression.md}}#native-host-admission)
@@ -140,7 +131,7 @@ activation and archive protocol is satisfied; installation never supplies author
 
 The foreground runner belongs only to Stage 3's package. Start requires a current
 registry snapshot and freezes runner plus Stage 2/3/4 identities in outer record
-version 8. The runner pins the confirmed-input file as `registry_input`, rereads its current
+version 9. The runner pins the confirmed-input file as `registry_input`, rereads its current
 `registry` and `registry_context` before every executor launch, and rechecks all remaining targets on
 resume. The trusted host/controller must refresh that evidence when registrations
 change; executor filesystem discovery is not registration evidence. To supply a
@@ -149,7 +140,5 @@ the file must contain current paired `registry` and `registry_context` objects. 
 execution retains the original package realpaths and identities. Missing,
 ambiguous or incompatible current targets block without launching an executor.
 Resume retains the record lock, sessions and completed results. Earlier outer
-records are read-only under normal operations. The narrow, Controller-initiated
-`scope-recover-legacy` route accepts only its explicitly verified v6 Stage-2
-combination; all other old records need their original runner and package tree.
+records require their original runner and package tree.
 Neither a registry refresh nor `resume` upgrades an old record.

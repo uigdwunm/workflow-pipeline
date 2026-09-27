@@ -52,7 +52,7 @@ that exact decision as consumed; transport completion alone cannot discard it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v14","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v15","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -191,124 +191,25 @@ scope has no downstream ceiling to reuse. Stage-3 carrier input comes from C's
 current or consumed readiness, while a standalone Stage-3 entry supplies its
 own complete sealed input.
 
-### Revising an accepted scope
+### Correcting scope before Stage 3
 
-When a required file was omitted after planning acceptance, the original
-Controller submits `scope-revise` with data `{revision_id,
-expected_scope_revision,previous_scope_digest,requirement_identity,binding,
-planning_commit,planning_merge_commit,candidate_commit,old_manifest,manifest,
-implementation_required,diff,reason,controller_ref,decision,
-generated_outputs?}`. `generated_outputs` is required when the revised
-manifest contains generated entries and is revalidated with that revision.
-`diff` is the
-exact result of the shared manifest comparison, and `decision` uses the same
-in-requirement or previously approved change form as the initial seal. A
-`reference-to-approved-change` must resolve to the earlier durable
-`approve-change` user-decision record in this Controller's original history;
-the new revision cannot create its own approval by naming a string. The
-planning candidate and its committed basis remain fixed; changing the accepted
-design first requires its ordinary change decision and publication path.
+The original Controller may use `scope-revise` to correct an accepted Stage-2
+manifest before Stage 3 has ever been prepared. Bind the exact previous scope
+revision/digest, original requirement, accepted planning commits, Flow binding,
+complete manifest/diff, reason and Controller decision. Generated entries retain
+their verified source-to-outputs map. A changed requirement or accepted design
+first follows the ordinary change decision and publication path.
 
-C saves the revision intent before stopping writers. While the transaction is
-stopping, neither the old lease nor a new proposal may authorize more work.
-Unknown native calls are reconciled through their original identity; a stop
-request alone is not stopped-writer proof. At quiescence, C snapshots Git HEAD,
-index, working files and the old plus proposed path set, including per-commit
-changes. It rejects previously unauthorized edits instead of retroactively
-approving them, and rejects removal or reassignment of paths with live work.
-The original Controller's `scope-revise` decision binds that snapshot, exact
-diff, requirement, planning commits, binding and expected revision. C rechecks
-the snapshot before activation; repeated identical revision IDs return their
-saved result, while conflicting replays fail. An accepted Stage-2 record can
-activate the new sealed revision in place. A Stage-3 writer remains stopped at
-`stage3-revision-attempt` until a new B attempt binds that revision; the old
-dispatch request and review evidence cannot grant permission for the new paths.
+Any saved Stage-3 preparation, launch intent or session rejects correction,
+even if cancelled or no writer was created. Rejection leaves the saved stage,
+accepted result and writer authority intact. It neither rolls back the workflow
+nor creates a new writer attempt. Within the admitted pre-Stage-3 boundary,
+revalidate original authority, Git bytes and publication before activating the
+corrected sealed scope; identical requests reuse their saved result. Existing
+pause/cancel and unresolved-call gates still apply.
 
-### Narrow recovery of an old accepted Stage 2
-
-Use `scope-recover-legacy` only for an original v12/v7, control schema 4/key 6
-accepted Stage-2 checkpoint whose planning commit was published and whose
-Stage-3 intent has never begun. The exact old package key must match one of
-the three historical source combinations: preparation-v3 without confirmation,
-preparation-v4 without confirmation, or preparation-v4 with confirmation-v3.
-The old runner outer, if present, is version 6. This route keeps the same
-canonical checkpoint path, Controller, frozen requirement, target and Flow
-Worktree. An old package must still exist at its pinned digest.
-
-First call `scope-recover-legacy` with `data.action="inspect"`,
-`recovery_id`, the SHA-256 of the original complete checkpoint bytes, the
-original accepted digest, original `controller_ref`, and fresh `host_evidence`
-from that old adapter. This operation is read-only. It checks the old accepted
-result with its original pinned read-only verifier, the actual old writer and
-unresolved calls, old runner sessions and Phase state, the exact planning Git
-merge, clean worktree, frozen requirement bytes/mode and old package pins.
-Missing old host or package evidence blocks takeover; a new host inventory does
-not prove an old writer stopped. `inspect` returns `downstream_ready=false`.
-
-For the same recovery ID, `data.action="prepare-takeover"` additionally
-supplies the complete manifest, `implementation_required`, the original
-Controller's explicit decision, current `new_packages`, and current
-`workspace_evidence` (plus `new_confirmed` for a runner and
-`generated_outputs` when the supplemental manifest contains generated files).
-The map becomes part of the sealed supplemental proposal and is revalidated
-at Stage-3 consumption. Under the original
-runner RunLock when applicable and then C's record lock, C rechecks the exact
-old digest and qualification, builds a sealed supplemental authority and a v9
-`legacy-supplemental-acceptance` bridge, and atomically replaces only the
-current checkpoint. `scope_recoveries` retains the original UTF-8 bytes,
-SHA-256, old pins, old accepted result and recovery transaction. Current C is
-v14 `recovery_mode="legacy-takeover"`; current runner outer is v8 with
-`recovery_source`. The new outer has no old CLI sessions. A repeated identical
-takeover request returns its saved result; a different request cannot silently
-replace it. The resulting `takeover-pending` state grants no Stage-3 permission.
-
-Call the same operation with `data.action="activate"`, `recovery_id`, original
-checkpoint SHA-256, original `controller_ref`, and fresh old-adapter
-`host_evidence`. C rechecks the old writer, clean published worktree, target
-ancestry, manifest and both old/new package pins. For an attached Topic it
-saves the original workflow-control ledger's pending CAS transaction and exact
-receipt, then saves and issues an active CAS transaction for that same control
-context. The old control JSON remains in the ledger record. Each completed
-step persists in the current checkpoint before the next, so uncertain results
-reconcile the original transaction. Pending or uncertain local/ledger state
-cannot launch Stage 3. A successful activation returns `authorized` with
-current readiness; the supplemental B bridge consumes it for the new Stage-3
-start. For an attached Topic, first prepare its actual `2→3` Phase Run. The
-Stage-3 handoff must carry that run and attempt in
-`authorization.phase:{run_id,attempt_id}`. Before changing local C to consumed,
-C saves the original `scope-recover-legacy-reserve` workflow-control request in
-`scope_recoveries[recovery_id].ledger.reservation_request`. Its evidence binds
-`recovery_id`, canonical checkpoint path, original checkpoint SHA-256, bridge
-digest, Phase Run ID, attempt ID, Controller, and reservation ID. C saves the
-ledger receipt, updates the active control envelope, then reads the Topic back
-to prove the exact reservation still owns the current Phase-2 `2→3` attempt.
-An uncertain ledger response replays that saved idempotency envelope; another
-reservation or Phase Run cannot silently replace it. Only then does C recheck
-legacy readiness, the new host, original entry/binding and sealed scope,
-prepare B's Stage-3 Dispatcher handoff, and save consumed recovery plus the
-single launch intent in the current checkpoint before any host call. The
-original accepted bytes and package pin remain historical evidence, never a
-new v9 acceptance. A copied post-takeover checkpoint fails its canonical path
-and original native-call identity recheck.
-
-Before Stage-3 consumption or Topic reservation, the original Controller may
-replace an incorrect supplemental manifest with `scope-recover-legacy` and
-`data.action="supersede"`. Supply the same `recovery_id`, original checkpoint
-SHA-256, original accepted digest and Controller, fresh old-adapter host evidence,
-new complete manifest, `implementation_required`, decision, current new package
-pins and workspace evidence, plus `previous_takeover_transaction_id` and
-`previous_scope_seal_ref` from the exact current supplement. Runner recovery
-also supplies `new_confirmed`; generated entries supply `generated_outputs`.
-The old raw checkpoint and original accepted result are reverified. The new
-seal must differ, and the previous supplemental record is appended to
-`superseded` history. The current projection returns to `takeover-pending` for
-the same activate sequence. An identical replay ACKs; a different request
-cannot replace consumed or reserved Stage-3 authority. For an attached Topic,
-the existing ledger action `scope-recover-legacy-supersede` binds the prior
-takeover transaction and seal, retains the previous current control bytes, and
-creates one new pending context before activation. Settle uncertain prior
-ledger writes before superseding; neither path rewrites the original v12/v7
-acceptance or publishes the plan again.
+Old checkpoints require their original pinned runtime. Current packages offer
+no cross-version takeover or supplemental handoff.
 
 ## Native host admission
 
@@ -348,7 +249,7 @@ An app-server adapter supplies `{adapter:"app-server",snapshot:<raw lifecycle
 snapshot>}` using the full lookup contract below. The foreground runner retains
 its existing live connection identity instead of taking interactive evidence.
 Adapter identity remains fixed across native stages. Installed v11 runs retain
-their original pinned runtime; v14 neither reseals their evidence nor migrates
+their original pinned runtime; v15 neither reseals their evidence nor migrates
 their checkpoints.
 
 ### Interactive completion
@@ -779,23 +680,12 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 8 and pin workflow-progress-v14 /
-workflow-stage-transfer-v9 / flow-worktree-v3 packages with control compatibility
-key 8. Earlier progress protocols and runner records require their original
+New runner records use outer version 9 and pin workflow-progress-v15 /
+workflow-stage-transfer-v10 / flow-worktree-v3 packages with control compatibility
+key 9. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete
 registration is required for live actions. No installation is implied.
-
-For the explicitly admitted v6 Stage-2 takeover, outer v8 records
-`recovery_source:{recovery_id,original_checkpoint_sha256}` and verifies it
-against C's current `scope_recoveries` entry on resume. The old outer bytes,
-pins, CLI sessions and accepted result remain in the immutable snapshot;
-new carrier sessions belong only to the new outer. `recovery_pending` reports
-the exact `scope-recover-legacy` activation action and does not launch Stage 3.
-After activation, the runner consumes C's supplemental readiness and B's v9
-bridge, not the old confirmed Stage-2 path ceiling. Host transport receipts
-for the new run use their recovery-specific path so old transport facts are
-not overwritten.
 
 Confirmed input retains the existing frozen_requirement display tuple
 and additionally requires `requirement`, the complete successful A frozen or

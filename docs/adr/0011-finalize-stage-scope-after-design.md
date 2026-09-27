@@ -1,15 +1,18 @@
-# ADR-0011: 设计后封存阶段范围，以补充授权接管旧交接
+# ADR-0011: 设计后封存阶段范围
 
-Status: Accepted — scope-review-20260926-01（用户已确认；项目实现与回归已落地）
+Status: Accepted in part; active revision and legacy exception withdrawn — 2026-09-27 用户决定
 
-Stage 2 启动时尚不知道完整实现文件，提前冻结后续数组会把“未知”与“明确为空”混为一谈。决定保留启动需求、规划权限与 Flow Worktree，将后续精确范围作为独立的提案、封存和修订对象，由设计者提出、原 Controller 授权，C 在原 checkpoint 持久化；B 只验证。规划接受不等于实现就绪，发布前封存、Stage 3 入口重验。需求内文件细化不增设用户审批，业务、权限及副作用扩张仍走原变更决定。
+Stage 2 启动时保留已知需求、规划写入权限和 Flow Worktree；未知下游范围保持 unresolved。设计者提出逐文件清单，原 Controller 封存，C 持久化，B 验证。planning_complete 与 handoff_ready 分离，Stage 3 必须验证当前封存权威与就绪证据。
 
-这是对 ADR-0008“旧记录仅由原固定运行时恢复”的一个明确、窄的例外：只处理已验收 Stage 2 且从未有 Stage-3 intent 的 v12/v7 组合。原 Controller 取得原包、原宿主停写与真实 Git 证据后，以独立补充决定创建新交接。恢复完整保存旧 checkpoint 原始字节、摘要、接受记录和包身份，在同一 checkpoint 原子接管唯一 current 为新协议；新 runner 封套和 pin 属于新运行，旧运行不被升级或伪造为新接受结果。旧运行时的现有版本门禁因此拒绝续写，历史快照仍由其原包作只读验证。附着讨论通过现有 ledger 的幂等事务接管唯一 current control；中断保持关闭新派发，直到两侧一致。
+范围校正仅允许在接受 Stage 2 后、任何 Stage-3 preparation、launch intent 或 session 保存前进行。已有这些记录即拒绝，即使取消或从未创建 writer；不回退阶段、不改变旧写入权威、不创建新的 writer attempt。正常业务、宿主、Dispatcher 恢复保留其原契约。
 
-恢复不重做设计、不重复发布规划、不新建 worktree、不引入另一套活动 ledger；已进入实现的旧运行不迁移。接管确实改变当前运行权威，不宣称旧记录文件完全不变。完整旧历史保留与当前执行指针切换是不同保证。仅追加一个旧运行时无法识别的恢复标志，不能防止旧续行，因此不采用。将旧包 pin 静默替换或重算原授权摘要同样不可接受。
+旧决定曾允许活动 Stage-3 范围修订和旧 Stage-2 一次性兼容接管。用户现已撤回两项能力，ADR-0008 原固定运行时规则不再有本 ADR 的例外。下方历史实施证据不构成恢复这些能力的待办或授权。
 
-活动范围修订先停写、结清调用并固定真实 Git 快照；保留旧接受结果与审查 fixed point，仅失效其对新 revision 的当前效力。新范围的派发与候选重新绑定授权 revision。全部状态复用原 Controller、checkpoint、Topic ledger 及现有锁，真实宿主证据不可用时阻断，不以布尔声明恢复权限。
+当前契约与验证边界见 `.scratch/stage-scope-finalization/PRD.md`。当前版本为 progress-v15、transfer-v10、control key 9/schema 5、runner outer 9；其余版本不变。本决策不执行现场迁移或安装，也不宣称本次检查已通过。
 
-精确版本、状态转换、跨文件中断恢复与测试由 `.scratch/stage-scope-finalization/PRD.md` 的 D1–D7 负责。
+## 历史实施记录（撤回前）
 
-实施记录（2026-09-27）：e24136f 实施基线已是 progress-v13、transfer-v8、control key 7/schema 5、runner outer 7；本决策在当前项目实现为 progress-v14、transfer-v9、control key 8/schema 5、runner outer 8。旧 v12/v7 的原始记录与包 pin 仍是只读历史。源码已加入范围封存/修订、同 checkpoint 的窄接管以及附着 Topic 的阶段预留；本对话授权的是项目修复，没有对用户真实旧运行执行接管。完整包、仓库回归及失败夹具复测已完成，58 个测试模块合并覆盖 1,000 个用例（999 通过、1 个既有跳过），实际命令结果与剩余验证边界见 PRD 实施记录；真实附着旧 schema 4 正向 fixture 因缺原 WC 记录而按资格检查拒绝，其正向行为尚未验证。
+实施记录（2026-09-27）：e24136f 实施基线已是 progress-v13、transfer-v8、control key 7/schema 5、runner outer 7；原决策当时实现为 progress-v14、transfer-v9、control key 8/schema 5、runner outer 8。旧 v12/v7 的原始记录与包 pin 仍是只读历史。源码已加入范围封存/修订、同 checkpoint 的窄接管以及附着 Topic 的阶段预留；本对话授权的是项目修复，没有对用户真实旧运行执行接管。完整包、仓库回归及失败夹具复测已完成，58 个测试模块合并覆盖 1,000 个用例（999 通过、1 个既有跳过），实际命令结果与剩余验证边界见 PRD 实施记录；真实附着旧 schema 4 正向 fixture 因缺原 WC 记录而按资格检查拒绝，其正向行为尚未验证。
+
+
+收缩实施已完成：全量验证 943 项、零失败/错误、1 个既有跳过；五包构建一致性和仓库校验通过。当前支持正常范围封存与 Stage 3 前校正，撤回能力不再提供入口。

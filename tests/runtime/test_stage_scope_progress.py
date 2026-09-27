@@ -277,16 +277,49 @@ class ScopeProgressTests(unittest.TestCase):
             "reason": "The implementation needs its approved regression test file.",
             "controller_ref": "task", "decision": {"kind": "in-requirement-refinement",
                 "reference": "controller:add-test"}}
+        original_control = progress.Progress.control_action
+        def interrupted(owner, request):
+            original_control(owner, request)
+            raise RuntimeError("interrupted after Controller receipt")
+        with patch.object(progress.Progress, "control_action", interrupted):
+            with self.assertRaisesRegex(RuntimeError, "Controller receipt"):
+                self.flow.invoke("scope-revise", data)
         revised = self.flow.invoke("scope-revise", data)
-        self.assertEqual(revised["next_action"]["operation"], "scope-revision-active", revised)
+        self.assertEqual(revised["next_action"]["operation"], "scope-revision-sealed", revised)
         after = self.flow.state()
         self.assertEqual(after["accepted"], before["accepted"])
         self.assertEqual(after["scope_authority"]["revision"], 2)
         self.assertEqual(after["scope_authority"]["scope"]["implementation_paths"],
                          ["impl.py", "tests/test_impl.py"])
         self.assertTrue(self.flow.invoke("scope-revise", data, revision=0)["acknowledged"])
+        second = copy.deepcopy(data)
+        current = after["scope_authority"]
+        second.update(revision_id="revision-2", expected_scope_revision=2,
+                      previous_scope_digest=fixture.transfer.entry.digest(current["scope"]),
+                      old_manifest=copy.deepcopy(current["scope"]["downstream"]["manifest"]))
+        second["manifest"].append({**copy.deepcopy(second["manifest"][-1]), "path": "tests/test_extra.py"})
+        second["manifest"].sort(key=lambda item: item["path"])
+        second["diff"] = stage_scope.manifest_diff(second["old_manifest"], second["manifest"])
+        with patch.object(progress.Progress, "control_action", interrupted):
+            with self.assertRaisesRegex(RuntimeError, "Controller receipt"):
+                self.flow.invoke("scope-revise", second)
+        self.flow.invoke("scope-revise", second)
+        self.assertEqual(self.flow.state()["scope_authority"]["revision"], 3)
+        self.assertEqual(self.flow.state()["accepted"], before["accepted"])
+        corrected = self.flow.state()
+        request = self.flow.input_for(3, corrected["accepted"])
+        for key in ("downstream", "implementation_paths", "closure_paths"):
+            request["scope"][key] = copy.deepcopy(corrected["scope_authority"]["scope"][key])
+        request["authorization"]["scope_digest"] = fixture.transfer.entry.digest(request["scope"])
+        self.flow.context = self.flow.context_for(3)
+        self.flow.begin("continuous", request)
+        started = self.flow.state()
+        self.assertEqual(started["stage"], 3)
+        self.assertEqual(started["consumed_readiness"]["scope_revision"], 3)
+        self.assertIn("tests/test_extra.py", started["handoff"]["scope"]["implementation_paths"])
+        fixture.transfer.handoff.verify(started["handoff"])
 
-    def test_active_stage_three_revision_closes_old_lease_before_host_stop(self):
+    def test_active_stage_three_revision_rejected_before_checkpoint_write(self):
         candidate = self.planning_candidate()
         _, digest = self.propose(candidate)
         self.flow.ready_publication(candidate, "controller:planning-readiness")
@@ -325,51 +358,30 @@ class ScopeProgressTests(unittest.TestCase):
             "reason": "Add the regression test file before implementation resumes.",
             "controller_ref": "task", "decision": {"kind": "in-requirement-refinement",
                 "reference": "controller:add-test"}}
-        stopped = self.flow.invoke("scope-revise", data)
-        self.assertEqual(self.flow.state()["scope_revision_transaction"]["state"], "stopping")
-        self.assertEqual(self.flow.state()["handoff"], before["handoff"])
-        self.assertEqual(self.flow.state()["dispatch"], before["dispatch"])
-        self.assertEqual(stopped["next_action"]["operation"], "stop-host", stopped)
+        checkpoint = self.flow.checkpoint.read_bytes()
         with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
-            self.flow.invoke("decide", {"decision_id": "old", "subject": {},
-                "answer": "accept", "reference": "controller:old"})
-        self.assertEqual(error.exception.code, "scope_revision_pending")
-        late = self.flow.observation("stopped", "result", {"delivery_id": "late-result",
-            "status": "completed", "payload": {"candidate_commit": candidate}}, ref="native:dispatcher")
-        late["receipt"]["raw"]["resumable"] = True
-        authorized = self.flow.invoke("observe", late)
-        self.assertEqual(authorized["next_action"]["operation"], "stage3-revision-attempt", authorized)
-        state = self.flow.state()
-        self.assertEqual(state["scope_revision_transaction"]["state"], "authorized")
-        self.assertIsNone(state["dispatch"]["delivery"])
-        self.assertEqual(len(state["scope_revision_late_results"]), 1)
-        readiness = progress.revision_scope_readiness(state, self.flow.checkpoint)
-        self.assertIsNotNone(readiness)
-        revised_input = copy.deepcopy(request)
-        revised_scope = copy.deepcopy(state["handoff"]["scope"])
-        revised_scope["baseline"] = state["scope_revision_transaction"]["snapshot"]["head"]
-        revised_scope["downstream"] = copy.deepcopy(readiness["scope_authority"]["scope"]["downstream"])
-        revised_scope["implementation_paths"] = copy.deepcopy(readiness["scope_authority"]["scope"]["implementation_paths"])
-        revised_scope["closure_paths"] = copy.deepcopy(readiness["scope_authority"]["scope"]["closure_paths"])
-        revised_scope["owned_paths"] = copy.deepcopy(revised_scope["implementation_paths"])
-        revised_input["scope"] = revised_scope
-        revised_input["authorization"]["reference"] = "controller:add-test"
-        revised_input["authorization"]["flow_mode"] = "continuous"
-        revised_input["authorization"]["scope_digest"] = fixture.transfer.entry.digest(revised_scope)
-        revised_input["readiness"] = readiness
-        active = self.flow.invoke("activate-scope-revision", {"revision_id": "revision-active",
-            "handoff": revised_input})
-        self.assertEqual(active["next_action"]["operation"], "continue-host", active)
-        current = self.flow.state()
-        self.assertEqual(current["control"]["context"]["carrier"]["ref"], "native:dispatcher")
-        self.assertEqual([receipt["event"] for receipt in current["dispatch"]["receipts"]],
-                         ["existing-dispatcher"])
-        self.assertEqual(active["next_action"]["payload"]["ref"], "native:dispatcher")
-        self.assertEqual(active["next_action"]["payload"]["request"],
-                         current["dispatch"]["request"])
-        self.assertEqual(current["scope_authority"]["revision"], 2)
-        self.assertEqual(current["scope_revision_transaction"]["state"], "active")
-        self.assertEqual(current["history"][-1]["dispatch"], state["dispatch"])
+            self.flow.invoke("scope-revise", data)
+        self.assertEqual(error.exception.code, "scope_revision_unavailable")
+        self.assertEqual(self.flow.checkpoint.read_bytes(), checkpoint)
+
+    def test_saved_launch_intent_closes_correction_even_when_unknown_or_cancelled(self):
+        for launch_state in ("unknown", "cancelled", "prelaunch"):
+            outer = {progress.KEY: {"stage": 2},
+                     "launch": {"stage": "stage3", "state": launch_state}}
+            with self.subTest(launch_state=launch_state), self.assertRaises(fixture.transfer.entry.PreparationError):
+                progress.require_scope_correction_available(outer)
+
+    def test_saved_stage_three_preparation_closes_correction(self):
+        for prepared in ({"stage3_prepared": {}}, {"prepared_inputs": {"stage3": {}}}):
+            with self.subTest(prepared=prepared), self.assertRaises(fixture.transfer.entry.PreparationError):
+                progress.require_scope_correction_available({progress.KEY: {"stage": 2}, **prepared})
+
+    def test_saved_runner_history_does_not_reopen_correction(self):
+        for record in ({"event": "failure", "stage": "stage3"},
+                       {"event": "checkpoint", "next_stage": "stage3"}):
+            with self.subTest(record=record), self.assertRaises(fixture.transfer.entry.PreparationError):
+                progress.require_scope_correction_available({progress.KEY: {"stage": 2},
+                    "current_stage": "stage2", "history": [record]})
 
 
 if __name__ == "__main__":

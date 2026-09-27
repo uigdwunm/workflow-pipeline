@@ -139,21 +139,12 @@ revision. Compare every planned
 source, test, generated output and document with the manifest and its committed
 basis. Keep the stage-level implementation ceiling intact when assigning a
 subset to an Execution Agent. An unresolved scope, stale seal or missing file
-returns to the original Controller's scope decision path before the affected
-write. A standalone Stage-3 brief supplies its own complete sealed manifest.
+blocks the affected write. Once any Stage-3 preparation, intent or session is
+saved, scope correction rejects; retain the current boundary and report the
+missing scope to the original Controller without creating a new writer attempt. A standalone Stage-3 brief supplies its own complete sealed manifest.
 If that standalone manifest includes generated files, supply B's top-level
 `generated_outputs` source-to-outputs map before sealing the handoff; inherited
 flows use their saved authority map and cannot replace it at entry.
-For a recovered old Stage-2 run, use only the current C recovery readiness and
-v9 supplemental B bridge after the original Controller's takeover is active.
-Keep the original v7 accepted result and old package pins as read-only history;
-an inspected or pending takeover is not an implementation entry. Reuse the
-same checkpoint, published plan and Flow Worktree.
-When this recovery is attached to a Topic, prepare the actual `2→3` Phase Run
-and let C persist and read back its one `scope-recover-legacy-reserve` ledger
-reservation before the new Dispatcher launch. A pending takeover, active
-takeover without that reservation, or copied checkpoint cannot supply Stage-3
-write authority.
 Implement a robust, coherent result
 inside that boundary; the goal is not merely the smallest diff. Do not infer
 authority from nearby code, an attractive refactor, or a possible future need.

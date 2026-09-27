@@ -2,7 +2,7 @@
 
 Use the pinned `scripts/stage_handoff.py` and `scripts/stage_dispatch.py`.
 Both take one bounded strict JSON object on stdin. Protocol is
-`workflow-stage-transfer-v9`. Success is `{ok:true,result:...}` (exit 0);
+`workflow-stage-transfer-v10`. Success is `{ok:true,result:...}` (exit 0);
 failure is `{ok:false,error:{code,operation,message,downstream_ready:false,
 completed_evidence,recovery}}` (exit 1). A digest detects changes, never
 authenticates a caller, receipt, user decision or semantic conclusion.
@@ -266,27 +266,10 @@ rejected, not rewritten. Flow bindings prove execution Git identity and share th
 discussion's common directory; they do not select its owner. Stage-4 intake reads
 the surviving discussion project without refreshing the removed execution checkout.
 
-Packages add stage_transfer=workflow-stage-transfer-v9 to their exact compatibility
+Packages add stage_transfer=workflow-stage-transfer-v10 to their exact compatibility
 key. Old runs keep original pinned runtime/records; no migration. Full A evidence
 stays outside strict control context. Only necessary design and launch transitions
 extend the existing control checkpoint.
-
-The narrow legacy Stage-2 recovery has one explicit exception at Stage-3
-preparation: C produces a v9 `legacy-supplemental-acceptance` bridge, carrying
-the original accepted v7 result as read-only evidence. B verifies the bridge
-against the current C recovery record, original accepted digest and raw snapshot
-hash, requirement, Controller, Flow Worktree, sealed manifest and current
-readiness. The v7 result is never re-signed as a normal v9 acceptance. This
-bridge grants only the one Stage-3 Dispatcher handoff after the original
-Controller completes takeover; it does not bypass normal v9 guards for any
-other operation or old pin combination.
-For an attached Topic, C first verifies the exact ledger reservation for the
-new `2→3` Phase Run and attempt, then supplies its current recovery readiness
-to B. The bridge's old v7 acceptance never substitutes for that Phase
-authorization, a stopped-writer proof, or a new native host admission.
-If the unconsumed supplemental decision is superseded, B accepts only the
-replacement bridge and current readiness; the earlier bridge remains audit
-history with no launch authority.
 
 Version 7 uses authenticated native adapter inventory for Stage-3 selection and
 removes the account catalog gate and `selection_catalog` field. Version 6 records

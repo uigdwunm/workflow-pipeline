@@ -36,8 +36,8 @@ when it differs from the handed-off publication base.
 Pin the sealed scope revision carried by that accepted Stage-3 candidate. Write
 only its closure-owned files; the final publication's allowed paths are the
 accepted implementation and closure lists. Keep every frozen requirement file
-protected even when the closure list is empty. A later unrelated scope revision
-does not change this candidate's closure authority. Return implementation gaps
+protected even when the closure list is empty. This candidate's closure
+authority remains fixed. Return implementation gaps
 to the original Stage-3 Controller decision path before editing them here.
 
 An explicit `$change-closure` invocation starts stepwise closure. A transition

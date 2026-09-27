@@ -42,27 +42,19 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertTrue(result.stdout, result.stderr)
         return json.loads(result.stdout)
 
-    def test_scope_revision_cannot_legalize_prior_untracked_or_reverted_edits(self):
-        (self.repo / 'allowed.py').write_text('approved\n')
-        self.git('add', 'allowed.py')
-        self.git('commit', '-qm', 'approved work')
+    def test_scope_correction_requires_clean_unchanged_planning_baseline(self):
         original = control_git.scope_revision_snapshot(
-            self.repo, self.base, ['allowed.py'], ['docs/draft.md'], ['later.py'])
-        self.assertEqual(original['touched'], ['allowed.py'])
+            self.repo, self.base, ['docs/draft.md'], ['later.py'])
         self.assertIsNone(original['files']['later.py'])
-        (self.repo / 'later.py').write_text('unapproved before revision\n')
-        with self.assertRaisesRegex(control.ControlError, 'earlier out-of-scope'):
+        (self.repo / 'later.py').write_text('unapproved before correction\n')
+        with self.assertRaisesRegex(control.ControlError, 'clean planning baseline'):
             control_git.scope_revision_snapshot(
-                self.repo, self.base, ['allowed.py'], ['docs/draft.md'], ['later.py'])
-        (self.repo / 'later.py').unlink()
-        (self.repo / 'later.py').write_text('temporary\n')
+                self.repo, self.base, ['docs/draft.md'], ['later.py'])
         self.git('add', 'later.py')
-        self.git('commit', '-qm', 'temporary out-of-scope addition')
-        self.git('rm', '-q', 'later.py')
-        self.git('commit', '-qm', 'undo addition')
-        with self.assertRaisesRegex(control.ControlError, 'earlier out-of-scope'):
+        self.git('commit', '-qm', 'implementation already started')
+        with self.assertRaisesRegex(control.ControlError, 'clean planning baseline'):
             control_git.scope_revision_snapshot(
-                self.repo, self.base, ['allowed.py'], ['docs/draft.md'], ['later.py'])
+                self.repo, self.base, ['docs/draft.md'], ['later.py'])
 
     def test_changed_requirement_is_received_and_archived_after_takeover(self):
         helper = test_workflow_control.WorkflowControlTests()

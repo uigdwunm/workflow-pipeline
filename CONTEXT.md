@@ -80,16 +80,12 @@ Stage-2 launch and preserves earlier revisions as history. A proposed manifest
 does not grant write permission.
 _Avoid_: Rewritten launch scope
 
-**Legacy Scope Takeover**:
-A narrow, original-Controller recovery for a fully accepted and published old
-Stage-2 run before any Stage-3 intent. It retains the old checkpoint bytes and
-package pins as immutable history, then creates one current supplemental scope
-authority in that same checkpoint and Flow Worktree. Pending takeover is not a
-Stage-3 handoff; the new run consumes a verified bridge after activation. An
-attached Topic first reserves its actual `2→3` Phase Run in the original ledger.
-An unconsumed supplement may be superseded with its prior decision preserved;
-the original accepted Stage-2 result remains immutable.
-_Avoid_: Upgrade of an old execution package, replay of old Stage-2 acceptance
+**Pre-Stage-3 Scope Correction**:
+The original Controller may correct an accepted Stage-2 manifest only before
+any saved Stage-3 preparation, launch intent or session. Later omissions block
+the affected work; they do not roll back the workflow or create another writer
+attempt. Old runs retain their original pinned runtime.
+_Avoid_: Retroactive path authorization
 
 **Planning Complete**:
 The accepted Stage-2 planning result, independent of whether implementation may

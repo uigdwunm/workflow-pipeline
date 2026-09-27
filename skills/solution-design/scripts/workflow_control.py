@@ -459,7 +459,7 @@ def validate_progress(progress):
             validate_scope_seal_evidence(seal['evidence'],
                                          {'requirement_identity': seal['evidence']['requirement_identity']}, progress)
     elif 'executions' in progress:
-        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'scope_revisions', 'revision_attempt'}
+        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head'}
         require(state in {'dispatcher-pending', 'implementing', 'reviewable', 'reviewing', 'final-validation-pending', 'validating', 'final-validation-failed', 'deliverable', 'cancelled'}, 'invalid dispatcher state')
         validate_binding(progress['binding'])
         paths(progress['allowed_paths']); paths(progress['protected_paths'], empty=True)
@@ -476,15 +476,6 @@ def validate_progress(progress):
                     'escalation policy changed')
             require(set(paths(escalation['pending_paths'], empty=True)) <= set(progress['allowed_paths']), 'escalation paths changed')
             require(escalation['stop'].get('git_snapshot') == escalation['snapshot'], 'escalation stop snapshot changed')
-        if 'revision_attempt' in progress:
-            revision = progress['revision_attempt']
-            keys(revision, {'revision_ref', 'revision_scope_digest', 'old_ref', 'old_attempt', 'stop_evidence_ref'})
-            require(progress.get('scope_revisions') and
-                    revision['revision_ref'] == progress['scope_revisions'][-1]['revision_ref'] and
-                    revision['revision_scope_digest'] == progress['scope_revisions'][-1]['evidence']['new_scope_digest'],
-                    'revision attempt lost its Controller decision')
-            for field in ('old_ref', 'old_attempt', 'stop_evidence_ref'):
-                text(revision[field])
         validate_validation_plan(progress['validation_plan'], progress['binding'])
         require(progress['plan_digest'] == digest(progress['validation_plan']), 'frozen validation plan changed')
         if 'attempts' in progress:
@@ -526,6 +517,7 @@ def validate_progress(progress):
         validate_selection(plan['configuration'])
         require(type(plan['task_count']) is int and plan['task_count'] == 1 and plan['plan_id'] == digest({k: v for k, v in plan.items() if k != 'plan_id'}), 'prepared plan digest changed')
     if 'scope_revisions' in progress:
+        require('design_input' in progress, 'scope revisions belong only to Stage-2 planning')
         revisions = progress['scope_revisions']
         require(isinstance(revisions, list) and len(revisions) <= 32, 'invalid scope revision history')
         seen = set()
@@ -616,43 +608,15 @@ def validate_recovery(recovery, progress):
 
 def validate_context(context):
     require(isinstance(context, dict) and CONTEXT_FIELDS <= set(context) <=
-            CONTEXT_FIELDS | {'successor_control', 'retired_handoffs', 'legacy_takeover'},
+            CONTEXT_FIELDS | {'successor_control', 'retired_handoffs'},
             'invalid context fields')
     require(len(json.dumps(context).encode()) <= MAX_BYTES, 'control history exceeds byte limit')
     if context.get('successor_control') is not None:
         successor = context['successor_control']
-        require(isinstance(successor, dict) and not ({'successor_control', 'retired_handoffs', 'legacy_takeover'} & set(successor)), 'only one successor slot and top-level history allowed')
+        require(isinstance(successor, dict) and not ({'successor_control', 'retired_handoffs'} & set(successor)), 'only one successor slot and top-level history allowed')
         validate_context(successor)
         require(successor['controller_ref'] == context['controller_ref'] and successor['topic_ref'] == context['topic_ref'], 'successor controller/topic mismatch')
     require(type(context['schema_version']) is int and context['schema_version'] == 5, 'legacy_run_requires_original_runtime: control schema ' + str(context.get('schema_version')))
-    if 'legacy_takeover' in context:
-        takeover = context['legacy_takeover']
-        keys(takeover, {'state', 'recovery_id', 'checkpoint_path', 'original_checkpoint_sha256',
-                        'original_accepted_digest', 'old_control_sha256', 'takeover_transaction_id'} |
-             ({'reservation'} if 'reservation' in takeover else set()))
-        require(takeover['state'] in {'pending', 'active'}, 'invalid legacy takeover state')
-        for field in ('recovery_id', 'takeover_transaction_id'):
-            text(takeover[field])
-        checkpoint = takeover['checkpoint_path']
-        require(isinstance(checkpoint, str) and checkpoint.startswith('/') and
-                '..' not in checkpoint.split('/') and '\\' not in checkpoint,
-                'invalid legacy checkpoint path')
-        for field in ('original_checkpoint_sha256', 'original_accepted_digest', 'old_control_sha256'):
-            require(isinstance(takeover[field], str) and re.fullmatch('[0-9a-f]{64}', takeover[field]),
-                    'invalid legacy takeover digest')
-        if 'reservation' in takeover:
-            reservation = takeover['reservation']
-            keys(reservation, {'reservation_id', 'recovery_id', 'bridge_digest',
-                               'phase_run_id', 'phase_attempt_id', 'checkpoint_path',
-                               'original_checkpoint_sha256'})
-            require(takeover['state'] == 'active' and
-                    all(reservation[field] == takeover[field] for field in
-                        ('recovery_id', 'checkpoint_path', 'original_checkpoint_sha256')) and
-                    isinstance(reservation['bridge_digest'], str) and
-                    re.fullmatch('[0-9a-f]{64}', reservation['bridge_digest']),
-                    'legacy reservation differs from active takeover')
-            for field in ('reservation_id', 'phase_run_id', 'phase_attempt_id'):
-                text(reservation[field])
     require(isinstance(context.get('retired_handoffs', {}), dict), 'invalid retired handoff history')
     for handoff_id, retired in context.get('retired_handoffs', {}).items():
         keys(retired, {'controller_ref', 'topic_ref', 'stage', 'carrier', 'requirement_identity', 'plan',
@@ -712,15 +676,10 @@ def validate_context(context):
                     seal['evidence']['requirement_identity'] == context['requirement_identity'],
                     'scope seal controller or requirement changed')
         for record in context['handoff_progress'].get('scope_revisions', []):
+            require(context['stage'] == 2, 'scope revisions belong only to Stage 2')
             require(record['controller_ref'] == context['controller_ref'] and
                     record['evidence']['requirement_identity'] == context['requirement_identity'],
                     'scope revision controller or requirement changed')
-        attempt = context['handoff_progress'].get('revision_attempt')
-        if attempt is not None:
-            require(context['carrier'] is not None and
-                    context['carrier']['kind'] == 'implementation-dispatcher' and
-                    context['carrier']['ref'] == attempt['old_ref'],
-                    'revision attempt changed the native Dispatcher identity')
     identity = context['requirement_identity']
     keys(identity, {'path', 'sha256', 'version'})
     path(identity['path'])
@@ -914,12 +873,9 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         progress['scope_seal'] = seal
         return {'ok': True, 'context': context, 'effects': [], 'scope_seal': seal}
     elif action == 'scope-revise':
-        require(context['stage'] in {2, 3} and progress is not None and
-                ('design_input' in progress or 'executions' in progress) and
-                progress['state'] != 'cancelled',
-                'scope revision requires the original active flow')
-        require('executions' in progress or 'scope_seal' in progress,
-                'scope revision requires an existing sealed authority')
+        require(context['stage'] == 2 and progress is not None and
+                'design_input' in progress and progress['state'] == 'design-accepted' and
+                'scope_seal' in progress, 'scope revision requires sealed accepted Stage-2 planning')
         validate_scope_revision_evidence(evidence, context, progress)
         record = {'controller_ref': context['controller_ref'], 'evidence': copy.deepcopy(evidence)}
         record['revision_ref'] = digest(record)
@@ -1022,43 +978,6 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             'validation_plan': evidence['validation_plan'], 'plan_digest': digest(evidence['validation_plan'])}
         return {'ok': True, 'context': context, 'attempt': attempt,
                 'effects': [{'operation': 'spawn_native', 'role': 'implementation-dispatcher', 'configuration': evidence['configuration']}]}
-    elif action == 'start-dispatch-revision':
-        added = {'revision_ref', 'revision_scope_digest', 'old_ref', 'old_attempt', 'stop_evidence_ref'}
-        core = {key: value for key, value in evidence.items() if key not in added}
-        keys(evidence, set(core) | added)
-        require(context['stage'] == 3 and progress is not None and 'executions' in progress and
-                context['carrier'] is not None and context['carrier']['kind'] == 'implementation-dispatcher' and
-                context['carrier']['ref'] == evidence['old_ref'] and
-                context['carrier']['attempt'] == evidence['old_attempt'],
-                'revision requires the original Dispatcher identity')
-        revisions = progress.get('scope_revisions') or []
-        require(revisions and revisions[-1]['revision_ref'] == evidence['revision_ref'] and
-                revisions[-1]['evidence']['stop_evidence_ref'] == evidence['stop_evidence_ref'] and
-                evidence['stop_evidence_ref'] is not None and
-                revisions[-1]['evidence']['new_scope_digest'] == evidence['revision_scope_digest'],
-                'revision requires the latest stopped Controller authority')
-        require(core['binding'] == progress['binding'] and
-                select_configuration(core['configuration']) == progress['configuration'] and
-                core['validation_plan'] == progress['validation_plan'],
-                'revision changed binding, model or validation contract')
-        fresh = copy.deepcopy(context)
-        fresh['carrier'] = None
-        fresh['handoff_progress'] = None
-        restarted = _transition_single({'schema_version': 5, 'action': 'start-dispatch',
-            'actor_ref': context['controller_ref'], 'context': fresh, 'evidence': core})
-        new_context = restarted['context']
-        require(new_context['handoff_progress']['configuration'] == progress['configuration'],
-                'revision changed the Dispatcher configuration')
-        new_context['carrier']['ref'] = evidence['old_ref']
-        new_context['handoff_progress']['state'] = 'implementing'
-        new_context['handoff_progress']['scope_revisions'] = copy.deepcopy(revisions)
-        new_context['handoff_progress']['revision_attempt'] = {
-            field: evidence[field] for field in added}
-        validate_context(new_context)
-        return {'ok': True, 'context': new_context,
-                'attempt': new_context['carrier']['attempt'],
-                'effects': [{'operation': 'continue_native', 'role': 'implementation-dispatcher',
-                             'ref': evidence['old_ref'], 'revision_ref': evidence['revision_ref']}]}
     elif action == 'dispatcher-bound':
         keys(evidence, {'ref', 'attempt'})
         require(progress and progress['state'] == 'dispatcher-pending' and evidence['attempt'] == context['carrier']['attempt'], 'wrong dispatcher attempt')

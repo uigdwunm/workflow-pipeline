@@ -20,7 +20,7 @@ import workflow_control as control
 import workflow_control_git as control_git
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-stage-transfer-v9"
+PROTOCOL = "workflow-stage-transfer-v10"
 ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution-designer",
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",
@@ -274,7 +274,7 @@ def delivery(request, current, identity, source_commit):
     return {"source_commit": source_commit, "delivery_commit": delivered, "target_head": head}
 
 
-def verify_result(stage, payload, binding, scope, root, role_ref, *, planning_descendant=False):
+def verify_result(stage, payload, binding, scope, root, role_ref):
     """Verify completed Git facts. Semantic acceptance remains controller-owned."""
     common = {"artifacts", "checks"}
     extra = {0: {"requirement", "delivery"}, 1: {"requirement", "delivery"},
@@ -296,10 +296,7 @@ def verify_result(stage, payload, binding, scope, root, role_ref, *, planning_de
         require(bool(owned) and set(owned) <= set(scope["owned_paths"]), "invalid_scope", "planning paths escape the prepared scope")
         ancestor(root, planning, merged); ancestor(root, merged, head)
         current_head = entry.git_text(root, "rev-parse", "HEAD")
-        if planning_descendant:
-            ancestor(root, merged, current_head)
-        else:
-            require(current_head == merged, "result_changed", "Flow Worktree must retain the published planning commit")
+        require(current_head == merged, "result_changed", "Flow Worktree must retain the published planning commit")
         changed = set(entry.git(root, "diff", "--name-only", "-z", binding["base_commit"], planning).stdout.decode().split("\0")) - {""}
         require(changed <= set(owned), "invalid_scope", "planning commit escapes owned paths")
         for relative in owned:
@@ -362,37 +359,14 @@ def effective_scope(original_handoff, authority):
 
 def current_readiness(readiness):
     """Read the original C checkpoint, never trust a caller's ready assertion."""
-    require(isinstance(readiness, dict) and isinstance(readiness.get("checkpoint_path"), str),
-            "handoff_not_ready", "current progression checkpoint required")
-    checkpoint = Path(readiness["checkpoint_path"])
-    require(checkpoint.is_absolute() and str(checkpoint.resolve()) == str(checkpoint),
-            "invalid_checkpoint", "canonical absolute progression checkpoint required")
-    # Import lazily: workflow_progress calls B while holding its own record lock.
     import workflow_progress as progress
-    state = progress.read_record(checkpoint).get(progress.KEY)
-    require(isinstance(state, dict) and state.get("protocol") == progress.PROTOCOL,
-            "handoff_not_ready", "current progression checkpoint is unavailable")
-    progress.validate_state(state)
-    require(state.get("checkpoint_path") == str(checkpoint), "handoff_not_ready",
-            "readiness must name the original current checkpoint")
-    if "revision_transaction_ref" in readiness:
-        expected = progress.revision_scope_readiness(state, str(checkpoint))
-    elif "legacy_recovery_id" in readiness:
-        expected = progress.legacy_scope_readiness(state, str(checkpoint))
-    else:
-        expected = (progress.scope_readiness(state, str(checkpoint)) if state.get("stage") == 2 else
-                    progress.consumed_scope_readiness(state, str(checkpoint)) if state.get("stage") == 3 else None)
-    require(expected is not None and expected == readiness,
-            "handoff_not_ready", "current scope, publication, stop or phase evidence changed")
-    return state
+    return progress.read_scope_readiness(readiness)
 
 
 def inherited_planning_paths(predecessor):
     if predecessor is None:
         return None
     accepted = unseal(predecessor)
-    if accepted.get("kind") == "legacy-supplemental-acceptance":
-        return accepted["payload"]["planning_paths"]
     original = accepted.get("handoff") or {}
     if original.get("stage") == 2:
         return accepted["payload"]["planning_paths"]
@@ -471,90 +445,6 @@ def inherited_generated_outputs(request):
                 return authority_generated_outputs(previous["readiness"]["scope_authority"])
             return previous.get("generated_outputs", {})
     return request.get("generated_outputs", {})
-
-
-def verify_legacy_bridge(predecessor, bridge, request, current, identity):
-    """Consume C's supplemental authority without reinterpreting old v7 bytes."""
-    require(bridge.get("protocol") == PROTOCOL and bridge.get("kind") == "legacy-supplemental-acceptance" and
-            request["stage"] == 3 and request["role"] == "implementation-dispatcher",
-            "predecessor_incomplete", "legacy recovery grants one Stage-3 Dispatcher handoff")
-    readiness = request.get("readiness")
-    state = current_readiness(readiness)
-    revised = "revision_transaction_ref" in readiness
-    recovery_id = bridge.get("recovery_id")
-    recovery = (state.get("scope_recoveries") or {}).get(recovery_id)
-    require(isinstance(recovery, dict) and recovery.get("bridge") == predecessor and
-            recovery.get("supplemental_authority") == bridge.get("scope_authority") and
-            bridge.get("original_accepted_digest") == bridge.get("legacy_accepted", {}).get("digest") and
-            bridge.get("original_accepted_digest") == readiness.get("original_accepted_digest") and
-            bridge.get("original_snapshot_sha256") == readiness.get("original_snapshot_sha256") and
-            readiness.get("legacy_recovery_id") == recovery_id and
-            readiness.get("accepted_digest") == predecessor["digest"],
-            "handoff_not_ready", "legacy supplement differs from the original accepted bytes or current recovery")
-    authority = readiness["scope_authority"]
-    require((revised or bridge.get("scope_authority") == authority) and
-            isinstance(authority.get("scope"), dict) and
-            isinstance(authority["scope"].get("downstream"), dict) and
-            authority.get("state") == "sealed" and
-            authority.get("revision") == authority.get("scope", {}).get("downstream", {}).get("revision") and
-            authority.get("seal_ref") == authority.get("scope", {}).get("downstream", {}).get("seal_ref") and
-            authority.get("proposal_digest") == authority.get("scope", {}).get("downstream", {}).get("proposal_ref") and
-            bridge.get("controller_ref") == current["actor"]["controller_ref"] and
-            bridge.get("requirement_identity") == identity and
-            bridge.get("binding") == request["binding"],
-            "identity_mismatch", "supplemental scope changed the original Controller, source or worktree")
-    old = bridge["legacy_accepted"]
-    require(old.get("protocol") == "workflow-stage-transfer-v7" and
-            old.get("status") == "accepted" and old.get("payload") == bridge["payload"] and
-            bridge.get("planning_complete") is True and bridge.get("downstream_ready") is False,
-            "predecessor_incomplete", "legacy accepted planning evidence is incomplete")
-    effective = stage_scope.validate_scope(authority["scope"], current["repository"]["root"], stage=2,
-        requirement_path=identity["path"], planning_paths=bridge["payload"]["planning_paths"],
-        candidate_commit=authority["candidate_commit"],
-        generated_outputs=authority_generated_outputs(authority))
-    planning = commit(bridge["payload"]["planning_commit"])
-    merged = commit(bridge["payload"]["planning_merge_commit"])
-    require(planning == authority["candidate_commit"], "scope_changed",
-            "supplemental manifest must retain the published planning candidate")
-    ancestor(current["repository"]["root"], planning, merged)
-    target = target_head(request["target"], current["repository"]["git_common_dir"])
-    ancestor(current["repository"]["root"], merged, target)
-    for relative in bridge["payload"]["planning_paths"]:
-        require(blob(current["repository"]["root"], merged, relative) ==
-                blob(current["repository"]["root"], target, relative) and
-                mode(current["repository"]["root"], merged, relative) ==
-                mode(current["repository"]["root"], target, relative),
-                "source_changed", "published planning bytes changed on the target")
-    scope = request["scope"]
-    require(effective["downstream"]["implementation_required"] is True and
-            bool(effective["implementation_paths"]) and
-            scope["downstream"] == effective["downstream"] and
-            scope["implementation_paths"] == effective["implementation_paths"] and
-            scope["closure_paths"] == effective["closure_paths"] and
-            set(effective["protected_paths"] + bridge["payload"]["planning_paths"]) <=
-                set(scope["protected_paths"]),
-            "scope_changed", "Stage 3 must consume the exact supplemental legacy scope and published planning")
-    current_head = entry.git_text(current["repository"]["root"], "rev-parse", "HEAD")
-    if revised:
-        require(scope["baseline"] == current_head, "baseline_changed",
-                "revised legacy scope must start at the stopped current HEAD")
-        ancestor(current["repository"]["root"], bridge["payload"]["planning_merge_commit"], current_head)
-        for relative in effective["protected_paths"]:
-            require(blob(current["repository"]["root"], effective["baseline"], relative) ==
-                    blob(current["repository"]["root"], current_head, relative) and
-                    mode(current["repository"]["root"], effective["baseline"], relative) ==
-                    mode(current["repository"]["root"], current_head, relative),
-                    "source_changed", "revision changed the frozen protected source")
-        for relative in bridge["payload"]["planning_paths"]:
-            require(blob(current["repository"]["root"], bridge["payload"]["planning_merge_commit"], relative) ==
-                    blob(current["repository"]["root"], current_head, relative) and
-                    mode(current["repository"]["root"], bridge["payload"]["planning_merge_commit"], relative) ==
-                    mode(current["repository"]["root"], current_head, relative),
-                    "source_changed", "revision changed published planning bytes")
-    else:
-        require(scope["baseline"] == bridge["payload"]["planning_merge_commit"],
-                "baseline_changed", "legacy handoff must retain the published planning HEAD")
-    return effective
 
 
 def prepare(request):
@@ -676,76 +566,59 @@ def prepare(request):
     if predecessor is not None:
         prior = unseal(predecessor)
         require_current_protocol(prior)
-        require(prior.get("status") == "accepted" or
-                prior.get("kind") == "legacy-supplemental-acceptance",
-                "predecessor_incomplete", "an accepted B result is required")
-        if prior.get("kind") == "legacy-supplemental-acceptance":
-            verify_legacy_bridge(predecessor, prior, request, current, identity)
+        require(prior.get("status") == "accepted", "predecessor_incomplete", "an accepted B result is required")
+        old = prior["handoff"]
+        if old["stage"] == 2:
+            require(prior.get("planning_complete") is True, "predecessor_incomplete", "accepted planning result required")
+            readiness = request.get("readiness")
+            state = current_readiness(readiness)
+            source_state = accepted_design_state(state, predecessor)
+            require(source_state.get("accepted") == predecessor and source_state.get("handoff") == old and
+                    readiness["accepted_digest"] == predecessor["digest"] and
+                    source_state.get("scope_authority") == readiness["scope_authority"],
+                    "handoff_not_ready", "readiness must bind the original accepted design and current scope")
+            effective = effective_scope(old, readiness["scope_authority"])
+            require(effective["downstream"]["implementation_required"] is True and
+                    bool(effective["implementation_paths"]),
+                    "scope_incomplete", "planning-only or empty implementation scope has no Stage-3 handoff")
         else:
-            old = prior["handoff"]
+            require(prior.get("downstream_ready") is True,
+                    "predecessor_incomplete", "accepted predecessor is not ready")
+        require(old["expected_entry"]["discussion_project"] == current["discussion_project"],
+                "discussion_identity_conflict", "successor must retain the original discussion project")
+        require((old["stage"], stage) in {(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)}, "invalid_stage", "illegal stage transition")
+        require(old["controller_ref"] == current["actor"]["controller_ref"] and prior["requirement_identity"] == identity,
+                "source_changed", "predecessor controller or requirement differs")
+        if old["stage"] >= 2:
+            require(old["binding"] == request["binding"], "binding_changed", "successor must retain the exact Flow Worktree")
+            verify_result(old["stage"], prior["payload"], old["binding"], old["scope"], root,
+                          prior["role_ref"])
             if old["stage"] == 2:
-                require(prior.get("planning_complete") is True, "predecessor_incomplete", "accepted planning result required")
-                readiness = request.get("readiness")
-                state = current_readiness(readiness)
-                source_state = accepted_design_state(state, predecessor)
-                require(source_state.get("accepted") == predecessor and source_state.get("handoff") == old and
-                        readiness["accepted_digest"] == predecessor["digest"] and
-                        ("revision_transaction_ref" in readiness or
-                         source_state.get("scope_authority") == readiness["scope_authority"]),
-                        "handoff_not_ready", "readiness must bind the original accepted design and current scope")
-                effective = effective_scope(old, readiness["scope_authority"])
-                require(effective["downstream"]["implementation_required"] is True and
-                        bool(effective["implementation_paths"]),
-                        "scope_incomplete", "planning-only or empty implementation scope has no Stage-3 handoff")
-            else:
-                require(prior.get("downstream_ready") is True,
-                        "predecessor_incomplete", "accepted predecessor is not ready")
-            require(old["expected_entry"]["discussion_project"] == current["discussion_project"],
-                    "discussion_identity_conflict", "successor must retain the original discussion project")
-            require((old["stage"], stage) in {(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)}, "invalid_stage", "illegal stage transition")
-            require(old["controller_ref"] == current["actor"]["controller_ref"] and prior["requirement_identity"] == identity,
-                    "source_changed", "predecessor controller or requirement differs")
-            if old["stage"] >= 2:
-                require(old["binding"] == request["binding"], "binding_changed", "successor must retain the exact Flow Worktree")
-                revised = old["stage"] == 2 and "revision_transaction_ref" in request.get("readiness", {})
-                verify_result(old["stage"], prior["payload"], old["binding"], old["scope"], root,
-                              prior["role_ref"], planning_descendant=revised)
-                if old["stage"] == 2:
-                    published_target = target_head(request["target"], current["repository"]["git_common_dir"])
-                    for relative in prior["payload"]["planning_paths"]:
-                        require(blob(root, prior["payload"]["planning_merge_commit"], relative) ==
-                                blob(root, published_target, relative) and
-                                mode(root, prior["payload"]["planning_merge_commit"], relative) ==
-                                mode(root, published_target, relative),
-                                "source_changed", "published planning bytes changed on the target")
-                if revised:
-                    current_head = entry.git_text(root, "rev-parse", "HEAD")
-                    for relative in old["scope"]["protected_paths"]:
-                        require(blob(root, old["scope"]["baseline"], relative) == blob(root, current_head, relative) and
-                                mode(root, old["scope"]["baseline"], relative) == mode(root, current_head, relative),
-                                "source_changed", "revision changed the frozen protected source")
-                    for relative in prior["payload"]["planning_paths"]:
-                        require(blob(root, prior["payload"]["planning_merge_commit"], relative) == blob(root, current_head, relative) and
-                                mode(root, prior["payload"]["planning_merge_commit"], relative) == mode(root, current_head, relative),
-                                "source_changed", "revision changed published planning bytes")
-                protected = set(old["scope"]["protected_paths"])
-                if old["stage"] == 2:
-                    protected.update(prior["payload"]["planning_paths"])
-                    require(scope["downstream"] == effective["downstream"] and
-                            scope["implementation_paths"] == effective["implementation_paths"] and
-                            scope["closure_paths"] == effective["closure_paths"],
-                            "scope_changed", "Stage 3 must use the current sealed scope without widening or narrowing it")
-                if stage == 4:
-                    protected -= set(old["scope"]["closure_paths"])
-                require(protected <= set(scope["protected_paths"]), "scope_changed", "successor must protect inherited planning and source paths")
-                if old["stage"] == 3:
-                    require(scope["downstream"] == old["scope"]["downstream"] and
-                            scope["implementation_paths"] == old["scope"]["implementation_paths"] and
-                            scope["closure_paths"] == old["scope"]["closure_paths"],
-                            "scope_changed", "closure must retain the Stage-3 accepted scope revision")
+                published_target = target_head(request["target"], current["repository"]["git_common_dir"])
+                for relative in prior["payload"]["planning_paths"]:
+                    require(blob(root, prior["payload"]["planning_merge_commit"], relative) ==
+                            blob(root, published_target, relative) and
+                            mode(root, prior["payload"]["planning_merge_commit"], relative) ==
+                            mode(root, published_target, relative),
+                            "source_changed", "published planning bytes changed on the target")
+            protected = set(old["scope"]["protected_paths"])
+            if old["stage"] == 2:
+                protected.update(prior["payload"]["planning_paths"])
+                require(scope["downstream"] == effective["downstream"] and
+                        scope["implementation_paths"] == effective["implementation_paths"] and
+                        scope["closure_paths"] == effective["closure_paths"],
+                        "scope_changed", "Stage 3 must use the current sealed scope without widening or narrowing it")
             if stage == 4:
-                require(prior["payload"]["candidate_commit"] == current["repository"]["head"] and scope["baseline"] == old["scope"]["baseline"] and
-                        old["scope"]["closure_paths"] == scope["closure_paths"], "scope_changed", "closure must retain accepted candidate and documentation scope")
+                protected -= set(old["scope"]["closure_paths"])
+            require(protected <= set(scope["protected_paths"]), "scope_changed", "successor must protect inherited planning and source paths")
+            if old["stage"] == 3:
+                require(scope["downstream"] == old["scope"]["downstream"] and
+                        scope["implementation_paths"] == old["scope"]["implementation_paths"] and
+                        scope["closure_paths"] == old["scope"]["closure_paths"],
+                        "scope_changed", "closure must retain the Stage-3 accepted scope revision")
+        if stage == 4:
+            require(prior["payload"]["candidate_commit"] == current["repository"]["head"] and scope["baseline"] == old["scope"]["baseline"] and
+                    old["scope"]["closure_paths"] == scope["closure_paths"], "scope_changed", "closure must retain accepted candidate and documentation scope")
     require(stage != 4 or predecessor is not None, "predecessor_incomplete", "inherited closure requires an accepted implementation result")
     return seal({**{k: copy.deepcopy(request[k]) for k in FIELDS},
                  **({"readiness": copy.deepcopy(request["readiness"])} if "readiness" in request else {}),
@@ -781,34 +654,6 @@ def verify(saved):
     return actual
 
 
-def _render_legacy_bridge_verified(saved, bridge, readiness):
-    require(bridge.get("planning_complete") is True and bridge.get("downstream_ready") is False,
-            "result_incomplete", "supplemental legacy bridge must contain accepted planning only")
-    ready = readiness is not None
-    payload = copy.deepcopy(bridge["payload"])
-    scope = (readiness["scope_authority"] if readiness is not None else bridge["scope_authority"])["scope"]
-    projection = {"controller_ref": bridge["controller_ref"],
-        "role_ref": bridge["legacy_accepted"].get("role_ref"),
-        "binding": bridge["binding"], "requirement_identity": bridge["requirement_identity"],
-        "source_commit": bridge["legacy_accepted"].get("handoff", {}).get("source_commit"),
-        "accepted_transfer": saved, "legacy_recovery_id": bridge["recovery_id"],
-        "original_accepted_digest": bridge["original_accepted_digest"],
-        "planning_complete": True, "handoff_ready": ready,
-        "scope_revision": scope["downstream"]["revision"] if ready else None,
-        "allowed_paths": scope["implementation_paths"] if ready else None,
-        "closure_paths": scope["closure_paths"] if ready else None,
-        "protected_paths": sorted(set(scope["protected_paths"] + payload["planning_paths"])),
-        "control_checkpoint": {"controller_ref": bridge["controller_ref"], "stage": 2,
-                               "role_ref": bridge["legacy_accepted"].get("role_ref"),
-                               "state": "completed", "role_kind": "solution-designer"}}
-    projection.update({key: value for key, value in payload.items() if key not in {"artifacts", "checks"}})
-    rendered = json.dumps(projection, ensure_ascii=False, sort_keys=True, indent=2)
-    return {"payload": projection, "text": rendered, "downstream_ready": ready,
-            "stage_result": {"result": "completed", "artifacts": payload["artifacts"],
-                             "evidence": payload["checks"], "handoff_json": rendered,
-                             "question": "", "message": "", "needs_input_kind": "none"}}
-
-
 def _render_verified(saved, readiness):
     """Project a C-verified acceptance; caller owns the current readback."""
     body = unseal(saved)
@@ -816,8 +661,6 @@ def _render_verified(saved, readiness):
     if readiness is not None:
         require(readiness.get("accepted_digest") == saved["digest"], "handoff_not_ready",
                 "readiness belongs to another accepted result")
-    if body.get("kind") == "legacy-supplemental-acceptance":
-        return _render_legacy_bridge_verified(saved, body, readiness)
     require(body.get("status") == "accepted", "invalid_evidence", "accepted stage result required")
     original = body["handoff"]
     unseal(original)
@@ -860,13 +703,6 @@ def _render_verified(saved, readiness):
 def render(saved, *, readiness=None):
     body = unseal(saved)
     require_current_protocol(body)
-    if body.get("kind") == "legacy-supplemental-acceptance":
-        if readiness is not None:
-            state = current_readiness(readiness)
-            recovery = (state.get("scope_recoveries") or {}).get(body["recovery_id"])
-            require(recovery is not None and recovery.get("bridge") == saved,
-                    "handoff_not_ready", "legacy bridge differs from the current recovery")
-        return _render_verified(saved, readiness)
     if body.get("status") == "accepted":
         original = body["handoff"]
         if original["stage"] == 2 and readiness is not None:

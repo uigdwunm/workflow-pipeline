@@ -52,6 +52,7 @@ class ScopeSealControlTests(unittest.TestCase):
             'candidate_commit': 'c' * 40,
             'decision': {'kind': 'in-requirement-refinement', 'reference': 'controller:revision'},
             'stop_evidence_ref': None}
+        sealed['context']['handoff_progress']['state'] = 'design-accepted'
         amended = self.fixture.call('scope-revise', revision, sealed['context'])
         self.assertTrue(amended['ok'], amended)
         self.assertEqual(amended['scope_revision'],
@@ -61,43 +62,6 @@ class ScopeSealControlTests(unittest.TestCase):
         changed_revision['new_scope_digest'] = '5' * 64
         self.assertFalse(self.fixture.call('scope-revise', changed_revision, amended['context'])['ok'])
 
-    def test_revision_rebinds_same_dispatcher_without_spawning(self):
-        context = self.fixture.context()
-        context['stage'] = 3
-        binding = self.fixture.binding()
-        evidence = {'binding': binding, 'binding_verified': True,
-                    'allowed_paths': ['old.py'], 'protected_paths': ['docs/draft.md'],
-                    'authority_digest': '1' * 64, 'testing_basis': 'focused test',
-                    'validation_plan': fixtures.plan_for(Path('/tmp/flow')),
-                    'configuration': self.fixture.configuration('implementation-dispatcher')}
-        started = self.fixture.call('start-dispatch', evidence, context)
-        self.assertTrue(started['ok'], started)
-        bound = self.fixture.call('dispatcher-bound', {'ref': 'native:original',
-            'attempt': started['attempt']}, started['context'])
-        self.assertTrue(bound['ok'], bound)
-        revision = {'revision_id': 'rev-2', 'expected_scope_revision': 1,
-                    'previous_scope_digest': '1' * 64, 'new_scope_digest': '2' * 64,
-                    'scope_diff_digest': '3' * 64, 'snapshot_digest': '4' * 64,
-                    'requirement_identity': context['requirement_identity'], 'binding': binding,
-                    'planning_commit': 'a' * 40, 'planning_merge_commit': 'b' * 40,
-                    'candidate_commit': 'a' * 40,
-                    'decision': {'kind': 'in-requirement-refinement', 'reference': 'controller:revision'},
-                    'stop_evidence_ref': '5' * 64}
-        amended = self.fixture.call('scope-revise', revision, bound['context'])
-        self.assertTrue(amended['ok'], amended)
-        resume = {**evidence, 'allowed_paths': ['new.py', 'old.py'],
-                  'authority_digest': '2' * 64,
-                  'revision_ref': amended['scope_revision']['revision_ref'],
-                  'revision_scope_digest': '2' * 64,
-                  'old_ref': 'native:original', 'old_attempt': started['attempt'],
-                  'stop_evidence_ref': '5' * 64}
-        resumed = self.fixture.call('start-dispatch-revision', resume, amended['context'])
-        self.assertTrue(resumed['ok'], resumed)
-        self.assertEqual(resumed['context']['carrier']['ref'], 'native:original')
-        self.assertNotEqual(resumed['attempt'], started['attempt'])
-        self.assertEqual(resumed['effects'][0]['operation'], 'continue_native')
-        self.assertEqual(resumed['context']['handoff_progress']['allowed_paths'], ['new.py', 'old.py'])
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

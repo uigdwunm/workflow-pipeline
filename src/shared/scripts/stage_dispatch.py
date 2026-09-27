@@ -154,25 +154,11 @@ def prepared(request):
             evidence.update(design_input=saved["digest"], binding=saved["binding"],
                             allowed_paths=scope["owned_paths"], protected_paths=scope["protected_paths"])
         elif role == "implementation-dispatcher":
-            revision = saved.get("readiness", {}).get("revision_transaction_ref")
-            action = "start-dispatch-revision" if revision else "start-dispatch"
+            action = "start-dispatch"
             evidence.update(binding=saved["binding"], binding_verified=True, allowed_paths=scope["implementation_paths"],
                             protected_paths=scope["protected_paths"], authority_digest=saved["authorization"]["scope_digest"],
                             testing_basis=saved["semantic"]["testing_basis"], validation_plan=saved["semantic"]["validation_plan"],
                             implementation_policy=control.implementation_policy(saved["semantic"].get("implementation_policy")))
-            if revision:
-                current = handoff.current_readiness(saved["readiness"])
-                transaction = current["scope_revision_transaction"]
-                require(transaction["state"] == "authorized" and
-                        current["dispatch"]["digest"] == saved["readiness"]["prior_dispatch_digest"],
-                        "scope_revision_pending", "revision must bind the stopped original dispatch")
-                old = current["control"]["context"]["carrier"]
-                require(old["ref"] is not None and old["attempt"] == current["dispatch"]["request"]["attempt"],
-                        "identity_mismatch", "revision must retain the original Dispatcher")
-                evidence.update(revision_ref=transaction["control_result"]["revision_ref"],
-                    revision_scope_digest=entry.digest(transaction["proposed_scope"]),
-                    old_ref=old["ref"], old_attempt=old["attempt"],
-                    stop_evidence_ref=saved["readiness"]["stop_evidence_ref"])
         elif role == "execution-agent":
             action = "plan-execution"
             progress = selected["handoff_progress"] or {}
@@ -207,23 +193,8 @@ def prepared(request):
                           "input_digest": saved["digest"], "configuration": saved["selection"], "payload": payload})
     if not native:
         launch = handoff.seal({**handoff.unseal(launch), "dedicated_plan": plan})
-    inherited = role == "implementation-dispatcher" and bool(saved.get("readiness", {}).get("revision_transaction_ref"))
-    receipts = ([{"event": "existing-dispatcher", "ref": evidence["old_ref"],
-                  "prior_dispatch_digest": saved["readiness"]["prior_dispatch_digest"],
-                  "revision_transaction_ref": saved["readiness"]["revision_transaction_ref"],
-                  "stop_evidence_ref": evidence["stop_evidence_ref"],
-                  "revision_ref": evidence["revision_ref"]}] if inherited else [])
     record = handoff.seal({"protocol": PROTOCOL, "kind": "dispatch", "handoff": saved, "request": launch,
-                          "receipts": receipts, "delivery": None, "acceptance": None,
-                          "status": "bound" if inherited else "prepared"})
-    if inherited:
-        require(result["context"]["carrier"]["ref"] == evidence["old_ref"] and
-                result["context"]["carrier"]["attempt"] == attempt and
-                result["context"]["handoff_progress"]["state"] == "implementing",
-                "authority_changed", "Controller did not bind the existing Dispatcher to the new attempt")
-        return {"status": "bound", "record": record, "checkpoint": port_result(result, applied),
-                "host_call": None, "downstream_ready": False,
-                "next_action": "continue-host-existing"}
+                          "receipts": [], "delivery": None, "acceptance": None, "status": "prepared"})
     return {"status": "prepared", "record": record, "checkpoint": port_result(result, applied),
             "host_call": launch, "downstream_ready": False,
             "required_order": ["persist-record-and-checkpoint", "verify-input-and-target-configuration", "invoke-host-once", "save-receipt", "bind"]}
