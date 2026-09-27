@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "a722feb763b8cdf6204b5a2127e965b9e14a8fddcbfc048877dfe377c3533fa6",
+  "bundle_digest": "9f247d711aa19afe30032b165a02cbd95cd67d2805b6af111f0beab868a4854d",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 9,
@@ -51,7 +51,7 @@
     },
     "references/shared/design-discussion/child-topic-protocol.md": {
       "mode": "0644",
-      "sha256": "13032af28e86f701a05ff7db5777429d9e87d2531b78e344a32dd043d3e51d8a"
+      "sha256": "791eab373171b7cf67dc63be267ee9f99845a5544e30b483c3cbb3eb5c13c50a"
     },
     "references/shared/design-discussion/confirmation-contract.md": {
       "mode": "0644",
@@ -79,7 +79,7 @@
     },
     "references/shared/design-discussion/topic-document-protocol.md": {
       "mode": "0644",
-      "sha256": "d97c99e6745a057c63264579e076e5c48c4d06799139f451af4280c32d3b08a7"
+      "sha256": "367b9467376c162eeb7e04b2acea8724ecb4ccc741c12977cf3938ca188ddf5c"
     },
     "references/shared/entry-preparation.md": {
       "mode": "0644",
@@ -131,7 +131,7 @@
     },
     "scripts/discussion_core/handoffs.py": {
       "mode": "0644",
-      "sha256": "47ed099d267c5b32174d357b2f3abd5cda051609f588d64fc552f20572b191b5"
+      "sha256": "c50f7c2291d917f72a7a728b3616a027cda5d2ddbe656cebd9c81c7742b2bf1e"
     },
     "scripts/discussion_core/phase_runs.py": {
       "mode": "0644",
@@ -151,7 +151,7 @@
     },
     "scripts/discussion_core/state.py": {
       "mode": "0644",
-      "sha256": "6ba0386342e8b97f103cf8128e78a959e4a8e6054a5286054e97ed11efb7ee40"
+      "sha256": "779b62c8dc5cc943c5eabdd1310a9502f1e80bd1e42d03c4e2965246a80c0538"
     },
     "scripts/discussion_core/topic_dependencies.py": {
       "mode": "0644",
@@ -179,7 +179,7 @@
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
-      "sha256": "a886548d70ab8885d00ff78e405173f313793537438a81f41bb13de6911314d9"
+      "sha256": "143355054fea939c352cd95280c3918730a7cab78440445dcb40709fc5fc4be7"
     },
     "scripts/entry_prepare.py": {
       "mode": "0644",
@@ -211,7 +211,7 @@
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "62f24718efc9c6ac1f84313699cc3d01f442bd07217f5df7b5416221580f15d4"
+      "sha256": "9cca733ceceba2c2c82e8c9f1a77ecfcc1ed47780c2b9ade048800756f9ac3e6"
     },
     "scripts/stage_scope.py": {
       "mode": "0644",
@@ -227,7 +227,7 @@
     },
     "scripts/supervision_protocol.py": {
       "mode": "0644",
-      "sha256": "66452715b3f8099191905e76cd73c2ad74c9bee86b60c9a7a46892824c59cd5c"
+      "sha256": "c534c16d636fcbbd7cd78ada70f6123dadbacd8b751bc8ea4164b26e1ce57768"
     },
     "scripts/thread_settings.py": {
       "mode": "0644",
@@ -239,7 +239,7 @@
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "4735c8fdcd53fc30d033a4b6d77c28fcf99a6cd19c4ddf7794ec2985178fc20d"
+      "sha256": "2f4c4a8cffcb16912faf30b0fb1054561002b0c4b2e0fb852336a73b460a8899"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",

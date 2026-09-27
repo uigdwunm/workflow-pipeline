@@ -3590,6 +3590,64 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolScenarioFixture, Discus
         self.assertEqual(read["attempts"][0]["state"], "setup-pending")
         self.assertEqual(read["target_topic"]["parent_topic_id"], topic["topic_id"])
 
+    def test_child_update_keeps_parent_document_and_uses_child_document(self) -> None:
+        project = self.make_project("child-document-owner", git=False)
+        topic = self.bootstrap_topic(project)
+        parent_path = Path(str(topic["topic_document_path"]))
+        parent_before = parent_path.read_bytes()
+        prepared, child_ref = self.activate_child_handoff(topic)
+        child_path = project / "docs" / "discussions" / "api-shape" / "topic.md"
+        self.assertTrue(child_path.is_file())
+        request = self.evolution_request(
+            topic, operation="update-topic", expected_revision=5,
+            expected_topic_revision=1, owner_ref=child_ref,
+            mutation={"type": "confirm-decision", "summary": "Use typed requests.",
+                      "rationale": "The child owns this decision."},
+        )
+        request["actor_topic_id"] = prepared["target_topic_id"]
+        code, updated, stderr = self.run_cli(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(updated["state"], "completed")
+        self.assertEqual(parent_path.read_bytes(), parent_before)
+        child_text = child_path.read_text(encoding="utf-8")
+        self.assertIn(f'topic_id: {prepared["target_topic_id"]}', child_text)
+        self.assertIn("Use typed requests.", child_text)
+
+    def test_child_accept_recovers_exact_document_after_interrupted_ledger_write(self) -> None:
+        project = self.make_project("child-document-retry", git=False)
+        topic = self.bootstrap_topic(project)
+        prepared = self.prepare_child_handoff(topic)
+        child_ref = "codex-thread:child-retry"
+        bind = self.handoff_request(
+            topic, operation="bind-handoff", ledger_revision=2,
+            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+            conversation_ref=child_ref,
+            verified_identity={
+                "project_id": topic["project_id"], "tree_id": topic["tree_id"],
+                "topic_id": prepared["target_topic_id"], "handoff_id": prepared["handoff_id"],
+                "attempt_id": prepared["attempt_id"], "payload_sha256": prepared["payload_sha256"],
+            },
+        )
+        code, _, stderr = self.run_cli(bind)
+        self.assertEqual(code, 0, stderr)
+        accept = self.handoff_request(
+            topic, operation="accept-handoff", ledger_revision=3, owner_ref=child_ref,
+            handoff_id=prepared["handoff_id"], attempt_id=prepared["attempt_id"],
+            payload_sha256=prepared["payload_sha256"],
+            source_reference_sha256=prepared["authoritative_references_sha256"], turn_number=1,
+        )
+        accept["actor_topic_id"] = prepared["target_topic_id"]
+        ledger = Path(str(topic["ledger_path"]))
+        before = ledger.read_bytes()
+        code, _, _ = self.run_cli(accept, failpoint="handoff-after-child-document-before-ledger-write")
+        self.assertEqual(code, 1)
+        self.assertEqual(ledger.read_bytes(), before)
+        child_path = project / "docs" / "discussions" / "api-shape" / "topic.md"
+        created = child_path.read_bytes()
+        code, _, stderr = self.run_cli(accept)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(child_path.read_bytes(), created)
+
         oversized = self.handoff_request(
             topic,
             operation="prepare-handoff",

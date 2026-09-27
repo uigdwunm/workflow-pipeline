@@ -649,13 +649,9 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.assert_code("invalid_scope", lambda: self.call("receive", bound["record"],
             receipt=self.receipt(bound["record"], "stopped", "result", "native:dispatcher"),
             result={"delivery_id": "invalid-implementation", "status": "completed", "payload": bad}))
-        self.flow_git("restore", "--source", candidate, "docs/spec.md")
-        self.flow_git("add", "docs/spec.md"); self.flow_git("commit", "-qm", "restore read-only planning source")
-        candidate = self.flow_git("rev-parse", "HEAD")
-        payload["candidate_commit"] = payload["verification"]["candidate"] = candidate
-        for axis in payload["review"].values():
-            axis["candidate"] = candidate
-        payload = self.finalize_candidate(bound["record"], candidate)
+        # Reverting in a new commit would retain the unauthorized planning edit
+        # in candidate history. Discard that commit before resuming acceptance.
+        self.flow_git("reset", "--hard", candidate)
         received = self.call("receive", bound["record"], receipt=self.receipt(bound["record"], "stopped", "result", "native:dispatcher"),
                              result={"delivery_id": "implementation", "status": "completed", "payload": payload})
         accepted = self.call("accept", received["record"], decision={"reference": "accepted", "delivery_digest": received["record"]["delivery"]["digest"]})["accepted"]

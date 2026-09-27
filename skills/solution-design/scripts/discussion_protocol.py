@@ -28,6 +28,7 @@ from discussion_core.state import (
     _active_pending_write,
     _append_event,
     _atomic_replace,
+    _record_topic_document_path,
     _canonical_json,
     _coordination_root,
     _evolution_paths,
@@ -49,6 +50,7 @@ from discussion_core.state import (
     _project_lock_name,
     _record_by_id,
     _render_records_ledger,
+    _render_topic_document,
     _require_regular_nosymlink,
     _sha256,
     _topic_snapshot,
@@ -285,35 +287,6 @@ def _render_project_manifest(
         f"root_slug: {root_slug}\n"
         "---\n"
         "# Codex Design Discussion Project\n"
-    ).encode("utf-8")
-
-
-def _render_topic_document(
-    *, project_id: str, tree_id: str, topic_id: str, root_slug: str
-) -> bytes:
-    return (
-        "---\n"
-        "schema_version: 1\n"
-        f"project_id: {project_id}\n"
-        f"tree_id: {tree_id}\n"
-        f"topic_id: {topic_id}\n"
-        "parent_topic_id: null\n"
-        "topic_revision: 1\n"
-        "---\n"
-        f"# {root_slug}\n\n"
-        "## Goal\n\n- None.\n\n"
-        "## Background and Current State\n\n- None.\n\n"
-        "## Scope\n\n- None.\n\n"
-        "## Non-goals\n\n- None.\n\n"
-        "## Users and Key Scenarios\n\n- None.\n\n"
-        "## Confirmed Decisions\n\n- None.\n\n"
-        "## Candidate Solution\n\n- None.\n\n"
-        "## Tentative Assumptions\n\n- None.\n\n"
-        "## Facts\n\n- Persistent discussion workspace initialized.\n\n"
-        "## Constraints\n\n- None.\n\n"
-        "## Acceptance Conditions\n\n- None.\n\n"
-        "## Pending Questions\n\n- The first substantive question is asked after bootstrap verification.\n\n"
-        "## Decision Evolution\n\n- None.\n"
     ).encode("utf-8")
 
 
@@ -743,6 +716,7 @@ def _render_evolved_topic(
     tree_id: str,
     topic_id: str,
     root_slug: str,
+    parent_topic_id: str | None,
     topic_revision: int,
     snapshot: dict[str, Any],
 ) -> bytes:
@@ -772,7 +746,7 @@ def _render_evolved_topic(
         f"project_id: {project_id}\n"
         f"tree_id: {tree_id}\n"
         f"topic_id: {topic_id}\n"
-        "parent_topic_id: null\n"
+        f"parent_topic_id: {parent_topic_id or 'null'}\n"
         f"topic_revision: {topic_revision}\n"
         "---\n"
         f"# {root_slug}\n\n"
@@ -1071,6 +1045,9 @@ def _prepare_topic_update(request: dict[str, Any], *, lock_held: bool = False) -
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
+        if (not isinstance(topic_record.get("topic_document_path"), str)
+                or topic_path != _record_topic_document_path(project, topic_record)):
+            raise ProtocolError("document_ownership_conflict", "topic has no owned document to update")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(
             records,
@@ -1127,13 +1104,10 @@ def _prepare_topic_update(request: dict[str, Any], *, lock_held: bool = False) -
             )
         next_topic_revision = topic_revision + 1
         next_snapshot = _topic_snapshot(next_records, request["actor_topic_id"])
-        manifest = _parse_frontmatter(
-            _require_regular_nosymlink(project / "docs" / "discussions" / ".codex-project.md", "project identity manifest"),
-            "project identity manifest",
-        )
         after_bytes = _render_evolved_topic(
             project_id=request["project_id"], tree_id=request["tree_id"],
-            topic_id=request["actor_topic_id"], root_slug=manifest["root_slug"],
+            topic_id=request["actor_topic_id"], root_slug=topic_record["root_slug"],
+            parent_topic_id=topic_record.get("parent_topic_id"),
             topic_revision=next_topic_revision, snapshot=next_snapshot,
         )
         phase_evidence = _requirement_write_evidence(records, next_records, topic_record, topic_path, after_bytes)
@@ -1191,6 +1165,9 @@ def _apply_document_write(
             return replay
         topic_record = _record_by_id(records["Current Topics"], "topic_id", request["actor_topic_id"], "topic_id")
         topic_path = _verify_topic_path_authority(topic_record, topic_path, records=records)
+        if (not isinstance(topic_record.get("topic_document_path"), str)
+                or topic_path != _record_topic_document_path(project, topic_record)):
+            raise ProtocolError("document_ownership_conflict", "topic has no owned document to update")
         ledger_revision, topic_revision = _validate_revisions(request, frontmatter, topic_record)
         _verify_topic_owner(
             records,

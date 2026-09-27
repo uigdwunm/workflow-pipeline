@@ -308,6 +308,10 @@ def verify_result(stage, payload, binding, scope, root, role_ref):
         ancestor(root, binding["base_commit"], candidate)
         changed = set(entry.git(root, "diff", "--name-only", "-z", head, candidate).stdout.decode().split("\0")) - {""}
         require(changed <= set(scope["implementation_paths"]), "invalid_scope", "candidate escapes implementation scope")
+        history_paths = control_git.incoming_changed_paths(Path(root), head, candidate)
+        require(history_paths <= set(scope["implementation_paths"]) and
+                not history_paths & set(scope["protected_paths"]),
+                "invalid_scope", "candidate history escapes implementation scope")
         control.validate_review(candidate, payload["review"], payload["verification"], role_ref)
         require(payload["verification"]["expected_target_head"] == head, "target_changed", "validated target changed")
         control.validate_validation_plan(payload["verification"]["validation_plan"], binding)

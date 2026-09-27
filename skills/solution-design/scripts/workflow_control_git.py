@@ -117,6 +117,22 @@ def changed_paths(repository, baseline):
     return sorted(set(tracked + untracked) - {''})
 
 
+def incoming_changed_paths(repository, target, candidate):
+    """Paths introduced by incoming commits, including later reversions."""
+    changed = set()
+    revisions = git(repository, 'rev-list', '--parents', commit(target) + '..' + commit(candidate)).decode().splitlines()
+    for line in revisions:
+        revision, *parents = line.split()
+        require(parents, 'incoming history has an unrelated root')
+        introduced = set(filter(None, git(repository, 'diff', '--no-renames', '--name-only', '-z',
+            parents[0], revision, '--').decode().split('\0')))
+        for parent in parents[1:]:
+            introduced.intersection_update(filter(None, git(repository, 'diff', '--no-renames',
+                '--name-only', '-z', parent, revision, '--').decode().split('\0')))
+        changed.update(introduced)
+    return changed
+
+
 def recovery_snapshot(repository, progress):
     """Freeze index, committed ancestry and every scoped file including absence/mode."""
     baseline = progress['git_baseline_commit']
@@ -385,6 +401,9 @@ def verified_transition(payload):
         require(evidence['commit'] == actual_commit, 'candidate is not actual HEAD')
         git(repository, 'merge-base', '--is-ancestor', progress['git_baseline_commit'], evidence['commit'])
         candidate_paths = changed_paths(repository, evidence['expected_target_head'])
+        history_paths = incoming_changed_paths(repository, evidence['expected_target_head'], evidence['commit'])
+        require(history_paths <= set(progress['allowed_paths']) and not history_paths & set(progress['protected_paths']),
+                'candidate history escapes implementation scope or changes protected sources')
         accepted_fingerprints = {}
         for execution in progress['executions']:
             if execution['state'] == 'accepted':

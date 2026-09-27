@@ -281,6 +281,28 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertFalse(self.call('candidate-ready', evidence(self.git('rev-parse', 'HEAD')),
                                    accepted['context'])['ok'])
 
+    def test_candidate_rejects_reverted_out_of_scope_history(self):
+        context = self.start_allocations()
+        (self.repo/'a.py').write_text('accepted bytes\n')
+        received = self.call('execution-result', self.result_evidence('a', ['a.py']), context)
+        accepted = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
+        self.assertTrue(accepted['ok'], accepted)
+        self.git('add', 'a.py'); self.git('commit', '-qm', 'accepted implementation')
+        (self.repo/'outside.py').write_text('private bytes\n')
+        self.git('add', 'outside.py'); self.git('commit', '-qm', 'outside scope')
+        self.git('rm', 'outside.py'); self.git('commit', '-qm', 'hide outside change')
+        progress = accepted['context']['handoff_progress']
+        candidate = self.git('rev-parse', 'HEAD')
+        target = self.git('rev-parse', progress['binding']['target_branch'])
+        checks = test_workflow_control.checks_for(progress['validation_plan']['review_required'], candidate)
+        evidence = {'dispatcher_ref': 'dispatcher', 'attempt': accepted['context']['carrier']['attempt'],
+                    'commit': candidate, 'expected_target_head': target, 'binding': progress['binding'],
+                    'plan_digest': control.digest(progress['validation_plan']), 'checks': checks,
+                    'source': {'adapter': 'fixture', 'call_ref': 'focused', 'response_ref': 'focused-result',
+                               'raw': {'checks': checks, 'source_unchanged': True,
+                                       'stopped': True, 'dispatcher_ref': 'dispatcher'}}}
+        self.assertFalse(self.call('candidate-ready', evidence, accepted['context'])['ok'])
+
     def test_full_delta_includes_deletion_and_mode_changes(self):
         (self.repo/'b.py').write_text('existing')
         self.git('add', '.'); self.git('commit', '-qm', 'existing allowed file')

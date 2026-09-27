@@ -240,6 +240,33 @@ class WorktreeProtocolTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "path_outside_scope")
         self.assertTrue(worktree.exists())
 
+    def assert_publication_rejects_reverted_history(self, operation):
+        binding = self.start(operation)
+        worktree = Path(binding["worktree"])
+        target = str(binding["base_commit"])
+        self.commit(worktree, "outside.txt", "private bytes\n", "outside scope")
+        self.git("rm", "outside.txt", cwd=worktree)
+        self.git("commit", "-q", "-m", "hide outside change", cwd=worktree)
+        candidate = self.commit(worktree, "a.txt", "allowed\n", "allowed change")
+        if operation == "publish-planning":
+            request = self.publish_input(operation, binding, candidate,
+                                         allowed_paths=["a.txt"])
+            publish = PROTOCOL.publish_planning
+        else:
+            request = self.complete_input(operation, binding, candidate, target,
+                                          allowed_paths=["a.txt"])
+            publish = PROTOCOL.complete_worktree
+        with self.assertRaises(PROTOCOL.ProtocolError) as raised:
+            publish(request)
+        self.assertEqual(raised.exception.code, "path_outside_scope")
+        self.assertEqual(self.git("rev-parse", "main"), target)
+
+    def test_planning_rejects_reverted_out_of_scope_history(self):
+        self.assert_publication_rejects_reverted_history("publish-planning")
+
+    def test_completion_rejects_reverted_out_of_scope_history(self):
+        self.assert_publication_rejects_reverted_history("complete-worktree")
+
     def test_adoption_allows_scoped_history_and_target_integration(self):
         binding = self.start("integrated-history")
         worktree = Path(binding["worktree"])

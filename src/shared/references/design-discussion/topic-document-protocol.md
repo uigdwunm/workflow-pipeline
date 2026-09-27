@@ -11,6 +11,9 @@ One topic owns one current design document under
 ledger owns coordination state; the document owns the human-readable current
 design.
 
+A child topic uses its own slug and document. Inherited parent context is
+read-only; a child update never replaces the parent's document.
+
 It also follows the shared
 [`{{resource:design-discussion/references/requirement-document-contract.md}}`]({{resource:design-discussion/references/requirement-document-contract.md}}). The
 ledger retains recovery history; the document presents current truth.

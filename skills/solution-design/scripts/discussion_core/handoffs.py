@@ -13,6 +13,7 @@ from .state import (
     ROOT_SLUG_RE,
     SHA256_RE,
     _active_pending_write,
+    _atomic_create,
     _requirement_phase_attempts,
     _canonical_json,
     _evolution_paths,
@@ -26,6 +27,8 @@ from .state import (
     _parse_frontmatter,
     _mutation_fingerprint,
     _record_by_id,
+    _record_topic_document_path,
+    _render_topic_document,
     _require_regular_nosymlink,
     _sha256,
     _topic_snapshot,
@@ -425,6 +428,11 @@ def _prepare_handoff(request: dict[str, Any]) -> dict[str, Any]:
         if kind == "child":
             if any(topic.get("topic_id") == target_topic_id for topic in records["Current Topics"]):
                 raise ProtocolError("handoff_identity_conflict", "child topic identity already exists")
+            if any(topic.get("root_slug") == target_slug for topic in records["Current Topics"]):
+                raise ProtocolError("handoff_identity_conflict", "child document slug is already owned")
+            child_directory = Path(request["project_path"]) / "docs" / "discussions" / target_slug
+            if child_directory.exists() or child_directory.is_symlink():
+                raise ProtocolError("handoff_identity_conflict", "child document path already exists")
             records["Current Topics"].append(
                 {
                     "topic_id": target_topic_id,
@@ -681,6 +689,44 @@ def _bind_handoff(request: dict[str, Any]) -> dict[str, Any]:
         return result
 
 
+def _ensure_child_document(
+    project: Path, records: dict[str, list[dict[str, Any]]],
+    topic_record: dict[str, Any], handoff: dict[str, Any],
+) -> None:
+    if topic_record.get("topic_document_path") is not None:
+        raise ProtocolError("handoff_identity_conflict", "child document is already assigned")
+    slug = topic_record["root_slug"]
+    if slug != handoff["target_slug"] or any(
+        topic is not topic_record and topic.get("root_slug") == slug
+        for topic in records["Current Topics"]
+    ):
+        raise ProtocolError("handoff_identity_conflict", "child document slug is not unique")
+    documents = project / "docs" / "discussions"
+    if documents.resolve(strict=True) != documents:
+        raise ProtocolError("document_ownership_conflict", "discussion documents path changed")
+    directory = documents / slug
+    try:
+        directory.mkdir(mode=0o700)
+    except FileExistsError:
+        if (directory.is_symlink() or not directory.is_dir()
+                or directory.resolve(strict=True) != directory
+                or any(path.name != "topic.md" for path in directory.iterdir())):
+            raise ProtocolError("document_ownership_conflict", "child document directory is occupied")
+    path = directory / "topic.md"
+    data = _render_topic_document(
+        project_id=handoff["project_id"], tree_id=handoff["tree_id"],
+        topic_id=topic_record["topic_id"], root_slug=slug,
+        parent_topic_id=topic_record["parent_topic_id"],
+    )
+    if path.exists() or path.is_symlink():
+        if _require_regular_nosymlink(path, "child topic document") != data:
+            raise ProtocolError("document_ownership_conflict", "child document path contains different content")
+    else:
+        _atomic_create(path, data)
+    topic_record["topic_document_path"] = str(path)
+    _record_topic_document_path(project, topic_record)
+
+
 def _accept_handoff(request: dict[str, Any]) -> dict[str, Any]:
     ledger_path, lock_path, _, owner_ref = _handoff_mutation_context(
         request,
@@ -725,6 +771,8 @@ def _accept_handoff(request: dict[str, Any]) -> dict[str, Any]:
                 raise ProtocolError("phase_source_drift", "dedicated requirement baseline changed")
             if not attempt.get("binding_eligible") or sum(bool(a.get("binding_eligible")) for a in handoff["attempts"]) != 1:
                 raise ProtocolError("handoff_identity_conflict", "dedicated attempt is not uniquely eligible")
+        if handoff["kind"] == "child":
+            _ensure_child_document(Path(request["project_path"]), records, topic_record, handoff)
         state = "active" if dedicated else "accepted-awaiting-next-turn"
         attempt.update({"state": state, "accepted_turn": 1})
         handoff["state"] = state
@@ -735,6 +783,8 @@ def _accept_handoff(request: dict[str, Any]) -> dict[str, Any]:
             **_handoff_result(request, handoff, attempt, ledger_revision=next_revision, topic_revision=topic_revision),
             "substantive_discussion_allowed": dedicated,
         }
+        if handoff["kind"] == "child":
+            _inject_failure("handoff-after-child-document-before-ledger-write")
         _write_ledger_transaction(
             ledger_path, frontmatter, records, request,
             ledger_revision=next_revision, event_type="handoff-accepted", result=result,

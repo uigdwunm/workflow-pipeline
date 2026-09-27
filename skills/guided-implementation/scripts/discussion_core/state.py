@@ -466,6 +466,55 @@ def _atomic_replace(path: Path, data: bytes, *, mode: int = 0o600) -> None:
             pass
 
 
+def _atomic_create(path: Path, data: bytes, *, mode: int = 0o600) -> None:
+    """Publish a complete new file without replacing an existing document."""
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path, follow_symlinks=False)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _render_topic_document(
+    *, project_id: str, tree_id: str, topic_id: str, root_slug: str,
+    parent_topic_id: str | None = None,
+) -> bytes:
+    return (
+        "---\n"
+        "schema_version: 1\n"
+        f"project_id: {project_id}\n"
+        f"tree_id: {tree_id}\n"
+        f"topic_id: {topic_id}\n"
+        f"parent_topic_id: {parent_topic_id or 'null'}\n"
+        "topic_revision: 1\n"
+        "---\n"
+        f"# {root_slug}\n\n"
+        "## Goal\n\n- None.\n\n"
+        "## Background and Current State\n\n- None.\n\n"
+        "## Scope\n\n- None.\n\n"
+        "## Non-goals\n\n- None.\n\n"
+        "## Users and Key Scenarios\n\n- None.\n\n"
+        "## Confirmed Decisions\n\n- None.\n\n"
+        "## Candidate Solution\n\n- None.\n\n"
+        "## Tentative Assumptions\n\n- None.\n\n"
+        "## Facts\n\n- Persistent discussion workspace initialized.\n\n"
+        "## Constraints\n\n- None.\n\n"
+        "## Acceptance Conditions\n\n- None.\n\n"
+        "## Pending Questions\n\n- The first substantive question is asked after bootstrap verification.\n\n"
+        "## Decision Evolution\n\n- None.\n"
+    ).encode("utf-8")
+
+
 def _flock_with_timeout(stream: Any, timeout_seconds: float = 5.0) -> None:
     deadline = time.monotonic() + timeout_seconds
     while True:

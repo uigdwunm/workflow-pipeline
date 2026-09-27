@@ -368,6 +368,21 @@ def _changed_paths(repository: Path, older: str, newer: str) -> list[str]:
         raise ProtocolError("git_failed", "changed path is not valid UTF-8") from error
 
 
+def _incoming_changed_paths(repository: Path, target: str, candidate: str) -> set[str]:
+    """Include paths touched by incoming commits even when later reverted."""
+    changed: set[str] = set()
+    commits = _git_text(repository, ["rev-list", "--parents", target + ".." + candidate])
+    for line in commits.splitlines():
+        revision, *parents = line.split()
+        if not parents:
+            raise ProtocolError("path_outside_scope", "incoming history has an unrelated root")
+        introduced = set(_changed_paths(repository, parents[0], revision))
+        for parent in parents[1:]:
+            introduced.intersection_update(_changed_paths(repository, parent, revision))
+        changed.update(introduced)
+    return changed
+
+
 def _lifecycle(value):
     if not isinstance(value, dict):
         raise ProtocolError("invalid_input", "binding lifecycle is required")
@@ -497,18 +512,7 @@ def bind_worktree(request):
         raise ProtocolError("target_changed", "workspace baseline must belong to target history")
     allowed = _normalize_relative_paths(request["allowed_paths"], "allowed_paths")
     changed = set(_changed_paths(repository, target, report["current_commit"]))
-    # Final trees alone hide reverted work. Inspect every incoming commit too.
-    # For merges, paths differing from every parent are the merge's own changes;
-    # ordinary target integration is already accounted for by target history.
-    commits = _git_text(repository, ["rev-list", "--parents", target + ".." + report["current_commit"]])
-    for line in commits.splitlines():
-        commit, *parents = line.split()
-        if not parents:
-            raise ProtocolError("path_outside_scope", "incoming history has an unrelated root")
-        introduced = set(_changed_paths(repository, parents[0], commit))
-        for parent in parents[1:]:
-            introduced.intersection_update(_changed_paths(repository, parent, commit))
-        changed.update(introduced)
+    changed.update(_incoming_changed_paths(repository, target, report["current_commit"]))
     if any(not _path_matches(path, allowed) for path in changed):
         raise ProtocolError("path_outside_scope", "existing workspace history escapes declared task scope")
     return {"binding": binding, "ok": True, "state": "bound"}
@@ -636,8 +640,9 @@ def _validate_candidate(
     changed = _changed_paths(repository, expected_target_head, candidate)
     if not changed:
         raise ProtocolError("empty_candidate", "candidate contains no scoped change")
+    history_paths = set(changed) | _incoming_changed_paths(repository, expected_target_head, candidate)
     source_edits = [
-        path for path in changed if _path_matches(path, protected_paths)
+        path for path in history_paths if _path_matches(path, protected_paths)
     ]
     if source_edits:
         raise ProtocolError(
@@ -646,7 +651,7 @@ def _validate_candidate(
             context={"paths": source_edits},
         )
     outside = [
-        path for path in changed if not _path_matches(path, allowed_paths)
+        path for path in history_paths if not _path_matches(path, allowed_paths)
     ]
     if outside:
         raise ProtocolError(
@@ -1324,9 +1329,10 @@ def _verify_publication_scope(operation, request, binding, prepared):
     if operation == "complete-worktree" and (candidate != original or target != request["expected_target_head"]):
         raise ProtocolError("integration_unverified", "final publication changed original candidate or target")
     changed = _changed_paths(repository, target, candidate)
-    if not changed or any(not _path_matches(p, request["allowed_paths"]) for p in changed):
+    history_paths = set(changed) | _incoming_changed_paths(repository, target, candidate)
+    if not changed or any(not _path_matches(p, request["allowed_paths"]) for p in history_paths):
         raise ProtocolError("path_outside_scope", "publication delta escapes original scope")
-    if any(_path_matches(p, request["protected_paths"]) for p in _changed_paths(repository, baseline, candidate)):
+    if any(_path_matches(p, request["protected_paths"]) for p in history_paths | set(_changed_paths(repository, baseline, candidate))):
         raise ProtocolError("source_changed", "publication changed protected sources")
     return changed
 

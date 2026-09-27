@@ -74,6 +74,11 @@ because the target is slow. The child first turn may only:
 2. call `accept-handoff` with `turn_number: 1`; and
 3. report `substantive_discussion_allowed: false` and stop.
 
+For a child topic, successful `accept-handoff` creates its own
+`docs/discussions/<target-slug>/topic.md`. Later `update-topic` writes only that
+document; a parent document changes only through a separately confirmed parent
+update.
+
 On a later turn, the same authenticated child calls
 `authorize-handoff-discussion` with a strictly larger `turn_number`. Only a
 successful response with `substantive_discussion_allowed: true` permits the
