@@ -28,7 +28,8 @@ semantic conflicts, follows the existing configuration-selection contract and
 obtains its required decisions. This adapter returns the actual current model and
 effort, not an invented default. Optional supported configurations must come from
 the exact target tool; its absence does not establish launch compatibility.
-The actual launch adapter must verify its selected configuration before launch.
+The target inventory does not constrain the current controller model. The actual
+launch adapter must verify its selected child configuration before launch.
 
 ## Request
 
@@ -143,15 +144,19 @@ into the strict Workflow Control context.
 
 Use operation=verify and expected=<saved result> immediately before dependent
 work. It compares repository, actor, stage/action, target and source facts;
-settings may advance turn_id without changing model/effort. Missing registration,
-changed source, identity, settings or incompatible packages stops the action.
+Current model, effort and turn_id are observations, not workflow identity: changing
+these does not invalidate authorization or block continuation. Actor identity keeps
+project, task, controller, role, source and optional actor_ref fixed; authenticated
+receipt and target supported_configurations may refresh. Missing registration,
+changed source or identity, or incompatible packages stops the action. Child launch
+configuration remains separately selected and verified by the launch adapter.
 It verifies retained package bytes and keeps the original roots even if current
 registration selects another compatible version. `pinned_packages` supplies that
 same original map when preparing a new action in an existing run; never use it to
 invent or change a pin. Installed scripts must execute from the stage's pinned root.
 
 Requirement writes intentionally change source bytes/HEAD. Their adapter rechecks
-the immutable owner/package/configuration facts and uses its own exact prepared
+the immutable owner/package facts and uses its own exact prepared
 baseline to reconcile those changes. Do not repeatedly resolve fresh evidence to
 bypass a failed confirmation or source check.
 

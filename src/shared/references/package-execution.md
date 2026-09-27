@@ -1,9 +1,12 @@
 # Package execution and action preflight
 
-Registration provenance and controlled recovery require preparation=workflow-preparation-v3,
+Registration provenance and controlled recovery require preparation=workflow-preparation-v4,
 stage_transfer=workflow-stage-transfer-v7, workflow_progress=workflow-progress-v12,
 and topic_gate=phase-0-1-discussion-v2. The topic gate key separates packages
 that allow discussion behind a closed dependency from the older blanket guard.
+Preparation v4 separates controller model and refreshed host observations from
+stable actor identity. Requirement freeze preserves unrelated edits made since
+preparation and checks for unexpected changes only across its own Git mutations.
 Entry requests use workflow-entry-v3 and requirement requests use requirement-freeze-v2.
 Old pinned runs keep their original packages and records; new packages reject
 incompatible exchanges instead of filling missing identity fields or migrating runs.

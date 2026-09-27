@@ -126,7 +126,7 @@ class PreflightBoundaryTests(unittest.TestCase):
             self.assertEqual(git('status', '--porcelain'), '')
             for package in self.names:
                 manifest = json.loads((self.packages / package / 'package.json').read_text())
-                self.assertEqual(manifest['compatibility_key']['preparation'], 'workflow-preparation-v3')
+                self.assertEqual(manifest['compatibility_key']['preparation'], 'workflow-preparation-v4')
                 self.assertIn('scripts/entry_prepare.py', manifest['files'])
                 self.assertIn('scripts/requirement_prepare.py', manifest['files'])
 

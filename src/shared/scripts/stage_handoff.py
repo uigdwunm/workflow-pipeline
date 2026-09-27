@@ -97,7 +97,7 @@ def refresh(request, expected, *, after_work=False):
             "invalid_evidence", "complete A entry evidence required")
     if after_work:
         current = entry.resolve({**request, "pinned_packages": expected["packages"]})
-        # A's existing immutable owner/config/package binding, without its
+        # A's existing immutable owner/package binding, without its
         # prepare-time HEAD/source-byte comparison (those legitimately change).
         requirement.bind(current, expected)
         require(current["entry"] == expected["entry"] and current["target"] == expected["target"],

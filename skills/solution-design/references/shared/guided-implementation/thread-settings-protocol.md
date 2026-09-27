@@ -60,10 +60,18 @@ A successful resolution returns only `protocol`, `source`, `thread_id`,
 `model`, `reasoning_effort`, and `turn_id`. The implementation safely opens the
 index-bound active rollout or verified filesystem rollout chain below the configured Codex sessions
 root and never returns message content or another rollout field. The caller separately requires the
-resolved model/effort pair to be advertised by the exact `create_thread` or
-`spawn_agent` capability it will use.
+selected child model/effort pair to be advertised by the exact `create_thread` or
+`spawn_agent` capability it will use. The controller's current pair need not be
+supported by that target tool when an explicit child configuration is selected.
 
 ## Revalidate before an authorized launch
+
+This check applies to a pending launch that explicitly inherits the controller's
+settings. It is not a lifetime lock on the controller model. Switching the main
+conversation model or effort preserves workflow identity and business decisions;
+continue existing children with their retained identity and launch configuration.
+Do not rerun inherited-launch verification to gate an existing child's continuation.
+
 
 When a user confirmation binds inherited settings, resolve before displaying
 the block and verify immediately before the authorized launch:

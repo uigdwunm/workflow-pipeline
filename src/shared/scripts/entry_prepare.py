@@ -253,6 +253,14 @@ def verify_registration(current, expected):
             "registry_changed", "changed registry requires a new trusted query receipt")
 
 
+def verify_actor(current, expected):
+    # Receipts and target tool inventories are refreshed observations, not owners.
+    observations = {"receipt", "supported_configurations"}
+    require({k: v for k, v in current.items() if k not in observations} ==
+            {k: v for k, v in expected.items() if k not in observations},
+            "identity_changed", "entry actor identity changed")
+
+
 def resolve(request):
     fields(request, {"protocol", "operation", "stage", "action", "host", "source"},
            {"target", "registry", "registry_context", "registry_input", "registration_identity", "target_stages", "required_skills", "expected", "pinned_packages"})
@@ -292,8 +300,10 @@ def resolve(request):
         require(isinstance(supported, list) and bool(supported), "configuration_unavailable", "target tool configurations required")
         for pair in supported:
             fields(pair, {"model", "reasoning_effort"})
-        require({k: settings[k] for k in ("model", "reasoning_effort")} in supported,
-                "configuration_unsupported", "runtime configuration is not advertised by target tool")
+            nonempty(pair["model"])
+            nonempty(pair["reasoning_effort"])
+        # This inventory describes the target tool, not the controller's model.
+        # Selection and launch verify the actual child configuration.
     source = request["source"]
     fields(source, {"kind"}, {"path", "attachment"})
     require(source["kind"] in {"none", "stage1", "conversation", "discussion", "frozen"}, "invalid_source", "unknown requirement source")
@@ -366,14 +376,15 @@ def resolve(request):
         for identity in expected["packages"].values():
             skill_preflight.verify_identity(identity)
         # Current registration may move, but cannot replace any pinned package.
-        for key in ("repository", "actor", "entry", "target", "requirement", "discussion_project"):
+        verify_actor(result["actor"], expected["actor"])
+        for key in ("repository", "entry", "target", "requirement", "discussion_project"):
             require(result[key] == expected[key], "entry_changed", "entry evidence changed: " + key)
         require(set(result["packages"]) == set(expected["packages"]), "entry_changed", "package route changed")
         for name, identity in result["packages"].items():
             require(identity["compatibility_key"] == expected["packages"][name]["compatibility_key"], "entry_changed", "registered package compatibility changed")
         result["packages"] = expected["packages"]
-        require(all(settings[k] == expected["configuration"][k] for k in ("thread_id", "model", "reasoning_effort")),
-                "configuration_changed", "confirmed runtime settings changed")
+        require(settings["thread_id"] == expected["configuration"]["thread_id"],
+                "identity_changed", "runtime task identity changed")
     else:
         require("expected" not in request, "invalid_request", "resolve cannot replace a pinned entry")
     return {**result, "evidence_digest": digest(result)}

@@ -17,7 +17,7 @@
     "runner": 6,
     "supervision": "flow-worktree-v2",
     "thread_settings": "thread-settings-v5",
-    "preparation": "workflow-preparation-v3",
+    "preparation": "workflow-preparation-v4",
     "stage_transfer": "workflow-stage-transfer-v7",
     "workflow_progress": "workflow-progress-v12",
     "requirement_delivery": "requirement-delivery-v1"

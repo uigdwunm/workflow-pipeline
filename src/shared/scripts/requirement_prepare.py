@@ -85,7 +85,8 @@ def unrelated(root, paths):
 
 def bind(current, original):
     entry.verify_registration(current.get("registration_context"), original.get("registration_context"))
-    for key in ("actor", "entry", "target", "discussion_project"):
+    entry.verify_actor(current["actor"], original["actor"])
+    for key in ("entry", "target", "discussion_project"):
         entry.require(current[key] == original[key], "identity_changed", "preparation owner or target changed")
     for key in ("root", "git_common_dir", "branch", "kind"):
         entry.require(current["repository"].get(key) == original["repository"].get(key), "repository_changed", "repository binding changed")
@@ -94,8 +95,8 @@ def bind(current, original):
     previous = original["requirement"].get("path")
     entry.require(selected is None or previous is None or selected == previous,
                   "source_changed", "explicit requirement source path changed")
-    for key in ("thread_id", "model", "reasoning_effort"):
-        entry.require(current["configuration"][key] == original["configuration"][key], "configuration_changed", "preparation configuration changed")
+    entry.require(current["configuration"]["thread_id"] == original["configuration"]["thread_id"],
+                  "identity_changed", "preparation task identity changed")
     entry.require(set(current["packages"]) == set(original["packages"]), "package_changed", "package route changed")
     for name, identity in original["packages"].items():
         skill_preflight.verify_identity(identity)
@@ -189,8 +190,7 @@ def prepare(current, request):
             entry.require(isinstance(p, str) and p.endswith(".md"), "invalid_document", "only exact Markdown documentation paths allowed")
         safe_stage_paths(root, paths)
         intent.update(paths=paths, sha256=sha(before),
-                      hashes={p: sha(entry.read_document(root, p)) for p in paths},
-                      unrelated=unrelated(root, paths))
+                      hashes={p: sha(entry.read_document(root, p)) for p in paths})
         intent["reuse_commit"] = all(
             sha(entry.git(root, "show", intent["baseline"] + ":" + p, check=False).stdout) == intent["hashes"][p]
             and entry.git_text(root, "ls-tree", intent["baseline"], "--", p).startswith("100644 ")
@@ -296,12 +296,15 @@ def verified_commit_evidence(root, intent, commit):
             "sha256": intent["hashes"][path], "downstream_ready": False}
 
 
-def frozen_result(current, root, intent, commit, *, command_succeeded=True):
+def frozen_result(current, root, intent, commit, *, command_succeeded=True, workspace_before=None):
     # Record only object evidence reverified here, before mutable workspace checks.
     # This is deliberately not the successful frozen receipt or its digest.
     evidence = verified_commit_evidence(root, intent, commit)
     try:
         entry.require(command_succeeded, "commit_outcome_unknown", "commit exists but command failed; reconcile the same intent")
+        if workspace_before is not None:
+            entry.require(unrelated(root, intent["paths"]) == workspace_before,
+                          "workspace_changed", "unrelated workspace or index changed during freeze; preserve and reconcile")
         return complete_frozen_result(current, root, intent, commit)
     except entry.ERROR_TYPES as error:
         raise entry.PreparationError(getattr(error, "code", "preparation_failed"), entry.error_message(error),
@@ -311,7 +314,6 @@ def frozen_result(current, root, intent, commit, *, command_succeeded=True):
 def complete_frozen_result(current, root, intent, commit):
     for path, expected in intent["hashes"].items():
         entry.require(sha(entry.read_document(root, path)) == expected, "document_changed", "committed source differs from work document")
-    entry.require(unrelated(root, intent["paths"]) == intent["unrelated"], "workspace_changed", "unrelated workspace or index changed; preserve and reconcile")
     path = intent["path"]
     identity = {"path": path, "sha256": intent["sha256"], "version": intent["version"]}
     changed = [] if intent.get("reuse_commit") else [os.fsdecode(p) for p in entry.git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", commit).stdout.split(b"\0") if p]
@@ -342,11 +344,11 @@ def freeze(current, intent, reconcile=False):
     for path, expected in intent["hashes"].items():
         entry.require(sha(entry.read_document(root, path)) == expected, "document_changed", "freeze bytes changed")
     safe_stage_paths(root, intent["paths"])
-    entry.require(unrelated(root, intent["paths"]) == intent["unrelated"], "workspace_changed", "workspace differs from prepared baseline")
     if reconcile:
         return {"protocol": PROTOCOL, "state": "prepared", "intent": intent}
     # New files must be known to the real index for commit --only. Staging is
     # limited to the frozen paths; a failed hook preserves this recoverable state.
+    workspace_before = unrelated(root, intent["paths"])
     entry.git(root, "add", "--", *intent["paths"])
     for path, expected in intent["hashes"].items():
         entry.require(sha(entry.git(root, "show", ":" + path).stdout) == expected,
@@ -356,7 +358,8 @@ def freeze(current, intent, reconcile=False):
     result = entry.git(root, "commit", "--only", "-m", message, "--", *intent["paths"], check=False)
     head = entry.git_text(root, "rev-parse", "HEAD")
     entry.require(commit_matches(root, head, intent), "commit_unverified", "freeze commit failed or differs from prepared intent; reconcile before retry")
-    return frozen_result(current, root, intent, head, command_succeeded=result.returncode == 0)
+    return frozen_result(current, root, intent, head, command_succeeded=result.returncode == 0,
+                         workspace_before=workspace_before)
 
 
 def verify(current, evidence):

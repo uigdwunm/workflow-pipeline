@@ -140,6 +140,46 @@ class RequirementTests(test_entry_prepare.EntrySupport):
         self.assertEqual(self.call("freeze", intent=intent)["commit"], frozen["commit"])
         self.assertEqual(self.git("rev-list", "--count", "HEAD"), "2")
 
+    def test_freeze_after_model_and_host_evidence_refresh(self):
+        _, receipt = self.create()
+        intent = copy.deepcopy(self.freeze_intent(receipt))
+        self.settings.update(model='another-controller-model', reasoning_effort='low', turn_id='turn-2')
+        self.request['host'].update(receipt='host:refreshed', supported_configurations=[
+            {'model': 'child-model', 'reasoning_effort': 'medium'}])
+        frozen = self.call('freeze', intent=intent)
+        self.assertEqual(frozen['changed_paths'], [receipt['path']])
+        self.assertEqual(self.call('reconcile', intent=intent)['commit'], frozen['commit'])
+
+    def test_unrelated_edits_after_preparation_and_before_retry_are_preserved(self):
+        _, receipt = self.create()
+        intent = self.freeze_intent(receipt)
+        (self.root / 'existing.txt').write_text('new staged work')
+        self.git('add', 'existing.txt')
+        (self.root / 'existing.txt').write_text('new unstaged work')
+        (self.root / 'notes.txt').write_text('new notes')
+        before = requirement.unrelated(self.root, [receipt['path']])
+        frozen = self.call('freeze', intent=intent)
+        self.assertEqual(requirement.unrelated(self.root, [receipt['path']]), before)
+        self.assertEqual(frozen['changed_paths'], [receipt['path']])
+        (self.root / 'notes.txt').write_text('later notes')
+        self.git('add', 'notes.txt')
+        before = requirement.unrelated(self.root, [receipt['path']])
+        self.assertEqual(self.call('reconcile', intent=intent)['commit'], frozen['commit'])
+        self.assertEqual(requirement.unrelated(self.root, [receipt['path']]), before)
+        self.assertEqual(self.git('rev-list', '--count', 'HEAD'), '2')
+
+    def test_hook_change_to_unrelated_file_is_reported_with_commit_evidence(self):
+        _, receipt = self.create()
+        intent = self.freeze_intent(receipt)
+        hook = self.root / '.git/hooks/post-commit'
+        hook.write_text('#!/bin/sh\nprintf unexpected > existing.txt\n')
+        hook.chmod(0o755)
+        code, response = self.cli_call('freeze', intent=intent)
+        self.assertEqual(code, 1)
+        self.assertEqual(response['error']['code'], 'workspace_changed')
+        self.assertEqual(len(response['error']['completed_evidence']), 1)
+        self.assertEqual((self.root / 'existing.txt').read_text(), 'unexpected')
+
     def test_existing_unknown_document_and_partial_staging_refused(self):
         (self.root / "unknown.md").write_text("user work")
         self.assert_code("ownership_required", lambda: self.call("prepare", purpose="write", path="unknown.md", version=1,

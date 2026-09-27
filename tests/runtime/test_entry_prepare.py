@@ -93,7 +93,8 @@ class EntryTests(EntrySupport):
         verify = {**self.request, "operation": "verify", "expected": result}
         self.assertEqual(entry.resolve(verify)["configuration"]["turn_id"], "turn-2")
         self.settings["model"] = "changed"
-        self.assert_code("configuration_changed", lambda: entry.resolve(verify))
+        self.settings["reasoning_effort"] = "low"
+        self.assertEqual(entry.resolve(verify)["configuration"]["model"], "changed")
 
     def test_wrong_host_project_task_role_and_source_fail(self):
         for key, value, code in (("thread_id", "another", "identity_mismatch"),
@@ -131,3 +132,17 @@ class EntryTests(EntrySupport):
         request = copy.deepcopy(self.request)
         request["target"]["branch"] = "other"
         self.assert_code("target_mismatch", lambda: entry.resolve(request))
+
+    def test_refresh_host_observations_without_changing_identity(self):
+        expected = entry.resolve(self.request)
+        request = copy.deepcopy(self.request)
+        request['host'].update(receipt='host:new-query', supported_configurations=[
+            {'model': 'child-only-model', 'reasoning_effort': 'medium'}])
+        current = entry.resolve({**request, 'operation': 'verify', 'expected': expected})
+        self.assertEqual(current['actor']['receipt'], 'host:new-query')
+        for field, value in (('actor_ref', 'different-actor'), ('source_ref', 'different-source')):
+            changed = copy.deepcopy(request)
+            changed['host'][field] = value
+            with self.subTest(field=field):
+                self.assert_code('identity_changed', lambda: entry.resolve(
+                    {**changed, 'operation': 'verify', 'expected': expected}))

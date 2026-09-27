@@ -69,7 +69,12 @@ Example request shapes (replace the named values with complete JSON objects):
 Retain the original intent and all successful writes. Reconcile accepts that same
 intent. A matching write is reused; a conflicting write stops. A matching freeze
 commit is reused; an unperformed freeze returns prepared. Changed HEAD, ownership,
-document bytes or unrelated workspace evidence stops without reset/stash/cleanup.
+or owned document bytes stops without reset/stash/cleanup. Unrelated staged,
+unstaged and untracked edits between preparation and freeze/retry are allowed.
+The freeze checks unrelated files against the snapshot immediately before its
+own Git mutations, not the preparation snapshot; unexpected changes during that
+operation retain commit evidence and report workspace_changed. Reconciliation
+rechecks the owned documents and exact commit without restoring unrelated files.
 write, freeze and reconcile require any current explicit source.path to match
 the saved intent's path before file/index/commit mutation. An initial entry may
 omit source.path; specifying that same document later remains valid. Omitting a

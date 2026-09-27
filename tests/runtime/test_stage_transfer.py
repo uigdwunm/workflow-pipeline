@@ -297,6 +297,16 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
             self.assert_code('configuration_changed', lambda: handoff.handle(inconsistent))
             inventory.assert_not_called()
 
+    def test_controller_model_can_differ_from_explicit_child_selection(self):
+        self.settings.update(model='controller-only-model', reasoning_effort='low')
+        request = copy.deepcopy(self.input)
+        request['configuration'].update(can_override=True,
+            user={'model': 'fixture-model', 'effort': 'high'})
+        prepared = handoff.handle(request)
+        self.assertEqual(prepared['selection']['model'], 'fixture-model')
+        self.assertEqual(prepared['selection']['source'], 'user')
+        self.assertEqual(handoff.verify(prepared), prepared)
+
     def test_stage3_selects_native_default_without_account_catalog(self):
         accepted = self.complete_design()
         self.request['host']['supported_configurations'] = [

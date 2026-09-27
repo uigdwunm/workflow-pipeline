@@ -306,6 +306,7 @@ class ProgressTests(transfer.StageTransferTests):
     def test_continue_uses_same_identity_and_no_duplicate_send(self):
         self.begin()
         self.invoke("observe", self.observation())
+        self.settings.update(model='new-controller-model', reasoning_effort='low', turn_id='turn-2')
         value = self.observation("idle", "result", {"delivery_id": "turn-1", "status": "continue", "payload": {"progress": "slice-1"}})
         result = self.invoke("observe", value)
         self.assertEqual(result["next_action"]["operation"], "continue-host")
