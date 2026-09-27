@@ -320,7 +320,7 @@ class TopicDependencyHandoffCliTests(DiscussionProtocolScenarioFixture, Discussi
         unrelated = self.prepare_child_handoff(topic)
         revision = activate(unrelated, "codex-thread:unrelated-child", 2)
         prerequisite = self.prepare_child_handoff(
-            topic, ledger_revision=revision,
+            topic, ledger_revision=revision, target_slug="prerequisite-child",
             initial_dependencies=[{
                 "dependent_endpoint": "source", "prerequisite_topic_ref": "target",
                 "requirement_kind": "confirmed-decision",

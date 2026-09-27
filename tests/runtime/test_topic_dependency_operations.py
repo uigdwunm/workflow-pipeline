@@ -844,7 +844,7 @@ class TopicDependencyOperationCliTests(DiscussionProtocolScenarioFixture, Discus
         project = self.make_project("dependency-replace-event-history", git=False)
         topic = self.bootstrap_topic(project)
         first = self.prepare_child_handoff(topic)
-        second = self.prepare_child_handoff(topic, ledger_revision=2)
+        second = self.prepare_child_handoff(topic, ledger_revision=2, target_slug="api-shape-second")
         ledger = Path(str(topic["ledger_path"]))
         code, created, stderr = self.run_cli(self.evolution_request(
             topic,

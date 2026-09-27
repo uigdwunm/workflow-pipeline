@@ -913,6 +913,7 @@ class DiscussionProtocolScenarioFixture:
         *,
         ledger_revision: int = 1,
         topic_revision: int = 1,
+        target_slug: str = "api-shape",
         scope: list[str] | None = None,
         work_snapshot: dict[str, object] | None = None,
         initial_dependencies: list[dict[str, object]] | None = None,
@@ -925,7 +926,7 @@ class DiscussionProtocolScenarioFixture:
                 ledger_revision=ledger_revision,
                 topic_revision=topic_revision,
                 handoff_kind="child",
-                target_slug="api-shape",
+                target_slug=target_slug,
                 scope=scope or ["api"],
                 work_snapshot=work_snapshot
                 or {
