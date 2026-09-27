@@ -39,7 +39,9 @@ class CombinedSolutionReviewTests(unittest.TestCase):
         f.flow_git("add", "docs/spec.md")
         f.flow_git("commit", "-qm", "reviewed complete planning")
         candidate = f.flow_git("rev-parse", "HEAD")
+        proposal_digest = f.propose_design_scope(candidate, "complete design with Tickets")
         f.ready_publication(candidate, reference)
+        f.seal_design_scope(proposal_digest)
         f.invoke("publication", {"candidate_commit": candidate, "reference": reference})
         pending = f.invoke("receive-publication")["pending"]
         result = f.invoke("decide", {"decision_id": pending["decision_id"], "subject": pending["subject"],
@@ -82,7 +84,9 @@ class CombinedSolutionReviewTests(unittest.TestCase):
         f.flow_git("add", "docs/spec.md")
         f.flow_git("commit", "-qm", "complete design")
         candidate = f.flow_git("rev-parse", "HEAD")
+        proposal_digest = f.propose_design_scope(candidate, "complete reviewed design")
         f.ready_publication(candidate, "controller:readiness")
+        f.seal_design_scope(proposal_digest)
         f.invoke("publication", {"candidate_commit": candidate, "reference": "controller:readiness"})
         pending = f.invoke("receive-publication")["pending"]
         return f.invoke("decide", {"decision_id": pending["decision_id"], "subject": pending["subject"],

@@ -90,6 +90,28 @@ def port_result(result, applied):
     return {"context": result["context"], "discussion_receipt": applied}
 
 
+def design_scope(request, saved, payload):
+    """Re-read C's persisted seal before accepting published planning work."""
+    checkpoint_path = request.get("scope_checkpoint_path")
+    require(isinstance(checkpoint_path, str), "scope_incomplete",
+            "sealed progression checkpoint required before design publication")
+    checkpoint = Path(checkpoint_path)
+    require(checkpoint.is_absolute() and str(checkpoint.resolve()) == str(checkpoint),
+            "invalid_checkpoint", "canonical absolute progression checkpoint required")
+    import workflow_progress as progress
+    state = progress.read_record(checkpoint).get(progress.KEY)
+    authority = request.get("scope_authority")
+    require(isinstance(state, dict) and state.get("protocol") == progress.PROTOCOL and
+            state.get("checkpoint_path") == str(checkpoint) and
+            state.get("handoff") == saved and state.get("scope_authority") == authority,
+            "scope_changed", "design result must use the current persisted scope authority")
+    progress.validate_state(state)
+    effective = handoff.effective_scope(saved, authority)
+    require(authority["candidate_commit"] == payload["planning_commit"],
+            "scope_changed", "published planning candidate differs from the sealed manifest basis")
+    return effective
+
+
 def prepared(request):
     entry.fields(request, {"protocol", "operation", "handoff", "control"})
     saved = handoff.verify(request["handoff"])
@@ -132,13 +154,33 @@ def prepared(request):
             evidence.update(design_input=saved["digest"], binding=saved["binding"],
                             allowed_paths=scope["owned_paths"], protected_paths=scope["protected_paths"])
         elif role == "implementation-dispatcher":
-            action = "start-dispatch"
+            revision = saved.get("readiness", {}).get("revision_transaction_ref")
+            action = "start-dispatch-revision" if revision else "start-dispatch"
             evidence.update(binding=saved["binding"], binding_verified=True, allowed_paths=scope["implementation_paths"],
                             protected_paths=scope["protected_paths"], authority_digest=saved["authorization"]["scope_digest"],
                             testing_basis=saved["semantic"]["testing_basis"], validation_plan=saved["semantic"]["validation_plan"],
                             implementation_policy=control.implementation_policy(saved["semantic"].get("implementation_policy")))
+            if revision:
+                current = handoff.current_readiness(saved["readiness"])
+                transaction = current["scope_revision_transaction"]
+                require(transaction["state"] == "authorized" and
+                        current["dispatch"]["digest"] == saved["readiness"]["prior_dispatch_digest"],
+                        "scope_revision_pending", "revision must bind the stopped original dispatch")
+                old = current["control"]["context"]["carrier"]
+                require(old["ref"] is not None and old["attempt"] == current["dispatch"]["request"]["attempt"],
+                        "identity_mismatch", "revision must retain the original Dispatcher")
+                evidence.update(revision_ref=transaction["control_result"]["revision_ref"],
+                    revision_scope_digest=entry.digest(transaction["proposed_scope"]),
+                    old_ref=old["ref"], old_attempt=old["attempt"],
+                    stop_evidence_ref=saved["readiness"]["stop_evidence_ref"])
         elif role == "execution-agent":
             action = "plan-execution"
+            progress = selected["handoff_progress"] or {}
+            original_manifest_base = (saved["readiness"]["scope_authority"]["scope"]["baseline"]
+                if saved.get("readiness") is not None else progress.get("git_baseline_commit"))
+            require(original_manifest_base is not None and
+                    saved.get("manifest_baseline", scope["baseline"]) == original_manifest_base,
+                    "scope_changed", "allocation manifest must retain the original sealed baseline")
             evidence.update(task_id=str(uuid.uuid4()), paths=scope["owned_paths"], read_only=scope["protected_paths"],
                             behavior=saved["semantic"]["objective"], tests=saved["semantic"]["completion_criteria"], git_operations=[])
             if saved['semantic'].get('adopt_paths'):
@@ -165,8 +207,23 @@ def prepared(request):
                           "input_digest": saved["digest"], "configuration": saved["selection"], "payload": payload})
     if not native:
         launch = handoff.seal({**handoff.unseal(launch), "dedicated_plan": plan})
+    inherited = role == "implementation-dispatcher" and bool(saved.get("readiness", {}).get("revision_transaction_ref"))
+    receipts = ([{"event": "existing-dispatcher", "ref": evidence["old_ref"],
+                  "prior_dispatch_digest": saved["readiness"]["prior_dispatch_digest"],
+                  "revision_transaction_ref": saved["readiness"]["revision_transaction_ref"],
+                  "stop_evidence_ref": evidence["stop_evidence_ref"],
+                  "revision_ref": evidence["revision_ref"]}] if inherited else [])
     record = handoff.seal({"protocol": PROTOCOL, "kind": "dispatch", "handoff": saved, "request": launch,
-                          "receipts": [], "delivery": None, "acceptance": None, "status": "prepared"})
+                          "receipts": receipts, "delivery": None, "acceptance": None,
+                          "status": "bound" if inherited else "prepared"})
+    if inherited:
+        require(result["context"]["carrier"]["ref"] == evidence["old_ref"] and
+                result["context"]["carrier"]["attempt"] == attempt and
+                result["context"]["handoff_progress"]["state"] == "implementing",
+                "authority_changed", "Controller did not bind the existing Dispatcher to the new attempt")
+        return {"status": "bound", "record": record, "checkpoint": port_result(result, applied),
+                "host_call": None, "downstream_ready": False,
+                "next_action": "continue-host-existing"}
     return {"status": "prepared", "record": record, "checkpoint": port_result(result, applied),
             "host_call": launch, "downstream_ready": False,
             "required_order": ["persist-record-and-checkpoint", "verify-input-and-target-configuration", "invoke-host-once", "save-receipt", "bind"]}
@@ -179,6 +236,8 @@ def record_for(request):
     require(record["kind"] == "dispatch", "invalid_evidence", "dispatch record required")
     launch = handoff.unseal(record["request"])
     handoff.require_current_protocol(handoff.unseal(record["handoff"]))
+    if record["handoff"]["stage"] == 3 and "readiness" in record["handoff"]:
+        handoff.current_readiness(record["handoff"]["readiness"])
     require(launch["input_digest"] == record["handoff"]["digest"], "identity_mismatch", "request belongs to another input")
     control.validate_context(request["control"]["context"])
     require(request["control"]["context"]["controller_ref"] == launch["controller_ref"], "identity_mismatch", "checkpoint owner changed")
@@ -297,6 +356,9 @@ def bind_discussion(port, record, receipt):
 def bound(request):
     entry.fields(request, {"protocol", "operation", "record", "control", "receipt"})
     record = record_for(request)
+    require(not any(isinstance(receipt, dict) and receipt.get("event") == "existing-dispatcher"
+                    for receipt in record["receipts"]),
+            "invalid_operation", "an inherited Dispatcher has no creation receipt to bind")
     launch = record['request']
     receipt = request["receipt"]
     receipt_for(record, receipt, {"create"} if request["operation"] == "bind" else {"lookup"})
@@ -369,7 +431,8 @@ def bound(request):
 
 
 def received(request):
-    entry.fields(request, {"protocol", "operation", "record", "control", "receipt", "result"})
+    entry.fields(request, {"protocol", "operation", "record", "control", "receipt", "result"},
+                 {"scope_checkpoint_path", "scope_authority"})
     record = record_for(request)
     receipt_for(record, request["receipt"], {"result"})
     ref, state, item = matching(record, request["control"]["context"])
@@ -405,6 +468,8 @@ def received(request):
         evidence.update(agent_ref=ref, stopped=True, git_unchanged=True)
         action = "execution-result"
     else:
+        if stage == 2:
+            design_scope(request, saved, payload)
         handoff.verify_result(stage, payload, saved["binding"], saved["scope"], root, ref)
         if stage < 2:
             identity, revision = handoff.source(current, payload["requirement"], stage)
@@ -436,7 +501,8 @@ def received(request):
 
 
 def accepted(request):
-    entry.fields(request, {"protocol", "operation", "record", "control", "decision"})
+    entry.fields(request, {"protocol", "operation", "record", "control", "decision"},
+                 {"scope_checkpoint_path", "scope_authority"})
     record = record_for(request)
     entry.fields(request["decision"], {"reference", "delivery_digest"})
     entry.nonempty(request["decision"]["reference"])
@@ -464,6 +530,8 @@ def accepted(request):
         if saved["role"] == "execution-agent":
             result, applied = checkpoint(request["control"], saved, "accept-execution", {"agent_ref": ref, "file_hashes": payload["file_hashes"]})
         else:
+            if stage == 2:
+                design_scope(request, saved, payload)
             handoff.verify_result(stage, payload, saved["binding"], saved["scope"], root, ref)
             if stage < 2:
                 current = handoff.refresh(saved["entry"], saved["expected_entry"], after_work=True)
@@ -484,7 +552,9 @@ def accepted(request):
     outcome = handoff.seal({"protocol": PROTOCOL, "status": "accepted", "handoff": saved,
                "request_digest": record["request"]["digest"], "role_ref": ref, "attempt": record["request"]["attempt"],
                "requirement_identity": identity, "payload": payload, "delivery_digest": claim["digest"],
-               "decision": request["decision"], "downstream_ready": saved["role"] != "execution-agent"})
+               "decision": request["decision"],
+               **({"planning_complete": True} if saved["stage"] == 2 else {}),
+               "downstream_ready": saved["role"] not in {"execution-agent", "solution-designer"}})
     record["acceptance"] = outcome
     return {"status": "accepted", "record": handoff.seal(record), "checkpoint": port_result(result, applied),
             "accepted": outcome, "downstream_ready": outcome["downstream_ready"]}

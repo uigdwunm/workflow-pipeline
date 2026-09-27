@@ -198,7 +198,9 @@ class AttachedFlowTests(fixtures.ProgressTests):
         (self.flow / 'docs/spec.md').write_text('approved design\n')
         self.flow_git('add', 'docs/spec.md'); self.flow_git('commit', '-qm', 'planning')
         candidate = self.flow_git('rev-parse', 'HEAD')
+        proposal_digest = self.propose_design_scope(candidate)
         self.ready_publication(candidate, 'controller:planning')
+        self.seal_design_scope(proposal_digest)
         self.invoke('publication', {'candidate_commit': candidate, 'reference': 'controller:planning'})
         pending = self.invoke('receive-publication')['pending']
         self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
@@ -231,7 +233,9 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.flow_git('add', 'docs/spec.md')
         self.flow_git('commit', '-qm', 'planning')
         candidate = self.flow_git('rev-parse', 'HEAD')
+        proposal_digest = self.propose_design_scope(candidate)
         self.ready_publication(candidate, 'controller:planning')
+        self.seal_design_scope(proposal_digest)
         result = self.invoke('publication', {'candidate_commit': candidate, 'reference': 'controller:planning'})
         self.assertEqual(result['next_action']['operation'], 'publication-receipt', result)
         pending = self.invoke('receive-publication')['pending']

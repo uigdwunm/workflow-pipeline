@@ -8,17 +8,21 @@ No host tools, daemon, Git publisher or governance-private records live here.
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import fcntl
+import hashlib
 import json
 import os
 import re
 from pathlib import Path
+import stat
+import subprocess
 import sys
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import entry_prepare as entry
@@ -26,12 +30,13 @@ import requirement_prepare as requirement
 import requirement_delivery
 import stage_handoff as handoff
 import stage_dispatch as dispatch
+import stage_scope
 import workflow_control as control
 import workflow_control_git as control_git
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v13"
+PROTOCOL = "workflow-progress-v14"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -167,6 +172,30 @@ def record_lock(path, *, timeout=None):
         yield
 
 
+@contextmanager
+def legacy_runner_lock(path):
+    """Take the original runner lock before C's record lock during takeover."""
+    path = Path(path).with_name(Path(path).name + ".runner.lock")
+    parent = path.parent
+    current = os.stat(parent, follow_symlinks=False)
+    require(stat.S_ISDIR(current.st_mode) and current.st_uid == os.geteuid() and
+            stat.S_IMODE(current.st_mode) & 0o077 == 0,
+            "invalid_checkpoint", "legacy runner record directory must be owner-only")
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        identity = os.fstat(descriptor)
+        require(stat.S_ISREG(identity.st_mode) and identity.st_uid == os.geteuid() and
+                identity.st_nlink == 1, "invalid_checkpoint", "legacy runner lock is not owner-owned")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise entry.PreparationError("run_busy", "original runner still owns this checkpoint") from error
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
 def read_record(path):
     if not Path(path).exists():
         return {}
@@ -199,9 +228,809 @@ def atomic_save(path, value):
             os.unlink(temporary)
 
 
+LEGACY_COMPATIBILITY = {"handoff": "workflow-controller-v1",
+    "confirmation": "goal-scoped-confirmation-v3", "discussion_request": 1,
+    "ledger_read": [1, 2, 3], "ledger_write": 3,
+    "topic_gate": "phase-0-1-discussion-v2", "control": 6, "entry": "workflow-entry-v3", "runner": 6,
+    "supervision": "flow-worktree-v2", "preparation": "workflow-preparation-v4",
+    "stage_transfer": "workflow-stage-transfer-v7", "workflow_progress": "workflow-progress-v12",
+    "requirement_delivery": "requirement-delivery-v1", "thread_settings": "thread-settings-v5"}
+LEGACY_COMPATIBILITY_PRE_CONFIRMATION = {key: value for key, value in LEGACY_COMPATIBILITY.items()
+                                         if key != "confirmation"}
+LEGACY_COMPATIBILITY_V3 = copy.deepcopy(LEGACY_COMPATIBILITY_PRE_CONFIRMATION)
+LEGACY_COMPATIBILITY_V3["preparation"] = "workflow-preparation-v3"
+LEGACY_COMPATIBILITIES = (LEGACY_COMPATIBILITY, LEGACY_COMPATIBILITY_PRE_CONFIRMATION,
+                          LEGACY_COMPATIBILITY_V3)
+
+
+def _legacy_attached_control_raw(state):
+    discussion = state["control"].get("discussion")
+    attached_source = state.get("handoff", {}).get("entry", {}).get("source", {}).get("kind") == "discussion"
+    require(not attached_source or discussion is not None, "authority_missing",
+            "attached legacy flow lacks its original Topic workflow-control envelope")
+    require(discussion is None or attached_source, "authority_missing",
+            "legacy control envelope cannot attach an unrelated standalone source")
+    if discussion is None:
+        return None
+    from discussion_core import state as ledger_state
+    envelope = {key: value for key, value in discussion.items()
+                if key not in {"expected_ledger_revision", "expected_topic_revision", "idempotency_key"}}
+    envelope["operation"] = "read-topic"
+    _, ledger_path, _, _, _ = ledger_state._evolution_paths(envelope, query=True, allow_tree_topic=True)
+    _, records = ledger_state._load_records(ledger_path)
+    matches = [record for record in records["Phase Results"]
+               if record.get("result_kind") == "workflow-control" and
+                  record.get("topic_id") == envelope["actor_topic_id"]]
+    require(len(matches) == 1 and isinstance(matches[0].get("data_json"), str),
+            "legacy_run_requires_original_runtime", "original attached workflow control is unavailable")
+    return matches[0].get("legacy_control_json", matches[0]["data_json"])
+
+
+def _verify_legacy_host(state, supplied):
+    native = state.get("native_host") or {}
+    old_stop = (state.get("host") or {}).get("last_stop") or {}
+    require(state.get("stopped") is True and state.get("host", {}).get("status") == "stopped" and
+            old_stop.get("provenance") and old_stop.get("receipt", {}).get("status") == "stopped" and
+            old_stop["receipt"].get("ref") == state["accepted"].get("role_ref"),
+            "host_evidence_missing", "old accepted designer lacks a causal complete stop")
+    require(isinstance(supplied, dict) and supplied.get("adapter") == native.get("adapter"),
+            "host_evidence_missing", "current native evidence must use the original host adapter")
+    if native.get("adapter") == "app-server":
+        entry.fields(supplied, {"adapter", "snapshot"})
+        snapshot = supplied["snapshot"]
+        expected_carrier = state["handoff"]["expected_entry"]["actor"]["thread_id"]
+        validate_rpc_lifecycle(snapshot, expected_carrier)
+        require(snapshot["instance"] == native.get("instance") and
+                snapshot["sequence"] >= (state.get("lifecycle_snapshot") or {}).get("sequence", 0),
+                "host_recovery_required", "current host differs from old pinned connection")
+        descendants = [child for page in snapshot["pages"] for child in page["response"]["data"]]
+        require(descendants and all(child.get("status") == {"type": "idle"} for child in descendants),
+                "host_evidence_missing", "all old native descendants must currently be idle")
+        pending = set()
+        for event in snapshot["events"]:
+            item = event["params"]["item"]
+            key = (event["params"]["threadId"], item["id"])
+            if event["method"] == "item/started":
+                pending.add(key)
+            else:
+                pending.discard(key)
+        require(not pending, "host_evidence_missing", "old native calls remain open")
+    elif native.get("adapter") == "collaboration":
+        require(not collaboration_inventory_pending(supplied,
+                set(native.get("baseline_refs", [])) | {state["accepted"]["role_ref"]}),
+                "host_evidence_missing", "old collaboration descendants are not all stopped")
+    else:
+        raise entry.PreparationError("host_capability_missing", "unsupported old native host adapter")
+    require(not any(not action.get("resolved") and not action.get("creation_resolved") for action in
+                [*state.get("retained_host_actions", []), state.get("host_action") or {}] if action),
+            "host_action_pending", "reconcile all original host calls before takeover")
+
+
+def inspect_legacy_checkpoint(path, data, *, raw=None, old_runtime=True):
+    """Qualify only the v12/v7 accepted Stage-2 combination, without writes."""
+    entry.fields(data, {"action", "recovery_id", "original_checkpoint_sha256",
+                        "original_accepted_digest", "controller_ref", "host_evidence"},
+                 {"manifest", "implementation_required", "decision", "new_packages",
+                  "new_confirmed", "workspace_evidence", "generated_outputs"})
+    require(data["action"] in {"inspect", "prepare-takeover"}, "invalid_operation",
+            "legacy qualification requires inspect or prepare-takeover")
+    path = Path(path)
+    require(path.is_absolute() and str(path.resolve()) == str(path), "invalid_checkpoint",
+            "canonical original checkpoint path required")
+    entry.nonempty(data["recovery_id"])
+    raw = path.read_bytes() if raw is None else raw
+    require(hashlib.sha256(raw).hexdigest() == data["original_checkpoint_sha256"],
+            "legacy_checkpoint_changed", "original checkpoint bytes differ from requested digest")
+    try:
+        outer = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise entry.PreparationError("invalid_checkpoint", "old checkpoint must be UTF-8 JSON") from error
+    require(isinstance(outer, dict) and outer.get("version") in (None, 6),
+            "legacy_run_requires_original_runtime", "only original outer runner 6 or standalone checkpoint is recoverable")
+    state = outer.get(KEY)
+    require(isinstance(state, dict) and state.get("protocol") == "workflow-progress-v12" and
+            state.get("stage") == 2 and state.get("status") == "accepted" and
+            state.get("phase_complete") is True and state.get("stopped") is True and
+            state.get("accepted", {}).get("protocol") == "workflow-stage-transfer-v7" and
+            state["accepted"].get("downstream_ready") is True and
+            state["accepted"].get("digest") == data["original_accepted_digest"] and
+            state.get("control", {}).get("context", {}).get("schema_version") == 4 and
+            state["control"]["context"].get("controller_ref") == data["controller_ref"] ==
+                state.get("handoff", {}).get("controller_ref"),
+            "legacy_run_requires_original_runtime", "only exact accepted v12/v7 Stage-2 authority may be recovered")
+    require(not any(item.get("stage", 0) >= 3 for item in state.get("history", [])) and
+            not outer.get("stage_results", {}).get("stage3") and
+            not outer.get("sessions", {}).get("stage3") and
+            outer.get("current_stage", "stage2") == "stage2" and
+            not outer.get("stage3_prepared") and
+            not (outer.get("prepared_inputs") or {}).get("stage3") and
+            not outer.get("runner_request") and not outer.get("pending_input") and
+            not outer.get("turn_result") and
+            (outer.get("launch") or {}).get("stage", "stage2") == "stage2" and
+            not any(isinstance(item, dict) and (
+                item.get("stage") in (3, "stage3") or item.get("current_stage") == "stage3" or
+                any(isinstance(item.get(key), dict) and item[key].get("stage") == 3
+                    for key in ("handoff", "request", "input")))
+                for item in outer.get("history", [])) and
+            not state.get("allocations") and not state.get("review_activity") and
+            state.get("transaction") is None and not state.get("transport_loss") and
+            not state.get("business_block") and
+            all(value.get("result") is not None or value.get("rejection") is not None
+                for value in state.get("control_transactions", {}).values()),
+            "legacy_recovery_ineligible", "old record has Stage-3 intent or unresolved business activity")
+    recorded_paths = [action["checkpoint"] for action in
+        [state.get("action") or {}, state.get("host_action") or {}, *state.get("retained_host_actions", [])]
+        if isinstance(action, dict) and "checkpoint" in action]
+    require(recorded_paths and all(recorded == str(path) for recorded in recorded_paths),
+            "legacy_checkpoint_changed", "copied old checkpoint has no matching original host-call identity")
+    accepted = state["accepted"]
+    require(state.get("dispatch", {}).get("acceptance") == accepted and
+            accepted.get("handoff") == state["handoff"] and
+            accepted.get("requirement_identity") == state["handoff"]["requirement_identity"],
+            "legacy_recovery_ineligible", "old acceptance differs from its original dispatch and source")
+    pins = state.get("packages") or {}
+    require(isinstance(pins, dict) and pins, "legacy_run_requires_original_runtime", "old package pins are missing")
+    old_key = next(iter(pins.values())).get("compatibility_key")
+    require(old_key in LEGACY_COMPATIBILITIES,
+            "legacy_run_requires_original_runtime", "old package protocol combination is unsupported")
+    for pin in pins.values():
+        try:
+            skill_preflight.verify_identity(pin)
+        except skill_preflight.PreflightError as error:
+            raise entry.PreparationError(error.code, "original pinned package is unavailable or changed") from error
+        require(pin["compatibility_key"] == old_key,
+                "legacy_run_requires_original_runtime", "old package compatibility combination differs")
+    if outer.get("version") == 6:
+        confirmed = outer.get("confirmed")
+        role_pins = (confirmed or {}).get("packages")
+        expected_roles = {"runner": "guided-implementation", "stage2": "solution-design",
+                          "stage3": "guided-implementation", "stage4": "change-closure"}
+        require(isinstance(role_pins, dict) and set(role_pins) == set(expected_roles) and
+                confirmed.get("controller_ref") == data["controller_ref"] and
+                confirmed.get("flow_mode") == state["mode"] and
+                (confirmed.get("requirement") is None or
+                 confirmed["requirement"] == state["handoff"]["requirement"]) and
+                all(confirmed.get(key) == state["handoff"]["binding"][key] for key in
+                    ("repository", "worktree", "git_common_dir", "target_branch")) and
+                confirmed.get("frozen_requirement", {}).get("path") ==
+                    state["handoff"]["requirement"]["absolute_path"] and
+                confirmed["frozen_requirement"].get("commit") == state["handoff"]["source_commit"] and
+                confirmed["frozen_requirement"].get("sha256") ==
+                    state["handoff"]["requirement_identity"]["sha256"],
+                "legacy_run_requires_original_runtime", "old runner confirmation differs from accepted Stage 2")
+        for role, pin in role_pins.items():
+            require(isinstance(pin, dict) and pin.get("name") == expected_roles[role],
+                    "legacy_run_requires_original_runtime", "old runner role pin is missing or mismatched")
+            try:
+                skill_preflight.verify_identity(pin)
+            except skill_preflight.PreflightError as error:
+                raise entry.PreparationError(error.code, "original runner package is unavailable or changed") from error
+            require(pin["compatibility_key"] == old_key,
+                    "legacy_run_requires_original_runtime", "old runner pin differs")
+    _verify_legacy_host(state, data["host_evidence"])
+    if old_runtime:
+        package = next((pin for pin in pins.values()
+            if (Path(pin["root"]) / "scripts/workflow_progress.py").is_file()), None)
+        require(package is not None, "package_unavailable", "original progression package is required")
+        script = Path(package["root"]) / "scripts/workflow_progress.py"
+        require(script.is_file(), "package_unavailable", "original read-only verifier is unavailable")
+        code = ("import json,sys;sys.path.insert(0,sys.argv[1]);import workflow_progress as p;"
+                "s=json.load(sys.stdin);p.validate_state(s);p.verify_phase_completed(s);"
+                "p.handoff.verify_result(2,s['accepted']['payload'],s['handoff']['binding'],"
+                "s['handoff']['scope'],s['handoff']['binding']['worktree'],s['accepted']['role_ref']);"
+                "v=p._view(s);assert v['downstream_ready'] is True;print('verified')")
+        completed = subprocess.run([sys.executable, "-B", "-c", code, str(script.parent)],
+            input=json.dumps(state, ensure_ascii=False), text=True, capture_output=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, timeout=30)
+        require(completed.returncode == 0 and completed.stdout.strip() == "verified",
+                "legacy_recovery_ineligible", "original pinned runtime could not verify its accepted Stage-2 record")
+    saved = state["handoff"]
+    binding = saved["binding"]
+    root, worktree = binding["repository"], binding["worktree"]
+    payload = accepted["payload"]
+    for key in ("planning_commit", "planning_merge_commit", "planning_paths"):
+        require(key in payload, "legacy_recovery_ineligible", "old planning publication is incomplete")
+    require(entry.git(root, "merge-base", "--is-ancestor", payload["planning_commit"],
+                      payload["planning_merge_commit"], check=False).returncode == 0 and
+            entry.git(root, "merge-base", "--is-ancestor", payload["planning_merge_commit"],
+                      entry.git(root, "rev-parse", binding["target_branch"]).stdout.decode().strip(),
+                      check=False).returncode == 0 and
+            entry.git(worktree, "rev-parse", "HEAD").stdout.decode().strip() == payload["planning_merge_commit"] and
+            not entry.git(worktree, "status", "--porcelain", "-z").stdout and
+            state.get("publication", {}).get("result", {}).get("merge_commit") == payload["planning_merge_commit"],
+            "legacy_recovery_ineligible", "published planning Git facts or clean worktree changed")
+    source = saved["requirement_identity"]
+    require(hashlib.sha256(handoff.blob(root, saved["source_commit"], source["path"])).hexdigest() ==
+            source["sha256"] and
+            handoff.blob(root, saved["scope"]["baseline"], source["path"]) ==
+            handoff.blob(root, payload["planning_merge_commit"], source["path"]) and
+            handoff.mode(root, saved["source_commit"], source["path"]) == b"100644" and
+            handoff.mode(root, saved["scope"]["baseline"], source["path"]) == b"100644" and
+            handoff.mode(root, payload["planning_merge_commit"], source["path"]) == b"100644",
+            "source_changed", "frozen requirement bytes changed in published planning")
+    old_control_raw = _legacy_attached_control_raw(state)
+    if old_control_raw is not None:
+        require(json.loads(old_control_raw) == state["control"]["context"],
+                "control_context_changed", "attached control differs from old checkpoint")
+    return {"outer": outer, "state": state, "raw": raw, "old_control_raw": old_control_raw,
+            "binding": binding, "accepted": accepted,
+            "original_checkpoint_sha256": data["original_checkpoint_sha256"],
+            "original_accepted_digest": data["original_accepted_digest"],
+            "recovery_id": data["recovery_id"]}
+
+
+def _new_recovery_packages(data, original, checkpoint_path):
+    pins = data["new_packages"]
+    require(isinstance(pins, dict) and pins, "invalid_request", "current package identities are required")
+    for pin in pins.values():
+        try:
+            skill_preflight.verify_identity(pin)
+        except skill_preflight.PreflightError as error:
+            raise entry.PreparationError(error.code, "new package identity is unavailable or changed") from error
+        require(pin["compatibility_key"].get("workflow_progress") == PROTOCOL and
+                pin["compatibility_key"].get("stage_transfer") == handoff.PROTOCOL and
+                pin["compatibility_key"].get("control") == 8,
+                "incompatible_package", "supplemental authorization requires the current package protocol")
+    if original.get("version") is None:
+        require(data.get("new_confirmed") is None, "invalid_request",
+                "standalone takeover has no runner confirmation")
+        return pins, None
+    confirmed = data.get("new_confirmed")
+    roles = {"runner": pins.get("guided-implementation"), "stage2": pins.get("solution-design"),
+             "stage3": pins.get("guided-implementation"), "stage4": pins.get("change-closure")}
+    require(isinstance(confirmed, dict) and confirmed.get("packages") == roles and
+            confirmed.get("run_record") == str(checkpoint_path),
+            "invalid_request", "current runner confirmation must pin this exact checkpoint and packages")
+    runner = roles["runner"]
+    require(isinstance(runner, dict) and runner.get("name") == "guided-implementation",
+            "incompatible_package", "current guided-implementation runner pin required")
+    script = Path(runner["root"]) / "scripts/workflow.py"
+    require(script.is_file(), "package_unavailable", "current runner validator is unavailable")
+    code = ("import json,sys;sys.path.insert(0,sys.argv[1]);import workflow as w;"
+            "v=w.validate_confirmed(json.load(sys.stdin),restoring=True,legacy_recovery=True);"
+            "print(json.dumps(v,ensure_ascii=False,sort_keys=True))")
+    completed = subprocess.run([sys.executable, "-B", "-c", code, str(script.parent)],
+        input=json.dumps(confirmed, ensure_ascii=False), text=True, capture_output=True,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, timeout=60)
+    require(completed.returncode == 0, "new_runtime_unavailable",
+            "current runner could not validate the supplemental confirmation")
+    try:
+        normalized = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise entry.PreparationError("new_runtime_unavailable", "current runner returned no confirmation") from error
+    return pins, normalized
+
+
+def _legacy_bridge(record):
+    body = {"protocol": handoff.PROTOCOL, "kind": "legacy-supplemental-acceptance",
+        "recovery_id": record["recovery_id"],
+        "original_snapshot_sha256": record["original_checkpoint_sha256"],
+        "original_accepted_digest": record["original_accepted_digest"],
+        "legacy_accepted": copy.deepcopy(record["original_accepted"]),
+        "controller_ref": record["controller_ref"],
+        "requirement_identity": copy.deepcopy(record["requirement_identity"]),
+        "binding": copy.deepcopy(record["binding"]),
+        "scope_authority": copy.deepcopy(record["supplemental_authority"]),
+        "payload": copy.deepcopy(record["original_accepted"]["payload"]),
+        "planning_complete": True, "downstream_ready": False}
+    return {**body, "digest": entry.digest(body)}
+
+
+def _prepare_legacy_record(path, data, inspected, *, previous_record=None):
+    entry.fields(data, {"action", "recovery_id", "original_checkpoint_sha256",
+                        "original_accepted_digest", "controller_ref", "host_evidence",
+                        "manifest", "implementation_required", "decision", "new_packages",
+                        "workspace_evidence"}, {"new_confirmed", "generated_outputs"})
+    original, old, accepted = inspected["outer"], inspected["state"], inspected["accepted"]
+    pins, confirmed = _new_recovery_packages(data, original, path)
+    requirement_identity = old["handoff"]["requirement_identity"]
+    require(confirmed is None or
+            (confirmed["controller_ref"] == data["controller_ref"] and
+             confirmed["frozen_requirement"]["sha256"] == requirement_identity["sha256"] and
+             confirmed["frozen_requirement"]["commit"] == old["handoff"]["source_commit"] and
+             confirmed["requirement"]["requirement_identity"] == requirement_identity and
+             confirmed["repository"] == inspected["binding"]["repository"] and
+             confirmed["worktree"] == inspected["binding"]["worktree"] and
+             confirmed["git_common_dir"] == inspected["binding"]["git_common_dir"] and
+             confirmed["target_branch"] == inspected["binding"]["target_branch"] and
+             confirmed["flow_mode"] == old["mode"]),
+            "source_changed", "current runner confirmation differs from old requirement, worktree or Controller")
+    workspace = data["workspace_evidence"]
+    require(isinstance(workspace, dict) and workspace.get("controller_ref") == data["controller_ref"] and
+            isinstance(workspace.get("reference"), str) and bool(workspace["reference"]),
+            "host_evidence_missing", "Controller workspace evidence required for retained binding")
+    lifecycle = {"origin": "reused", "manager": "git", "disposition": "retain",
+                 "evidence_ref": workspace["reference"], "creation_receipt": None}
+    old_binding = inspected["binding"]
+    generated_outputs = generated_outputs_for(data)
+    projected = stage_scope.validate_manifest(data["manifest"], old_binding["repository"],
+        accepted["payload"]["planning_commit"], baseline=old["handoff"]["scope"]["baseline"],
+        protected_paths=old["handoff"]["scope"]["protected_paths"],
+        planning_paths=old["handoff"]["scope"]["owned_paths"],
+        requirement_path=requirement_identity["path"], generated_outputs=generated_outputs)
+    require(type(data["implementation_required"]) is bool and
+            data["implementation_required"] == bool(projected["implementation_paths"]),
+            "scope_incomplete", "supplemental manifest contradicts implementation decision")
+    bound = supervision.bind_worktree({"repository": old_binding["repository"],
+        "worktree": old_binding["worktree"], "branch": old_binding["branch"],
+        "target_branch": old_binding["target_branch"], "base_commit": old_binding["base_commit"],
+        "allowed_paths": sorted(set(old["handoff"]["scope"]["owned_paths"] +
+                                    projected["implementation_paths"] + projected["closure_paths"])),
+        "lifecycle": lifecycle})["binding"]
+    require(all(bound[key] == old_binding[key] for key in
+                ("repository", "worktree", "git_common_dir", "branch", "target_branch", "base_commit")),
+            "binding_changed", "supplemental binding changed the original worktree")
+    if previous_record is not None:
+        require(bound == previous_record["binding"] and
+                workspace["reference"] == previous_record["workspace_evidence"]["reference"],
+                "binding_changed", "supersede must retain the exact active worktree ownership evidence")
+    workspace_evidence(bound, data["controller_ref"], workspace)
+    scope = {key: copy.deepcopy(old["handoff"]["scope"][key]) for key in
+             ("baseline", "owned_paths", "protected_paths")}
+    proposal = {"recovery_id": data["recovery_id"], "manifest": copy.deepcopy(data["manifest"]),
+                "implementation_required": data["implementation_required"],
+                "generated_outputs": generated_outputs,
+                "original_checkpoint_sha256": data["original_checkpoint_sha256"]}
+    proposal_ref = entry.digest(proposal)
+    candidate = accepted["payload"]["planning_commit"]
+    basis_paths = {requirement_identity["path"]} | {item["basis"]["path"] for item in data["manifest"]}
+    basis_blobs = {relative: hashlib.sha256(handoff.blob(bound["repository"], candidate, relative)).hexdigest()
+                   for relative in sorted(basis_paths)}
+    seal_evidence = {"proposal_id": "legacy:" + data["recovery_id"],
+        "proposal_digest": proposal_ref, "expected_scope_revision": 0,
+        "candidate_commit": candidate, "manifest_digest": entry.digest(data["manifest"]),
+        "requirement_identity": copy.deepcopy(requirement_identity), "binding": copy.deepcopy(bound),
+        "prior_authorization_ref": old["handoff"]["authorization"]["reference"],
+        "decision": copy.deepcopy(data["decision"]),
+        "target_head": supervision._branch_oid(Path(bound["repository"]), bound["target_branch"]),
+        "basis_blobs": basis_blobs}
+    change_evidence = approved_change_evidence(old, data["decision"])
+    new_control = copy.deepcopy(old["control"]["context"])
+    new_control["schema_version"] = 5
+    new_control["handoff_progress"]["binding"] = copy.deepcopy(bound)
+    sealed = control.transition({"schema_version": 5, "actor_ref": data["controller_ref"],
+        "context": new_control, "action": "scope-seal", "evidence": seal_evidence})
+    new_control = sealed["context"]
+    seal = sealed["scope_seal"]
+    scope.update(projected)
+    scope["downstream"] = {"state": "sealed", "revision": 1,
+        "implementation_required": data["implementation_required"],
+        "manifest": copy.deepcopy(data["manifest"]), "proposal_ref": proposal_ref,
+        "seal_ref": seal["seal_ref"]}
+    stage_scope.validate_scope(scope, bound["repository"], stage=2,
+        requirement_path=requirement_identity["path"],
+        planning_paths=accepted["payload"]["planning_paths"], candidate_commit=candidate,
+        generated_outputs=generated_outputs)
+    authority = {"state": "sealed", "revision": 1, "scope": scope,
+        "proposal": proposal, "proposal_digest": proposal_ref,
+        "seal": seal, "seal_ref": seal["seal_ref"], "candidate_commit": candidate,
+        "approved_changes": [change_evidence] if change_evidence is not None else []}
+    ledger = None
+    old_control_raw = inspected["old_control_raw"]
+    takeover_transaction_id = entry.digest({"recovery_id": data["recovery_id"],
+        "original_checkpoint_sha256": data["original_checkpoint_sha256"],
+        "original_accepted_digest": data["original_accepted_digest"],
+        **({"supersedes": previous_record["supplemental_authority"]["seal_ref"],
+            "proposal_ref": proposal_ref} if previous_record is not None else {})})
+    phase_finalization_ref = None
+    phase = old["handoff"]["authorization"].get("phase")
+    if phase is not None:
+        source = old["handoff"]["entry"]["source"]
+        require(source["kind"] == "discussion", "phase_authorization_required",
+                "old Phase Run must belong to its attached discussion")
+        phase_result = entry.discussion_protocol.handle({"protocol_version": 1,
+            "operation": "read-phase-run",
+            "project_path": entry.discussion_root(old["handoff"]["expected_entry"]),
+            **source["attachment"], "phase_run_id": phase["run_id"]})["phase_run"]
+        require(phase_result.get("state") == "completed" and any(
+            attempt.get("attempt_id") == phase["attempt_id"] and attempt.get("state") == "completed"
+            for attempt in phase_result.get("attempts", [])),
+            "phase_authorization_required", "original Stage-2 Phase Run is not finalized")
+        phase_finalization_ref = entry.digest(phase_result)
+    if old_control_raw is not None:
+        metadata = {"state": "pending", "recovery_id": data["recovery_id"],
+            "checkpoint_path": str(path),
+            "original_checkpoint_sha256": data["original_checkpoint_sha256"],
+            "original_accepted_digest": data["original_accepted_digest"],
+            "old_control_sha256": hashlib.sha256(old_control_raw.encode("utf-8")).hexdigest(),
+            "takeover_transaction_id": takeover_transaction_id}
+        new_control["legacy_takeover"] = metadata
+        control.validate_context(new_control)
+        discussion = old["control"]["discussion"]
+        base = {key: copy.deepcopy(value) for key, value in discussion.items()
+                if key not in {"expected_ledger_revision", "expected_topic_revision", "idempotency_key"}}
+        topic = entry.discussion_protocol.handle({**base, "operation": "read-topic"})
+        expected_control = (old["control"]["context"] if previous_record is None else
+            previous_record["ledger"]["active_receipt"]["control"]["context"])
+        require(topic["workflow_control"] == expected_control,
+                "control_context_changed", "attached ledger changed before takeover or supersede")
+        evidence = {**{key: metadata[key] for key in metadata if key != "state"},
+                    "controller_ref": data["controller_ref"],
+                    "new_control_context": copy.deepcopy(new_control)}
+        if previous_record is not None:
+            evidence.update(previous_takeover_transaction_id=
+                previous_record["ledger"]["active_request"]["evidence"]["takeover_transaction_id"],
+                previous_scope_seal_ref=previous_record["supplemental_authority"]["seal_ref"])
+        ledger = {"pending_request": {**base, "operation": "workflow-control",
+            "action": "scope-recover-legacy-supersede" if previous_record is not None else "scope-recover-legacy",
+            "evidence": evidence,
+            "expected_ledger_revision": topic["ledger_revision"],
+            "expected_topic_revision": topic["record_revision"],
+            "idempotency_key": str(uuid.uuid4())},
+            "pending_receipt": None, "active_request": None, "active_receipt": None}
+    record = {"recovery_id": data["recovery_id"], "state": "takeover-pending",
+        "original_checkpoint_path": str(path),
+        "takeover_transaction_id": takeover_transaction_id,
+        "original_checkpoint_sha256": data["original_checkpoint_sha256"],
+        "original_accepted_digest": data["original_accepted_digest"],
+        "original_bytes_base64": base64.b64encode(inspected["raw"]).decode("ascii"),
+        "original_pins": copy.deepcopy(old["packages"]),
+        "original_accepted": copy.deepcopy(accepted),
+        "controller_ref": data["controller_ref"],
+        "requirement_identity": copy.deepcopy(requirement_identity),
+        "binding": copy.deepcopy(bound), "supplemental_authority": authority,
+        "new_pins": copy.deepcopy(pins), "decision": copy.deepcopy(data["decision"]),
+        "host_evidence": copy.deepcopy(data["host_evidence"]),
+        "workspace_evidence": copy.deepcopy(workspace),
+        "publication_request_digest": entry.digest(old["publication"]["request"]),
+        "old_stop_ref": entry.digest(old["host"]["last_stop"]),
+        "phase_finalization_ref": phase_finalization_ref,
+        "takeover_receipts": {"local": {"original_checkpoint_sha256": data["original_checkpoint_sha256"]},
+                              "ledger_pending": None, "ledger_active": None},
+        "ledger": ledger,
+        "input": copy.deepcopy(data)}
+    if previous_record is not None:
+        prior = {key: copy.deepcopy(value) for key, value in previous_record.items()
+                 if key not in {"original_bytes_base64", "superseded"}}
+        record["superseded"] = [*copy.deepcopy(previous_record.get("superseded", [])), prior]
+    record["bridge"] = _legacy_bridge(record)
+    packages = {pin["name"]: copy.deepcopy(pin) for pin in pins.values()}
+    native_host = native_host_preflight(data["host_evidence"])
+    if native_host["adapter"] == "collaboration":
+        native_host.update(instance=old["handoff"]["expected_entry"]["actor"]["thread_id"],
+                           baseline_refs=copy.deepcopy(old["native_host"].get("baseline_refs", [])))
+    current = {"protocol": PROTOCOL, "recovery_mode": "legacy-takeover",
+        "revision": 0, "mode": old["mode"], "stage": 2, "status": "accepted", "step": "accepted",
+        "next_stage": 3, "phase_complete": True, "stopped": True,
+        "packages": packages, "handoff": copy.deepcopy(old["handoff"]),
+        "control": {"context": new_control, "discussion": copy.deepcopy(old["control"]["discussion"])},
+        "dispatch": None, "accepted": copy.deepcopy(record["bridge"]), "pending": None,
+        "scope_authority": authority, "scope_recoveries": {data["recovery_id"]: record},
+        "checkpoint_path": str(path), "native_host": native_host,
+        "host": copy.deepcopy(old["host"]), "workspace_evidence": copy.deepcopy(workspace),
+        "history": [], "transaction": None, "transaction_source": None,
+        "transaction_result": None, "retained_host_actions": []}
+    if original.get("version") == 6:
+        recovered = {"version": 8, "confirmed": confirmed, "status": "recovery_pending",
+            "current_stage": "stage3", "sessions": {}, "stage_results": {},
+            "launch": {"stage": "stage3", "state": "prelaunch", "turn": 0},
+            "history": [{"event": "scope-recovery-takeover", "recovery_id": data["recovery_id"]}],
+            "recovery_source": {"recovery_id": data["recovery_id"],
+                "original_checkpoint_sha256": data["original_checkpoint_sha256"]}, KEY: current}
+    else:
+        recovered = {"recovery_source": {"recovery_id": data["recovery_id"],
+            "original_checkpoint_sha256": data["original_checkpoint_sha256"]}, KEY: current}
+    return recovered
+
+
+def prepare_legacy_takeover(path, data):
+    """Atomically replace the sole current old checkpoint, retaining raw bytes."""
+    path = Path(path)
+    require(path.is_absolute() and str(path.resolve()) == str(path),
+            "invalid_checkpoint", "canonical original checkpoint path required")
+    preliminary = read_record(path)
+    runner = preliminary.get("version") in {6, 8}
+    with (legacy_runner_lock(path) if runner else nullcontext()):
+        with record_lock(path):
+            current = read_record(path)
+            if current.get("version") == 8 or current.get(KEY, {}).get("recovery_mode") == "legacy-takeover":
+                proof = verify_legacy_recovery(current, path)
+                record = current[KEY]["scope_recoveries"][proof["recovery_id"]]
+                require(record["input"] == data, "scope_conflict", "replay must retain exact original takeover input")
+                return {"protocol": PROTOCOL, "status": record["state"], "state": record["state"],
+                    "recovery_id": proof["recovery_id"], "bridge": copy.deepcopy(record["bridge"]),
+                    "acknowledged": True, "downstream_ready": False}
+            raw = path.read_bytes()
+            inspected = inspect_legacy_checkpoint(path, data, raw=raw)
+            require((inspected["outer"].get("version") == 6) == runner,
+                    "legacy_checkpoint_changed", "runner ownership changed before takeover lock")
+            recovered = _prepare_legacy_record(path, data, inspected)
+            atomic_save(path, recovered)
+            record = recovered[KEY]["scope_recoveries"][data["recovery_id"]]
+            return {"protocol": PROTOCOL, "status": "takeover-pending", "state": "takeover-pending",
+                    "recovery_id": data["recovery_id"], "bridge": copy.deepcopy(record["bridge"]),
+                    "downstream_ready": False}
+
+
+def supersede_legacy_takeover(path, data):
+    """Replace only an unconsumed supplement, retaining its entire prior audit."""
+    entry.fields(data, {"action", "recovery_id", "original_checkpoint_sha256",
+                        "original_accepted_digest", "controller_ref", "host_evidence",
+                        "manifest", "implementation_required", "decision", "new_packages",
+                        "workspace_evidence", "previous_takeover_transaction_id",
+                        "previous_scope_seal_ref"}, {"new_confirmed", "generated_outputs"})
+    require(data["action"] == "supersede", "invalid_operation", "explicit supersede action required")
+    path = Path(path)
+    require(path.is_absolute() and str(path.resolve()) == str(path),
+            "invalid_checkpoint", "canonical recovered checkpoint required")
+    preliminary = read_record(path)
+    with (legacy_runner_lock(path) if preliminary.get("version") == 8 else nullcontext()):
+        with record_lock(path):
+            outer = read_record(path)
+            proof = verify_legacy_recovery(outer, path)
+            require(proof["recovery_id"] == data["recovery_id"] and
+                    proof["original_checkpoint_sha256"] == data["original_checkpoint_sha256"],
+                    "scope_conflict", "supersede must retain the original checkpoint identity")
+            state = outer[KEY]
+            current = state["scope_recoveries"][proof["recovery_id"]]
+            if current.get("input") == data:
+                return {"protocol": PROTOCOL, "status": current["state"], "state": current["state"],
+                        "recovery_id": data["recovery_id"], "bridge": copy.deepcopy(current["bridge"]),
+                        "acknowledged": True, "downstream_ready": False}
+            require(state.get("recovery_mode") == "legacy-takeover" and
+                    current["state"] in {"takeover-pending", "authorized"} and
+                    state.get("accepted") == current["bridge"] and
+                    (outer.get("version") != 8 or
+                     (outer.get("current_stage") == "stage3" and not outer.get("sessions", {}).get("stage3") and
+                      (outer.get("launch") or {}).get("state") == "prelaunch")) and
+                    not (current.get("ledger") or {}).get("reservation_request") and
+                    not (current.get("ledger") or {}).get("reservation_receipt"),
+                    "legacy_recovery_consumed", "supersede cannot replace consumed or reserved Stage-3 authority")
+            require(data["previous_scope_seal_ref"] == current["supplemental_authority"]["seal_ref"] and
+                    data["previous_takeover_transaction_id"] == current["takeover_transaction_id"] and
+                    data["controller_ref"] == current["controller_ref"] and
+                    data["original_accepted_digest"] == current["original_accepted_digest"],
+                    "scope_conflict", "supersede must name the exact current supplemental decision")
+            if current.get("ledger") is not None:
+                require(current["state"] == "authorized" and
+                        current["ledger"].get("active_receipt") is not None,
+                        "control_outcome_unknown", "settle original attached takeover before superseding")
+            normalized = {key: copy.deepcopy(value) for key, value in data.items()
+                          if key not in {"previous_takeover_transaction_id", "previous_scope_seal_ref"}}
+            normalized["action"] = "prepare-takeover"
+            raw = base64.b64decode(current["original_bytes_base64"], validate=True)
+            inspected = inspect_legacy_checkpoint(path, normalized, raw=raw)
+            recovered = _prepare_legacy_record(path, normalized, inspected, previous_record=current)
+            replacement = recovered[KEY]["scope_recoveries"][data["recovery_id"]]
+            require(replacement["supplemental_authority"]["seal_ref"] !=
+                    current["supplemental_authority"]["seal_ref"],
+                    "scope_conflict", "supersede needs a distinct supplemental decision")
+            replacement["input"] = copy.deepcopy(data)
+            atomic_save(path, recovered)
+            return {"protocol": PROTOCOL, "status": "takeover-pending", "state": "takeover-pending",
+                    "recovery_id": data["recovery_id"], "bridge": copy.deepcopy(replacement["bridge"]),
+                    "downstream_ready": False}
+
+
+def activate_legacy_takeover(path, data):
+    """Reconcile the original attached transaction, then open current Stage 3."""
+    entry.fields(data, {"action", "recovery_id", "original_checkpoint_sha256",
+                        "controller_ref", "host_evidence"})
+    require(data["action"] == "activate", "invalid_operation", "legacy activation action required")
+    path = Path(path)
+    require(path.is_absolute() and str(path.resolve()) == str(path),
+            "invalid_checkpoint", "canonical recovery checkpoint path required")
+    preliminary = read_record(path)
+    with (legacy_runner_lock(path) if preliminary.get("version") == 8 else nullcontext()):
+        with record_lock(path):
+            outer = read_record(path)
+            proof = verify_legacy_recovery(outer, path)
+            require(proof["recovery_id"] == data["recovery_id"] and
+                    proof["original_checkpoint_sha256"] == data["original_checkpoint_sha256"],
+                    "scope_conflict", "activation names another original recovery")
+            state = outer[KEY]
+            record = state["scope_recoveries"][proof["recovery_id"]]
+            require(data["controller_ref"] == record["controller_ref"],
+                    "identity_mismatch", "original Controller must activate recovery")
+            if record["state"] in {"authorized", "consumed"}:
+                return {"protocol": PROTOCOL, "status": record["state"], "state": record["state"],
+                    "recovery_id": data["recovery_id"], "acknowledged": True,
+                    "readiness": legacy_scope_readiness(state, path) if record["state"] == "authorized" else None}
+            previous = record.get("activation_input")
+            require(previous is None or previous == data, "scope_conflict", "resume exact activation evidence")
+            raw = base64.b64decode(record["original_bytes_base64"], validate=True)
+            old = json.loads(raw.decode("utf-8"))[KEY]
+            _verify_legacy_host(old, data["host_evidence"])
+            require(data["host_evidence"] == record["host_evidence"] or
+                    data["host_evidence"].get("snapshot", {}).get("sequence", -1) >=
+                        record["host_evidence"].get("snapshot", {}).get("sequence", 0),
+                    "host_evidence_missing", "activation host observation is older than inspection")
+            bridge = record["bridge"]
+            binding = bridge["binding"]
+            payload = bridge["payload"]
+            require(entry.git(binding["worktree"], "rev-parse", "HEAD").stdout.decode().strip() ==
+                    payload["planning_merge_commit"] and
+                    not entry.git(binding["worktree"], "status", "--porcelain", "-z").stdout and
+                    entry.git(binding["repository"], "merge-base", "--is-ancestor",
+                        payload["planning_merge_commit"],
+                        entry.git(binding["repository"], "rev-parse", binding["target_branch"]).stdout.decode().strip(),
+                        check=False).returncode == 0,
+                    "legacy_recovery_changed", "old published planning Git facts changed before activation")
+            stage_scope.validate_scope(record["supplemental_authority"]["scope"], binding["repository"],
+                stage=2, requirement_path=record["requirement_identity"]["path"],
+                planning_paths=payload["planning_paths"], candidate_commit=payload["planning_commit"],
+                generated_outputs=generated_outputs_for(record["supplemental_authority"]["proposal"]))
+            for pin in [*record["original_pins"].values(), *record["new_pins"].values()]:
+                skill_preflight.verify_identity(pin)
+            if previous is None:
+                record["activation_input"] = copy.deepcopy(data)
+                state["revision"] += 1
+                atomic_save(path, outer)
+            ledger = record.get("ledger")
+            if ledger is not None:
+                if ledger["pending_receipt"] is None:
+                    ledger["pending_receipt"] = entry.discussion_protocol.handle(
+                        copy.deepcopy(ledger["pending_request"]))
+                    record["takeover_receipts"]["ledger_pending"] = copy.deepcopy(ledger["pending_receipt"])
+                    state["revision"] += 1
+                    atomic_save(path, outer)
+                require(ledger["pending_receipt"].get("state") in {"takeover-pending", "takeover-active"},
+                        "control_context_changed", "attached takeover did not persist pending control")
+                if ledger["active_request"] is None:
+                    pending = ledger["pending_request"]
+                    active = copy.deepcopy(pending)
+                    active["action"] = "scope-recover-legacy"
+                    active["evidence"].pop("previous_takeover_transaction_id", None)
+                    active["evidence"].pop("previous_scope_seal_ref", None)
+                    active["evidence"]["new_control_context"]["legacy_takeover"]["state"] = "active"
+                    active["expected_ledger_revision"] = ledger["pending_receipt"]["ledger_revision"]
+                    active["expected_topic_revision"] = ledger["pending_receipt"]["record_revision"]
+                    active["idempotency_key"] = str(uuid.uuid4())
+                    ledger["active_request"] = active
+                    state["revision"] += 1
+                    atomic_save(path, outer)
+                if ledger["active_receipt"] is None:
+                    ledger["active_receipt"] = entry.discussion_protocol.handle(
+                        copy.deepcopy(ledger["active_request"]))
+                    record["takeover_receipts"]["ledger_active"] = copy.deepcopy(ledger["active_receipt"])
+                    state["revision"] += 1
+                    atomic_save(path, outer)
+                require(ledger["active_receipt"].get("state") == "takeover-active" and
+                        ledger["active_receipt"]["control"]["context"] ==
+                            ledger["active_request"]["evidence"]["new_control_context"],
+                        "control_context_changed", "attached takeover active control differs")
+                state["control"]["context"] = copy.deepcopy(ledger["active_receipt"]["control"]["context"])
+                discussion = state["control"]["discussion"]
+                discussion.update(expected_ledger_revision=ledger["active_receipt"]["ledger_revision"],
+                    expected_topic_revision=ledger["active_receipt"]["record_revision"],
+                    idempotency_key=str(uuid.uuid4()))
+            record["state"] = "authorized"
+            if outer.get("version") == 8:
+                outer["status"] = "active"
+            state["revision"] += 1
+            atomic_save(path, outer)
+            return {"protocol": PROTOCOL, "status": "authorized", "state": "authorized",
+                    "recovery_id": data["recovery_id"],
+                    "readiness": legacy_scope_readiness(state, path),
+                    "downstream_ready": legacy_scope_readiness(state, path) is not None}
+
+
 def pending_decision(kind, subject, question):
     entry.nonempty(kind); entry.nonempty(question)
     return {"decision_id": str(uuid.uuid4()), "kind": kind, "subject": copy.deepcopy(subject), "question": question}
+
+
+def verify_legacy_recovery(outer, checkpoint_path=None):
+    """Read the sole supplemental current without interpreting old v7 as v9."""
+    require(isinstance(outer, dict) and outer.get("version") in (None, 8) and
+            isinstance(outer.get(KEY), dict), "legacy_recovery_missing",
+            "current recovered runner and progression are required")
+    state = outer[KEY]
+    path = Path(state.get("checkpoint_path", ""))
+    if checkpoint_path is not None:
+        require(str(Path(checkpoint_path).resolve()) == str(path),
+                "legacy_recovery_changed", "copied recovery cannot own a second checkpoint path")
+    require(path.is_absolute() and str(path.resolve()) == str(path) and path.is_file() and
+            read_record(path) == outer,
+            "legacy_recovery_changed", "recovery must be the unique current canonical checkpoint")
+    require(state.get("protocol") == PROTOCOL and state.get("recovery_mode") == "legacy-takeover" or
+            state.get("protocol") == PROTOCOL and state.get("stage") in {3, 4} and
+            isinstance(state.get("scope_recoveries"), dict),
+            "legacy_recovery_missing", "current v14 recovery projection is unavailable")
+    source = outer.get("recovery_source")
+    records = state.get("scope_recoveries")
+    require(isinstance(source, dict) and set(source) == {"recovery_id", "original_checkpoint_sha256"} and
+            isinstance(records, dict) and set(records) == {source["recovery_id"]},
+            "legacy_recovery_changed", "exactly one current recovery provenance is required")
+    record = records[source["recovery_id"]]
+    require(record.get("recovery_id") == source["recovery_id"] and
+            record.get("original_checkpoint_sha256") == source["original_checkpoint_sha256"] and
+            record.get("state") in {"takeover-pending", "authorized", "consumed"},
+            "legacy_recovery_changed", "current recovery state or source changed")
+    try:
+        raw = base64.b64decode(record["original_bytes_base64"], validate=True)
+        original = json.loads(raw.decode("utf-8"))
+    except (KeyError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise entry.PreparationError("legacy_recovery_changed", "original raw snapshot is unreadable") from error
+    require(hashlib.sha256(raw).hexdigest() == record["original_checkpoint_sha256"] and
+            original.get("version") in (None, 6) and
+            original.get(KEY, {}).get("accepted") == record.get("original_accepted") and
+            record["original_accepted"].get("digest") == record.get("original_accepted_digest") and
+            record.get("bridge", {}).get("legacy_accepted") == record["original_accepted"] and
+            record["bridge"].get("original_snapshot_sha256") == record["original_checkpoint_sha256"] and
+            record["bridge"].get("digest") == entry.digest({key: value for key, value in record["bridge"].items()
+                if key != "digest"}) and
+            record.get("supplemental_authority") == record["bridge"].get("scope_authority"),
+            "legacy_recovery_changed", "old bytes, bridge or supplemental authority changed")
+    original_state = original[KEY]
+    bound_paths = [action["checkpoint"] for action in
+        [original_state.get("action") or {}, original_state.get("host_action") or {},
+         *original_state.get("retained_host_actions", [])]
+        if isinstance(action, dict) and "checkpoint" in action]
+    require(record.get("original_checkpoint_path") == str(path) and
+            bound_paths and all(saved_path == str(path) for saved_path in bound_paths),
+            "legacy_recovery_changed", "original native calls bind another checkpoint path")
+    if state.get("recovery_mode") == "legacy-takeover":
+        require(state.get("stage") == 2 and state.get("accepted") == record["bridge"] and
+                state.get("scope_authority") == record["supplemental_authority"] and
+                record["state"] in {"takeover-pending", "authorized"},
+                "legacy_recovery_changed", "current Stage-2 supplemental projection changed")
+    else:
+        require(record["state"] == "consumed" and
+                any(item.get("recovery_mode") == "legacy-takeover" and
+                    item.get("accepted") == record["bridge"] for item in state.get("history", [])),
+                "legacy_recovery_changed", "consumed Stage-2 bridge is missing from current history")
+    if record["state"] == "takeover-pending" and outer.get("version") == 8:
+        require(outer.get("status") == "recovery_pending", "legacy_recovery_changed",
+                "pending takeover cannot authorize the runner")
+    if record["state"] == "authorized" and outer.get("version") == 8:
+        require(outer.get("status") == "active", "legacy_recovery_changed",
+                "only activated takeover can authorize Stage 3")
+    return {"state": record["state"], "recovery_id": record["recovery_id"],
+            "original_checkpoint_sha256": record["original_checkpoint_sha256"],
+            "binding": copy.deepcopy(record["bridge"]["binding"]),
+            "accepted_digest": record["bridge"]["digest"]}
+
+
+def legacy_scope_readiness(state, checkpoint_path):
+    path = Path(checkpoint_path).resolve()
+    if state.get("checkpoint_path") != str(path):
+        return None
+    outer = read_record(path)
+    proof = verify_legacy_recovery(outer, path)
+    record = state["scope_recoveries"][proof["recovery_id"]]
+    if record["state"] == "consumed" and state.get("stage") in {3, 4}:
+        readiness = state.get("consumed_readiness")
+        if (not isinstance(readiness, dict) or readiness.get("legacy_recovery_id") != record["recovery_id"] or
+                readiness.get("accepted_digest") != record["bridge"]["digest"] or
+                state.get("stage") == 3 and state.get("handoff", {}).get("readiness") != readiness):
+            return None
+        return copy.deepcopy(readiness)
+    if (record["state"] != "authorized" or state.get("stage") != 2 or
+            state.get("accepted") != record["bridge"] or not state.get("stopped") or
+            not state.get("phase_complete") or state.get("status") != "accepted"):
+        return None
+    authority = record["supplemental_authority"]
+    bridge = record["bridge"]
+    payload = bridge["payload"]
+    current_progress = state["control"]["context"].get("handoff_progress") or {}
+    verify_scope_authority(authority, initial_seal=current_progress.get("scope_seal"),
+        revision_records=current_progress.get("scope_revisions", []),
+        requirement_identity=bridge["requirement_identity"], binding=bridge["binding"],
+        decision_records=change_decision_journal(state))
+    stage_scope.validate_scope(authority["scope"], bridge["binding"]["repository"], stage=3,
+        requirement_path=bridge["requirement_identity"]["path"],
+        planning_paths=payload["planning_paths"], candidate_commit=payload["planning_commit"],
+        generated_outputs=generated_outputs_for(authority["proposal"]))
+    if not authority["scope"]["downstream"]["implementation_required"]:
+        return None
+    if Path(bridge["binding"]["worktree"]).exists():
+        require(entry.git(bridge["binding"]["worktree"], "rev-parse", "HEAD").stdout.decode().strip() ==
+                payload["planning_merge_commit"], "legacy_recovery_changed",
+                "recovered planning worktree changed before Stage 3")
+    return {"accepted_digest": bridge["digest"], "scope_revision": authority["revision"],
+            "scope_seal": authority["seal_ref"], "scope_authority": copy.deepcopy(authority),
+            "publication": {"planning_commit": payload["planning_commit"],
+                "planning_merge_commit": payload["planning_merge_commit"],
+                "publication_request_digest": record["publication_request_digest"]},
+            "stop_evidence_ref": record["old_stop_ref"],
+            "phase_finalization_ref": record.get("phase_finalization_ref"),
+            "controller_ref": bridge["controller_ref"],
+            "control_revision": state["control"]["context"].get("revision"),
+            "checkpoint_path": str(path), "checkpoint_revision": state["revision"],
+            "legacy_recovery_id": record["recovery_id"],
+            "original_snapshot_sha256": record["original_checkpoint_sha256"],
+            "original_accepted_digest": record["original_accepted_digest"]}
 
 
 def decision_matches(pending, decision):
@@ -209,6 +1038,50 @@ def decision_matches(pending, decision):
     require(pending is not None and decision["decision_id"] == pending["decision_id"] and
             decision["subject"] == pending["subject"], "stale_decision", "answer does not name the current pending matter")
     entry.nonempty(decision["reference"]); entry.nonempty(decision["answer"])
+
+
+def change_decision_journal(state):
+    records = {}
+    for saved in [*state.get("history", []), state]:
+        for identity, value in saved.get("decision_provenance", {}).items():
+            require(identity not in records or records[identity] == value,
+                    "scope_conflict", "original user-decision journal changed")
+            records[identity] = value
+    return records
+
+
+def approved_change_evidence(state, decision):
+    if decision.get("kind") == "in-requirement-refinement":
+        return None
+    require(decision.get("kind") == "reference-to-approved-change" and
+            isinstance(decision.get("approved_change_ref"), str),
+            "approved_change_missing", "explicit approved change reference required")
+    controller = state["control"]["context"]["controller_ref"]
+    requirement_identity = state["handoff"]["requirement_identity"]
+    ancestry = {item.get("handoff", {}).get("digest") for item in [*state.get("history", []), state]}
+    matches = [record for record in change_decision_journal(state).values()
+        if record.get("pending_kind") == "user-decision" and
+           record.get("controller_ref") == controller and
+           record.get("requirement_identity") == requirement_identity and
+           record.get("handoff_digest") in ancestry and
+           record.get("decision", {}).get("answer") == "approve-change" and
+           record["decision"].get("reference") == decision["approved_change_ref"] and
+           record["decision"].get("subject", {}).get("handoff") == record["handoff_digest"]]
+    require(len(matches) == 1, "approved_change_missing",
+            "approved change must name one original user-decision in this Controller's source history")
+    record = copy.deepcopy(matches[0])
+    return {"record": record, "digest": entry.digest(record)}
+
+
+def generated_outputs_for(data):
+    mapping = data.get("generated_outputs", {})
+    require(isinstance(mapping, dict), "invalid_scope", "generated output inventory must be a map")
+    require(isinstance(data.get("manifest"), list) and all(isinstance(item, dict) for item in data["manifest"]),
+            "invalid_scope", "complete manifest array required")
+    if any(item.get("kind") == "generated" for item in data["manifest"]):
+        require("generated_outputs" in data and bool(mapping), "scope_incomplete",
+                "generated files require a declared source-to-output inventory")
+    return copy.deepcopy(mapping)
 
 
 def stage_boundary(mode, stage, accepted, next_stage=None):
@@ -245,6 +1118,26 @@ def workspace_evidence(binding, controller_ref, supplied):
 def validate_state(state):
     require(isinstance(state, dict) and state.get("protocol") == PROTOCOL,
             "legacy_run_requires_original_runtime", "use original " + str(state.get("protocol") if isinstance(state,dict) else None) + "; package digests " + str({k:v.get("bundle_digest") for k,v in (state.get("packages",{}) if isinstance(state,dict) else {}).items()}))
+    if state.get("recovery_mode") == "legacy-takeover":
+        require(state.get("stage") == 2 and state.get("status") == "accepted" and
+                type(state.get("revision")) is int and state["revision"] >= 0 and
+                isinstance(state.get("scope_recoveries"), dict) and len(state["scope_recoveries"]) == 1 and
+                state.get("accepted") == next(iter(state["scope_recoveries"].values())).get("bridge") and
+                state.get("scope_authority") == next(iter(state["scope_recoveries"].values())).get("supplemental_authority") and
+                state.get("checkpoint_path") and
+                state.get("control", {}).get("context", {}).get("schema_version") == 5,
+                "invalid_checkpoint", "supplemental Stage-2 current projection is inconsistent")
+        for pin in state.get("packages", {}).values():
+            skill_preflight.verify_identity(pin)
+        control.validate_context(state["control"]["context"])
+        recovery = next(iter(state["scope_recoveries"].values()))
+        verify_scope_authority(recovery["supplemental_authority"],
+            initial_seal=(state["control"]["context"].get("handoff_progress") or {}).get("scope_seal"),
+            revision_records=(state["control"]["context"].get("handoff_progress") or {}).get("scope_revisions", []),
+            requirement_identity=recovery["bridge"]["requirement_identity"],
+            binding=recovery["bridge"]["binding"],
+            decision_records=change_decision_journal(state))
+        return state
     require(type(state.get("revision")) is int and state["revision"] >= 0,
             "invalid_checkpoint", "checkpoint revision is invalid")
     require(state.get("mode") in {"stepwise", "continuous"}, "invalid_checkpoint", "invalid mode")
@@ -293,6 +1186,27 @@ def validate_state(state):
                     'invalid_checkpoint', 'archive intent has no durable result')
     for pin in state["packages"].values():
         skill_preflight.verify_identity(pin)
+    if state["stage"] == 2:
+        stage_scope.validate_scope(state["handoff"]["scope"], state["handoff"]["binding"]["repository"],
+            stage=2, requirement_path=state["handoff"]["requirement_identity"]["path"])
+        authority = state.get("scope_authority")
+        if authority is not None:
+            require(authority.get("state") == "sealed" and authority.get("revision") ==
+                    authority.get("scope", {}).get("downstream", {}).get("revision") and
+                    authority.get("seal_ref") == authority.get("scope", {}).get("downstream", {}).get("seal_ref") and
+                    authority.get("proposal_digest") == entry.digest(authority.get("proposal")) and
+                    authority.get("seal") == (state["control"]["context"].get("handoff_progress") or {}).get("scope_seal"),
+                    "invalid_checkpoint", "scope authority differs from original Controller seal")
+            stage_scope.validate_scope(authority["scope"], state["handoff"]["binding"]["repository"], stage=2,
+                requirement_path=state["handoff"]["requirement_identity"]["path"],
+                candidate_commit=authority["candidate_commit"],
+                generated_outputs=generated_outputs_for(authority["proposal"]))
+            current_progress = state["control"]["context"].get("handoff_progress") or {}
+            verify_scope_authority(authority, initial_seal=current_progress.get("scope_seal"),
+                revision_records=current_progress.get("scope_revisions", []),
+                requirement_identity=state["handoff"]["requirement_identity"],
+                binding=state["handoff"]["binding"],
+                decision_records=change_decision_journal(state))
     return state
 
 
@@ -311,7 +1225,324 @@ def retain_entry_pins(request, retained):
         request["expected_entry"] = entry.resolve(entry_request)
 
 
-def _view(state, next_action=None, acknowledged=False):
+def scope_readiness(state, checkpoint_path):
+    """Project Stage-3 authority from the current accepted Stage-2 facts.
+
+    This is also used by B's read-only checkpoint verification. The immutable B
+    acceptance records the planning result; it cannot itself grant a later lease.
+    """
+    if (state.get("stage") != 2 or state.get("status") != "accepted" or
+            state.get("accepted") is None or not state.get("stopped") or
+            not state.get("phase_complete") or state.get("stop_requested") or
+            state.get("transport_loss") or state.get("business_block")):
+        return None
+    if (state.get("scope_revision_transaction") or {}).get("state") not in (None, "active"):
+        return None
+    authority = state.get("scope_authority")
+    publication = state.get("publication")
+    if (not isinstance(authority, dict) or authority.get("state") != "sealed" or
+            not isinstance(publication, dict) or publication.get("result") is None or
+            state.get("transaction") is not None or state.get("pending") is not None and
+            state["pending"].get("kind") != "stage-entry"):
+        return None
+    scope = authority.get("scope")
+    if not isinstance(scope, dict) or scope.get("downstream", {}).get("state") != "sealed":
+        return None
+    if not scope["downstream"]["implementation_required"] or not scope["implementation_paths"]:
+        return None
+    current_progress = state["control"]["context"].get("handoff_progress") or {}
+    verify_scope_authority(authority, initial_seal=current_progress.get("scope_seal"),
+        revision_records=current_progress.get("scope_revisions", []),
+        requirement_identity=state["handoff"]["requirement_identity"],
+        binding=state["handoff"]["binding"],
+        decision_records=change_decision_journal(state))
+    accepted = state["accepted"]
+    payload = accepted.get("payload", {})
+    if (accepted.get("handoff") != state["handoff"] or
+            payload.get("planning_commit") != authority.get("candidate_commit") or
+            payload.get("planning_merge_commit") != publication["result"].get("merge_commit") or
+            state.get("host", {}).get("status") != "stopped" or
+            any(not action.get("resolved") and not action.get("creation_resolved") for action in
+                [*state.get("retained_host_actions", []), state.get("host_action") or {}] if action)):
+        return None
+    if checkpoint_path is None:
+        return None
+    path = Path(checkpoint_path).resolve()
+    persisted = read_record(path)
+    if not path.is_absolute() or persisted.get(KEY) != state:
+        return None
+    owner = Progress(path, persisted)
+    if owner.stop_barrier_pending() or owner.unresolved_control_transactions():
+        return None
+    stage_scope.validate_scope(scope, state["handoff"]["binding"]["repository"], stage=3,
+        requirement_path=state["handoff"]["requirement_identity"]["path"],
+        planning_paths=payload["planning_paths"],
+        candidate_commit=authority["candidate_commit"],
+        generated_outputs=generated_outputs_for(authority["proposal"]))
+    actual = supervision.reconcile_publication({key: publication[key] for key in ("operation", "request", "facts")})
+    if actual.get("state") != "planning_published" or actual.get("merge_commit") != payload["planning_merge_commit"]:
+        return None
+    phase = state["handoff"]["authorization"].get("phase")
+    phase_finalization_ref = None
+    if phase is not None:
+        verify_phase_completed(state)
+        saved = state["handoff"]
+        result = entry.discussion_protocol.handle({"protocol_version": 1, "operation": "read-phase-run",
+            "project_path": entry.discussion_root(saved["expected_entry"]),
+            **saved["entry"]["source"]["attachment"], "phase_run_id": phase["run_id"]})
+        phase_finalization_ref = entry.digest(result["phase_run"])
+    return {"accepted_digest": accepted["digest"], "scope_revision": authority["revision"],
+            "scope_seal": authority["seal_ref"], "scope_authority": copy.deepcopy(authority),
+            "publication": {"planning_commit": payload["planning_commit"],
+                            "planning_merge_commit": payload["planning_merge_commit"],
+                            "publication_request_digest": entry.digest(publication["request"])},
+            "stop_evidence_ref": entry.digest(state["host"]["last_stop"]),
+            "phase_finalization_ref": phase_finalization_ref,
+            "controller_ref": state["handoff"]["controller_ref"],
+            "control_revision": state["control"]["context"].get("revision"),
+            "checkpoint_path": str(path), "checkpoint_revision": state["revision"]}
+
+
+def consumed_scope_readiness(state, checkpoint_path):
+    """Verify the one Stage-2 readiness atomically consumed by current Stage 3."""
+    if (state.get("consumed_readiness") or {}).get("revision_transaction_ref"):
+        return revision_scope_readiness(state, checkpoint_path)
+    if (state.get("consumed_readiness") or {}).get("legacy_recovery_id"):
+        return legacy_scope_readiness(state, checkpoint_path)
+    if state.get("stage") != 3 or not isinstance(state.get("consumed_readiness"), dict):
+        return None
+    if (state.get("scope_revision_transaction") or {}).get("state") not in (None, "active"):
+        return None
+    readiness = state["consumed_readiness"]
+    path = Path(checkpoint_path).resolve()
+    if (state.get("checkpoint_path") != str(path) or readiness.get("checkpoint_path") != str(path) or
+            state.get("handoff", {}).get("readiness") != readiness or
+            state.get("scope_authority") != readiness.get("scope_authority") or
+            not state.get("history")):
+        return None
+    old = state["history"][-1]
+    if (old.get("stage") != 2 or old.get("revision") != readiness.get("checkpoint_revision") or
+            old.get("status") != "accepted" or not old.get("stopped") or not old.get("phase_complete") or
+            old.get("accepted", {}).get("digest") != readiness.get("accepted_digest") or
+            old.get("scope_authority") != readiness.get("scope_authority") or
+            state["handoff"].get("predecessor") != old.get("accepted") or
+            state["handoff"].get("binding") != old.get("handoff", {}).get("binding") or
+            state["handoff"].get("scope", {}).get("downstream") != old["scope_authority"]["scope"]["downstream"] or
+            state["handoff"]["scope"].get("implementation_paths") != old["scope_authority"]["scope"]["implementation_paths"] or
+            state["handoff"]["scope"].get("closure_paths") != old["scope_authority"]["scope"]["closure_paths"]):
+        return None
+    publication = old.get("publication") or {}
+    payload = old["accepted"].get("payload", {})
+    if (publication.get("result", {}).get("merge_commit") != payload.get("planning_merge_commit") or
+            readiness.get("publication") != {"planning_commit": payload.get("planning_commit"),
+                "planning_merge_commit": payload.get("planning_merge_commit"),
+                "publication_request_digest": entry.digest(publication.get("request"))} or
+            readiness.get("stop_evidence_ref") != entry.digest(old.get("host", {}).get("last_stop"))):
+        return None
+    original_progress = old["control"]["context"].get("handoff_progress") or {}
+    verify_scope_authority(readiness["scope_authority"],
+        initial_seal=original_progress.get("scope_seal"),
+        revision_records=original_progress.get("scope_revisions", []),
+        requirement_identity=old["handoff"]["requirement_identity"],
+        binding=old["handoff"]["binding"],
+        decision_records=change_decision_journal(state))
+    return copy.deepcopy(readiness)
+
+
+def revised_scope_authority(transaction):
+    old = transaction["old_authority"]
+    receipt = transaction["control_result"]
+    scope = copy.deepcopy(transaction["proposed_scope"])
+    scope["downstream"].update(state="sealed", seal_ref=receipt["revision_ref"])
+    approved = transaction.get("approved_change_evidence")
+    return {**copy.deepcopy(old), "state": "sealed", "revision": scope["downstream"]["revision"],
+        "scope": scope, "proposal": copy.deepcopy(transaction["input"]),
+        "proposal_digest": entry.digest(transaction["input"]),
+        "seal_ref": receipt["revision_ref"],
+        "revisions": [*old.get("revisions", []), copy.deepcopy(receipt)],
+        "approved_changes": [*old.get("approved_changes", []), *([approved] if approved else [])]}
+
+
+def verify_scope_authority(authority, *, initial_seal=None, revision_records=None,
+                           requirement_identity=None, binding=None, decision_records=None):
+    """Bind the current manifest to durable Controller receipts, not its own fields."""
+    require(isinstance(authority, dict) and authority.get("state") == "sealed" and
+            type(authority.get("revision")) is int and authority["revision"] >= 1 and
+            isinstance(authority.get("scope"), dict) and
+            authority.get("proposal_digest") == entry.digest(authority.get("proposal")),
+            "scope_changed", "scope proposal identity changed")
+    scope = authority["scope"]
+    downstream = scope["downstream"]
+    require(downstream["state"] == "sealed" and downstream["revision"] == authority["revision"] and
+            downstream["proposal_ref"] == authority["proposal_digest"] and
+            downstream["seal_ref"] == authority["seal_ref"],
+            "scope_changed", "current downstream scope differs from its authority references")
+    seal = authority.get("seal")
+    require(isinstance(seal, dict) and seal.get("seal_ref") ==
+            control.digest({key: value for key, value in seal.items() if key != "seal_ref"}) and
+            (initial_seal is None or seal == initial_seal),
+            "scope_changed", "original Controller seal differs from current control history")
+    evidence = seal["evidence"]
+    require(evidence["candidate_commit"] == authority["candidate_commit"] and
+            (requirement_identity is None or evidence["requirement_identity"] == requirement_identity) and
+            (binding is None or evidence["binding"] == binding),
+            "scope_changed", "sealed candidate, requirement or worktree changed")
+    approved = authority.get("approved_changes", [])
+    require(isinstance(approved, list) and all(isinstance(item, dict) and
+            item.get("digest") == entry.digest(item.get("record")) for item in approved),
+            "scope_changed", "approved change evidence changed")
+    def verify_approved(decision):
+        if decision.get("kind") != "reference-to-approved-change":
+            return
+        matches = [item["record"] for item in approved
+            if item["record"].get("decision", {}).get("reference") == decision.get("approved_change_ref") and
+               item["record"].get("decision", {}).get("answer") == "approve-change" and
+               item["record"].get("pending_kind") == "user-decision" and
+               item["record"].get("controller_ref") == seal["controller_ref"] and
+               item["record"].get("requirement_identity") == evidence["requirement_identity"]]
+        require(len(matches) == 1 and (decision_records is None or matches[0] in decision_records.values()),
+                "approved_change_missing", "approved change no longer matches original user-decision journal")
+    verify_approved(evidence["decision"])
+    if authority["revision"] == 1:
+        require(authority["seal_ref"] == seal["seal_ref"] and
+                evidence["proposal_digest"] == authority["proposal_digest"] and
+                evidence["manifest_digest"] == entry.digest(downstream["manifest"]) and
+                (authority["proposal"].get("candidate_commit", authority["candidate_commit"]) ==
+                 authority["candidate_commit"]),
+                "scope_changed", "manifest differs from original Controller seal")
+    else:
+        revisions = authority.get("revisions")
+        require(isinstance(revisions, list) and len(revisions) == authority["revision"] - 1 and
+                isinstance(revisions[-1], dict) and
+                revisions[-1].get("revision_ref") == control.digest({key: value for key, value in
+                    revisions[-1].items() if key != "revision_ref"}) and
+                authority["seal_ref"] == revisions[-1]["revision_ref"] and
+                (revision_records is None or revisions == revision_records),
+                "scope_changed", "latest Controller revision receipt changed")
+        latest = revisions[-1]["evidence"]
+        verify_approved(latest["decision"])
+        proposed = copy.deepcopy(scope)
+        proposed["downstream"].update(state="proposed", seal_ref=None)
+        require(latest["expected_scope_revision"] + 1 == authority["revision"] and
+                latest["new_scope_digest"] == entry.digest(proposed) and
+                latest["scope_diff_digest"] == entry.digest(authority["proposal"]["diff"]) and
+                latest["candidate_commit"] == authority["candidate_commit"] and
+                latest["requirement_identity"] == evidence["requirement_identity"] and
+                latest["binding"] == evidence["binding"] and
+                authority["proposal"]["candidate_commit"] == authority["candidate_commit"],
+                "scope_changed", "current manifest differs from authorized revision snapshot")
+    return authority
+
+
+def revision_scope_readiness(state, checkpoint_path):
+    """Attest a stopped Stage-3 revision before and after its existing-ref bind."""
+    if state.get("stage") == 4 and (state.get("consumed_readiness") or {}).get("revision_transaction_ref"):
+        readiness = state["consumed_readiness"]
+        prior = (state.get("history") or [])[-1:]
+        if (not prior or prior[0].get("stage") != 3 or
+                prior[0].get("consumed_readiness") != readiness or
+                prior[0].get("scope_revision_transaction", {}).get("state") != "active" or
+                prior[0].get("scope_authority") != readiness.get("scope_authority") or
+                state.get("scope_authority") != readiness.get("scope_authority") or
+                state.get("checkpoint_path") != str(Path(checkpoint_path).resolve())):
+            return None
+        return copy.deepcopy(readiness)
+    if state.get("stage") != 3 or not isinstance(state.get("scope_revision_transaction"), dict):
+        return None
+    path = Path(checkpoint_path).resolve()
+    if state.get("checkpoint_path") != str(path):
+        return None
+    transaction = state["scope_revision_transaction"]
+    if transaction["state"] == "active":
+        readiness = state.get("consumed_readiness")
+        prior = (state.get("history") or [])[-1:]
+        if (not isinstance(readiness, dict) or not readiness.get("revision_transaction_ref") or
+                not prior or prior[0].get("scope_revision_transaction", {}).get("state") != "authorized" or
+                state.get("handoff", {}).get("readiness") != readiness or
+                state.get("scope_authority") != readiness.get("scope_authority") or
+                state.get("handoff", {}).get("predecessor") != prior[0].get("handoff", {}).get("predecessor") or
+                state.get("dispatch", {}).get("handoff") != state.get("handoff") or
+                state.get("scope_revision_transaction", {}).get("input") !=
+                    prior[0]["scope_revision_transaction"]["input"]):
+            return None
+        verify_scope_authority(readiness["scope_authority"],
+            initial_seal=prior[0]["scope_revision_transaction"]["old_authority"]["seal"],
+            revision_records=(state["control"]["context"].get("handoff_progress") or {}).get("scope_revisions", []),
+            requirement_identity=state["handoff"]["requirement_identity"],
+            binding=state["handoff"]["binding"],
+            decision_records=change_decision_journal(state))
+        return copy.deepcopy(readiness)
+    if (transaction["state"] != "authorized" or not state.get("stopped") or
+            state.get("host", {}).get("status") != "stopped"):
+        return None
+    outer = read_record(path)
+    if outer.get(KEY, {}).get("revision") != state["revision"]:
+        return None
+    owner = Progress(path, outer)
+    if owner.stop_barrier_pending() or owner.unresolved_host_actions() or owner.unresolved_control_transactions():
+        return None
+    stop = state["host"].get("last_stop")
+    if (not isinstance(stop, dict) or not stop.get("provenance") or
+            not isinstance(stop.get("receipt"), dict) or
+            stop["receipt"].get("ref") != owner.bound_ref() or
+            stop["receipt"].get("raw", {}).get("resumable") is not True):
+        return None
+    receipt = transaction.get("control_result")
+    revisions = (state["control"]["context"].get("handoff_progress") or {}).get("scope_revisions", [])
+    if not isinstance(receipt, dict) or not revisions or revisions[-1] != receipt:
+        return None
+    old_scope = transaction["old_authority"]["scope"]
+    design = next((item for item in reversed(state.get("history", []))
+        if item.get("stage") == 2 and item.get("status") == "accepted"), None)
+    if design is None or design.get("accepted") is None:
+        return None
+    protected = set(old_scope["protected_paths"]) | set(design["accepted"]["payload"]["planning_paths"])
+    proposed = set(transaction["proposed_scope"]["implementation_paths"] +
+                   transaction["proposed_scope"]["closure_paths"]) - protected
+    actual = control_git.scope_revision_snapshot(state["handoff"]["binding"]["worktree"],
+        design["accepted"]["payload"]["planning_merge_commit"], old_scope["implementation_paths"],
+        sorted(protected), sorted(proposed))
+    stage_scope.validate_snapshot(transaction["snapshot"], actual)
+    authority = revised_scope_authority(transaction)
+    verify_scope_authority(authority, initial_seal=transaction["old_authority"]["seal"],
+        revision_records=revisions,
+        requirement_identity=receipt["evidence"]["requirement_identity"],
+        binding=receipt["evidence"]["binding"],
+        decision_records=change_decision_journal(state))
+    design_source = (design["accepted"] if design["accepted"].get("kind") ==
+                     "legacy-supplemental-acceptance" else design["handoff"])
+    stage_scope.validate_scope(authority["scope"], state["handoff"]["binding"]["repository"],
+        stage=2, requirement_path=design_source["requirement_identity"]["path"],
+        planning_paths=design["accepted"]["payload"]["planning_paths"],
+        candidate_commit=authority["candidate_commit"],
+        generated_outputs=generated_outputs_for(authority["proposal"]))
+    original = state.get("consumed_readiness") or {}
+    readiness = {"accepted_digest": design["accepted"]["digest"], "scope_revision": authority["revision"],
+            "scope_seal": authority["seal_ref"], "scope_authority": authority,
+            "publication": copy.deepcopy(original.get("publication")),
+            "stop_evidence_ref": entry.digest(stop),
+            "phase_finalization_ref": original.get("phase_finalization_ref"),
+            "controller_ref": design_source["controller_ref"],
+            "control_revision": state["control"]["context"].get("revision"),
+            "checkpoint_path": str(path), "checkpoint_revision": state["revision"],
+            "revision_transaction_ref": entry.digest({"input": transaction["input"],
+                "snapshot": transaction["snapshot"], "control_result": receipt}),
+            "revision_snapshot_digest": entry.digest(transaction["snapshot"]),
+            "prior_dispatch_digest": state["dispatch"]["digest"]}
+    if original.get("legacy_recovery_id"):
+        readiness.update({key: original[key] for key in
+            ("legacy_recovery_id", "original_snapshot_sha256", "original_accepted_digest")})
+    activation = transaction.get("activation")
+    if activation is not None:
+        frozen = activation["readiness"]
+        require({key: value for key, value in readiness.items() if key != "checkpoint_revision"} ==
+                {key: value for key, value in frozen.items() if key != "checkpoint_revision"},
+                "scope_changed", "revision activation changed stopped authority")
+        return copy.deepcopy(frozen)
+    return readiness
+
+
+def _view(state, next_action=None, acknowledged=False, *, verified_readiness=None):
     if state.get("business_block") and state["status"] == "blocked" and (next_action or {}).get('operation') not in {
             'invoke-recovery-host', 'lookup-recovery-host', 'activate-dispatch-recovery', 'prepare-dispatch-recovery', 'control-effects', 'await-host-recovery'}:
         next_action = {"operation": "await-business-recovery", "subject": state["business_block"]["subject"]}
@@ -331,14 +1562,30 @@ def _view(state, next_action=None, acknowledged=False):
         next_action = {"operation": "publication", "data": data}
     if next_action is None and state["step"] == "publication-complete":
         next_action = {"operation": "receive-publication", "data": {}}
+    readiness = (verified_readiness if verified_readiness is not None else
+        legacy_scope_readiness(state, state.get("checkpoint_path"))
+        if state.get("recovery_mode") == "legacy-takeover" and state.get("status") == "accepted" else
+        scope_readiness(state, state.get("checkpoint_path"))
+        if state.get("stage") == 2 and state.get("status") == "accepted" else None)
+    planning_complete = state.get("stage") == 2 and state.get("status") == "accepted" and state.get("accepted") is not None
+    revision_stable = (state.get("scope_revision_transaction") or {}).get("state") in (None, "active")
+    downstream_ready = (readiness is not None if state.get("stage") == 2 else
+        revision_stable and state["status"] == "accepted" and state.get('stopped', False) and state.get("phase_complete", True) and
+        bool((state.get("accepted") or {}).get("downstream_ready")))
     result = {"protocol": PROTOCOL, "revision": state["revision"], "status": state["status"],
               "step": state["step"], "pending": state.get("pending"), "next_action": next_action,
-              "downstream_ready": state["status"] == "accepted" and state.get('stopped', False) and state.get("phase_complete", True) and
-                  bool((state.get("accepted") or {}).get("downstream_ready")), "acknowledged": acknowledged}
-    if state["status"] == "accepted" and state.get('stopped', False) and state.get("accepted") is not None and state["accepted"]["downstream_ready"] and state.get("phase_complete", True):
+              "planning_complete": planning_complete, "handoff_ready": readiness is not None,
+              "downstream_ready": downstream_ready, "acknowledged": acknowledged}
+    if planning_complete:
+        stable_scope = (state.get("scope_revision_transaction") or {}).get("state") in (None, "active")
+        result["route"] = "stage-3" if readiness is not None else "planning-only" if stable_scope and (state.get("scope_authority") or {}).get("scope", {}).get("downstream", {}).get("implementation_required") is False else "pending"
+        if readiness is not None:
+            result["readiness"] = readiness
+    if state["status"] == "accepted" and state.get('stopped', False) and state.get("accepted") is not None and (state["stage"] == 2 or downstream_ready) and state.get("phase_complete", True):
         if state["stage"] == 4:
             result["workflow_completion"] = verify_completion(state)
-        result["completion"] = handoff.render(state["accepted"])
+        result["completion"] = (handoff._render_verified(state["accepted"], readiness)
+            if state["stage"] == 2 else handoff.render(state["accepted"]))
     elif state["status"] == "accepted" and not state.get("phase_complete", True) and next_action is None:
         result["next_action"] = {"operation": "complete-original-phase", "phase": state["handoff"]["authorization"].get("phase")}
     if state.get("business_block"):
@@ -399,6 +1646,19 @@ def verify_completion(state):
     previous = saved.get("predecessor")
     while previous is not None:
         handoff.unseal(previous)
+        if previous.get("kind") == "legacy-supplemental-acceptance":
+            outer = read_record(state["checkpoint_path"])
+            proof = verify_legacy_recovery(outer, state["checkpoint_path"])
+            recovery = state["scope_recoveries"][proof["recovery_id"]]
+            require(recovery["state"] == "consumed" and recovery["bridge"] == previous,
+                    "result_changed", "final closure lost the exact supplemental Stage-2 bridge")
+            original = json.loads(base64.b64decode(recovery["original_bytes_base64"], validate=True))
+            verify_phase_completed(original[KEY])
+            root = saved["binding"]["repository"]
+            handoff.ancestor(root, previous["payload"]["planning_commit"],
+                             previous["payload"]["planning_merge_commit"])
+            handoff.ancestor(root, previous["payload"]["planning_merge_commit"], payload["merge_commit"])
+            break
         prior = previous["handoff"]
         matches = [item for item in state.get("history", []) if (item.get("accepted") or {}).get("digest") == previous["digest"]]
         if matches:
@@ -419,8 +1679,10 @@ class Progress:
     def __init__(self, path, outer):
         self.path, self.outer = Path(path), outer
         self.state = outer.get(KEY)
+        self._verified_readiness = None
 
     def save(self):
+        self._verified_readiness = None
         # Compatibility projection, never a business-replay liveness input.
         # Before any issue, or after exact non-creation, there is no writer.
         root_stopped = (self.state["host"]["status"] == "stopped" or
@@ -435,6 +1697,10 @@ class Progress:
         self.state["revision"] += 1
         self.outer[KEY] = self.state
         atomic_save(self.path, self.outer)
+
+    def current_verified_readiness(self):
+        saved = self._verified_readiness
+        return copy.deepcopy(saved[1]) if saved is not None and saved[0] == self.state["revision"] else None
 
     def stop_barrier_pending(self):
         """Derive writer closure from the existing roles and invocation journal."""
@@ -727,7 +1993,8 @@ class Progress:
         return None
 
     def require_not_stopping(self):
-        require(self.stop_intent() is None, "progression_suspended",
+        revision = self.state.get("scope_revision_transaction") or {}
+        require(self.stop_intent() is None and revision.get("state") in (None, "active"), "progression_suspended",
                 "stop intent permits reconciliation and stopping, not new work or continuation")
 
     def advance_stop(self, intent):
@@ -821,11 +2088,16 @@ class Progress:
         return _view(self.state)
 
     def start(self, data):
+        if (self.state or {}).get("recovery_mode") == "legacy-takeover":
+            return self.start_legacy_stage3(data)
+        require((self.state or {}).get("scope_revision_transaction", {}).get("state") in (None, "active"),
+                "scope_revision_pending", "finish the original scope revision before starting another stage")
         require(self.outer.get('transport', {}).get('state') != 'lost', 'host_recovery_required', 'lost foreground transport cannot create a native role')
         entry.fields(data, {"handoff"}, {"control", "next_stage", "requirement_transaction", "native_host", "workspace_evidence"})
         request = copy.deepcopy(data["handoff"])
         require(request.get("operation") == "prepare", "invalid_request", "handoff prepare input required")
         old = self.state
+        consumed_readiness = None
         retry = old is not None and old["status"] == "cancelled" and (old.get("dispatch") or {}).get("status") == "not-created" and not old.get("stop_requested")
         if old is not None:
             validate_state(old)
@@ -837,6 +2109,29 @@ class Progress:
                         "settle original host actions before starting another stage")
                 require(old.get('stopped') and not self.stop_barrier_pending(), 'host_evidence_missing', 'recheck the complete original native barrier before the successor')
                 verify_phase_completed(old)
+            if not retry and old["stage"] == 2 and request["stage"] == 3:
+                readiness = scope_readiness(old, self.path)
+                require(readiness is not None, "scope_incomplete",
+                        "Stage 3 requires the current sealed scope and completed planning handoff; use scope-propose or scope-revise")
+                effective_scope = old["scope_authority"]["scope"]
+                if "scope" not in request:
+                    request["scope"] = {**copy.deepcopy(effective_scope),
+                        "baseline": old["accepted"]["payload"]["planning_merge_commit"],
+                        "owned_paths": copy.deepcopy(effective_scope["implementation_paths"]),
+                        "protected_paths": sorted(set(effective_scope["protected_paths"] +
+                            old["accepted"]["payload"]["planning_paths"]))}
+                require(all(request["scope"][key] == effective_scope[key] for key in
+                            ("downstream", "implementation_paths", "closure_paths")) and
+                        request["scope"]["baseline"] == old["accepted"]["payload"]["planning_merge_commit"] and
+                        set(effective_scope["protected_paths"] + old["accepted"]["payload"]["planning_paths"]) <=
+                        set(request["scope"]["protected_paths"]),
+                        "scope_changed", "Stage-3 input differs from the sealed scope ceiling or published baseline")
+                require("readiness" not in request or request["readiness"] == readiness,
+                        "scope_changed", "Stage-3 input differs from current readiness")
+                request["readiness"] = readiness
+                consumed_readiness = copy.deepcopy(readiness)
+            elif not retry and old.get("scope_recoveries") and request["stage"] == 4:
+                consumed_readiness = copy.deepcopy(old.get("consumed_readiness"))
             predecessor = old["handoff"]["predecessor"] if retry else old["accepted"]
             request.setdefault("predecessor", predecessor)
             request.setdefault("requirement", old["handoff"]["requirement"] if retry or old["stage"] >= 2 else old["accepted"]["payload"]["requirement"])
@@ -929,7 +2224,7 @@ class Progress:
             if "authority_scope" in confirmed:
                 allowed = confirmed["authority_scope"]["allowed_paths"]
                 require(all(supervision._path_matches(path, allowed) for path in
-                            saved["scope"]["implementation_paths"] + saved["scope"]["closure_paths"]),
+                            (saved["scope"]["implementation_paths"] or []) + (saved["scope"]["closure_paths"] or [])),
                         "scope_changed", "carrier scope exceeds the runner's authority")
         port = data.get("control")
         if port is None:
@@ -971,6 +2266,11 @@ class Progress:
             "mode": mode, "stage": request["stage"], "status": "active", "step": "prepare-dispatch",
             "next_stage": next_stage, "phase_complete": not phase_required,
             "packages": {**retained, **resolved["packages"]}, "handoff": saved, "control": copy.deepcopy(port),
+            "checkpoint_path": str(self.path.resolve()),
+            "scope_authority": copy.deepcopy(old.get("scope_authority") if old and request["stage"] >= 3 else None),
+            "consumed_readiness": consumed_readiness,
+            "scope_recoveries": copy.deepcopy(old.get("scope_recoveries", {}) if old else {}),
+            "scope_proposals": {}, "scope_seals": {},
             "dispatch": None, "accepted": None, "action": None, "pending": None,
             "events": {}, "observations": [], "transaction": None, "transaction_source": None,
             "transaction_result": None, "stopped": False,
@@ -984,8 +2284,161 @@ class Progress:
         self.save()
         return self.advance()
 
+    def reserve_legacy_stage3(self, record, request):
+        ledger = record.get("ledger")
+        if ledger is None:
+            return
+        phase = (request.get("authorization") or {}).get("phase")
+        require(isinstance(phase, dict) and set(phase) == {"run_id", "attempt_id"} and
+                all(isinstance(value, str) and value for value in phase.values()),
+                "phase_authorization_required", "attached recovery needs its actual Stage-3 Phase Run")
+        original_input = record.get("reservation_input")
+        require(original_input is None or original_input == request,
+                "scope_conflict", "retain the exact original attached Stage-3 launch intent")
+        if ledger.get("reservation_request") is None:
+            current = self.state["control"]["discussion"]
+            require(current is not None, "control_context_changed", "original Topic control envelope is missing")
+            evidence = {"recovery_id": record["recovery_id"],
+                "checkpoint_path": str(self.path.resolve()),
+                "original_checkpoint_sha256": record["original_checkpoint_sha256"],
+                "bridge_digest": record["bridge"]["digest"],
+                "phase_run_id": phase["run_id"], "phase_attempt_id": phase["attempt_id"],
+                "controller_ref": record["controller_ref"],
+                "reservation_id": entry.digest({"recovery_id": record["recovery_id"],
+                    "bridge_digest": record["bridge"]["digest"], "phase": phase})}
+            ledger["reservation_request"] = {**copy.deepcopy(current),
+                "operation": "workflow-control", "action": "scope-recover-legacy-reserve",
+                "evidence": evidence}
+            record["reservation_input"] = copy.deepcopy(request)
+            self.save()
+        if ledger.get("reservation_receipt") is None:
+            ledger["reservation_receipt"] = entry.discussion_protocol.handle(
+                copy.deepcopy(ledger["reservation_request"]))
+            self.save()
+        receipt = ledger["reservation_receipt"]
+        require(receipt.get("state") == "launch-reserved" and
+                receipt.get("reservation") == {key: value for key, value in
+                    ledger["reservation_request"]["evidence"].items() if key != "controller_ref"} and
+                receipt.get("control", {}).get("context", {}).get("legacy_takeover", {}).get("reservation") ==
+                    receipt["reservation"],
+                "phase_authorization_required", "Topic did not reserve this exact Stage-3 launch")
+        if self.state["control"]["context"] != receipt["control"]["context"]:
+            self.state["control"]["context"] = copy.deepcopy(receipt["control"]["context"])
+            self.state["control"]["discussion"].update(
+                expected_ledger_revision=receipt["ledger_revision"],
+                expected_topic_revision=receipt["record_revision"],
+                idempotency_key=str(uuid.uuid4()))
+            self.save()
+        query = {key: value for key, value in self.state["control"]["discussion"].items()
+                 if key not in {"expected_ledger_revision", "expected_topic_revision", "idempotency_key"}}
+        topic = entry.discussion_protocol.handle({**query, "operation": "read-topic"})
+        require(topic["workflow_control"] == self.state["control"]["context"] and
+                topic["workflow_control"]["legacy_takeover"]["reservation"] == receipt["reservation"],
+                "control_context_changed", "Topic reservation changed before local Stage-3 consumption")
+
+    def start_legacy_stage3(self, data):
+        """Consume the supplemental authority with one new Stage-3 launch intent."""
+        entry.fields(data, {"handoff", "native_host"}, {"workspace_evidence", "control", "next_stage"})
+        old = self.state
+        proof = verify_legacy_recovery(self.outer, self.path)
+        require(proof["state"] == "authorized" and old["stage"] == 2 and
+                old["recovery_mode"] == "legacy-takeover", "legacy_takeover_pending",
+                "only authorized supplemental scope can start Stage 3")
+        record = old["scope_recoveries"][proof["recovery_id"]]
+        bridge = record["bridge"]
+        request = copy.deepcopy(data["handoff"])
+        require(request.get("operation") == "prepare" and request.get("stage") == 3 and
+                request.get("role") == "implementation-dispatcher",
+                "invalid_stage", "recovery can launch only the first implementation Dispatcher")
+        readiness = legacy_scope_readiness(old, self.path)
+        require(readiness is not None, "scope_incomplete",
+                "legacy supplemental implementation scope is not ready")
+        scope = copy.deepcopy(record["supplemental_authority"]["scope"])
+        scope.update(baseline=bridge["payload"]["planning_merge_commit"],
+            owned_paths=copy.deepcopy(scope["implementation_paths"]),
+            protected_paths=sorted(set(scope["protected_paths"] + bridge["payload"]["planning_paths"])))
+        require("scope" not in request or request["scope"] == scope,
+                "scope_changed", "Stage-3 input must retain the supplemental manifest and planning protection")
+        require("predecessor" not in request or request["predecessor"] == bridge,
+                "predecessor_changed", "Stage-3 input must consume the current supplemental bridge")
+        require("readiness" not in request or request["readiness"] == readiness,
+                "scope_changed", "Stage-3 input must consume current legacy readiness")
+        require("binding" not in request or request["binding"] == bridge["binding"],
+                "binding_changed", "recovery must retain the exact Flow Worktree")
+        requirement = ((self.outer.get("confirmed") or {}).get("requirement") or
+                       old["handoff"]["requirement"])
+        require("requirement" not in request or request["requirement"] == requirement,
+                "source_changed", "recovery must retain the original frozen requirement")
+        request.update(scope=scope, predecessor=bridge, readiness=readiness,
+                       binding=copy.deepcopy(bridge["binding"]), requirement=copy.deepcopy(requirement))
+        require(request["authorization"]["scope_digest"] == entry.digest(scope) and
+                request["authorization"]["flow_mode"] == old["mode"] and
+                request["target"] == {"repository": bridge["binding"]["repository"],
+                                      "branch": bridge["binding"]["target_branch"]},
+                "authorization_changed", "new Controller authorization must bind exact supplemental Stage-3 scope")
+        retain_entry_pins(request, old["packages"])
+        resolved = entry.resolve({**request["entry"], "operation": "verify",
+                                  "expected": request["expected_entry"]})
+        require(not self.path.resolve().is_relative_to(Path(resolved["repository"]["root"]).resolve()) and
+                not self.path.resolve().is_relative_to(Path(bridge["binding"]["worktree"]).resolve()),
+                "unsafe_checkpoint", "checkpoint must remain outside source and worktree")
+        native = native_host_preflight(data["native_host"])
+        if native["adapter"] == "app-server":
+            require(data["native_host"]["snapshot"]["carrier_thread"] ==
+                    request["entry"]["host"]["thread_id"],
+                    "identity_mismatch", "new native host must inspect the new Stage-3 carrier")
+        else:
+            native["instance"] = request["entry"]["host"]["thread_id"]
+            native["baseline_refs"] = sorted(set(collaboration_inventory(data["native_host"])) -
+                                             {data["native_host"]["controller_ref"]})
+        selected_workspace = workspace_evidence(bridge["binding"], bridge["controller_ref"],
+            data.get("workspace_evidence", record["workspace_evidence"]))
+        # Validate the complete local B/A/Git input before reserving the Topic.
+        # Reservation is durable and must not be consumed by a malformed request.
+        handoff.handle(request)
+        self.reserve_legacy_stage3(record, data["handoff"])
+        refreshed_readiness = legacy_scope_readiness(old, self.path)
+        require(refreshed_readiness is not None, "scope_incomplete",
+                "Topic reservation changed the supplemental handoff")
+        request["readiness"] = refreshed_readiness
+        saved = handoff.handle(request)
+        context = copy.deepcopy(old["control"]["context"])
+        context.update(stage=3, carrier=None, handoff_progress=None,
+                       requirement_identity=copy.deepcopy(bridge["requirement_identity"]))
+        control.validate_context(context)
+        port = {"context": context, "discussion": None}
+        if "control" in data:
+            require(data["control"] == port, "control_context_changed",
+                    "recovered Stage-3 control must derive from original Controller authority")
+        history = [*old.get("history", []), {key: copy.deepcopy(value) for key, value in old.items()
+                                              if key != "history"}]
+        current = {"protocol": PROTOCOL, "revision": old["revision"], "mode": old["mode"],
+            "stage": 3, "status": "active", "step": "prepare-dispatch", "next_stage": 4,
+            "phase_complete": "phase" not in request["authorization"],
+            "packages": copy.deepcopy(old["packages"]), "handoff": saved, "control": port,
+            "checkpoint_path": str(self.path.resolve()),
+            "scope_authority": copy.deepcopy(record["supplemental_authority"]),
+            "scope_recoveries": copy.deepcopy(old["scope_recoveries"]),
+            "consumed_readiness": copy.deepcopy(refreshed_readiness),
+            "recovery_start_input": copy.deepcopy(data),
+            "dispatch": None, "accepted": None, "action": None, "pending": None,
+            "events": {}, "observations": [], "transaction": None,
+            "transaction_source": None, "transaction_result": None,
+            "stopped": False, "retained_host_actions": [],
+            "native_host": native, "host_preflight": copy.deepcopy(data["native_host"]),
+            "workspace_evidence": selected_workspace,
+            "host": {"generation": 0, "status": "unknown", "proof": None, "query": None,
+                     "seen": {}, "calls": {}, "last_stop": None},
+            "history": history}
+        current["scope_recoveries"][proof["recovery_id"]]["state"] = "consumed"
+        self.state = current
+        self.save()
+        return self.advance()
+
     def call(self, operation, *, _source=None, **extra):
         s = self.state
+        if operation in {"prepare", "receive", "accept"}:
+            self.require_not_stopping()
         self.require_controls_reconciled()
         require(s["transaction"] is None, "transaction_pending", "consume the original B transaction before new business input")
         if operation in {"receive", "accept"}:
@@ -999,6 +2452,12 @@ class Progress:
                     slots[axis]['candidate'] == payload['candidate_commit'] and slots[axis]['stopped'] and
                     slots[axis]['ref'] == payload['review'][axis]['reviewer_ref'] for axis in slots),
                     'review_incomplete', 'both stopped native reviewers must match the exact candidate')
+        if (s["stage"] == 2 and (operation == "accept" or
+                operation == "receive" and extra.get("result", {}).get("status") == "completed")):
+            authority = s.get("scope_authority")
+            require(authority is not None and authority.get("state") == "sealed", "scope_incomplete",
+                    "seal the complete planning scope before accepting its publication")
+            extra.update(scope_authority=copy.deepcopy(authority), scope_checkpoint_path=str(self.path.resolve()))
         request = {"protocol": handoff.PROTOCOL, "operation": operation, "control": copy.deepcopy(s["control"]), **extra}
         request["handoff" if operation == "prepare" else "record"] = copy.deepcopy(s["handoff"] if operation == "prepare" else s["dispatch"])
         s["transaction"], s["transaction_source"], s["transaction_result"] = request, copy.deepcopy(_source), None
@@ -1077,7 +2536,8 @@ class Progress:
         elif operation == "accept":
             require(source is not None, "decision_required", "retain original controller decision")
             s["status"], s["step"] = "accepted", "accepted"
-            s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"]) if s["accepted"]["downstream_ready"] and s["phase_complete"] else None
+            s["pending"] = (stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"])
+                            if s["stage"] != 2 and s["accepted"]["downstream_ready"] and s["phase_complete"] else None)
             s.setdefault("decisions", {})[source["decision_id"]] = copy.deepcopy(source)
             s["last_decision"] = copy.deepcopy(source)
         if source is not None and "event_id" in source:
@@ -1087,6 +2547,415 @@ class Progress:
         s["transaction"], s["transaction_source"], s["transaction_result"] = None, None, None
         s["last_result"] = result
         self.save()
+        if operation == "accept" and s["stage"] == 2 and s["phase_complete"]:
+            readiness = scope_readiness(s, self.path)
+            if readiness is not None:
+                pending = stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"])
+                if pending is not None:
+                    s["pending"] = pending
+                    self.save()
+                    readiness = {**readiness, "checkpoint_revision": s["revision"]}
+                self._verified_readiness = (s["revision"], copy.deepcopy(readiness))
+
+    def scope_propose(self, data):
+        """Record the designer's exact candidate and manifest without granting writes."""
+        entry.fields(data, {"proposal_id", "expected_revision", "candidate_commit", "manifest",
+                            "implementation_required", "requirement_identity", "binding", "previous_scope_revision"},
+                     {"generated_outputs"})
+        entry.nonempty(data["proposal_id"])
+        s = self.state
+        existing = s.setdefault("scope_proposals", {}).get(data["proposal_id"])
+        if existing is not None:
+            require(existing["input"] == data, "scope_conflict", "proposal ID was reused with different content")
+            return _view(s, {"operation": "scope-proposed", "proposal": existing}, acknowledged=True)
+        self.require_business_ready()
+        self.require_not_stopping()
+        require(s["stage"] == 2 and s["dispatch"] is not None and s["dispatch"]["status"] == "bound" and
+                not s.get("publication") and s.get("accepted") is None, "scope_changed",
+                "scope proposal belongs to the active unpublished design")
+        require(type(data["expected_revision"]) is int and data["expected_revision"] == 0 and
+                data["previous_scope_revision"] == 0 and s.get("scope_authority") is None,
+                "stale_scope_revision", "initial scope proposal must name unresolved revision zero")
+        saved = s["handoff"]
+        require(data["requirement_identity"] == saved["requirement_identity"] and
+                data["binding"] == saved["binding"], "source_changed",
+                "proposal must retain the frozen requirement and worktree binding")
+        original_scope = saved["scope"]
+        require(original_scope["downstream"]["state"] == "unresolved", "scope_changed",
+                "only an unresolved Stage-2 scope can receive an initial proposal")
+        candidate = handoff.commit(data["candidate_commit"])
+        self.verify_publication_authority(candidate, before=True)
+        generated_outputs = generated_outputs_for(data)
+        projection = stage_scope.validate_manifest(data["manifest"], saved["binding"]["repository"], candidate,
+            baseline=original_scope["baseline"], protected_paths=original_scope["protected_paths"],
+            planning_paths=original_scope["owned_paths"], requirement_path=saved["requirement_identity"]["path"],
+            generated_outputs=generated_outputs)
+        require(type(data["implementation_required"]) is bool and
+                data["implementation_required"] == bool(projection["implementation_paths"]),
+                "scope_incomplete", "implementation-required decision contradicts the complete manifest")
+        proposal_digest = entry.digest(data)
+        scope = copy.deepcopy(original_scope)
+        scope.update(projection)
+        scope["downstream"] = {"state": "proposed", "revision": 0,
+            "implementation_required": data["implementation_required"],
+            "manifest": copy.deepcopy(data["manifest"]), "proposal_ref": proposal_digest,
+            "seal_ref": None}
+        stage_scope.validate_scope(scope, saved["binding"]["repository"], stage=2,
+            requirement_path=saved["requirement_identity"]["path"], candidate_commit=candidate,
+            generated_outputs=generated_outputs)
+        record = {"input": copy.deepcopy(data), "digest": proposal_digest, "scope": scope,
+                  "target_head": supervision._branch_oid(Path(saved["binding"]["repository"]), saved["binding"]["target_branch"])}
+        s["scope_proposals"][data["proposal_id"]] = record
+        self.save()
+        return _view(s, {"operation": "scope-proposed", "proposal": record})
+
+    def scope_seal(self, data):
+        """Bind a saved proposal to the original Controller's durable decision."""
+        entry.fields(data, {"proposal_id", "proposal_digest", "controller_ref", "decision"})
+        s = self.state
+        existing = s.setdefault("scope_seals", {}).get(data["proposal_id"])
+        if existing is not None:
+            require(existing["input"] == data, "scope_conflict", "seal ID was reused with different content")
+            return _view(s, {"operation": "scope-sealed", "authority": s["scope_authority"]}, acknowledged=True)
+        self.require_business_ready()
+        self.require_not_stopping()
+        require(s["stage"] == 2 and not s.get("publication") and s.get("accepted") is None and
+                s.get("scope_authority") is None, "scope_changed", "initial seal belongs to unpublished design")
+        proposal = s["scope_proposals"].get(data["proposal_id"])
+        require(proposal is not None and proposal["digest"] == data["proposal_digest"],
+                "scope_conflict", "seal must name the exact saved proposal")
+        saved = s["handoff"]
+        require(data["controller_ref"] == saved["controller_ref"] == s["control"]["context"]["controller_ref"],
+                "identity_mismatch", "only the original Controller can seal the proposal")
+        candidate = proposal["input"]["candidate_commit"]
+        ready = s.get("publication_candidate")
+        require(ready is not None and ready["payload"]["candidate_commit"] == candidate,
+                "candidate_changed", "the stopped planning candidate must match the proposal")
+        self.verify_publication_authority(candidate, before=True)
+        require(supervision._branch_oid(Path(saved["binding"]["repository"]), saved["binding"]["target_branch"]) ==
+                proposal["target_head"], "target_changed", "target moved before the scope seal")
+        basis_paths = {saved["requirement_identity"]["path"]} | {item["basis"]["path"] for item in proposal["input"]["manifest"]}
+        basis_blobs = {path: hashlib.sha256(handoff.blob(saved["binding"]["repository"], candidate, path)).hexdigest()
+                       for path in sorted(basis_paths)}
+        evidence = {"proposal_id": data["proposal_id"], "proposal_digest": proposal["digest"],
+            "expected_scope_revision": 0, "candidate_commit": candidate,
+            "manifest_digest": entry.digest(proposal["input"]["manifest"]),
+            "requirement_identity": copy.deepcopy(saved["requirement_identity"]),
+            "binding": copy.deepcopy(saved["binding"]),
+            "prior_authorization_ref": saved["authorization"]["reference"],
+            "decision": copy.deepcopy(data["decision"]), "target_head": proposal["target_head"],
+            "basis_blobs": basis_blobs}
+        change_evidence = approved_change_evidence(s, data["decision"])
+        result = self.control_action({"action": "scope-seal", "evidence": evidence,
+            "receipt": {"controller_ref": data["controller_ref"], "reference": data["decision"].get("reference")}})
+        seal = s["control"]["context"]["handoff_progress"]["scope_seal"]
+        scope = copy.deepcopy(proposal["scope"])
+        scope["downstream"].update(state="sealed", revision=1, seal_ref=seal["seal_ref"])
+        stage_scope.validate_scope(scope, saved["binding"]["repository"], stage=2,
+            requirement_path=saved["requirement_identity"]["path"], candidate_commit=candidate,
+            generated_outputs=generated_outputs_for(proposal["input"]))
+        authority = {"state": "sealed", "revision": 1, "scope": scope,
+                     "proposal": copy.deepcopy(proposal["input"]), "proposal_digest": proposal["digest"],
+                     "seal": copy.deepcopy(seal), "seal_ref": seal["seal_ref"], "candidate_commit": candidate,
+                     "approved_changes": [change_evidence] if change_evidence is not None else []}
+        s["scope_authority"] = authority
+        s["scope_seals"][data["proposal_id"]] = {"input": copy.deepcopy(data), "authority_digest": entry.digest(authority)}
+        self.save()
+        return _view(s, {"operation": "scope-sealed", "authority": authority})
+
+    def scope_revise(self, data):
+        """Stop old leases, snapshot Git, and authorize one manifest revision.
+
+        A Stage-3 writer keeps its old immutable B request while stopped. Its
+        authorized revision waits for a new Stage-3 attempt; only a Stage-2
+        accepted run with no implementation writer can activate in place.
+        """
+        entry.fields(data, {"revision_id", "expected_scope_revision", "previous_scope_digest",
+                            "requirement_identity", "binding", "planning_commit", "planning_merge_commit",
+                            "candidate_commit", "old_manifest", "manifest", "implementation_required",
+                            "diff", "reason", "controller_ref", "decision"}, {"generated_outputs"})
+        entry.nonempty(data["revision_id"]); entry.nonempty(data["reason"])
+        s = self.state
+        require(s.get("recovery_mode") != "legacy-takeover", "legacy_supersede_required",
+                "unconsumed supplemental Stage-2 scope changes must use explicit scope-recover-legacy supersede")
+        history = s.setdefault("scope_revisions", {})
+        prior = history.get(data["revision_id"])
+        if prior is not None:
+            require(prior["input"] == data, "scope_conflict", "revision ID was reused with different content")
+            return _view(s, {"operation": "scope-revision", "revision": prior}, acknowledged=True)
+        transaction = s.get("scope_revision_transaction")
+        if transaction is not None:
+            require(transaction["input"] == data, "scope_conflict", "finish the original scope revision first")
+        else:
+            self.require_business_ready()
+            require(s["stage"] in {2, 3} and (s.get("scope_authority") or {}).get("state") == "sealed" and
+                    (s["stage"] != 2 or s["status"] == "accepted") and
+                    (s["stage"] != 3 or not s.get("publication")),
+                    "scope_revision_unavailable", "revision requires an accepted design and no later publication")
+            require(s["stage"] != 3 or s["status"] != "cancelled",
+                    "stage3_revision_attempt_required", "cancelled Stage-3 attempt cannot revise its scope")
+            require(s["transaction"] is None and not self.unresolved_control_transactions() and
+                    not any(slot.get("transaction") for slot in s.get("allocations", {}).values()),
+                    "transaction_pending", "settle prior business and allocation transactions")
+            authority = s["scope_authority"]
+            old_scope = authority["scope"]
+            require(type(data["expected_scope_revision"]) is int and
+                    data["expected_scope_revision"] == authority["revision"] and
+                    data["previous_scope_digest"] == entry.digest(old_scope) and
+                    data["old_manifest"] == old_scope["downstream"]["manifest"],
+                    "stale_scope_revision", "revision must name the exact current manifest and digest")
+            design = s if s["stage"] == 2 else next((item for item in reversed(s.get("history", []))
+                if item.get("stage") == 2 and item.get("status") == "accepted"), None)
+            require(design is not None and design.get("accepted") is not None,
+                    "scope_revision_unavailable", "accepted planning source is unavailable")
+            payload = design["accepted"]["payload"]
+            design_source = (design["accepted"] if design["accepted"].get("kind") ==
+                             "legacy-supplemental-acceptance" else design["handoff"])
+            current_binding = (s["handoff"]["binding"] if s["stage"] == 3 else
+                               design_source["binding"])
+            require(data["requirement_identity"] == design_source["requirement_identity"] and
+                    data["binding"] == design_source["binding"] == current_binding and
+                    data["planning_commit"] == payload["planning_commit"] == authority["candidate_commit"] and
+                    data["planning_merge_commit"] == payload["planning_merge_commit"] and
+                    data["candidate_commit"] == authority["candidate_commit"] and
+                    data["controller_ref"] == design_source["controller_ref"] == s["control"]["context"]["controller_ref"],
+                    "source_changed", "revision must retain the published design, requirement and Controller")
+            diff = stage_scope.manifest_diff(data["old_manifest"], data["manifest"])
+            require(data["diff"] == diff and any(diff.values()), "scope_conflict",
+                    "revision must declare the exact nonempty manifest difference")
+            generated_outputs = generated_outputs_for(data)
+            projection = stage_scope.validate_manifest(data["manifest"], data["binding"]["repository"],
+                data["candidate_commit"], baseline=old_scope["baseline"],
+                protected_paths=old_scope["protected_paths"], planning_paths=old_scope["owned_paths"],
+                requirement_path=data["requirement_identity"]["path"],
+                generated_outputs=generated_outputs)
+            require(type(data["implementation_required"]) is bool and
+                    data["implementation_required"] == bool(projection["implementation_paths"]),
+                    "scope_incomplete", "revision implementation requirement disagrees with manifest")
+            proposed_scope = copy.deepcopy(old_scope)
+            proposed_scope.update(projection)
+            proposed_scope["downstream"] = {"state": "proposed", "revision": authority["revision"] + 1,
+                "implementation_required": data["implementation_required"],
+                "manifest": copy.deepcopy(data["manifest"]), "proposal_ref": entry.digest(data),
+                "seal_ref": None}
+            stage_scope.validate_scope(proposed_scope, data["binding"]["repository"], stage=2,
+                requirement_path=data["requirement_identity"]["path"],
+                planning_paths=payload["planning_paths"], candidate_commit=data["candidate_commit"],
+                generated_outputs=generated_outputs)
+            change_evidence = approved_change_evidence(s, data["decision"])
+            transaction = {"input": copy.deepcopy(data), "state": "proposed",
+                "old_authority": copy.deepcopy(authority), "proposed_scope": proposed_scope,
+                "snapshot": None, "control_result": None,
+                "approved_change_evidence": change_evidence,
+                "old_pending": copy.deepcopy(s.get("pending"))}
+            s["scope_revision_transaction"] = transaction
+            self.save()
+            transaction["state"] = "stopping"
+            s["pending"] = None
+            self.save()
+        if transaction["state"] == "stopping":
+            if self.stop_intent() is not None:
+                return _view(s, {"operation": "await-original-stop-intent", "scope_revision": data["revision_id"]})
+            if self.unresolved_host_actions():
+                return self.query_host()
+            if s["stage"] == 3 and s["host"]["status"] != "stopped" and self.bound_ref() is not None:
+                return self.effect("stop-host", {"subject": self.subject(), "ref": self.bound_ref(),
+                                                 "scope_revision": data["revision_id"]})
+            pending = self.stop_barrier_pending()
+            if not s.get("stopped") or pending:
+                return _view(s, {"operation": "reconcile-stopped-writers", "pending": pending,
+                                 "scope_revision": data["revision_id"]})
+            design = s if s["stage"] == 2 else next(item for item in reversed(s["history"])
+                if item.get("stage") == 2 and item.get("status") == "accepted")
+            old_scope = transaction["old_authority"]["scope"]
+            published_paths = design["accepted"]["payload"]["planning_paths"]
+            protected = set(old_scope["protected_paths"]) | set(published_paths)
+            proposed_paths = set(transaction["proposed_scope"]["implementation_paths"] +
+                                 transaction["proposed_scope"]["closure_paths"]) - protected
+            allowed = old_scope["implementation_paths"] if s["stage"] == 3 else []
+            snapshot = control_git.scope_revision_snapshot(s["handoff"]["binding"]["worktree"],
+                design["accepted"]["payload"]["planning_merge_commit"], allowed,
+                sorted(protected), sorted(proposed_paths))
+            changed = {item["path"] for item in data["diff"]["removed"]} | {
+                item["before"]["path"] for item in data["diff"]["changed"]}
+            require(not changed & set(snapshot["touched"]) and
+                    not changed & {path for slot in s.get("allocations", {}).values()
+                                   for path in (slot.get("handoff") or {}).get("scope", {}).get("implementation_paths", [])},
+                    "scope_changed", "cannot remove or change a path with existing implementation work")
+            transaction.update(state="quiescent", snapshot=snapshot)
+            self.save()
+        if transaction["state"] == "quiescent":
+            old_scope = transaction["old_authority"]["scope"]
+            design = s if s["stage"] == 2 else next(item for item in reversed(s["history"])
+                if item.get("stage") == 2 and item.get("status") == "accepted")
+            protected = set(old_scope["protected_paths"]) | set(design["accepted"]["payload"]["planning_paths"])
+            proposed_paths = set(transaction["proposed_scope"]["implementation_paths"] +
+                                 transaction["proposed_scope"]["closure_paths"]) - protected
+            actual = control_git.scope_revision_snapshot(s["handoff"]["binding"]["worktree"],
+                data["planning_merge_commit"], old_scope["implementation_paths"] if s["stage"] == 3 else [],
+                sorted(protected), sorted(proposed_paths))
+            stage_scope.validate_snapshot(transaction["snapshot"], actual)
+            evidence = {"revision_id": data["revision_id"], "expected_scope_revision": data["expected_scope_revision"],
+                "previous_scope_digest": data["previous_scope_digest"],
+                "new_scope_digest": entry.digest(transaction["proposed_scope"]),
+                "scope_diff_digest": entry.digest(data["diff"]),
+                "snapshot_digest": entry.digest(actual),
+                "requirement_identity": copy.deepcopy(data["requirement_identity"]),
+                "binding": copy.deepcopy(data["binding"]),
+                "planning_commit": data["planning_commit"],
+                "planning_merge_commit": data["planning_merge_commit"],
+                "candidate_commit": data["candidate_commit"], "decision": copy.deepcopy(data["decision"]),
+                "stop_evidence_ref": entry.digest(s["host"]["last_stop"]) if s["host"].get("last_stop") else None}
+            result = self.control_action({"action": "scope-revise", "evidence": evidence,
+                "receipt": {"controller_ref": data["controller_ref"],
+                            "reference": data["decision"].get("reference")}})
+            receipt = s["control"]["context"]["handoff_progress"]["scope_revisions"][-1]
+            transaction.update(state="authorized", control_result=copy.deepcopy(receipt))
+            self.save()
+        if transaction["state"] == "authorized":
+            if s["stage"] == 3:
+                return _view(s, {"operation": "stage3-revision-attempt", "revision_id": data["revision_id"],
+                                 "reason": "old Stage-3 dispatch remains sealed to the prior scope"})
+            old_scope = transaction["old_authority"]["scope"]
+            receipt = transaction["control_result"]
+            scope = copy.deepcopy(transaction["proposed_scope"])
+            scope["downstream"].update(state="sealed", seal_ref=receipt["revision_ref"])
+            stage_scope.validate_scope(scope, data["binding"]["repository"], stage=2,
+                requirement_path=data["requirement_identity"]["path"],
+                planning_paths=s["accepted"]["payload"]["planning_paths"],
+                candidate_commit=data["candidate_commit"],
+                generated_outputs=generated_outputs_for(data))
+            old = transaction["old_authority"]
+            s["scope_authority"] = {**copy.deepcopy(old), "state": "sealed",
+                "revision": scope["downstream"]["revision"], "scope": scope,
+                "proposal": copy.deepcopy(data), "proposal_digest": entry.digest(data),
+                "seal_ref": receipt["revision_ref"],
+                "revisions": [*old.get("revisions", []), copy.deepcopy(receipt)]}
+            transaction["state"] = "active"
+            history[data["revision_id"]] = copy.deepcopy(transaction)
+            s["pending"] = None
+            self.save()
+            if scope_readiness(s, self.path):
+                s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"])
+                self.save()
+            return _view(s, {"operation": "scope-revision-active", "authority": s["scope_authority"]})
+        return _view(s, {"operation": "scope-revision", "revision": transaction})
+
+    def activate_scope_revision(self, data):
+        """Create a revised B attempt bound to the same stopped Dispatcher ref."""
+        entry.fields(data, {"revision_id", "handoff"})
+        s = self.state
+        txn = s.get("scope_revision_transaction") or {}
+        activation = txn.get("activation")
+        if txn.get("state") == "active" and activation is not None:
+            require(activation["input"] == data, "scope_conflict", "revision activation input changed")
+            return _view(s, acknowledged=True)
+        require(s["stage"] == 3 and txn.get("state") == "authorized" and
+                txn["input"]["revision_id"] == data["revision_id"],
+                "scope_revision_pending", "authorize the exact stopped Stage-3 revision first")
+        readiness = revision_scope_readiness(s, self.path)
+        require(readiness is not None, "host_recovery_required",
+                "current stopped snapshot and resumable Dispatcher evidence required")
+        original = s["handoff"]
+        design = next(item for item in reversed(s["history"])
+            if item.get("stage") == 2 and item.get("status") == "accepted")
+        new_scope = copy.deepcopy(original["scope"])
+        new_scope.update(implementation_paths=copy.deepcopy(readiness["scope_authority"]["scope"]["implementation_paths"]),
+                         closure_paths=copy.deepcopy(readiness["scope_authority"]["scope"]["closure_paths"]),
+                         downstream=copy.deepcopy(readiness["scope_authority"]["scope"]["downstream"]),
+                         baseline=txn["snapshot"]["head"],
+                         owned_paths=copy.deepcopy(readiness["scope_authority"]["scope"]["implementation_paths"]))
+        request = copy.deepcopy(data["handoff"])
+        require("generated_outputs" not in request or
+                request["generated_outputs"] == generated_outputs_for(readiness["scope_authority"]["proposal"]),
+                "scope_changed", "revision must use the generated inventory sealed by C")
+        request.pop("generated_outputs", None)
+        supplied_entry = request.get("entry")
+        old_entry = original["entry"]
+        require(isinstance(supplied_entry, dict) and
+                {key: value for key, value in supplied_entry.items() if key != "pinned_packages"} ==
+                {key: value for key, value in old_entry.items() if key != "pinned_packages"},
+                "identity_mismatch", "revision must retain the original Dispatcher entry and host identity")
+        current_entry = entry.resolve({**old_entry, "operation": "resolve"})
+        old_expected = original["expected_entry"]
+        require(current_entry["actor"] == old_expected["actor"] and
+                current_entry["packages"] == old_expected["packages"] and
+                current_entry["repository"]["head"] == txn["snapshot"]["head"] and
+                current_entry["repository"]["root"] == old_expected["repository"]["root"] and
+                (request.get("expected_entry") is None or
+                 request["expected_entry"] == old_expected or request["expected_entry"] == current_entry),
+                "entry_changed", "revision entry must retain pinned actor/packages at the stopped Git HEAD")
+        request["entry"] = copy.deepcopy(old_entry)
+        request["expected_entry"] = current_entry
+        require(request.get("operation") == "prepare" and request.get("stage") == 3 and
+                request.get("role") == "implementation-dispatcher" and
+                request.get("predecessor") == design["accepted"] and
+                request.get("binding") == original["binding"] and
+                request.get("requirement") == original["requirement"] and
+                request.get("scope") == new_scope and
+                request.get("authorization", {}).get("reference") == txn["input"]["decision"]["reference"] and
+                request["authorization"]["scope_digest"] == entry.digest(new_scope) and
+                request["authorization"]["flow_mode"] == s["mode"] and
+                request.get("readiness", readiness) == readiness and
+                request.get("target") == original["target"] and
+                request.get("configuration") == original["configuration"],
+                "scope_changed", "revised attempt must retain original Dispatcher, source and exact new ceiling")
+        old_semantic = original["semantic"]
+        new_semantic = request.get("semantic") or {}
+        stable_fields = {"objective", "testing_basis", "completion_criteria", "constraints", "validation_plan"}
+        require(all(new_semantic.get(key) == old_semantic.get(key) for key in stable_fields),
+                "scope_changed", "scope refinement cannot silently change implementation behavior")
+        if (old_semantic.get("implementation_policy") or {}).get("mode") == "direct":
+            require(new_semantic.get("implementation_policy") != old_semantic.get("implementation_policy") and
+                    new_semantic.get("implementation_policy") is not None,
+                    "policy_reevaluation_required", "direct policy must be freshly evaluated for the new scope digest")
+        request["readiness"] = readiness
+        if activation is None:
+            saved = handoff.handle(request)
+            b_request = {"protocol": handoff.PROTOCOL, "operation": "prepare", "handoff": saved,
+                         "control": copy.deepcopy(s["control"])}
+            activation = {"input": copy.deepcopy(data), "handoff": saved, "request": b_request,
+                          "result": None, "readiness": readiness}
+            txn["activation"] = activation
+            self.save()
+        else:
+            require(activation["input"] == data and activation["readiness"] == readiness,
+                    "scope_conflict", "resume the exact revision activation transaction")
+        if activation["result"] is None:
+            activation["result"] = dispatch.handle(copy.deepcopy(activation["request"]))
+            self.save()
+        result = activation["result"]
+        require(result.get("status") == "bound" and result.get("record", {}).get("status") == "bound" and
+                result["record"]["handoff"] == activation["handoff"] and
+                result["checkpoint"]["context"]["carrier"]["ref"] == self.bound_ref(),
+                "scope_revision_pending", "B must bind the revised attempt to the original stopped Dispatcher")
+        previous = {key: copy.deepcopy(value) for key, value in s.items() if key != "history"}
+        updated = copy.deepcopy(s)
+        discussion = copy.deepcopy(s["control"]["discussion"])
+        applied = result["checkpoint"].get("discussion_receipt")
+        if discussion is not None and applied is not None:
+            discussion.update(expected_ledger_revision=applied["ledger_revision"],
+                expected_topic_revision=applied["record_revision"], idempotency_key=str(uuid.uuid4()))
+        for field in ("allocations", "review_activity", "review_history", "publication", "publication_candidate",
+                      "closure_effects", "closure_receipt", "last_observation", "last_decision", "decisions",
+                      "business_block", "error", "recovery_action", "transport_loss", "deferred_validation",
+                      "deferred_observation", "host_action", "action", "scope_revision_late_results"):
+            updated.pop(field, None)
+        updated.update(history=[*s["history"], previous], handoff=activation["handoff"],
+            control={"context": copy.deepcopy(result["checkpoint"]["context"]), "discussion": discussion},
+            dispatch=copy.deepcopy(result["record"]),
+            scope_authority=copy.deepcopy(readiness["scope_authority"]),
+            consumed_readiness=copy.deepcopy(readiness), accepted=None, pending=None,
+            events={}, observations=[], transaction=None, transaction_source=None,
+            transaction_result=None, status="active", step="continue",
+            retained_host_actions=[],
+            continuation_intent={"kind": "scope-revision", "revision_id": data["revision_id"],
+                                 "revision_transaction_ref": readiness["revision_transaction_ref"]})
+        updated["scope_revision_transaction"]["state"] = "active"
+        updated["scope_revisions"][data["revision_id"]] = copy.deepcopy(updated["scope_revision_transaction"])
+        self.state = updated
+        self.save()
+        return self.advance()
 
     def message_key(self, data):
         return entry.digest({"request": self.state["dispatch"]["request"]["digest"],
@@ -1326,7 +3195,12 @@ class Progress:
             return self.query_host()
         proof = host["proof"]
         if proof is not None and proof["generation"] == host["generation"] and proof["receipt"]["ref"] == self.bound_ref():
-            dispatch.receipt_for(s["dispatch"], proof["receipt"], {"result"})
+            if (s.get("continuation_intent") or {}).get("kind") == "scope-revision":
+                require(entry.digest(host["last_stop"]) == s["consumed_readiness"]["stop_evidence_ref"] and
+                        proof["receipt"].get("raw", {}).get("resumable") is True,
+                        "host_recovery_required", "new revision requires the original resumable stop proof")
+            else:
+                dispatch.receipt_for(s["dispatch"], proof["receipt"], {"result"})
             return None
         return self.query_host()
 
@@ -1378,6 +3252,8 @@ class Progress:
         intent = self.stop_intent()
         if intent is not None:
             return self.advance_stop(intent)
+        if (s.get("scope_revision_transaction") or {}).get("state") not in (None, "active"):
+            return self.scope_revise(s["scope_revision_transaction"]["input"])
         if s.get('deferred_validation') is not None:
             if self.unresolved_host_actions() or self.stop_barrier_pending():
                 return self.query_host()
@@ -1393,7 +3269,7 @@ class Progress:
         if s["status"] == "accepted" and not s.get("phase_complete", True):
             return self.phase_action(completing=True)
         if s["status"] in {"blocked", "paused", "cancelled", "needs_input", "accepted"}:
-            return _view(s)
+            return _view(s, verified_readiness=self.current_verified_readiness())
         if s["step"] == "prepare-dispatch":
             if s["dispatch"] is None:
                 result = self.call("prepare")
@@ -1430,6 +3306,8 @@ class Progress:
             return self.effect("continue-host", {"ref": self.bound_ref(), "subject": self.subject(),
                 "result": s.get("last_observation"), "decision": s.get("last_decision"),
                 "intent": s.get("resume_intent") or s.get("continuation_intent"),
+                **({"request": copy.deepcopy(s["dispatch"]["request"])} if
+                   (s.get("continuation_intent") or {}).get("kind") == "scope-revision" else {}),
                 **({"validation_attempt":s["control"]["context"]["handoff_progress"]["attempts"][-1]} if
                    (s["control"]["context"].get("handoff_progress") or {}).get("state") == "validating" else {})})
         if s["step"] == "received":
@@ -1463,8 +3341,11 @@ class Progress:
                 "phase_requires_reconciliation", "completion-claimed phase cannot resume substantive work")
         if completing and run["state"] == "completed" and attempt["state"] == "completed":
             s["phase_complete"] = True
-            s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"])
+            s["pending"] = None
             self.save()
+            if s["stage"] != 2 or scope_readiness(s, self.path):
+                s["pending"] = stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"])
+                self.save()
             return _view(s)
         operation = ({"active": "claim-phase-completion", "completion-claimed": "complete-phase-run", "completion-pending": "finalize-phase-run"}.get(attempt["state"])
                      if completing else "phase-activate" if attempt["state"] == "ready" else None)
@@ -1560,6 +3441,14 @@ class Progress:
             if s["step"] == "continue" and self.stop_intent() is None and s["transaction"] is None:
                 return self.advance()
             return _view(s, acknowledged=True)
+        revision = s.get("scope_revision_transaction") or {}
+        if revision.get("state") not in (None, "active") and receipt["event"] == "result":
+            # An old writer's late result is evidence for stopping, not a new
+            # B delivery or candidate acceptance under the revoked scope.
+            s.setdefault("scope_revision_late_results", []).append(copy.deepcopy(data))
+            s["events"][data["event_id"]]["applied"] = True
+            self.save()
+            return self.scope_revise(revision["input"])
         # Host facts can be retained while a prior business transaction is unresolved.
         if s["transaction"] is not None and ("result" in data or receipt["event"] != "result"):
             intent = self.stop_intent()
@@ -1685,6 +3574,8 @@ class Progress:
         return self.advance()
 
     def decide(self, data):
+        require((self.state.get("scope_revision_transaction") or {}).get("state") in (None, "active"),
+                "scope_revision_pending", "old acceptance and stage-entry decisions are closed during revision")
         s = self.state
         prior = s.get("decisions", {}).get(data.get("decision_id"))
         if prior is not None:
@@ -1751,6 +3642,13 @@ class Progress:
         else:
             s["pending"], s["status"], s["step"] = None, "active", "continue"
             s["continuation_intent"] = {"kind": "decision", "decision": copy.deepcopy(data)}
+        if pending["kind"] == "user-decision":
+            s.setdefault("decision_provenance", {})[data["decision_id"]] = {
+                "pending_kind": pending["kind"], "pending_subject": copy.deepcopy(pending["subject"]),
+                "decision": copy.deepcopy(data),
+                "controller_ref": s["control"]["context"]["controller_ref"],
+                "requirement_identity": copy.deepcopy(s["handoff"]["requirement_identity"]),
+                "handoff_digest": s["handoff"]["digest"]}
         s.setdefault("decisions", {})[data["decision_id"]] = copy.deepcopy(data)
         s["last_decision"] = copy.deepcopy(data)
         self.save()
@@ -1856,6 +3754,16 @@ class Progress:
         ready = s.get("publication_candidate")
         require(ready is not None and ready["decision"] is not None and ready["handoff_digest"] == s["handoff"]["digest"],
                 "candidate_not_accepted", "receive the stopped candidate and record its original readiness decision first")
+        if s["stage"] == 2:
+            authority = s.get("scope_authority")
+            require(authority is not None and authority.get("state") == "sealed" and
+                    authority["candidate_commit"] == ready["payload"]["candidate_commit"] and
+                    authority["seal"] == (s["control"]["context"].get("handoff_progress") or {}).get("scope_seal"),
+                    "scope_incomplete", "seal the exact stopped planning candidate before publication")
+            stage_scope.validate_scope(authority["scope"], s["handoff"]["binding"]["repository"],
+                stage=2, requirement_path=s["handoff"]["requirement_identity"]["path"],
+                candidate_commit=ready["payload"]["candidate_commit"],
+                generated_outputs=generated_outputs_for(authority["proposal"]))
         dispatch.receipt_for(s["dispatch"], ready["receipt"], {"result"})
         require(ready["receipt"]["status"] == "stopped" and ready["receipt"]["ref"] == self.bound_ref(),
                 "host_evidence_missing", "exact original writer stop proof required")
@@ -2001,10 +3909,13 @@ class Progress:
         entry.fields(data, {"action", "evidence", "receipt"})
         entry.nonempty(data["action"])
         require(data["action"] in {"successor-ready", "archive", "archive-result",
-                    "escalate-implementation", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
+                    "scope-seal", "scope-revise", "escalate-implementation", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
                 "invalid_operation", "use the original bounded control recovery/closure operation")
         require(isinstance(data["receipt"], dict) and data["receipt"], "host_evidence_missing", "original authenticated host/controller evidence required")
         s = self.state
+        if (s.get("scope_revision_transaction") or {}).get("state") not in (None, "active"):
+            require(data["action"] == "scope-revise", "scope_revision_pending",
+                    "scope revision has closed the old control lease")
         if data['action'] in {'archive', 'archive-result'}:
             return self.archive_action(data)
         if data['action'] == 'successor-ready':
@@ -2404,6 +4315,9 @@ class Progress:
         operation = data["operation"]
         require(operation in {"prepare", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown allocation operation")
         s = self.state
+        if (s.get("scope_revision_transaction") or {}).get("state") not in (None, "active"):
+            require(operation in {"bind", "reconcile"}, "scope_revision_pending",
+                    "old allocation lease is closed during scope revision")
         require(s["stage"] == 3 and s["handoff"]["role"] == "implementation-dispatcher", "role_mismatch", "allocation belongs to the Stage-3 dispatcher")
         self.require_controls_reconciled()
         slots = s.setdefault("allocations", {})
@@ -2430,6 +4344,26 @@ class Progress:
                 request.setdefault("binding", s["handoff"]["binding"])
                 request.setdefault("target", s["handoff"]["target"])
                 request.setdefault("delivery", s["handoff"]["delivery"])
+                parent_scope = s["handoff"]["scope"]
+                manifest_base = ((s["handoff"].get("readiness") or {}).get("scope_authority") or {}).get("scope", {}).get(
+                    "baseline", s["handoff"].get("manifest_baseline", parent_scope["baseline"]))
+                require("manifest_baseline" not in request or
+                        request["manifest_baseline"] == manifest_base,
+                        "scope_changed", "allocation must retain the sealed manifest baseline")
+                request["manifest_baseline"] = manifest_base
+                if "readiness" in s["handoff"]:
+                    require("readiness" not in request or
+                            request["readiness"] == s["handoff"]["readiness"],
+                            "scope_changed", "allocation readiness differs from its Dispatcher")
+                    request["readiness"] = copy.deepcopy(s["handoff"]["readiness"])
+                    require("generated_outputs" not in request, "scope_changed",
+                            "inherited generated inventory belongs to the sealed authority")
+                else:
+                    generated = s["handoff"].get("generated_outputs", {})
+                    require("generated_outputs" not in request or request["generated_outputs"] == generated,
+                            "scope_changed", "allocation generated inventory differs from its Dispatcher")
+                    if "generated_outputs" in s["handoff"]:
+                        request["generated_outputs"] = copy.deepcopy(generated)
                 require(request["binding"] == s["handoff"]["binding"] and request["target"] == s["handoff"]["target"],
                         "binding_changed", "allocation must retain its dispatcher's flow")
                 retain_entry_pins(request, s["packages"])
@@ -2942,10 +4876,15 @@ def lifecycle(path, outer, data):
         verify_phase_completed(outer[KEY])
         if not outer[KEY]["phase_complete"]:
             state = outer[KEY]
-            state["pending"] = stage_boundary(state["mode"], state["stage"], state["accepted"], state["next_stage"])
+            state["pending"] = None
         outer[KEY]["phase_complete"] = True
         outer[KEY]["revision"] += 1
         atomic_save(path, outer)
+        state = outer[KEY]
+        if state["stage"] != 2 or scope_readiness(state, path):
+            state["pending"] = stage_boundary(state["mode"], state["stage"], state["accepted"], state["next_stage"])
+            state["revision"] += 1
+            atomic_save(path, outer)
     state = outer.get(KEY)
     action = (state or {}).get("action")
     if action and action["operation"] in {"source-lifecycle", "carrier-lifecycle"} and action["payload"]["request"] == request:
@@ -2966,6 +4905,19 @@ def handle(path, request):
                 'native_host': native_host_preflight(request.get('data'))}
     path = Path(path)
     require(path.is_absolute(), "invalid_checkpoint", "absolute checkpoint path required")
+    if request["operation"] == "scope-recover-legacy" and (request.get("data") or {}).get("action") == "inspect":
+        details = inspect_legacy_checkpoint(path, request["data"])
+        return {"protocol": PROTOCOL, "status": "inspected", "state": "inspected",
+                "recovery_id": details["recovery_id"],
+                "original_checkpoint_sha256": details["original_checkpoint_sha256"],
+                "original_accepted_digest": details["original_accepted_digest"],
+                "binding": copy.deepcopy(details["binding"]), "downstream_ready": False}
+    if request["operation"] == "scope-recover-legacy" and (request.get("data") or {}).get("action") == "prepare-takeover":
+        return prepare_legacy_takeover(path, request["data"])
+    if request["operation"] == "scope-recover-legacy" and (request.get("data") or {}).get("action") == "supersede":
+        return supersede_legacy_takeover(path, request["data"])
+    if request["operation"] == "scope-recover-legacy" and (request.get("data") or {}).get("action") == "activate":
+        return activate_legacy_takeover(path, request["data"])
     with record_lock(path):
         outer = read_record(path)
         require(outer.get("version") not in {1, 2, 3, 4, 5, 6}, "legacy_run_requires_original_runtime", "retain the original runner and record")
@@ -2977,6 +4929,10 @@ def handle(path, request):
         if member is not None:
             require(member.get("control",{}).get("context",{}).get("schema_version") == 5,
                     "legacy_run_requires_original_runtime", "retain the original embedded control runtime")
+            if member.get("recovery_mode") == "legacy-takeover" or outer.get("recovery_source") is not None:
+                recovery = verify_legacy_recovery(outer, path)
+                require(recovery["state"] != "takeover-pending" or request["operation"] == "inspect",
+                        "legacy_takeover_pending", "activate or reconcile the original takeover before new work")
         if request["operation"] == "deliver-requirement":
             return deliver_requirement(path, outer, request.get("data", {}))
         if request["operation"] == "prepare-requirement":
@@ -2993,8 +4949,20 @@ def handle(path, request):
             return _view(owner.state)
         # Exact duplicate observations/decisions may ACK even with an old revision.
         data = request.get("data", {})
+        if (operation == "start" and owner.state is not None and
+                owner.state.get("recovery_start_input") is not None and
+                owner.state["recovery_start_input"] == data and
+                any(value.get("state") == "consumed" for value in owner.state.get("scope_recoveries", {}).values())):
+            return _view(owner.state, acknowledged=True)
         duplicate = owner.state is not None and ((operation == "observe" and
             owner.state["events"].get(data.get("event_id"), {}).get("applied")) or
+            (operation == "scope-propose" and data.get("proposal_id") in owner.state.get("scope_proposals", {})) or
+            (operation == "scope-seal" and data.get("proposal_id") in owner.state.get("scope_seals", {})) or
+            (operation == "scope-revise" and (data.get("revision_id") in owner.state.get("scope_revisions", {}) or
+             data.get("revision_id") == (owner.state.get("scope_revision_transaction") or {}).get("input", {}).get("revision_id"))) or
+            (operation == "activate-scope-revision" and data.get("revision_id") ==
+             (owner.state.get("scope_revision_transaction") or {}).get("input", {}).get("revision_id") and
+             (owner.state.get("scope_revision_transaction") or {}).get("activation", {}).get("input") == data) or
             (operation == "recover-business" and data.get("decision_id") in owner.state.get("recovery_decisions", {})) or
             (operation == "decide" and (data.get("decision_id") in owner.state.get("decisions", {}) or
              owner.state.get("deferred_decisions", {}).get(data.get("decision_id"), {}).get("decision") == data)))
@@ -3015,6 +4983,10 @@ def handle(path, request):
             validate_snapshot_events(data['lifecycle'])
         try:
             if operation == "advance": return owner.advance()
+            if operation == "scope-propose": return owner.scope_propose(data)
+            if operation == "scope-seal": return owner.scope_seal(data)
+            if operation == "scope-revise": return owner.scope_revise(data)
+            if operation == "activate-scope-revision": return owner.activate_scope_revision(data)
             if operation == "observe": return owner.observe(data)
             if operation == "decide": return owner.decide(data)
             if operation == "publication": return owner.publication(data)
@@ -3038,6 +5010,9 @@ def handle(path, request):
             if operation == "resume": return owner.resume()
             raise entry.PreparationError("invalid_operation", "unknown progression operation")
         except entry.ERROR_TYPES + (control.ControlError,) as error:
+            if (operation in {"scope-propose", "scope-seal", "scope-revise", "activate-scope-revision"} or
+                    getattr(error, "code", None) in {"scope_revision_pending", "scope_conflict", "stale_scope_revision"}):
+                raise
             if operation == 'control' and data.get('action') in {'archive', 'archive-result'}:
                 return _view(owner.state, {'operation': 'control-effects', 'result': {'ok': False,
                     'handoff_id': data['evidence'].get('handoff_id'),

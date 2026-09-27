@@ -101,6 +101,7 @@ Flow Worktree：<exact verified binding, including lifecycle>
 允许动作：完整执行 $to-spec、必要 ADR、$ask-matt、$to-tickets、精确目标原生发布；只写入并提交本阶段拥有的本地规划文档。
 禁止动作：修改实现代码、创建 PR、部署、发布版本、改变规划目标、进入 3实现、修改冻结需求文档或处理无关任务。
 文档权威：冻结需求文档拥有需求；CONTEXT.md 拥有术语；ADR 拥有难逆决策；Spec 拥有实施方案与测试决策；Tickets 拥有实施切片和阻塞关系。不要创建单独的 2方案草案。
+范围交付：启动时 implementation_paths 与 closure_paths 均为未定；在 Spec/Tickets 写出逐文件清单及依据，规划提交后提供完整结构化 manifest、implementation_required、生成物 source→outputs 映射和各依据的提交/路径/章节。你只提案，由原 Controller 封存并出版。
 逐阶段模式：先完成 Spec、必要 ADR 和 Tickets 草稿及就绪检查；发布与终态前返回一次合并 SOLUTION_REVIEW_REQUIRED，询问接受完整方案、发布并进入实现；按匹配 review ID 的 PARENT_DECISION 修订或发布，主 Agent 沿用该授权进入实现。
 连续模式：此前的 执行后续全部流程 是标准方案选择和原生审阅问题的预授权；不发出 review 消息；仍完成方案就绪检查、原生发布和规划提交，通过后直接交付。
 范围扩展：认为需求边界外的改动是形成完整方案的必要条件时，按 $solution-design 的 visible-scope 规则返回 SOLUTION_DESIGN_ANOMALY，并等待用户明确决定。
@@ -139,6 +140,8 @@ Tickets 草稿：<paths, implementation order and dependencies | none with reaso
 测试依据：<Spec testing decisions>
 方案就绪检查：<Spec readiness and Ticket traceability evidence>
 实现范围：<included scope>
+实施文件清单：<exact implementation paths, operations and draft Spec/Ticket sections>
+归档文件清单：<exact closure paths and basis | explicit empty>
 既有行为变化：<behavior, compatibility, data and API effects | none>
 必要关联改动：<required collateral changes | none>
 明确不纳入：<out-of-scope improvements | none>
@@ -209,6 +212,9 @@ Tickets：<paths or URLs | none>
 Flow Worktree：<exact binding>
 本地规划路径：
 - <repository-relative path>
+下游 Manifest：<complete machine-readable per-file path, owner, kind, operation, basis {commit,path,section}, and generated source_paths>
+generated_outputs：<source-path-to-sorted-output-paths map when generated items exist | omitted otherwise>
+implementation_required：<true | false>
 发布结果：<completed results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
@@ -235,6 +241,8 @@ Matt 原生发布：Spec=<result>; Tickets=<result or none>; 原生标签与阻�
 Use after publication and mechanical intake. Reuse the saved combined-review
 acceptance; this footer adds no approval. For an explicit design-only request,
 render the actual stopped boundary instead of Stage-3 entry below.
+For a sealed `implementation_required=false` result, render the accepted
+planning-only route with no Stage-3 entry or dispatcher launch.
 
 ```text
 阶段结果：方案完成
@@ -247,6 +255,7 @@ Tickets：<clickable paths or URLs | 不需要，完整 Spec 可在一个实现�
 Flow Worktree：<exact retained binding at planning merge commit>
 本地规划路径：
 - <repository-relative path>
+封存范围：<current scope revision and seal reference>
 发布结果：<results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<confirmed Testing Decisions or exact Spec section>
@@ -279,6 +288,8 @@ Emit this complete block and invoke `$guided-implementation` in the same turn.
 Render mechanical fields from the accepted Stage Transfer result. Preserve the
 trusted child's semantic evidence, and verify native identity, Git publication,
 protected source and worktree facts through the adapter before consumption.
+When the current sealed scope is planning-only, report that terminal route and
+omit this Stage-3 handoff.
 
 ```text
 阶段结果：方案完成
@@ -293,6 +304,7 @@ Tickets：<clickable paths or URLs | 不需要，完整 Spec 可在一个实现�
 Flow Worktree：<exact retained binding at planning merge commit>
 本地规划路径：
 - <repository-relative path>
+封存范围：<current scope revision and seal reference>
 发布结果：<child-reported results>
 实现依据：<Spec and Tickets | complete Spec>
 测试依据：<child-reported Testing Decisions or exact Spec section>

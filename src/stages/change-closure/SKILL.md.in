@@ -33,6 +33,12 @@ protected requirement-source paths or `none`, and closure-owned document paths. 
 from Git that the clean inherited Flow Worktree `HEAD` is the accepted candidate
 and record the target's current `HEAD`; the target-advance path below applies
 when it differs from the handed-off publication base.
+Pin the sealed scope revision carried by that accepted Stage-3 candidate. Write
+only its closure-owned files; the final publication's allowed paths are the
+accepted implementation and closure lists. Keep every frozen requirement file
+protected even when the closure list is empty. A later unrelated scope revision
+does not change this candidate's closure authority. Return implementation gaps
+to the original Stage-3 Controller decision path before editing them here.
 
 An explicit `$change-closure` invocation starts stepwise closure. A transition
 from Stage 3 requires its complete handoff and either an unambiguous affirmation

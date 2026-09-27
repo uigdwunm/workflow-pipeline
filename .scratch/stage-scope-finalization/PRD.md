@@ -93,7 +93,7 @@ authorized 必须绑定 snapshot、最新宿主 query/generation、完整 settle
 
 恢复只在同一 checkpoint 进行。scope_recoveries 是追加恢复事务与历史快照成员，不是另一套活动投影。inspect 只读。prepare-takeover 在原 Controller 授权及停止屏障满足后，取得原 runner RunLock（适用时），再取得原 record_lock，在锁内重读 exact old digest，保存旧 checkpoint 完整原始 UTF-8 字节、SHA-256、规范文件身份及旧 pin/accepted 索引。快照只追加一次并永不覆写，所有旧接受及历史均可从原字节复原。
 
-在同一原子文件替换中，将唯一 current workflow_progress 切为合法 v13 takeover-pending 投影；runner 的当前 outer 切为新 outer 7，新 confirmed/pins 明确属于补充授权的新运行。旧 outer 6/confirmed/sessions/pins 完整留在旧快照，不转换成新版证据。新投影尚无派发权限。旧 v12 handle 的现有 protocol guard、旧 runner 的 version guard 因而拒绝后续操作。这确实改变 current 指针与当前运行封套，不能宣称旧运行完全无状态变化；历史原貌与当前权威接管是不同约束。
+在同一原子文件替换中，将唯一 current workflow_progress 切为合法 v14 takeover-pending 投影；若有 runner，其当前 outer 切为新 outer 8，新 confirmed/pins 明确属于补充授权的新运行。旧 outer 6/confirmed/sessions/pins 完整留在旧快照，不转换成新版证据。新投影尚无派发权限。旧 v12 handle 的现有 protocol guard、旧 runner 的 version guard 因而拒绝后续操作。这确实改变 current 指针与当前运行封套，不能宣称旧运行完全无状态变化；历史原貌与当前权威接管是不同约束。
 
 接管前停止证据覆盖旧 designer、CLI carrier、相关子 Agent、runner host transport、未决业务/出版/接受调用和已发起的 Controller 写命令。原 Controller 可执行恢复编排，但不能仍有旧包写命令或 continuation 在途。拿到锁不能代替作者停止证据：必须先取得原请求身份关联的完成/终止响应，再在锁内重新核验。旧命令持锁则待其正常释放后重读；仍可迟到写回、原 host 不可查或 runner 持锁则阻断，不杀进程、不删锁、不把超时当终止。顺序固定为 runner RunLock → C record_lock → Topic ledger transaction；宿主等待在短 record lock 外完成。
 
@@ -101,17 +101,17 @@ read-only inspect 首先验证原 accepted Stage-2、downstream_ready 历史事�
 
 原 Controller 的补充决定绑定上述快照摘要、原记录身份、exact new manifest、同一需求/规划/工作区和新 pins；恢复使用新包正常 preflight/current registry。旧只读 verifier 接收冻结旧对象及真实 Git/host 证据；若调用旧包，只调用其纯验证函数或只读 API，不向新 current 路径调用旧 runner。旧包不可用或 digest 不符就阻断；新解析成功不能替代旧身份核验。旧宿主证据仍按原语义验证；新宿主重新 admission，不能把新 inventory 冒充旧宿主停止证据。
 
-恢复状态 inspected → takeover-pending → authorized → consumed，key 为规范 checkpoint 身份 + 原 accepted digest；同一 key 只有一个有效补充授权。同内容重放 ACK；异内容须对未消费授权显式 supersede 并保留前版，current 不回退。消费与 Stage-3 launch intent 在唯一当前 v13 checkpoint 同次锁内原子保存，宿主调用在其后；lost response 只 reconcile 原 intent。消费后回归普通 v13 start/dispatch/accept/publication，不要求长期 recovery_id 选择另一路径；scope_recoveries 仅保存 provenance 与幂等索引。canonical checkpoint、原 Controller/current control 与原宿主来源共同确证身份，复制 JSON 不获得第二消费权。consumed 后只可用普通 scope-revise。
+恢复状态 inspected → takeover-pending → authorized → consumed，key 为规范 checkpoint 身份 + 原 accepted digest；同一 key 只有一个有效补充授权。同内容重放 ACK；异内容须对未消费授权显式 supersede 并保留前版，current 不回退。消费与 Stage-3 launch intent 在唯一当前 v14 checkpoint 同次锁内原子保存，宿主调用在其后；lost response 只 reconcile 原 intent。消费后回归普通 v14 start/dispatch/accept/publication，不要求长期 recovery_id 选择另一路径；scope_recoveries 仅保存 provenance 与幂等索引。canonical checkpoint、原 Controller/current control 与原宿主来源共同确证身份，复制 JSON 不获得第二消费权。consumed 后只可用普通 scope-revise。
 
 附着场景采用可恢复的两阶段接管，不假装跨文件原子：先保存本地 takeover-pending，关闭旧 C/runner；再在原 Topic workflow-control 事务保存旧完整 control 值和 checkpoint/snapshot/transaction 引用，将唯一 current control 切至 schema 5 takeover-pending；最后精确回读该事务并使两侧 active。每步绑定原 Controller、Topic binding、expected revisions 和 idempotency key。中断均无新派发权限：本地 pending/ledger 未变则重试原事务；ledger 已切换/本地未回执则按事务 ID 回读；冲突保留接管状态，不回退旧 current。旧讨论入口的 schema 4 guard 拒绝新 current。消费时 ledger 先按原控制事务保存 reservation，C 确认原事务后才落 consumed+launch-intent，未知窗口不能重复派发。Topic 必须仍在已完成 Stage-2 的 Phase 2，不能有 Phase-3 intent、未 finalize 旧 phase 或绑定漂移。
 
-新 runner 从唯一 current outer 7 正常运行，明确从已接受规划的新交接进入 Stage 3，不复用旧 CLI sessions，不把旧 accepted 伪装为新版接受记录。新补充授权构造的是 scope handoff，旧 accepted 只是只读来源证据。后续 Stage 3 走原合法 Phase Run，新记录引用恢复来源；不改写旧 Phase Run。
+新 runner 从唯一 current outer 8 正常运行，明确从已接受规划的新交接进入 Stage 3，不复用旧 CLI sessions，不把旧 accepted 伪装为新版接受记录。新补充授权构造的是 scope handoff，旧 accepted 只是只读来源证据。后续 Stage 3 走原合法 Phase Run，新记录引用恢复来源；不改写旧 Phase Run。
 
-旧包 preparation key 的 v3 与 v4 是两种明确源组合，分别以 fixture 验证；其他兼容键按原 pin 完整匹配，不靠默认补字段。当前设计执行包 pin 为 preparation-v3，仓库基线构建为 v4，这是既存不同版本，设计工作不修改执行 pin。
+旧包 preparation-v3/无 confirmation、preparation-v4/无 confirmation、preparation-v4/confirmation-v3 是三个明确的完整兼容键组合，分别以历史 fixture 核验；其他键按原 pin 完整匹配，不靠默认补字段。设计规划交接原 pin 为 preparation-v3，原设计时仓库构建为 v4；实施基线 e24136f 已是 v5。这些是不同时间与身份的事实，恢复不修改原执行 pin。
 
 ### D6 — 版本与兼容边界
 
-新普通协议为 workflow-progress-v13、workflow-stage-transfer-v8、control compatibility key 7 / JSON schema 5、runner outer 7。新增范围 envelope 内部 version=1。entry-v3、preparation-v4（仓库基线现状）、requirement-freeze-v2、requirement delivery、thread-settings-v5、supervision flow-worktree-v2、discussion request 与 ledger 存储版本保持不变；它们的数据语义不需升级。控制嵌入数据以其 schema 5 校验，ledger 3 保留旧嵌入对象只读解释与历史，拒绝普通变更操作隐式转换。
+实施基线 e24136f 已先行使用 progress-v13、transfer-v8、control key 7/schema 5、runner outer 7，并升级 entry-v4、preparation-v5、requirement-delivery-v2、supervision flow-worktree-v3。因此本次新普通协议使用 workflow-progress-v14、workflow-stage-transfer-v9、control compatibility key 8 / JSON schema 5、runner outer 8。新增范围 envelope 内部 version=1。entry-v4、preparation-v5、requirement-freeze-v2、requirement-delivery-v2、thread-settings-v5、supervision flow-worktree-v3、discussion request 与 ledger 存储版本沿用当前实施基线，不回退。控制嵌入数据以其 schema 5 校验，ledger 3 保留旧嵌入对象只读解释与历史，拒绝普通变更操作隐式转换。
 
 五个生成包使用完全一致的新 compatibility_key。新普通操作遇旧 pin、旧 runner 或旧 checkpoint 一律拒绝；只有 scope-recover-legacy 的独立白名单入口能在通用 version guard 之前执行只读资格验证，再显式原子接管 current 并追加旧原始快照。该白名单不扩展到 pause/cancel/start/accept/publication。仓库构建配置作为兼容键唯一来源，显式声明 stage_scope 资源并放入五包资源闭包，生成物不手改。发行版本号更新、安装及现有注册更新不属于本任务。
 
@@ -149,14 +149,26 @@ read-only inspect 首先验证原 accepted Stage-2、downstream_ready 历史事�
 | 故障注入 | 每一持久意图/控制调用/宿主调用/结果保存/生效之间中断；恢复复用事务，零重复 dispatch/publication/accept |
 | 旧恢复 | 合成删除记录同结构 v12/v7 Stage-2 accepted、empty/nonempty missing 范围；旧快照原字节/hash 保持、同一 Git/worktree、零重设计/出版、补充消费一次 |
 | 旧恢复拒绝 | Stage-3 任一 intent/history/session、未 final Phase、旧 host 不可查、旧包变更、伪造摘要/Controller、复制 checkpoint、新 manifest 复用 ID 均拒绝 |
-| 旧进程隔离 | 真实多进程锁测试：旧 runner 持 RunLock 时接管失败；旧 C 已持 record lock 时先完成并使旧摘要失效；旧命令在锁后才读取时被 v13/outer7/schema5 拒绝；不重放旧业务；旧快照能由原 verifier 在 current 切换后只读验证 |
+| 旧进程隔离 | 真实多进程锁测试：旧 runner 持 RunLock 时接管失败；旧 C 已持 record lock 时先完成并使旧摘要失效；旧命令在锁后才读取时被 v14/outer8/schema5 拒绝；不重放旧业务；旧快照能由原 verifier 在 current 切换后只读验证 |
 | 附着两阶段接管 | 在本地切换前后、ledger CAS 前后和回执前后逐点故障注入；所有 pending 窗口零派发，回读原事务后一次性激活，历史原值不变；规划接受→Phase finalize→ready 顺序无循环 |
-| runner / attached | 同一 C seam 两种 carrier；旧 outer 6 原字节留存、新 outer 7 接管；唯一 current 与 Topic CAS 断点恢复；过期 ledger/绑定拒绝 |
+| runner / attached | 同一 C seam 两种 carrier；旧 outer 6 原字节留存、新 outer 8 接管；唯一 current 与 Topic CAS 断点恢复；过期 ledger/绑定拒绝 |
 | 独立/连续/包兼容 | 独立 Stage 3 sealed 启动；continuous 不新增人为审批；五包独立导入/混合键拒绝/老普通操作拒绝/显式窄恢复成功 |
 
-沿用 stage-transfer、workflow-progress、publication-progress/recovery、collaboration-lifecycle、unified-recovery、attached-flow-progress、parallel-runner、foreground-host 的真实 fixture；新增 test_stage_scope 只覆盖共享纯规则的难组合，避免重复实现断言。control schema bump 同时更新 requirement-delivery 中调用控制入口的 fixture。
+沿用 stage-transfer、workflow-progress、publication-progress/recovery、collaboration-lifecycle、unified-recovery、attached-flow-progress、parallel-runner、foreground-host 的真实 fixture；新增 test_stage_scope 只覆盖共享纯规则的难组合，避免重复实现断言。实施时 control compatibility key 升至 8，嵌入 JSON schema 保持 5；相关 fixture 按实际调用入口更新。
 
-实现时先跑受改动模块对应测试，再完整 repository validator、package build --check、tests/packages 与 tests/runtime。生成输出用临时目录比较精确 diff，不安装。当前阶段只核验文档、路径/闭包和源码事实，以上行为测试是 Stage 3 验收要求，不声称已经实现或运行通过。
+实现时先跑受改动模块对应测试，再完整 repository validator、package build --check、tests/packages 与 tests/runtime。生成输出用临时目录比较精确 diff，不安装。原方案确认时只核验了文档、路径/闭包和源码事实；以下记录实施后的实际进度，不将当时的规划审阅当作行为测试结果。
+
+## 实施记录（2026-09-27，项目修复与回归完成）
+
+实施从 e24136f 基线继续，该基线已是 progress-v13、transfer-v8、control key 7/schema 5、runner outer 7；因此本修复的当前代码与五包构建配置采用 progress-v14、transfer-v9、control key 8/schema 5、runner outer 8。原 v12/v7 checkpoint、原 pin 与 ADR-0008 限制仍是历史事实；这次只修改项目实现和合成测试记录，不接管用户的真实旧运行。
+
+源码已加入共享 `stage_scope`，B/C 的范围提案、封存、当前 readiness、受控修订与旧 Stage-2 白名单接管，以及 runner/附着 Topic 的相应入口。生成物使用 source→outputs 清单逐文件校验；需求外变更需引用原 Controller 持久用户决定。旧接管保留原 checkpoint 字节与 pin，在同一路径创建当前补充授权；附着 Stage-3 派发前还要在原 ledger 预留具体 Phase Run。已接受规划的 `planning_complete` 与可派发的 `handoff_ready` 分开。
+
+当前源码与五个生成包已同步。`./scripts/validate.sh --jobs 2` 完整执行 56 个模块、989 项测试，发现 1 项旧分配 fixture 错把新 HEAD 的文件操作当作原封存清单；修正该 fixture 后 `test_dispatch_recovery.py` 13/13 整组复测通过，生产代码未因此改动。其余模块均通过；另补充 `test_stage_scope_revision_edges.py` 6/6 和 `test_stage_scope_legacy_locks.py` 5/5。最终覆盖 58 个模块、1,000 个用例，999 项通过、1 项既有跳过。初次全量命令的退出码为 1，后续失败模块复测和独立构建检查、repository validator 均为 0；不把初次运行记为一次全绿。validator 报告 5 个 Skill、81 个引用、58 个测试文件且 issues 为空；`build_skills.py --check` 与 `git diff --check` 通过。
+
+补充验证包含真实 prep-v4 无 confirmation 历史包、真实多进程 RunLock/record-lock 竞争、唯一接管和旧进程迟到写入拒绝，以及未结清执行分配、运行中 reviewer、在途文件删除/转交、Stage 4 已启动和旧 direct 策略复用的拒绝。范围模型将 146 项同依据清单的 Git 调用从 588 次降至 9 次；同次接受复用已验证的就绪结果。前台只对发送前的只读生命周期查询锁忙延后，已发送请求及其他错误不被吞掉，4 项确定性测试与前台 31 项整组均通过。
+
+未验证边界仍保留：真实附着旧 schema 4 正向恢复缺少带原 WC 链的历史 fixture，当前已验证缺链记录被拒绝和真实临时 Topic 的组合事务；没有执行用户真实 checkpoint 接管、本机安装或现场宿主验收。D4 各持久化边界的逐点故障注入和附着修订 CAS 全链验证尚未穷尽，相关 Ticket 不作整份方案无保留归档。
 
 ## Out of Scope
 
@@ -364,3 +376,35 @@ ask-matt 路由结论：采用 to-tickets。正常封存、活动修订、旧接
 | 04 五包与跨入口契约验收 | D6/D7；正常/修订/接管组合、生成闭包、注册兼容、用户 Skill 文本完整同步 | 02、03；五包构建校验、runner/附着完整回归 |
 
 01 必须带正常生产路径、相应版本及资源闭包和必要文本一起完成；02/03 同样随实现更新对应生成物，不留坏包到 04。04 负责完整发行面的组合验收与剩余跨流程文档同步，不代替前面切片的功能验证。02 与 03 只有语义依赖 01；它们会修改共享生产文件，Dispatcher 应串行整合或分配精确非重叠文件，不能仅因无阻塞边就并发覆盖。全部 Ticket 继承本 Spec 的 146/6 精确集合，不能扩大权限；六项旧 ceiling 缺口在真正实施前仍须解决。
+
+
+### 当前基线的关联路径补充
+
+本次项目修复依据本对话“修可以”的直接授权，从 e24136f 实施；未消费、改写或重算原运行的旧 ceiling。实际变更为 141 个路径；相对下面历史规划清单，当前基线的版本文档、既有 fixture 和新增行为测试需要以下关联路径。生成副本仍只由 builder 生成。
+
+```text
+README.md
+skills/change-closure/references/shared/guided-implementation/worktree-execution.md
+skills/guided-implementation/references/shared/guided-implementation/worktree-execution.md
+skills/solution-design/references/shared/guided-implementation/worktree-execution.md
+src/shared/references/guided-implementation/worktree-execution.md
+tests/runtime/test_attached_design_recovery.py
+tests/runtime/test_dedicated_stage.py
+tests/runtime/test_dispatch_recovery.py
+tests/runtime/test_entry_recovery_chain.py
+tests/runtime/test_lifecycle_snapshot_retry.py
+tests/runtime/test_requirement_workspace.py
+tests/runtime/test_review_first_validation.py
+tests/runtime/test_scope_seal_control.py
+tests/runtime/test_solution_review_progress.py
+tests/runtime/test_stage_scope_accepted_revision.py
+tests/runtime/test_stage_scope_attached_legacy.py
+tests/runtime/test_stage_scope_legacy.py
+tests/runtime/test_stage_scope_legacy_attached_flow.py
+tests/runtime/test_stage_scope_legacy_locks.py
+tests/runtime/test_stage_scope_progress.py
+tests/runtime/test_stage_scope_revision_edges.py
+tests/runtime/test_stage_scope_runner.py
+tests/runtime/test_stage_scope_supersede.py
+tests/runtime/test_stage_scope_transfer.py
+```

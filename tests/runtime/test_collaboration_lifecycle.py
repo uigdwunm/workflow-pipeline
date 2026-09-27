@@ -35,6 +35,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
         f.flow_git('add', 'docs/spec.md')
         f.flow_git('commit', '-qm', 'plan')
         candidate = f.flow_git('rev-parse', 'HEAD')
+        proposal_digest = f.propose_design_scope(candidate)
         observed = f.observation('stopped', 'result', ref='/root/designer')
         observed.pop('lifecycle')
         observed['publication_candidate'] = {'candidate_commit': candidate,
@@ -42,6 +43,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
         pending = f.invoke('observe', observed)['pending']
         f.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
                            'answer': 'accept', 'reference': 'controller:ready'})
+        f.seal_design_scope(proposal_digest)
         return candidate
 
     def snapshot(self, inventory=None):

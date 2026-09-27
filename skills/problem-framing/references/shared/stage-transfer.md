@@ -2,7 +2,7 @@
 
 Use the pinned `scripts/stage_handoff.py` and `scripts/stage_dispatch.py`.
 Both take one bounded strict JSON object on stdin. Protocol is
-`workflow-stage-transfer-v8`. Success is `{ok:true,result:...}` (exit 0);
+`workflow-stage-transfer-v9`. Success is `{ok:true,result:...}` (exit 0);
 failure is `{ok:false,error:{code,operation,message,downstream_ready:false,
 completed_evidence,recovery}}` (exit 1). A digest detects changes, never
 authenticates a caller, receipt, user decision or semantic conclusion.
@@ -30,11 +30,12 @@ adapter owns argument mapping, actual identity, stopped-writer observations and
 governance disclosures/bookkeeping. Its private schema/version/session is not
 copied into B. Effects and host_call are plans, never execution receipts.
 
-Stage 2's pre-publication child completion is a planning candidate. Its existing
-stage owner publishes once, retains that receipt, then submits completed transfer
-evidence. B verifies planning/publication commits, local paths and the retained
-flow. It does not publish, re-review prose, certify test execution or validate
-remote Matt artifact URLs. Stage 4 publication/cleanup stay D-owned.
+Stage 2's pre-publication child completion is a planning candidate. The
+Controller seals its proposed downstream file manifest through C before the
+stage owner publishes once and submits completed transfer evidence. B verifies
+the current scope authority, planning/publication commits, local paths and
+retained flow. It does not publish, re-review prose, certify test execution or
+validate remote Matt artifact URLs. Stage 4 publication/cleanup stay D-owned.
 
 C's `receive-publication` is stage-owner composition: it preserves the original
 stopped native candidate and raw host receipt separately from the later verified
@@ -62,7 +63,9 @@ gate/control path; never invent a requirement or attachment to fit B.
 | target | Exact `{repository,branch}` |
 | delivery | Null for source already on target, otherwise proof below |
 | binding | Null at 0/1; actual Flow Worktree binding downstream |
-| scope | `{baseline,owned_paths,protected_paths,implementation_paths,closure_paths}` |
+| scope | `{baseline,owned_paths,protected_paths,implementation_paths,closure_paths,downstream}`; see lifecycle below |
+| readiness | C's current `scope_readiness` projection for a Stage-2 successor; otherwise omitted |
+| generated_outputs | Optional top-level source-path-to-output-paths map only for independent Stage 3; required when its manifest has generated entries |
 | authorization | `{reference,flow_mode,scope_digest}` from confirmed checkpoint |
 | configuration | Existing select-configuration input for the actual target role |
 | semantic | `{objective,testing_basis,completion_criteria,constraints}` |
@@ -71,6 +74,20 @@ Flow mode is stepwise or continuous. Scope digest uses entry_prepare.digest;
 the saved controller decision binds it, not a new permission token. Completion
 criteria and constraints are nonempty text lists. Path lists are sorted, unique
 exact repository-relative files; directories must be expanded and new files named.
+Stage 2 starts with `implementation_paths:null`, `closure_paths:null`, and
+`downstream:{state:"unresolved",revision:0,implementation_required:null,
+manifest:null,proposal_ref:null,seal_ref:null}`. Null means design has not yet
+determined downstream files; an explicit empty array means the sealed owner has
+no files. Stage 2 may write only its `owned_paths`. After completing Spec/Tickets,
+the designer supplies a per-file manifest. Each item names path, owner
+(`implementation` or `closure`), kind (`source`, `test`, `generated`, or
+`document`), operation (`add`, `modify`, or `delete`), and committed Spec/Ticket
+basis; generated files also name their `source_paths`. C records the Controller's
+seal and derives both path arrays from this one manifest.
+For independent Stage 3, `generated_outputs` is sealed into the B input digest
+and must match each generated manifest item's exact sources and output path.
+For inherited Stage-3/4 handoffs, B obtains the mapping from the current sealed
+authority; a caller-supplied top-level map cannot override it.
 Baseline is current downstream HEAD, except Stage 4 retains the accepted Stage-3
 scope baseline and separately checks its candidate against current HEAD.
 Execution allocations may start at a later dispatcher commit: their baseline is
@@ -85,6 +102,13 @@ listed for later closure. Stage 2→3 preserves that approved closure list. Stag
 may remove only those previously approved closure paths from inherited protection;
 all other protected paths remain protected. Frozen requirements can never be
 closure-owned. Do not derive authorized scope from observed diff contents.
+Stage-2 acceptance means `planning_complete`; it does not by itself mean
+`handoff_ready` or `downstream_ready`. Stage-3 preparation consumes C's current
+sealed scope authority and `scope_readiness` in `readiness`. B checks that
+projection against the original checkpoint, including scope revision, publication,
+stopped-writer, and phase-finalization evidence. Render an accepted Stage-2 result
+with the same readiness before using its Stage-3 payload. Neither a copied old
+launch scope nor an expanded allowed-path list is an effective handoff.
 
 For dedicated dispatch with two control slots, authorization also requires
 `control_plan_id` from the exact confirmed ledger plan. B selects that slot before
@@ -106,7 +130,8 @@ requires a successful frozen Git source. Non-Git Stage 0 keeps snapshot authorit
 
 The sealed stage-input retains the whole request, controller_ref,
 requirement_identity, source_commit, delivery_facts and selection.
-`verify` and `render` take exactly `{protocol,operation,handoff}`. Verify checks
+`verify` and `render` require `{protocol,operation,handoff}`. Render consumes
+the current `readiness` for a Stage-2 accepted predecessor. Verify checks
 current facts without replacing pins or authorization. Render returns payload
 and readable JSON text; it does not revalidate or authorize execution. Embed this
 unchanged machine payload in the existing role-specific bootstrap instructions;
@@ -224,8 +249,11 @@ resources need not be absent; partial disposition preserves publication and does
 not permit republishing.
 
 Accept adds `decision={reference,delivery_digest}` from the controller's confirmed
-checkpoint. Received Git facts are checked again. Only the sealed accepted result
-can be a successor predecessor. Allocation acceptance is not stage completion.
+checkpoint. For Stage 2, receive and accept also carry the original
+`scope_checkpoint_path` and current `scope_authority`; B rereads the seal and
+does not turn acceptance alone into downstream readiness. Received Git facts
+are checked again. Only the sealed accepted result can be a successor
+predecessor when current readiness also holds. Allocation acceptance is not stage completion.
 Accepted replay ACKs without mutation; prospective consumption separately checks
 freshness. B never dispatches a successor, archives tasks or runs a recovery loop.
 
@@ -238,10 +266,27 @@ rejected, not rewritten. Flow bindings prove execution Git identity and share th
 discussion's common directory; they do not select its owner. Stage-4 intake reads
 the surviving discussion project without refreshing the removed execution checkout.
 
-Packages add stage_transfer=workflow-stage-transfer-v8 to their exact compatibility
+Packages add stage_transfer=workflow-stage-transfer-v9 to their exact compatibility
 key. Old runs keep original pinned runtime/records; no migration. Full A evidence
 stays outside strict control context. Only necessary design and launch transitions
 extend the existing control checkpoint.
+
+The narrow legacy Stage-2 recovery has one explicit exception at Stage-3
+preparation: C produces a v9 `legacy-supplemental-acceptance` bridge, carrying
+the original accepted v7 result as read-only evidence. B verifies the bridge
+against the current C recovery record, original accepted digest and raw snapshot
+hash, requirement, Controller, Flow Worktree, sealed manifest and current
+readiness. The v7 result is never re-signed as a normal v9 acceptance. This
+bridge grants only the one Stage-3 Dispatcher handoff after the original
+Controller completes takeover; it does not bypass normal v9 guards for any
+other operation or old pin combination.
+For an attached Topic, C first verifies the exact ledger reservation for the
+new `2→3` Phase Run and attempt, then supplies its current recovery readiness
+to B. The bridge's old v7 acceptance never substitutes for that Phase
+authorization, a stopped-writer proof, or a new native host admission.
+If the unconsumed supplemental decision is superseded, B accepts only the
+replacement bridge and current readiness; the earlier bridge remains audit
+history with no launch authority.
 
 Version 7 uses authenticated native adapter inventory for Stage-3 selection and
 removes the account catalog gate and `selection_catalog` field. Version 6 records

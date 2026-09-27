@@ -13,14 +13,14 @@
     ],
     "ledger_write": 3,
     "topic_gate": "phase-0-1-discussion-v2",
-    "control": 7,
+    "control": 8,
     "entry": "workflow-entry-v4",
-    "runner": 7,
+    "runner": 8,
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v5",
-    "stage_transfer": "workflow-stage-transfer-v8",
-    "workflow_progress": "workflow-progress-v13",
+    "stage_transfer": "workflow-stage-transfer-v9",
+    "workflow_progress": "workflow-progress-v14",
     "requirement_delivery": "requirement-delivery-v2"
   },
   "resources": {
@@ -292,6 +292,10 @@
       "source": "src/shared/scripts/stage_handoff.py",
       "output": "scripts/stage_handoff.py"
     },
+    "shared/scripts/stage_scope.py": {
+      "source": "src/shared/scripts/stage_scope.py",
+      "output": "scripts/stage_scope.py"
+    },
     "shared/scripts/stage_dispatch.py": {
       "source": "src/shared/scripts/stage_dispatch.py",
       "output": "scripts/stage_dispatch.py"
@@ -367,6 +371,7 @@
         "shared/references/entry-preparation.md",
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
+        "shared/scripts/stage_scope.py",
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
@@ -417,6 +422,7 @@
         "shared/references/entry-preparation.md",
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
+        "shared/scripts/stage_scope.py",
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
@@ -475,6 +481,7 @@
         "shared/references/entry-preparation.md",
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
+        "shared/scripts/stage_scope.py",
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
@@ -540,6 +547,7 @@
         "shared/references/entry-preparation.md",
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
+        "shared/scripts/stage_scope.py",
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
@@ -597,6 +605,7 @@
         "shared/references/entry-preparation.md",
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
+        "shared/scripts/stage_scope.py",
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",

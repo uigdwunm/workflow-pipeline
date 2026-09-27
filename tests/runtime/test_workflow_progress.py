@@ -25,7 +25,7 @@ class ProgressTests(transfer.StageTransferTests):
         super().setUp()
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.checkpoint = Path(temporary.name) / "checkpoint.json"
+        self.checkpoint = (Path(temporary.name) / "checkpoint.json").resolve()
         self.host_response_sequence = 0
 
     def state(self):
@@ -342,6 +342,28 @@ class ProgressTests(transfer.StageTransferTests):
         self.invoke("decide", {"decision_id": pending["decision_id"], "subject": pending["subject"],
                                "answer": "accept", "reference": reference})
 
+    def propose_design_scope(self, candidate, section="approved design"):
+        saved = self.state()
+        basis = {"commit": candidate, "path": "docs/spec.md", "section": section}
+        proposal = {"proposal_id": "proposal-1", "expected_revision": 0,
+            "candidate_commit": candidate, "manifest": [
+                {"path": "CHANGELOG.md", "owner": "closure", "kind": "document",
+                 "operation": "add", "basis": basis},
+                {"path": "impl.py", "owner": "implementation", "kind": "source",
+                 "operation": "add", "basis": basis}],
+            "implementation_required": True,
+            "requirement_identity": copy.deepcopy(saved["handoff"]["requirement_identity"]),
+            "binding": copy.deepcopy(saved["handoff"]["binding"]), "previous_scope_revision": 0}
+        proposed = self.invoke("scope-propose", proposal)
+        self.assertEqual(proposed["next_action"]["operation"], "scope-proposed", proposed)
+        return proposed["next_action"]["proposal"]["digest"]
+
+    def seal_design_scope(self, proposal_digest):
+        sealed = self.invoke("scope-seal", {"proposal_id": "proposal-1",
+            "proposal_digest": proposal_digest, "controller_ref": "task",
+            "decision": {"kind": "in-requirement-refinement", "reference": "controller:scope-review"}})
+        self.assertEqual(sealed["next_action"]["operation"], "scope-sealed", sealed)
+
     def prepare_design_result(self, mode):
         self.begin(mode)
         self.invoke("observe", self.observation())
@@ -349,7 +371,9 @@ class ProgressTests(transfer.StageTransferTests):
         self.flow_git("add", "docs/spec.md")
         self.flow_git("commit", "-qm", "plan")
         planning = self.flow_git("rev-parse", "HEAD")
+        proposal_digest = self.propose_design_scope(planning)
         self.ready_publication(planning, "controller:planning-readiness")
+        self.seal_design_scope(proposal_digest)
         published = self.invoke("publication", {"candidate_commit": planning, "reference": "controller:planning-readiness"})
         self.assertTrue(published["next_action"]["publication"]["result"]["ok"], published)
         payload = {"artifacts": ["docs/spec.md"], "checks": ["design readiness"], "planning_commit": planning,
@@ -376,7 +400,9 @@ class ProgressTests(transfer.StageTransferTests):
         self.invoke("pause")
         self.invoke("observe", self.observation("stopped", "result"))
         self.invoke("resume")
+        proposal_digest = self.propose_design_scope(candidate)
         self.ready_publication(candidate, "original:review")
+        self.seal_design_scope(proposal_digest)
         result = self.invoke("publication", {**request, "reference": "different:review"})
         self.assertEqual(result["error"]["code"], "candidate_changed")
         self.assertNotIn("publication", self.state())
@@ -392,7 +418,9 @@ class ProgressTests(transfer.StageTransferTests):
         self.flow_git("add", "docs/spec.md")
         self.flow_git("commit", "-qm", "plan")
         candidate = self.flow_git("rev-parse", "HEAD")
+        proposal_digest = self.propose_design_scope(candidate)
         self.ready_publication(candidate, "original:review")
+        self.seal_design_scope(proposal_digest)
         original = transfer.supervision._merge_candidate_into_target
         def crash(*args):
             original(*args)
@@ -2027,10 +2055,8 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
 
         with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
                 patch.object(runner, '_stage_prompt', return_value='prompt'), \
-                patch.object(runner, '_invoke', side_effect=accept_before_issue), \
-                patch.object(runner.stage_handoff, 'render',
-                             side_effect=AssertionError('accepted projection reached')):
-            with self.assertRaisesRegex(AssertionError, 'accepted projection reached'):
+                patch.object(runner, '_invoke', side_effect=accept_before_issue):
+            with self.assertRaisesRegex(runner.WorkflowError, 'scope_incomplete'):
                 runner._advance_in_host(self.state, self.checkpoint, None, Host())
 
     def test_normal_turn_rechecks_business_block_after_progress_read(self):

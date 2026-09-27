@@ -88,7 +88,9 @@ class DeliveryTests(EntrySupport):
         downstream['host']['project_path'] = str(flow)
         downstream = self.with_registration(downstream, project=self.root, receipt='host:receiving-project-registry')
         scope = {'baseline': binding['base_commit'], 'owned_paths': ['docs/spec.md'], 'protected_paths': [self.path],
-                 'implementation_paths': ['impl.py'], 'closure_paths': []}
+                 'implementation_paths': None, 'closure_paths': None,
+                 'downstream': {'state': 'unresolved', 'revision': 0, 'implementation_required': None,
+                                'manifest': None, 'proposal_ref': None, 'seal_ref': None}}
         prepared = handoff.handle({'protocol': handoff.PROTOCOL, 'operation': 'prepare', 'entry': downstream,
             'expected_entry': entry.resolve(downstream), 'stage': 2, 'role': 'solution-designer', 'requirement': self.frozen,
             'predecessor': None, 'target': self.delivery_request['target'], 'delivery': outcome['delivery'], 'binding': binding,

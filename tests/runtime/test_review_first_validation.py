@@ -408,6 +408,10 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.context = self.context_for(3)
         value = self.input_for(3)
         value['scope']['implementation_paths'] = ['impl.py', 'sibling.py']
+        manifest = value['scope']['downstream']['manifest']
+        manifest.append({'path': 'sibling.py', 'owner': 'implementation', 'kind': 'source',
+                         'operation': 'modify', 'basis': copy.deepcopy(manifest[-1]['basis'])})
+        manifest.sort(key=lambda item: item['path'])
         value['authorization']['scope_digest'] = control.digest(value['scope'])
         value['semantic']['implementation_policy'] = self.direct_policy(value)
         self.begin('continuous', value)
@@ -426,6 +430,7 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.flow_git('merge', '--no-edit', 'main')
         execution = self.execution_input()
         execution['scope']['implementation_paths'] = ['impl.py', 'sibling.py']
+        execution['scope']['downstream'] = copy.deepcopy(value['scope']['downstream'])
         execution['authorization']['scope_digest'] = control.digest(execution['scope'])
         execution['semantic']['adopt_paths'] = ['impl.py']
         execution['semantic']['adoption_snapshot_digest'] = checkpoint['implementation_escalation']['snapshot_digest']
@@ -594,6 +599,12 @@ class ReviewFirstTests(fixture.ProgressTests):
         locations = ['executable.py', 'impl.py', 'remove.py']
         value['scope']['implementation_paths'] = locations
         value['scope']['owned_paths'] = locations
+        manifest = value['scope']['downstream']['manifest']
+        basis = copy.deepcopy(manifest[-1]['basis'])
+        manifest.extend({'path': name, 'owner': 'implementation', 'kind': 'source',
+                         'operation': operation, 'basis': copy.deepcopy(basis)}
+                        for name, operation in (('executable.py', 'modify'), ('remove.py', 'delete')))
+        manifest.sort(key=lambda item: item['path'])
         value['authorization']['scope_digest'] = control.digest(value['scope'])
         policy = self.direct_policy(value)
         policy['assessment']['implementation_paths'] = locations

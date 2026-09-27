@@ -756,7 +756,7 @@ class HostProtocolTests(unittest.TestCase):
         result = {'answers':{'question':{'answers':['x' * (128 * 1024)]}}}
         decision = {'decision_id':pending['decision_id'],'subject':pending['subject'],
                     'answer':json.dumps(result),'reference':'controller-answer:'+pending['decision_id']}
-        state = {'version':7,'status':'needs_input','current_stage':'stage2',
+        state = {'version':8,'status':'needs_input','current_stage':'stage2',
                  'transport':{'instance':self.host.instance,'server_decision':decision}}
         progress.atomic_save(checkpoint,state)
         return checkpoint, state, request, result

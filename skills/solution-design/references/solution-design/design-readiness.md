@@ -96,6 +96,29 @@ the combined review before planning publication, or direct publication in contin
   silently redesign it. Repair the Spec first, then regenerate the affected
   Ticket content.
 
+## Downstream file manifest
+
+Before the planning candidate is committed, enumerate each file required to
+execute and close the design. Include production code, behavior tests, generated
+outputs, migration or configuration files, and planning documents that Stage 4
+will update. Put the human-readable list and decision basis in the Spec/Tickets.
+Classify each exact repository-relative file by owner, kind and operation;
+generated outputs also name their exact source files. State whether implementation
+is required. An empty closure list is explicit; a null downstream list means
+the design is unfinished. Check that implementation and closure owners do not
+overlap, frozen requirements stay protected, and every entry traces to a
+committed Spec/Ticket section. The structured completion manifest cites that
+commit and section after the clean planning candidate exists. Do not try to
+write the candidate's own future commit hash into its Spec.
+When generated files are present, provide a source-to-outputs map whose output
+paths are exact, sorted file paths. Outputs mapped from a manifest-owned source
+must be declared in the manifest, and each generated item must cite exactly the
+map's source set.
+
+The Controller may seal a complete in-requirement file refinement. A new
+behavior, permission, side effect, or change to an accepted design goes through
+the existing anomaly and decision path before a revised manifest is proposed.
+
 ## Repair and anomaly boundary
 
 Draft repair inside the accepted requirement scope is ordinary stage-2 work by

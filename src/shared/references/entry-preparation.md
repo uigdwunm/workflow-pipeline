@@ -128,6 +128,19 @@ common directory on distinct named branches. Keep this source identity for freez
 and bounded delivery; never substitute target cwd to satisfy a host check. Finalize
 Flow binding only after source and target proof are verified.
 
+For Stage 2, entry freezes the requirement and planning target before the
+implementation design exists. Its confirmed scope digest authorizes planning
+`owned_paths` and protection; implementation and closure lists stay null until
+the later C scope proposal and Controller seal. An empty list does not mean
+"unknown". A Stage-3 successor obtains its effective file lists from the current
+sealed scope authority and readiness projection, not from an old Stage-2 entry
+result.
+An accepted old Stage-2 checkpoint eligible for narrow scope recovery keeps
+its original source and entry receipt as historical proof. The recovery route
+reads that exact checkpoint and verifies its old package and host/Git facts;
+entry preparation must not synthesize a new Stage-2 requirement or target to
+make the old record fit the current protocol.
+
 ## Result and freshness
 
 `repository` describes actual execution cwd and Git facts. For discussion input,

@@ -64,7 +64,9 @@ class ConversationWorkspaceTests(EntrySupport):
         current.update(source={'kind': 'frozen', 'path': self.path}, target={'kind': 'flow', 'binding': binding})
         resolved = entry.resolve(current)
         scope = {'baseline': resolved['repository']['head'], 'owned_paths': ['docs/spec.md'],
-                 'protected_paths': [self.path], 'implementation_paths': ['impl.py'], 'closure_paths': []}
+                 'protected_paths': [self.path], 'implementation_paths': None, 'closure_paths': None,
+                 'downstream': {'state': 'unresolved', 'revision': 0, 'implementation_required': None,
+                                'manifest': None, 'proposal_ref': None, 'seal_ref': None}}
         prepared = handoff.handle({'protocol': handoff.PROTOCOL, 'operation': 'prepare', 'entry': current,
             'expected_entry': resolved, 'stage': 2, 'role': 'solution-designer', 'requirement': frozen,
             'predecessor': None, 'target': request['target'], 'delivery': result['delivery'], 'binding': binding,

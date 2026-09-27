@@ -1,6 +1,6 @@
 # ADR-0011: 设计后封存阶段范围，以补充授权接管旧交接
 
-Status: Accepted — scope-review-20260926-01（用户已确认；尚未实施）
+Status: Accepted — scope-review-20260926-01（用户已确认；项目实现与回归已落地）
 
 Stage 2 启动时尚不知道完整实现文件，提前冻结后续数组会把“未知”与“明确为空”混为一谈。决定保留启动需求、规划权限与 Flow Worktree，将后续精确范围作为独立的提案、封存和修订对象，由设计者提出、原 Controller 授权，C 在原 checkpoint 持久化；B 只验证。规划接受不等于实现就绪，发布前封存、Stage 3 入口重验。需求内文件细化不增设用户审批，业务、权限及副作用扩张仍走原变更决定。
 
@@ -11,3 +11,5 @@ Stage 2 启动时尚不知道完整实现文件，提前冻结后续数组会把
 活动范围修订先停写、结清调用并固定真实 Git 快照；保留旧接受结果与审查 fixed point，仅失效其对新 revision 的当前效力。新范围的派发与候选重新绑定授权 revision。全部状态复用原 Controller、checkpoint、Topic ledger 及现有锁，真实宿主证据不可用时阻断，不以布尔声明恢复权限。
 
 精确版本、状态转换、跨文件中断恢复与测试由 `.scratch/stage-scope-finalization/PRD.md` 的 D1–D7 负责。
+
+实施记录（2026-09-27）：e24136f 实施基线已是 progress-v13、transfer-v8、control key 7/schema 5、runner outer 7；本决策在当前项目实现为 progress-v14、transfer-v9、control key 8/schema 5、runner outer 8。旧 v12/v7 的原始记录与包 pin 仍是只读历史。源码已加入范围封存/修订、同 checkpoint 的窄接管以及附着 Topic 的阶段预留；本对话授权的是项目修复，没有对用户真实旧运行执行接管。完整包、仓库回归及失败夹具复测已完成，58 个测试模块合并覆盖 1,000 个用例（999 通过、1 个既有跳过），实际命令结果与剩余验证边界见 PRD 实施记录；真实附着旧 schema 4 正向 fixture 因缺原 WC 记录而按资格检查拒绝，其正向行为尚未验证。

@@ -15,9 +15,22 @@ class RecoveryFixture(ProgressTests):
         value = super().input_for(stage, predecessor)
         if stage == 3:
             value['scope']['implementation_paths'] = ['extra.py', 'impl.py']
+            manifest = value['scope']['downstream']['manifest']
+            baseline_paths = self.flow_git('ls-tree', '-r', '--name-only', value['scope']['baseline']).splitlines()
+            manifest.append({'path': 'extra.py', 'owner': 'implementation', 'kind': 'source',
+                             'operation': 'modify' if 'extra.py' in baseline_paths else 'add',
+                             'basis': copy.deepcopy(manifest[-1]['basis'])})
+            manifest.sort(key=lambda item: item['path'])
             value['scope']['owned_paths'] = ['impl.py'] if self.request['host']['role'] == 'implementation-dispatcher' else ['extra.py', 'impl.py']
             import entry_prepare
             value['authorization']['scope_digest'] = entry_prepare.digest(value['scope'])
+        return value
+
+    def execution_input(self):
+        value = super().execution_input()
+        value['scope']['downstream'] = copy.deepcopy(self.state()['handoff']['scope']['downstream'])
+        import entry_prepare
+        value['authorization']['scope_digest'] = entry_prepare.digest(value['scope'])
         return value
 
 

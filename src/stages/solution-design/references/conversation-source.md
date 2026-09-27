@@ -20,6 +20,10 @@ the Spec under the frozen behavior and constraints.
 A missing draft alone is not a reason to ask questions or enter stages 0/1.
 If context is unavailable, request the missing facts rather than inventing them.
 Ordinary implementation design choices belong in the Spec, not this snapshot.
+Freeze the goal and constraints here while leaving downstream file paths
+unresolved. The Stage-2 designer derives the exact implementation and closure
+manifest from the completed Spec/Tickets; the snapshot's silence about a file
+does not mean an empty downstream authorization.
 
 ## Save and freeze
 

@@ -34,6 +34,7 @@ class AttachedDesignRecoveryTests(DesignRecoveryTests):
         (f.flow/'docs/spec.md').write_text('completed recovered design\n')
         f.flow_git('add', 'docs/spec.md'); f.flow_git('commit', '-qm', 'recovered planning')
         candidate = f.flow_git('rev-parse', 'HEAD')
+        proposal_digest = f.propose_design_scope(candidate, 'completed recovered design')
         stopped = f.observation('stopped', 'result', ref='native:replacement')
         stopped['lifecycle']['pages'][0]['response']['data'].append(
             {'id':'native:designer','status':{'type':'idle'}})
@@ -42,6 +43,7 @@ class AttachedDesignRecoveryTests(DesignRecoveryTests):
         pending = f.invoke('observe', stopped)['pending']
         f.invoke('decide', {'decision_id':pending['decision_id'], 'subject':pending['subject'],
             'answer':'accept', 'reference':'controller:recovered-plan'})
+        f.seal_design_scope(proposal_digest)
         published = f.invoke('publication', {'candidate_commit':candidate, 'reference':'controller:recovered-plan'})
         self.assertEqual(published['next_action']['operation'], 'publication-receipt', published)
         received = f.invoke('receive-publication')

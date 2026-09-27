@@ -163,7 +163,7 @@ class BusinessRecoveryTransportTests(unittest.TestCase):
                          "reference": "controller-review", "diagnosis": "fixed input", "instruction": "continue",
                          "expected_progress": "produce candidate"}
         self.decision_path.write_text(json.dumps(self.decision))
-        self.state = {"version": 7, "status": "failed", "current_stage": "stage3", "sessions": {"stage3": "original-cli"},
+        self.state = {"version": 8, "status": "failed", "current_stage": "stage3", "sessions": {"stage3": "original-cli"},
                       "stage_results": {}, "confirmed": {}, "launch": {"state": "completed_turn"},
                       self.runner.progression.KEY: {"revision": 7, "stage": 3, "status": "blocked", "business_block": {"id": "block-1"}}}
         self.record.write_text(json.dumps(self.state))

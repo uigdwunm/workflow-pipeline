@@ -92,6 +92,20 @@ the stage.
 
 ## Enter the stage
 
+An already accepted, published v12/v7 Stage-2 run with no Stage-3 intent uses
+the original Controller's narrow `scope-recover-legacy` path under [Workflow
+progression](references/shared/workflow-progression.md). Verify the
+old package, checkpoint, stopped host and Git proof first. Preserve its Spec,
+Tickets, publication and Flow Worktree; establish supplemental scope authority
+in the same checkpoint before Stage-3 entry. This is recovery of accepted
+planning, not a new solution-designer run.
+If the supplemental file manifest needs correction before Stage-3 consumption,
+the original Controller uses the explicit `supersede` action with the current
+takeover transaction and seal references; the old planning publication and
+accepted result stay in history. A reserved launch must be reconciled through
+its original transaction; after consumption, use the ordinary Stage-3
+scope-revision path for later omissions.
+
 Enter from exactly one route:
 
 - an explicit `$solution-design` invocation or clear request to begin 2方案 or
@@ -243,6 +257,16 @@ the binding before its first write, and commits only stage-owned planning
 documents there. Unrelated changes in the primary checkout remain untouched and
 do not block Flow Worktree creation.
 
+At launch, freeze only the known planning and protection paths. Downstream
+implementation and closure paths are null until design is complete. Require the
+child to list every implementation and closure file in a committed Spec/Ticket
+decision, including tests, generated outputs and required documentation. Its
+completion evidence supplies the exact manifest and `implementation_required`;
+generated items also supply a source-to-outputs inventory that agrees with
+their per-item `source_paths` and enumerates every output file. The Controller
+checks the basis and seals the manifest through C before Git
+planning publication. An empty closure list is a deliberate sealed decision.
+
 Use the protocol's notification wait, review/anomaly and resume messages with
 the same child. Stepwise mode has one combined solution-and-entry decision before publication.
 Continuous mode skips that human review;
@@ -253,8 +277,12 @@ anomaly checkpoint instead of improvising or spawning a replacement.
 ## Complete the stage
 
 After accepting the trusted child's clean planning commit, record its original
-stopped host receipt and `{candidate_commit,artifacts,checks}` through C
-`observe.publication_candidate`. Consume the original Controller readiness
+stopped host receipt. Submit its exact candidate, manifest and committed basis
+through C `scope-propose`, then submit `{candidate_commit,artifacts,checks}`
+through C `observe.publication_candidate`. The original Controller makes the
+corresponding `scope-seal` decision before publication. Check the returned
+current scope authority against the same requirement, target, binding and
+planning commit. Consume the original Controller readiness
 decision through C `decide`; this records existing authorization and adds no user
 approval. Then take the complete
 sorted repository-relative paths from its `本地规划路径` field and pass them
@@ -273,13 +301,21 @@ state and must not call `publish-planning` again. Use C `reconcile-publication`
 for inspection and `resume` for authorized remaining effects. Use
 `receive-publication` to compose the B delivery from the retained native candidate
 and separately verified Git facts, then perform original Controller acceptance.
+For an attached run, finish the original Phase Run before Stage-3 entry. If
+implementation is required, require C `inspect` to report `handoff_ready` and
+its current `readiness`, then render the accepted Stage-2 result with that
+readiness. Its effective handoff supplies Stage-3 paths.
+When the sealed manifest has `implementation_required=false`, C instead reports
+the `planning-only` route. Report accepted planning and stop; do not fabricate a
+Stage-3 handoff or dispatch an implementation role.
 Do not create a replacement.
 Do not add checks for pre-existing or duplicate planning files.
 Carry the compact `变更契约预检` field from the child's completion evidence,
 pointing to the Spec's preflight and real call-chain section, through the
 existing handoff; it is not a separate artifact or gate.
 
-In stepwise mode, verify the saved combined-review decision still covers the
+In stepwise mode, when Stage 3 is required, verify the saved combined-review
+decision still covers the
 published solution and Stage-3 entry. Show the success footer as a handoff,
 record C's pending `stage-entry` decision using that original authorization
 reference and its current subject/ID, then invoke `$guided-implementation`
@@ -289,7 +325,7 @@ changed scope or revoked entry authority stops the affected transition.
 User edits belong at the combined review before publication, while the original
 child remains resumable; never promise to reopen an accepted terminal result.
 
-In continuous mode, emit the fixed continuous completion handoff from
+In continuous mode, when Stage 3 is required, emit the fixed continuous completion handoff from
 `references/solution-design/templates.md`, then invoke `$guided-implementation` in the same turn
 with the preserved mode. Do not ask or end the turn for a stage confirmation.
 Continuous mode may later enter `4归档` only through the existing verified

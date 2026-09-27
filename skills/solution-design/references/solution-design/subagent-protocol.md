@@ -176,7 +176,8 @@ The child is the complete stage owner. It must:
 8. Invoke `$ask-matt` only to decide whether Tickets are useful.
 9. Invoke the complete `$to-tickets` behavior when Tickets are useful and
    publish them to the exact configured carrier.
-10. Commit only clean-baseline, stage-owned local Spec, ADR, and Ticket paths.
+10. Record the complete downstream per-file manifest and rationale in those
+    Spec/Ticket decisions; commit only clean-baseline, stage-owned local paths.
 11. Return a combined review in stepwise mode before publication; after its
     decision, finish with exactly one anomaly or completion message.
 
@@ -197,6 +198,12 @@ Document authority is fixed:
 
 Do not create a separate solution-design draft. The Spec itself may move from a
 drafting state to its final published state.
+The manifest's implementation and closure arrays are unknown at launch, then
+explicitly determined from the complete design. Completion evidence carries
+each exact path, owner, kind, operation, committed basis, and generated source
+paths when applicable. Generated entries also require a complete
+source-path-to-output-paths map. `implementation_required` is explicit. The child proposes
+these facts but does not seal scope or gain implementation write access.
 
 ## Stepwise review flow
 
@@ -424,7 +431,8 @@ uncertainty instead of retrying blindly.
 The child may emit `SOLUTION_DESIGN_COMPLETE` only after it has finished its
 selected native publication and required local stage-owned commit work. The
 message must name requirement source, Spec, ADRs, Tickets, planning commit,
-the complete `本地规划路径` manifest, publication result, implementation basis,
+the complete `本地规划路径` list, downstream manifest and
+`implementation_required`, publication result, implementation basis,
 flow mode, Flow Worktree binding, workspace state, and every fixed
 readiness-evidence field, including the compact `变更契约预检` pointer to the
 Spec's preflight and real call-chain section. Completion requires the child to report a clean Flow

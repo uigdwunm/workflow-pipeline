@@ -511,9 +511,9 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
         if predecessor:
             self.assertEqual(next_ready['context']['retired_handoffs'][takeover['control']['handoff_id']]['archive_status'], archive_status)
             if archive_status == 'unknown':
-                self.recover_attached_archive(topic, project, next_ready['context'], takeover['control']['handoff_id'])
+                self.recover_attached_archive(topic, project, next_ready['context'], takeover['control']['handoff_id'], delivery['requirement_identity'])
 
-    def recover_attached_archive(self, topic, project, source_context, handoff_id):
+    def recover_attached_archive(self, topic, project, source_context, handoff_id, requirement_identity):
         """A persisted downstream checkpoint routes cleanup through the real original ledger."""
         import copy
         import tempfile
@@ -536,6 +536,11 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
         repository = progression.entry.repository_facts(str(project))
         discussion_project, _ = progression.entry.resolve_discussion_project(repository, attachment)
         saved = {'controller_ref': 'discussion-task', 'binding': binding, 'entry': {'source': {'attachment': attachment}},
+            'requirement_identity': copy.deepcopy(requirement_identity),
+            'scope': {'baseline': binding['base_commit'], 'owned_paths': [],
+                'protected_paths': [requirement_identity['path']], 'implementation_paths': None, 'closure_paths': None,
+                'downstream': {'state': 'unresolved', 'revision': 0, 'implementation_required': None,
+                    'manifest': None, 'proposal_ref': None, 'seal_ref': None}},
             'expected_entry': {'repository': repository, 'discussion_project': discussion_project,
                 'requirement': {'attachment': attachment}}}
         port = {'context': copy.deepcopy(source_context), 'discussion': {**base,

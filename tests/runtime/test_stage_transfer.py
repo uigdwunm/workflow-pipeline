@@ -61,6 +61,10 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.request["host"]["project_path"] = str(self.flow)
         self.input = self.input_for(2)
         self.context = self.context_for(2)
+        progress_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(progress_directory.cleanup)
+        self.checkpoint = (Path(progress_directory.name) / "checkpoint.json").resolve()
+        self.host_response_sequence = 0
 
     def flow_git(self, *args):
         return subprocess.run(["git", "-C", str(self.flow), *args], capture_output=True, check=True).stdout.decode().strip()
@@ -88,13 +92,43 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.request["stage"] = stage
         role = handoff.ROLES[stage]
         owned = ["docs/spec.md"] if stage == 2 else ["impl.py"] if stage == 3 else ["CHANGELOG.md"]
-        scope = {"baseline": self.flow_git("rev-parse", "HEAD"), "owned_paths": owned,
-                 "protected_paths": [self.requirement_path], "implementation_paths": ["impl.py"], "closure_paths": ["CHANGELOG.md"]}
+        baseline = self.flow_git("rev-parse", "HEAD")
+        scope = {"baseline": baseline, "owned_paths": owned,
+                 "protected_paths": [self.requirement_path], "implementation_paths": None,
+                 "closure_paths": None, "downstream": {"state": "unresolved", "revision": 0,
+                     "implementation_required": None, "manifest": None,
+                     "proposal_ref": None, "seal_ref": None}}
+        if stage == 3 and predecessor is None:
+            basis = {"commit": self.frozen["commit"], "path": self.requirement_path,
+                     "section": "confirmed requirement"}
+            manifest = [{"path": "CHANGELOG.md", "owner": "closure", "kind": "document",
+                         "operation": "add", "basis": basis},
+                        {"path": "impl.py", "owner": "implementation", "kind": "source",
+                         "operation": "add", "basis": basis}]
+            scope.update(implementation_paths=["impl.py"], closure_paths=["CHANGELOG.md"],
+                downstream={"state": "sealed", "revision": 1,
+                    "implementation_required": True, "manifest": manifest,
+                    "proposal_ref": "standalone:requirement", "seal_ref": "controller:standalone"})
+        elif stage >= 3 and predecessor is not None:
+            inherited = predecessor["handoff"]["scope"]
+            if stage == 3 and predecessor["handoff"]["stage"] == 2:
+                import workflow_progress as progress
+                state = progress.read_record(self.checkpoint).get(progress.KEY, {})
+                if state.get("stage") == 2 and state.get("accepted") == predecessor:
+                    inherited = state["scope_authority"]["scope"]
+            scope["downstream"] = copy.deepcopy(inherited["downstream"])
+            scope["implementation_paths"] = copy.deepcopy(inherited["implementation_paths"])
+            scope["closure_paths"] = copy.deepcopy(inherited["closure_paths"])
+            if stage == 3:
+                scope["owned_paths"] = copy.deepcopy(scope["implementation_paths"])
+            else:
+                scope["owned_paths"] = copy.deepcopy(scope["closure_paths"])
         if stage >= 3 and (self.flow / "docs/spec.md").exists():
             scope["protected_paths"] = sorted([self.requirement_path, "docs/spec.md"])
         if stage == 4 and predecessor is not None:
             scope["baseline"] = predecessor["handoff"]["scope"]["baseline"]
-        return {"protocol": handoff.PROTOCOL, "operation": "prepare", "entry": copy.deepcopy(self.request),
+            scope["protected_paths"] = sorted(set(scope["protected_paths"]) - set(scope["closure_paths"]))
+        request = {"protocol": handoff.PROTOCOL, "operation": "prepare", "entry": copy.deepcopy(self.request),
                 "expected_entry": entry.resolve(self.request), "stage": stage, "role": role, "requirement": self.frozen,
                 "predecessor": predecessor, "target": {"repository": str(self.root), "branch": "main"}, "delivery": None,
                 "binding": self.binding, "scope": scope,
@@ -102,6 +136,12 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                 "configuration": configuration(role), "semantic": {"objective": "implement the approved behavior", "testing_basis": "real CLI",
                     "completion_criteria": ["verified outputs"], "constraints": ["no remote mutations"],
                     **({"validation_plan":plan_for(self.flow)} if stage == 3 else {})}}
+        if stage == 3 and predecessor is not None:
+            import workflow_progress as progress
+            state = progress.read_record(self.checkpoint).get(progress.KEY, {})
+            if state.get("stage") == 2 and state.get("accepted") == predecessor:
+                request["readiness"] = progress.scope_readiness(state, self.checkpoint)
+        return request
 
     def context_for(self, stage):
         return {"schema_version": 5, "controller_ref": "task", "topic_ref": None, "stage": stage,
@@ -109,7 +149,26 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                 "requirement_identity": self.frozen["requirement_identity"], "handoff_progress": None}
 
     def launch(self, input_data=None):
-        saved = handoff.handle(input_data or self.input)
+        value = input_data or self.input
+        if value["stage"] == 3 and value.get("predecessor") is not None:
+            import workflow_progress as progress
+            state = progress.read_record(self.checkpoint).get(progress.KEY, {})
+            if state.get("stage") == 2 and state.get("accepted") == value["predecessor"]:
+                pending = state.get("pending")
+                if pending is not None and pending["kind"] == "stage-entry":
+                    self.invoke("decide", {"decision_id": pending["decision_id"],
+                        "subject": pending["subject"], "answer": "confirm",
+                        "reference": "user:stage-entry"})
+                value = copy.deepcopy(value)
+                value["readiness"] = progress.scope_readiness(self.state(), self.checkpoint)
+                started = self.invoke("start", {"handoff": value,
+                    "control": {"context": self.context, "discussion": None}})
+                self.assertEqual(started["next_action"]["operation"], "invoke-host", started)
+                state = self.state()
+                self.context = state["control"]["context"]
+                return {"record": state["dispatch"], "host_call": state["dispatch"]["request"],
+                        "checkpoint": {"context": self.context}}
+        saved = handoff.handle(value)
         result = dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "prepare", "handoff": saved,
                                   "control": {"context": self.context, "discussion": None}})
         self.context = result["checkpoint"]["context"]
@@ -130,20 +189,54 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         return result
 
     def complete_design(self):
-        started = self.launch()
-        bound = self.call("bind", started["record"], receipt=self.receipt(started["record"]))
+        # The direct B result is only planning_complete. A successor requires
+        # C's sealed, published, stopped, and accepted current readiness.
+        if not hasattr(self, "invoke"):
+            from test_workflow_progress import ProgressTests
+            for name in ("invoke", "state", "begin", "observation"):
+                setattr(self, name, getattr(ProgressTests, name).__get__(self, type(self)))
+        self.begin("stepwise")
+        self.invoke("observe", self.observation())
         planning_paths = self.input["scope"]["owned_paths"]
         for path in planning_paths:
-            (self.flow / path).write_text("approved plan\n")
-        self.flow_git("add", *planning_paths); self.flow_git("commit", "-qm", "planning")
+            (self.flow / path).write_text("approved plan\nImplementation: impl.py\nClosure: CHANGELOG.md\n")
+        self.flow_git("add", *planning_paths)
+        self.flow_git("commit", "-qm", "planning")
         planning = self.flow_git("rev-parse", "HEAD")
-        supervision.publish_planning({"binding": self.binding, "planning_commit": planning,
-                                      "allowed_paths": planning_paths, "protected_paths": [self.requirement_path]})
-        payload = {"artifacts": planning_paths, "checks": ["design review"], "planning_commit": planning,
-                   "planning_merge_commit": self.flow_git("rev-parse", "HEAD"), "planning_paths": planning_paths}
-        message = {"delivery_id": "design-1", "status": "completed", "payload": payload}
-        received = self.call("receive", bound["record"], receipt=self.receipt(bound["record"], "stopped", "result"), result=message)
-        return self.call("accept", received["record"], decision={"reference": "review:accepted", "delivery_digest": received["record"]["delivery"]["digest"]})
+        basis = {"commit": planning, "path": "docs/spec.md", "section": "approved plan"}
+        closure_paths = getattr(self, "planned_closure_paths", ["CHANGELOG.md"])
+        manifest = [{"path": path, "owner": "closure", "kind": "document",
+                     "operation": "add", "basis": basis} for path in closure_paths]
+        manifest.append({"path": "impl.py", "owner": "implementation", "kind": "source",
+                         "operation": "add", "basis": basis})
+        manifest.sort(key=lambda item: item["path"])
+        saved = self.state()
+        proposal = {"proposal_id": "proposal-1", "expected_revision": 0,
+            "candidate_commit": planning, "manifest": manifest, "implementation_required": True,
+            "requirement_identity": copy.deepcopy(saved["handoff"]["requirement_identity"]),
+            "binding": copy.deepcopy(saved["handoff"]["binding"]), "previous_scope_revision": 0}
+        proposed = self.invoke("scope-propose", proposal)
+        self.assertEqual(proposed["next_action"]["operation"], "scope-proposed", proposed)
+        observed = self.observation("stopped", "result")
+        observed["publication_candidate"] = {"candidate_commit": planning,
+            "artifacts": planning_paths, "checks": ["design readiness"]}
+        response = self.invoke("observe", observed)
+        pending = response["pending"]
+        self.invoke("decide", {"decision_id": pending["decision_id"], "subject": pending["subject"],
+                              "answer": "accept", "reference": "controller:planning-readiness"})
+        sealed = self.invoke("scope-seal", {"proposal_id": "proposal-1",
+            "proposal_digest": proposed["next_action"]["proposal"]["digest"],
+            "controller_ref": "task", "decision": {"kind": "in-requirement-refinement",
+                "reference": "controller:scope-review"}})
+        self.assertEqual(sealed["next_action"]["operation"], "scope-sealed", sealed)
+        self.invoke("publication", {"candidate_commit": planning,
+                    "reference": "controller:planning-readiness"})
+        pending = self.invoke("receive-publication")["pending"]
+        accepted = self.invoke("decide", {"decision_id": pending["decision_id"],
+            "subject": pending["subject"], "answer": "accept", "reference": "review:accepted"})
+        self.assertTrue(accepted["planning_complete"], accepted)
+        self.context = self.state()["control"]["context"]
+        return {**accepted, "accepted": self.state()["accepted"], "record": self.state()["dispatch"]}
 
     def finalize_candidate(self, record, candidate):
         import workflow_control_git
@@ -249,7 +342,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
     def test_real_design_publication_receive_accept_and_duplicate(self):
         accepted = self.complete_design()
         self.assertTrue(accepted["downstream_ready"])
-        rendered = handoff.render(accepted["accepted"])
+        rendered = handoff.render(accepted["accepted"], readiness=accepted["readiness"])
         self.assertEqual(json.loads(rendered["stage_result"]["handoff_json"])["role_ref"], "native:designer")
         self.assertEqual(rendered["payload"]["allowed_paths"], ["impl.py"])
         record = accepted["record"]
@@ -441,7 +534,9 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         record = handoff.unseal(completed["record"])
         record.update(status="received", acceptance=None)
         (self.flow / "docs/spec.md").write_text("unreviewed change\n")
-        self.assert_code("dirty_worktree", lambda: self.call("accept", handoff.seal(record), decision=completed["accepted"]["decision"]))
+        self.assert_code("dirty_worktree", lambda: self.call("accept", handoff.seal(record),
+            decision=completed["accepted"]["decision"], scope_checkpoint_path=str(self.checkpoint),
+            scope_authority=self.state()["scope_authority"]))
 
     def test_dedicated_reservation_replay_has_no_host_call(self):
         entry.os.getcwd.return_value = str(self.root)
@@ -451,8 +546,9 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         candidate = copy.deepcopy(self.input)
         candidate.update(stage=1, role="dedicated-problem-framing", entry=copy.deepcopy(self.request), expected_entry=entry.resolve(self.request),
                          binding=None, configuration=configuration("dedicated-problem-framing"))
-        candidate["scope"]["owned_paths"] = [self.requirement_path]
-        candidate["scope"]["protected_paths"] = []
+        candidate["scope"] = {"baseline": candidate["scope"]["baseline"],
+                              "owned_paths": [self.requirement_path], "protected_paths": [],
+                              "implementation_paths": [], "closure_paths": []}
         candidate["authorization"]["scope_digest"] = entry.digest(candidate["scope"])
         ctx = self.context_for(1)
         def transition(action, evidence):
@@ -525,7 +621,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
 
     def test_planning_read_only_in_implementation_but_authorized_for_closure(self):
         self.input["scope"]["owned_paths"] = ["docs/adr.md", "docs/spec.md"]
-        self.input["scope"]["closure_paths"] = ["docs/spec.md"]
+        self.planned_closure_paths = ["docs/spec.md"]
         self.input["authorization"]["scope_digest"] = entry.digest(self.input["scope"])
         design = self.complete_design()["accepted"]
         implementation = self.input_for(3, design)

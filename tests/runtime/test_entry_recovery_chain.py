@@ -41,7 +41,9 @@ class EntryChainTests(fixture.RegistrationContextTests):
             'source':{'kind':'frozen','path':document['path']},'target':{'kind':'flow','binding':self.binding}}
         expected = call('solution-design','entry_prepare.py',current,self.flow)
         scope = {'baseline':expected['repository']['head'],'owned_paths':['spec.md'],'protected_paths':['docs/requirement.md'],
-                 'implementation_paths':['impl.py'],'closure_paths':['closure.md']}
+                 'implementation_paths':None,'closure_paths':None,
+                 'downstream':{'state':'unresolved','revision':0,'implementation_required':None,
+                               'manifest':None,'proposal_ref':None,'seal_ref':None}}
         configuration = {'role':'solution-designer','required_capability':None,'supported':[
             {'model':'gpt-5.6-sol','effort':'high','capability':None,'cost':None,'permission':'same','visible_identity':'same'}],
             'user':None,'frozen':None,'previous':None,'receipt':'fixture:configuration','can_override':False,
