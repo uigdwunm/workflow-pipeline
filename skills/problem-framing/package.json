@@ -1,6 +1,7 @@
 {
-  "bundle_digest": "afbed932a57a62dd9da99510b01e5d8b24f084b2f6821ef654857ab994b718d1",
+  "bundle_digest": "5b50cdc258f3587125bfa81d435dd103b10297694ac674c95071602cae81802f",
   "compatibility_key": {
+    "confirmation": "goal-scoped-confirmation-v3",
     "control": 6,
     "discussion_request": 1,
     "entry": "workflow-entry-v3",
@@ -57,7 +58,7 @@
     },
     "references/shared/design-discussion/confirmation-contract.md": {
       "mode": "0644",
-      "sha256": "b423fea244ea899fa38e904688ab75c1929a54696f0c5ce9ac5da3ff1b1b4a50"
+      "sha256": "4c207e0f5836a83fd8d7d97df756cd82bdf6bf034458ac4046a7ae44ef947912"
     },
     "references/shared/design-discussion/ledger-protocol.md": {
       "mode": "0644",
@@ -65,7 +66,7 @@
     },
     "references/shared/design-discussion/lifecycle-integration.md": {
       "mode": "0644",
-      "sha256": "917e0d12059221dc13a80cc895c3856ef91b8140e6024257fcf369b94715050a"
+      "sha256": "7aa218c2a1f618eee8ab0c51549617868324855354855925411ec4c8b24f77ab"
     },
     "references/shared/design-discussion/requirement-document-contract.md": {
       "mode": "0644",
@@ -105,11 +106,11 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "c200642612e1fa09cc49896ec0232e5ebf79ccccce8b33c504157461067a6dd3"
+      "sha256": "3998c3b72be055e92cded23ed7ba451e4fbe7277af756a4a227099f1feef01cb"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
-      "sha256": "8ce2361d13254da150589f5e446384c35277d72e390566885920d0c658b61349"
+      "sha256": "a18ef4bbeb21b84c1021aad09d5c3bbdf1fc83bf14f7f2c834618895c7832c3f"
     },
     "scripts/discussion_core/__init__.py": {
       "mode": "0644",
@@ -233,7 +234,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "c003d9875d28f6ecc50c1bcd6ff4833397ee6e78b23d289fe1499a59091cb472"
+      "sha256": "6602eec345070e8f616d3c23e87e2fdf7dbadfac918a2cfe5486c1d1ea8a49ff"
     }
   },
   "format_version": 1,

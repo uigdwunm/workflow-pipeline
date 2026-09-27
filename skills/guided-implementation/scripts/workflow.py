@@ -1222,6 +1222,8 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
         saved = progression.read_record(record_path)
         request = saved.get("runner_request")
         current_progress = saved.get(progression.KEY)
+        if current_progress and "mode" in current_progress:
+            state["confirmed"]["flow_mode"] = current_progress["mode"]
         route = _runner_route(saved, state)
         if route == 'stop':
             stop_delivery = state.pop('stop_delivery_pending', False)
@@ -1348,18 +1350,44 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
         state["status"] = "active"
         state.pop("pending_input", None)
         state["launch"] = {"stage": state["current_stage"], "state": "prelaunch", "turn": 0}
-        pending = progression.stage_boundary(state["confirmed"]["flow_mode"], int(stage[-1]), accepted)
+        current = progression.read_record(record_path)[progression.KEY]
+        state["confirmed"]["flow_mode"] = current["mode"]
+        pending = _pending_stage_entry(state["confirmed"]["flow_mode"], int(stage[-1]), accepted, current)
         if pending is not None:
-            # Use the C-owned boundary ID, never create a second confirmation.
-            current = progression.read_record(record_path)[progression.KEY]
-            state["pending_input"] = current.get("pending") or pending
+            state["pending_input"] = pending
             state["status"] = "needs_input"
+        intent = current.get("flow_intent", {})
+        design_only = (stage == "stage2" and intent.get("flow_intent") == "design-only" and
+                       current.get("decisions", {}).get(intent.get("decision_id")) == intent)
+        if design_only:
+            # Retain the unapproved successor for an explicit future resume,
+            # without asking to implement or claiming the whole flow completed.
+            state["status"] = "paused"
+            state["history"].append({"event": "design.completed", "reference": intent["reference"]})
+            _atomic_save(record_path, state)
+            print(json.dumps({"status": "paused", "stage_result": "design-completed",
+                              "run_record": str(record_path), "artifacts": result["artifacts"]}), flush=True)
+            return 0
         state["history"].append({"event": "checkpoint", "next_stage": state["current_stage"]})
         _atomic_save(record_path, state)
         print(json.dumps({"event": "checkpoint", "next_stage": state["current_stage"]}), flush=True)
         if state["status"] == "needs_input":
             print(json.dumps({"status": "needs_input", "pending": state["pending_input"]}))
             return 0
+
+
+def _pending_stage_entry(mode, stage, accepted, current):
+    """Retain C's boundary, including a consumed combined-review authorization."""
+    pending = progression.stage_boundary(mode, stage, accepted)
+    if pending is None:
+        return None
+    if current.get("pending") is None and current.get("accepted") == accepted:
+        for decision_id, recorded in current.get("decisions", {}).items():
+            if (recorded.get("decision_id") == decision_id and
+                    recorded.get("subject") == pending["subject"] and
+                    recorded.get("answer") in {"confirm", "continuous"} and recorded.get("reference")):
+                return None
+    return current.get("pending") or pending
 
 
 def _verify_run_completion(record_path, state):
@@ -1420,7 +1448,19 @@ def start(confirmed_path: Path) -> int:
         return _advance(state, record_path)
 
 
-def _queue_resume(record_path, answer, registry_input, decision_id):
+def _answer_decision(pending, answer, decision_id, flow_intent):
+    decision = {"decision_id": decision_id, "subject": pending["subject"], "answer": answer,
+                "reference": "controller-answer:" + decision_id}
+    if flow_intent is not None:
+        if (not isinstance(flow_intent, str) or flow_intent not in {"stepwise", "continuous", "design-only"} or
+                pending["kind"] != "user-decision" or pending["subject"].get("stage") not in {2, 3} or
+                flow_intent == "design-only" and pending["subject"].get("stage") != 2):
+            raise WorkflowError("invalid_flow_intent: use the current user decision and a supported intent")
+        decision["flow_intent"] = flow_intent
+    return decision
+
+
+def _queue_resume(record_path, answer, registry_input, decision_id, flow_intent=None):
     observed = _validate_record(_read_json(record_path, 'run record'))
     if registry_input is not None:
         observed['confirmed']['registry_input'] = str(registry_input.resolve())
@@ -1442,13 +1482,12 @@ def _queue_resume(record_path, answer, registry_input, decision_id):
         previous = state.get('answers', {}).get(decision_id) if decision_id else None
         acknowledged = previous is not None
         if previous is not None:
-            if previous != answer:
-                raise WorkflowError('decision_conflict: retain the first exact answer')
+            if previous != answer or state.get('answer_flow_intents', {}).get(decision_id) != flow_intent:
+                raise WorkflowError('decision_conflict: retain the first exact answer and flow intent')
         elif answer is not None:
             if not answer or pending is None or decision_id != pending['decision_id']:
                 raise WorkflowError('stale_decision: answer the exact current pending matter')
-            decision = {'decision_id':decision_id, 'subject':pending['subject'], 'answer':answer,
-                        'reference':'controller-answer:' + decision_id}
+            decision = _answer_decision(pending, answer, decision_id, flow_intent)
             if pending['kind'] == 'host-request':
                 try:
                     response = json.loads(answer)
@@ -1464,6 +1503,8 @@ def _queue_resume(record_path, answer, registry_input, decision_id):
                     raise WorkflowError('decision_conflict: another original decision is awaiting consumption')
                 state['controller_decision'] = decision
             state.setdefault('answers', {})[decision_id] = answer
+            if flow_intent is not None:
+                state.setdefault('answer_flow_intents', {})[decision_id] = flow_intent
         elif current.get('stop_requested') == 'pausing' or (request or {}).get('operation') == 'pause':
             subject = {'stage':current.get('stage'), 'attempt':(current.get('dispatch') or {}).get('request', {}).get('attempt'),
                        'handoff':(current.get('handoff') or {}).get('digest')}
@@ -1480,16 +1521,18 @@ def _queue_resume(record_path, answer, registry_input, decision_id):
     return 0
 
 
-def resume(record_path, answer=None, registry_input=None, decision_id=None):
+def resume(record_path, answer=None, registry_input=None, decision_id=None, flow_intent=None):
+    if flow_intent is not None and (answer is None or decision_id is None):
+        raise WorkflowError("invalid_flow_intent: an answer and exact decision ID are required")
     record_path = _absolute_path(str(record_path), 'run_record')
     try:
         with RunLock(record_path):
-            return _resume_owned(record_path, answer, registry_input, decision_id)
+            return _resume_owned(record_path, answer, registry_input, decision_id, flow_intent)
     except RunBusy:
-        return _queue_resume(record_path, answer, registry_input, decision_id)
+        return _queue_resume(record_path, answer, registry_input, decision_id, flow_intent)
 
 
-def _resume_owned(record_path: Path, answer: str | None = None, registry_input: Path | None = None, decision_id: str | None = None) -> int:
+def _resume_owned(record_path: Path, answer: str | None = None, registry_input: Path | None = None, decision_id: str | None = None, flow_intent: str | None = None) -> int:
     record_path = _absolute_path(str(record_path), "run_record")
     state = CheckpointState(_validate_record(_read_json(record_path, "run record")))
     _recover_transport(state, record_path)
@@ -1554,8 +1597,8 @@ def _resume_owned(record_path: Path, answer: str | None = None, registry_input: 
         _atomic_save(record_path, state)
     previous = state.get("answers", {}).get(decision_id) if decision_id else None
     if previous is not None:
-        if previous != answer:
-            raise WorkflowError("decision_conflict: answer cannot be replaced")
+        if previous != answer or state.get("answer_flow_intents", {}).get(decision_id) != flow_intent:
+            raise WorkflowError("decision_conflict: answer or flow intent cannot be replaced")
         print(json.dumps({"status": status, "acknowledged": True}))
         return 0
     if registry_input is not None:
@@ -1577,8 +1620,7 @@ def _resume_owned(record_path: Path, answer: str | None = None, registry_input: 
             return 0
         if not answer or decision_id != pending["decision_id"]:
             raise WorkflowError("stale_decision: provide --decision-id for the current pending matter")
-        decision = {"decision_id": decision_id, "subject": pending["subject"], "answer": answer,
-                    "reference": "controller-answer:" + decision_id}
+        decision = _answer_decision(pending, answer, decision_id, flow_intent)
         current = progression.read_record(record_path).get(progression.KEY)
         if current and current.get("pending") == pending:
             if pending["kind"] == "stage-entry":
@@ -1591,6 +1633,8 @@ def _resume_owned(record_path: Path, answer: str | None = None, registry_input: 
             else:
                 state["controller_decision"] = decision
         state.setdefault("answers", {})[decision_id] = answer
+        if flow_intent is not None:
+            state.setdefault("answer_flow_intents", {})[decision_id] = flow_intent
         state["answer_pending_delivery"] = answer
         if pending["kind"] == "stage-entry" and answer == "continuous":
             state["confirmed"]["flow_mode"] = "continuous"
@@ -1717,6 +1761,8 @@ def main(argv: list[str] | None = None) -> int:
     resume_parser.add_argument("run_record", type=Path)
     resume_parser.add_argument("user_answer", nargs="?")
     resume_parser.add_argument("--decision-id")
+    resume_parser.add_argument("--flow-intent", choices=("stepwise", "continuous", "design-only"),
+                               help="explicit user scope/mode for the current user decision")
     resume_parser.add_argument("--registry-input", type=Path, help="current controller input containing registry evidence")
     recovery_parser = subcommands.add_parser("recover-business", help="record an explicit original Controller recovery decision without launching a carrier")
     recovery_parser.add_argument("run_record", type=Path)
@@ -1737,7 +1783,7 @@ def main(argv: list[str] | None = None) -> int:
             return recover_business(args.run_record, args.decision_input)
         if args.command in {"pause", "cancel"}:
             return request_control(args.run_record, args.command)
-        return start(args.confirmed_input) if args.command == "start" else resume(args.run_record, args.user_answer, args.registry_input, args.decision_id)
+        return start(args.confirmed_input) if args.command == "start" else resume(args.run_record, args.user_answer, args.registry_input, args.decision_id, args.flow_intent)
     except (WorkflowError, entry_prepare.PreparationError, OSError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
         return 1

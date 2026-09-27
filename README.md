@@ -95,11 +95,11 @@ $problem-framing 帮我明确这次需求
 
 ```bash
 ./scripts/validate.sh
-# 可选：限制并发进程数；--jobs 1 为串行
-./scripts/validate.sh --jobs 2
+# 可选：进一步减轻负载；--jobs 1 为串行
+./scripts/validate.sh --jobs 1
 ```
 
-该命令校验生成漂移、五包入口/引用/资源闭包，运行 `tests/runtime` 与 `tests/packages` 的源测试和五包快速验证。测试默认最多使用 4 个独立进程，按文件并发、文件内部串行，汇总测试数量、跳过项和失败日志。开发编辑 `src/` 与 `build/skill-packages.json`，再运行 `python3 scripts/build_skills.py`；不要手改 `skills/` 生成副本。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+该命令校验生成漂移、五包入口/引用/资源闭包，运行 `tests/runtime` 与 `tests/packages` 的源测试和五包快速验证。测试默认最多使用 2 个独立进程，后台 CPU 优先级设为 nice 10，先做快速检查，再按历史耗时优先启动慢测试，减少资源争抢和末尾等待。可用 `--jobs` 调整并发，`--nice 0` 保留原进程优先级。按文件并发、文件内部串行，仍运行全部测试并汇总跳过项和失败日志；历史耗时仅用于排队，不是测试成功凭据。开发编辑 `src/` 与 `build/skill-packages.json`，再运行 `python3 scripts/build_skills.py`；不要手改 `skills/` 生成副本。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 v1.2.0 的仓库检查运行了 820 项测试：819 项通过、1 项按既有条件跳过；本机专用部署器另有 23 项隔离测试通过。`skills@1.6.0` 的临时项目发现与五次单包安装验证属于 v1.1.0 的既有证据，不能代表本次候选。真实嵌套 Agent 集成仍待外部依赖验收；本次候选的现场宿主验收须与自动测试分开记录。`python3 scripts/field_acceptance.py` 输出现场步骤与证据表。
 

@@ -18,6 +18,7 @@ class PackageBuildTests(unittest.TestCase):
         self.assertEqual((key['control'], key['stage_transfer'], key['workflow_progress']),
                          (6, 'workflow-stage-transfer-v7', 'workflow-progress-v12'))
         self.assertEqual(key['topic_gate'], 'phase-0-1-discussion-v2')
+        self.assertEqual(key['confirmation'], 'goal-scoped-confirmation-v3')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / 'packages'

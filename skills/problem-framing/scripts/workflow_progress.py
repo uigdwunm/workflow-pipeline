@@ -205,7 +205,7 @@ def pending_decision(kind, subject, question):
 
 
 def decision_matches(pending, decision):
-    entry.fields(decision, {"decision_id", "subject", "answer", "reference"})
+    entry.fields(decision, {"decision_id", "subject", "answer", "reference"}, {"flow_intent"})
     require(pending is not None and decision["decision_id"] == pending["decision_id"] and
             decision["subject"] == pending["subject"], "stale_decision", "answer does not name the current pending matter")
     entry.nonempty(decision["reference"]); entry.nonempty(decision["answer"])
@@ -1658,6 +1658,13 @@ class Progress:
         self.require_business_ready()
         decision_matches(s.get("pending"), data)
         pending = s["pending"]
+        flow_intent = data.get("flow_intent")
+        if "flow_intent" in data:
+            require(isinstance(flow_intent, str) and flow_intent in {"stepwise", "continuous", "design-only"} and
+                    pending["kind"] == "user-decision" and s["stage"] in {2, 3},
+                    "invalid_request", "flow intent requires the current stage's user decision")
+            require(flow_intent != "design-only" or s["stage"] == 2,
+                    "invalid_request", "design-only scope is available before Stage 2 completion")
         deferred = s.get("deferred_decisions", {}).get(data["decision_id"])
         intent = self.stop_intent()
         if deferred is not None:
@@ -1683,6 +1690,9 @@ class Progress:
                     "decision_conflict", "retain the decision bound to the original B transaction")
             self.replay_transaction()
             return self.advance()
+        if flow_intent is not None:
+            s["mode"] = "continuous" if flow_intent == "continuous" else "stepwise"
+            s["flow_intent"] = copy.deepcopy(data)
         if pending["kind"] == "publication-readiness":
             require(data["answer"] == "accept", "decision_required", "original controller readiness acceptance required")
             s["publication_candidate"]["decision"] = copy.deepcopy(data)
@@ -1701,6 +1711,7 @@ class Progress:
             require(data["answer"] in {"confirm", "continuous"}, "decision_required", "confirm or continuous required")
             if data["answer"] == "continuous":
                 s["mode"] = "continuous"
+            s.pop("flow_intent", None)
             s["pending"] = None
         else:
             s["pending"], s["status"], s["step"] = None, "active", "continue"

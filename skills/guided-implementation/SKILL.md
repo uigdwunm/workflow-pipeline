@@ -38,7 +38,8 @@ When a missing or insufficient setting or a native limit prevents the planned di
   stepwise or continuous confirmation replying to a valid Phase-2 success
   footer, an unambiguous confirmation replying to this Skill's immediately
   preceding stalled-task replacement block, that footer's verified same-turn
-  continuous handoff, or an unambiguous retry request (including
+  continuous handoff, a verified stepwise handoff with the saved combined-review
+  decision already authorizing Stage 3, or an unambiguous retry request (including
   `$guided-implementation 重试`) in the same task after this Skill's immediately
   preceding retained-worktree footer.
   On retry, verify the recorded binding and current Git state before acting;

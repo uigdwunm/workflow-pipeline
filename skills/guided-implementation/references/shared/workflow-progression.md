@@ -104,7 +104,7 @@ digests, child assertions, names and timestamps are not authentication.
   link; copying an ID onto old evidence is invalid. Use stable event IDs:
   identical replay ACKs; conflicting replay fails. Uncorrelated adverse facts
   revoke continuation, but cannot establish quiescence or resumability.
-- `decide`: data is `{decision_id,subject,answer,reference}` copied from the
+- `decide`: data is `{decision_id,subject,answer,reference,flow_intent?}` copied from the
   exact pending matter and controller decision. For acceptance answer is
   `accept`; for stage entry it is `confirm` or an explicitly authorized
   `continuous`. Other answers carry the user's actual semantic decision.
@@ -344,12 +344,30 @@ and acceptance remain available subject to B's original validation.
 ## Decisions and recovery
 
 Continuous and stepwise share the same operations and acceptance checks.
-Stepwise retains launch, solution, optional Tickets and stage-entry decisions.
+Stage 2 starts under its entry authorization and combines Spec, ADR and Tickets
+in one review before publication. Its acceptance also authorizes Stage 3; record
+that existing authorization at the later stage-entry boundary without asking
+again. Other stage boundaries retain their applicable decisions.
 Continuous skips only the existing human gates, not readiness, independent
 implementation reviews, phase activation or acceptance. Changed requirements,
 targets, permissions and real semantic choices always return to the controller.
 For an in-stage decision send needs_input with its exact question; C creates
 the pending identity and retains it across resumed turns.
+For an explicit mode change, add `flow_intent: stepwise | continuous` to the
+current Stage-2/3 user decision; C persists it before continuing the same host.
+For a Stage-2 decision that explicitly stops after design, use `design-only`.
+For foreground answers, the original Controller passes the normalized value as
+`workflow.py resume <record> <answer> --decision-id <id> --flow-intent <value>`.
+The runner queues the complete decision and the carrier consumes it unchanged;
+retries must retain both the answer and intent. Omit the flag for ordinary answers.
+This sets stepwise mode and retains the scope in C when the intent is design-only. After verified design
+completion the runner pauses with a design-completed result, preserves the
+Flow Worktree and the unapproved Stage-3 boundary, and asks no new question.
+A later explicit stage-entry confirmation consumes that retained boundary and
+clears the design-only scope. Never infer these intents from a bare acceptance.
+A steering instruction during active work is handled at the next same-stage
+user-decision seam before completion; do not rewrite the checkpoint directly.
+
 
 Stop intent takes priority at advance and effect issuance, including a saved
 runner stop request before shared suspension. A valid reply during pause/cancel

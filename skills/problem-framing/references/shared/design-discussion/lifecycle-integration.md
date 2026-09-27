@@ -78,7 +78,7 @@ An accepted Stage-0 task awaiting archive uses the bounded successor slot in
 [Workflow Control](../guided-implementation/workflow-control-protocol.md).
 
 For Stage 4 attached by the exact successful Stage-3 handoff, the source and
-carrier are the same current task. After the Stage-4 entry confirmation and
+carrier are the same current task. After the Stage-4 entry authorization (inherited in continuous mode) and
 before closure work, call `read-topic` with the handed-off identity and binding.
 Require the exact active, open topic at `current_phase: 3`, no pending document
 write, the handed-off phase-3 result and the current ledger/topic revisions.

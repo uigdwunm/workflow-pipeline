@@ -480,7 +480,7 @@ or
         ).read_text(encoding="utf-8")
         for marker in (
             "not a password or an exact-string challenge",
-            "immediately preceding unresolved confirmation block",
+            "immediately preceding unresolved action",
             "Natural replies",
             "meaning-preserving wording",
             "confirmation_intent",

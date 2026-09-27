@@ -11,9 +11,9 @@ The primary then reads only the sections needed at its current seam:
 
 | Seam | Additional sections and template blocks |
 | --- | --- |
-| Initial launch | Launch and model inheritance; Flow Worktree binding; stepwise launch confirmation or continuous automatic launch disclosure; canonical child bootstrap payload |
+| Initial launch | Launch and model inheritance; Flow Worktree binding; automatic launch disclosure for the selected mode; canonical child bootstrap payload |
 | Failed launch | Pre-launch recovery; pre-launch anomaly only when a user decision is needed |
-| Review or resume | Waiting, decisions, and recovery; the matching review, anomaly and parent-decision blocks |
+| Review or resume | Waiting, decisions, and recovery; the combined review, anomaly and parent-decision blocks |
 | Completion | Repository and publication boundaries; Completion intake and stage transition; completion and the matching success/handoff block |
 
 The child reads this complete protocol before execution, plus the bootstrap,
@@ -101,18 +101,15 @@ The requirement commit and SHA-256 remain the stage's immutable source identity.
 Adapter verification may protect those bytes during dispatch, but it does not
 replace or redefine that source identity.
 
-The stepwise launch confirmation binds to every displayed value and the
-resolution receipt. After an unambiguous confirmation, use `verify --current`
-with the confirmed pair. `status: match` authorizes `start-worktree` and one
-adapter dispatch. `status: changed` invalidates the block and supplies the
-settings for a fresh complete confirmation. An unavailable verification emits
-the pre-launch anomaly. A user-requested override is revalidated from the
-unchanged confirmed block rather than represented as current-task inheritance.
+The explicit stage instruction or inherited handoff authorizes launch. Resolve
+and verify current settings, then create the Flow Worktree and dispatch once.
+Show the selected configuration and receipt without pausing for approval.
+Re-resolve stale inheritance evidence automatically; ask only when a changed
+setting requires a user choice or new authority. A user-requested override stays
+explicit and is revalidated rather than represented as inheritance.
+An unavailable verification uses the pre-launch anomaly.
 
-After stepwise authorization, create the Flow Worktree, build the payload and
-submit the semantic dispatch request. Show any adapter-required disclosure
-before launch; it is a disclosure, not another confirmation gate.
-
+In stepwise mode, use the automatic launch disclosure for stepwise mode.
 In continuous mode, use `resolve --current`, create the Flow Worktree, and submit
 the semantic dispatch request before the automatic launch disclosure. Show any
 adapter-required disclosure first, then only the missing stage facts using the
@@ -137,7 +134,7 @@ packages, frozen requirement and any created Flow Worktree binding. A Hook
 rejection, expired preparation or absent child message alone does not prove
 non-creation. Use the adapter's supported reconciliation before classifying:
 
-- **Proven not created:** under existing continuous authorization, the original
+- **Proven not created:** under existing stage authorization, the original
   Controller may make one technical retry decision without asking the user to
   repeat that authorization. Require authenticated non-creation evidence, an
   adapter-permitted recovery, and unchanged source, target, scope, permissions,
@@ -158,8 +155,8 @@ non-creation. Use the adapter's supported reconciliation before classifying:
 Allow at most one automatic technical retry per authorized launch, using the
 existing Controller checkpoint/decision history to retain that fact across
 turns. A second failure does not reset the allowance or start a retry loop.
-Stepwise mode retains its existing launch confirmation; cancellation never
-authorizes this recovery. If a child actually exists, use the original child's
+The existing stage instruction also covers this bounded recovery in stepwise
+mode; cancellation never authorizes recovery. If a child actually exists, use the original child's
 continuation/reconciliation path instead. No cleanup or replacement is implicit.
 
 ## Child responsibilities and document authority
@@ -180,12 +177,14 @@ The child is the complete stage owner. It must:
 9. Invoke the complete `$to-tickets` behavior when Tickets are useful and
    publish them to the exact configured carrier.
 10. Commit only clean-baseline, stage-owned local Spec, ADR, and Ticket paths.
-11. Finish with exactly one terminal review, anomaly, or completion message.
+11. Return a combined review in stepwise mode before publication; after its
+    decision, finish with exactly one anomaly or completion message.
 
 Before invoking `$to-spec`, `$ask-matt`, or `$to-tickets`, read that Skill's
 complete `SKILL.md` at the inherited, verified canonical package entry. Treat
-a missing, mismatched, or cross-project resolution as an anomaly. Do not
-reconstruct or approximate native behavior from this protocol.
+a missing, mismatched, or cross-project resolution as an anomaly. The stepwise flow below schedules their publication seams after one combined
+review; perform all native content, readiness, label and relationship work at
+those seams. Do not reconstruct or approximate the native behavior.
 
 Document authority is fixed:
 
@@ -201,40 +200,50 @@ drafting state to its final published state.
 
 ## Stepwise review flow
 
-The child runs `$to-spec` until the native testing-seam and solution review
-point, then performs the bounded change-contract preflight and completes
-**Spec readiness** from `{{resource:solution-design/references/design-readiness.md}}`.
-It records the required evidence in the Spec's existing decisions and repairs
-the draft inside the accepted scope before it returns
-`SOLUTION_REVIEW_REQUIRED` instead of addressing the user.
-It must include the exact candidate Spec, decisions, ADRs, scope, target, and a
-review ID. The review represents the child's proposed answer to the native
-testing-seam question and the complete solution choice; exact confirmation
-accepts both and authorizes the child to perform native publication.
+Prepare the complete Spec and necessary ADRs through `$to-spec`, answer its
+testing-seam questions using repository evidence, and perform the
+bounded change-contract preflight and **Spec readiness**. Defer native publication.
+Invoke `$ask-matt` on that exact Spec to decide whether Tickets are useful;
+when useful, prepare the complete `$to-tickets` draft set, answer its quiz and
+complete **Ticket traceability** against the same Spec. Repair in-scope gaps.
+Drafts stay in stage-owned paths inside the Flow Worktree. External publication
+still requires existing explicit authority. Missing material user decisions use
+the anomaly path.
 
-The primary agent shows the fixed review block:
+Return one `SOLUTION_REVIEW_REQUIRED` containing Spec, ADRs, Tickets (or why
+none are needed), effects, testing basis and the saved review checkpoint.
+Remain at a resumable `needs_input` decision: do not emit completion, publish
+planning, claim phase completion, or finalize the role yet. The primary presents
+this combined review as the sole routine decision: accept the complete solution,
+publish it and enter Stage 3. A design-only user request changes the decision
+scope to publication without implementation. Normalize that answer as
+`flow_intent: design-only` on C's current user decision. For explicit switches
+to continuous or stepwise, pass the corresponding `flow_intent` there instead.
+Keep it with the same pending ID, subject and original user reference; C owns
+persistence and the runner consumes that saved intent.
 
-- an unambiguous affirmation sends `PARENT_DECISION` accepting that review ID to the same
-  child;
-- edits or objections are sent to the same child, which revises the artifacts
-  and returns a fresh review ID; and
-- every edit invalidates the prior review and confirmation.
+For a requested revision, use `PARENT_DECISION` with the current review ID and
+the user's exact change. C records that current business decision, then the
+original-identity continuation gate resumes the same child. Update only affected
+artifacts, rerun affected readiness checks and return a fresh combined review.
+The revision instruction authorizes the in-scope edit without another question;
+it does not accept the old solution. Requirement changes return to its owner.
 
-After accepted Spec publication, the child invokes `$ask-matt`. If Tickets are
-not useful, continue without another confirmation. If Tickets are useful, run
-`$to-tickets` through its quiz point, complete **Ticket traceability** from
-`{{resource:solution-design/references/design-readiness.md}}`, and repair any in-scope gap before returning
-`TICKETS_REVIEW_REQUIRED` with the exact draft set, order, dependencies, target,
-and review ID.
+For acceptance, save the review ID, exact reviewed artifact identities, selected
+flow mode, Stage-3 entry scope and original user decision reference in the
+existing Controller decision/checkpoint. Resume the same child, perform deferred
+native Spec/ADR/Ticket publication and the planning commit, then finish with
+`SOLUTION_DESIGN_COMPLETE`. Publication-only formatting/identifiers do not alter
+the accepted solution. Material changes invalidate the affected review before
+publication. An explicit continuous request at this seam is existing authority
+for these actions and remaining stages; update the child and Controller mode.
 
-Handle acceptance or edits identically. The child performs the actual native
-publication after acceptance and owns uncertain-publication recovery.
-
-An edit to implementation design, testing details, ADRs, or Ticket shape remains
-inside stage 2. An edit that changes the accepted goal, requirement scope,
-constraints, or acceptance conditions is an anomaly returned to the primary.
-For a conversation snapshot use `{{resource:solution-design/references/conversation-source.md}}`; for a 0/1 source
-return to its source owner. The child never rewrites the frozen source.
+Unless the user explicitly requested design-only completion, after mechanical
+publication and result acceptance, consume the stage-entry
+pending ID/subject through C `decide` with `answer: confirm` (or `continuous`)
+and the saved original user reference. This records the prior combined decision,
+not another human approval. The foreground runner must honor that recorded
+boundary decision; stepwise mode remains stepwise for the later Stage-4 gate.
 
 ## Continuous exception-only flow
 
@@ -246,7 +255,7 @@ The child must:
 - perform the bounded change-contract preflight through the real production
   call chain and record its evidence in the Spec;
 - complete **Spec readiness** and repair in-scope draft gaps before publication;
-- choose the solution without `SOLUTION_REVIEW_REQUIRED`;
+- choose the solution without an intermediate human review;
 - decide whether Tickets are useful;
 - answer the `$to-tickets` quiz using its best judgment;
 - when Tickets are useful, complete **Ticket traceability** and repair in-scope
@@ -287,7 +296,10 @@ On anomaly:
 - preserve successful work and exact side-effect state;
 - return the fixed anomaly message with one anomaly ID and recovery point;
 - do not choose a different target or action silently; and
-- wait for `PARENT_DECISION` from the primary agent.
+- wait for `PARENT_DECISION` from the primary agent. The primary may supply a
+  recovery decision under existing authority after resolving technical evidence;
+  ask the user only for a missing material choice or new authority. An internal
+  anomaly message does not itself require human approval.
 
 Before a child exists, the primary uses **Pre-launch recovery** instead of a
 child anomaly message. Its permitted technical retry does not change the plan
@@ -314,7 +326,7 @@ command interface.
 
 Continue design from committed objects. Before each Spec, ADR, or Ticket write,
 verify the path is stage-owned and its baseline has not changed. When design and
-review are complete, compare branch, HEAD, workspace state, and exact document
+readiness checks are complete, compare branch, HEAD, workspace state, and exact document
 bytes, then perform only the stage-owned planning commit in the Flow Worktree.
 Remote carrier publication uses its separately disclosed authority.
 
@@ -366,7 +378,7 @@ return control to this protocol. Review and recoverable anomaly messages retain
 the same semantic child identity and stage checkpoint; transport bookkeeping
 does not create a new stage attempt or widen its authority.
 
-On a review or anomaly, retain the actual current native state separately from
+On a combined review or anomaly, retain the actual current native state separately from
 the child's message. In a foreground run the host stays open while a decision
 is pending. The primary records the exact decision and follows C's current
 original-identity continuation gate; running permits wait, and a historical
@@ -376,7 +388,7 @@ through the original orchestration adapter must include:
 - protocol `solution-design-subagent-v2`;
 - trusted child target;
 - exact review or anomaly ID;
-- the user's decision or requested edits; and
+- the user's decision or requested edits, or the Controller recovery decision under existing authority; and
 - the saved recovery point.
 
 Do not start a replacement because the child is idle. If the child terminated
@@ -419,7 +431,9 @@ Process each trusted child completion once. Pass its `本地规划路径` unchan
 `allowed_paths` and the frozen requirement-source paths as `protected_paths`,
 then publish the accepted planning commit once. Carry the same path manifest
 with the retained Flow Worktree at the verified planning merge commit. In
-stepwise mode show the fixed success footer. In continuous mode use the fixed
+stepwise mode consume the existing combined decision as described above and
+show the fixed success footer without another question, then enter Stage 3
+unless the saved decision explicitly stops at design-only completion. In continuous mode use the fixed
 continuous completion handoff and immediately invoke `$guided-implementation`
 with the preserved mode.
 
@@ -427,6 +441,6 @@ After planning publication and Flow Worktree verification succeed, tell the
 orchestration adapter that Stage 2 has accepted and published the child's
 result. If the user explicitly stops recovery, report that decision through the
 same adapter. The adapter owns any native interruption and terminal bookkeeping;
-a review or recoverable anomaly remains resumable stage state.
+a review, requested design revision, or recoverable anomaly remains resumable stage state.
 
 When the tool exposes a resolvable task identity, use thread-settings-v5 resolve --current and verify --current as defined in [the local settings protocol]({{resource:guided-implementation/references/thread-settings-protocol.md}}). Otherwise use actual adapter inheritance evidence without inventing a settings receipt.

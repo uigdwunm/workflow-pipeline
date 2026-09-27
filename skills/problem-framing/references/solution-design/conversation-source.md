@@ -54,8 +54,9 @@ A failed write, commit or verification uses the existing pre-launch anomaly
 with the exact failed operation and recovery point. Preserve successful writes;
 reconcile uncertain outcomes and reuse a verified source on retry. Do not
 send the user to Stage 1 merely because this mechanical preparation failed.
-Once frozen, continue the existing launch and review flow. This entry defaults
-to stepwise mode and does not authorize stages 3/4 or additional remote actions.
+Once frozen, launch under the explicit stage instruction without another approval.
+Use stepwise mode unless the user requested continuous execution; preserve that
+authorization through stages 3/4. Additional remote actions require their own authority.
 
 ## Correct the source
 

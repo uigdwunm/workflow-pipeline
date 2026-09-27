@@ -84,7 +84,7 @@ an incomplete draft to the existing review or publication seam.
 ## Ticket traceability
 
 After `$ask-matt` decides whether Tickets are useful, complete this check before
-the existing Tickets review or direct publication seam.
+the combined review before planning publication, or direct publication in continuous mode.
 
 - When Tickets are useful, every material implementation slice must trace to
   the owning Spec decision and acceptance condition, preserve required order or

@@ -122,7 +122,7 @@ class SolutionDesignContractTests(unittest.TestCase):
         )
         self.assertLess(
             protocol.index("bounded change-contract preflight"),
-            protocol.index("SOLUTION_REVIEW_REQUIRED"),
+            protocol.index("`SOLUTION_REVIEW_REQUIRED`"),
         )
 
     def test_preflight_completion_evidence_is_compact_and_not_a_new_artifact(self) -> None:
@@ -233,11 +233,11 @@ class SolutionDesignContractTests(unittest.TestCase):
             self.assertIn("Ticket traceability", flow)
         self.assertLess(
             stepwise.index("Spec readiness"),
-            stepwise.index("SOLUTION_REVIEW_REQUIRED"),
+            stepwise.index("`SOLUTION_REVIEW_REQUIRED`"),
         )
         self.assertLess(
             stepwise.index("Ticket traceability"),
-            stepwise.index("TICKETS_REVIEW_REQUIRED"),
+            stepwise.index("`SOLUTION_REVIEW_REQUIRED`"),
         )
 
     def test_continuous_mode_skips_human_review_but_keeps_readiness(self) -> None:

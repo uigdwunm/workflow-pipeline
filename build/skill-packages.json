@@ -4,6 +4,7 @@
   "source_revision": "workflow-pipeline-v1.2.2",
   "compatibility_key": {
     "handoff": "workflow-controller-v1",
+    "confirmation": "goal-scoped-confirmation-v3",
     "discussion_request": 1,
     "ledger_read": [
       1,
