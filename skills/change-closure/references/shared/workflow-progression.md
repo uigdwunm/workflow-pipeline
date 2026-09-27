@@ -159,7 +159,9 @@ revision 0. `generated_outputs` is required when the manifest has generated
 items. The
 proposal freezes the candidate and complete manifest but grants no write lease.
 Submit `scope-seal` with data `{proposal_id,proposal_digest,controller_ref,
-decision}`. The decision is either `{kind:"in-requirement-refinement",reference}`
+decision}`. Use the dedicated `scope-seal` and `scope-revise` operations for
+scope decisions; the generic `control` entry rejects both actions before writing.
+The decision is either `{kind:"in-requirement-refinement",reference}`
 or `{kind:"reference-to-approved-change",reference,approved_change_ref}`; the
 latter cites an earlier durable user-decision record by `approved_change_ref`.
 The user's explicit natural-language approval is normalized internally to
@@ -207,6 +209,10 @@ nor creates a new writer attempt. Within the admitted pre-Stage-3 boundary,
 revalidate original authority, Git bytes and publication before activating the
 corrected sealed scope; identical requests reuse their saved result. Existing
 pause/cancel and unresolved-call gates still apply.
+
+Correction preserves any pending or completed stage-entry confirmation for the
+same accepted design. Stepwise entry to newly required implementation waits for
+that confirmation; planning-only scope clears the stage-entry question.
 
 Old checkpoints require their original pinned runtime. Current packages offer
 no cross-version takeover or supplemental handoff.

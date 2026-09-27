@@ -24,8 +24,8 @@ class ScopeProgressTests(unittest.TestCase):
             "proposal_ref": None, "seal_ref": None}
         self.flow.input["authorization"]["scope_digest"] = fixture.transfer.entry.digest(scope)
 
-    def planning_candidate(self):
-        self.flow.begin("continuous")
+    def planning_candidate(self, mode="continuous"):
+        self.flow.begin(mode)
         self.flow.invoke("observe", self.flow.observation())
         (self.flow.flow / "docs/spec.md").write_text("approved design\nImplementation: impl.py\nClosure: CHANGELOG.md\n")
         self.flow.flow_git("add", "docs/spec.md")
@@ -382,6 +382,118 @@ class ScopeProgressTests(unittest.TestCase):
             with self.subTest(record=record), self.assertRaises(fixture.transfer.entry.PreparationError):
                 progress.require_scope_correction_available({progress.KEY: {"stage": 2},
                     "current_stage": "stage2", "history": [record]})
+
+    def test_raw_control_cannot_replace_a_prepared_correction_receipt(self):
+        self.flow.finish_design("continuous")
+        before = self.flow.state()
+        authority = before["scope_authority"]
+        old_manifest = authority["scope"]["downstream"]["manifest"]
+        manifest = sorted([*copy.deepcopy(old_manifest),
+            {**copy.deepcopy(old_manifest[-1]), "path": "tests/test_missing.py", "kind": "test"}],
+            key=lambda item: item["path"])
+        data = {"revision_id": "guarded-correction", "expected_scope_revision": 1,
+            "previous_scope_digest": fixture.transfer.entry.digest(authority["scope"]),
+            "requirement_identity": before["handoff"]["requirement_identity"],
+            "binding": before["handoff"]["binding"],
+            "planning_commit": authority["candidate_commit"],
+            "planning_merge_commit": before["accepted"]["payload"]["planning_merge_commit"],
+            "candidate_commit": authority["candidate_commit"], "old_manifest": old_manifest,
+            "manifest": manifest, "implementation_required": True,
+            "diff": stage_scope.manifest_diff(old_manifest, manifest), "reason": "Include required test",
+            "controller_ref": "task", "decision": {"kind": "in-requirement-refinement",
+                "reference": "controller:include-test"}}
+        calls = []
+        def interrupted(owner, request):
+            calls.append(copy.deepcopy(request))
+            raise RuntimeError("before Controller receipt")
+        with patch.object(progress.Progress, "control_action", interrupted):
+            with self.assertRaisesRegex(RuntimeError, "before Controller receipt"):
+                self.flow.invoke("scope-revise", data)
+        checkpoint = self.flow.checkpoint.read_bytes()
+        forged = calls[0]
+        forged["evidence"]["new_scope_digest"] = "0" * 64
+        with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
+            self.flow.invoke("control", forged)
+        self.assertEqual(error.exception.code, "invalid_operation")
+        self.assertEqual(self.flow.checkpoint.read_bytes(), checkpoint)
+        resumed = self.flow.invoke("scope-revise", data)
+        self.assertTrue(resumed["handoff_ready"], resumed)
+        self.assertEqual(self.flow.state()["accepted"], before["accepted"])
+
+    def test_raw_scope_control_without_transaction_is_rejected_without_writes(self):
+        self.flow.begin("continuous")
+        checkpoint = self.flow.checkpoint.read_bytes()
+        for action in ("scope-seal", "scope-revise"):
+            with self.subTest(action=action):
+                with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
+                    self.flow.invoke("control", {"action": action, "evidence": {},
+                        "receipt": {"controller_ref": "task", "reference": "raw-control"}})
+                self.assertEqual(error.exception.code, "invalid_operation")
+                self.assertEqual(self.flow.checkpoint.read_bytes(), checkpoint)
+
+    def test_progression_rejects_old_runner_envelope_without_writes(self):
+        self.flow.finish_design("continuous")
+        original = progress.read_record(self.flow.checkpoint)
+        readiness = progress.scope_readiness(original[progress.KEY], self.flow.checkpoint)
+        for version in (7, 8):
+            with self.subTest(version=version):
+                outer = {**copy.deepcopy(original), "version": version}
+                progress.atomic_save(self.flow.checkpoint, outer)
+                checkpoint = self.flow.checkpoint.read_bytes()
+                with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
+                    self.flow.invoke("inspect")
+                self.assertEqual(error.exception.code, "legacy_run_requires_original_runtime")
+                self.assertEqual(self.flow.checkpoint.read_bytes(), checkpoint)
+
+                with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
+                    fixture.transfer.handoff.current_readiness(readiness)
+                self.assertEqual(error.exception.code, "legacy_run_requires_original_runtime")
+                self.assertEqual(self.flow.checkpoint.read_bytes(), checkpoint)
+
+    def test_correction_updates_stepwise_boundary_without_reasking_confirmed_entry(self):
+        candidate = self.planning_candidate("stepwise")
+        _, digest = self.propose(candidate, implementation=False)
+        self.flow.ready_publication(candidate, "controller:planning-readiness")
+        self.seal(digest)
+        self.flow.invoke("publication", {"candidate_commit": candidate, "reference": "controller:planning-readiness"})
+        pending = self.flow.invoke("receive-publication")["pending"]
+        self.flow.invoke("decide", {"decision_id": pending["decision_id"], "subject": pending["subject"],
+            "answer": "accept", "reference": "controller:accept-plan"})
+        self.assertIsNone(self.flow.state()["pending"])
+
+        def correct(implementation, *, extra_test=False):
+            state = self.flow.state()
+            authority = state["scope_authority"]
+            manifest = self.manifest(candidate, implementation=implementation)
+            if extra_test:
+                manifest.append({**copy.deepcopy(manifest[-1]), "kind": "test", "path": "tests/test_missing.py"})
+            previous = authority["scope"]["downstream"]["manifest"]
+            return self.flow.invoke("scope-revise", {
+                "revision_id": "revision-" + str(authority["revision"]),
+                "expected_scope_revision": authority["revision"],
+                "previous_scope_digest": fixture.transfer.entry.digest(authority["scope"]),
+                "requirement_identity": state["handoff"]["requirement_identity"], "binding": state["handoff"]["binding"],
+                "planning_commit": candidate, "planning_merge_commit": state["accepted"]["payload"]["planning_merge_commit"],
+                "candidate_commit": candidate, "old_manifest": previous, "manifest": manifest,
+                "implementation_required": implementation, "diff": stage_scope.manifest_diff(previous, manifest),
+                "reason": "Correct planning scope", "controller_ref": "task",
+                "decision": {"kind": "in-requirement-refinement", "reference": "controller:correct-scope"}})
+
+        ready = correct(True)
+        self.assertIsNotNone(ready["pending"])
+        self.assertEqual(ready["pending"]["kind"], "stage-entry")
+        still_pending = correct(True, extra_test=True)
+        self.assertEqual(still_pending["pending"], ready["pending"])
+        planning_only = correct(False)
+        self.assertEqual(planning_only["route"], "planning-only")
+        self.assertIsNone(planning_only["pending"])
+        ready = correct(True)
+        pending = ready["pending"]
+        self.flow.invoke("decide", {"decision_id": pending["decision_id"], "subject": pending["subject"],
+            "answer": "confirm", "reference": "user:enter-implementation"})
+        refined = correct(True, extra_test=True)
+        self.assertTrue(refined["handoff_ready"])
+        self.assertIsNone(refined["pending"])
 
 
 if __name__ == "__main__":

@@ -410,6 +410,8 @@ def read_scope_readiness(readiness):
     require(path.is_absolute() and str(path.resolve()) == str(path),
             "invalid_checkpoint", "canonical absolute progression checkpoint required")
     outer = read_record(path)
+    require(outer.get("version") in (None, 9), "legacy_run_requires_original_runtime",
+            "scope readiness requires a standalone record or runner version 9")
     state = outer.get(KEY)
     require(isinstance(state, dict) and state.get("protocol") == PROTOCOL,
             "handoff_not_ready", "current progression checkpoint is unavailable")
@@ -1680,6 +1682,17 @@ class Progress:
         s["scope_authority"] = corrected_scope_authority(transaction, transaction["control_result"])
         s.setdefault("scope_revisions", {})[data["revision_id"]] = copy.deepcopy(transaction)
         s.pop("scope_revision_transaction", None)
+        pending = (stage_boundary(s["mode"], s["stage"], s["accepted"], s["next_stage"])
+                   if s["scope_authority"]["scope"]["downstream"]["implementation_required"] else None)
+        if pending is not None:
+            previous = s.get("pending")
+            if previous and previous["kind"] == "stage-entry" and previous["subject"] == pending["subject"]:
+                pending = previous
+            if any(decision.get("subject") == pending["subject"] and
+                   decision.get("answer") in {"confirm", "continuous"}
+                   for decision in s.get("decisions", {}).values()):
+                pending = None
+        s["pending"] = pending
         self.save()
         return _view(s, {"operation": "scope-revision-sealed", "authority": s["scope_authority"]})
 
@@ -3627,14 +3640,17 @@ def handle(path, request):
                 'native_host': native_host_preflight(request.get('data'))}
     path = Path(path)
     require(path.is_absolute(), "invalid_checkpoint", "absolute checkpoint path required")
-    if request["operation"] == "scope-revise" or (request["operation"] == "control" and
-            (request.get("data") or {}).get("action") == "scope-revise"):
+    data = request.get("data")
+    if request["operation"] == "control" and isinstance(data, dict):
+        require(data.get("action") not in ("scope-seal", "scope-revise"),
+                "invalid_operation", "use the dedicated scope-seal or scope-revise operation")
+    if request["operation"] == "scope-revise":
         require_scope_correction_available(read_record(path))
     with record_lock(path):
         outer = read_record(path)
         if request["operation"] == "scope-revise":
             require_scope_correction_available(outer)
-        require(outer.get("version") not in {1, 2, 3, 4, 5, 6}, "legacy_run_requires_original_runtime", "retain the original runner and record")
+        require(outer.get("version") in (None, 9), "legacy_run_requires_original_runtime", "progression requires a standalone record or runner version 9")
         member = outer.get(KEY)
         pinned_protocol = outer.get("confirmed", {}).get("packages", {}).get("runner", {}).get("compatibility_key", {}).get("workflow_progress")
         require((member is None or isinstance(member, dict) and member.get("protocol") == PROTOCOL) and
