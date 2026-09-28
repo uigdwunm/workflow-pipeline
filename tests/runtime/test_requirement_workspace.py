@@ -85,17 +85,18 @@ class ConversationWorkspaceTests(EntrySupport):
             'owned_paths': [self.path], 'authorization': 'controller:confirmed'})
         delivered = delivery.handle({'protocol': delivery.PROTOCOL, 'operation': 'deliver',
             'entry': self.request, 'intent': intent})
-        subprocess.run(['git', '-C', str(self.source), 'merge', '--no-edit', 'main'],
-            check=True, capture_output=True)
         old_head = subprocess.run(['git', '-C', str(self.source), 'rev-parse', 'HEAD'],
             check=True, capture_output=True, text=True).stdout.strip()
+        old_status = subprocess.run(['git', '-C', str(self.source), 'status', '--porcelain'],
+            check=True, capture_output=True, text=True).stdout
+        self.assertEqual(old_head, frozen['commit'])
         with self.assertRaises(supervision.ProtocolError) as caught:
             supervision.bind_worktree({'repository': str(self.root), 'target_branch': 'main',
                 'worktree': str(self.source), 'branch': 'codex/source',
                 'base_commit': delivered['target_head'], 'allowed_paths': ['docs/spec.md'],
                 'lifecycle': {'origin': 'reused', 'manager': 'host', 'disposition': 'retain',
                     'evidence_ref': 'fixture:source-workspace', 'creation_receipt': None}})
-        self.assertEqual(caught.exception.code, 'path_outside_scope')
+        self.assertEqual(caught.exception.code, 'worktree_mismatch')
 
         flow = self.root / 'planning'
         self.git('worktree', 'add', '-b', 'codex/planning', str(flow), delivered['target_head'])
@@ -141,6 +142,8 @@ class ConversationWorkspaceTests(EntrySupport):
         self.assertEqual(self.git('show', f"main:{self.path}"), 'confirmed snapshot')
         self.assertEqual(subprocess.run(['git', '-C', str(self.source), 'rev-parse', 'HEAD'],
             check=True, capture_output=True, text=True).stdout.strip(), old_head)
+        self.assertEqual(subprocess.run(['git', '-C', str(self.source), 'status', '--porcelain'],
+            check=True, capture_output=True, text=True).stdout, old_status)
 
     def test_requirement_already_on_target_reuses_the_source_workspace(self):
         frozen = self.freeze()

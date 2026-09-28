@@ -48,10 +48,12 @@ recovery condition, not permission to create a replacement.
    from the target checkout, and contain no unrelated history or ambiguous edits.
    At Stage 2, pass only stage-owned planning paths as `allowed_paths`; the frozen
    requirement is protected even when its source commit has identical bytes to the
-   delivered target. If `bind-worktree` rejects an unbound workspace for incoming
-   source history, retain it and select another suitable workspace or create one
-   from the verified target. Stage-2 handoff checks the protected history again
-   before the designer's first write.
+   delivered target. A separately delivered source checkout is unsuitable while
+   its freeze commit is outside target history; preserve it and select another
+   workspace or create one from the verified target before synchronizing any
+   candidate. Treat an unbound workspace rejected for that verified split or
+   incoming protected history as unsuitable. Stage-2 handoff checks the protected
+   history again before the designer's first write.
 4. Only when the host capability is unavailable and applicable rules allow it, or
    the user explicitly requests script creation, use `start-worktree`. The Controller
    chooses this mechanical route under existing authority; it does not ask the user

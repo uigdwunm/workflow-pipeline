@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "99c2a81e9e07063e994835422d7e3b76f781457e267e7d5f6cb20badf3f2aa1e",
+  "bundle_digest": "abd6038837a75ae63cbb6f30e6f1b6817c08660543b37a4d5ff3de8e93378ae4",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 9,
@@ -78,7 +78,7 @@
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "de36cddd76d44ec584848bdc8423a579c0c3822c01d0bbc70c89aff19e4ee7d9"
+      "sha256": "af4ce91db6000bf6b37b1ba2b13ba042b6a34f29ebff2173042e5b93244b3358"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
