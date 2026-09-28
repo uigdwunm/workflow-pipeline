@@ -383,6 +383,16 @@ def _incoming_changed_paths(repository: Path, target: str, candidate: str) -> se
     return changed
 
 
+def planning_protected_changes(binding: dict[str, Any], target: str, protected_paths: list[str]) -> list[str]:
+    """Find protected paths in a prospective planning flow's incoming history."""
+    repository = Path(binding["repository"])
+    candidate = _git_text(Path(binding["worktree"]), ["rev-parse", "HEAD"])
+    protected = _normalize_relative_paths(protected_paths, "protected_paths")
+    changed = set(_changed_paths(repository, target, candidate))
+    changed.update(_incoming_changed_paths(repository, target, candidate))
+    return sorted(path for path in changed if _path_matches(path, protected))
+
+
 def _lifecycle(value):
     if not isinstance(value, dict):
         raise ProtocolError("invalid_input", "binding lifecycle is required")

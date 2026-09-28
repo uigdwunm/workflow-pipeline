@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "ccc41dc68ac4522310526b6b8c3bde66980bd0945ffa396bb6f0952163210d60",
+  "bundle_digest": "1c72746750b25a442525597d6b3270f2279d42f7839a58d79fcb71d724ab0860",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 9,
@@ -70,7 +70,7 @@
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "335358631e30215e4ab950f364f10acaa5e182c0800f14cff9daea1e38435790"
+      "sha256": "de36cddd76d44ec584848bdc8423a579c0c3822c01d0bbc70c89aff19e4ee7d9"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
@@ -94,7 +94,7 @@
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
-      "sha256": "b0558c64ba8a35069f1fcec2de42f8473d31b2290e7543f6a80e38d065df816e"
+      "sha256": "4c15f493890f2e8b9a3ebb2af8db6f52dcfdd3c4f7d7e134d4d3db0caa394bbc"
     },
     "references/solution-design/design-readiness.md": {
       "mode": "0644",
@@ -202,7 +202,7 @@
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "9cca733ceceba2c2c82e8c9f1a77ecfcc1ed47780c2b9ade048800756f9ac3e6"
+      "sha256": "0f9540d5206190515ab57c86a1d55789cceacbe78bb48c403534db77c3862c1a"
     },
     "scripts/stage_scope.py": {
       "mode": "0644",
@@ -218,7 +218,7 @@
     },
     "scripts/supervision_protocol.py": {
       "mode": "0644",
-      "sha256": "c534c16d636fcbbd7cd78ada70f6123dadbacd8b751bc8ea4164b26e1ce57768"
+      "sha256": "e23a476dcaa6892861c8d989453048044ccf8061ba165f51aa4df0e56f4b5359"
     },
     "scripts/thread_settings.py": {
       "mode": "0644",

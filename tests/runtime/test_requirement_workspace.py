@@ -67,16 +67,80 @@ class ConversationWorkspaceTests(EntrySupport):
                  'protected_paths': [self.path], 'implementation_paths': None, 'closure_paths': None,
                  'downstream': {'state': 'unresolved', 'revision': 0, 'implementation_required': None,
                                 'manifest': None, 'proposal_ref': None, 'seal_ref': None}}
-        prepared = handoff.handle({'protocol': handoff.PROTOCOL, 'operation': 'prepare', 'entry': current,
+        stage_request = {'protocol': handoff.PROTOCOL, 'operation': 'prepare', 'entry': current,
             'expected_entry': resolved, 'stage': 2, 'role': 'solution-designer', 'requirement': frozen,
             'predecessor': None, 'target': request['target'], 'delivery': result['delivery'], 'binding': binding,
             'scope': scope, 'authorization': {'reference': 'controller:confirmed', 'flow_mode': 'stepwise',
                 'scope_digest': entry.digest(scope)}, 'configuration': configuration('solution-designer'),
             'semantic': {'objective': 'design the frozen requirement', 'testing_basis': 'real Git',
-                         'completion_criteria': ['verified design'], 'constraints': ['planning only']}})
-        self.assertEqual(prepared['binding']['worktree'], str(self.source))
-        self.assertEqual(prepared['source_commit'], frozen['commit'])
+                         'completion_criteria': ['verified design'], 'constraints': ['planning only']}}
+        self.assert_code('source_history_conflict', lambda: handoff.handle(stage_request))
         self.assertEqual(requirement.unrelated(self.root, [self.path]), before)
+
+    def test_delivered_requirement_publishes_from_a_target_based_flow(self):
+        frozen = self.freeze()
+        target = {'repository': str(self.root), 'branch': 'main'}
+        intent = delivery.handle({'protocol': delivery.PROTOCOL, 'operation': 'prepare',
+            'entry': self.request, 'requirement': frozen, 'target': target,
+            'owned_paths': [self.path], 'authorization': 'controller:confirmed'})
+        delivered = delivery.handle({'protocol': delivery.PROTOCOL, 'operation': 'deliver',
+            'entry': self.request, 'intent': intent})
+        subprocess.run(['git', '-C', str(self.source), 'merge', '--no-edit', 'main'],
+            check=True, capture_output=True)
+        old_head = subprocess.run(['git', '-C', str(self.source), 'rev-parse', 'HEAD'],
+            check=True, capture_output=True, text=True).stdout.strip()
+        with self.assertRaises(supervision.ProtocolError) as caught:
+            supervision.bind_worktree({'repository': str(self.root), 'target_branch': 'main',
+                'worktree': str(self.source), 'branch': 'codex/source',
+                'base_commit': delivered['target_head'], 'allowed_paths': ['docs/spec.md'],
+                'lifecycle': {'origin': 'reused', 'manager': 'host', 'disposition': 'retain',
+                    'evidence_ref': 'fixture:source-workspace', 'creation_receipt': None}})
+        self.assertEqual(caught.exception.code, 'path_outside_scope')
+
+        flow = self.root / 'planning'
+        self.git('worktree', 'add', '-b', 'codex/planning', str(flow), delivered['target_head'])
+        self.addCleanup(lambda: subprocess.run(['git', '-C', str(self.root), 'worktree',
+            'remove', '--force', str(flow)], capture_output=True))
+        binding = supervision.bind_worktree({'repository': str(self.root), 'target_branch': 'main',
+            'worktree': str(flow), 'branch': 'codex/planning',
+            'base_commit': delivered['target_head'], 'allowed_paths': ['docs/spec.md'],
+            'lifecycle': {'origin': 'reused', 'manager': 'host', 'disposition': 'retain',
+                'evidence_ref': 'fixture:planning-workspace', 'creation_receipt': None}})['binding']
+        entry.os.getcwd.return_value = str(flow)
+        current = copy.deepcopy(self.request)
+        current['host']['project_path'] = str(flow)
+        current.update(source={'kind': 'frozen', 'path': self.path},
+            target={'kind': 'flow', 'binding': binding})
+        current = self.with_registration(current, project=self.root, receipt='host:flow-registry')
+        resolved = entry.resolve(current)
+        scope = {'baseline': resolved['repository']['head'], 'owned_paths': ['docs/spec.md'],
+                 'protected_paths': [self.path], 'implementation_paths': None,
+                 'closure_paths': None, 'downstream': {'state': 'unresolved', 'revision': 0,
+                 'implementation_required': None, 'manifest': None, 'proposal_ref': None,
+                 'seal_ref': None}}
+        prepared = handoff.handle({'protocol': handoff.PROTOCOL, 'operation': 'prepare',
+            'entry': current, 'expected_entry': resolved, 'stage': 2,
+            'role': 'solution-designer', 'requirement': frozen, 'predecessor': None,
+            'target': target, 'delivery': delivered['delivery'], 'binding': binding,
+            'scope': scope, 'authorization': {'reference': 'controller:confirmed',
+                'flow_mode': 'stepwise', 'scope_digest': entry.digest(scope)},
+            'configuration': configuration('solution-designer'),
+            'semantic': {'objective': 'design the frozen requirement',
+                'testing_basis': 'real Git', 'completion_criteria': ['verified design'],
+                'constraints': ['planning only']}})
+        self.assertEqual(prepared['binding']['base_commit'], delivered['target_head'])
+        (flow / 'docs/spec.md').write_text('accepted plan\n')
+        subprocess.run(['git', '-C', str(flow), 'add', 'docs/spec.md'], check=True)
+        subprocess.run(['git', '-C', str(flow), 'commit', '-qm', 'add planning'], check=True)
+        planning = subprocess.run(['git', '-C', str(flow), 'rev-parse', 'HEAD'],
+            check=True, capture_output=True, text=True).stdout.strip()
+        published = supervision.publish_planning({'binding': binding, 'planning_commit': planning,
+            'allowed_paths': ['docs/spec.md'], 'protected_paths': [self.path]})
+        self.assertEqual(published['state'], 'planning_published')
+        self.assertEqual(self.git('rev-parse', 'main'), published['merge_commit'])
+        self.assertEqual(self.git('show', f"main:{self.path}"), 'confirmed snapshot')
+        self.assertEqual(subprocess.run(['git', '-C', str(self.source), 'rev-parse', 'HEAD'],
+            check=True, capture_output=True, text=True).stdout.strip(), old_head)
 
     def test_other_stage_and_carrier_cannot_use_cross_checkout_freeze(self):
         for update in ({'stage': 1, 'source': {'kind': 'stage1', 'path': self.path}},

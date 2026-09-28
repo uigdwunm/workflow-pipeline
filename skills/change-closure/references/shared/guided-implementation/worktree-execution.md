@@ -46,6 +46,12 @@ recovery condition, not permission to create a replacement.
    paths and merge deltas, not only the final tree diff. A change later reverted still
    belongs to incoming history; never choose a newer base to hide it. The registered worktree must share the Git common directory, be separate
    from the target checkout, and contain no unrelated history or ambiguous edits.
+   At Stage 2, pass only stage-owned planning paths as `allowed_paths`; the frozen
+   requirement is protected even when its source commit has identical bytes to the
+   delivered target. If `bind-worktree` rejects an unbound workspace for incoming
+   source history, retain it and select another suitable workspace or create one
+   from the verified target. Stage-2 handoff checks the protected history again
+   before the designer's first write.
 4. Only when the host capability is unavailable and applicable rules allow it, or
    the user explicitly requests script creation, use `start-worktree`. The Controller
    chooses this mechanical route under existing authority; it does not ask the user

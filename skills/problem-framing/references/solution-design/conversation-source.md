@@ -55,16 +55,16 @@ An explicit request to enter Stage 2 authorizes this bounded local preparation:
    for this Stage-2 conversation snapshot under the original Controller authority.
    Keep source and delivery commits distinct; deliver only the authorized document,
    never unrelated source history. Stage-1 and discussion source ownership is unchanged.
-5. Verify the same source in the chosen Flow Worktree and target proof before
-   finalizing its planning baseline. If controlled source and target delivery
-   commits forked, integrate the target only with writers stopped and a clean
-   workspace, verifying the delta stays within authorized content. Real content
-   conflicts use the existing decision path. Bind `base_commit` to the verified
-   target delivery HEAD, not the source's integration HEAD. Binding `allowed_paths`
-   must include the frozen requirement path: its incoming source commit remains in
-   history even when source and target final bytes are identical. After binding, the
-   frozen requirement belongs in `protected_paths`, not designer planning
-   `allowed_paths`; its preparation commit is not new planning output.
+5. Select a Flow Worktree whose incoming history from the verified target delivery
+   HEAD does not touch the frozen requirement. A separate source checkout retains
+   its freeze commit as evidence; when that commit is outside target history, use
+   another suitable workspace or create one from the delivered target. Pass only
+   stage-owned planning paths as binding `allowed_paths`, with the requirement in
+   `protected_paths`. Verify the delivered source bytes and target proof in the
+   selected Flow Worktree, then bind `base_commit` to the target delivery HEAD.
+   A source-history rejection during selection or Stage-2 handoff preparation is
+   a workspace suitability result while no Stage-2 run is saved; preserve that
+   checkout and continue selection before launching the designer.
 
 A failed write, commit or verification uses the existing pre-launch anomaly
 with the exact failed operation and recovery point. Preserve successful writes;

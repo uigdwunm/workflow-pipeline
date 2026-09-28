@@ -55,7 +55,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.flow = self.root.parent / (self.root.name + "-flow")
         self.binding = supervision.start_worktree({"repository": str(self.root), "worktree": str(self.flow),
                                   "branch": "codex/test-flow", "target_branch": "main"})["binding"]
-        self.addCleanup(lambda: subprocess.run(["git", "-C", str(self.root), "worktree", "remove", "--force", str(self.flow)], capture_output=True))
+        self.addCleanup(lambda flow=self.flow: subprocess.run(["git", "-C", str(self.root), "worktree", "remove", "--force", str(flow)], capture_output=True))
         entry.os.getcwd.return_value = str(self.flow)
         self.request.update(stage=2, source={"kind": "frozen", "path": self.requirement_path}, target={"kind": "flow", "binding": self.binding})
         self.request["host"]["project_path"] = str(self.flow)
@@ -521,6 +521,18 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.git("add", document["path"]); self.git("commit", "-qm", "bounded delivery")
         delivered = self.git("rev-parse", "HEAD")
         self.flow_git("merge", "--no-edit", "main")
+        candidate = self.input_for(2)
+        candidate["delivery"] = {"commit": delivered, "paths": [document["path"]], "receipt": "delivery-owner:result"}
+        self.assert_code('source_history_conflict', lambda: handoff.handle(candidate))
+        self.flow = self.root.parent / (self.root.name + '-delivered-flow')
+        self.binding = supervision.start_worktree({"repository": str(self.root),
+            "worktree": str(self.flow), "branch": "codex/delivered-flow",
+            "target_branch": "main"})["binding"]
+        self.addCleanup(lambda flow=self.flow: subprocess.run(["git", "-C", str(self.root),
+            "worktree", "remove", "--force", str(flow)], capture_output=True))
+        entry.os.getcwd.return_value = str(self.flow)
+        self.request['host']['project_path'] = str(self.flow)
+        self.request['target'] = {'kind': 'flow', 'binding': self.binding}
         candidate = self.input_for(2)
         candidate["delivery"] = {"commit": delivered, "paths": [document["path"]], "receipt": "delivery-owner:result"}
         saved = handoff.handle(candidate)

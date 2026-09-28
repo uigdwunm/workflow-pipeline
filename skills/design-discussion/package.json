@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "9f247d711aa19afe30032b165a02cbd95cd67d2805b6af111f0beab868a4854d",
+  "bundle_digest": "66a673a64c6ba4031d369d00939aab80d12ae32f796417e672f0862b4242e44c",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 9,
@@ -115,7 +115,7 @@
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
-      "sha256": "b0558c64ba8a35069f1fcec2de42f8473d31b2290e7543f6a80e38d065df816e"
+      "sha256": "4c15f493890f2e8b9a3ebb2af8db6f52dcfdd3c4f7d7e134d4d3db0caa394bbc"
     },
     "scripts/discussion_core/__init__.py": {
       "mode": "0644",
@@ -211,7 +211,7 @@
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "9cca733ceceba2c2c82e8c9f1a77ecfcc1ed47780c2b9ade048800756f9ac3e6"
+      "sha256": "0f9540d5206190515ab57c86a1d55789cceacbe78bb48c403534db77c3862c1a"
     },
     "scripts/stage_scope.py": {
       "mode": "0644",
@@ -227,7 +227,7 @@
     },
     "scripts/supervision_protocol.py": {
       "mode": "0644",
-      "sha256": "c534c16d636fcbbd7cd78ada70f6123dadbacd8b751bc8ea4164b26e1ce57768"
+      "sha256": "e23a476dcaa6892861c8d989453048044ccf8061ba165f51aa4df0e56f4b5359"
     },
     "scripts/thread_settings.py": {
       "mode": "0644",

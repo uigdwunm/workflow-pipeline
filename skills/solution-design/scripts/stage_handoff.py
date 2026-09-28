@@ -516,6 +516,11 @@ def prepare(request):
         require(request["binding"]["repository"] == request["target"]["repository"] and
                 request["binding"]["target_branch"] == request["target"]["branch"], "target_mismatch", "Flow Worktree and delivery target differ")
         delivered = delivery(request, current, identity, source_commit)
+        if stage == 2:
+            protected_history = supervision.planning_protected_changes(
+                request["binding"], delivered["target_head"], scope["protected_paths"])
+            require(not protected_history, "source_history_conflict",
+                    "Flow Worktree history touches protected planning sources: " + ", ".join(protected_history))
     else:
         require(request["binding"] is None and request["delivery"] is None, "invalid_request", "dedicated discussion preparation has no Flow Worktree delivery")
         delivered = None
