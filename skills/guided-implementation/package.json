@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "1c7ebad7208c5d60c94d638f9d6d6bee9dea5c5e8a528003e3d4854c51d1e963",
+  "bundle_digest": "99c2a81e9e07063e994835422d7e3b76f781457e267e7d5f6cb20badf3f2aa1e",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 9,
@@ -15,7 +15,7 @@
     "preparation": "workflow-preparation-v5",
     "requirement_delivery": "requirement-delivery-v2",
     "runner": 9,
-    "stage_transfer": "workflow-stage-transfer-v10",
+    "stage_transfer": "workflow-stage-transfer-v11",
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "topic_gate": "phase-0-1-discussion-v2",
@@ -74,7 +74,7 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "3044d037d7b335106334bbd1674fdcd0c9677e7d12a548a84f28363adef33ecd"
+      "sha256": "b8eedf8165c4a8ed14721a95a0c78d0e7140e2920f796762e1f566815724f8fb"
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
@@ -82,7 +82,7 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "b82e6d97d670ab70b3d098deefdea4f3a7ade422678df15083b7a2b59962e3c6"
+      "sha256": "45a338207378536f06bad9b59483d9796ea1cb2d1d3b85c0d930f5909cca549d"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -94,11 +94,11 @@
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
-      "sha256": "ec9457a3d8911577ad79f8e56d6f5409d894a664e4c316ae25615677f6e66629"
+      "sha256": "566b1ddedd461cae8f5b25d00bde74eff4fd652da15d43307d44ad0e33990a6f"
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "19f6dcf78744caeffc30ac46408191d96be8bd20acf8c609961f1e6b9366fe12"
+      "sha256": "fac66f03fa71bb8b349b82e5abe08e3187f316edc2389a0151a2317af94ea743"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -202,7 +202,7 @@
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "0f9540d5206190515ab57c86a1d55789cceacbe78bb48c403534db77c3862c1a"
+      "sha256": "3307f40dfd9ba455747c26a6631b9700920a73bfa7d10501027175b1b3b99696"
     },
     "scripts/stage_scope.py": {
       "mode": "0644",

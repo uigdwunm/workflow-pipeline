@@ -16,7 +16,7 @@ class PackageBuildTests(unittest.TestCase):
         config = json.loads((ROOT / 'build/skill-packages.json').read_text())
         key = config['compatibility_key']
         self.assertEqual((key['control'], key['stage_transfer'], key['workflow_progress']),
-                         (9, 'workflow-stage-transfer-v10', 'workflow-progress-v15'))
+                         (9, 'workflow-stage-transfer-v11', 'workflow-progress-v15'))
         self.assertEqual(key['topic_gate'], 'phase-0-1-discussion-v2')
         self.assertEqual(key['confirmation'], 'goal-scoped-confirmation-v3')
         with tempfile.TemporaryDirectory() as temporary:

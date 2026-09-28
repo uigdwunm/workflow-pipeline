@@ -687,7 +687,7 @@ Final completion rereads the original ledger and surviving repository's publishe
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
 New runner records use outer version 9 and pin workflow-progress-v15 /
-workflow-stage-transfer-v10 / flow-worktree-v3 packages with control compatibility
+workflow-stage-transfer-v11 / flow-worktree-v3 packages with control compatibility
 key 9. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete
