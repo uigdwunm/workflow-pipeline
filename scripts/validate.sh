@@ -1,6 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+validate_arguments() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --jobs|--nice)
+        if [[ $# -lt 2 ]]; then
+          printf 'validate.sh: %s requires a value.\n' "$1" >&2
+          exit 2
+        fi
+        shift 2
+        ;;
+      --jobs=*|--nice=*)
+        shift
+        ;;
+      *)
+        printf 'validate.sh requires the full test suite and only accepts --jobs and --nice; use scripts/run_tests.py for filtered tests.\n' >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+validate_arguments "$@"
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 validator="${CODEX_SKILL_VALIDATOR:-$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py}"
 repository_validator="$repo_root/scripts/validate_repository.py"

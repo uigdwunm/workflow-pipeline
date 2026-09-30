@@ -1,5 +1,13 @@
 # Project Agent Instructions
 
+## Repository tests
+
+Run all repository tests through `scripts/run_tests.py`, including focused checks;
+use `scripts/validate.sh` for complete validation. Selection options are documented
+in `CONTRIBUTING.md`. When the runner reports an existing test run, report its owner
+and end this validation attempt. Do not bypass it with direct `python -m unittest`
+commands or by deleting its lock file.
+
 ## Local deployment on the owner's Mac
 
 The local-only entrypoint is `scripts/deploy_local.py`; its isolated tests are

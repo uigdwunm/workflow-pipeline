@@ -26,6 +26,17 @@ Commit source and generated changes together. `--check` rebuilds outside the che
 
 `./scripts/validate.sh` runs test files in separate Python processes, with up to two workers by default and worker CPU niceness 10 on supported POSIX hosts. Each runner accepts only `--jobs 1` or `--jobs 2`; larger values are rejected. This leaves more room for foreground applications; it is not a memory or CPU-percentage limit. Use `--jobs 1` for stable serial order. `--nice 0` retains inherited priority; values 1–19 only lower worker priority, including for their subprocesses.
 
+Run focused tests through the same runner:
+
+```bash
+python3 scripts/run_tests.py --test-file tests/runtime/test_parallel_runner.py
+python3 scripts/run_tests.py --test-file tests/runtime/test_parallel_runner.py --match interrupt
+```
+
+`--test-file` selects one discovered module inside `tests/`, using a repository-relative or absolute path. `--match` requires `--test-file` and selects a substring of the full test ID after the module's `load_tests` hook. Missing modules and empty selections fail the run; loading errors fail the module before any cases execute. Case-filtered runs do not update whole-module timing hints. `validate.sh` accepts only `--jobs` and `--nice`, keeping repository selection and internal worker arguments under its control so that complete validation always runs the full suite.
+
+The runner takes a nonblocking OS file lock in the shared Git directory for the entire test phase, including worker cleanup and timing updates. All worktrees of the repository share this lock; a second run exits immediately with the owner's PID and worktree. Non-Git test fixtures use a lock in their own root. Workers inherit the lock descriptor, keeping it held if their coordinator is killed until the last worker exits. The persistent lock file is diagnostic metadata, not proof of an active run; do not delete it to bypass contention. Build and package checks remain outside the test lock. Direct `python -m unittest` commands bypass this coordination, so repository tests must use the runner.
+
 Parallel runs retain the two quick repository/contract checks first, then prioritize files with the longest recorded wall time. Successful module timings are saved atomically as `workflow-test-timings.json` in the Git common directory, shared across worktrees; this scheduling data is separate from validation-success receipts and never skips a test. Without history, larger test files run first; invalid/unavailable history falls back without failing validation. Non-Git fixtures do not persist history. Fewer workers and earlier long tests can reduce contention and the final serial tail, but total runtime still depends on the workload and machine load.
 
 Tests within each file remain serial, including their existing `load_tests` rules. The runner reports per-file results, failure output, and aggregate test/skip counts; any failed or crashed worker fails validation. Build and package checks finish before tests begin. For tests alone, run `python3 scripts/run_tests.py`; the same `--jobs` and `--nice` options apply.
