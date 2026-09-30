@@ -1,8 +1,8 @@
 {
-  "bundle_digest": "e05d9d258b302a521825a29368ad62bd3619763cd521e4ac8c16df20eb06ab47",
+  "bundle_digest": "50029840d3436b76712632433c5a1b44b710afa4e6f632595fc7ae90a878a153",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
-    "control": 9,
+    "control": 10,
     "discussion_request": 1,
     "entry": "workflow-entry-v4",
     "handoff": "workflow-controller-v1",
@@ -15,11 +15,11 @@
     "preparation": "workflow-preparation-v5",
     "requirement_delivery": "requirement-delivery-v2",
     "runner": 9,
-    "stage_transfer": "workflow-stage-transfer-v11",
+    "stage_transfer": "workflow-stage-transfer-v12",
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "topic_gate": "phase-0-1-discussion-v2",
-    "workflow_progress": "workflow-progress-v15"
+    "workflow_progress": "workflow-progress-v16"
   },
   "external_actions": {
     "route": [
@@ -33,7 +33,7 @@
     },
     "SKILL.md": {
       "mode": "0644",
-      "sha256": "e13601856ba5a089df07fc15dfdb51de7f4455dc9694780b16f2910fa0cc0504"
+      "sha256": "47a97a9a5d679cb22c603aa6c35a122a579ffc629e06aafc2f69519ca46afd8c"
     },
     "agents/openai.yaml": {
       "mode": "0644",
@@ -65,15 +65,15 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "b8eedf8165c4a8ed14721a95a0c78d0e7140e2920f796762e1f566815724f8fb"
+      "sha256": "9383dc6d837929675fbc1d313b9c9d4cc7dfc18ec5d78083010f56e323100eba"
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "af4ce91db6000bf6b37b1ba2b13ba042b6a34f29ebff2173042e5b93244b3358"
+      "sha256": "ea13c6fe5861fa23036db65c84b3f6837c633acdcaa4d003694a9b5dab46e714"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "45a338207378536f06bad9b59483d9796ea1cb2d1d3b85c0d930f5909cca549d"
+      "sha256": "b8f674d5fa3fce1a1af3d6428718a33d8a0b051245887ab4cd6f51926c49464f"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -85,11 +85,11 @@
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
-      "sha256": "566b1ddedd461cae8f5b25d00bde74eff4fd652da15d43307d44ad0e33990a6f"
+      "sha256": "341ed649903becc52844daffd5fd056be8bd6aff2358bb48341285018832588d"
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "fac66f03fa71bb8b349b82e5abe08e3187f316edc2389a0151a2317af94ea743"
+      "sha256": "68a250c3914378d5f22c95e9a8d58efa03c85783f416b475d52bbdf56cfc6b23"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -185,11 +185,11 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "26fb4e2e308eef96299ebdf222556a33a34799369f8448f75bb39925e4a217a1"
+      "sha256": "d36785eabecbcab7032171ca778639a082859cb58c36b232c186e0c14b0f51b8"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "3307f40dfd9ba455747c26a6631b9700920a73bfa7d10501027175b1b3b99696"
+      "sha256": "bd49cc426ef80e698c6f694d545190137efa62bb2ead3f80a33358eb0f478a13"
     },
     "scripts/stage_scope.py": {
       "mode": "0644",
@@ -213,20 +213,20 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "5cb5d4bb7f52763713260caeb6ba8dd0ac867094830e13a6c363e7dba995e7c6"
+      "sha256": "b7295ef415121d8c664bbba8c28c160d1b33b62c4cd1542ff6880c281c7c3367"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "2f4c4a8cffcb16912faf30b0fb1054561002b0c4b2e0fb852336a73b460a8899"
+      "sha256": "580b717dd918155d601682eddb5cc825343d904603d907f50af48fca6eb64156"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "196710ed521de5520a400922129dc4592415ffbd706fcb7251f360a60224a082"
+      "sha256": "53567e466a916f102a9af0b2965164e1dcc2fcbb6950214cc47a196d2b773ffa"
     }
   },
   "format_version": 1,
   "name": "change-closure",
-  "release": "1.2.2",
+  "release": "1.2.3",
   "resources": [
     "change-closure/SKILL.md",
     "change-closure/agents/openai.yaml",
@@ -278,6 +278,6 @@
     "shared/scripts/workflow_progress.py",
     "solution-design/references/conversation-source.md"
   ],
-  "source_revision": "workflow-pipeline-v1.2.2",
+  "source_revision": "workflow-pipeline-v1.2.3",
   "stage": 4
 }

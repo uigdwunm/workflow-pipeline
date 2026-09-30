@@ -105,7 +105,7 @@ further edits; do not create a replacement Dispatcher for ordinary conversion.
 
 This review contract is authoritative. Require a clean committed candidate plus
 focused and affected checks. The Originating Task pins the exact candidate commit and
-the expected target-branch commit as one review fixed point, independently
+the sealed implementation baseline as one review fixed point (`expected_target_head`), independently
 inspects the candidate diff against that fixed point, and passes that same fixed
 point and candidate to both Standards and Spec review axes. Give the Spec axis
 the committed planning artifacts for an inherited flow or the exact fixed
@@ -125,11 +125,11 @@ the implementation or create a replacement for ordinary remediation. Any
 replacement candidate invalidates both review results. The Originating Task
 reruns both axes against that replacement candidate before accepting it. Only
 the Originating Task accepts the candidate; Stage 4 integrates it. Route only a material
-unresolved decision to the user. If the target advanced without changing a
-source path, first convert a direct attempt to full before integration. The same
-Implementation Dispatcher merges that target, runs
-affected checks, and commits a replacement candidate. The Originating
-Task then establishes its exact replacement fixed point and reruns both axes.
+unresolved decision to the user. Target advancement preserves the current
+candidate, review and validation during Stage 3. Final integration is initiated
+only by Stage 4 through the bounded recovery procedure in Workflow Progression;
+the original accepted result remains immutable history. A recovered replacement
+requires both fresh review axes and the frozen final validation.
 
 ## Diagnosis-first remediation
 

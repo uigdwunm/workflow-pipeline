@@ -9,3 +9,11 @@ A Controller-approved bounded direct exception permits that same Dispatcher to i
 The active Conversation Binding stays with the controller; dedicated-stage handoffs delegate an operation allowlist without creating another owner. Standalone calls need no discussion ledger. Existing conversation checkpoints and the foreground runner record carry execution evidence; Git owns Flow Worktree facts. No scheduler or second execution registry is added.
 
 The controller accepts the result, verifies successor readiness and activation, then archives the old visible task. The dispatcher integrates and commits, the controller independently accepts, and the closure agent publishes and cleans within handed-off authority. ADR-0001's state separation, ADR-0005's qualified unattached implementation, and ADR-0006's requirements gates remain. This new role contract has no old-handoff migration obligation.
+
+Stage 3 verifies implementation against its sealed worktree baseline. Parallel
+target commits do not interrupt allocation intake, policy, review or validation.
+Stage 4 handles target advancement only at final publication. Its narrow
+unpublished recovery reuses the original Dispatcher and Flow Worktree, retains
+accepted results as history, and requires full adoption plus fresh review and
+validation for the integrated candidate. Git publication and cleanup guards
+remain in the existing publisher.

@@ -1,7 +1,7 @@
 {
   "format_version": 1,
-  "release": "1.2.2",
-  "source_revision": "workflow-pipeline-v1.2.2",
+  "release": "1.2.3",
+  "source_revision": "workflow-pipeline-v1.2.3",
   "compatibility_key": {
     "handoff": "workflow-controller-v1",
     "confirmation": "goal-scoped-confirmation-v3",
@@ -13,14 +13,14 @@
     ],
     "ledger_write": 3,
     "topic_gate": "phase-0-1-discussion-v2",
-    "control": 9,
+    "control": 10,
     "entry": "workflow-entry-v4",
     "runner": 9,
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v5",
-    "stage_transfer": "workflow-stage-transfer-v11",
-    "workflow_progress": "workflow-progress-v15",
+    "stage_transfer": "workflow-stage-transfer-v12",
+    "workflow_progress": "workflow-progress-v16",
     "requirement_delivery": "requirement-delivery-v2"
   },
   "resources": {

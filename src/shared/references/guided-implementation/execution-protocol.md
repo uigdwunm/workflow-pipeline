@@ -155,12 +155,14 @@ to the originating task before the affected change and never asks the user direc
 It performs no push, pull request, deployment, release, tracker write or other
 remote mutation without separate explicit authority.
 
-If the originating task reports a newer unrelated target HEAD, merge that
-target in this worktree only after converting a direct attempt to full. Resolve
-conflicts here, rerun affected checks and
-report the replacement candidate. The authoritative role contract determines
-the Originating Task's review action. A changed planning source, material
-semantic conflict, or standalone-brief conflict stops for user direction.
+Implement and review against the sealed implementation baseline. Target-branch
+advances do not trigger integration during Stage 3. Only the final Stage-4
+`implementation-recovery` route authorizes the original Dispatcher to integrate
+the selected target in this same worktree. After the merge attempt, stop for C's
+`capture-integration`; then use the existing full allocations and explicit
+adoption to verify or repair the captured implementation paths. Return a fresh
+candidate for both review axes and final validation. Retained closure documents
+remain read-only during that recovery.
 
 The dispatcher never updates the target branch and never removes the Flow
 Worktree or branch. It returns the clean accepted candidate in that retained
@@ -189,7 +191,7 @@ mandatory before delivery, never prerequisites for initial or replacement review
 
 A failed attempt remains immutable. Retry the complete final list only after the
 Controller names that failed attempt; reuse review only while commit, target,
-plan, binding and source state remain unchanged. A code or target change returns
+plan, binding and source state remain unchanged. A candidate code change returns
 to implementation, focused/affected checks and both review axes before another
 final attempt. Unknown command completion requires original-host reconciliation,
 not replay. Pause/cancel intent precedes all new business actions.

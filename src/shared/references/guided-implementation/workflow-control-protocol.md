@@ -311,7 +311,7 @@ new user approval. Scripts verify structure, identity, scope and evidence linkag
 they do not infer low semantic risk or test sufficiency from a diff. The Controller
 reads the frozen plan and relevant production code, subject to independent review.
 
-Direct dispatch requires both the Flow Worktree and target branch at the same
+Direct dispatch requires the Flow Worktree at its
 clean original baseline; existing unexplained
 implementation bytes cannot acquire direct authority. Direct write authority
 starts only after actual Dispatcher binding. `executions`
@@ -322,12 +322,12 @@ result/stop, policy digest, Dispatcher ref/attempt, original baseline and actual
 candidate. On the causal stopped observation, C freezes the real Git snapshot;
 candidate-ready rejects any later byte or Git-state drift. Git verifies that snapshot,
 clean exact HEAD, allowed cumulative paths and complete content/presence/mode
-fingerprints against commit objects. Baseline/target ancestry, current target,
-protected bytes and frozen review checks still apply. Direct start-dispatch freezes
+fingerprints against commit objects. Baseline ancestry, protected bytes and frozen review checks still apply. Direct start-dispatch freezes
 `implementation_target_head` to the original baseline that was verified at admission;
-it does not reread the target after that check. Target movement requires conversion to full
-before integration. Candidate paths keep the original target-diff semantics, with
-the original implementation baseline still required as an ancestor. Self-reported clean/hash,
+it does not reread the target after that check. Target movement does not change the implementation policy or frozen review
+baseline during Stage 3. Final integration recovery uses full allocations to
+revalidate the merged bytes before a replacement candidate can be accepted.
+Self-reported clean/hash,
 child prose or an empty roster cannot substitute for these facts. Provenance
 establishes authorized role and observed Git state, not forensic keyboard authorship;
 unexplained external changes remain an anomaly.
@@ -336,8 +336,7 @@ Both independent review axes and final validation retain the same exact-candidat
 checks. The Dispatcher cannot be either reviewer. Remediation first stops old
 review activity and invalidates the old candidate; direct work continues only
 while the original eligibility remains true. Every replacement candidate requires
-new affected checks, both review axes and final validation. Target movement,
-integration, conflicts or recovery cannot broaden direct authority.
+new affected checks, both review axes and final validation. Integration, conflicts or recovery cannot broaden implementation authority.
 
 ### One-way conversion and inherited bytes
 
@@ -466,7 +465,7 @@ final-validation-failed. validation-retry names its latest failed attempt and
 Controller reference; it preserves all previous attempts and repeats the complete
 final list. invalidate-candidate names the old candidate, reason and Controller
 reference, preserves validation_history, and returns to implementing only after
-old calls/reviewers stop. An accepted delivery cannot be invalidated in place.
+old calls/reviewers stop. An accepted delivery cannot be invalidated in place; final Stage-4 recovery retains it in checkpoint history before reopening the same implementation authority.
 
 The strict verification projection contains candidate, expected_target_head,
 validation_plan, plan_digest, review_digest, review_decision, attempts and
@@ -478,8 +477,8 @@ No implementation contract, tests, generated package or protected source belongs
 to closure scope. After a recorded merge, reconcile publication/cleanup instead
 of demanding a new validation or merge.
 
-New records use runner 9, C workflow-progress-v15, B workflow-stage-transfer-v11
-and control compatibility key 9 (JSON schema 5). Old executable records fail with
+New records use runner 9, C workflow-progress-v16, B workflow-stage-transfer-v12
+and control compatibility key 10 (JSON schema 5). Old executable records fail with
 legacy_run_requires_original_runtime before writes or host calls. Embedded old
 control keeps the ledger outer version and bytes; resume with its original pinned
 package. Never migrate checks strings into passed evidence.

@@ -20,7 +20,7 @@ import workflow_control as control
 import workflow_control_git as control_git
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-stage-transfer-v11"
+PROTOCOL = "workflow-stage-transfer-v12"
 ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution-designer",
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",
@@ -159,6 +159,21 @@ def verify_discussion_binding(current, binding):
 
 
 def phase_evidence(saved, *, role_ref=None, receiving=False, control_context=None):
+    recovery = saved['authorization'].get('integration_recovery')
+    if recovery is not None:
+        entry.fields(recovery, {'closure', 'retained_commit', 'retained_paths'})
+        closure = unseal(recovery['closure'])
+        original = unseal(closure['predecessor'])
+        require(saved['stage'] == 3 and closure['stage'] == 4 and
+                original['handoff']['stage'] == 3 and closure['controller_ref'] == saved['controller_ref'] and
+                closure['binding'] == saved['binding'] and
+                closure['scope']['implementation_paths'] == saved['scope']['implementation_paths'] and
+                closure['requirement_identity'] == saved['requirement_identity'],
+                'authority_changed', 'final recovery must retain its exact closure authority')
+        require(set(recovery['retained_paths']) <= set(closure['scope']['closure_paths']),
+                'scope_changed', 'retained documents escape original closure scope')
+        ancestor(saved['binding']['repository'], original['payload']['candidate_commit'], recovery['retained_commit'])
+        return phase_evidence(closure, receiving=receiving)
     source_request = saved["entry"]["source"]
     if source_request["kind"] != "discussion":
         require("phase" not in saved["authorization"], "authority_missing", "standalone input cannot claim a discussion phase")
@@ -241,7 +256,8 @@ def phase_evidence(saved, *, role_ref=None, receiving=False, control_context=Non
 def delivery(request, current, identity, source_commit):
     """Read-only receiving contract; never cherry-pick or publish a source."""
     root = request["target"]["repository"]
-    head = target_head(request["target"], current["repository"]["git_common_dir"])
+    head = (request['scope']['baseline'] if request.get('stage') == 3 else
+            target_head(request["target"], current["repository"]["git_common_dir"]))
     expected = identity["sha256"]
     require(mode(root, head, identity["path"]) == b"100644", "delivery_pending", "target requirement is absent or has an invalid mode")
     require(hashlib.sha256(blob(root, head, identity["path"])).hexdigest() == expected,
@@ -274,7 +290,7 @@ def delivery(request, current, identity, source_commit):
     return {"source_commit": source_commit, "delivery_commit": delivered, "target_head": head}
 
 
-def verify_result(stage, payload, binding, scope, root, role_ref):
+def verify_result(stage, payload, binding, scope, root, role_ref, integration_recovery=None):
     """Verify completed Git facts. Semantic acceptance remains controller-owned."""
     common = {"artifacts", "checks"}
     extra = {0: {"requirement", "delivery"}, 1: {"requirement", "delivery"},
@@ -304,16 +320,19 @@ def verify_result(stage, payload, binding, scope, root, role_ref):
         protected_revision = merged
     elif stage == 3:
         candidate = commit(payload["candidate_commit"])
+        control.validate_review(candidate, payload["review"], payload["verification"], role_ref)
         require(entry.git_text(root, "rev-parse", "HEAD") == candidate, "result_changed", "candidate differs from actual HEAD")
         ancestor(root, binding["base_commit"], candidate)
-        changed = set(entry.git(root, "diff", "--name-only", "-z", head, candidate).stdout.decode().split("\0")) - {""}
+        review_base = commit(payload["verification"]["expected_target_head"])
+        ancestor(root, scope["baseline"], review_base); ancestor(root, review_base, candidate)
+        changed = set(entry.git(root, "diff", "--name-only", "-z", review_base, candidate).stdout.decode().split("\0")) - {""}
+        retained_paths = set((integration_recovery or {}).get('retained_paths', []))
+        changed -= retained_paths
         require(changed <= set(scope["implementation_paths"]), "invalid_scope", "candidate escapes implementation scope")
-        history_paths = control_git.incoming_changed_paths(Path(root), head, candidate)
+        history_paths = control_git.incoming_changed_paths(Path(root), review_base, candidate) - retained_paths
         require(history_paths <= set(scope["implementation_paths"]) and
                 not history_paths & set(scope["protected_paths"]),
                 "invalid_scope", "candidate history escapes implementation scope")
-        control.validate_review(candidate, payload["review"], payload["verification"], role_ref)
-        require(payload["verification"]["expected_target_head"] == head, "target_changed", "validated target changed")
         control.validate_validation_plan(payload["verification"]["validation_plan"], binding)
         protected_revision = candidate
     else:
@@ -331,8 +350,10 @@ def verify_result(stage, payload, binding, scope, root, role_ref):
                 "cleanup_pending", "publication retained; workspace disposition is incomplete")
         root, protected_revision = primary, merged
     for relative in scope["protected_paths"]:
-        require(blob(root, scope["baseline"], relative) == blob(root, protected_revision, relative) and
-                mode(root, scope["baseline"], relative) == mode(root, protected_revision, relative),
+        source_revision = (integration_recovery['retained_commit'] if integration_recovery is not None and
+                           relative in integration_recovery['retained_paths'] else scope['baseline'])
+        require(blob(root, source_revision, relative) == blob(root, protected_revision, relative) and
+                mode(root, source_revision, relative) == mode(root, protected_revision, relative),
                 "source_changed", "protected source changed")
 
 
@@ -525,7 +546,11 @@ def prepare(request):
         require(request["binding"] is None and request["delivery"] is None, "invalid_request", "dedicated discussion preparation has no Flow Worktree delivery")
         delivered = None
     authority = request["authorization"]
-    entry.fields(authority, {"reference", "flow_mode", "scope_digest"}, {"phase", "control_plan_id"})
+    entry.fields(authority, {"reference", "flow_mode", "scope_digest"}, {"phase", "control_plan_id", "integration_recovery"})
+    if 'integration_recovery' in authority:
+        require(role == 'execution-agent' and request.get('readiness') is not None and
+                current_readiness(request['readiness'])['handoff']['authorization'].get('integration_recovery') ==
+                authority['integration_recovery'], 'authority_missing', 'only final recovery allocations inherit closure authority')
     if "control_plan_id" in authority:
         require(stage < 2, "invalid_request", "control_plan_id selects a dedicated plan only")
         entry.nonempty(authority["control_plan_id"])
@@ -601,15 +626,15 @@ def prepare(request):
         if old["stage"] >= 2:
             require(old["binding"] == request["binding"], "binding_changed", "successor must retain the exact Flow Worktree")
             verify_result(old["stage"], prior["payload"], old["binding"], old["scope"], root,
-                          prior["role_ref"])
+                          prior["role_ref"], old['authorization'].get('integration_recovery'))
             if old["stage"] == 2:
-                published_target = target_head(request["target"], current["repository"]["git_common_dir"])
+                published_target = scope['baseline']
                 for relative in prior["payload"]["planning_paths"]:
                     require(blob(root, prior["payload"]["planning_merge_commit"], relative) ==
                             blob(root, published_target, relative) and
                             mode(root, prior["payload"]["planning_merge_commit"], relative) ==
                             mode(root, published_target, relative),
-                            "source_changed", "published planning bytes changed on the target")
+                            "source_changed", "sealed planning bytes changed at the implementation baseline")
             protected = set(old["scope"]["protected_paths"])
             if old["stage"] == 2:
                 protected.update(prior["payload"]["planning_paths"])

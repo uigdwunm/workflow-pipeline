@@ -47,12 +47,41 @@ delivered `resume_progression`, `answer_pending_delivery` and
 another carrier. A queued `controller_decision` is removed only when C records
 that exact decision as consumed; transport completion alone cannot discard it.
 
+## Final implementation recovery
+
+Stage 3's `expected_target_head` is its sealed review baseline, not a freshness
+requirement on the shared target. Stage 4 alone detects target advancement at
+final publication. After an unpublished closure reports `implementation_problem`
+and every native writer and pending call is stopped, the original Controller
+calls `implementation-recovery` with `{reference, closure_digest}`. The operation
+verifies the exact Stage-4 handoff, original accepted Stage-3 checkpoint, pinned
+packages, fixed scope, current Git identity and absence of publication. It keeps
+the old acceptance and closure checkpoint in history and reopens the same
+Dispatcher/worktree without a new native creation. Exact repeats ACK; a changed
+handoff/reference, uncertain publication, dirty worktree or changed protected
+source rejects. Committed closure-only changes remain immutable, read-only Git
+objects during implementation recovery. Attached recovery uses the active Stage-4
+Phase Run; it never rewinds the topic or alters the completed Stage-3 Phase Run.
+
+The resumed Dispatcher performs the final target merge and stops. The Controller
+then sends bounded `control` action `capture-integration` with evidence
+`{reference}` and a matching `{controller_ref, reference}` receipt. Git derives
+the snapshot and pending implementation paths, including an unresolved merge
+whose MERGE_HEAD exactly matches the selected target. Out-of-scope changes and
+retained closure-document drift reject. Historical Execution reservations close;
+the existing full allocation/adoption protocol verifies or repairs these bytes.
+A fresh candidate requires both review axes and the complete final validation.
+After the original Stage-4 carrier turn has completed or its transport receipt
+has been reconciled, the foreground runner retains its earlier result in history
+and resumes its original Stage-3 session before returning to Stage 4. A verified publication
+permits cleanup-only; this recovery never rolls back or republishes it.
+
 ## One mechanical path
 
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v15","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v16","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -686,8 +715,8 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 9 and pin workflow-progress-v15 /
-workflow-stage-transfer-v11 / flow-worktree-v3 packages with control compatibility
+New runner records use outer version 9 and pin workflow-progress-v16 /
+workflow-stage-transfer-v12 / flow-worktree-v3 packages with control compatibility
 key 9. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete

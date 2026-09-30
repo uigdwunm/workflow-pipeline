@@ -256,12 +256,10 @@ work.
   Task applies the result-intake classifications and continuation rules in the
   authoritative originating-task protocol before review or recovery.
 
-If the target branch advances, inspect the committed changes since the binding
-base. A changed source path stops for user direction. For an unchanged source,
-convert direct to full before integration, then merge the new target HEAD into
-the Flow Worktree, repair ordinary conflicts there,
-rerun affected checks, and commit the replacement candidate. The Originating
-Task handles its review under the authoritative role contract.
+Stage 3 uses the sealed implementation baseline for allocation intake, candidate
+review and final validation. Retain that commit as `expected_target_head` in
+Stage-3 evidence even when the target branch advances. Continue the same worktree
+and policy; Stage 4 handles target integration at final publication.
 
 ## Hand off the retained Flow Worktree
 

@@ -221,6 +221,69 @@ class WorkflowGitTests(unittest.TestCase):
         rejected = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
         self.assertFalse(rejected['ok'], rejected)
 
+    def test_target_advance_does_not_block_execution_intake_or_next_allocation(self):
+        context = self.start_allocations()
+        primary = self.root / 'repository'
+        (primary / 'other-task.md').write_text('another task planning\n')
+        subprocess.run(['git', '-C', str(primary), 'add', 'other-task.md'], check=True)
+        subprocess.run(['git', '-C', str(primary), 'commit', '-qm', 'parallel task'], check=True)
+        (self.repo / 'a.py').write_text('executor change\n')
+        received = self.call('execution-result', self.result_evidence('a', ['a.py']), context)
+        self.assertTrue(received['ok'], received)
+        accepted = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
+        self.assertTrue(accepted['ok'], accepted)
+        helper = test_workflow_control.WorkflowControlTests()
+        envelope = {'task_id': 'next', 'paths': ['b.py'], 'read_only': [],
+            'behavior': 'next slice', 'tests': ['focused'], 'git_operations': [],
+            'configuration': helper.configuration('execution-agent')}
+        self.assertTrue(self.call('plan-execution', envelope, accepted['context'])['ok'])
+        self.assertFalse((self.repo / 'other-task.md').exists())
+        (self.repo / 'outside.txt').write_text('actual unassigned work\n')
+        self.assertFalse(self.call('plan-execution', envelope, accepted['context'])['ok'])
+
+    def test_final_integration_conflict_is_revalidated_in_original_scope(self):
+        context = self.start_allocations()
+        (self.repo / 'a.py').write_text('task version\n')
+        received = self.call('execution-result', self.result_evidence('a', ['a.py']), context)
+        context = self.call('accept-execution', {'agent_ref':'a', 'file_hashes':{}}, received['context'])['context']
+        self.git('add', 'a.py'); self.git('commit', '-qm', 'accepted implementation')
+        accepted = self.git('rev-parse', 'HEAD')
+        primary = self.root / 'repository'
+        (primary / 'a.py').write_text('parallel version\n')
+        subprocess.run(['git', '-C', str(primary), 'add', 'a.py'], check=True)
+        subprocess.run(['git', '-C', str(primary), 'commit', '-qm', 'parallel task'], check=True)
+        target = self.git('rev-parse', context['handoff_progress']['binding']['target_branch'])
+        context['handoff_progress'].update(integration_candidate=accepted, integration_target_head=target)
+        merged = subprocess.run(['git', '-C', str(self.repo), 'merge', '--no-edit', target], capture_output=True)
+        self.assertNotEqual(merged.returncode, 0)
+        captured = self.call('capture-integration', {'reference':'controller:conflict'}, context)
+        self.assertTrue(captured['ok'], captured)
+        source = captured['context']['handoff_progress']['integration_source']
+        helper = test_workflow_control.WorkflowControlTests()
+        planned = self.call('plan-execution', {'task_id':'resolve', 'paths':['a.py'], 'read_only':['docs/draft.md'],
+            'behavior':'resolve final conflict', 'tests':['resolved behavior'], 'git_operations':[],
+            'configuration':helper.configuration('execution-agent'), 'adopt_paths':['a.py'],
+            'adoption_snapshot_digest':source['snapshot_digest']}, captured['context'])
+        self.assertTrue(planned['ok'], planned)
+        assigned = self.call('assign', {'task_id':'resolve', 'agent_ref':'resolver',
+            'allocation_digest':planned['allocation_digest']}, planned['context'])
+        (self.repo / 'a.py').write_text('verified combined version\n')
+        evidence = {**self.result_evidence('resolver', ['a.py']), 'adopted_paths':['a.py']}
+        received = self.call('execution-result', evidence, assigned['context'])
+        self.assertTrue(received['ok'], received)
+        accepted_result = self.call('accept-execution', {'agent_ref':'resolver', 'file_hashes':{}}, received['context'])
+        self.assertTrue(accepted_result['ok'], accepted_result)
+        self.git('add', 'a.py'); self.git('commit', '-qm', 'verified final integration')
+        candidate = self.git('rev-parse', 'HEAD')
+        checkpoint = accepted_result['context']['handoff_progress']
+        checks = test_workflow_control.checks_for(checkpoint['validation_plan']['review_required'], candidate)
+        ready = self.call('candidate-ready', {'dispatcher_ref':'dispatcher',
+            'attempt':accepted_result['context']['carrier']['attempt'], 'commit':candidate,
+            'expected_target_head':target, 'binding':checkpoint['binding'], 'plan_digest':checkpoint['plan_digest'],
+            'checks':checks, 'source':{'adapter':'fixture', 'call_ref':'focused', 'response_ref':'focused-result',
+                'raw':{'checks':checks, 'source_unchanged':True, 'stopped':True, 'dispatcher_ref':'dispatcher'}}}, accepted_result['context'])
+        self.assertTrue(ready['ok'], ready)
+
     def test_parallel_results_wait_for_peer_evidence_before_acceptance(self):
         context = self.start_allocations(peers=True)
         (self.repo/'a.py').write_text('a'); (self.repo/'b.py').write_text('b')

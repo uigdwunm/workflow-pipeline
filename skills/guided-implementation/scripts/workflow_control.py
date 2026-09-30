@@ -133,6 +133,8 @@ def direct_implementation(progress):
 
 
 def adoption_source(progress):
+    if progress.get('integration_source') is not None:
+        return progress['integration_source']
     escalation = progress.get('implementation_escalation')
     if escalation is not None:
         return escalation
@@ -459,7 +461,26 @@ def validate_progress(progress):
             validate_scope_seal_evidence(seal['evidence'],
                                          {'requirement_identity': seal['evidence']['requirement_identity']}, progress)
     elif 'executions' in progress:
-        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head'}
+        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'integration_target_head', 'integration_candidate', 'integration_source', 'integration_retained'}
+        if 'integration_target_head' in progress:
+            for field in ('integration_target_head', 'integration_candidate'):
+                require(re.fullmatch('[0-9a-f]{40}', progress.get(field, '')), 'invalid final integration identity')
+        if 'integration_retained' in progress:
+            retained = progress['integration_retained']
+            keys(retained, {'commit', 'paths'})
+            require(re.fullmatch('[0-9a-f]{40}', retained['commit']), 'invalid retained closure commit')
+            paths(retained['paths'], empty=True)
+        if 'integration_source' in progress:
+            source = progress['integration_source']
+            keys(source, {'reference', 'snapshot', 'snapshot_digest', 'pending_paths'})
+            text(source['reference'])
+            keys(source['snapshot'], {'head','branch','index_hash','files'})
+            hashes(source['snapshot']['files'])
+            require(set(source['snapshot']['files']) == set(progress['allowed_paths'] + progress['protected_paths']),
+                    'integration snapshot must cover the frozen file scope')
+            require(source['snapshot_digest'] == digest(source['snapshot']) and
+                    set(paths(source['pending_paths'], empty=True)) <= set(progress['allowed_paths']),
+                    'invalid final integration snapshot')
         require(state in {'dispatcher-pending', 'implementing', 'reviewable', 'reviewing', 'final-validation-pending', 'validating', 'final-validation-failed', 'deliverable', 'cancelled'}, 'invalid dispatcher state')
         validate_binding(progress['binding'])
         paths(progress['allowed_paths']); paths(progress['protected_paths'], empty=True)
@@ -1003,6 +1024,25 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             'snapshot_digest': digest(evidence['snapshot']), 'pending_paths': pending}
         progress['implementation_policy'] = {'mode': 'full'}
         effects = [{'operation': 'continue-host', 'ref': context['carrier']['ref'], 'implementation_mode': 'full'}]
+    elif action == 'capture-integration':
+        keys(evidence, {'reference', 'snapshot', 'pending_paths'})
+        require(progress and progress['state'] == 'implementing' and 'integration_target_head' in progress,
+                'capture requires the final publication recovery')
+        require(all(e['stopped'] and e['state'] in {'accepted', 'cancelled'} for e in progress['executions']),
+                'stop all historical execution allocations before integration capture')
+        source = {**evidence, 'snapshot_digest': digest(evidence['snapshot'])}
+        if progress.get('integration_source') is not None:
+            require(progress['integration_source'] == source, 'final integration snapshot cannot change')
+            return {'ok': True, 'context': context, 'effects': [], 'acknowledged': True}
+        text(evidence['reference'])
+        require(set(paths(evidence['pending_paths'], empty=True)) <= set(progress['allowed_paths']),
+                'final integration adoption escapes scope')
+        progress['integration_source'] = source
+        progress['implementation_policy'] = {'mode': 'full'}
+        for field in ('implementation_escalation', 'implementation_target_head', 'recovery', 'recovery_history'):
+            progress.pop(field, None)
+        for execution in progress['executions']:
+            execution['state'] = 'cancelled'
     elif action == 'plan-execution':
         keys(evidence, {'task_id', 'paths', 'read_only', 'behavior', 'tests', 'git_operations', 'configuration'} |
              (set(evidence) & {'adopt_paths', 'adoption_snapshot_digest', 'adoption_fingerprints'}))

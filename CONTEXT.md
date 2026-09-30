@@ -45,7 +45,10 @@ The one isolated Git worktree selected and bound at Stage 2, or by a standalone
 Stage 3/4, for one delivery. Suitable existing workspaces are reused before creation;
 reused and host-managed workspaces remain after delivery, while script-created
 temporary resources follow their recorded deletion disposition. Stage 2 may publish its planning
-checkpoint without ending the Flow Worktree.
+checkpoint without ending the Flow Worktree. Stage 3 uses that fixed implementation
+baseline throughout work and review; Stage 4 handles the current target only at
+final publication. An unpublished final integration recovery retains acceptance
+history and reuses the same Dispatcher/worktree for revalidation.
 _Avoid_: Stage-2 worktree, implementation worktree, closure worktree
 
 ## Discussion continuity

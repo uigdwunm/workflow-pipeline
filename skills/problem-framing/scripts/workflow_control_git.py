@@ -117,6 +117,14 @@ def changed_paths(repository, baseline):
     return sorted(set(tracked + untracked) - {''})
 
 
+def retained_closure_paths(repository, progress):
+    retained = progress.get('integration_retained') or {'paths':[]}
+    for relative in retained['paths']:
+        require(file_fingerprint(repository, relative) == committed_fingerprint(repository, retained['commit'], relative),
+                'retained closure document changed during implementation recovery: ' + relative)
+    return set(retained['paths'])
+
+
 def incoming_changed_paths(repository, target, candidate):
     """Paths introduced by incoming commits, including later reversions."""
     changed = set()
@@ -218,16 +226,16 @@ def verify_execution_start(repository, progress):
     baseline = commit(progress['git_baseline_commit'])
     expected = {p: committed_fingerprint(repository, baseline, p)
                 for p in progress['allowed_paths']}
-    escalation = progress.get('implementation_escalation')
+    if progress.get('integration_source') is not None:
+        expected = {p: progress['integration_source']['snapshot']['files'][p] for p in progress['allowed_paths']}
+    escalation = None if progress.get('integration_source') is not None else progress.get('implementation_escalation')
     if escalation is not None:
         inherited = escalation['snapshot']
         pending = set(escalation['pending_paths'])
-        target = git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip()
-        git(repository, 'merge-base', '--is-ancestor', inherited['target'], target)
-        git(repository, 'merge-base', '--is-ancestor', target, 'HEAD')
+        target = baseline
         if not progress['executions']:
             current = recovery_snapshot(repository, progress)[0]
-            if current != inherited:
+            if {k:v for k,v in current.items() if k != 'target'} != {k:v for k,v in inherited.items() if k != 'target'}:
                 # Dispatcher integration may change HEAD/index after escalation,
                 # but cannot replace or accept any inherited implementation bytes.
                 require(current['branch'] == inherited['branch'] and current['base'] == inherited['base'] and
@@ -294,9 +302,31 @@ def verified_transition(payload):
         require(payload['baseline'] == progress['git_baseline_commit'], 'frozen Git baseline changed')
     if action == 'receive':
         verify_delivery(repository, payload['baseline'], evidence)
+    if action == 'capture-integration':
+        require(progress is not None and 'integration_target_head' in progress,
+                'final integration recovery is missing')
+        verify_binding(repository, progress['binding'])
+        target, accepted = progress['integration_target_head'], progress['integration_candidate']
+        actual = snapshot(repository)
+        git(repository, 'merge-base', '--is-ancestor', accepted, actual['head'])
+        merging = git(repository, 'rev-parse', '--git-path', 'MERGE_HEAD').decode().strip()
+        merging = Path(merging) if Path(merging).is_absolute() else repository / merging
+        if merging.exists():
+            require(actual['head'] == accepted and merging.read_text().strip() == target,
+                    'unresolved merge differs from the final integration target')
+        else:
+            git(repository, 'merge-base', '--is-ancestor', target, actual['head'])
+        retained = retained_closure_paths(repository, progress)
+        pending = sorted(set(changed_paths(repository, target)) - retained)
+        require(set(pending) <= set(progress['allowed_paths']) and not set(pending) & set(progress['protected_paths']),
+                'final integration changes escape implementation authority')
+        for relative in set(progress['protected_paths']) - retained:
+            require(file_fingerprint(repository, relative) == committed_fingerprint(repository, payload['baseline'], relative),
+                    'final integration changed protected source: ' + relative)
+        actual['files'] = {p: file_fingerprint(repository, p) for p in progress['allowed_paths'] + progress['protected_paths']}
+        evidence.update(snapshot=actual, pending_paths=pending)
     if action == 'start-closure':
         verify_binding(repository, evidence['binding'])
-        require(git(repository, 'rev-parse', evidence['binding']['target_branch']).decode().strip() == evidence['verification']['expected_target_head'], 'target_changed')
         require(snapshot(repository)['head'] == evidence['candidate'] and not git(repository, 'status', '--porcelain'), 'closure must start at the clean accepted candidate')
     if action == 'closure-result' and evidence.get('implementation_problem') is None:
         require(progress is not None, 'missing closure checkpoint')
@@ -324,8 +354,6 @@ def verified_transition(payload):
             if policy['mode'] == 'direct':
                 require(snapshot(repository)['head'] == payload['baseline'] and not git(repository, 'status', '--porcelain'),
                         'direct dispatch requires the clean original baseline; unaccepted bytes require full')
-                require(git(repository, 'rev-parse', evidence['binding']['target_branch']).decode().strip() == payload['baseline'],
-                        'direct dispatch requires the original target baseline; use full after target movement')
                 assessment = policy['assessment']
                 require(set(assessment['implementation_paths'] + assessment['test_paths']) <= set(evidence['allowed_paths']),
                         'direct assessment paths escape implementation scope')
@@ -334,9 +362,8 @@ def verified_transition(payload):
         require(progress is not None, 'missing dispatcher checkpoint')
         verify_binding(repository, progress['binding'])
         scope_base = git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip()
-        if action in {'escalate-implementation', 'prepare-dispatch-recovery', 'recover-dispatch'}:
-            scope_base = git(repository, 'merge-base', scope_base, 'HEAD').decode().strip()
-        require(set(changed_paths(repository, scope_base)) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
+        scope_base = git(repository, 'merge-base', scope_base, 'HEAD').decode().strip()
+        require(set(changed_paths(repository, scope_base)) - retained_closure_paths(repository, progress) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
     if action == 'escalate-implementation':
         actual = recovery_snapshot(repository, progress)[0]
         verify_stopped_snapshot(repository, evidence['snapshot'], actual)
@@ -346,6 +373,8 @@ def verified_transition(payload):
         actual, ownership, revalidate = recovery_snapshot(repository, progress)
         evidence.update(snapshot=actual, ownership=ownership, revalidate=revalidate)
     if action == 'plan-execution':
+        require('integration_target_head' not in progress or progress.get('integration_source') is not None,
+                'capture final integration before revalidation allocations')
         if evidence.get('adopt_paths'):
             source = adoption_source(progress)
             require(source is not None, 'adoption requires an escalated direct snapshot')
@@ -392,16 +421,20 @@ def verified_transition(payload):
             execution_delta(repository, progress, execution, accepting=True)
             evidence['file_hashes'] = {p: evidence['file_hashes'][p] for p in execution['file_hashes']}
     if action in {'candidate-ready', 'review-start', 'review-converged', 'validation-start', 'validation-result', 'validation-retry', 'delivery-ready', 'accept-delivery'}:
-        require(not set(changed_paths(repository, payload['baseline'])) & set(progress['protected_paths']), 'protected source changed')
+        require(not (set(changed_paths(repository, payload['baseline'])) - retained_closure_paths(repository, progress)) & set(progress['protected_paths']), 'protected source changed')
     if action == 'candidate-ready':
-        require(git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip() == evidence['expected_target_head'], 'target_changed')
+        require('integration_target_head' not in progress or progress.get('integration_source') is not None,
+                'capture and revalidate the final integration before a replacement candidate')
+        require(evidence['expected_target_head'] == progress.get('integration_target_head', progress['git_baseline_commit']),
+                'candidate review base differs from its frozen authority')
         git(repository, 'merge-base', '--is-ancestor', evidence['expected_target_head'], evidence['commit'])
         require(not git(repository, 'status', '--porcelain'), 'candidate working tree is dirty')
         actual_commit = snapshot(repository)['head']
         require(evidence['commit'] == actual_commit, 'candidate is not actual HEAD')
         git(repository, 'merge-base', '--is-ancestor', progress['git_baseline_commit'], evidence['commit'])
-        candidate_paths = changed_paths(repository, evidence['expected_target_head'])
-        history_paths = incoming_changed_paths(repository, evidence['expected_target_head'], evidence['commit'])
+        retained = retained_closure_paths(repository, progress)
+        candidate_paths = sorted(set(changed_paths(repository, evidence['expected_target_head'])) - retained)
+        history_paths = incoming_changed_paths(repository, evidence['expected_target_head'], evidence['commit']) - retained
         require(history_paths <= set(progress['allowed_paths']) and not history_paths & set(progress['protected_paths']),
                 'candidate history escapes implementation scope or changes protected sources')
         accepted_fingerprints = {}
@@ -414,8 +447,8 @@ def verified_transition(payload):
             require(evidence['expected_target_head'] == progress.get('implementation_target_head'),
                     'direct target advanced; escalate to full before integration')
             require('direct_provenance' in evidence, 'actual native dispatcher provenance required')
-            require(evidence['direct_provenance']['stop'].get('git_snapshot') == recovery_snapshot(repository, progress)[0],
-                    'direct bytes or Git state changed after native stop')
+            verify_stopped_snapshot(repository, evidence['direct_provenance']['stop'].get('git_snapshot'),
+                                    recovery_snapshot(repository, progress)[0])
             accepted_fingerprints = {p: committed_fingerprint(repository, actual_commit, p) for p in candidate_paths}
             evidence['direct_provenance']['fingerprints'] = accepted_fingerprints
             evidence['direct_provenance']['paths'] = candidate_paths
@@ -429,8 +462,7 @@ def verified_transition(payload):
         require(progress is not None, 'missing implementation fixed point')
         verify_binding(repository, progress['binding'])
         require(not git(repository, 'status', '--porcelain') and snapshot(repository)['head'] == progress['candidate'], 'validation candidate changed or dirty')
-        require(git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip() == progress['expected_target_head'], 'target_changed')
-        require(set(changed_paths(repository, git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip())) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
+        require(set(changed_paths(repository, progress['expected_target_head'])) - retained_closure_paths(repository, progress) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
         if action in {'validation-start', 'validation-result'}:
             evidence['source_snapshot'] = {p:file_fingerprint(repository, p) for p in progress['allowed_paths'] + progress['protected_paths']}
     result = transition(request)

@@ -441,7 +441,7 @@ def received(request):
     else:
         if stage == 2:
             design_scope(request, saved, payload)
-        handoff.verify_result(stage, payload, saved["binding"], saved["scope"], root, ref)
+        handoff.verify_result(stage, payload, saved["binding"], saved["scope"], root, ref, saved['authorization'].get('integration_recovery'))
         if stage < 2:
             identity, revision = handoff.source(current, payload["requirement"], stage)
             require(identity["path"] == saved["requirement_identity"]["path"] and identity["version"] >= saved["requirement_identity"]["version"],
@@ -503,7 +503,7 @@ def accepted(request):
         else:
             if stage == 2:
                 design_scope(request, saved, payload)
-            handoff.verify_result(stage, payload, saved["binding"], saved["scope"], root, ref)
+            handoff.verify_result(stage, payload, saved["binding"], saved["scope"], root, ref, saved['authorization'].get('integration_recovery'))
             if stage < 2:
                 current = handoff.refresh(saved["entry"], saved["expected_entry"], after_work=True)
                 identity, revision = handoff.source(current, payload["requirement"], stage)

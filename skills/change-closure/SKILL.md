@@ -95,13 +95,19 @@ existing `complete-worktree` once. Inspect uncertain outcomes with
 `receive-publication` for B intake. This publishes the accepted implementation plus closure updates and
 verifies the binding’s original retain or delete disposition.
 
-If the target advanced, inspect the committed delta. A changed protected source
-or material semantic conflict requires user direction. Otherwise return the
-same Flow Worktree to the existing implementation task to merge the target and
-rerun affected checks, then have the Originating Task rerun both review
-axes for the replacement candidate. After the same dispatcher completes its
-frozen final validation, recheck any closure-document result and
-retry final completion. Stage 4 never repairs implementation code itself.
+At final publication, compare the target with the accepted candidate's review
+base. If it advanced, inspect the committed delta before writing closure documents.
+A changed protected source or material semantic conflict requires user direction.
+Otherwise stop all closure writers, report `implementation_problem`, and have C
+invoke `implementation-recovery` with this exact closure handoff digest and the
+Controller's reference. C retains the old accepted result and same Flow Worktree,
+then resumes the original Implementation Dispatcher for the final merge. After
+its stopped merge attempt, C invokes `capture-integration`; existing full
+Execution allocations adopt or repair the captured bytes. Both review axes and
+final validation must pass for the replacement before returning to Stage 4.
+Previously committed closure documents are retained read-only and rechecked here.
+The target is written only by the existing final publisher. Stage 4 never repairs
+implementation code itself.
 
 For explicit standalone Stage 4, read documents from the current target. If
 bytes change, follow the shared worktree selection contract, reusing a suitable

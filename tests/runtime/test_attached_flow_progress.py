@@ -226,6 +226,12 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.assertIsNone(self.state()['dispatch']['delivery'])
 
     def test_attached_flow_publication_cleanup_acceptance_and_phase_replay(self):
+        self.attached_publication_chain()
+
+    def test_attached_final_recovery_keeps_completed_phase_and_active_closure(self):
+        self.attached_publication_chain(recover=True)
+
+    def attached_publication_chain(self, recover=False):
         self.begin('stepwise')
         self.invoke('observe', self.observation())
         self.activate_designer()
@@ -254,6 +260,42 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.context = self.context_for(4)
         self.begin('stepwise', value)
         self.invoke('observe', self.observation(ref='native:closure'))
+        if recover:
+            original_stage3 = copy.deepcopy(self.state()['history'][-1])
+            completed_phase = copy.deepcopy(self.phases[3])
+            (self.root / 'other-task.md').write_text('parallel update\n')
+            self.git('add', 'other-task.md'); self.git('commit', '-qm', 'parallel task')
+            observed = self.observation('stopped', 'result', ref='native:closure')
+            observed['closure'] = {'ref':'native:closure', 'candidate':predecessor['payload']['candidate_commit'],
+                'merge':None, 'ancestor_verified':False, 'changed_paths':[], 'binding':self.binding,
+                'checks':[], 'worktree_removed':False, 'branch_removed':False, 'disposition':'deleted',
+                'disposition_verified':False, 'implementation_problem':'target advanced at final publication'}
+            self.invoke('observe', observed)
+            restored = self.invoke('implementation-recovery', {'reference':'controller:final', 'closure_digest':self.state()['handoff']['digest']})
+            self.assertEqual(self.state()['stage'], 3, restored.get('error'))
+            continued = self.invoke('observe', self.observation('idle','result',ref='native:dispatcher'))
+            self.assertEqual(continued['next_action']['operation'], 'continue-host', continued.get('error'))
+            self.flow_git('merge','--no-edit','main')
+            candidate = self.flow_git('rev-parse','HEAD')
+            self.invoke('observe', self.observation('stopped','result',ref='native:dispatcher'))
+            self.invoke('control', {'action':'capture-integration', 'evidence':{'reference':'controller:merged'},
+                'receipt':{'controller_ref':'task','reference':'controller:merged'}})
+            payload = {'candidate_commit':candidate, 'artifacts':['impl.py'], 'checks':['verified'],
+                'review':{axis:{'candidate':candidate,'reviewer_ref':axis,'status':'accepted'} for axis in ('standards','spec')},
+                'verification':{'candidate':candidate}}
+            accepted = self.accept_current(payload,'native:dispatcher')
+            self.assertEqual(accepted['status'],'accepted',accepted.get('error'))
+            self.assertEqual(self.phases[3], completed_phase)
+            self.assertIn(original_stage3, self.state()['history'])
+            pending = self.state()['pending']
+            self.invoke('decide', {'decision_id':pending['decision_id'], 'subject':pending['subject'],
+                'answer':'confirm','reference':'controller:return-stage4'})
+            predecessor = self.state()['accepted']
+            next_input = fixtures.ProgressTests.input_for(self,4,predecessor)
+            next_input['authorization']['phase'] = copy.deepcopy(value['authorization']['phase'])
+            self.context = self.context_for(4)
+            self.begin('stepwise',next_input)
+            self.invoke('observe',self.observation(ref='native:closure'))
         candidate = predecessor['payload']['candidate_commit']
         self.ready_publication(candidate, 'controller:closure', 'native:closure')
         result = self.invoke('publication', {'candidate_commit': candidate, 'reference': 'controller:closure',

@@ -34,7 +34,7 @@
     },
     "handoff_json": {
       "type": "string",
-      "description": "Reviewable Stage-3 work returns continue. Completed uses the exact current completion.stage_result.handoff_json from workflow-progress-v15; Stage 2 planning completion alone does not grant Stage 3 readiness. Stage 3 completion requires converged reviews and the latest complete passed final attempt. For needs_input, retain the exact pending matter. Never reconstruct B evidence."
+      "description": "Reviewable Stage-3 work returns continue. Completed uses the exact current completion.stage_result.handoff_json from workflow-progress-v16; Stage 2 planning completion alone does not grant Stage 3 readiness. Stage 3 completion requires converged reviews and the latest complete passed final attempt. For needs_input, retain the exact pending matter. Never reconstruct B evidence."
     },
     "question": {
       "type": "string"
@@ -51,5 +51,5 @@
       ]
     }
   },
-  "description": "One carrier turn in runner v9. Only persisted workflow-progress-v15 C/B/D acceptance completes a stage; current C sealed readiness controls Stage-3 entry, and planning-only Stage 2 ends without it. Continue and needs_input retain the foreground host."
+  "description": "One carrier turn in runner v9. Only persisted workflow-progress-v16 C/B/D acceptance completes a stage; current C sealed readiness controls Stage-3 entry, and planning-only Stage 2 ends without it. Continue and needs_input retain the foreground host."
 }

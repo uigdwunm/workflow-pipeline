@@ -1,7 +1,7 @@
 # Package execution and action preflight
 
 Registration provenance and controlled recovery require preparation=workflow-preparation-v5,
-stage_transfer=workflow-stage-transfer-v11, workflow_progress=workflow-progress-v15,
+stage_transfer=workflow-stage-transfer-v12, workflow_progress=workflow-progress-v16,
 and topic_gate=phase-0-1-discussion-v2. The topic gate key separates packages
 that allow discussion behind a closed dependency from the older blanket guard.
 Preparation v5 retains stable actor identity and permits the original Stage-2
@@ -11,8 +11,8 @@ Entry requests use workflow-entry-v4 and requirement requests use requirement-fr
 Old pinned runs keep their original packages and records; ordinary new-package
 operations reject incompatible exchanges instead of filling missing identity
 fields.
-Runner outer version 9 requires workflow-progress-v15, workflow-stage-transfer-v11
-and control compatibility key 9 (JSON schema 5). Supervision flow-worktree-v3
+Runner outer version 9 requires workflow-progress-v16, workflow-stage-transfer-v12
+and control compatibility key 10 (JSON schema 5). Supervision flow-worktree-v3
 requires lifecycle provenance and disposition; requirement-delivery-v2 accepts
 bounded Stage-2 conversation delivery. Discussion request/ledger, requirement-freeze
 and thread-settings retain their existing versions. Older records require
@@ -20,7 +20,7 @@ their original pinned runtime for ordinary execution. Missing implementation_pol
 compatible new input means full; it never supplies direct provenance to an old
 candidate. This change does not install packages or update active registrations.
 
-Progression v15 retains native lifecycle admission, sealed Stage-2 downstream
+Progression v16 retains native lifecycle admission, sealed Stage-2 downstream
 scope and lifecycle-aware completion. The scope envelope has internal `version:1`;
 its manifest supplies implementation and closure path projections. Corrections
 are limited to accepted Stage 2 before any saved Stage-3 preparation, launch

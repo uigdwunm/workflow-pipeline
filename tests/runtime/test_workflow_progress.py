@@ -1084,7 +1084,10 @@ class ProgressTests(transfer.StageTransferTests):
                      **{key:checkpoint[key] for key in ('candidate','expected_target_head','plan_digest','review_digest')}}
             response = self.invoke('control', {'action':'validation-start','evidence':start,
                 'receipt':{'adapter':'fixture','call_ref':'final','response_ref':'final-start','raw':{'decision':'run'}}})
-            self.assertEqual(response['next_action']['operation'],'continue-host',response)
+            self.assertIsNotNone(response['next_action'], response)
+            if response['next_action']['operation'] == 'inspect-host-state':
+                response = self.invoke('observe', self.observation('idle', 'result', ref=role))
+            self.assertEqual(response['next_action']['operation'],'continue-host', response.get('error'))
             checks = transfer.checks_for(checkpoint['validation_plan']['final_required'], candidate)
             response = self.invoke('control', {'action':'validation-result','evidence':{'attempt_id':'fixture-final','checks':checks},
                 'receipt':{'adapter':'fixture','call_ref':'command','response_ref':'command-result',
@@ -1123,7 +1126,7 @@ class ProgressTests(transfer.StageTransferTests):
                 "expected_target_head": self.git("rev-parse", "HEAD"), "reference": "controller:closure"})
             self.assertTrue(published["next_action"]["publication"]["result"]["ok"], published)
             payload = {"artifacts": ["impl.py"], "checks": ["publication verified"], "candidate_commit": candidate,
-                "merge_commit": self.git("rev-parse", "HEAD"), "changed_paths": ["impl.py"],
+                "merge_commit": self.git("rev-parse", "HEAD"), "changed_paths": self.state()["publication"]["result"]["changed_paths"],
                 "cleanup": {"worktree_removed": True, "branch_removed": True, "disposition": "deleted", "disposition_verified": True}}
         return self.accept_current(payload, role)
 
@@ -1487,6 +1490,99 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(result["next_action"]["operation"], "implementation-recovery")
         self.assertEqual(result["next_action"]["ref"], "native:dispatcher")
         self.assertEqual(self.invoke("resume")["next_action"], result["next_action"])
+
+    def test_final_recovery_preserves_acceptance_and_revalidates_replacement(self):
+        self.final_recovery_chain()
+
+    def test_final_recovery_preserves_committed_closure_documents(self):
+        self.final_recovery_chain(retain_docs=True)
+
+    def test_final_recovery_rejects_reused_historical_host_response(self):
+        self.final_recovery_chain(replay_host=True)
+
+    def final_recovery_chain(self, retain_docs=False, replay_host=False):
+        self.finish_design('continuous')
+        self.finish_next(3, 'continuous')
+        original = copy.deepcopy(self.state())
+        predecessor = original['accepted']
+        before = self.checkpoint.read_bytes()
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('implementation-recovery', {'reference':'unauthorized', 'closure_digest':'a'*64})
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        (self.root / 'other-task.md').write_text('parallel planning\n')
+        self.git('add', 'other-task.md'); self.git('commit', '-qm', 'parallel task')
+        self.context = self.context_for(4)
+        self.begin('continuous', self.input_for(4, predecessor))
+        self.invoke('observe', self.observation(ref='native:closure'))
+        if retain_docs:
+            (self.flow / 'CHANGELOG.md').write_text('closure notes\n')
+            self.flow_git('add', 'CHANGELOG.md'); self.flow_git('commit', '-qm', 'closure documentation')
+        observed = self.observation('stopped', 'result', ref='native:closure')
+        observed['closure'] = {'ref':'native:closure', 'candidate':predecessor['payload']['candidate_commit'],
+            'merge':None, 'ancestor_verified':False, 'changed_paths':[], 'binding':self.binding,
+            'checks':[], 'worktree_removed':False, 'branch_removed':False, 'disposition':'deleted',
+            'disposition_verified':False, 'implementation_problem':'target advanced at final publication'}
+        self.assertEqual(self.invoke('observe', observed)['next_action']['operation'], 'implementation-recovery')
+        recovery_input = {'reference':'controller:final-recovery', 'closure_digest':self.state()['handoff']['digest']}
+        if retain_docs:
+            outer = progress.read_record(self.checkpoint)
+            outer.update(confirmed={'stages':{'stage3':{},'stage4':{}}}, current_stage='stage4',
+                         launch={'stage':'stage4','state':'launched','turn':2},
+                         stage_results={'stage3':copy.deepcopy(predecessor)}, sessions={'stage3':'task','stage4':'task'},
+                         history=[{'event':'turn.completed','stage':'stage3','turn':7}])
+            progress.atomic_save(self.checkpoint, outer)
+            denied = self.invoke('implementation-recovery', recovery_input)
+            self.assertEqual(denied['error']['code'], 'carrier_active')
+            self.assertEqual(self.state()['stage'], 4)
+            outer = progress.read_record(self.checkpoint)
+            outer['launch']['state'] = 'completed_turn'
+            progress.atomic_save(self.checkpoint, outer)
+        recovered = self.invoke('implementation-recovery', recovery_input)
+        self.assertEqual(self.state()['stage'], 3, recovered)
+        self.assertIsNone(self.state()['accepted'])
+        if retain_docs:
+            outer = progress.read_record(self.checkpoint)
+            self.assertEqual(outer['current_stage'], 'stage3')
+            self.assertEqual(outer['launch']['turn'], 7)
+            self.assertEqual(outer['sessions']['stage3'], 'task')
+            self.assertNotIn('stage3', outer['stage_results'])
+            self.assertEqual(outer['history'][-1]['stage_results']['stage3'], predecessor)
+            for field in ('confirmed','current_stage','launch','stage_results','sessions','history'):
+                outer.pop(field, None)
+            progress.atomic_save(self.checkpoint, outer)
+        retained = [s for s in self.state()['history'] if s.get('accepted') == predecessor]
+        self.assertTrue(retained)
+        self.assertEqual(retained[-1]['control'], original['control'])
+        replay = self.invoke('implementation-recovery', recovery_input)
+        self.assertTrue(replay['acknowledged'], replay)
+        if replay_host:
+            forged = self.observation('idle', 'result', ref='native:dispatcher')
+            forged['provenance']['response_ref'] = original['host']['last_stop']['provenance']['response_ref']
+            rejected = self.invoke('observe', forged)
+            self.assertEqual(rejected['error']['code'], 'host_provenance_conflict')
+            self.assertIsNone(self.state()['accepted'])
+            return
+        continuation = self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        self.assertEqual(continuation['next_action']['operation'], 'continue-host', continuation)
+        self.flow_git('merge', '--no-edit', 'main')
+        replacement = self.flow_git('rev-parse', 'HEAD')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        captured = self.invoke('control', {'action':'capture-integration', 'evidence':{'reference':'controller:merged'},
+            'receipt':{'controller_ref':'task', 'reference':'controller:merged'}})
+        self.assertNotEqual(captured['status'], 'blocked', captured)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'implementing', captured)
+        payload = {'artifacts':['impl.py'], 'checks':['verified'], 'candidate_commit':replacement,
+            'review':{axis:{'candidate':replacement, 'reviewer_ref':axis, 'status':'accepted'} for axis in ('standards','spec')},
+            'verification':{'candidate':replacement}}
+        accepted = self.accept_current(payload, 'native:dispatcher')
+        self.assertEqual(accepted['status'], 'accepted', accepted)
+        self.assertNotEqual(self.state()['accepted']['digest'], predecessor['digest'])
+        completed = self.finish_next(4, 'continuous')
+        self.assertEqual(completed['status'], 'accepted', completed.get('error'))
+        self.assertEqual((self.root / 'other-task.md').read_text(), 'parallel planning\n')
+        self.assertTrue((self.root / 'impl.py').exists())
+        if retain_docs:
+            self.assertEqual((self.root / 'CHANGELOG.md').read_text(), 'closure notes\n')
 
     def test_cancel_unknown_then_not_created_cannot_accept_late_ready(self):
         self.begin()
