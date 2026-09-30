@@ -115,6 +115,65 @@ class PublicationRecoveryTests(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "HEAD"), before)
         self.assertTrue(Path(transaction["request"]["binding"]["worktree"]).exists())
 
+    def test_target_advance_can_prove_unpublished_without_retrying_old_intent(self):
+        for prepared in (False, True):
+            with self.subTest(prepared=prepared):
+                transaction = self.transaction()
+                if prepared:
+                    with self.assertRaises(SimulatedCrash):
+                        self.run_publication(transaction, "prepared")
+                self.commit(self.repository, "b.txt", "later\n", "target race")
+                head = self.git("rev-parse", "HEAD")
+                before = copy.deepcopy(transaction)
+                result = protocol.reconcile_publication(transaction, for_implementation_recovery=True)
+                self.assertEqual(result["state"], "not-published")
+                self.assertEqual(transaction, before)
+                self.assertEqual(self.git("rev-parse", "HEAD"), head)
+                for recovery_inspection in (False, True):
+                    with self.assertRaises(protocol.ProtocolError):
+                        protocol.reconcile_publication(transaction, resume=True,
+                            for_implementation_recovery=recovery_inspection,
+                            record=lambda fact: self.fail("old intent must not write"))
+                self.tearDown()
+                self.setUp()
+
+    def test_implementation_recovery_inspection_retains_publication_proof(self):
+        transaction = self.transaction()
+        with self.assertRaises(SimulatedCrash):
+            self.run_publication(transaction, "merged")
+        merge = self.git("rev-parse", "HEAD")
+        self.commit(self.repository, "b.txt", "later\n", "target after publication")
+        result = protocol.reconcile_publication(transaction, for_implementation_recovery=True)
+        self.assertEqual(result["state"], "cleanup-pending")
+        self.assertEqual(result["merge_commit"], merge)
+
+    def test_implementation_recovery_inspection_rejects_target_rewrite(self):
+        earlier = self.git("rev-parse", "HEAD")
+        self.commit(self.repository, "b.txt", "baseline\n", "publication baseline")
+        transaction = self.transaction()
+        self.git("reset", "--hard", earlier)
+        with self.assertRaises(protocol.ProtocolError) as rewritten:
+            protocol.reconcile_publication(transaction, for_implementation_recovery=True)
+        self.assertEqual(rewritten.exception.code, "target_changed")
+
+    def test_implementation_recovery_inspection_rejects_unproven_or_changed_candidate(self):
+        transaction = self.transaction()
+        worktree = Path(transaction["request"]["binding"]["worktree"])
+        self.commit(self.repository, "b.txt", "later\n", "target race")
+        (worktree / "a.txt").write_text("uncommitted work\n")
+        with self.assertRaises(protocol.ProtocolError) as dirty:
+            protocol.reconcile_publication(transaction, for_implementation_recovery=True)
+        self.assertEqual(dirty.exception.code, "worktree_not_clean")
+        self.git("add", "a.txt", cwd=worktree)
+        self.git("commit", "-qm", "changed candidate", cwd=worktree)
+        with self.assertRaises(protocol.ProtocolError) as changed:
+            protocol.reconcile_publication(transaction, for_implementation_recovery=True)
+        self.assertEqual(changed.exception.code, "candidate_changed")
+        self.git("merge", "--no-edit", transaction["request"]["candidate_commit"])
+        with self.assertRaises(protocol.ProtocolError) as unproven:
+            protocol.reconcile_publication(transaction, for_implementation_recovery=True)
+        self.assertEqual(unproven.exception.code, "integration_unverified")
+
     def test_cleanup_preserves_new_user_work_and_reused_branch(self):
         transaction = self.transaction()
         with self.assertRaises(SimulatedCrash):

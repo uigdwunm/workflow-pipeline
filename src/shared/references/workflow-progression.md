@@ -62,6 +62,8 @@ handoff/reference, uncertain publication, dirty worktree or changed protected
 source rejects. Committed closure-only changes remain immutable, read-only Git
 objects during implementation recovery. Attached recovery uses the active Stage-4
 Phase Run; it never rewinds the topic or alters the completed Stage-3 Phase Run.
+If the target advanced after publication intent was saved, read-only inspection
+must prove it remains unpublished; that proof never authorizes retrying the old intent.
 
 The resumed Dispatcher performs the final target merge and stops. The Controller
 then sends bounded `control` action `capture-integration` with evidence
@@ -717,7 +719,7 @@ Git facts, without recreating a Flow. The discussion owner must remain available
 
 New runner records use outer version 9 and pin workflow-progress-v16 /
 workflow-stage-transfer-v12 / flow-worktree-v3 packages with control compatibility
-key 9. Earlier progress protocols and runner records require their original
+key 10. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete
 registration is required for live actions. No installation is implied.

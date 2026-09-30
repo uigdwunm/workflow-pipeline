@@ -1929,7 +1929,7 @@ class Progress:
         for pin in s['packages'].values():
             skill_preflight.verify_identity(pin)
         if s.get('publication'):
-            publication = supervision.reconcile_publication(self.publication_transaction())
+            publication = supervision.reconcile_publication(self.publication_transaction(), for_implementation_recovery=True)
             require(publication['state'] in {'not-published', 'prepared'}, 'already_published',
                     'published or uncertain effects permit publication reconciliation only')
         predecessor = s['handoff']['predecessor']
@@ -2333,7 +2333,7 @@ class Progress:
                 require(s["stage"] == 4, "invalid_result", "closure observation belongs to Stage 4")
                 publication = s.get("publication") or {}
                 if publication and data["closure"].get("implementation_problem") is not None:
-                    observed_publication = supervision.reconcile_publication(self.publication_transaction())
+                    observed_publication = supervision.reconcile_publication(self.publication_transaction(), for_implementation_recovery=True)
                     require(observed_publication["state"] in {"not-published", "prepared"},
                             "already_published", "published or uncertain actions cannot return to implementation")
                 known_merge = (publication.get("result") or {}).get("merge_commit") or (

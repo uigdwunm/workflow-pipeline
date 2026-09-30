@@ -1347,7 +1347,7 @@ def _verify_publication_scope(operation, request, binding, prepared):
     return changed
 
 
-def _inspect_publication(transaction):
+def _inspect_publication(transaction, *, for_implementation_recovery=False):
     operation, request, facts, binding = _publication_input(transaction)
     repository = Path(binding["repository"])
     head = _branch_oid(repository, binding["target_branch"])
@@ -1400,6 +1400,14 @@ def _inspect_publication(transaction):
     flow = _verify_binding(binding, platform_cwd=Path(binding["worktree"]))
     if _full_status(Path(binding["worktree"])):
         raise ProtocolError("worktree_not_clean", "preserve changes during publication recovery")
+    if for_implementation_recovery and head != request["expected_target_head"]:
+        if flow["current_commit"] != original:
+            raise ProtocolError("candidate_changed", "original candidate changed before implementation recovery")
+        if not _is_ancestor(repository, request["expected_target_head"], head):
+            raise ProtocolError("target_changed", "final target no longer descends from the publication target")
+        # Exact publication and unexplained candidate ancestry were checked above.
+        # This proof permits returning to implementation, never retrying old intent.
+        return {"ok": True, "state": "not-published"}
     latest = facts[-1] if facts else None
     prepared = next((f for f in reversed(facts) if f["event"] == "prepared"), None)
     if prepared and latest["event"] not in {"restored", "refresh"}:
@@ -1421,18 +1429,21 @@ def _inspect_publication(transaction):
     return {"ok": True, "state": "not-published"}
 
 
-def reconcile_publication(transaction, *, resume=False, cleanup_only=False, record=None):
+def reconcile_publication(transaction, *, resume=False, cleanup_only=False, record=None,
+                          for_implementation_recovery=False):
     """Owner-saved facts are evidence, never authority. Caller verifies permission.
 
     Inspect is read-only. Resume persists each new intent through the existing
     checkpoint owner before writes; there is no second journal or run loop.
     """
     operation, request, _, binding = _publication_input(transaction)
+    if for_implementation_recovery and (resume or cleanup_only or operation != "complete-worktree"):
+        raise ProtocolError("invalid_input", "implementation recovery inspection is read-only and final-publication-only")
     common, worktree = Path(binding["git_common_dir"]), Path(binding["worktree"])
     retry = False
     with os.fdopen(os.open(common / PUBLICATION_LOCK_FILENAME, os.O_RDWR | os.O_CREAT, 0o600), "r+b") as stream:
         _flock_with_timeout(stream)
-        result = _inspect_publication(transaction)
+        result = _inspect_publication(transaction, for_implementation_recovery=for_implementation_recovery)
         if not resume:
             return result
         if result["state"] in {"not-published", "prepared"}:

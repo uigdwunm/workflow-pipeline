@@ -1500,7 +1500,10 @@ class ProgressTests(transfer.StageTransferTests):
     def test_final_recovery_rejects_reused_historical_host_response(self):
         self.final_recovery_chain(replay_host=True)
 
-    def final_recovery_chain(self, retain_docs=False, replay_host=False):
+    def test_final_recovery_after_target_advances_during_publication(self):
+        self.final_recovery_chain(publication_race=True)
+
+    def final_recovery_chain(self, retain_docs=False, replay_host=False, publication_race=False):
         self.finish_design('continuous')
         self.finish_next(3, 'continuous')
         original = copy.deepcopy(self.state())
@@ -1509,14 +1512,33 @@ class ProgressTests(transfer.StageTransferTests):
         with self.assertRaises(transfer.entry.PreparationError):
             self.invoke('implementation-recovery', {'reference':'unauthorized', 'closure_digest':'a'*64})
         self.assertEqual(self.checkpoint.read_bytes(), before)
-        (self.root / 'other-task.md').write_text('parallel planning\n')
-        self.git('add', 'other-task.md'); self.git('commit', '-qm', 'parallel task')
+        def advance_target():
+            (self.root / 'other-task.md').write_text('parallel planning\n')
+            self.git('add', 'other-task.md'); self.git('commit', '-qm', 'parallel task')
+
+        if not publication_race:
+            advance_target()
         self.context = self.context_for(4)
         self.begin('continuous', self.input_for(4, predecessor))
         self.invoke('observe', self.observation(ref='native:closure'))
         if retain_docs:
             (self.flow / 'CHANGELOG.md').write_text('closure notes\n')
             self.flow_git('add', 'CHANGELOG.md'); self.flow_git('commit', '-qm', 'closure documentation')
+        if publication_race:
+            candidate = self.flow_git('rev-parse', 'HEAD')
+            request = {'candidate_commit':candidate, 'expected_target_head':self.git('rev-parse', 'HEAD'),
+                       'reference':'controller:close'}
+            self.ready_publication(candidate, request['reference'], 'native:closure')
+            publisher = transfer.supervision.complete_worktree
+            def race_before_publish(*args, **kwargs):
+                advance_target()
+                return publisher(*args, **kwargs)
+            with patch.object(transfer.supervision, 'complete_worktree', side_effect=race_before_publish):
+                failed = self.invoke('publication', request)
+            self.assertEqual(failed['error']['code'], 'target_changed', failed)
+            failed_publication = copy.deepcopy(self.state()['publication'])
+            self.assertEqual([fact['event'] for fact in failed_publication['facts']], ['prepared'])
+            self.assertIsNone(failed_publication['result'])
         observed = self.observation('stopped', 'result', ref='native:closure')
         observed['closure'] = {'ref':'native:closure', 'candidate':predecessor['payload']['candidate_commit'],
             'merge':None, 'ancestor_verified':False, 'changed_paths':[], 'binding':self.binding,
@@ -1553,6 +1575,11 @@ class ProgressTests(transfer.StageTransferTests):
         retained = [s for s in self.state()['history'] if s.get('accepted') == predecessor]
         self.assertTrue(retained)
         self.assertEqual(retained[-1]['control'], original['control'])
+        if publication_race:
+            closure = [s for s in self.state()['history'] if s.get('stage') == 4][-1]
+            self.assertEqual(closure['publication'], failed_publication)
+            with self.assertRaises(transfer.supervision.ProtocolError):
+                transfer.supervision.reconcile_publication({key:failed_publication[key] for key in ('operation','request','facts')}, resume=True)
         replay = self.invoke('implementation-recovery', recovery_input)
         self.assertTrue(replay['acknowledged'], replay)
         if replay_host:
