@@ -282,8 +282,18 @@ def verify_execution_start(repository, progress):
 
 def verify_binding(repository, binding):
     result = subprocess.run([sys.executable, str(Path(__file__).with_name('supervision_protocol.py')), 'verify-worktree'],
-        input=json.dumps({'binding': binding, 'platform_cwd': str(repository)}), text=True, capture_output=True)
+        input=json.dumps({'binding': binding, 'platform_cwd': str(repository)}), text=True, encoding='utf-8', capture_output=True)
     require(result.returncode == 0, 'Flow Worktree binding verification failed')
+    require(len(result.stdout.encode()) <= MAX_BYTES, 'Flow Worktree verifier output exceeds limit')
+    try:
+        report = decode_json(result.stdout.encode())
+    except (ValueError, UnicodeError) as error:
+        raise ControlError('Flow Worktree verifier returned invalid JSON') from error
+    keys(report, {'binding', 'ok', 'current_commit', 'verified'})
+    require(report['ok'] is True and report['verified'] is True and report['binding'] == binding,
+            'Flow Worktree verifier returned a different binding')
+    commit(report['current_commit'])
+    return report
 
 
 def verified_transition(payload):

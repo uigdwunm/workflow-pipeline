@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import discussion_protocol
 import skill_preflight
 import thread_settings
-from supervision_protocol import _binding, _verify_binding, ProtocolError as SupervisionError
+from supervision_protocol import _binding, _binding_input, _verify_binding, ProtocolError as SupervisionError
 
 PROTOCOL = "workflow-entry-v4"
 MAX_BYTES = 2 * 1024 * 1024
@@ -81,11 +81,15 @@ def repository_facts(cwd):
     probe = git(root, "rev-parse", "--show-toplevel", check=False)
     if probe.returncode:
         return {"cwd": str(root), "root": str(root), "kind": "non-git"}
-    top = Path(probe.stdout.decode().strip()).resolve()
+    top = Path(probe.stdout.decode().removesuffix("\n")).resolve()
+    identity = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir", "--verify", "HEAD").stdout
+    common, separator, head = identity.decode().removesuffix("\n").rpartition("\n")
+    require(separator and common and len(head) in (40, 64) and all(c in "0123456789abcdef" for c in head),
+            "git_failed", "invalid Git identity output")
     return {"cwd": str(root), "root": str(top), "kind": "git",
-            "git_common_dir": str(Path(git_text(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()),
+            "git_common_dir": str(Path(common).resolve()),
             "branch": git_text(root, "branch", "--show-current") or None,
-            "head": git_text(root, "rev-parse", "HEAD")}
+            "head": head}
 
 
 def document_path(root, relative):
@@ -286,6 +290,11 @@ def verify_actor(current, expected):
 
 
 def resolve(request):
+    return _resolve(request)
+
+
+def _resolve(request, *, binding_to_verify=None):
+    """B may defer its exact Flow binding until its final read-only check."""
     fields(request, {"protocol", "operation", "stage", "action", "host", "source"},
            {"target", "registry", "registry_context", "registry_input", "registration_identity", "target_stages", "required_skills", "expected", "pinned_packages"})
     require(request["protocol"] == PROTOCOL and request["operation"] in {"resolve", "verify"},
@@ -354,7 +363,9 @@ def resolve(request):
         fields(target, {"kind"}, {"repository", "branch", "binding"})
         if target["kind"] == "flow":
             fields(target, {"kind", "binding"})
-            _verify_binding(_binding(target["binding"]), platform_cwd=Path(facts["cwd"]))
+            binding = _binding_input(target["binding"])
+            if binding != binding_to_verify or binding["worktree"] != facts["cwd"]:
+                _verify_binding(_binding(binding), platform_cwd=Path(facts["cwd"]))
         else:
             fields(target, {"kind", "repository", "branch"})
             require(target["kind"] == "planning" and facts["kind"] == "git", "target_mismatch", "Git planning target required")

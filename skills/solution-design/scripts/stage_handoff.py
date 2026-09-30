@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -65,35 +66,41 @@ def paths(value, root):
     return value
 
 
-def blob(root, revision, relative):
+def blob(root, revision, relative, *, _documents=None):
     commit(revision)
     entry.document_path(root, relative)
-    record = entry.git(root, "ls-tree", "-z", revision, "--", relative).stdout
+    document = requirement._committed_document(root, revision, relative, _documents)
+    record = document["tree"]
     require(record.startswith(b"100644 blob ") or record.startswith(b"100755 blob "),
             "invalid_document", "committed regular file required")
-    return entry.git(root, "show", revision + ":" + relative).stdout
+    return requirement._committed_bytes(root, revision, relative, document)
 
 
-def mode(root, revision, relative):
+def mode(root, revision, relative, *, _documents=None):
     commit(revision)
     entry.document_path(root, relative)
-    return entry.git(root, "ls-tree", "-z", revision, "--", relative).stdout.split(b" ", 1)[0]
+    return requirement._committed_document(root, revision, relative, _documents)["tree"].split(b" ", 1)[0]
 
 
 def ancestor(root, older, newer):
     entry.git(root, "merge-base", "--is-ancestor", commit(older), commit(newer))
 
 
-def target_head(target, common):
+def target_head(target, common, *, _binding_report=None):
     entry.fields(target, {"repository", "branch"})
-    facts = entry.repository_facts(target["repository"])
-    require(facts.get("git_common_dir") == common, "target_mismatch", "target belongs to another Git repository")
     branch = entry.nonempty(target["branch"])
-    entry.git(target["repository"], "check-ref-format", "refs/heads/" + branch)
+    if _binding_report is None:
+        facts = entry.repository_facts(target["repository"])
+        require(facts.get("git_common_dir") == common, "target_mismatch", "target belongs to another Git repository")
+        entry.git(target["repository"], "check-ref-format", "refs/heads/" + branch)
+    else:
+        binding = _binding_report["binding"]
+        require(binding["repository"] == target["repository"] and binding["target_branch"] == branch and
+                binding["git_common_dir"] == common, "target_mismatch", "target differs from the verified Flow binding")
     return entry.git_text(target["repository"], "rev-parse", "refs/heads/" + branch)
 
 
-def refresh(request, expected, *, after_work=False):
+def refresh(request, expected, *, after_work=False, _binding_to_verify=None):
     """Only result intake permits the originally authorized work to move HEAD."""
     require(request.get("operation") == "resolve", "invalid_request", "original resolve request required")
     require(expected.get("evidence_digest") == entry.digest({k: v for k, v in expected.items() if k != "evidence_digest"}),
@@ -108,8 +115,10 @@ def refresh(request, expected, *, after_work=False):
         require(current["requirement"]["kind"] == expected["requirement"]["kind"],
                 "source_changed", "source kind changed")
     else:
-        current = entry.resolve({**request, "operation": "verify", "expected": expected,
-                                 "pinned_packages": expected["packages"]})
+        verification = {**request, "operation": "verify", "expected": expected,
+                        "pinned_packages": expected["packages"]}
+        current = (entry._resolve(verification, binding_to_verify=_binding_to_verify)
+                   if _binding_to_verify is not None else entry.resolve(verification))
     return current
 
 
@@ -253,14 +262,30 @@ def phase_evidence(saved, *, role_ref=None, receiving=False, control_context=Non
     return {"run": run, "attempt": attempt, "topic": topic}
 
 
-def delivery(request, current, identity, source_commit):
+def _replacement_view(root):
+    """Object replacement refs/config are mutable even for a full commit ID."""
+    flags = (os.environ.get("GIT_REPLACE_REF_BASE"), os.environ.get("GIT_NO_REPLACE_OBJECTS"))
+    if flags[1] is not None:
+        return flags, b"", None
+    references = entry.git(root, "replace", "--format=medium", "--list").stdout
+    setting = None
+    if references:
+        result = entry.git(root, "config", "--bool", "--get", "core.useReplaceRefs", check=False)
+        require(result.returncode in (0, 1), "git_failed", "invalid Git replacement configuration")
+        setting = (result.returncode, result.stdout)
+    return flags, references, setting
+
+
+def delivery(request, current, identity, source_commit, *, _binding_report=None):
     """Read-only receiving contract; never cherry-pick or publish a source."""
     root = request["target"]["repository"]
     head = (request['scope']['baseline'] if request.get('stage') == 3 else
-            target_head(request["target"], current["repository"]["git_common_dir"]))
+            target_head(request["target"], current["repository"]["git_common_dir"], _binding_report=_binding_report))
+    documents = {}
+    replacements = _replacement_view(root)
     expected = identity["sha256"]
-    require(mode(root, head, identity["path"]) == b"100644", "delivery_pending", "target requirement is absent or has an invalid mode")
-    require(hashlib.sha256(blob(root, head, identity["path"])).hexdigest() == expected,
+    require(mode(root, head, identity["path"], _documents=documents) == b"100644", "delivery_pending", "target requirement is absent or has an invalid mode")
+    require(hashlib.sha256(blob(root, head, identity["path"], _documents=documents)).hexdigest() == expected,
             "delivery_pending", "requirement is not delivered to the target branch")
     proof = request["delivery"]
     if proof is None:
@@ -279,14 +304,15 @@ def delivery(request, current, identity, source_commit):
         require(changed <= set(owned), "delivery_unverified", "delivery changes escape the owned document paths")
         for relative in owned:
             require(Path(relative).suffix.lower() == ".md", "invalid_scope", "requirement delivery owns Markdown only")
-            require(blob(root, delivered, relative) == blob(root, source_commit, relative),
+            require(blob(root, delivered, relative, _documents=documents) == blob(root, source_commit, relative, _documents=documents),
                     "delivery_unverified", "delivered document differs from the source")
-            require(mode(root, delivered, relative) == mode(root, source_commit, relative),
+            require(mode(root, delivered, relative, _documents=documents) == mode(root, source_commit, relative, _documents=documents),
                     "delivery_unverified", "delivered document mode differs from source")
-    require(hashlib.sha256(blob(root, delivered, identity["path"])).hexdigest() == expected,
+    require(hashlib.sha256(blob(root, delivered, identity["path"], _documents=documents)).hexdigest() == expected,
             "delivery_unverified", "delivery commit differs from frozen requirement")
     owned = proof["paths"] if proof else request["requirement"].get("owned_paths", [identity["path"]])
-    requirement.verify_target_documents(root, head, source_commit, owned)
+    requirement.verify_target_documents(root, head, source_commit, owned, _documents=documents)
+    require(_replacement_view(root) == replacements, "source_changed", "Git object replacements changed during delivery")
     return {"source_commit": source_commit, "delivery_commit": delivered, "target_head": head}
 
 
@@ -474,12 +500,17 @@ def inherited_generated_outputs(request):
 
 
 def prepare(request):
+    return _prepare(request)[0]
+
+
+def _prepare(request):
+    """Return the sealed input and this preparation's verified entry to C."""
     require(request.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime", "retain original stage-transfer runtime: " + str(request.get("protocol")))
     entry.fields(request, FIELDS | {"operation"}, OPTIONAL_FIELDS)
     stage, role = request["stage"], request["role"]
     require(type(stage) is int and stage in ROLES and role in {ROLES[stage], "execution-agent" if stage == 3 else ROLES[stage]},
             "role_mismatch", "stage and role differ")
-    current = refresh(request["entry"], request["expected_entry"])
+    current = refresh(request["entry"], request["expected_entry"], _binding_to_verify=request["binding"])
     require(current["entry"]["stage"] == stage, "role_mismatch", "entry must be prepared for the target stage")
     verify_discussion_binding(current, request["binding"])
     scope = request["scope"]
@@ -499,7 +530,8 @@ def prepare(request):
             planning_paths=planning_paths_for(request),
             manifest_baseline=inherited_manifest_baseline(request),
             candidate_commit=inherited_planning_candidate(request),
-            generated_outputs=inherited_generated_outputs(request))
+            generated_outputs=inherited_generated_outputs(request),
+            _repository_facts=current["repository"])
         require((stage != 2 or scope["downstream"]["state"] == "unresolved") and
                 (stage == 2 or scope["downstream"]["state"] == "sealed"),
                 "scope_incomplete", "Stage 2 starts unresolved; downstream stages require a sealed manifest")
@@ -534,10 +566,12 @@ def prepare(request):
         commit(scope["baseline"])
         require(stage == 4 or current["repository"]["head"] == scope["baseline"], "baseline_changed", "scope baseline must be current HEAD")
         require(request["binding"] is not None and source_commit is not None, "binding_missing", "Git stages need an actual Flow Worktree and frozen Git source")
-        control_git.verify_binding(Path(root), request["binding"])
+        binding_report = control_git.verify_binding(Path(root), request["binding"])
+        require(binding_report["current_commit"] == current["repository"]["head"],
+                "entry_changed", "Flow Worktree HEAD changed during preparation")
         require(request["binding"]["repository"] == request["target"]["repository"] and
                 request["binding"]["target_branch"] == request["target"]["branch"], "target_mismatch", "Flow Worktree and delivery target differ")
-        delivered = delivery(request, current, identity, source_commit)
+        delivered = delivery(request, current, identity, source_commit, _binding_report=binding_report)
         if stage == 2:
             protected_history = supervision.planning_protected_changes(
                 request["binding"], delivered["target_head"], scope["protected_paths"])
@@ -655,7 +689,7 @@ def prepare(request):
             require(prior["payload"]["candidate_commit"] == current["repository"]["head"] and scope["baseline"] == old["scope"]["baseline"] and
                     old["scope"]["closure_paths"] == scope["closure_paths"], "scope_changed", "closure must retain accepted candidate and documentation scope")
     require(stage != 4 or predecessor is not None, "predecessor_incomplete", "inherited closure requires an accepted implementation result")
-    return seal({**{k: copy.deepcopy(request[k]) for k in FIELDS},
+    saved = seal({**{k: copy.deepcopy(request[k]) for k in FIELDS},
                  **({"readiness": copy.deepcopy(request["readiness"])} if "readiness" in request else {}),
                  **({"generated_outputs": copy.deepcopy(request["generated_outputs"])}
                     if "generated_outputs" in request else {}),
@@ -664,6 +698,7 @@ def prepare(request):
                  "kind": "stage-input",
                  "controller_ref": current["actor"]["controller_ref"], "requirement_identity": identity,
                  "source_commit": source_commit, "delivery_facts": delivered, "selection": configuration})
+    return saved, current
 
 
 def require_current_protocol(value):

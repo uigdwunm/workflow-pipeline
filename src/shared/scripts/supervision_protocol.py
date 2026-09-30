@@ -175,17 +175,21 @@ def _git_text(repository: Path, arguments: list[str]) -> str:
 
 def _canonical_repository(value: Any) -> tuple[Path, Path]:
     repository = _canonical_absolute_path(value, "repository", must_exist=True)
-    top = Path(
-        _git_text(repository, ["rev-parse", "--path-format=absolute", "--show-toplevel"])
-    )
+    if "\n" in str(repository):
+        top = _run_git(repository, ["rev-parse", "--path-format=absolute", "--show-toplevel"]).stdout.removesuffix("\n")
+        common = _run_git(repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout.removesuffix("\n")
+    else:
+        location = _run_git(repository, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"]).stdout.removesuffix("\n")
+        top, separator, common = location.partition("\n")
+        if not separator:
+            raise ProtocolError("git_failed", "invalid Git location output")
+    top = Path(top)
     if top != repository or not (repository / ".git").is_dir():
         raise ProtocolError(
             "invalid_repository",
             "repository must be the canonical primary Git checkout",
         )
-    common = Path(
-        _git_text(repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
-    )
+    common = Path(common)
     if common != repository / ".git":
         raise ProtocolError("invalid_repository", "repository Git common directory is unexpected")
     return repository, common
@@ -418,7 +422,8 @@ def _lifecycle(value):
     return copy.deepcopy(value)
 
 
-def _binding(value: Any, *, removed: bool = False) -> dict[str, Any]:
+def _binding_input(value: Any, *, removed: bool = False) -> dict[str, Any]:
+    """Normalize binding data; the caller must still verify its Git identity."""
     if not isinstance(value, dict):
         raise ProtocolError("invalid_input", "binding must be an object")
     _expect_keys(
@@ -434,15 +439,13 @@ def _binding(value: Any, *, removed: bool = False) -> dict[str, Any]:
         },
         "binding",
     )
-    repository, common = _canonical_repository(value["repository"])
+    repository = _canonical_absolute_path(value["repository"], "repository", must_exist=True)
     supplied_common = _canonical_absolute_path(
         value["git_common_dir"], "git_common_dir", must_exist=True
     )
-    if supplied_common != common:
-        raise ProtocolError("worktree_mismatch", "binding Git common directory changed")
     worktree = _canonical_absolute_path(value["worktree"], "worktree", must_exist=not removed)
-    branch = _validate_branch(repository, value["branch"], "branch")
-    target_branch = _validate_branch(repository, value["target_branch"], "target_branch")
+    branch = _expect_string(value["branch"], "branch", max_bytes=1024)
+    target_branch = _expect_string(value["target_branch"], "target_branch", max_bytes=1024)
     if branch == target_branch:
         raise ProtocolError("invalid_input", "worktree and target branches must differ")
     lifecycle = _lifecycle(value["lifecycle"])
@@ -452,11 +455,21 @@ def _binding(value: Any, *, removed: bool = False) -> dict[str, Any]:
         "lifecycle": lifecycle,
         "base_commit": _expect_oid(value["base_commit"], "base_commit"),
         "branch": branch,
-        "git_common_dir": str(common),
+        "git_common_dir": str(supplied_common),
         "repository": str(repository),
         "target_branch": target_branch,
         "worktree": str(worktree),
     }
+
+
+def _binding(value: Any, *, removed: bool = False) -> dict[str, Any]:
+    binding = _binding_input(value, removed=removed)
+    repository, common = _canonical_repository(binding["repository"])
+    if str(common) != binding["git_common_dir"]:
+        raise ProtocolError("worktree_mismatch", "binding Git common directory changed")
+    _validate_branch(repository, binding["branch"], "branch")
+    _validate_branch(repository, binding["target_branch"], "target_branch")
+    return binding
 
 
 def _verify_binding(binding: dict[str, Any], *, platform_cwd: Path | None = None) -> dict[str, Any]:
@@ -466,12 +479,15 @@ def _verify_binding(binding: dict[str, Any], *, platform_cwd: Path | None = None
     if platform_cwd is not None and platform_cwd != worktree:
         raise ProtocolError("worktree_mismatch", "platform working directory does not match binding")
     try:
-        observed_top = Path(
-            _git_text(worktree, ["rev-parse", "--path-format=absolute", "--show-toplevel"])
-        )
-        observed_common = Path(
-            _git_text(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        )
+        if any("\n" in str(path) for path in (worktree, common)):
+            observed_top = _run_git(worktree, ["rev-parse", "--path-format=absolute", "--show-toplevel"]).stdout.removesuffix("\n")
+            observed_common = _run_git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout.removesuffix("\n")
+        else:
+            location = _run_git(worktree, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"]).stdout.removesuffix("\n")
+            observed_top, separator, observed_common = location.partition("\n")
+            if not separator:
+                raise ProtocolError("git_failed", "invalid Git location output")
+        observed_top, observed_common = Path(observed_top), Path(observed_common)
     except ProtocolError as error:
         raise ProtocolError("worktree_mismatch", "bound worktree is not usable") from error
     registered = _git_text(repository, ["worktree", "list", "--porcelain"]).splitlines()

@@ -40,11 +40,11 @@ def _commit(value):
     return value
 
 
-def _repository(root):
+def _repository(root, facts=None):
     require(isinstance(root, (str, Path)), "invalid_scope", "repository path required")
     root = Path(root)
     require(root.is_absolute() and root.is_dir() and not root.is_symlink(), "invalid_scope", "absolute repository required")
-    facts = entry.repository_facts(str(root))
+    facts = entry.repository_facts(str(root)) if facts is None else facts
     require(facts["kind"] == "git" and facts["root"] == str(root.resolve()),
             "invalid_scope", "scope root must be the Git worktree root")
     return root
@@ -278,9 +278,9 @@ def validate_manifest(manifest, repository, candidate_commit=None, *, baseline=N
 
 def validate_scope(scope, repository, *, stage=None, requirement_path=None,
                    planning_paths=None, candidate_commit=None, manifest_baseline=None,
-                   generated_outputs=None):
+                   generated_outputs=None, _repository_facts=None):
     """Validate a complete lifecycle scope and return an independent copy."""
-    root = _repository(repository)
+    root = _repository(repository, _repository_facts)
     entry.fields(scope, SCOPE_FIELDS)
     _commit(scope["baseline"])
     owned = _validate_paths(scope["owned_paths"], root)

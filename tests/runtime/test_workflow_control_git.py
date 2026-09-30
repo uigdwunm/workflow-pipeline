@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/shared/scripts
 import test_workflow_control
 import workflow_control as control
 import workflow_control_git as control_git
+import supervision_protocol as supervision
 
 CLI = Path(__file__).resolve().parents[2] / "src/shared/scripts/workflow_control_git.py"
 
@@ -41,6 +42,28 @@ class WorkflowGitTests(unittest.TestCase):
                 'request': {'schema_version': 5, 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
         self.assertTrue(result.stdout, result.stderr)
         return json.loads(result.stdout)
+
+    def test_binding_verifier_returns_facts_from_the_package_cli(self):
+        binding = supervision.start_worktree({'repository': str(self.repo),
+            'worktree': str(self.root / 'flow'), 'branch': 'codex/verifier',
+            'target_branch': self.git('branch', '--show-current')})['binding']
+        report = control_git.verify_binding(Path(binding['worktree']), binding)
+        self.assertEqual(report, {'binding': binding, 'ok': True, 'verified': True,
+                                  'current_commit': self.base})
+
+    def test_binding_verifier_rejects_malformed_or_mismatched_cli_facts(self):
+        binding = {'repository': str(self.repo)}
+        valid = {'binding': binding, 'ok': True, 'verified': True, 'current_commit': self.base}
+        outputs = ['not json', '{"ok":true,"ok":false}',
+                   json.dumps({**valid, 'binding': {'repository': str(self.root)}}),
+                   json.dumps({**valid, 'verified': 1}),
+                   json.dumps({**valid, 'current_commit': 'HEAD'}),
+                   ' ' * (control_git.MAX_BYTES + 1)]
+        for output in outputs:
+            with self.subTest(output=output[:80]), patch.object(control_git.subprocess, 'run',
+                    return_value=subprocess.CompletedProcess([], 0, output, '')):
+                with self.assertRaises(control.ControlError):
+                    control_git.verify_binding(self.repo, binding)
 
     def test_scope_correction_requires_clean_unchanged_planning_baseline(self):
         original = control_git.scope_revision_snapshot(

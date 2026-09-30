@@ -57,14 +57,31 @@ def file_fingerprint(target):
     return {"kind": "directory" if target.is_dir() else "absent"}
 
 
-def verify_target_documents(root, head, source_commit, paths):
+def _committed_document(root, revision, path, documents=None):
+    """One caller-owned read of a fixed commit/path; live paths stay checked."""
+    entry.document_path(root, path)
+    key = (str(Path(root).resolve()), revision, path)
+    document = {} if documents is None else documents.setdefault(key, {})
+    if "tree" not in document:
+        document["tree"] = entry.git(root, "ls-tree", "-z", revision, "--", path).stdout
+    return document
+
+
+def _committed_bytes(root, revision, path, document):
+    if "data" not in document:
+        document["data"] = entry.git(root, "show", revision + ":" + path).stdout
+    return document["data"]
+
+
+def verify_target_documents(root, head, source_commit, paths, *, _documents=None):
     """Read-only target Git, worktree mode/bytes, and exact stage-0 index check."""
     for path in paths:
-        expected = entry.git(root, "ls-tree", "-z", source_commit, "--", path).stdout
-        actual = entry.git(root, "ls-tree", "-z", head, "--", path).stdout
+        source = _committed_document(root, source_commit, path, _documents)
+        expected = source["tree"]
+        actual = _committed_document(root, head, path, _documents)["tree"]
         entry.require(expected.startswith(b"100644 blob ") and actual == expected,
                       "delivery_pending", "target document bytes or mode differ from frozen source")
-        data = entry.git(root, "show", source_commit + ":" + path).stdout
+        data = _committed_bytes(root, source_commit, path, source)
         entry.require(entry.read_document(root, path) == data and not (Path(root) / path).stat().st_mode & 0o111,
                       "delivery_pending", "target working document bytes or mode differ")
         blob = expected.split(b"\t", 1)[0].split()[2]

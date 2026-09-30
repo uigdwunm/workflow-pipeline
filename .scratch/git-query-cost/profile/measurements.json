@@ -1,0 +1,173 @@
+{
+  "baseline_commit": "e5699cf4a312fcfa576b29d3311dac81c22c9f1b",
+  "samples": [
+    {
+      "git_calls": 382,
+      "phases": {
+        "setup": 154,
+        "start": 215,
+        "test": 12,
+        "cleanup": 1
+      },
+      "cpu_seconds": 3.527377,
+      "wall_seconds": 4.057575292,
+      "python_child_processes": 4,
+      "mode": "baseline",
+      "repetition": 1
+    },
+    {
+      "git_calls": 241,
+      "phases": {
+        "setup": 129,
+        "start": 102,
+        "test": 9,
+        "cleanup": 1
+      },
+      "cpu_seconds": 2.408776,
+      "wall_seconds": 2.776241583,
+      "python_child_processes": 4,
+      "mode": "candidate",
+      "repetition": 1
+    },
+    {
+      "git_calls": 382,
+      "phases": {
+        "setup": 154,
+        "start": 215,
+        "test": 12,
+        "cleanup": 1
+      },
+      "cpu_seconds": 3.486467,
+      "wall_seconds": 3.959382625,
+      "python_child_processes": 4,
+      "mode": "baseline",
+      "repetition": 2
+    },
+    {
+      "git_calls": 241,
+      "phases": {
+        "setup": 129,
+        "start": 102,
+        "test": 9,
+        "cleanup": 1
+      },
+      "cpu_seconds": 2.5082649999999997,
+      "wall_seconds": 2.874493834,
+      "python_child_processes": 4,
+      "mode": "candidate",
+      "repetition": 2
+    },
+    {
+      "git_calls": 382,
+      "phases": {
+        "setup": 154,
+        "start": 215,
+        "test": 12,
+        "cleanup": 1
+      },
+      "cpu_seconds": 3.5484799999999996,
+      "wall_seconds": 4.060412374999999,
+      "python_child_processes": 4,
+      "mode": "baseline",
+      "repetition": 3
+    },
+    {
+      "git_calls": 241,
+      "phases": {
+        "setup": 129,
+        "start": 102,
+        "test": 9,
+        "cleanup": 1
+      },
+      "cpu_seconds": 2.4003639999999997,
+      "wall_seconds": 2.71929225,
+      "python_child_processes": 4,
+      "mode": "candidate",
+      "repetition": 3
+    },
+    {
+      "git_calls": 382,
+      "phases": {
+        "setup": 154,
+        "start": 215,
+        "test": 12,
+        "cleanup": 1
+      },
+      "cpu_seconds": 3.508532,
+      "wall_seconds": 4.005802666999999,
+      "python_child_processes": 4,
+      "mode": "baseline",
+      "repetition": 4
+    },
+    {
+      "git_calls": 241,
+      "phases": {
+        "setup": 129,
+        "start": 102,
+        "test": 9,
+        "cleanup": 1
+      },
+      "cpu_seconds": 2.427739,
+      "wall_seconds": 2.791232541,
+      "python_child_processes": 4,
+      "mode": "candidate",
+      "repetition": 4
+    },
+    {
+      "git_calls": 382,
+      "phases": {
+        "setup": 154,
+        "start": 215,
+        "test": 12,
+        "cleanup": 1
+      },
+      "cpu_seconds": 3.528673,
+      "wall_seconds": 4.042622167,
+      "python_child_processes": 4,
+      "mode": "baseline",
+      "repetition": 5
+    },
+    {
+      "git_calls": 241,
+      "phases": {
+        "setup": 129,
+        "start": 102,
+        "test": 9,
+        "cleanup": 1
+      },
+      "cpu_seconds": 2.454168,
+      "wall_seconds": 2.7916461249999998,
+      "python_child_processes": 4,
+      "mode": "candidate",
+      "repetition": 5
+    }
+  ],
+  "summary": {
+    "baseline": {
+      "start_calls": [
+        215
+      ],
+      "total_calls": [
+        382
+      ],
+      "median_cpu_seconds": 3.527377,
+      "median_wall_seconds": 4.042622167,
+      "python_child_processes": [
+        4
+      ]
+    },
+    "candidate": {
+      "start_calls": [
+        102
+      ],
+      "total_calls": [
+        241
+      ],
+      "median_cpu_seconds": 2.427739,
+      "median_wall_seconds": 2.791232541,
+      "python_child_processes": [
+        4
+      ]
+    }
+  }
+}

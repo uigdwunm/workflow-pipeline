@@ -1259,14 +1259,12 @@ class Progress:
             if "name" in identity:
                 retained[identity["name"]] = identity
         retain_entry_pins(request, retained)
-        # A resolves/rechecks actual cwd and complete host registration before B.
-        resolved = entry.resolve({**request["entry"], "operation": "verify", "expected": request["expected_entry"]})
+        saved, resolved = handoff._prepare(request)
         mode = request["authorization"]["flow_mode"]
         require(old is None or mode == old["mode"], "authorization_changed", "mode cannot change without its exact decision")
         for root in (resolved["repository"]["root"], (request.get("binding") or {}).get("worktree")):
             require(root is None or not self.path.resolve().is_relative_to(Path(root).resolve()),
                     "unsafe_checkpoint", "checkpoint must live outside repository and disposable worktree")
-        saved = handoff.handle(request)
         selection = None
         if request['stage'] >= 2:
             previous_selection = old.get('workspace_evidence') if old and old['stage'] >= 2 else None
