@@ -32,8 +32,8 @@ explained now.
 推理强度：<selected supported reasoning effort>
 强度来源：<selection source: user | confirmed | role | inherited; current adapter receipt>
 上下文方式：隔离上下文；不继承历史；仅读取需求来源和明确交接材料
-执行环境：新建 Flow Worktree
-Worktree：已创建；绑定=<exact binding including canonical path and branch>
+执行环境：<复用 | 新建> Flow Worktree
+Worktree：已绑定；绑定=<exact binding including canonical path, branch and lifecycle>
 允许动作：执行标准 $to-spec、ADR、$ask-matt、$to-tickets、原生发布；只写入并提交本阶段拥有的本地规划文档
 禁止动作：修改实现代码、创建 PR、部署、发布版本、进入 3实现或处理无关任务
 异常规则：执行失败、结果或副作用不确定、意外情况、与原计划不符或需要调整计划时停止并报告
@@ -67,7 +67,7 @@ it appeared in an earlier turn or in the machine payload.
 需求来源：<immutable draft path, commit and hash>
 目标：<goal>; 角色=solution_designer; 项目=<project identity>; 仓库=<repository identity>
 规划载体：<exact target>
-Worktree：已创建；绑定=<exact binding including canonical path and branch>
+Worktree：<复用 | 新建>，已绑定；绑定=<exact binding including canonical path, branch and lifecycle>
 配置补充：<only missing model/effort, source/receipt, isolated context or dispatch facts>
 权限补充：<only missing allowed/forbidden actions, completion conditions and anomaly rule>
 流程模式：连续执行后续全部流程
@@ -97,11 +97,11 @@ $solution-design
 Flow Worktree：<exact verified binding, including lifecycle>
 流程模式：<逐阶段确认 | 连续执行后续全部流程>
 工作区要求：在首次写入前以实际工作目录调用 `verify-worktree`；所有本地规划写入和提交只在该 Flow Worktree 内完成。
-交付复查：创建 Flow 后核验原目标 proof 与 Flow 中冻结需求的字节和模式；不足时回交付责任方，不自行补交付。
+交付复查：绑定 Flow 后核验原目标 proof 与 Flow 中冻结需求的字节和模式；不足时回交付责任方，不自行补交付。
 允许动作：完整执行 $to-spec、必要 ADR、$ask-matt、$to-tickets、精确目标原生发布；只写入并提交本阶段拥有的本地规划文档。
 禁止动作：修改实现代码、创建 PR、部署、发布版本、改变规划目标、进入 3实现、修改冻结需求文档或处理无关任务。
 文档权威：冻结需求文档拥有需求；CONTEXT.md 拥有术语；ADR 拥有难逆决策；Spec 拥有实施方案与测试决策；Tickets 拥有实施切片和阻塞关系。不要创建单独的 2方案草案。
-范围交付：启动时 implementation_paths 与 closure_paths 均为未定；在 Spec/Tickets 写出逐文件清单及依据，规划提交后提供完整结构化 manifest、implementation_required、生成物 source→outputs 映射和各依据的提交/路径/章节。你只提案，由原 Controller 封存并出版。
+范围交付：启动时 implementation_paths 与 closure_paths 均为未定；先按 {{resource:solution-design/references/design-readiness.md}} 的文件归属与首个 TDD 切片指引制定 Spec/Tickets，再交付逐文件清单及依据、完整 manifest、implementation_required、生成物 source→outputs 映射和实际规划提交/路径/章节。你只提案，由原 Controller 封存并出版。
 逐阶段模式：先完成 Spec、必要 ADR 和 Tickets 草稿及就绪检查；发布与终态前返回一次合并 SOLUTION_REVIEW_REQUIRED，询问接受完整方案、发布并进入实现；按匹配 review ID 的 PARENT_DECISION 修订或发布，主 Agent 沿用该授权进入实现。
 连续模式：此前的 执行后续全部流程 是标准方案选择和原生审阅问题的预授权；不发出 review 消息；仍完成方案就绪检查、原生发布和规划提交，通过后直接交付。
 范围扩展：认为需求边界外的改动是形成完整方案的必要条件时，按 $solution-design 的 visible-scope 规则返回 SOLUTION_DESIGN_ANOMALY，并等待用户明确决定。
@@ -241,8 +241,9 @@ Matt 原生发布：Spec=<result>; Tickets=<result or none>; 原生标签与阻�
 Use after publication and mechanical intake. Reuse the saved combined-review
 acceptance; this footer adds no approval. For an explicit design-only request,
 render the actual stopped boundary instead of Stage-3 entry below.
-For a sealed `implementation_required=false` result, render the accepted
-planning-only route with no Stage-3 entry or dispatcher launch.
+For a sealed `implementation_required=false` result with both downstream owner
+lists empty, render the accepted planning-only route with no Stage-3 entry or
+dispatcher launch.
 
 ```text
 阶段结果：方案完成

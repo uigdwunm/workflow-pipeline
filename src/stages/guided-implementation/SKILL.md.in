@@ -227,9 +227,10 @@ work.
   agents or receive the parent Session or CLI. It reports the exact candidate
   commit, changed paths, focused and full checks, remaining risks, and any
   remediation candidate commits from the same verified worktree.
-- Implementation commits contain no documentation. Commit only task-owned code,
-  tests and required implementation artifacts. Report exact documentation paths
-  and required updates as `待归档文档`; Stage 4 owns those edits and commits.
+- Commit only task-owned code, tests and required implementation artifacts.
+  Runtime Prompt Markdown is source; generated READMEs follow their manifest
+  source ownership. Ordinary explanatory documentation belongs to Stage 4;
+  report its exact paths and required updates as `待归档文档`.
 - Do not modify committed planning-source paths. A standalone flow has none.
 - The dispatcher never asks the user directly. It resolves ordinary
   technical details from the confirmed sources and repository conventions. An

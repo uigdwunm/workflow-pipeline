@@ -77,6 +77,35 @@ class StageScopeTests(unittest.TestCase):
         self.assertEqual(scope.validate_scope(empty, self.root, stage=2,
                          requirement_path="docs/requirement.md", candidate_commit=self.candidate), empty)
 
+    def test_documents_belong_to_closure_regardless_of_extension(self):
+        for path in ("docs/usage.md", "docs/usage.txt"):
+            with self.subTest(path=path):
+                item = self.item(path, kind="document")
+                self.assert_error("invalid_scope", lambda: scope.validate_manifest(
+                    [item], self.root, self.candidate, baseline=self.baseline,
+                    planning_paths=["docs/spec.md"]))
+                item["owner"] = "closure"
+                self.assertEqual(scope.validate_manifest([item], self.root, self.candidate,
+                    baseline=self.baseline, planning_paths=["docs/spec.md"])["closure_paths"], [path])
+
+    def test_runtime_markdown_and_generated_readme_follow_implementation(self):
+        manifest = [self.item("README.md", kind="generated", sources=["prompts/runtime.md"]),
+                    self.item("prompts/runtime.md")]
+        outputs = {"prompts/runtime.md": ["README.md"]}
+        self.assertEqual(scope.validate_manifest(manifest, self.root, self.candidate,
+            baseline=self.baseline, planning_paths=["docs/spec.md"], generated_outputs=outputs),
+            {"implementation_paths": ["README.md", "prompts/runtime.md"], "closure_paths": []})
+        manifest[0]["owner"] = "closure"
+        self.assert_error("invalid_scope", lambda: scope.validate_manifest(manifest, self.root,
+            self.candidate, baseline=self.baseline, planning_paths=["docs/spec.md"], generated_outputs=outputs))
+
+    def test_planning_only_cannot_leave_closure_work(self):
+        sealed = self.sealed([self.item("docs/usage.md", owner="closure", kind="document")])
+        before = copy.deepcopy(sealed)
+        self.assert_error("scope_incomplete", lambda: scope.validate_scope(sealed, self.root, stage=2,
+            requirement_path="docs/requirement.md", candidate_commit=self.candidate))
+        self.assertEqual(sealed, before)
+
     def test_manifest_projection_basis_and_generated_closure(self):
         sealed = self.sealed()
         self.assertEqual(scope.validate_scope(sealed, self.root, stage=3,

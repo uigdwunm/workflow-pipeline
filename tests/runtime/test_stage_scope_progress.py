@@ -33,6 +33,8 @@ class ScopeProgressTests(unittest.TestCase):
         return self.flow.flow_git("rev-parse", "HEAD")
 
     def manifest(self, candidate, *, implementation=True):
+        if not implementation:
+            return []
         basis = {"commit": candidate, "path": "docs/spec.md", "section": "approved design"}
         items = [{"path": "CHANGELOG.md", "owner": "closure", "kind": "document",
                   "operation": "add", "basis": basis}]
@@ -223,6 +225,25 @@ class ScopeProgressTests(unittest.TestCase):
         self.assertTrue(accepted["planning_complete"], accepted)
         self.assertFalse(accepted["handoff_ready"], accepted)
         self.assertEqual(accepted["route"], "planning-only")
+
+    def test_invalid_document_scope_proposals_leave_checkpoint_and_target_unchanged(self):
+        candidate = self.planning_candidate()
+        state = self.flow.state()
+        checkpoint = self.flow.checkpoint.read_bytes()
+        target = self.flow.git("rev-parse", "HEAD")
+        for owner, code in (("implementation", "invalid_scope"), ("closure", "scope_incomplete")):
+            with self.subTest(owner=owner):
+                document = {**self.manifest(candidate)[0], "owner": owner}
+                data = {"proposal_id": "invalid-document-" + owner, "expected_revision": 0,
+                    "candidate_commit": candidate, "manifest": [document],
+                    "implementation_required": owner == "implementation",
+                    "requirement_identity": state["handoff"]["requirement_identity"],
+                    "binding": state["handoff"]["binding"], "previous_scope_revision": 0}
+                with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
+                    self.flow.invoke("scope-propose", data)
+                self.assertEqual(error.exception.code, code)
+                self.assertEqual(self.flow.checkpoint.read_bytes(), checkpoint)
+                self.assertEqual(self.flow.git("rev-parse", "HEAD"), target)
 
     def test_stage_three_consumes_current_seal_and_retains_it_after_start(self):
         candidate = self.planning_candidate()
@@ -461,10 +482,12 @@ class ScopeProgressTests(unittest.TestCase):
             "answer": "accept", "reference": "controller:accept-plan"})
         self.assertIsNone(self.flow.state()["pending"])
 
-        def correct(implementation, *, extra_test=False):
+        def correct(implementation, *, extra_test=False, closure_only=False):
             state = self.flow.state()
             authority = state["scope_authority"]
             manifest = self.manifest(candidate, implementation=implementation)
+            if closure_only:
+                manifest = self.manifest(candidate)[:1]
             if extra_test:
                 manifest.append({**copy.deepcopy(manifest[-1]), "kind": "test", "path": "tests/test_missing.py"})
             previous = authority["scope"]["downstream"]["manifest"]
@@ -484,6 +507,11 @@ class ScopeProgressTests(unittest.TestCase):
         self.assertEqual(ready["pending"]["kind"], "stage-entry")
         still_pending = correct(True, extra_test=True)
         self.assertEqual(still_pending["pending"], ready["pending"])
+        checkpoint = self.flow.checkpoint.read_bytes()
+        with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
+            correct(False, closure_only=True)
+        self.assertEqual(error.exception.code, "scope_incomplete")
+        self.assertEqual(self.flow.checkpoint.read_bytes(), checkpoint)
         planning_only = correct(False)
         self.assertEqual(planning_only["route"], "planning-only")
         self.assertIsNone(planning_only["pending"])

@@ -43,7 +43,8 @@ and require the frozen document defined by
 [`{{resource:design-discussion/references/requirement-document-contract.md}}`]({{resource:design-discussion/references/requirement-document-contract.md}}).
 The child reads
 [{{resource:solution-design/references/design-readiness.md}}]({{resource:solution-design/references/design-readiness.md}}) before native
-Spec synthesis and applies it at the existing review or publication seams.
+Spec synthesis, uses its file-ownership and first TDD-slice instructions while
+drafting, and completes its checks at the existing review or publication seams.
 
 Read [Workflow Control Protocol]({{resource:guided-implementation/references/workflow-control-protocol.md}}) before role preparation or transition. This stage uses solution-designer and preserves the Workflow Controller.
 
@@ -295,9 +296,10 @@ For an attached run, finish the original Phase Run before Stage-3 entry. If
 implementation is required, require C `inspect` to report `handoff_ready` and
 its current `readiness`, then render the accepted Stage-2 result with that
 readiness. Its effective handoff supplies Stage-3 paths.
-When the sealed manifest has `implementation_required=false`, C instead reports
-the `planning-only` route. Report accepted planning and stop; do not fabricate a
-Stage-3 handoff or dispatch an implementation role.
+When the sealed manifest has `implementation_required=false` and both downstream
+owner lists are empty, C reports the `planning-only` route. Report accepted
+planning and stop; do not fabricate a Stage-3 handoff or dispatch an
+implementation role.
 Do not create a replacement.
 Do not add checks for pre-existing or duplicate planning files.
 Carry the compact `变更契约预检` field from the child's completion evidence,

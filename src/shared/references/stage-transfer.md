@@ -2,7 +2,7 @@
 
 Use the pinned `scripts/stage_handoff.py` and `scripts/stage_dispatch.py`.
 Both take one bounded strict JSON object on stdin. Protocol is
-`workflow-stage-transfer-v12`. Success is `{ok:true,result:...}` (exit 0);
+`workflow-stage-transfer-v13`. Success is `{ok:true,result:...}` (exit 0);
 failure is `{ok:false,error:{code,operation,message,downstream_ready:false,
 completed_evidence,recovery}}` (exit 1). A digest detects changes, never
 authenticates a caller, receipt, user decision or semantic conclusion.
@@ -84,6 +84,8 @@ the designer supplies a per-file manifest. Each item names path, owner
 `document`), operation (`add`, `modify`, or `delete`), and committed Spec/Ticket
 basis; generated files also name their `source_paths`. C records the Controller's
 seal and derives both path arrays from this one manifest.
+Document-kind entries belong to closure; the file's purpose, rather than its
+extension, determines its kind. Planning-only requires both owner lists empty.
 For independent Stage 3, `generated_outputs` is sealed into the B input digest
 and must match each generated manifest item's exact sources and output path.
 For inherited Stage-3/4 handoffs, B obtains the mapping from the current sealed
@@ -266,10 +268,14 @@ rejected, not rewritten. Flow bindings prove execution Git identity and share th
 discussion's common directory; they do not select its owner. Stage-4 intake reads
 the surviving discussion project without refreshing the removed execution checkout.
 
-Packages add stage_transfer=workflow-stage-transfer-v12 to their exact compatibility
+Packages add stage_transfer=workflow-stage-transfer-v13 to their exact compatibility
 key. Old runs keep original pinned runtime/records; no migration. Full A evidence
 stays outside strict control context. Only necessary design and launch transitions
 extend the existing control checkpoint.
+
+Version 13 requires closure ownership for ordinary documents and permits
+planning-only completion only with no downstream files. Version 12 runs retain
+their original pinned packages.
 
 Version 11 checks Stage-2 protected source history before the designer starts.
 An unsuitable unbound workspace is reselected before a Stage-2 run is saved;

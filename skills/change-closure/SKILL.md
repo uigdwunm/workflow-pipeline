@@ -76,8 +76,10 @@ never proves closure complete.
 
 For an inherited flow, read closure-owned documents in the verified Flow
 Worktree after the accepted implementation candidate. Update only
-closure-owned Spec/Ticket/ADR/CONTEXT or tracker paths. A new requirement is not
-a closure update and requires a separate planning decision.
+the declared closure-owned files using their approved add, modify or delete
+operations. These include ordinary documentation such as Spec/Ticket/ADR/CONTEXT,
+tracker files, READMEs, CHANGELOGs and usage or technical guides; the sealed paths
+define the boundary. A new requirement requires a separate planning decision.
 
 Preserve each document's established representation. Invoke `$ask-matt` only
 when the representation inside an existing closure-owned document is genuinely

@@ -155,6 +155,8 @@ def manifest_projection(manifest):
                 isinstance(item["operation"], str) and item["operation"] in OPERATIONS and
                 isinstance(item["basis"], dict),
                 "invalid_scope", "invalid manifest ownership, kind, or operation")
+        require(item["kind"] != "document" or owner == "closure", "invalid_scope",
+                "ordinary documentation belongs to closure: " + relative)
         require(relative not in seen, "invalid_scope", "manifest path has multiple owners")
         seen.add(relative)
         paths[owner].append(relative)
@@ -326,6 +328,8 @@ def validate_scope(scope, repository, *, stage=None, requirement_path=None,
         required = downstream["implementation_required"]
         require(required == bool(projected["implementation_paths"]), "scope_incomplete",
                 "implementation_required disagrees with implementation paths")
+        require(required or not projected["closure_paths"], "scope_incomplete",
+                "planning-only cannot leave closure work; return pending documents to the Controller")
         if stage in (3, 4):
             require(state == "sealed", "scope_incomplete", "downstream scope must be sealed")
     return copy.deepcopy(scope)

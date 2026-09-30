@@ -20,7 +20,7 @@ import workflow_control as control
 import workflow_control_git as control_git
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-stage-transfer-v12"
+PROTOCOL = "workflow-stage-transfer-v13"
 ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution-designer",
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",

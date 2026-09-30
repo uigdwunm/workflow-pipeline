@@ -19,7 +19,7 @@
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v5",
-    "stage_transfer": "workflow-stage-transfer-v12",
+    "stage_transfer": "workflow-stage-transfer-v13",
     "workflow_progress": "workflow-progress-v16",
     "requirement_delivery": "requirement-delivery-v2"
   },

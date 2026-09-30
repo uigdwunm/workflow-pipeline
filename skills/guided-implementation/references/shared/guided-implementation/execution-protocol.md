@@ -101,8 +101,9 @@ Work only in the verified worktree and invoke the complete native `$implement`
 workflow for the accepted work, including `$tdd`, typechecking, focused and affected tests before review, then the frozen final suite only after
 the original Controller confirms review convergence. Keep planning sources read-only when present.
 Implementation commits contain only code, tests and required implementation
-artifacts; report documentation paths and intended updates to the originating
-task for Stage 4 instead of editing or committing them here.
+artifacts, including runtime Prompt Markdown and implementation-owned generated
+READMEs. Report ordinary explanatory documentation paths and intended updates
+to the originating task for Stage 4 instead of editing or committing them here.
 
 Before ending any execution turn, report one result block:
 

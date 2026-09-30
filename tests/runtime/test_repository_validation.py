@@ -510,7 +510,7 @@ or
             encoding="utf-8"
         )
 
-        self.assertIn("Implementation commits contain no documentation", guided)
+        self.assertIn("Ordinary explanatory documentation belongs to Stage 4", guided)
         self.assertIn("never asks the user directly", guided)
         self.assertIn("separate explicit authority", guided)
         self.assertIn(

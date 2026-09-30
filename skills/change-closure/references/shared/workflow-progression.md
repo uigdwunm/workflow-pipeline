@@ -217,9 +217,10 @@ the current `scope_readiness` projection and pass it as B `prepare.readiness` an
 revision and evidence. Do not issue a Stage-3 host action from the historical
 Stage-2 launch arrays. An explicitly sealed empty closure list is valid; frozen
 requirements remain protected.
-When the sealed manifest explicitly says `implementation_required=false`, an
-accepted Stage 2 has route `planning-only`; the runner records a planning-only
-terminal result and does not launch Stage 3. Its original confirmed Stage-2
+When the sealed manifest explicitly says `implementation_required=false` and
+both downstream owner lists are empty, accepted Stage 2 has route `planning-only`;
+the runner records a planning-only terminal result and does not launch Stage 3.
+Its original confirmed Stage-2
 scope has no downstream ceiling to reuse. Stage-3 carrier input comes from C's
 current or consumed readiness, while a standalone Stage-3 entry supplies its
 own complete sealed input.
@@ -718,7 +719,7 @@ Final completion rereads the original ledger and surviving repository's publishe
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
 New runner records use outer version 9 and pin workflow-progress-v16 /
-workflow-stage-transfer-v12 / flow-worktree-v3 packages with control compatibility
+workflow-stage-transfer-v13 / flow-worktree-v3 packages with control compatibility
 key 10. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete

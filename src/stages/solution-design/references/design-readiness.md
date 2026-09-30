@@ -1,8 +1,9 @@
 # Solution Readiness
 
-The same `solution_designer` that drafts the Spec owns these checks. They are
-part of stage-2 design work, not a separate review, message, agent, artifact, or
-user checkpoint.
+Read before drafting the Spec. Use the file-ownership and first TDD-slice
+instructions while designing; complete the checks before review or publication.
+The same `solution_designer` owns this stage-2 work, without a separate review,
+message, agent, artifact, or user checkpoint.
 
 ## Bounded change-contract preflight
 
@@ -63,6 +64,14 @@ remains read-only until its source owner resolves that decision.
 5. **Testing decisions:** Map each material acceptance condition and design
    branch to the most direct observable test seam and test level.
 
+When implementation is required, record the first representative TDD slice in
+Testing Decisions: the production caller, the changed boundary, and the
+observable failing test through their real wiring. Keep that caller path and
+boundary real; doubles may replace external dependencies downstream of it.
+If no executable seam exists, resolve the necessary in-scope seam change in the
+Spec and include its files in the manifest, or return the existing anomaly
+before publication when the accepted boundary cannot cover it.
+
 Use evidence-based `not applicable` only when the requirement genuinely has no
 such dimension:
 
@@ -98,22 +107,36 @@ the combined review before planning publication, or direct publication in contin
 
 ## Downstream file manifest
 
-Before the planning candidate is committed, enumerate each file required to
-execute and close the design. Include production code, behavior tests, generated
-outputs, migration or configuration files, and planning documents that Stage 4
-will update. Put the human-readable list and decision basis in the Spec/Tickets.
-Classify each exact repository-relative file by owner, kind and operation;
-generated outputs also name their exact source files. State whether implementation
-is required. An empty closure list is explicit; a null downstream list means
-the design is unfinished. Check that implementation and closure owners do not
-overlap, frozen requirements stay protected, and every entry traces to a
-committed Spec/Ticket section. The structured completion manifest cites that
-commit and section after the clean planning candidate exists. Do not try to
-write the candidate's own future commit hash into its Spec.
-When generated files are present, provide a source-to-outputs map whose output
-paths are exact, sorted file paths. Outputs mapped from a manifest-owned source
-must be declared in the manifest, and each generated item must cite exactly the
-map's source set.
+While drafting the Spec/Tickets, plan every downstream file required to execute
+and close the design. Put exact repository-relative paths, operations and their
+decision basis in those artifacts. Assign owner and kind by the file's purpose:
+
+- Implementation owns `source`, `test` and required `generated` artifacts,
+  including migrations and configuration.
+- Closure owns ordinary explanatory documentation as `document`, including
+  usage/technical guides, hand-written READMEs, CHANGELOGs and later updates to
+  planning documents.
+- Markdown consumed at runtime, such as a Prompt, is `source`. A generated
+  README is `generated`. The `.md` suffix does not determine ownership.
+- Plan a changed source and its generated outputs together. When the source is
+  also in the manifest, assign its outputs the same owner. List exact
+  `source_paths` and a complete source-to-outputs map; every mapped output of a
+  manifest-owned source must be declared, with the same source set as the map.
+
+A planning-only completion has `implementation_required=false` and both owner
+lists empty. If there is no implementation but documentation
+work remains, return `SOLUTION_DESIGN_ANOMALY` before planning publication with
+the exact pending paths and operations. Preserve the draft and return control
+to the original Controller, which applies existing entry and authorization
+rules for standalone Stage 4. The designer does not launch closure or report
+the pending work complete.
+
+Before committing the planning candidate, ensure owners do not overlap, frozen
+requirements stay protected, and each entry traces to a Spec/Ticket section.
+An empty closure list is explicit; null downstream lists mean unfinished design.
+After the clean candidate exists, completion cites its actual commit and section;
+do not write the candidate's own future hash into the Spec. Generated output
+paths are exact and sorted.
 
 The Controller may seal a complete in-requirement file refinement. A new
 behavior, permission, side effect, or change to an accepted design goes through

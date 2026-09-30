@@ -169,7 +169,8 @@ The child is the complete stage owner. It must:
    then commit only those exact paths.
 4. Use the project's terminology and existing ADRs.
 5. Read `{{resource:solution-design/references/design-readiness.md}}` completely before starting native Spec work and
-   apply it at the existing review or publication seams.
+   use its file-ownership and first TDD-slice instructions while drafting;
+   complete its checks at the existing review or publication seams.
 6. Invoke the complete `$to-spec` behavior and publish the Spec to the exact
    configured carrier.
 7. Create or update ADRs only for hard-to-reverse decisions.

@@ -57,6 +57,8 @@ class StageScopeTransferTests(unittest.TestCase):
                  "operation": "add", "basis": basis},
                 {"path": "tests/test_impl.py", "owner": "implementation", "kind": "test",
                  "operation": "add", "basis": basis}])
+        else:
+            manifest = []
         scope = copy.deepcopy(self.unresolved)
         scope["implementation_paths"] = [item["path"] for item in manifest if item["owner"] == "implementation"]
         scope["closure_paths"] = [item["path"] for item in manifest if item["owner"] == "closure"]
@@ -107,7 +109,7 @@ class StageScopeTransferTests(unittest.TestCase):
         sealed = handoff.effective_scope(self.original, self.authority(implementation=False))
         self.assertIs(sealed["downstream"]["implementation_required"], False)
         self.assertEqual(sealed["implementation_paths"], [])
-        self.assertEqual(sealed["closure_paths"], ["CHANGELOG.md"])
+        self.assertEqual(sealed["closure_paths"], [])
 
     def test_empty_closure_manifest_does_not_unfreeze_requirement(self):
         authority = self.authority()
