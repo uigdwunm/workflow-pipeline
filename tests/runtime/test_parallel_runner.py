@@ -112,9 +112,21 @@ class ParallelRunnerTests(unittest.TestCase):
         result = self.run_suite()
         self.assertEqual(result.returncode, 1)
         self.assertIn("No test files found", result.stderr)
-        for jobs in (0, -1, "invalid"):
+        for jobs in (0, -1, 3, 4, "invalid"):
             with self.subTest(jobs=jobs):
                 self.assertEqual(self.run_suite(jobs).returncode, 2)
+
+    def test_excess_concurrency_is_rejected_before_tests_start(self):
+        self.source('unexpected', '''
+            import unittest
+            from pathlib import Path
+            class Case(unittest.TestCase):
+                def test_must_not_start(self): Path('started').touch()
+        ''')
+        result = self.run_suite(4)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn('maximum: 2 workers', result.stderr)
+        self.assertFalse((self.root / 'started').exists())
 
     def test_default_limits_active_workers_to_two(self):
         for name in ('one', 'two', 'three'):

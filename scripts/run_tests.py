@@ -25,10 +25,10 @@ DEFAULT_JOBS = min(2, os.cpu_count() or 1)
 DEFAULT_NICE = 10
 
 
-def positive_int(value: str) -> int:
+def worker_count(value: str) -> int:
     number = int(value)
-    if number < 1:
-        raise argparse.ArgumentTypeError("jobs must be a positive integer")
+    if not 1 <= number <= 2:
+        raise argparse.ArgumentTypeError("jobs must be 1 or 2 (maximum: 2 workers)")
     return number
 
 
@@ -223,8 +223,8 @@ def run(repository: Path, jobs: int, niceness: int = DEFAULT_NICE) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--jobs", type=positive_int, default=DEFAULT_JOBS,
-                        help="maximum concurrent test processes (default: up to 2; use 1 for serial)")
+    parser.add_argument("--jobs", type=worker_count, default=DEFAULT_JOBS,
+                        help="concurrent test processes: 1 or 2 (default: up to 2; maximum: 2)")
     parser.add_argument("--nice", type=worker_niceness, default=DEFAULT_NICE,
                         help="worker CPU niceness 0-19 (default: 10; 0 keeps inherited priority)")
     parser.add_argument("--repository", type=Path, default=ROOT)
