@@ -1,6 +1,7 @@
 # Reduce stage-start Git reads
 
 Status: ready-for-agent
+Lifecycle: completed
 
 Spec: ../PRD.md
 
@@ -15,5 +16,7 @@ Owner authorized formal implementation, necessary validation, independent review
 
 ## Comments
 
-- Initial formal sample: total 241 calls (setup 129, start 102, later requests 9, cleanup 1), with all four binding CLI subprocesses retained. Repeated sampling and complete validation remain in progress.
+- Five interleaved formal samples each used 241 calls (setup 129, start 102, later requests 9, cleanup 1), with all four binding CLI subprocesses retained. Baseline used 382 total and 215 start calls. CPU and elapsed medians decreased approximately 31% in this one case.
 - Focused checks passed: 13 identity/location, 19 startup/recovery/ledger, 6 committed-document/object-view, 2 binding CLI response checks.
+- Complete validation: 1024 tests across 54 files in 1951.9 seconds; zero failures/errors, one existing skip. All five package validators, generation check and repository validation passed.
+- Independent Standards and Spec reviews of candidate `26e736021813b9e0cee55803a49a95a64d0e5db0` against `e5699cf` reported zero findings and no overdesign. The candidate was fast-forward merged into local main. No push or installation was performed.
