@@ -17,6 +17,8 @@ from typing import Any
 MAX_BYTES = 262144
 CONTEXT_FIELDS = {'schema_version', 'controller_ref', 'topic_ref', 'stage', 'carrier',
                   'preference', 'flow_authority', 'requirement_identity', 'handoff_progress'}
+DELIVERY_VERIFICATION_FIELDS = {'candidate', 'expected_target_head', 'validation_plan', 'plan_digest',
+                                'review_digest', 'review_decision', 'attempts', 'dispatcher_ref'}
 STAGE3_DEFAULT_CONFIGURATIONS = frozenset({
     ('gpt-6-luna', 'high'),
     ('gpt-6-luna', 'xhigh'),
@@ -242,8 +244,7 @@ def validate_attempt_identities(attempts):
 
 def validate_review(candidate, review, verification, dispatcher_ref):
     """Strict delivery projection shared by B, runner and closure."""
-    keys(verification, {'candidate', 'expected_target_head', 'validation_plan', 'plan_digest', 'review_digest',
-                        'review_decision', 'attempts', 'dispatcher_ref'})
+    keys(verification, DELIVERY_VERIFICATION_FIELDS)
     require(verification['candidate'] == candidate and verification['dispatcher_ref'] == dispatcher_ref, 'verification identity mismatch')
     plan = verification['validation_plan']
     validate_validation_plan(plan)

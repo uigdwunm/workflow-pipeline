@@ -320,7 +320,7 @@ def verify_result(stage, payload, binding, scope, root, role_ref, integration_re
         protected_revision = merged
     elif stage == 3:
         candidate = commit(payload["candidate_commit"])
-        control.validate_review(candidate, payload["review"], payload["verification"], role_ref)
+        control.keys(payload["verification"], control.DELIVERY_VERIFICATION_FIELDS)
         require(entry.git_text(root, "rev-parse", "HEAD") == candidate, "result_changed", "candidate differs from actual HEAD")
         ancestor(root, binding["base_commit"], candidate)
         review_base = commit(payload["verification"]["expected_target_head"])
@@ -333,6 +333,7 @@ def verify_result(stage, payload, binding, scope, root, role_ref, integration_re
         require(history_paths <= set(scope["implementation_paths"]) and
                 not history_paths & set(scope["protected_paths"]),
                 "invalid_scope", "candidate history escapes implementation scope")
+        control.validate_review(candidate, payload["review"], payload["verification"], role_ref)
         control.validate_validation_plan(payload["verification"]["validation_plan"], binding)
         protected_revision = candidate
     else:
