@@ -2,7 +2,7 @@
 
 The owner observed sustained fan load during repository tests. A single initial standalone Stage 2 case executed 382 Git subprocesses, including 215 in start. The earlier two-worker cap and shared test lock are complete; this change reduces repeated work inside the runtime.
 
-Implementation baseline: `e5699cf4a312fcfa576b29d3311dac81c22c9f1b`. The preceding throwaway prototype is retained on `codex/git-query-prototype`, commit `3b2c072`; its interception mechanism is not production code.
+Implementation baseline: `e5699cf4a312fcfa576b29d3311dac81c22c9f1b`. The preceding throwaway prototype is retained by tag `archive/git-query-prototype`, commit `3b2c072`; its interception mechanism is not production code.
 
 ## Requirements
 
