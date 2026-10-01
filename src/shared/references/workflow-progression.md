@@ -312,104 +312,6 @@ An unexplained missing identity remains unavailable evidence.
 All unresolved control/native
 calls must still be reconciled through their original parents.
 
-### Retiring accepted native agents
-
-After C/B has accepted an ordinary native carrier, Execution allocation or
-converged review and its commands and descendants have stopped, its original
-business owner may declare that this exact identity needs no further reuse.
-Keep a carrier needed for same-identity recovery available. Existing queued
-acknowledgements are mailbox input: use one V2 `followup_task`/TriggerTurn on
-the same registered ref to consume them and return a correlated terminal
-result. The parent records that result without sending another confirmation.
-This read-only turn preserves the original business delivery, commits and tests.
-
-Use C `native-finalize` with `operation:prepare`, the registered `ref`, original
-`actor_ref`, decision `reference`, `reuse:false`, `binding`, and `close`.
-`binding` retains `{call_ref,response_ref,raw}` from the actual parent's native
-host response containing a `subAgentActivity` with this exact `agentPath` and
-`agentThreadId`. Its parent thread ID must match the original business owner's
-frozen entry identity, including historical owners. The trusted ingress authenticates the tool call and original
-parent; agent assertions, titles, storage inspection and inferred IDs are not
-identity evidence. `close` retains the actually available adapter and request:
-
-```json
-{"adapter":"codex-desktop","request":{
- "tool":"mcp__codex_app__set_thread_archived",
- "arguments":{"threadId":"<bound native thread ID>","hostId":"<original host>","archived":true}}}
-```
-
-This C branch supports the verified collaboration V2 and Desktop archive
-combination. App-server archive or V1 close_agent needs its actual capability
-and authenticated request/result contract; this runtime blocks those unsupported
-adapters rather than inventing tool schemas. Discover capabilities before
-preparing; missing support retains the accepted delivery for host recovery.
-
-The first prepare persists and returns `finish-native` with `action_id`, exact
-ref/thread ID and a read-only message. Invoke the original host's available
-V2 followup once. Its final answer contains `NATIVE_FINISHED action_id=<id>
-mailbox=consumed business_result=unchanged commands=stopped`. Record
-`native-finalize` operation `observe` with `{ref,action_id,receipt}`. The receipt
-is `{adapter,call_ref,response_ref,status,ref,raw}`; status is
-completed/unknown/failed. For completed finish, retain the actual exact-thread
-readback: its latest turn is completed, thread status is idle, and its final
-agentMessage contains that action's terminal result. Child assertions alone
-cannot establish stopped descendants; obtain a new complete lifecycle query.
-
-Repeat the identical prepare only after that query confirms the stopped target
-and its registered descendants. C persists one `close-native` action carrying
-the exact saved request. Invoke it once and observe its authenticated raw
-receipt under that action ID. Desktop success requires the raw
-`{threadId:<exact ID>,archived:true}`. Then query lifecycle again.
-Archive success alone is insufficient: the whole live collaboration inventory
-must omit the target and descendants. Retire and verify registered descendants
-before closing their parent. Only then may these registered refs be
-absent from later stop barriers and successor/allocation checks.
-
-An accepted Execution Agent can finish while its Dispatcher continues its own
-business turn. Quiescence is scoped to that exact target, its registered
-descendants and their original calls; unknown native identities still block it.
-
-The lifecycle action/receipt list is separate from B/control business results.
-Exact receipt repeats ACK; conflicting IDs, bindings, responses or no-reuse
-decisions reject. Repeated prepare, in-flight work or a lost response returns
-`lookup-exact-native-action` naming the original action. Reconcile that original
-call and its raw result; neither absence nor uncertainty authorizes another
-wake/close. Ordinary inspect/advance exposes that saved action through a
-read-only lookup or requests a fresh lifecycle query; only an explicit identical
-native-finalize prepare can progress from verified finish to the one close call.
-New activity revokes closure evidence, including late observations.
-For collaboration, `host-event` retains the original `native_host.instance` and
-the actual `read_thread` `subAgentActivity` item as `event`; no RPC wrapper is
-constructed. A related started/interacted item invalidates the inventory query
-and any issued close's release proof. The expected finish turn only invalidates
-inventory; it does not retire its own action.
-
-For a revoked successful close, `lookup-exact-native-action` supplies the actual
-Desktop `read_thread` request for that original UUID/host. Observe its new
-authenticated call/response with `receipt.query:true` and the lookup's unchanged
-`receipt.query_for` revocation guard. A query from an older guard can settle but
-cannot clear newer activity. The guard includes the existing checkpoint revision
-at activity observation, so replayed evidence cannot restore an older guard.
-Completed readback must
-show `notLoaded` and the latest completed turn's original finish marker. It
-preserves the original archive receipt and actions, clears only the obsolete
-release proof, and requires a later fresh complete inventory before release.
-Any target or descendant reappearing after readback revokes release, including
-completed nodes; obtain another readback before fresh absence can grant release.
-Unknown/failed readback and duplicate old responses leave revocation intact.
-Readback cannot replace an unknown/failed archive or authorize another close;
-missing readback capability retains the block.
-An authentic fresh inventory remains usable for another stopped target even
-when it also reports activity that revokes a different target's release proof.
-Business failure retains these read-only lookups and receipt reconciliation;
-new finish/close calls wait for the original business recovery.
-Pause/cancel intent forbids new finish/close calls while allowing existing
-receipt reconciliation. A finished turn can satisfy the stop barrier while its
-unarchived identity remains retained for resume; new native creation, including
-Dispatcher replacement, still waits for verified resource release. Saved creation
-intents remain queryable while that gate is closed. Historical runs retain their original pinned runtime;
-v17 does not migrate them.
-
 Every query revokes the previous snapshot immediately. New host activity,
 changed allocations/review bindings or outstanding calls invalidate its saved
 guard. After failure or changed activity, use a new query and real response;
@@ -512,6 +414,108 @@ direct decision in its confirmed runner input and therefore uses full. Read
 for admission and candidate-source rules. C retains the original native
 Dispatcher result/stop and Git snapshot for direct candidate provenance; zero
 allocations never close the stop barrier on their own.
+
+### Retiring accepted native agents
+
+After C/B has accepted an ordinary native carrier, Execution allocation or
+converged review and its commands and descendants have stopped, its original
+business owner may declare that this exact identity needs no further reuse.
+Keep a carrier needed for same-identity recovery available. Existing queued
+acknowledgements are mailbox input: use one V2 `followup_task`/TriggerTurn on
+the same registered ref to consume them and return a correlated terminal
+result. The parent records that result without sending another confirmation.
+This read-only turn preserves the original business delivery, commits and tests.
+
+Use C `native-finalize` with `operation:prepare`, the registered `ref`, original
+`actor_ref`, decision `reference`, `reuse:false`, `binding`, and `close`.
+`binding` retains `{call_ref,response_ref,raw}` from the actual parent's native
+host response containing a `subAgentActivity` with this exact `agentPath` and
+`agentThreadId`. Its parent thread ID must match the original business owner's
+frozen entry identity, including historical owners. The trusted ingress authenticates the tool call and original
+parent; agent assertions, titles, storage inspection and inferred IDs are not
+identity evidence. `close` retains the actually available adapter and request:
+
+```json
+{"adapter":"codex-desktop","request":{
+ "tool":"mcp__codex_app__set_thread_archived",
+ "arguments":{"threadId":"<bound native thread ID>","hostId":"<original host>","archived":true}}}
+```
+
+This C branch supports the verified collaboration V2 and Desktop archive
+combination. App-server archive or V1 close_agent needs its actual capability
+and authenticated request/result contract; this runtime blocks those unsupported
+adapters rather than inventing tool schemas. Discover capabilities before
+preparing; missing support retains the accepted delivery for host recovery.
+
+The first prepare persists and returns `finish-native` with `action_id`, exact
+ref/thread ID and a read-only message. Invoke the original host's available
+V2 followup once. Its final answer contains `NATIVE_FINISHED action_id=<id>
+mailbox=consumed business_result=unchanged commands=stopped`. Record
+`native-finalize` operation `observe` with `{ref,action_id,receipt}`. The receipt
+is `{adapter,call_ref,response_ref,status,ref,raw}`; status is
+completed/unknown/failed. For completed finish, retain the actual exact-thread
+readback: its latest turn is completed, thread status is idle, and its final
+agentMessage contains that action's terminal result. Child assertions alone
+cannot establish stopped descendants; obtain a new complete lifecycle query.
+
+Repeat the identical prepare only after that query confirms the stopped target
+and its registered descendants. C persists one `close-native` action carrying
+the exact saved request. Invoke it once and observe its authenticated raw
+receipt under that action ID. Desktop success requires the raw
+`{threadId:<exact ID>,archived:true}`. Then query lifecycle again.
+Archive success alone is insufficient: the whole live collaboration inventory
+must omit the target and descendants. Retire and verify registered descendants
+before closing their parent. Only then may these registered refs be
+absent from later stop barriers and successor/allocation checks.
+
+An accepted Execution Agent can finish while its Dispatcher continues its own
+business turn. Quiescence is scoped to that exact target, its registered
+descendants and their original calls; unknown native identities still block it.
+
+The lifecycle action/receipt list is separate from B/control business results.
+Exact receipt repeats ACK; conflicting IDs, bindings, responses or no-reuse
+decisions reject. Repeated prepare, in-flight work or a lost response returns
+`lookup-exact-native-action` naming the original action. Reconcile that original
+call and its raw result; neither absence nor uncertainty authorizes another
+wake/close. Ordinary inspect/advance exposes that saved action through a
+read-only lookup or requests a fresh lifecycle query; only an explicit identical
+native-finalize prepare can progress from verified finish to the one close call.
+A terminal failed finish or close returns `await-host-recovery` with the
+original action and failed receipt for its business owner. Release stays blocked;
+this branch neither retries the failed call nor asks to query it again. An
+uncertain invocation remains `unknown` and uses its original lookup.
+New activity revokes closure evidence, including late observations.
+For collaboration, `host-event` retains the original `native_host.instance` and
+the actual `read_thread` `subAgentActivity` item as `event`; no RPC wrapper is
+constructed. A related started/interacted item invalidates the inventory query
+and any issued close's release proof. The expected finish turn only invalidates
+inventory; it does not retire its own action.
+
+For a revoked successful close, `lookup-exact-native-action` supplies the actual
+Desktop `read_thread` request for that original UUID/host. Observe its new
+authenticated call/response with `receipt.query:true` and the lookup's unchanged
+`receipt.query_for` revocation guard. A query from an older guard can settle but
+cannot clear newer activity. The guard includes the existing checkpoint revision
+at activity observation, so replayed evidence cannot restore an older guard.
+Completed readback must
+show `notLoaded` and the latest completed turn's original finish marker. It
+preserves the original archive receipt and actions, clears only the obsolete
+release proof, and requires a later fresh complete inventory before release.
+Any target or descendant reappearing after readback revokes release, including
+completed nodes; obtain another readback before fresh absence can grant release.
+Unknown/failed readback and duplicate old responses leave revocation intact.
+Readback cannot replace an unknown/failed archive or authorize another close;
+missing readback capability retains the block.
+An authentic fresh inventory remains usable for another stopped target even
+when it also reports activity that revokes a different target's release proof.
+Business failure retains these read-only lookups and receipt reconciliation;
+new finish/close calls wait for the original business recovery.
+Pause/cancel intent forbids new finish/close calls while allowing existing
+receipt reconciliation. A finished turn can satisfy the stop barrier while its
+unarchived identity remains retained for resume; new native creation, including
+Dispatcher replacement, still waits for verified resource release. Saved creation
+intents remain queryable while that gate is closed. Historical runs retain their original pinned runtime;
+v17 does not migrate them.
 
 ## Dispatcher allocations
 

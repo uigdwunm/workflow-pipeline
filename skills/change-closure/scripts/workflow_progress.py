@@ -763,6 +763,14 @@ def verify_scope_authority(authority, *, initial_seal=None, revision_records=Non
 
 def native_finalization_lookup(record):
     action = record['actions'][-1]
+    if action.get('resolved') and action.get('resolution') == 'failed':
+        failure = next((data['receipt'] for data in reversed(record['receipts'])
+                        if data['action_id'] == action['action_id'] and data['receipt']['status'] == 'failed' and
+                        not data['receipt'].get('query')), None)
+        require(failure is not None, 'invalid_checkpoint', 'failed native action requires its original failed receipt')
+        return {'operation': 'await-host-recovery', 'ref': record['ref'], 'action': copy.deepcopy(action),
+                'receipt': copy.deepcopy(failure),
+                'reason': 'The original ' + action['operation'] + ' failed; its business owner must handle host recovery.'}
     result = {'operation': 'lookup-exact-native-action', 'action': copy.deepcopy(action)}
     if record.get('revoked') and action['operation'] == 'close-native' and action.get('resolution') == 'completed':
         result.update(query=True, query_for=entry.digest(record['revoked']), tool='mcp__codex_app__read_thread', arguments={
@@ -1267,7 +1275,8 @@ class Progress:
         s['lifecycle_snapshot'] = None
         s.pop('lifecycle_query', None)
         self.save()
-        return _view(s, {'operation': 'reconcile-stop-barrier', 'ref': record['ref']})
+        return _view(s, native_finalization_lookup(record) if receipt['status'] == 'failed' else
+                     {'operation': 'reconcile-stop-barrier', 'ref': record['ref']})
 
     def lifecycle_query(self, data):
         entry.fields(data, set())

@@ -195,6 +195,45 @@ class CollaborationLifecycleTests(unittest.TestCase):
         f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
         self.assertTrue(f.state()['native_finalizations'][0]['verified'])
 
+    def assert_failed_native_action_waits_for_owner(self, operation):
+        f = self.f
+        self.accepted_execution()
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        action = f.invoke('native-finalize', request)['next_action']
+        if operation == 'close-native':
+            f.invoke('native-finalize', self.finalize_observation(action))
+            f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+            action = f.invoke('native-finalize', request)['next_action']
+        failure = self.finalize_observation(action, 'failed')
+        result = f.invoke('native-finalize', failure)
+        actions = copy.deepcopy(f.state()['native_finalizations'][0]['actions'])
+        before = f.checkpoint.read_bytes()
+        requests = [('native-finalize', request), ('native-finalize', {'operation': 'lookup', 'ref': request['ref']}),
+                    ('native-finalize', failure), ('inspect', {}), ('advance', {})]
+        for observed in [result, *(f.invoke(name, data) for name, data in requests)]:
+            waiting = observed['next_action']
+            self.assertEqual(waiting['operation'], 'await-host-recovery', observed)
+            self.assertEqual(waiting['ref'], request['ref'])
+            self.assertEqual(waiting['action'], actions[-1])
+            self.assertEqual(waiting['receipt'], failure['receipt'])
+            self.assertIn('business owner', waiting['reason'])
+        self.assertEqual(f.checkpoint.read_bytes(), before)
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            f.invoke('native-finalize', self.finalize_observation(action))
+        self.assertEqual(error.exception.code, 'finalization_conflict')
+        self.assertEqual(f.checkpoint.read_bytes(), before)
+        blocked = f.invoke('allocation', {'allocation_id': 'after-terminal-failure', 'operation': 'prepare',
+            'handoff': self.execution_handoff()})
+        self.assertEqual(blocked['error']['code'], 'host_action_pending')
+        self.assertEqual(f.state()['native_finalizations'][0]['actions'], actions)
+
+    def test_failed_native_finish_waits_for_owner_without_lookup_or_retry(self):
+        self.assert_failed_native_action_waits_for_owner('finish-native')
+
+    def test_failed_native_close_waits_for_owner_without_lookup_or_retry(self):
+        self.assert_failed_native_action_waits_for_owner('close-native')
+
     def test_inspect_rejects_malformed_native_journal_without_rewriting_checkpoint(self):
         f = self.f
         request, finish, close = self.finish_execution()
