@@ -83,7 +83,7 @@ permits cleanup-only; this recovery never rolls back or republishes it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v16","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v17","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -307,9 +307,81 @@ writers or extra unregistered agents keep publication/acceptance blocked. The
 Controller itself may be running. Current execution allocations, both review
 axes and previous review attempts remain part of the writer set. Every admitted
 baseline identity and every prior stage's native identity must still appear and
-be completed; a missing identity is unavailable evidence, not a stopped writer.
+be completed unless the native finalization below has verified its closure.
+An unexplained missing identity remains unavailable evidence.
 All unresolved control/native
 calls must still be reconciled through their original parents.
+
+### Retiring accepted native agents
+
+After C/B has accepted an ordinary native carrier, Execution allocation or
+converged review and its commands and descendants have stopped, its original
+business owner may declare that this exact identity needs no further reuse.
+Keep a carrier needed for same-identity recovery available. Existing queued
+acknowledgements are mailbox input: use one V2 `followup_task`/TriggerTurn on
+the same registered ref to consume them and return a correlated terminal
+result. The parent records that result without sending another confirmation.
+This read-only turn preserves the original business delivery, commits and tests.
+
+Use C `native-finalize` with `operation:prepare`, the registered `ref`, original
+`actor_ref`, decision `reference`, `reuse:false`, `binding`, and `close`.
+`binding` retains `{call_ref,response_ref,raw}` from the actual parent's native
+host response containing a `subAgentActivity` with this exact `agentPath` and
+`agentThreadId`. The trusted ingress authenticates the tool call and original
+parent; agent assertions, titles, storage inspection and inferred IDs are not
+identity evidence. `close` retains the actually available adapter and request:
+
+```json
+{"adapter":"codex-desktop","request":{
+ "tool":"mcp__codex_app__set_thread_archived",
+ "arguments":{"threadId":"<bound native thread ID>","hostId":"<original host>","archived":true}}}
+```
+
+This C branch supports the verified collaboration V2 and Desktop archive
+combination. App-server archive or V1 close_agent needs its actual capability
+and authenticated request/result contract; this runtime blocks those unsupported
+adapters rather than inventing tool schemas. Discover capabilities before
+preparing; missing support retains the accepted delivery for host recovery.
+
+The first prepare persists and returns `finish-native` with `action_id`, exact
+ref/thread ID and a read-only message. Invoke the original host's available
+V2 followup once. Its final answer contains `NATIVE_FINISHED action_id=<id>
+mailbox=consumed business_result=unchanged commands=stopped`. Record
+`native-finalize` operation `observe` with `{ref,action_id,receipt}`. The receipt
+is `{adapter,call_ref,response_ref,status,ref,raw}`; status is
+completed/unknown/failed. For completed finish, retain the actual exact-thread
+readback: its latest turn is completed, thread status is idle, and its final
+agentMessage contains that action's terminal result. Child assertions alone
+cannot establish stopped descendants; obtain a new complete lifecycle query.
+
+Repeat the identical prepare only after that query confirms the stopped target
+and its registered descendants. C persists one `close-native` action carrying
+the exact saved request. Invoke it once and observe its authenticated raw
+receipt under that action ID. Desktop success requires the raw
+`{threadId:<exact ID>,archived:true}`. Then query lifecycle again.
+Archive success alone is insufficient: the whole live collaboration inventory
+must omit the target and descendants. Retire and verify registered descendants
+before closing their parent. Only then may these registered refs be
+absent from later stop barriers and successor/allocation checks.
+
+An accepted Execution Agent can finish while its Dispatcher continues its own
+business turn. Quiescence is scoped to that exact target, its registered
+descendants and their original calls; unknown native identities still block it.
+
+The lifecycle action/receipt list is separate from B/control business results.
+Exact receipt repeats ACK; conflicting IDs, bindings, responses or no-reuse
+decisions reject. Repeated prepare, in-flight work or a lost response returns
+`lookup-exact-native-action` naming the original action. Reconcile that original
+call and its raw result; neither absence nor uncertainty authorizes another
+wake/close. Ordinary inspect/advance exposes that saved action through a
+read-only lookup or requests a fresh lifecycle query; only an explicit identical
+native-finalize prepare can progress from verified finish to the one close call.
+New activity revokes closure evidence, including late observations.
+Pause/cancel intent forbids new finish/close calls while allowing existing
+receipt reconciliation. A finished turn can satisfy the stop barrier while its
+unarchived identity remains retained for resume; new native creation still waits
+for verified resource release. Historical runs retain their original pinned runtime;
+v17 does not migrate them.
 
 Every query revokes the previous snapshot immediately. New host activity,
 changed allocations/review bindings or outstanding calls invalidate its saved
@@ -718,7 +790,7 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 9 and pin workflow-progress-v16 /
+New runner records use outer version 9 and pin workflow-progress-v17 /
 workflow-stage-transfer-v13 / flow-worktree-v3 packages with control compatibility
 key 10. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate

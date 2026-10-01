@@ -16,7 +16,7 @@ class PackageBuildTests(unittest.TestCase):
         config = json.loads((ROOT / 'build/skill-packages.json').read_text())
         key = config['compatibility_key']
         self.assertEqual((key['control'], key['stage_transfer'], key['workflow_progress']),
-                         (10, 'workflow-stage-transfer-v13', 'workflow-progress-v16'))
+                         (10, 'workflow-stage-transfer-v13', 'workflow-progress-v17'))
         self.assertEqual(key['topic_gate'], 'phase-0-1-discussion-v2')
         self.assertEqual(key['confirmation'], 'goal-scoped-confirmation-v3')
         with tempfile.TemporaryDirectory() as temporary:
@@ -30,6 +30,8 @@ class PackageBuildTests(unittest.TestCase):
             scripts = output / 'guided-implementation/scripts'
             requests = [('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v12', 'operation': 'prepare'}),
                         ('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v9', 'operation': 'prepare'}),
+                        ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
+                         {'protocol': 'workflow-progress-v16', 'operation': 'inspect', 'expected_revision': 0, 'data': {}}),
                         ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
                          {'protocol': 'workflow-progress-v14', 'operation': 'inspect', 'expected_revision': 0, 'data': {}}),
                         ('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v5', 'operation': 'prepare'}),

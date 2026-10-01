@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "9552c9b021ab87329abc4fbb89266600ffa6f28933cc3aa9bd407210320b0bc4",
+  "bundle_digest": "8fba80655f0b6f253b413f4fe29b9aa0e0186e9c78a3414183cd7b5f53a6c60f",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 10,
@@ -19,7 +19,7 @@
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "topic_gate": "phase-0-1-discussion-v2",
-    "workflow_progress": "workflow-progress-v16"
+    "workflow_progress": "workflow-progress-v17"
   },
   "external_actions": {
     "adr": [
@@ -66,15 +66,15 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "afc504f776561f954aa02f21bfd9ce315cb6fa9da834c5717f9a4e3931e2cf9e"
+      "sha256": "9334b47aa45a432fa55e95fbdca6a0923cdb2bd3d2fe90d5717ceab8acdcac2d"
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "ea13c6fe5861fa23036db65c84b3f6837c633acdcaa4d003694a9b5dab46e714"
+      "sha256": "51aaa1c536674c3a1e274251acb4abfb64d1fdf9284a453e66075b81ba1d5381"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "54b9e0ca492039f7de60f3f75216b65a32c6a2b5db0777ba7333adb9192680c1"
+      "sha256": "5ca367f3229203c14c02e395e39905b3383ed936263fb8c345b6fe62888655ba"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -90,7 +90,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "0bef183d8d03e8daea34c4cc178e42def8f873a71d9bcd22e09e3e86d629592f"
+      "sha256": "4419bfca2b758346406fe30e01b7a84df56bcbb7bc7ed41975a77311dd57b46b"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -234,7 +234,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "42b7de9119a725c2af1ddaa688ed66ca26f16bfa2c088c9e786f544f1f0b9b22"
+      "sha256": "a5a26b023b7b581e990d0180dbb528e8381c41e92d59a3dc8fdf1f849f513ec8"
     }
   },
   "format_version": 1,

@@ -30,6 +30,13 @@ Allocation receipts and acceptance update the same control roster consumed by
 the originating task's candidate intake. Existing native governance still owns
 real launch, waits, stopped-writer proofs and interruption.
 
+After an allocation is accepted and its exact Execution Agent will not be
+reused, follow the shared progression's **Retiring accepted native agents**
+branch before the next allocation. A queued confirmation requires one read-only
+same-identity finish turn and correlated terminal result; record it without
+another acknowledgement. Keep business acceptance and lifecycle receipts
+separate. A carrier required for later recovery remains available.
+
 Before this role acts, execute [Package execution preflight](../package-execution.md) using the inherited registration_input fields from the verified handoff. Pass them unchanged to entry_prepare.py with this role’s actual host identity and cwd; keep registration_identity as the frozen source identity. File evidence is reread by the adapter, while inline registry/context remain paired. Missing evidence stops before work. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
 Under an approved `direct` policy, this bound Dispatcher performs the same

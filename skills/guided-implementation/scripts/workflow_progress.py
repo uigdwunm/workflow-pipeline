@@ -33,7 +33,7 @@ import workflow_control_git as control_git
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v16"
+PROTOCOL = "workflow-progress-v17"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -59,6 +59,43 @@ def validate_snapshot_events(snapshot):
         validate_native_event(event)
 
 
+def native_raw_object(raw):
+    require(isinstance(raw, dict) and raw and raw.get('isError') is not True,
+            'host_evidence_missing', 'retain the authenticated successful raw host response')
+    if 'content' in raw:
+        require(isinstance(raw['content'], list) and all(isinstance(item, dict) for item in raw['content']),
+                'host_evidence_missing', 'raw host content must be a list of content objects')
+        texts = [item.get('text') for item in raw['content'] if item.get('type') == 'text']
+        require(len(texts) == 1 and isinstance(texts[0], str), 'host_evidence_missing', 'one raw host JSON response required')
+        try:
+            raw = json.loads(texts[0])
+        except (ValueError, TypeError) as error:
+            raise entry.PreparationError('host_evidence_missing', 'host response is not JSON evidence') from error
+    require(isinstance(raw, dict), 'host_evidence_missing', 'raw host object required')
+    return raw
+
+
+def validate_native_close(close, ref, thread):
+    entry.fields(close, {'adapter', 'request'})
+    request = close['request']
+    require(isinstance(request, dict), 'host_capability_missing', 'discover an actual exact-target close capability')
+    if close['adapter'] == 'codex-desktop':
+        entry.fields(request, {'tool', 'arguments'})
+        arguments = request['arguments']
+        require(request['tool'] == 'mcp__codex_app__set_thread_archived' and isinstance(arguments, dict) and
+                set(arguments) == {'threadId', 'hostId', 'archived'} and arguments['threadId'] == thread and
+                isinstance(arguments['hostId'], str) and arguments['hostId'] and arguments['archived'] is True,
+                'identity_mismatch', 'archive the mechanically bound exact desktop thread on its original host')
+    else:
+        raise entry.PreparationError('host_capability_missing', 'no supported native close capability is available')
+
+
+def validate_native_close_result(payload, raw):
+    if payload['adapter'] == 'codex-desktop':
+        require(raw.get('threadId') == payload['thread_id'] and raw.get('archived') is True,
+                'host_evidence_missing', 'retain the exact-thread successful archive response')
+
+
 def collaboration_inventory(value):
     """Validate the native tool's unmodified whole-tree response, not RPC pages."""
     entry.fields(value, {'adapter', 'controller_ref', 'request', 'response'})
@@ -82,12 +119,12 @@ def collaboration_inventory(value):
     return agents
 
 
-def collaboration_inventory_pending(inventory, expected):
+def collaboration_inventory_pending(inventory, expected, closed=()):
     agents = collaboration_inventory(inventory)
     actual = set(agents) - {inventory['controller_ref']}
     pending = []
-    if actual != expected:
-        pending.append({'kind': 'unreconciled-descendants', 'expected': sorted(expected), 'actual': sorted(actual)})
+    if actual != expected - set(closed):
+        pending.append({'kind': 'unreconciled-descendants', 'expected': sorted(expected - set(closed)), 'actual': sorted(actual)})
     for ref in sorted(actual):
         status = agents[ref]
         if not (isinstance(status, dict) and set(status) == {'completed'} and isinstance(status['completed'], str)):
@@ -324,6 +361,33 @@ def validate_state(state):
             "invalid_checkpoint", "v4 transaction journal is inconsistent")
     require(isinstance(state.get("retained_host_actions", []), list),
             "invalid_checkpoint", "retained host actions must be an ordered list")
+    records = state.get('native_finalizations', [])
+    require(isinstance(records, list), 'invalid_checkpoint', 'native lifecycle receipts must be an ordered list')
+    refs, actions = set(), set()
+    for record in records:
+        require(isinstance(record, dict) and isinstance(record.get('ref'), str) and record['ref'] not in refs and
+                isinstance(record.get('thread_id'), str) and record['thread_id'] and isinstance(record.get('actions'), list) and
+                all(isinstance(action, dict) for action in record['actions']) and
+                [action.get('operation') for action in record['actions']] in (['finish-native'], ['finish-native', 'close-native']) and
+                isinstance(record.get('receipts'), list) and record.get('prepare', {}).get('ref') == record['ref'],
+                'invalid_checkpoint', 'retain one finish and at most one close action for the exact native identity')
+        refs.add(record['ref'])
+        validate_native_close(record['prepare']['close'], record['ref'], record['thread_id'])
+        for action in record['actions']:
+            require(isinstance(action.get('action_id'), str) and action['action_id'] not in actions and
+                    action.get('payload', {}).get('ref') == record['ref'] and action['payload'].get('thread_id') == record['thread_id'],
+                    'invalid_checkpoint', 'native action identity changed')
+            actions.add(action['action_id'])
+        if record.get('verified'):
+            close = record['actions'][-1]
+            completed = [data['receipt'] for data in record['receipts'] if data['action_id'] == close['action_id'] and
+                         data['receipt']['status'] == 'completed' and data['receipt']['ref'] == record['ref']]
+            require(close['operation'] == 'close-native' and close.get('resolved') and close.get('resolution') == 'completed' and
+                    len(completed) == 1, 'invalid_checkpoint', 'verified absence requires the original successful close receipt')
+            validate_native_close_result(close['payload'], native_raw_object(completed[0]['raw']))
+            inventory = collaboration_inventory(record['verified']['inventory'])
+            require(not any(ref == record['ref'] or ref.startswith(record['ref'] + '/') for ref in inventory),
+                    'invalid_checkpoint', 'verified native closure must retain the exact inactive subtree inventory')
     control.validate_context(state["control"]["context"])
     for identity, transaction in state.get('control_transactions', {}).items():
         require(entry.digest(transaction['request']) == identity, 'invalid_checkpoint', 'control transaction identity changed')
@@ -633,6 +697,18 @@ def verify_scope_authority(authority, *, initial_seal=None, revision_records=Non
     return authority
 
 
+def native_finalization_action(state):
+    record = next((item for item in state.get('native_finalizations', []) if not item.get('verified') or item.get('revoked')), None)
+    if record is None:
+        return None
+    action = record['actions'][-1]
+    if (not action.get('resolved') or action.get('resolution') != 'completed' or record.get('revoked') or
+            state.get('stop_requested') or state['status'] in {'pausing', 'paused', 'cancelling', 'cancelled'}):
+        return {'operation': 'lookup-exact-native-action', 'action': copy.deepcopy(action)}
+    return {'operation': 'lifecycle-query' if state.get('lifecycle_snapshot') is None else 'reconcile-stop-barrier',
+            'ref': record['ref'], 'action_id': action['action_id'], 'prepare': copy.deepcopy(record['prepare'])}
+
+
 def _view(state, next_action=None, acknowledged=False, *, verified_readiness=None):
     if state.get("business_block") and state["status"] == "blocked" and (next_action or {}).get('operation') not in {
             'invoke-recovery-host', 'lookup-recovery-host', 'activate-dispatch-recovery', 'prepare-dispatch-recovery', 'control-effects', 'await-host-recovery'}:
@@ -653,6 +729,8 @@ def _view(state, next_action=None, acknowledged=False, *, verified_readiness=Non
         next_action = {"operation": "publication", "data": data}
     if next_action is None and state["step"] == "publication-complete":
         next_action = {"operation": "receive-publication", "data": {}}
+    if next_action is None:
+        next_action = native_finalization_action(state)
     readiness = (verified_readiness if verified_readiness is not None else
         scope_readiness(state, state.get("checkpoint_path"))
         if state.get("stage") == 2 and state.get("status") == "accepted" else None)
@@ -782,6 +860,10 @@ class Progress:
         """Derive writer closure from the existing roles and invocation journal."""
         s = self.state
         pending = []
+        for record in s.get('native_finalizations', []):
+            for action in record['actions']:
+                if not action.get('resolved'):
+                    pending.append({'kind': 'native-finalization-action', 'ref': record['ref'], 'action_id': action['action_id']})
         recovery = (s.get('control', {}).get('context', {}).get('handoff_progress') or {}).get('recovery')
         if recovery and recovery['state'] in {'dispatch-pending', 'dispatch-unknown'}:
             pending.append({'kind':'replacement-call', 'intent_id':recovery['intent']['intent_id']})
@@ -892,7 +974,9 @@ class Progress:
             'host', 'host_action', 'retained_host_actions', 'allocations', 'review_activity',
             'review_history', 'native_adverse', 'prior_carrier_activity')} | {
                 'refs': sorted(self.native_refs()),
-                'executions': (selected.get('handoff_progress') or {}).get('executions', [])})
+                'executions': (selected.get('handoff_progress') or {}).get('executions', []),
+                'native_finalizations': [{key: record.get(key) for key in ('ref', 'thread_id', 'actions', 'revoked')}
+                                         for record in s.get('native_finalizations', [])]})
 
     def collaboration_pending(self):
         s = self.state
@@ -903,7 +987,200 @@ class Progress:
             return [{'kind': 'current-descendants-stale'}]
         expected = set(s['native_host']['baseline_refs']) | self.native_refs()
         expected.update(ref for old in s.get('history', []) for ref in self.native_refs(old))
-        return collaboration_inventory_pending(snapshot['inventory'], expected)
+        return collaboration_inventory_pending(snapshot['inventory'], expected, self.closed_native_refs())
+
+    def closed_native_refs(self):
+        return {record['ref'] for record in self.state.get('native_finalizations', [])
+                if record.get('verified') and not record.get('revoked')}
+
+    def require_finalizations_released(self):
+        require(all(record.get('verified') and not record.get('revoked') for record in self.state.get('native_finalizations', [])),
+                'host_action_pending', 'finish the existing native finalization before creating another native role')
+
+    def finalization_owner(self, ref):
+        """Acceptance stays in B/control; lifecycle evidence grants no role."""
+        require(ref in self.native_refs() or any(ref in self.native_refs(old) for old in self.state.get('history', [])),
+                'identity_mismatch', 'finalize only a registered workflow native identity')
+        for saved in [self.state, *reversed(self.state.get('history', []))]:
+            accepted = saved.get('accepted')
+            if accepted and accepted['role_ref'] == ref and saved.get('host', {}).get('status') == 'stopped':
+                return saved['handoff']['controller_ref'], accepted['digest']
+            for slot in saved.get('allocations', {}).values():
+                record = slot.get('record') or {}
+                accepted = record.get('acceptance')
+                if accepted and accepted['role_ref'] == ref and record['status'] == 'accepted':
+                    return slot['owner_ref'], accepted['digest']
+            checkpoint = saved.get('control', {}).get('context', {}).get('handoff_progress') or {}
+            for group in [saved.get('review_activity', {}), *saved.get('review_history', [])]:
+                for slot in group.values():
+                    if slot and slot.get('ref') == ref and slot.get('stopped') and checkpoint.get('state') in {
+                            'final-validation-pending', 'validating', 'final-validation-failed', 'deliverable', 'completed'}:
+                        return slot['originating_ref'], entry.digest(slot['receipts'])
+        raise entry.PreparationError('result_incomplete', 'native finalization requires authoritative stopped and accepted business work')
+
+    def finalization_snapshot(self):
+        snapshot = self.state.get('lifecycle_snapshot')
+        require(snapshot is not None, 'host_evidence_missing', 'obtain a fresh whole-tree lookup before native finalization')
+        require(snapshot.get('guard') == self.collaboration_guard(), 'host_evidence_missing', 'native inventory is stale')
+        return collaboration_inventory(snapshot['inventory'])
+
+    def finalization_stopped(self, record):
+        agents = self.finalization_snapshot()
+        refs = self.native_refs() | set().union(*(self.native_refs(old) for old in self.state.get('history', [])))
+        require(set(agents) - {self.state['native_host']['controller_ref']} <= refs | set(self.state['native_host']['baseline_refs']),
+                'host_evidence_missing', 'unknown native identities must be reconciled before finalization')
+        descendants = {ref for ref in agents if ref == record['ref'] or ref.startswith(record['ref'] + '/')}
+        require(descendants <= refs and record['ref'] in descendants and
+                all(isinstance(agents[ref], dict) and set(agents[ref]) == {'completed'} for ref in descendants),
+                'host_evidence_missing', 'target and every registered descendant must have stopped; unknown descendants block closure')
+        targets = {ref for ref in refs if ref == record['ref'] or ref.startswith(record['ref'] + '/')}
+        host_calls = [action for action in self.unresolved_host_actions()
+                      if action['payload'].get('ref', self.bound_ref()) in targets]
+        transactions = [transaction for transaction in self.state.get('control_transactions', {}).values()
+                        if transaction.get('result') is None and (self.bound_ref() in targets or
+                           any(value in targets for key, value in transaction['request'].get('evidence', {}).items()
+                               if key in {'ref', 'agent_ref', 'dispatcher_ref'} and isinstance(value, str)))]
+        allocations = [slot for slot in self.state.get('allocations', {}).values() if slot.get('transaction') and
+                       (slot['owner_ref'] in targets or any(receipt.get('ref') in targets
+                        for receipt in (slot.get('record') or {}).get('receipts', [])))]
+        require(not host_calls and not transactions and not allocations,
+                'host_action_pending', 'reconcile the target and descendant original calls before native finalization')
+
+    def verify_native_finalizations(self, agents, evidence):
+        for record in self.state.get('native_finalizations', []):
+            close = next((action for action in record['actions'] if action['operation'] == 'close-native'), None)
+            if close is None or not close.get('resolved') or close.get('resolution') != 'completed':
+                continue
+            descendants = {ref for ref in agents if ref.startswith(record['ref'] + '/')}
+            inactive = record['ref'] not in agents and not descendants
+            active = any(not (isinstance(agents[ref], dict) and set(agents[ref]) == {'completed'})
+                         for ref in descendants | ({record['ref']} & set(agents)))
+            if active or record.get('verified') and not inactive:
+                record['revoked'] = copy.deepcopy(evidence)
+            if inactive and not record.get('revoked'):
+                record['verified'] = copy.deepcopy(evidence)
+
+    def native_finalize(self, data):
+        entry.fields(data, {'operation', 'ref'}, {'actor_ref', 'reference', 'reuse', 'binding', 'close', 'action_id', 'receipt'})
+        entry.nonempty(data['ref'])
+        s = self.state
+        require(s.get('native_host', {}).get('adapter') == 'collaboration', 'host_capability_missing',
+                'native finalization currently requires the verified collaboration and desktop host capabilities')
+        records = s.setdefault('native_finalizations', [])
+        record = next((item for item in records if item['ref'] == data['ref']), None)
+        if data['operation'] == 'prepare':
+            entry.fields(data, {'operation', 'ref', 'actor_ref', 'reference', 'reuse', 'binding', 'close'})
+            self.require_not_stopping()
+            owner, delivery = self.finalization_owner(data['ref'])
+            require(data['actor_ref'] == owner and data['reuse'] is False, 'authority_missing',
+                    'the original business owner must retire this identity from all future reuse')
+            entry.nonempty(data['reference'])
+            if record is not None:
+                require(record['prepare'] == data and record['delivery_digest'] == delivery,
+                        'finalization_conflict', 'retain the original identity, business acceptance and no-reuse decision')
+                if record.get('verified') and not record.get('revoked'):
+                    return _view(s, acknowledged=True)
+                action = record['actions'][-1]
+                if not action.get('resolved') or action.get('resolution') != 'completed' or record.get('revoked'):
+                    return _view(s, {'operation': 'lookup-exact-native-action', 'action': action}, acknowledged=True)
+                if action['operation'] == 'close-native':
+                    return _view(s, {'operation': 'reconcile-stop-barrier', 'ref': record['ref']}, acknowledged=True)
+                self.finalization_stopped(record)
+                require(not any(ref.startswith(record['ref'] + '/') for ref in
+                            (self.native_refs() | set().union(*(self.native_refs(old) for old in s.get('history', [])))) - self.closed_native_refs()),
+                        'host_evidence_missing', 'finalize and verify registered descendants before closing their parent')
+                action = {'action_id': str(uuid.uuid4()), 'operation': 'close-native', 'payload': {
+                    'ref': record['ref'], 'thread_id': record['thread_id'], **copy.deepcopy(data['close'])}, 'checkpoint': str(self.path)}
+            else:
+                binding = data['binding']
+                entry.fields(binding, {'call_ref', 'response_ref', 'raw'})
+                entry.nonempty(binding['call_ref']); entry.nonempty(binding['response_ref'])
+                raw = native_raw_object(binding['raw'])
+                require(isinstance(raw.get('thread'), dict) and isinstance(raw.get('turns'), list) and
+                        all(isinstance(turn, dict) and isinstance(turn.get('items'), list) and
+                            all(isinstance(item, dict) for item in turn['items']) for turn in raw['turns']),
+                        'host_evidence_missing', 'retain the parent readback thread, turns and native item objects')
+                entry.nonempty(raw['thread'].get('id')); entry.nonempty(raw['thread'].get('hostId'))
+                require(all(isinstance(item.get('agentThreadId'), str) and item['agentThreadId'] for turn in raw['turns']
+                        for item in turn['items'] if item.get('type') == 'subAgentActivity' and item.get('agentPath') == data['ref']),
+                        'identity_mismatch', 'native event thread identities must be nonempty strings')
+                identities = {item['agentThreadId'] for turn in raw.get('turns', []) for item in turn.get('items', [])
+                              if item.get('type') == 'subAgentActivity' and item.get('agentPath') == data['ref'] and item.get('agentThreadId')}
+                require(len(identities) == 1 and all(isinstance(identity, str) and identity for identity in identities),
+                        'identity_mismatch', 'retain the actual parent native event binding the canonical ref to its exact thread ID')
+                thread = next(iter(identities))
+                validate_native_close(data['close'], data['ref'], thread)
+                require(data['close']['request']['arguments']['hostId'] == raw['thread']['hostId'],
+                        'identity_mismatch', 'close must retain the actual parent native host')
+                record = {'ref': data['ref'], 'thread_id': thread, 'prepare': copy.deepcopy(data),
+                          'delivery_digest': delivery, 'actions': [], 'receipts': []}
+                self.finalization_stopped(record)
+                identity = str(uuid.uuid4())
+                action = {'action_id': identity, 'operation': 'finish-native', 'payload': {
+                    'ref': record['ref'], 'thread_id': thread, 'read_only': True,
+                    'message': 'Read-only finalization. Consume queued mailbox messages, preserve the accepted business delivery and all commits/tests. '
+                               'Stop commands and descendants. Return one terminal final answer: NATIVE_FINISHED action_id=' + identity +
+                               ' mailbox=consumed business_result=unchanged commands=stopped. Do not send an acknowledgement back or resume business work.'},
+                          'checkpoint': str(self.path)}
+                records.append(record)
+            record['actions'].append(action)
+            s['lifecycle_snapshot'] = None
+            s.pop('lifecycle_query', None)
+            self.save()
+            return _view(s, action)
+        require(record is not None, 'identity_mismatch', 'look up only the exact saved native finalization')
+        if data['operation'] == 'lookup':
+            entry.fields(data, {'operation', 'ref'})
+            return _view(s, {'operation': 'lookup-exact-native-action', 'action': record['actions'][-1]})
+        entry.fields(data, {'operation', 'ref', 'action_id', 'receipt'})
+        require(data['operation'] == 'observe', 'invalid_operation', 'unknown native finalization operation')
+        action = next((item for item in record['actions'] if item['action_id'] == data['action_id']), None)
+        require(action is not None, 'identity_mismatch', 'receipt must name the original exact native action')
+        receipt = data['receipt']
+        entry.fields(receipt, {'adapter', 'call_ref', 'response_ref', 'status', 'ref', 'raw'})
+        for key in ('adapter', 'call_ref', 'response_ref'): entry.nonempty(receipt[key])
+        require(isinstance(receipt['raw'], dict) and receipt['raw'], 'host_evidence_missing', 'retain the raw authenticated native response')
+        require(receipt['ref'] == record['ref'] and receipt['status'] in {'completed', 'unknown', 'failed'},
+                'identity_mismatch', 'retain the exact target and authenticated native outcome')
+        require(receipt['adapter'] == record['prepare']['close']['adapter'],
+                'identity_mismatch', 'finish and close evidence must retain the original desktop adapter')
+        for previous_record in records:
+            for previous in previous_record['receipts']:
+                if previous['receipt']['call_ref'] == receipt['call_ref']:
+                    require(previous['action_id'] == data['action_id'] and previous['ref'] == data['ref'],
+                            'host_provenance_conflict', 'native invocation cannot be rebound to another action')
+                if previous['receipt']['response_ref'] == receipt['response_ref']:
+                    require(previous == data, 'host_provenance_conflict', 'native response cannot be rebound or changed')
+                    return _view(s, acknowledged=True)
+        require(not action.get('resolved'), 'finalization_conflict', 'a resolved native action cannot acquire another outcome')
+        if receipt['status'] == 'completed':
+            raw = native_raw_object(receipt['raw'])
+            if action['operation'] == 'finish-native':
+                turns = raw.get('turns', [])
+                require(isinstance(raw.get('thread'), dict) and isinstance(turns, list) and turns and
+                        isinstance(turns[0], dict) and isinstance(turns[0].get('items'), list) and
+                        all(isinstance(item, dict) for item in turns[0]['items']),
+                        'host_evidence_missing', 'current thread, completed turn and final item objects are required')
+                require(raw['thread'].get('id') == record['thread_id'] and
+                        raw['thread'].get('hostId') == record['prepare']['close']['request']['arguments']['hostId'] and
+                        raw['thread'].get('status') == {'type': 'idle'} and turns and turns[0].get('status') == 'completed' and
+                        any(item.get('type') == 'agentMessage' and item.get('phase') == 'final_answer' and
+                            isinstance(item.get('text'), str) and
+                            'NATIVE_FINISHED action_id=' + action['action_id'] in item.get('text', '') and
+                            all(marker in item['text'] for marker in ('mailbox=consumed', 'business_result=unchanged', 'commands=stopped'))
+                            for item in turns[0].get('items', [])),
+                        'host_evidence_missing', 'current exact-thread lookup must contain the correlated completed finish turn')
+            else:
+                require(receipt['adapter'] == action['payload']['adapter'], 'identity_mismatch', 'retain the original close adapter')
+                validate_native_close_result(action['payload'], raw)
+            action['resolved'], action['resolution'] = True, 'completed'
+        elif receipt['status'] == 'failed':
+            action['resolved'], action['resolution'] = True, 'failed'
+        record['receipts'].append(copy.deepcopy(data))
+        s['lifecycle_snapshot'] = None
+        s.pop('lifecycle_query', None)
+        self.save()
+        return _view(s, {'operation': 'reconcile-stop-barrier', 'ref': record['ref']})
 
     def lifecycle_query(self, data):
         entry.fields(data, set())
@@ -935,7 +1212,10 @@ class Progress:
         entry.fields(data, {'query_id', 'call_ref', 'response_ref', 'inventory'})
         for key in ('query_id', 'call_ref', 'response_ref'):
             entry.nonempty(data[key])
-        collaboration_inventory(data['inventory'])
+        agents = collaboration_inventory(data['inventory'])
+        for record in s.get('native_finalizations', []):
+            if record.get('verified') and any(ref == record['ref'] or ref.startswith(record['ref'] + '/') for ref in agents):
+                record['revoked'] = copy.deepcopy(data)
         require(data['inventory']['controller_ref'] == s['native_host']['controller_ref'],
                 'identity_mismatch', 'retain the original controller agent path')
         # Trusted ingress authenticates these actual tool identities. Never
@@ -954,6 +1234,7 @@ class Progress:
                 'host_evidence_missing', 'obtain a new inventory after native activity or changed writer bindings')
         s['lifecycle_snapshot'] = {**copy.deepcopy(data), 'guard': query['guard'],
                                    'instance': s['native_host']['instance']}
+        self.verify_native_finalizations(collaboration_inventory(data['inventory']), data)
         self.save()
         return self.finish_lifecycle(advance)
 
@@ -987,6 +1268,10 @@ class Progress:
         validate_native_event(event)
         item = event['params']['item']
         carrier = data.get('carrier_thread')
+        if event['method'] == 'item/started' and item.get('kind') in {'started', 'interacted'}:
+            for record in self.state.get('native_finalizations', []):
+                if item.get('agentPath') == record['ref'] or item.get('agentThreadId') == record['thread_id']:
+                    record['revoked'] = copy.deepcopy(data)
         if carrier is not None and carrier != self.outer.get('sessions', {}).get('stage' + str(self.state['stage'])):
             require(carrier in self.outer.get('sessions', {}).values(), 'identity_mismatch', 'event must retain a known original carrier')
             self.state['observations'].append({'native_event':copy.deepcopy(data)})
@@ -1119,6 +1404,8 @@ class Progress:
         if operation in {"invoke-host", "continue-host", "source-lifecycle", "carrier-lifecycle"}:
             self.require_not_stopping()
         if operation == "continue-host":
+            require(not any(record['ref'] == self.bound_ref() for record in self.state.get('native_finalizations', [])),
+                    'identity_retired', 'the original owner retired this native identity from future reuse')
             blocked = self.continuation_gate()
             if blocked is not None:
                 return blocked
@@ -1176,6 +1463,7 @@ class Progress:
         if old is not None:
             validate_state(old)
             self.require_controls_reconciled()
+            self.require_finalizations_released()
             require(old.get('transport_loss') is None, 'host_recovery_required', 'retain the original foreground host recovery point')
             require(old["status"] == "accepted" or retry, "run_active", "finish the current stage or reconcile non-creation before a new attempt")
             if not retry:
@@ -1247,7 +1535,7 @@ class Progress:
                     native_host['baseline_refs'] = (old['native_host']['baseline_refs'] if old and
                         old.get('native_host', {}).get('adapter') == 'collaboration' else sorted(actual))
                     require(not collaboration_inventory_pending(data['native_host'],
-                            expected | historical | set(native_host['baseline_refs'])),
+                            expected | historical | set(native_host['baseline_refs']), self.closed_native_refs() if old else ()),
                             'host_evidence_missing', 'reconcile existing native agents before starting this stage')
             elif transport.get('state') == 'live' and transport.get('instance'):
                 native_host = {'adapter': 'app-server', 'instance': transport['instance']}
@@ -1344,6 +1632,7 @@ class Progress:
             "events": {}, "observations": [], "transaction": None, "transaction_source": None,
             "transaction_result": None, "stopped": False,
             "retained_host_actions": [],
+            "native_finalizations": copy.deepcopy(old.get('native_finalizations', []) if old else []),
             "native_host": native_host,
             "workspace_evidence": selection,
             "host_preflight": copy.deepcopy(data.get('native_host')),
@@ -1934,6 +2223,8 @@ class Progress:
         candidates = [item for item in s['history'] if item['stage'] == 3 and item.get('accepted') == predecessor]
         require(bool(candidates), 'recovery_missing', 'retain the original accepted Stage-3 checkpoint')
         old = copy.deepcopy(candidates[-1])
+        require(not any(record['ref'] == old['accepted']['role_ref'] for record in s.get('native_finalizations', [])),
+                'identity_retired', 'implementation recovery requires the original reusable native identity')
         require(old['handoff']['binding'] == s['handoff']['binding'] and old['stopped'] and
                 old['accepted']['role_ref'] == s['recovery_action']['ref'],
                 'binding_changed', 'recovery must retain original stopped implementation and worktree')
@@ -1966,6 +2257,7 @@ class Progress:
         record.update(handoff=restored['handoff'], request=handoff.seal(launch), status='bound', delivery=None, acceptance=None, receipts=[])
         restored['dispatch'] = handoff.seal(record)
         restored['native_host'] = copy.deepcopy(s['native_host'])
+        restored['native_finalizations'] = copy.deepcopy(s.get('native_finalizations', []))
         restored['control']['context']['retired_handoffs'] = copy.deepcopy(s['control']['context'].get('retired_handoffs', {}))
         checkpoint = restored['control']['context']['handoff_progress']
         checkpoint.setdefault('validation_history', []).append({k:copy.deepcopy(checkpoint[k]) for k in
@@ -2084,6 +2376,8 @@ class Progress:
         intent = self.stop_intent()
         if intent is not None:
             return self.advance_stop(intent)
+        if native_finalization_action(s) is not None:
+            return _view(s, native_finalization_action(s))
         if (s.get("scope_revision_transaction") or {}).get("state") not in (None,):
             return self.scope_revise(s["scope_revision_transaction"]["input"])
         if s.get('deferred_validation') is not None:
@@ -3285,6 +3579,7 @@ class Progress:
 
     def require_allocation_active(self):
         self.require_not_stopping()
+        self.require_finalizations_released()
 
     def review_activity(self, data):
         """Two fixed review slots; allocation and candidate acceptance stay in B."""
@@ -3308,6 +3603,7 @@ class Progress:
             entry.fields(data, {'operation','axis','candidate','actor_ref','verification'})
             self.require_not_stopping()
             self.require_business_ready()
+            self.require_finalizations_released()
             control.validate_reviewable(s['control']['context']['handoff_progress'], data['candidate'], data['verification'])
             binding, scope = s['handoff']['binding'], s['handoff']['scope']
             observed = supervision.verify_worktree({'binding':binding,'platform_cwd':binding['worktree']})
@@ -3785,7 +4081,8 @@ def handle(path, request):
             return _view(owner.state)
         # Exact duplicate observations/decisions may ACK even with an old revision.
         data = request.get("data", {})
-        duplicate = owner.state is not None and ((operation == "observe" and
+        duplicate = owner.state is not None and ((operation == 'native-finalize' and any(
+            record.get('prepare') == data or data in record['receipts'] for record in owner.state.get('native_finalizations', []))) or (operation == "observe" and
             owner.state["events"].get(data.get("event_id"), {}).get("applied")) or
             (operation == "scope-propose" and data.get("proposal_id") in owner.state.get("scope_proposals", {})) or
             (operation == "scope-seal" and data.get("proposal_id") in owner.state.get("scope_seals", {})) or
@@ -3830,6 +4127,7 @@ def handle(path, request):
             if operation == 'review-activity': return owner.review_activity(data)
             if operation == 'lifecycle-state': return owner.lifecycle_state(data)
             if operation == 'lifecycle-query': return owner.lifecycle_query(data)
+            if operation == 'native-finalize': return owner.native_finalize(data)
             if operation == 'host-event': return owner.host_event(data)
             if operation == 'transport-lost': return owner.transport_lost(data)
             if operation == 'carrier-failure': return owner.carrier_failure(data)
@@ -3838,6 +4136,8 @@ def handle(path, request):
             if operation == "resume": return owner.resume()
             raise entry.PreparationError("invalid_operation", "unknown progression operation")
         except entry.ERROR_TYPES + (control.ControlError,) as error:
+            if operation == 'native-finalize':
+                raise
             if (operation in {"scope-propose", "scope-seal", "scope-revise"} or
                     getattr(error, "code", None) in {"scope_revision_pending", "scope_conflict", "stale_scope_revision"}):
                 raise

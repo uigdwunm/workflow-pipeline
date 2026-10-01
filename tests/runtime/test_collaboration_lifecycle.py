@@ -1,4 +1,7 @@
 """Interactive tool receipts through C/B and real temporary Git publication."""
+import copy
+import json
+import hashlib
 import sys
 import unittest
 from pathlib import Path
@@ -51,6 +54,309 @@ class CollaborationLifecycleTests(unittest.TestCase):
         action = f.invoke('lifecycle-query')['next_action']
         return {'query_id': action['query_id'], 'call_ref': 'call:' + action['query_id'],
                 'response_ref': 'response:' + action['query_id'], 'inventory': inventory or self.inventory()}
+
+    def finalization(self, ref='/root/designer', thread='designer-thread'):
+        return {'operation': 'prepare', 'ref': ref, 'actor_ref': 'task',
+            'reference': 'controller:no-further-reuse', 'reuse': False,
+            'binding': {'call_ref': 'parent-read', 'response_ref': 'parent-response',
+                'raw': {'thread': {'id': 'task', 'hostId': 'local'}, 'turns': [{'items': [
+                    {'type': 'subAgentActivity', 'agentPath': ref, 'agentThreadId': thread}]}]}},
+            'close': {'adapter': 'codex-desktop', 'request': {
+                'tool': 'mcp__codex_app__set_thread_archived',
+                'arguments': {'threadId': thread, 'hostId': 'local', 'archived': True}}}}
+
+    def finalize_observation(self, action, status='completed'):
+        ref, thread = action['payload']['ref'], action['payload']['thread_id']
+        if action['operation'] == 'finish-native':
+            raw = {'content': [{'type': 'text', 'text': json.dumps({
+                'schemaVersion': 1, 'thread': {'id': thread, 'hostId': 'local', 'status': {'type': 'idle'}},
+                'turns': [{'id': 'finish-turn', 'status': 'completed', 'items': [{
+                    'type': 'agentMessage', 'phase': 'final_answer',
+                    'text': 'NATIVE_FINISHED action_id=' + action['action_id'] + ' mailbox=consumed business_result=unchanged commands=stopped'}]}]})}], 'isError': False}
+        else:
+            raw = {'content': [{'type': 'text', 'text': json.dumps({'threadId': thread, 'archived': True})}], 'isError': False}
+        return {'operation': 'observe', 'ref': ref, 'action_id': action['action_id'],
+            'receipt': {'adapter': action['payload'].get('adapter', 'codex-desktop'),
+                'call_ref': 'call:' + action['action_id'], 'response_ref': 'response:' + action['action_id'] + ':' + status,
+                'status': status, 'ref': ref, 'raw': raw}}
+
+    def accepted_execution(self):
+        f = self.f
+        request = f.input_for(3)
+        request['authorization']['flow_mode'] = 'continuous'
+        f.context = f.context_for(3)
+        f.invoke('start', {'handoff': request, 'control': {'context': f.context, 'discussion': None},
+            'native_host': self.inventory([{'agent_name': '/root', 'agent_status': 'running'}])})
+        f.invoke('observe', f.observation(ref='/root/dispatcher'))
+        execution = self.execution_handoff()
+        f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'prepare', 'handoff': execution})
+        slot = f.state()['allocations']['first-slice']
+        f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'bind',
+            'receipt': f.receipt(slot['record'], ref='/root/dispatcher/executor')})
+        data = b"print('accepted first slice')\n"
+        (f.flow / 'impl.py').write_bytes(data)
+        slot = f.state()['allocations']['first-slice']
+        f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'receive',
+            'receipt': f.receipt(slot['record'], 'stopped', 'result', ref='/root/dispatcher/executor'),
+            'result': {'delivery_id': 'first-slice', 'status': 'completed', 'payload': {
+                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
+                'tests': ['real first-slice bytes verified'],
+                'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record'])}}})
+        f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:accept-first-slice'}})
+        f.invoke('observe', f.observation('running', 'result', ref='/root/dispatcher'))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+
+    def execution_handoff(self):
+        f = self.f
+        execution = f.execution_input()
+        f.request['host']['actor_ref'] = '/root/dispatcher'
+        execution['entry']['host']['actor_ref'] = '/root/dispatcher'
+        execution['expected_entry'] = progress.entry.resolve(execution['entry'])
+        return execution
+
+    def execution_inventory(self, executor=True):
+        agents = [{'agent_name': '/root', 'agent_status': 'running'},
+                  {'agent_name': '/root/dispatcher', 'agent_status': 'running'}]
+        if executor:
+            agents.append({'agent_name': '/root/dispatcher/executor', 'agent_status': {'completed': 'accepted first slice'}})
+        return self.inventory(agents)
+
+    def test_running_dispatcher_releases_accepted_execution_before_next_slice(self):
+        f = self.f
+        self.accepted_execution()
+        before = copy.deepcopy(f.state()['allocations']['first-slice']['record'])
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        finish = f.invoke('native-finalize', request)['next_action']
+        self.assertEqual(finish['operation'], 'finish-native')
+        f.invoke('native-finalize', self.finalize_observation(finish))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        close = f.invoke('native-finalize', request)['next_action']
+        self.assertEqual(close['operation'], 'close-native')
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        self.assertEqual(f.state()['host']['status'], 'running')
+        self.assertEqual(f.state()['allocations']['first-slice']['record'], before)
+        f.flow_git('add', 'impl.py')
+        f.flow_git('commit', '-qm', 'integrate accepted first slice')
+        result = f.invoke('allocation', {'allocation_id': 'next-slice', 'operation': 'prepare', 'handoff': self.execution_handoff()})
+        self.assertEqual((result['next_action'] or {}).get('operation'), 'invoke-host', result)
+
+    def finish_execution(self):
+        self.accepted_execution()
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        finish = self.f.invoke('native-finalize', request)['next_action']
+        self.f.invoke('native-finalize', self.finalize_observation(finish))
+        self.f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        close = self.f.invoke('native-finalize', request)['next_action']
+        return request, finish, close
+
+    def test_unknown_finish_and_close_receipts_query_original_actions_and_ack_replays(self):
+        f = self.f
+        self.accepted_execution()
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        finish = f.invoke('native-finalize', request)['next_action']
+        unknown = self.finalize_observation(finish, 'unknown')
+        revision = f.state()['revision']
+        f.invoke('native-finalize', unknown)
+        self.assertTrue(f.invoke('native-finalize', unknown, revision=revision)['acknowledged'])
+        lookup = f.invoke('native-finalize', request)['next_action']
+        self.assertEqual(lookup['action']['action_id'], finish['action_id'])
+        self.assertEqual(len(f.state()['native_finalizations'][0]['actions']), 1)
+        f.invoke('native-finalize', self.finalize_observation(finish))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        close = f.invoke('native-finalize', request)['next_action']
+        f.invoke('native-finalize', self.finalize_observation(close, 'unknown'))
+        lookup = f.invoke('native-finalize', {'operation': 'lookup', 'ref': request['ref']})['next_action']
+        self.assertEqual(lookup['action']['action_id'], close['action_id'])
+        # Missing in an inventory cannot settle a lost close receipt.
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        self.assertFalse(f.state()['native_finalizations'][0].get('verified'))
+        f.invoke('native-finalize', self.finalize_observation(close))
+        again = f.invoke('native-finalize', request)['next_action']
+        self.assertEqual(again['operation'], 'reconcile-stop-barrier')
+        self.assertEqual(len(f.state()['native_finalizations'][0]['actions']), 2)
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        self.assertTrue(f.state()['native_finalizations'][0]['verified'])
+
+    def test_finish_requires_real_binding_owner_capability_and_stopped_known_subtree(self):
+        f = self.f
+        self.accepted_execution()
+        valid = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        valid['actor_ref'] = '/root/dispatcher'
+        before = f.checkpoint.read_bytes()
+        mutations = [lambda data: data.update(ref='/root/unknown'),
+                     lambda data: data.update(actor_ref='other-parent'),
+                     lambda data: data.update(reuse=True),
+                     lambda data: data['close'].update(adapter='unavailable'),
+                     lambda data: data['close']['request']['arguments'].update(threadId='wrong-thread'),
+                     lambda data: data['close']['request']['arguments'].update(hostId='wrong-host'),
+                     lambda data: data['binding'].update(raw={'business_payload': {'type': 'subAgentActivity',
+                         'agentPath': valid['ref'], 'agentThreadId': 'executor-thread'}})]
+        for mutate in mutations:
+            data = copy.deepcopy(valid)
+            mutate(data)
+            with self.subTest(data=data), self.assertRaises(progress.entry.PreparationError):
+                f.invoke('native-finalize', data)
+            self.assertEqual(f.checkpoint.read_bytes(), before)
+        for ref, status in ((valid['ref'] + '/late-child', 'running'), ('/root/unknown', {'completed': 'unknown'})):
+            agents = self.execution_inventory()['response']['agents'] + [{'agent_name': ref, 'agent_status': status}]
+            f.invoke('lifecycle-state', self.snapshot(self.inventory(agents)))
+            with self.subTest(ref=ref), self.assertRaises(progress.entry.PreparationError):
+                f.invoke('native-finalize', valid)
+        self.assertFalse(f.state().get('native_finalizations'))
+
+    def test_wrong_or_stale_finish_receipt_and_cross_action_call_identity_reject(self):
+        f = self.f
+        self.accepted_execution()
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        finish = f.invoke('native-finalize', request)['next_action']
+        valid = self.finalize_observation(finish)
+        for mutation in ('ref', 'action', 'thread', 'latest-turn', 'content-type', 'thread-type', 'turns-type', 'items-type', 'text-type'):
+            data = copy.deepcopy(valid)
+            if mutation == 'ref': data['receipt']['ref'] = '/root/wrong'
+            elif mutation == 'action': data['action_id'] = 'other-action'
+            elif mutation == 'content-type':
+                data['receipt']['raw']['content'] = None
+            else:
+                raw = json.loads(data['receipt']['raw']['content'][0]['text'])
+                if mutation == 'thread': raw['thread']['id'] = 'other-thread'
+                elif mutation == 'latest-turn': raw['turns'].insert(0, {'status': 'completed', 'items': []})
+                elif mutation == 'thread-type': raw['thread'] = None
+                elif mutation == 'turns-type': raw['turns'] = 'invalid'
+                elif mutation == 'items-type': raw['turns'][0]['items'] = None
+                else: raw['turns'][0]['items'][0]['text'] = 42
+                data['receipt']['raw']['content'][0]['text'] = json.dumps(raw)
+            with self.subTest(mutation=mutation), self.assertRaises(progress.entry.PreparationError):
+                f.invoke('native-finalize', data)
+        f.invoke('native-finalize', valid)
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        close = f.invoke('native-finalize', request)['next_action']
+        conflict = self.finalize_observation(close)
+        conflict['receipt']['call_ref'] = valid['receipt']['call_ref']
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            f.invoke('native-finalize', conflict)
+        self.assertEqual(error.exception.code, 'host_provenance_conflict')
+
+    def test_archive_success_old_query_and_resident_descendant_do_not_release_slot(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        before_close = self.snapshot(self.execution_inventory(False))
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', before_close)
+        self.assertFalse(f.state()['native_finalizations'][0].get('verified'))
+        active_child = self.execution_inventory(False)['response']['agents'] + [
+            {'agent_name': request['ref'] + '/child', 'agent_status': 'running'}]
+        f.invoke('lifecycle-state', self.snapshot(self.inventory(active_child)))
+        self.assertFalse(f.state()['native_finalizations'][0].get('verified'))
+        blocked = f.invoke('allocation', {'allocation_id': 'blocked-slice', 'operation': 'prepare', 'handoff': self.execution_handoff()})
+        self.assertEqual(blocked['error']['code'], 'host_action_pending')
+
+    def test_reappearing_closed_identity_revokes_release_and_pause_cancel_precede_new_effects(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        self.assertEqual(f.invoke('native-finalize', request)['next_action']['operation'], 'lookup-exact-native-action')
+        f.invoke('pause')
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            f.invoke('native-finalize', request)
+        self.assertEqual(error.exception.code, 'progression_suspended')
+
+    def test_pause_during_finish_reconciles_stopped_turn_without_issuing_close(self):
+        f = self.f
+        self.accepted_execution()
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        finish = f.invoke('native-finalize', request)['next_action']
+        f.invoke('pause')
+        root_stop = f.observation('stopped', 'result', ref='/root/dispatcher')
+        root_stop.pop('lifecycle')
+        f.invoke('observe', root_stop)
+        f.invoke('native-finalize', self.finalize_observation(finish))
+        agents = self.execution_inventory()['response']['agents']
+        agents[1]['agent_status'] = {'completed': 'dispatcher paused'}
+        paused = f.invoke('lifecycle-state', self.snapshot(self.inventory(agents)))
+        self.assertEqual(paused['status'], 'paused', paused)
+        self.assertEqual(len(f.state()['native_finalizations'][0]['actions']), 1)
+        self.assertEqual(paused['next_action']['operation'], 'lookup-exact-native-action')
+        self.assertEqual(paused['next_action']['action']['action_id'], finish['action_id'])
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            f.invoke('native-finalize', request)
+        self.assertEqual(error.exception.code, 'progression_suspended')
+        f.invoke('cancel')
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            f.invoke('native-finalize', request)
+        self.assertEqual(error.exception.code, 'progression_suspended')
+
+    def test_lost_finish_prepare_response_is_visible_through_inspect_and_advance(self):
+        f = self.f
+        self.accepted_execution()
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        finish = f.invoke('native-finalize', request)['next_action']
+        before = f.checkpoint.read_bytes()
+        for operation in ('inspect', 'advance'):
+            observed = f.invoke(operation)['next_action']
+            self.assertEqual(observed['operation'], 'lookup-exact-native-action')
+            self.assertEqual(observed['action']['action_id'], finish['action_id'])
+        self.assertEqual(f.checkpoint.read_bytes(), before)
+
+    def test_late_running_inventory_revokes_closed_proof_before_stale_query_rejection(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        agents = self.execution_inventory()['response']['agents']
+        agents[-1]['agent_status'] = 'running'
+        late = self.snapshot(self.inventory(agents))
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        self.assertTrue(f.state()['native_finalizations'][0]['verified'])
+        rejected = f.invoke('lifecycle-state', late)
+        self.assertEqual(rejected['error']['code'], 'host_evidence_missing')
+        self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        lookup = f.invoke('native-finalize', request)['next_action']
+        self.assertEqual(lookup['operation'], 'lookup-exact-native-action')
+        self.assertEqual(lookup['action']['action_id'], close['action_id'])
+        blocked = f.invoke('allocation', {'allocation_id': 'after-late-activity', 'operation': 'prepare', 'handoff': self.execution_handoff()})
+        self.assertEqual(blocked['error']['code'], 'host_action_pending')
+
+    def test_accepted_carrier_delivery_finishes_queued_ack_closes_and_allows_successor(self):
+        f = self.f
+        f.input['authorization']['flow_mode'] = 'continuous'
+        self.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        before = copy.deepcopy({key: f.state()[key] for key in ('dispatch', 'accepted', 'control')})
+        request = self.finalization()
+        finish = f.invoke('native-finalize', request)['next_action']
+        self.assertEqual(finish['operation'], 'finish-native')
+        self.assertIn('action_id=' + finish['action_id'], finish['payload']['message'])
+        self.assertTrue(finish['payload']['read_only'])
+        # QueueOnly confirmations remain mailbox input; the same identity gets
+        # exactly one TriggerTurn action even when its business turn completed.
+        again = f.invoke('native-finalize', request)['next_action']
+        self.assertEqual(again['operation'], 'lookup-exact-native-action')
+        self.assertEqual(again['action']['action_id'], finish['action_id'])
+        f.invoke('native-finalize', self.finalize_observation(finish))
+        f.invoke('lifecycle-state', self.snapshot())
+        close = f.invoke('native-finalize', request)['next_action']
+        self.assertEqual(close['operation'], 'close-native')
+        f.invoke('native-finalize', self.finalize_observation(close))
+        self.assertFalse(f.state()['stopped'])
+        missing = self.inventory([{'agent_name': '/root', 'agent_status': 'running'}])
+        f.invoke('lifecycle-state', self.snapshot(missing))
+        self.assertTrue(f.state()['stopped'])
+        self.assertEqual({key: f.state()[key] for key in before}, before)
+        successor = f.input_for(3, f.state()['accepted'])
+        successor['authorization']['flow_mode'] = 'continuous'
+        result = f.invoke('start', {'handoff': successor, 'native_host': missing})
+        self.assertEqual((result['next_action'] or {}).get('operation'), 'invoke-host', result)
 
     def test_real_tool_shape_allows_planning_publication_without_rpc_pages(self):
         self.start()
