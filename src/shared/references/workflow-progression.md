@@ -327,7 +327,8 @@ Use C `native-finalize` with `operation:prepare`, the registered `ref`, original
 `actor_ref`, decision `reference`, `reuse:false`, `binding`, and `close`.
 `binding` retains `{call_ref,response_ref,raw}` from the actual parent's native
 host response containing a `subAgentActivity` with this exact `agentPath` and
-`agentThreadId`. The trusted ingress authenticates the tool call and original
+`agentThreadId`. Its parent thread ID must match the original business owner's
+frozen entry identity, including historical owners. The trusted ingress authenticates the tool call and original
 parent; agent assertions, titles, storage inspection and inferred IDs are not
 identity evidence. `close` retains the actually available adapter and request:
 
@@ -377,6 +378,21 @@ wake/close. Ordinary inspect/advance exposes that saved action through a
 read-only lookup or requests a fresh lifecycle query; only an explicit identical
 native-finalize prepare can progress from verified finish to the one close call.
 New activity revokes closure evidence, including late observations.
+For collaboration, `host-event` retains the original `native_host.instance` and
+the actual `read_thread` `subAgentActivity` item as `event`; no RPC wrapper is
+constructed. A related started/interacted item invalidates the inventory query
+and any issued close's release proof. The expected finish turn only invalidates
+inventory; it does not retire its own action.
+
+For a revoked successful close, `lookup-exact-native-action` supplies the actual
+Desktop `read_thread` request for that original UUID/host. Observe its new
+authenticated call/response with `receipt.query:true`. Completed readback must
+show `notLoaded` and the latest completed turn's original finish marker. It
+preserves the original archive receipt and actions, clears only the obsolete
+release proof, and requires a later fresh complete inventory before release.
+Unknown/failed readback and duplicate old responses leave revocation intact.
+Readback cannot replace an unknown/failed archive or authorize another close;
+missing readback capability retains the block.
 Business failure retains these read-only lookups and receipt reconciliation;
 new finish/close calls wait for the original business recovery.
 Pause/cancel intent forbids new finish/close calls while allowing existing

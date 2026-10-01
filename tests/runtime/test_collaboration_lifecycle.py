@@ -56,10 +56,11 @@ class CollaborationLifecycleTests(unittest.TestCase):
                 'response_ref': 'response:' + action['query_id'], 'inventory': inventory or self.inventory()}
 
     def finalization(self, ref='/root/designer', thread='designer-thread'):
+        parent_thread = 'dispatcher-runtime' if ref.startswith('/root/dispatcher/') else 'task'
         return {'operation': 'prepare', 'ref': ref, 'actor_ref': 'task',
             'reference': 'controller:no-further-reuse', 'reuse': False,
             'binding': {'call_ref': 'parent-read', 'response_ref': 'parent-response',
-                'raw': {'thread': {'id': 'task', 'hostId': 'local'}, 'turns': [{'items': [
+                'raw': {'thread': {'id': parent_thread, 'hostId': 'local'}, 'turns': [{'items': [
                     {'type': 'subAgentActivity', 'agentPath': ref, 'agentThreadId': thread}]}]}},
             'close': {'adapter': 'codex-desktop', 'request': {
                 'tool': 'mcp__codex_app__set_thread_archived',
@@ -79,6 +80,15 @@ class CollaborationLifecycleTests(unittest.TestCase):
             'receipt': {'adapter': action['payload'].get('adapter', 'codex-desktop'),
                 'call_ref': 'call:' + action['action_id'], 'response_ref': 'response:' + action['action_id'] + ':' + status,
                 'status': status, 'ref': ref, 'raw': raw}}
+
+    def unloaded_query(self, finish, close, reference='readback'):
+        observed = self.finalize_observation(finish)
+        observed['action_id'] = close['action_id']
+        observed['receipt'].update(query=True, call_ref='call:' + reference, response_ref='response:' + reference)
+        raw = json.loads(observed['receipt']['raw']['content'][0]['text'])
+        raw['thread']['status'] = {'type': 'notLoaded'}
+        observed['receipt']['raw']['content'][0]['text'] = json.dumps(raw)
+        return observed
 
     def accepted_execution(self):
         f = self.f
@@ -336,6 +346,34 @@ class CollaborationLifecycleTests(unittest.TestCase):
             f.invoke('native-finalize', conflict)
         self.assertEqual(error.exception.code, 'host_provenance_conflict')
 
+    def test_native_receipt_reports_invalid_status_without_generic_type_error(self):
+        f = self.f
+        self.accepted_execution()
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        finish = f.invoke('native-finalize', request)['next_action']
+        before = f.checkpoint.read_bytes()
+        for status in ({}, [], None, False, 42, 'unsupported'):
+            observation = self.finalize_observation(finish)
+            observation['receipt']['status'] = status
+            with self.subTest(status=status):
+                with self.assertRaises(progress.entry.PreparationError) as error:
+                    f.invoke('native-finalize', observation)
+                self.assertEqual(error.exception.code, 'invalid_result')
+                self.assertEqual(f.checkpoint.read_bytes(), before)
+
+    def test_binding_from_another_parent_thread_cannot_retire_registered_identity(self):
+        f = self.f
+        self.accepted_execution()
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        request['binding']['raw']['thread']['id'] = 'unrelated-parent-thread'
+        before = f.checkpoint.read_bytes()
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            f.invoke('native-finalize', request)
+        self.assertEqual(error.exception.code, 'identity_mismatch')
+        self.assertEqual(f.checkpoint.read_bytes(), before)
+
     def test_archive_success_old_query_and_resident_descendant_do_not_release_slot(self):
         f = self.f
         request, finish, close = self.finish_execution()
@@ -489,6 +527,98 @@ class CollaborationLifecycleTests(unittest.TestCase):
         self.assertEqual(lookup['action']['action_id'], close['action_id'])
         blocked = f.invoke('allocation', {'allocation_id': 'after-late-activity', 'operation': 'prepare', 'handoff': self.execution_handoff()})
         self.assertEqual(blocked['error']['code'], 'host_action_pending')
+
+    def test_desktop_activity_revokes_closed_proof_and_invalidates_inflight_inventory(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        stale = self.snapshot(self.execution_inventory(False))
+        instance = f.state()['native_host']['instance']
+        event = {'type': 'subAgentActivity', 'id': 'actual-native-interaction', 'kind': 'interacted',
+            'agentPath': request['ref'], 'agentThreadId': 'executor-thread'}
+        observed = f.invoke('host-event', {'instance': instance, 'event': event})
+        self.assertNotEqual(observed.get('error', {}).get('code'), 'identity_mismatch', observed)
+        self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
+        rejected = f.invoke('lifecycle-state', stale)
+        self.assertEqual(rejected['error']['code'], 'host_evidence_missing')
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
+
+    def test_revoked_close_recovers_only_after_new_unloaded_readback_and_fresh_inventory(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
+        query = self.unloaded_query(finish, close)
+        stale = self.snapshot(self.execution_inventory(False))
+        original = copy.deepcopy(f.state()['native_finalizations'][0]['actions'])
+        f.invoke('native-finalize', query)
+        self.assertEqual(f.state()['native_finalizations'][0]['actions'], original)
+        self.assertFalse(f.state()['native_finalizations'][0].get('verified'))
+        self.assertFalse(f.state()['native_finalizations'][0].get('revoked'))
+        f.invoke('lifecycle-state', stale)
+        self.assertFalse(f.state()['native_finalizations'][0].get('verified'))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        self.assertTrue(f.state()['native_finalizations'][0]['verified'])
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        f.invoke('native-finalize', query)
+        self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
+
+    def test_close_readback_failures_and_new_activity_preserve_original_close_and_revoke(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        original = copy.deepcopy(f.state()['native_finalizations'][0]['actions'])
+        lookup = f.invoke('native-finalize', {'operation': 'lookup', 'ref': request['ref']})['next_action']
+        self.assertEqual(lookup['tool'], 'mcp__codex_app__read_thread')
+        self.assertEqual(lookup['arguments']['threadId'], 'executor-thread')
+        for status in ('unknown', 'failed'):
+            query = self.unloaded_query(finish, close, status)
+            query['receipt']['status'] = status
+            f.invoke('native-finalize', query)
+            self.assertEqual(f.state()['native_finalizations'][0]['actions'], original)
+            self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
+        valid = self.unloaded_query(finish, close, 'complete')
+        for change in ('wrong-thread', 'old-turn', 'active', 'old-archive'):
+            wrong = copy.deepcopy(valid)
+            raw = json.loads(wrong['receipt']['raw']['content'][0]['text'])
+            if change == 'wrong-thread': raw['thread']['id'] = 'other-thread'
+            elif change == 'old-turn': raw['turns'].insert(0, {'status': 'completed', 'items': []})
+            elif change == 'active': raw['thread']['status'] = {'type': 'active'}
+            else: raw = {'threadId': 'executor-thread', 'archived': True}
+            wrong['receipt']['raw']['content'][0]['text'] = json.dumps(raw)
+            before = f.checkpoint.read_bytes()
+            with self.subTest(change=change), self.assertRaises(progress.entry.PreparationError):
+                f.invoke('native-finalize', wrong)
+            self.assertEqual(f.checkpoint.read_bytes(), before)
+        f.invoke('native-finalize', valid)
+        stale = self.snapshot(self.execution_inventory(False))
+        event = {'type': 'subAgentActivity', 'id': 'activity-during-restoration', 'kind': 'started',
+            'agentPath': request['ref'], 'agentThreadId': 'executor-thread'}
+        f.invoke('host-event', {'instance': f.state()['native_host']['instance'], 'event': event})
+        f.invoke('lifecycle-state', stale)
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
+        self.assertFalse(f.state()['native_finalizations'][0].get('verified'))
+
+    def test_expected_finish_activity_only_invalidates_snapshot_not_retirement(self):
+        f = self.f
+        self.accepted_execution()
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        finish = f.invoke('native-finalize', request)['next_action']
+        f.invoke('host-event', {'instance': f.state()['native_host']['instance'], 'event': {
+            'type': 'subAgentActivity', 'id': 'expected-finish-turn', 'kind': 'interacted',
+            'agentPath': request['ref'], 'agentThreadId': 'executor-thread'}})
+        self.assertFalse(f.state()['native_finalizations'][0].get('revoked'))
+        f.invoke('native-finalize', self.finalize_observation(finish))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        self.assertEqual(f.invoke('native-finalize', request)['next_action']['operation'], 'close-native')
 
     def test_accepted_carrier_delivery_finishes_queued_ack_closes_and_allows_successor(self):
         f = self.f
