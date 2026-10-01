@@ -156,6 +156,144 @@ class CollaborationLifecycleTests(unittest.TestCase):
         result = f.invoke('allocation', {'allocation_id': 'next-slice', 'operation': 'prepare', 'handoff': self.execution_handoff()})
         self.assertEqual((result['next_action'] or {}).get('operation'), 'invoke-host', result)
 
+    def final_recovery_with_native_retirement(self, *, pending_execution=False, retire_dispatcher=False):
+        f = self.f
+        agents = {}
+        invoke = f.invoke
+
+        def inventory():
+            return self.inventory([{'agent_name': '/root', 'agent_status': 'running'}] + [
+                {'agent_name': ref, 'agent_status': status} for ref, status in sorted(agents.items())])
+
+        def host_invoke(operation, data=None, revision=None):
+            data = copy.deepcopy(data or {})
+            if operation == 'start':
+                data['native_host'] = inventory()
+            if operation == 'observe':
+                data.pop('lifecycle', None)
+            result = invoke(operation, data, revision)
+            receipt = data.get('receipt') or {}
+            if operation in {'observe', 'allocation', 'review-activity'} and receipt.get('ref'):
+                status = 'running' if receipt.get('status') in {'ready', 'running'} else {'completed': 'host turn completed'}
+                agents[receipt['ref']] = status
+                invoke('lifecycle-state', self.snapshot(inventory()))
+                result = invoke('inspect')
+            elif operation == 'native-finalize' and data.get('operation') == 'observe':
+                record = next(record for record in f.state()['native_finalizations'] if record['ref'] == data['ref'])
+                action = next(action for action in record['actions'] if action['action_id'] == data['action_id'])
+                if action['operation'] == 'close-native' and receipt['status'] == 'completed':
+                    agents.pop(data['ref'])
+                invoke('lifecycle-state', self.snapshot(inventory()))
+            return result
+
+        def retire(request):
+            f.invoke('lifecycle-state', self.snapshot(inventory()))
+            finish = f.invoke('native-finalize', request)['next_action']
+            self.assertEqual(finish['operation'], 'finish-native')
+            f.invoke('native-finalize', self.finalize_observation(finish))
+            close = f.invoke('native-finalize', request)['next_action']
+            self.assertEqual(close['operation'], 'close-native')
+            f.invoke('native-finalize', self.finalize_observation(close))
+
+        with patch.object(f, 'invoke', side_effect=host_invoke):
+            f.input['authorization']['flow_mode'] = 'continuous'
+            self.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+            request = f.input_for(3, f.state()['accepted'])
+            request['authorization']['flow_mode'] = 'continuous'
+            f.context = f.context_for(3)
+            f.begin('continuous', request)
+            f.invoke('observe', f.observation(ref='/root/dispatcher'))
+            with patch.dict(f.settings, thread_id='dispatcher-runtime'):
+                execution = f.inherited_execution_input()
+                f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'prepare', 'handoff': execution})
+                slot = f.state()['allocations']['first-slice']
+                f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'bind',
+                    'receipt': f.receipt(slot['record'], ref='/root/dispatcher/executor')})
+                data = b"print('accepted implementation')\n"
+                (f.flow / 'impl.py').write_bytes(data)
+                slot = f.state()['allocations']['first-slice']
+                f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'receive',
+                    'receipt': f.receipt(slot['record'], 'stopped', 'result', ref='/root/dispatcher/executor'),
+                    'result': {'delivery_id': 'first-slice', 'status': 'completed', 'payload': {
+                        'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
+                        'tests': ['implementation bytes verified'],
+                        'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record'])}}})
+                f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'accept',
+                    'decision': {'reference': 'dispatcher:accept-first-slice'}})
+            execution_close = self.finalization('/root/dispatcher/executor', 'executor-thread')
+            execution_close['actor_ref'] = '/root/dispatcher'
+            if not pending_execution:
+                retire(execution_close)
+            f.flow_git('add', 'impl.py')
+            f.flow_git('commit', '-qm', 'accepted implementation')
+            candidate = f.flow_git('rev-parse', 'HEAD')
+            accepted = f.accept_current({'candidate_commit': candidate, 'artifacts': ['impl.py'], 'checks': ['verified'],
+                'review': {axis: {'candidate': candidate, 'reviewer_ref': '/root/' + axis, 'status': 'accepted'}
+                           for axis in ('standards', 'spec')},
+                'verification': {'candidate': candidate}}, '/root/dispatcher', fixture_execution=False)
+            self.assertEqual(accepted['status'], 'accepted', accepted)
+            if retire_dispatcher:
+                retire(self.finalization('/root/dispatcher', 'dispatcher-thread'))
+            predecessor = f.state()['accepted']
+            (f.root / 'other-task.md').write_text('parallel update\n')
+            f.git('add', 'other-task.md')
+            f.git('commit', '-qm', 'parallel target update')
+            request = f.input_for(4, predecessor)
+            f.context = f.context_for(4)
+            f.begin('continuous', request)
+            f.invoke('observe', f.observation(ref='/root/closure'))
+            observation = f.observation('stopped', 'result', ref='/root/closure')
+            observation['closure'] = {'ref': '/root/closure', 'candidate': candidate, 'merge': None,
+                'ancestor_verified': False, 'changed_paths': [], 'binding': f.binding, 'checks': [],
+                'worktree_removed': False, 'branch_removed': False, 'disposition': 'deleted',
+                'disposition_verified': False, 'implementation_problem': 'target advanced at final publication'}
+            f.invoke('observe', observation)
+            recovery = {'reference': 'controller:final-recovery', 'closure_digest': f.state()['handoff']['digest']}
+            result = f.invoke('implementation-recovery', recovery)
+            if retire_dispatcher:
+                self.assertEqual(result['error']['code'], 'identity_retired', result)
+                self.assertEqual(f.state()['stage'], 4)
+                self.assertEqual(f.state()['handoff']['predecessor'], predecessor)
+                self.assertNotIn('/root/dispatcher', agents)
+                return
+            self.assertEqual(f.state()['stage'], 3, result)
+            f.invoke('observe', f.observation('idle', 'result', ref='/root/dispatcher'))
+            f.flow_git('merge', '--no-edit', 'main')
+            f.invoke('observe', f.observation('stopped', 'result', ref='/root/dispatcher'))
+            f.invoke('control', {'action': 'capture-integration', 'evidence': {'reference': 'controller:merged'},
+                'receipt': {'controller_ref': 'task', 'reference': 'controller:merged'}})
+            if pending_execution:
+                f.invoke('lifecycle-state', self.snapshot(inventory()))
+                finish = f.invoke('native-finalize', execution_close)['next_action']
+                with patch.dict(f.settings, thread_id='dispatcher-runtime'):
+                    request = f.inherited_execution_input()
+                    control = copy.deepcopy(f.state()['control'])
+                    blocked = f.invoke('allocation', {'allocation_id': 'waiting-integration',
+                        'operation': 'prepare', 'handoff': request})
+                    self.assertEqual(blocked['error']['code'], 'host_action_pending', blocked)
+                    self.assertEqual(f.state()['control'], control)
+                    self.assertNotIn('waiting-integration', f.state()['allocations'])
+                f.invoke('native-finalize', self.finalize_observation(finish))
+                close = f.invoke('native-finalize', execution_close)['next_action']
+                f.invoke('native-finalize', self.finalize_observation(close))
+                self.assertEqual(f.invoke('resume')['status'], 'active')
+            accepted_record = copy.deepcopy(f.state()['allocations']['first-slice']['record'])
+            f.revalidate_integrated_execution()
+            self.assertEqual(f.state()['allocations']['first-slice']['record'], accepted_record)
+            self.assertIn('/root/dispatcher', agents)
+            self.assertNotIn('/root/dispatcher/executor', agents)
+            self.assertEqual(f.state()['control']['context']['carrier']['ref'], '/root/dispatcher')
+            self.assertEqual(f.state()['allocations']['integrated-execution']['record']['status'], 'accepted')
+
+    def test_final_recovery_allocates_after_verified_execution_retirement(self):
+        self.final_recovery_with_native_retirement()
+
+    def test_final_recovery_allocation_waits_for_pending_execution_retirement(self):
+        self.final_recovery_with_native_retirement(pending_execution=True)
+
+    def test_final_recovery_rejects_retired_original_dispatcher(self):
+        self.final_recovery_with_native_retirement(retire_dispatcher=True)
+
     def finish_execution(self):
         self.accepted_execution()
         request = self.finalization('/root/dispatcher/executor', 'executor-thread')

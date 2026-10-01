@@ -1035,30 +1035,32 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.invoke("pause")["status"], "paused")
         self.assertEqual(self.invoke("resume")["pending"], pending)
 
-    def mark_reviewable(self, candidate):
+    def mark_reviewable(self, candidate, *, fixture_execution=True):
         current = self.state()['control']['context']
+        dispatcher = current['carrier']['ref']
         if current['handoff_progress'].get('candidate') is not None:
             self.invoke('control', {'action':'invalidate-candidate',
                 'evidence':{'candidate':current['handoff_progress']['candidate'],'reference':'fixture:remediation','reason':'replacement'},
                 'receipt':{'adapter':'fixture','call_ref':'remediate','response_ref':'remediation','raw':{'decision':'fix'}}})
-        outer = progress.read_record(self.checkpoint)
-        self.fixture_accepted_execution(outer[progress.KEY]['control']['context'], candidate)
-        progress.atomic_save(self.checkpoint, outer)
-        self.invoke('observe', self.observation('idle','result',ref='native:dispatcher'))
+        if fixture_execution:
+            outer = progress.read_record(self.checkpoint)
+            self.fixture_accepted_execution(outer[progress.KEY]['control']['context'], candidate)
+            progress.atomic_save(self.checkpoint, outer)
+        self.invoke('observe', self.observation('idle','result',ref=dispatcher))
         current = self.state()['control']['context']
         plan = current['handoff_progress']['validation_plan']
         checks = transfer.checks_for(plan['review_required'],candidate)
         result = self.invoke('control', {'action':'candidate-ready', 'evidence':{
-            'dispatcher_ref':'native:dispatcher','attempt':current['carrier']['attempt'],'commit':candidate,
+            'dispatcher_ref':dispatcher,'attempt':current['carrier']['attempt'],'commit':candidate,
             'expected_target_head':self.git('rev-parse','main'),'binding':self.binding,
             'plan_digest':transfer.control.digest(plan),'checks':checks},
-            'receipt':{'adapter':'fixture','call_ref':'focused','response_ref':'focused-result','raw':{'checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':'native:dispatcher'}}})
+            'receipt':{'adapter':'fixture','call_ref':'focused','response_ref':'focused-result','raw':{'checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':dispatcher}}})
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'reviewable',result)
         return {'candidate':candidate,'plan_digest':transfer.control.digest(plan),'checks':checks}
 
-    def accept_current(self, payload, role):
+    def accept_current(self, payload, role, *, fixture_execution=True):
         if self.state()['stage'] == 3:
-            verification = self.mark_reviewable(payload['candidate_commit'])
+            verification = self.mark_reviewable(payload['candidate_commit'], fixture_execution=fixture_execution)
             actor = self.state()['handoff']['expected_entry']['actor']['thread_id']
             for axis in ('standards','spec'):
                 prepared = self.invoke('review-activity', {'operation':'prepare','axis':axis,'candidate':payload['candidate_commit'],
@@ -1503,6 +1505,76 @@ class ProgressTests(transfer.StageTransferTests):
     def test_final_recovery_after_target_advances_during_publication(self):
         self.final_recovery_chain(publication_race=True)
 
+    def execution_transfer_request(self):
+        parent = self.state()['handoff']
+        request = {key: copy.deepcopy(value) for key, value in parent.items()
+                   if key in transfer.handoff.FIELDS | transfer.handoff.OPTIONAL_FIELDS}
+        request.update(operation='prepare', role='execution-agent', predecessor=None,
+                       configuration=transfer.configuration('execution-agent'))
+        request['scope']['baseline'] = self.flow_git('rev-parse', 'HEAD')
+        request['scope']['owned_paths'] = copy.deepcopy(parent['scope']['implementation_paths'])
+        request['authorization']['scope_digest'] = transfer.entry.digest(request['scope'])
+        request['semantic'].pop('validation_plan', None)
+        request['semantic'].pop('implementation_policy', None)
+        return request
+
+    def inherited_execution_input(self):
+        parent = self.state()['handoff']
+        request = self.execution_transfer_request()
+        request['entry']['host'].update(thread_id=self.settings['thread_id'], role='implementation-dispatcher',
+            source_ref=parent['controller_ref'], actor_ref=self.state()['control']['context']['carrier']['ref'])
+        request['expected_entry'] = transfer.entry.resolve(request['entry'])
+        return request
+
+    def revalidate_integrated_execution(self):
+        parent = self.state()['handoff']
+        source = self.state()['control']['context']['handoff_progress']['integration_source']
+        dispatcher = self.state()['control']['context']['carrier']['ref']
+        executor = dispatcher + '/integrated_executor' if dispatcher.startswith('/root/') else 'native:integrated-executor'
+        before = progress.control_git.snapshot(self.flow)
+        with patch.dict(self.settings, thread_id='dispatcher-runtime'):
+            request = self.inherited_execution_input()
+            request['scope']['owned_paths'] = copy.deepcopy(source['pending_paths'])
+            request['authorization']['scope_digest'] = transfer.entry.digest(request['scope'])
+            request['semantic'].update(adopt_paths=copy.deepcopy(source['pending_paths']),
+                                       adoption_snapshot_digest=source['snapshot_digest'])
+            checkpoint = self.checkpoint.read_bytes()
+            for field in ('controller_ref', 'requirement_identity'):
+                with self.subTest(caller_field=field), self.assertRaises(transfer.entry.PreparationError) as error:
+                    transfer.handoff.prepare({**request, field: parent[field]})
+                self.assertEqual(error.exception.code, 'invalid_request')
+            internal = {**request, 'controller_ref': parent['controller_ref'],
+                        'requirement_identity': parent['requirement_identity']}
+            for field, value in (('controller_ref', 'other-controller'),
+                                 ('requirement_identity', {**parent['requirement_identity'], 'sha256': '0' * 64}),
+                                 ('binding', {**parent['binding'], 'branch': 'codex/other-flow'}),
+                                 ('scope', {**request['scope'], 'implementation_paths': ['other.py']})):
+                with self.subTest(authority_field=field), self.assertRaises(transfer.entry.PreparationError) as error:
+                    transfer.handoff.phase_evidence({**internal, field: value})
+                self.assertEqual(error.exception.code, 'authority_changed')
+            self.assertEqual(self.checkpoint.read_bytes(), checkpoint)
+            prepared = self.invoke('allocation', {'allocation_id': 'integrated-execution',
+                'operation': 'prepare', 'handoff': request})
+            self.assertEqual((prepared.get('next_action') or {}).get('operation'), 'invoke-host', prepared)
+            slot = self.state()['allocations']['integrated-execution']
+            self.assertEqual(slot['handoff']['controller_ref'], parent['controller_ref'])
+            self.assertEqual(slot['handoff']['requirement_identity'], parent['requirement_identity'])
+            self.invoke('allocation', {'allocation_id': 'integrated-execution', 'operation': 'bind',
+                'receipt': self.receipt(slot['record'], ref=executor)})
+            slot = self.state()['allocations']['integrated-execution']
+            self.invoke('allocation', {'allocation_id': 'integrated-execution', 'operation': 'receive',
+                'receipt': self.receipt(slot['record'], 'stopped', 'result', ref=executor),
+                'result': {'delivery_id': 'integrated-execution', 'status': 'completed', 'payload': {
+                    'changed_paths': [], 'adopted_paths': source['pending_paths'],
+                    'file_hashes': {path: hashlib.sha256((self.flow / path).read_bytes()).hexdigest()
+                                   for path in source['pending_paths']},
+                    'tests': ['unchanged integrated implementation bytes verified'],
+                    'write_release': transfer.dispatch.execution_release_token(slot['record'])}}})
+            accepted = self.invoke('allocation', {'allocation_id': 'integrated-execution', 'operation': 'accept',
+                'decision': {'reference': 'dispatcher:accept-integrated-execution'}})
+            self.assertEqual(accepted['next_action']['result']['status'], 'accepted', accepted)
+        self.assertEqual(progress.control_git.snapshot(self.flow), before)
+
     def final_recovery_chain(self, retain_docs=False, replay_host=False, publication_race=False):
         self.finish_design('continuous')
         self.finish_next(3, 'continuous')
@@ -1598,10 +1670,11 @@ class ProgressTests(transfer.StageTransferTests):
             'receipt':{'controller_ref':'task', 'reference':'controller:merged'}})
         self.assertNotEqual(captured['status'], 'blocked', captured)
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'implementing', captured)
+        self.revalidate_integrated_execution()
         payload = {'artifacts':['impl.py'], 'checks':['verified'], 'candidate_commit':replacement,
             'review':{axis:{'candidate':replacement, 'reviewer_ref':axis, 'status':'accepted'} for axis in ('standards','spec')},
             'verification':{'candidate':replacement}}
-        accepted = self.accept_current(payload, 'native:dispatcher')
+        accepted = self.accept_current(payload, 'native:dispatcher', fixture_execution=False)
         self.assertEqual(accepted['status'], 'accepted', accepted)
         self.assertNotEqual(self.state()['accepted']['digest'], predecessor['digest'])
         completed = self.finish_next(4, 'continuous')

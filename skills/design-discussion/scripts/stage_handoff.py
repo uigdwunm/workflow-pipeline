@@ -616,7 +616,8 @@ def _prepare(request):
                     'invalid_scope', 'direct locations must be in the authorized implementation scope')
     entry.nonempty(semantic["objective"]); entry.nonempty(semantic["testing_basis"])
     strings(semantic["completion_criteria"]); strings(semantic["constraints"])
-    phase_evidence(request)
+    phase_evidence({**request, "controller_ref": current["actor"]["controller_ref"],
+                    "requirement_identity": identity})
     stage3_role = stage == 3 and role in {'implementation-dispatcher', 'execution-agent'}
     configuration = control.select_configuration(request["configuration"])
     if stage3_role:

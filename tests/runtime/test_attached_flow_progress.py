@@ -280,6 +280,31 @@ class AttachedFlowTests(fixtures.ProgressTests):
             self.invoke('observe', self.observation('stopped','result',ref='native:dispatcher'))
             self.invoke('control', {'action':'capture-integration', 'evidence':{'reference':'controller:merged'},
                 'receipt':{'controller_ref':'task','reference':'controller:merged'}})
+            # The topic carrier can prepare the transfer under its own identity.
+            # A separate Dispatcher cannot inherit that conversation binding.
+            parent = self.state()['handoff']
+            request = self.execution_transfer_request()
+            source = self.state()['control']['context']['handoff_progress']['integration_source']
+            request['scope']['owned_paths'] = copy.deepcopy(source['pending_paths'])
+            request['authorization']['scope_digest'] = entry.digest(request['scope'])
+            request['semantic'].update(adopt_paths=copy.deepcopy(source['pending_paths']),
+                                       adoption_snapshot_digest=source['snapshot_digest'])
+            request['expected_entry'] = entry.resolve(request['entry'])
+            ledger = self.ledger.read_bytes()
+            checkpoint = self.checkpoint.read_bytes()
+            snapshot = progress.control_git.snapshot(self.flow)
+            prepared = fixtures.transfer.handoff.prepare(request)
+            self.assertEqual(prepared['controller_ref'], parent['controller_ref'])
+            self.assertEqual(prepared['requirement_identity'], parent['requirement_identity'])
+            self.assertEqual(prepared['expected_entry']['actor']['role'], 'controller')
+            self.assertEqual(prepared['expected_entry']['actor']['thread_id'], 'task')
+            with patch.dict(self.settings, thread_id='dispatcher-runtime'):
+                with self.assertRaises(entry.PreparationError) as error:
+                    self.inherited_execution_input()
+                self.assertEqual(error.exception.code, 'identity_mismatch')
+            self.assertEqual(self.ledger.read_bytes(), ledger)
+            self.assertEqual(self.checkpoint.read_bytes(), checkpoint)
+            self.assertEqual(progress.control_git.snapshot(self.flow), snapshot)
             payload = {'candidate_commit':candidate, 'artifacts':['impl.py'], 'checks':['verified'],
                 'review':{axis:{'candidate':candidate,'reviewer_ref':axis,'status':'accepted'} for axis in ('standards','spec')},
                 'verification':{'candidate':candidate}}
