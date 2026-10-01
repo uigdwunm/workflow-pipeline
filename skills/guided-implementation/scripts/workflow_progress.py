@@ -1029,11 +1029,12 @@ class Progress:
         refs = self.native_refs() | set().union(*(self.native_refs(old) for old in self.state.get('history', [])))
         require(set(agents) - {self.state['native_host']['controller_ref']} <= refs | set(self.state['native_host']['baseline_refs']),
                 'host_evidence_missing', 'unknown native identities must be reconciled before finalization')
-        descendants = {ref for ref in agents if ref == record['ref'] or ref.startswith(record['ref'] + '/')}
-        require(descendants <= refs and record['ref'] in descendants and
-                all(isinstance(agents[ref], dict) and set(agents[ref]) == {'completed'} for ref in descendants),
-                'host_evidence_missing', 'target and every registered descendant must have stopped; unknown descendants block closure')
         targets = {ref for ref in refs if ref == record['ref'] or ref.startswith(record['ref'] + '/')}
+        descendants = {ref for ref in agents if ref == record['ref'] or ref.startswith(record['ref'] + '/')}
+        require(descendants == targets - self.closed_native_refs() and record['ref'] in descendants and
+                all(isinstance(agents[ref], dict) and set(agents[ref]) == {'completed'} and
+                    isinstance(agents[ref]['completed'], str) for ref in descendants),
+                'host_evidence_missing', 'target and every registered descendant must have stopped; unknown descendants block closure')
         host_calls = [action for action in self.unresolved_host_actions()
                       if action['payload'].get('ref', self.bound_ref()) in targets]
         transactions = [transaction for transaction in self.state.get('control_transactions', {}).values()
@@ -4092,6 +4093,9 @@ def handle(path, request):
             (operation == "decide" and (data.get("decision_id") in owner.state.get("decisions", {}) or
              owner.state.get("deferred_decisions", {}).get(data.get("decision_id"), {}).get("decision") == data)))
         require(actual == request["expected_revision"] or duplicate, "stale_checkpoint", "read the current checkpoint before changing it")
+        if actual != request['expected_revision'] and operation == 'native-finalize' and data.get('operation') == 'prepare':
+            record = next(item for item in owner.state['native_finalizations'] if item['prepare'] == data)
+            return _view(owner.state, {'operation': 'lookup-exact-native-action', 'action': record['actions'][-1]}, acknowledged=True)
         if operation == "start":
             return owner.start(data)
         require(owner.state is not None, "missing_checkpoint", "start a progression checkpoint first")

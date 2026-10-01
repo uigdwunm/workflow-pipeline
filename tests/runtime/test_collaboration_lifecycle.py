@@ -182,6 +182,70 @@ class CollaborationLifecycleTests(unittest.TestCase):
         f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
         self.assertTrue(f.state()['native_finalizations'][0]['verified'])
 
+    def test_stale_prepare_only_recovers_finish_and_current_revision_may_issue_close(self):
+        f = self.f
+        self.accepted_execution()
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        original_revision = f.state()['revision']
+        finish = f.invoke('native-finalize', request)['next_action']
+        f.invoke('native-finalize', self.finalize_observation(finish))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        before = f.checkpoint.read_bytes()
+        replay = f.invoke('native-finalize', request, revision=original_revision)
+        self.assertTrue(replay['acknowledged'])
+        self.assertEqual(replay['next_action']['operation'], 'lookup-exact-native-action')
+        self.assertEqual(replay['next_action']['action']['action_id'], finish['action_id'])
+        self.assertEqual(f.checkpoint.read_bytes(), before)
+        close = f.invoke('native-finalize', request)['next_action']
+        self.assertEqual(close['operation'], 'close-native')
+        self.assertEqual(len(f.state()['native_finalizations'][0]['actions']), 2)
+
+    def test_missing_registered_descendant_blocks_finish_until_its_close_is_verified(self):
+        f = self.f
+        self.accepted_execution()
+        f.flow_git('add', 'impl.py')
+        f.flow_git('commit', '-qm', 'integrate first accepted slice')
+        child_ref = '/root/dispatcher/executor/child'
+        f.invoke('allocation', {'allocation_id': 'descendant-slice', 'operation': 'prepare', 'handoff': self.execution_handoff()})
+        slot = f.state()['allocations']['descendant-slice']
+        f.invoke('allocation', {'allocation_id': 'descendant-slice', 'operation': 'bind',
+            'receipt': f.receipt(slot['record'], ref=child_ref)})
+        data = b"print('accepted descendant slice')\n"
+        (f.flow / 'impl.py').write_bytes(data)
+        slot = f.state()['allocations']['descendant-slice']
+        f.invoke('allocation', {'allocation_id': 'descendant-slice', 'operation': 'receive',
+            'receipt': f.receipt(slot['record'], 'stopped', 'result', ref=child_ref),
+            'result': {'delivery_id': 'descendant-slice', 'status': 'completed', 'payload': {
+                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
+                'tests': ['real descendant bytes verified'],
+                'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record'])}}})
+        f.invoke('allocation', {'allocation_id': 'descendant-slice', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:accept-descendant'}})
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        parent = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        parent['actor_ref'] = '/root/dispatcher'
+        before = f.checkpoint.read_bytes()
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            f.invoke('native-finalize', parent)
+        self.assertEqual(error.exception.code, 'host_evidence_missing')
+        self.assertEqual(f.checkpoint.read_bytes(), before)
+        self.assertFalse(f.state()['native_finalizations'])
+        inventory = self.execution_inventory()['response']['agents'] + [
+            {'agent_name': child_ref, 'agent_status': {'completed': 'accepted descendant slice'}}]
+        f.invoke('lifecycle-state', self.snapshot(self.inventory(inventory)))
+        child = self.finalization(child_ref, 'child-thread')
+        child['actor_ref'] = '/root/dispatcher'
+        finish = f.invoke('native-finalize', child)['next_action']
+        f.invoke('native-finalize', self.finalize_observation(finish))
+        f.invoke('lifecycle-state', self.snapshot(self.inventory(inventory)))
+        close = f.invoke('native-finalize', child)['next_action']
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        finish_parent = f.invoke('native-finalize', parent)['next_action']
+        self.assertEqual(finish_parent['operation'], 'finish-native')
+        self.assertEqual(finish_parent['payload']['ref'], parent['ref'])
+
     def test_finish_requires_real_binding_owner_capability_and_stopped_known_subtree(self):
         f = self.f
         self.accepted_execution()
