@@ -82,9 +82,12 @@ class CollaborationLifecycleTests(unittest.TestCase):
                 'status': status, 'ref': ref, 'raw': raw}}
 
     def unloaded_query(self, finish, close, reference='readback'):
+        lookup = self.f.invoke('native-finalize', {'operation': 'lookup', 'ref': finish['payload']['ref']})['next_action']
         observed = self.finalize_observation(finish)
         observed['action_id'] = close['action_id']
         observed['receipt'].update(query=True, call_ref='call:' + reference, response_ref='response:' + reference)
+        if 'query_for' in lookup:
+            observed['receipt']['query_for'] = lookup['query_for']
         raw = json.loads(observed['receipt']['raw']['content'][0]['text'])
         raw['thread']['status'] = {'type': 'notLoaded'}
         observed['receipt']['raw']['content'][0]['text'] = json.dumps(raw)
@@ -632,6 +635,82 @@ class CollaborationLifecycleTests(unittest.TestCase):
         f.invoke('native-finalize', self.finalize_observation(finish))
         f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
         self.assertEqual(f.invoke('native-finalize', request)['next_action']['operation'], 'close-native')
+
+    def test_readback_captured_before_new_activity_cannot_clear_later_revocation(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        readback = self.unloaded_query(finish, close, 'before-new-activity')
+        f.invoke('host-event', {'instance': f.state()['native_host']['instance'], 'event': {
+            'type': 'subAgentActivity', 'id': 'newer-than-readback', 'kind': 'interacted',
+            'agentPath': request['ref'], 'agentThreadId': 'executor-thread'}})
+        revoked = copy.deepcopy(f.state()['native_finalizations'][0]['revoked'])
+        f.invoke('native-finalize', readback)
+        self.assertEqual(f.state()['native_finalizations'][0].get('revoked'), revoked)
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        self.assertEqual(f.state()['native_finalizations'][0].get('revoked'), revoked)
+        blocked = f.invoke('allocation', {'allocation_id': 'after-stale-readback', 'operation': 'prepare',
+            'handoff': self.execution_handoff()})
+        self.assertEqual(blocked['error']['code'], 'host_action_pending')
+
+    def test_late_activity_before_first_close_verification_still_requires_readback(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        agents = self.execution_inventory()['response']['agents']
+        agents[-1]['agent_status'] = 'running'
+        late = self.snapshot(self.inventory(agents))
+        f.invoke('native-finalize', self.finalize_observation(close))
+        rejected = f.invoke('lifecycle-state', late)
+        self.assertEqual(rejected['error']['code'], 'host_evidence_missing')
+        self.assertTrue(f.state()['native_finalizations'][0].get('revoked'))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        self.assertFalse(f.state()['native_finalizations'][0].get('verified'))
+
+    def test_reappeared_target_does_not_prevent_stopped_sibling_finalization(self):
+        f = self.f
+        self.accepted_execution()
+        f.flow_git('add', 'impl.py')
+        f.flow_git('commit', '-qm', 'integrate accepted first slice')
+        f.invoke('allocation', {'allocation_id': 'sibling', 'operation': 'prepare', 'handoff': self.execution_handoff()})
+        sibling = '/root/dispatcher/sibling'
+        slot = f.state()['allocations']['sibling']
+        f.invoke('allocation', {'allocation_id': 'sibling', 'operation': 'bind',
+            'receipt': f.receipt(slot['record'], ref=sibling)})
+        data = b"print('accepted sibling slice')\n"
+        (f.flow / 'impl.py').write_bytes(data)
+        slot = f.state()['allocations']['sibling']
+        f.invoke('allocation', {'allocation_id': 'sibling', 'operation': 'receive',
+            'receipt': f.receipt(slot['record'], 'stopped', 'result', ref=sibling),
+            'result': {'delivery_id': 'sibling', 'status': 'completed', 'payload': {
+                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
+                'tests': ['real sibling bytes verified'],
+                'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record'])}}})
+        f.invoke('allocation', {'allocation_id': 'sibling', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:accept-sibling'}})
+        agents = self.execution_inventory()['response']['agents'] + [
+            {'agent_name': sibling, 'agent_status': {'completed': 'accepted sibling'}}]
+        f.invoke('lifecycle-state', self.snapshot(self.inventory(agents)))
+        first = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        first['actor_ref'] = '/root/dispatcher'
+        finish = f.invoke('native-finalize', first)['next_action']
+        f.invoke('native-finalize', self.finalize_observation(finish))
+        f.invoke('lifecycle-state', self.snapshot(self.inventory(agents)))
+        close = f.invoke('native-finalize', first)['next_action']
+        f.invoke('native-finalize', self.finalize_observation(close))
+        absent = [agent for agent in agents if agent['agent_name'] != first['ref']]
+        f.invoke('lifecycle-state', self.snapshot(self.inventory(absent)))
+        agents[2]['agent_status'] = 'running'
+        for _ in range(2):
+            f.invoke('lifecycle-state', self.snapshot(self.inventory(agents)))
+        self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
+        second = self.finalization(sibling, 'sibling-thread')
+        second['actor_ref'] = '/root/dispatcher'
+        result = f.invoke('native-finalize', second)
+        self.assertEqual(result['next_action']['operation'], 'finish-native')
+        self.assertEqual(result['next_action']['payload']['ref'], sibling)
+        self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
 
     def test_accepted_carrier_delivery_finishes_queued_ack_closes_and_allows_successor(self):
         f = self.f

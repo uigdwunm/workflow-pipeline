@@ -417,10 +417,13 @@ def validate_state(state):
             require(receipt.get('ref') == record['ref'] and receipt.get('status') in ('completed', 'unknown', 'failed') and
                     all(isinstance(receipt.get(key), str) and receipt[key] for key in ('adapter', 'call_ref', 'response_ref')) and
                     isinstance(receipt.get('raw'), dict) and receipt['raw'] and
-                    ('query' not in receipt or receipt['query'] is True),
+                    ('query' not in receipt or receipt['query'] is True) and
+                    ('query_for' not in receipt or receipt.get('query') is True),
                     'invalid_checkpoint', 'native receipt fields are invalid')
             action = next(action for action in record['actions'] if action['action_id'] == data['action_id'])
             if receipt.get('query'):
+                require(isinstance(receipt.get('query_for'), str) and re.fullmatch(r'[0-9a-f]{64}', receipt['query_for']),
+                        'invalid_checkpoint', 'readback must retain its original revocation guard')
                 require(action['operation'] == 'close-native' and action.get('resolved') and
                         action.get('resolution') == 'completed', 'invalid_checkpoint', 'readback cannot replace close completion')
                 if receipt['status'] == 'completed':
@@ -755,7 +758,7 @@ def native_finalization_lookup(record):
     action = record['actions'][-1]
     result = {'operation': 'lookup-exact-native-action', 'action': copy.deepcopy(action)}
     if record.get('revoked') and action['operation'] == 'close-native' and action.get('resolution') == 'completed':
-        result.update(query=True, tool='mcp__codex_app__read_thread', arguments={
+        result.update(query=True, query_for=entry.digest(record['revoked']), tool='mcp__codex_app__read_thread', arguments={
             'threadId': record['thread_id'], 'hostId': record['prepare']['close']['request']['arguments']['hostId'],
             'turnLimit': 1, 'includeOutputs': False})
     return result
@@ -1210,8 +1213,10 @@ class Progress:
         action = next((item for item in record['actions'] if item['action_id'] == data['action_id']), None)
         require(action is not None, 'identity_mismatch', 'receipt must name the original exact native action')
         receipt = data['receipt']
-        entry.fields(receipt, {'adapter', 'call_ref', 'response_ref', 'status', 'ref', 'raw'}, {'query'})
+        entry.fields(receipt, {'adapter', 'call_ref', 'response_ref', 'status', 'ref', 'raw'}, {'query', 'query_for'})
         require('query' not in receipt or receipt['query'] is True, 'invalid_result', 'readback query marker must be true')
+        require('query_for' not in receipt or receipt.get('query') is True,
+                'invalid_result', 'revocation guard belongs only to a readback query')
         for key in ('adapter', 'call_ref', 'response_ref'): entry.nonempty(receipt[key])
         require(isinstance(receipt['raw'], dict) and receipt['raw'], 'host_evidence_missing', 'retain the raw authenticated native response')
         require(receipt['ref'] == record['ref'], 'identity_mismatch', 'retain the exact native target')
@@ -1228,14 +1233,17 @@ class Progress:
                     require(previous == data, 'host_provenance_conflict', 'native response cannot be rebound or changed')
                     return _view(s, acknowledged=True)
         if receipt.get('query'):
+            require(isinstance(receipt.get('query_for'), str) and re.fullmatch(r'[0-9a-f]{64}', receipt['query_for']),
+                    'host_evidence_missing', 'readback requires the guard issued with its original lookup')
             require(record.get('revoked') and action['operation'] == 'close-native' and action.get('resolved') and
                     action.get('resolution') == 'completed', 'finalization_conflict', 'readback reconciles only a revoked successful close')
             require(all(previous['receipt']['call_ref'] != receipt['call_ref'] for item in records for previous in item['receipts']),
                     'host_provenance_conflict', 'readback requires a new authenticated read_thread invocation')
             if receipt['status'] == 'completed':
                 validate_native_readback(native_raw_object(receipt['raw']), record, 'notLoaded')
-                record.pop('verified', None)
-                record.pop('revoked', None)
+                if receipt['query_for'] == entry.digest(record['revoked']):
+                    record.pop('verified', None)
+                    record.pop('revoked', None)
             record['receipts'].append(copy.deepcopy(data))
             s['lifecycle_snapshot'] = None
             s.pop('lifecycle_query', None)
@@ -1289,8 +1297,13 @@ class Progress:
         for key in ('query_id', 'call_ref', 'response_ref'):
             entry.nonempty(data[key])
         agents = collaboration_inventory(data['inventory'])
+        incoming_guard = self.collaboration_guard()
         for record in s.get('native_finalizations', []):
-            if record.get('verified') and any(ref == record['ref'] or ref.startswith(record['ref'] + '/') for ref in agents):
+            subtree = {ref for ref in agents if ref == record['ref'] or ref.startswith(record['ref'] + '/')}
+            active = any(not (isinstance(agents[ref], dict) and set(agents[ref]) == {'completed'} and
+                             isinstance(agents[ref]['completed'], str)) for ref in subtree)
+            if any(action['operation'] == 'close-native' for action in record['actions']) and (
+                    active or record.get('verified') and subtree):
                 record['revoked'] = copy.deepcopy(data)
         require(data['inventory']['controller_ref'] == s['native_host']['controller_ref'],
                 'identity_mismatch', 'retain the original controller agent path')
@@ -1306,9 +1319,9 @@ class Progress:
                         previous['response_ref'] == data['response_ref']):
                     require(previous == data, 'host_provenance_conflict', 'inventory response cannot be rebound to a new query')
         require(query is not None and query['query_id'] == data['query_id'] and
-                query['guard'] == self.collaboration_guard(),
+                query['guard'] == incoming_guard,
                 'host_evidence_missing', 'obtain a new inventory after native activity or changed writer bindings')
-        s['lifecycle_snapshot'] = {**copy.deepcopy(data), 'guard': query['guard'],
+        s['lifecycle_snapshot'] = {**copy.deepcopy(data), 'guard': self.collaboration_guard(),
                                    'instance': s['native_host']['instance']}
         self.verify_native_finalizations(collaboration_inventory(data['inventory']), data)
         self.save()
