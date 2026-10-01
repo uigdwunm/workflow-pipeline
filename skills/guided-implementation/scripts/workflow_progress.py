@@ -1347,7 +1347,8 @@ class Progress:
                 self.state['lifecycle_snapshot'] = None
                 self.state.pop('lifecycle_query', None)
                 for record in self.state.get('native_finalizations', []):
-                    if (item['agentPath'] == record['ref'] or item['agentThreadId'] == record['thread_id']) and any(
+                    if (item['agentPath'] == record['ref'] or item['agentPath'].startswith(record['ref'] + '/') or
+                            item['agentThreadId'] == record['thread_id']) and any(
                             action['operation'] == 'close-native' for action in record['actions']):
                         record['revoked'] = copy.deepcopy(data)
             self.save()
@@ -1361,7 +1362,8 @@ class Progress:
         carrier = data.get('carrier_thread')
         if event['method'] == 'item/started' and item.get('kind') in {'started', 'interacted'}:
             for record in self.state.get('native_finalizations', []):
-                if item.get('agentPath') == record['ref'] or item.get('agentThreadId') == record['thread_id']:
+                if (item.get('agentPath') == record['ref'] or item.get('agentThreadId') == record['thread_id'] or
+                        (item.get('agentPath') or '').startswith(record['ref'] + '/')):
                     record['revoked'] = copy.deepcopy(data)
         if carrier is not None and carrier != self.outer.get('sessions', {}).get('stage' + str(self.state['stage'])):
             require(carrier in self.outer.get('sessions', {}).values(), 'identity_mismatch', 'event must retain a known original carrier')

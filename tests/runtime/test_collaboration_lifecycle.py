@@ -545,6 +545,19 @@ class CollaborationLifecycleTests(unittest.TestCase):
         f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
         self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
 
+    def test_late_unknown_descendant_activity_blocks_new_allocation_before_inventory(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        f.invoke('host-event', {'instance': f.state()['native_host']['instance'], 'event': {
+            'type': 'subAgentActivity', 'id': 'late-descendant-started', 'kind': 'started',
+            'agentPath': request['ref'] + '/late_child', 'agentThreadId': 'new-descendant-thread'}})
+        self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
+        blocked = f.invoke('allocation', {'allocation_id': 'after-late-descendant',
+            'operation': 'prepare', 'handoff': self.execution_handoff()})
+        self.assertEqual(blocked['error']['code'], 'host_action_pending')
+
     def test_revoked_close_recovers_only_after_new_unloaded_readback_and_fresh_inventory(self):
         f = self.f
         request, finish, close = self.finish_execution()
