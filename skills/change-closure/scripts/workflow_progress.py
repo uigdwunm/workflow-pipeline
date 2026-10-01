@@ -392,6 +392,7 @@ def validate_state(state):
     for record in records:
         require(isinstance(record, dict) and isinstance(record.get('ref'), str) and record['ref'] not in refs and
                 isinstance(record.get('thread_id'), str) and record['thread_id'] and isinstance(record.get('actions'), list) and
+                isinstance(record.get('delivery_digest'), str) and re.fullmatch(r'[0-9a-f]{64}', record['delivery_digest']) and
                 all(isinstance(action, dict) for action in record['actions']) and
                 [action.get('operation') for action in record['actions']] in (['finish-native'], ['finish-native', 'close-native']) and
                 isinstance(record.get('receipts'), list) and isinstance(record.get('prepare'), dict) and
@@ -1304,8 +1305,10 @@ class Progress:
             subtree = {ref for ref in agents if ref == record['ref'] or ref.startswith(record['ref'] + '/')}
             active = any(not (isinstance(agents[ref], dict) and set(agents[ref]) == {'completed'} and
                              isinstance(agents[ref]['completed'], str)) for ref in subtree)
+            readback_completed = any(observed['receipt'].get('query') and observed['receipt']['status'] == 'completed'
+                                     for observed in record['receipts'])
             if any(action['operation'] == 'close-native' for action in record['actions']) and (
-                    active or record.get('verified') and subtree):
+                    active or subtree and (record.get('verified') or readback_completed)):
                 record['revoked'] = {'checkpoint_revision': s['revision'], 'evidence': copy.deepcopy(data)}
         require(data['inventory']['controller_ref'] == s['native_host']['controller_ref'],
                 'identity_mismatch', 'retain the original controller agent path')
@@ -3713,7 +3716,8 @@ class Progress:
             entry.fields(data, {'operation','axis','candidate','actor_ref','verification'})
             self.require_not_stopping()
             self.require_business_ready()
-            self.require_finalizations_released()
+            if slot is None or slot['candidate'] != data['candidate']:
+                self.require_finalizations_released()
             control.validate_reviewable(s['control']['context']['handoff_progress'], data['candidate'], data['verification'])
             binding, scope = s['handoff']['binding'], s['handoff']['scope']
             observed = supervision.verify_worktree({'binding':binding,'platform_cwd':binding['worktree']})

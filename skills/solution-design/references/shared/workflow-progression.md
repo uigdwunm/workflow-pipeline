@@ -394,6 +394,8 @@ Completed readback must
 show `notLoaded` and the latest completed turn's original finish marker. It
 preserves the original archive receipt and actions, clears only the obsolete
 release proof, and requires a later fresh complete inventory before release.
+Any target or descendant reappearing after readback revokes release, including
+completed nodes; obtain another readback before fresh absence can grant release.
 Unknown/failed readback and duplicate old responses leave revocation intact.
 Readback cannot replace an unknown/failed archive or authorize another close;
 missing readback capability retains the block.

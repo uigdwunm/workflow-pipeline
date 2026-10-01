@@ -714,6 +714,94 @@ class CollaborationLifecycleTests(unittest.TestCase):
             'handoff': self.execution_handoff()})
         self.assertEqual(blocked['error']['code'], 'host_action_pending')
 
+    def assert_completed_reappearance_requires_readback(self, suffix):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
+        f.invoke('native-finalize', self.unloaded_query(finish, close, 'before-completed-reappearance'))
+        self.assertFalse(f.state()['native_finalizations'][0].get('verified'))
+        agents = self.execution_inventory(False)['response']['agents'] + [
+            {'agent_name': request['ref'] + suffix, 'agent_status': {'completed': 'reappeared after readback'}}]
+        f.invoke('lifecycle-state', self.snapshot(self.inventory(agents)))
+        self.assertTrue(f.state()['native_finalizations'][0].get('revoked'))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        blocked = f.invoke('allocation', {'allocation_id': 'after-completed-reappearance', 'operation': 'prepare',
+            'handoff': self.execution_handoff()})
+        self.assertEqual(blocked['error']['code'], 'host_action_pending')
+        actions = copy.deepcopy(f.state()['native_finalizations'][0]['actions'])
+        f.invoke('native-finalize', self.unloaded_query(finish, close, 'after-completed-reappearance'))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        self.assertTrue(f.state()['native_finalizations'][0].get('verified'))
+        self.assertFalse(f.state()['native_finalizations'][0].get('revoked'))
+        self.assertEqual(f.state()['native_finalizations'][0]['actions'], actions)
+
+    def test_native_retirement_completed_target_reappearance_requires_readback(self):
+        self.assert_completed_reappearance_requires_readback('')
+
+    def test_native_retirement_completed_descendant_reappearance_requires_readback(self):
+        self.assert_completed_reappearance_requires_readback('/new_descendant')
+
+    def test_native_retirement_preserves_saved_review_query(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        f.flow_git('add', 'impl.py')
+        f.flow_git('commit', '-qm', 'integrate accepted candidate for review')
+        candidate = f.flow_git('rev-parse', 'HEAD')
+        idle = f.observation('idle', 'result', ref='/root/dispatcher')
+        idle.pop('lifecycle', None)
+        f.invoke('observe', idle)
+        f.settings['thread_id'] = 'task'
+        f.request['host'].update(thread_id='task', role='controller', source_ref=None)
+        f.request['host'].pop('actor_ref', None)
+        current = f.state()['control']['context']
+        plan = current['handoff_progress']['validation_plan']
+        checks = fixtures.transfer.checks_for(plan['review_required'], candidate)
+        result = f.invoke('control', {'action': 'candidate-ready', 'evidence': {
+            'dispatcher_ref': '/root/dispatcher', 'attempt': current['carrier']['attempt'], 'commit': candidate,
+            'expected_target_head': f.git('rev-parse', 'main'), 'binding': f.binding,
+            'plan_digest': fixtures.transfer.control.digest(plan), 'checks': checks},
+            'receipt': {'adapter': 'fixture', 'call_ref': 'focused', 'response_ref': 'focused-result',
+                'raw': {'checks': checks, 'source_unchanged': True, 'stopped': True,
+                        'dispatcher_ref': '/root/dispatcher'}}})
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['state'], 'reviewable', result)
+        prepare = {'operation': 'prepare', 'axis': 'standards', 'candidate': candidate, 'actor_ref': 'task',
+            'verification': {'candidate': candidate, 'plan_digest': fixtures.transfer.control.digest(plan), 'checks': checks}}
+        issued = f.invoke('review-activity', prepare)['next_action']
+        saved = copy.deepcopy(f.state()['review_activity']['standards'])
+        f.invoke('host-event', {'instance': f.state()['native_host']['instance'], 'event': {
+            'type': 'subAgentActivity', 'id': 'reappeared-during-review', 'kind': 'interacted',
+            'agentPath': request['ref'], 'agentThreadId': 'executor-thread'}})
+        recovered = f.invoke('review-activity', prepare)
+        self.assertEqual(recovered['next_action']['operation'], 'lookup-exact-review', recovered)
+        self.assertEqual(recovered['next_action']['action_id'], issued['action_id'])
+        self.assertEqual(f.state()['review_activity']['standards'], saved)
+        blocked = f.invoke('review-activity', {**prepare, 'axis': 'spec'})
+        self.assertEqual(blocked['error']['code'], 'host_action_pending')
+        self.assertNotIn('spec', f.state()['review_activity'])
+
+    def test_native_retirement_rejects_invalid_delivery_digest(self):
+        f = self.f
+        self.finish_execution()
+        original = json.loads(f.checkpoint.read_text())
+        for value in (None, '', [], {}, True, 'invalid', 'A' * 64):
+            damaged = copy.deepcopy(original)
+            record = damaged[progress.KEY]['native_finalizations'][0]
+            if value is None:
+                record.pop('delivery_digest')
+            else:
+                record['delivery_digest'] = value
+            f.checkpoint.write_text(json.dumps(damaged))
+            before = f.checkpoint.read_bytes()
+            with self.subTest(value=value):
+                with self.assertRaises(progress.entry.PreparationError) as error:
+                    f.invoke('inspect')
+                self.assertEqual(error.exception.code, 'invalid_checkpoint')
+                self.assertEqual(f.checkpoint.read_bytes(), before)
+
     def test_reappeared_target_does_not_prevent_stopped_sibling_finalization(self):
         f = self.f
         self.accepted_execution()
