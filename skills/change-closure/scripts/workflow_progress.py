@@ -399,6 +399,12 @@ def validate_state(state):
                 'invalid_checkpoint', 'retain one finish and at most one close action for the exact native identity')
         refs.add(record['ref'])
         validate_native_close(record['prepare']['close'], record['ref'], record['thread_id'])
+        if 'revoked' in record:
+            revoked = record['revoked']
+            require(isinstance(revoked, dict) and set(revoked) == {'checkpoint_revision', 'evidence'} and
+                    type(revoked['checkpoint_revision']) is int and 0 <= revoked['checkpoint_revision'] <= state['revision'] and
+                    isinstance(revoked['evidence'], dict) and revoked['evidence'],
+                    'invalid_checkpoint', 'native revocation must retain its observation revision and raw evidence')
         for action in record['actions']:
             require(isinstance(action.get('action_id'), str) and action['action_id'] not in actions and
                     isinstance(action.get('payload'), dict) and action['payload'].get('ref') == record['ref'] and
@@ -1125,10 +1131,6 @@ class Progress:
                 continue
             descendants = {ref for ref in agents if ref.startswith(record['ref'] + '/')}
             inactive = record['ref'] not in agents and not descendants
-            active = any(not (isinstance(agents[ref], dict) and set(agents[ref]) == {'completed'})
-                         for ref in descendants | ({record['ref']} & set(agents)))
-            if active or record.get('verified') and not inactive:
-                record['revoked'] = copy.deepcopy(evidence)
             if inactive and not record.get('revoked'):
                 record['verified'] = copy.deepcopy(evidence)
 
@@ -1304,7 +1306,7 @@ class Progress:
                              isinstance(agents[ref]['completed'], str)) for ref in subtree)
             if any(action['operation'] == 'close-native' for action in record['actions']) and (
                     active or record.get('verified') and subtree):
-                record['revoked'] = copy.deepcopy(data)
+                record['revoked'] = {'checkpoint_revision': s['revision'], 'evidence': copy.deepcopy(data)}
         require(data['inventory']['controller_ref'] == s['native_host']['controller_ref'],
                 'identity_mismatch', 'retain the original controller agent path')
         # Trusted ingress authenticates these actual tool identities. Never
@@ -1363,7 +1365,7 @@ class Progress:
                     if (item['agentPath'] == record['ref'] or item['agentPath'].startswith(record['ref'] + '/') or
                             item['agentThreadId'] == record['thread_id']) and any(
                             action['operation'] == 'close-native' for action in record['actions']):
-                        record['revoked'] = copy.deepcopy(data)
+                        record['revoked'] = {'checkpoint_revision': self.state['revision'], 'evidence': copy.deepcopy(data)}
             self.save()
             return _view(self.state)
         transport = self.outer.get('transport')
@@ -1377,7 +1379,7 @@ class Progress:
             for record in self.state.get('native_finalizations', []):
                 if (item.get('agentPath') == record['ref'] or item.get('agentThreadId') == record['thread_id'] or
                         (item.get('agentPath') or '').startswith(record['ref'] + '/')):
-                    record['revoked'] = copy.deepcopy(data)
+                    record['revoked'] = {'checkpoint_revision': self.state['revision'], 'evidence': copy.deepcopy(data)}
         if carrier is not None and carrier != self.outer.get('sessions', {}).get('stage' + str(self.state['stage'])):
             require(carrier in self.outer.get('sessions', {}).values(), 'identity_mismatch', 'event must retain a known original carrier')
             self.state['observations'].append({'native_event':copy.deepcopy(data)})

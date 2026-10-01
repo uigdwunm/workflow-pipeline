@@ -214,6 +214,12 @@ class CollaborationLifecycleTests(unittest.TestCase):
                         lambda record: record['actions'][-1]['payload'].pop('adapter'),
                         lambda record: record.update(verified=True),
                         lambda record: record['verified'].pop('inventory')))
+        changes.extend(lambda record, value=value: record.update(revoked=value)
+                       for value in (None, {}, {'checkpoint_revision': True, 'evidence': {'event': 'activity'}},
+                                     {'checkpoint_revision': -1, 'evidence': {'event': 'activity'}},
+                                     {'checkpoint_revision': original[progress.KEY]['revision'] + 1,
+                                      'evidence': {'event': 'activity'}},
+                                     {'checkpoint_revision': 0, 'evidence': []}))
         for index, change in enumerate(changes):
             damaged = copy.deepcopy(original)
             change(damaged[progress.KEY]['native_finalizations'][0])
@@ -667,6 +673,46 @@ class CollaborationLifecycleTests(unittest.TestCase):
         self.assertTrue(f.state()['native_finalizations'][0].get('revoked'))
         f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
         self.assertFalse(f.state()['native_finalizations'][0].get('verified'))
+
+    def test_inventory_replays_cannot_restore_an_old_readback_guard(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        old_inventory = self.snapshot(self.execution_inventory())
+        f.invoke('lifecycle-state', old_inventory)
+        readback = self.unloaded_query(finish, close, 'before-inventory-replay')
+        f.invoke('host-event', {'instance': f.state()['native_host']['instance'], 'event': {
+            'type': 'subAgentActivity', 'id': 'after-old-inventory', 'kind': 'interacted',
+            'agentPath': request['ref'], 'agentThreadId': 'executor-thread'}})
+        f.invoke('lifecycle-state', old_inventory)
+        f.invoke('native-finalize', readback)
+        self.assertTrue(f.state()['native_finalizations'][0].get('revoked'))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        blocked = f.invoke('allocation', {'allocation_id': 'after-inventory-replay', 'operation': 'prepare',
+            'handoff': self.execution_handoff()})
+        self.assertEqual(blocked['error']['code'], 'host_action_pending')
+
+    def test_event_replays_cannot_restore_an_old_readback_guard(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        old_event = {'instance': f.state()['native_host']['instance'], 'event': {
+            'type': 'subAgentActivity', 'id': 'first-activity', 'kind': 'interacted',
+            'agentPath': request['ref'], 'agentThreadId': 'executor-thread'}}
+        f.invoke('host-event', old_event)
+        readback = self.unloaded_query(finish, close, 'before-event-replay')
+        newer_event = copy.deepcopy(old_event)
+        newer_event['event']['id'] = 'newer-activity'
+        f.invoke('host-event', newer_event)
+        f.invoke('host-event', old_event)
+        f.invoke('native-finalize', readback)
+        self.assertTrue(f.state()['native_finalizations'][0].get('revoked'))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        blocked = f.invoke('allocation', {'allocation_id': 'after-event-replay', 'operation': 'prepare',
+            'handoff': self.execution_handoff()})
+        self.assertEqual(blocked['error']['code'], 'host_action_pending')
 
     def test_reappeared_target_does_not_prevent_stopped_sibling_finalization(self):
         f = self.f

@@ -388,7 +388,9 @@ For a revoked successful close, `lookup-exact-native-action` supplies the actual
 Desktop `read_thread` request for that original UUID/host. Observe its new
 authenticated call/response with `receipt.query:true` and the lookup's unchanged
 `receipt.query_for` revocation guard. A query from an older guard can settle but
-cannot clear newer activity. Completed readback must
+cannot clear newer activity. The guard includes the existing checkpoint revision
+at activity observation, so replayed evidence cannot restore an older guard.
+Completed readback must
 show `notLoaded` and the latest completed turn's original finish marker. It
 preserves the original archive receipt and actions, clears only the obsolete
 release proof, and requires a later fresh complete inventory before release.
