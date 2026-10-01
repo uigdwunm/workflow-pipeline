@@ -377,10 +377,13 @@ wake/close. Ordinary inspect/advance exposes that saved action through a
 read-only lookup or requests a fresh lifecycle query; only an explicit identical
 native-finalize prepare can progress from verified finish to the one close call.
 New activity revokes closure evidence, including late observations.
+Business failure retains these read-only lookups and receipt reconciliation;
+new finish/close calls wait for the original business recovery.
 Pause/cancel intent forbids new finish/close calls while allowing existing
 receipt reconciliation. A finished turn can satisfy the stop barrier while its
-unarchived identity remains retained for resume; new native creation still waits
-for verified resource release. Historical runs retain their original pinned runtime;
+unarchived identity remains retained for resume; new native creation, including
+Dispatcher replacement, still waits for verified resource release. Saved creation
+intents remain queryable while that gate is closed. Historical runs retain their original pinned runtime;
 v17 does not migrate them.
 
 Every query revokes the previous snapshot immediately. New host activity,

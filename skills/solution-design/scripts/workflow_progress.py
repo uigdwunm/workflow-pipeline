@@ -369,16 +369,33 @@ def validate_state(state):
                 isinstance(record.get('thread_id'), str) and record['thread_id'] and isinstance(record.get('actions'), list) and
                 all(isinstance(action, dict) for action in record['actions']) and
                 [action.get('operation') for action in record['actions']] in (['finish-native'], ['finish-native', 'close-native']) and
-                isinstance(record.get('receipts'), list) and record.get('prepare', {}).get('ref') == record['ref'],
+                isinstance(record.get('receipts'), list) and isinstance(record.get('prepare'), dict) and
+                record['prepare'].get('ref') == record['ref'] and isinstance(record['prepare'].get('close'), dict),
                 'invalid_checkpoint', 'retain one finish and at most one close action for the exact native identity')
         refs.add(record['ref'])
         validate_native_close(record['prepare']['close'], record['ref'], record['thread_id'])
         for action in record['actions']:
             require(isinstance(action.get('action_id'), str) and action['action_id'] not in actions and
-                    action.get('payload', {}).get('ref') == record['ref'] and action['payload'].get('thread_id') == record['thread_id'],
+                    isinstance(action.get('payload'), dict) and action['payload'].get('ref') == record['ref'] and
+                    action['payload'].get('thread_id') == record['thread_id'],
                     'invalid_checkpoint', 'native action identity changed')
+            if action['operation'] == 'close-native':
+                require(action['payload'] == {'ref': record['ref'], 'thread_id': record['thread_id'],
+                        **record['prepare']['close']}, 'invalid_checkpoint', 'native close request changed')
             actions.add(action['action_id'])
+        record_actions = {action['action_id'] for action in record['actions']}
+        for data in record['receipts']:
+            require(isinstance(data, dict) and isinstance(data.get('action_id'), str) and
+                    data['action_id'] in record_actions and data.get('ref') == record['ref'] and
+                    isinstance(data.get('receipt'), dict), 'invalid_checkpoint', 'native receipt attribution is invalid')
+            receipt = data['receipt']
+            require(receipt.get('ref') == record['ref'] and receipt.get('status') in ('completed', 'unknown', 'failed') and
+                    all(isinstance(receipt.get(key), str) and receipt[key] for key in ('adapter', 'call_ref', 'response_ref')) and
+                    isinstance(receipt.get('raw'), dict) and receipt['raw'],
+                    'invalid_checkpoint', 'native receipt fields are invalid')
         if record.get('verified'):
+            require(isinstance(record['verified'], dict) and isinstance(record['verified'].get('inventory'), dict),
+                    'invalid_checkpoint', 'native closure inventory is invalid')
             close = record['actions'][-1]
             completed = [data['receipt'] for data in record['receipts'] if data['action_id'] == close['action_id'] and
                          data['receipt']['status'] == 'completed' and data['receipt']['ref'] == record['ref']]
@@ -710,8 +727,12 @@ def native_finalization_action(state):
 
 
 def _view(state, next_action=None, acknowledged=False, *, verified_readiness=None):
+    if next_action is None and state.get('business_block') and state['status'] == 'blocked':
+        next_action = native_finalization_action(state)
     if state.get("business_block") and state["status"] == "blocked" and (next_action or {}).get('operation') not in {
-            'invoke-recovery-host', 'lookup-recovery-host', 'activate-dispatch-recovery', 'prepare-dispatch-recovery', 'control-effects', 'await-host-recovery'}:
+            'invoke-recovery-host', 'lookup-recovery-host', 'activate-dispatch-recovery', 'prepare-dispatch-recovery',
+            'control-effects', 'await-host-recovery', 'lookup-exact-native-action', 'lifecycle-query',
+            'invoke-lifecycle-query', 'reconcile-stop-barrier'}:
         next_action = {"operation": "await-business-recovery", "subject": state["business_block"]["subject"]}
     if next_action is None and state.get("recovery_action"):
         next_action = state["recovery_action"]
@@ -1086,6 +1107,7 @@ class Progress:
                     return _view(s, {'operation': 'lookup-exact-native-action', 'action': action}, acknowledged=True)
                 if action['operation'] == 'close-native':
                     return _view(s, {'operation': 'reconcile-stop-barrier', 'ref': record['ref']}, acknowledged=True)
+                self.require_business_ready()
                 self.finalization_stopped(record)
                 require(not any(ref.startswith(record['ref'] + '/') for ref in
                             (self.native_refs() | set().union(*(self.native_refs(old) for old in s.get('history', [])))) - self.closed_native_refs()),
@@ -1093,6 +1115,7 @@ class Progress:
                 action = {'action_id': str(uuid.uuid4()), 'operation': 'close-native', 'payload': {
                     'ref': record['ref'], 'thread_id': record['thread_id'], **copy.deepcopy(data['close'])}, 'checkpoint': str(self.path)}
             else:
+                self.require_business_ready()
                 binding = data['binding']
                 entry.fields(binding, {'call_ref', 'response_ref', 'raw'})
                 entry.nonempty(binding['call_ref']); entry.nonempty(binding['response_ref'])
@@ -3149,6 +3172,8 @@ class Progress:
                 if data['action'] == 'dispatch-recovery-result' and s.get('transport_loss'):
                     return _view(s, s['recovery_action'], acknowledged=True)
                 return _view(s, {'operation':'control-effects', 'result':cached['result']}, acknowledged=True)
+            if data['action'] == 'dispatch-recovery-intent' and cached is None:
+                self.require_finalizations_released()
             if data['action'] != 'dispatch-recovery-result':
                 self.require_not_stopping()
             require(not s.get('publication') and (data['action'] == 'dispatch-recovery-result' or not s.get('transport_loss')),

@@ -182,6 +182,36 @@ class CollaborationLifecycleTests(unittest.TestCase):
         f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
         self.assertTrue(f.state()['native_finalizations'][0]['verified'])
 
+    def test_inspect_rejects_malformed_native_journal_without_rewriting_checkpoint(self):
+        f = self.f
+        request, finish, close = self.finish_execution()
+        f.invoke('native-finalize', self.finalize_observation(close))
+        f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
+        original = json.loads(f.checkpoint.read_text())
+        changes = [
+            lambda record, value=value: record.update(prepare=value)
+            for value in (None, 'invalid', [])
+        ]
+        changes.append(lambda record: record['prepare'].pop('close'))
+        changes.extend(lambda record, value=value: record['actions'][0].update(payload=value)
+                       for value in (None, 'invalid', []))
+        changes.extend((lambda record: record.update(receipts=[None]),
+                        lambda record: record.update(receipts=[{}]),
+                        lambda record: record['receipts'][0].update(receipt=None),
+                        lambda record: record['actions'][-1]['payload'].pop('adapter'),
+                        lambda record: record.update(verified=True),
+                        lambda record: record['verified'].pop('inventory')))
+        for index, change in enumerate(changes):
+            damaged = copy.deepcopy(original)
+            change(damaged[progress.KEY]['native_finalizations'][0])
+            f.checkpoint.write_text(json.dumps(damaged))
+            before = f.checkpoint.read_bytes()
+            with self.subTest(case=index):
+                with self.assertRaises(progress.entry.PreparationError) as error:
+                    f.invoke('inspect')
+                self.assertEqual(error.exception.code, 'invalid_checkpoint')
+                self.assertEqual(f.checkpoint.read_bytes(), before)
+
     def test_stale_prepare_only_recovers_finish_and_current_revision_may_issue_close(self):
         f = self.f
         self.accepted_execution()
@@ -372,6 +402,74 @@ class CollaborationLifecycleTests(unittest.TestCase):
             self.assertEqual(observed['operation'], 'lookup-exact-native-action')
             self.assertEqual(observed['action']['action_id'], finish['action_id'])
         self.assertEqual(f.checkpoint.read_bytes(), before)
+
+    def test_business_failure_keeps_issued_native_finish_lookup_accessible(self):
+        f = self.f
+        self.accepted_execution()
+        request = self.finalization('/root/dispatcher/executor', 'executor-thread')
+        request['actor_ref'] = '/root/dispatcher'
+        finish = f.invoke('native-finalize', request)['next_action']
+        failed = f.observation('idle', 'result', {'delivery_id': 'dispatcher-error',
+            'status': 'technical_error', 'payload': {'message': 'original dispatcher failed'}},
+            ref='/root/dispatcher')
+        failed.pop('lifecycle', None)
+        f.invoke('observe', failed)
+        block = copy.deepcopy(f.state()['business_block'])
+        before = f.checkpoint.read_bytes()
+        for operation, data in (('inspect', {}), ('advance', {}),
+                                ('native-finalize', {'operation': 'lookup', 'ref': request['ref']})):
+            action = f.invoke(operation, data)['next_action']
+            self.assertEqual(action['operation'], 'lookup-exact-native-action')
+            self.assertEqual(action['action']['action_id'], finish['action_id'])
+        self.assertEqual(f.checkpoint.read_bytes(), before)
+        f.invoke('native-finalize', self.finalize_observation(finish))
+        action = f.invoke('lifecycle-query')['next_action']
+        self.assertEqual(action['operation'], 'invoke-lifecycle-query')
+        self.assertEqual(f.state()['business_block'], block)
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            f.invoke('native-finalize', request)
+        self.assertEqual(error.exception.code, 'business_recovery_required')
+        self.assertEqual(len(f.state()['native_finalizations'][0]['actions']), 1)
+
+    def test_replacement_dispatch_waits_for_native_release_and_preserves_issued_lookup(self):
+        f = self.f
+        self.test_dispatch_recovery_retains_interactive_host_identity()
+        request = self.finalization()
+        finish = f.invoke('native-finalize', request)['next_action']
+        f.invoke('native-finalize', self.finalize_observation(finish))
+        agents = self.inventory()['response']['agents'] + [
+            {'agent_name': '/root/dispatcher', 'agent_status': {'completed': 'original dispatcher stopped'}}]
+        f.invoke('lifecycle-state', self.snapshot(self.inventory(agents)))
+        recovery = f.state()['control']['context']['handoff_progress']['recovery']
+        decision = {'reference': 'controller:assume-snapshot', 'authority_digest': recovery['authority_digest'],
+            'attempt': recovery['attempt'], 'remaining_paths': recovery['remaining_paths'],
+            'assume_paths': recovery['ownership']['dispatcher']}
+        intent = {'action': 'dispatch-recovery-intent', 'evidence': {
+            'recovery_id': recovery['recovery_id'], 'snapshot_digest': recovery['snapshot_digest'], 'decision': decision},
+            'receipt': {'controller_ref': 'task', 'reference': decision['reference']}}
+        before = copy.deepcopy(recovery)
+        rejected = f.invoke('control', intent)
+        self.assertEqual(rejected['status'], 'blocked', rejected)
+        self.assertEqual(rejected['error']['code'], 'host_action_pending')
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['recovery'], before)
+        close = f.invoke('native-finalize', request)['next_action']
+        f.invoke('native-finalize', self.finalize_observation(close))
+        released = self.inventory([agents[0], agents[-1]])
+        f.invoke('lifecycle-state', self.snapshot(released))
+        issued = f.invoke('control', intent)['next_action']
+        self.assertEqual(issued['operation'], 'invoke-recovery-host')
+        # Revoking release after creation cannot erase or reissue the saved call.
+        f.invoke('lifecycle-state', self.snapshot(self.inventory(agents)))
+        self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
+        repeated = f.invoke('control', intent)['next_action']
+        self.assertEqual(repeated['operation'], 'lookup-recovery-host')
+        self.assertEqual(repeated['request'], issued['request'])
+        receipt = {'adapter': 'fixture-native', 'call_ref': 'original-replacement-call',
+            'response_ref': 'unknown-original-replacement', 'intent_id': issued['request']['intent_id'],
+            'status': 'unknown', 'ref': None, 'raw': {'status': 'unknown', 'write_authority': False}}
+        f.invoke('control', {'action': 'dispatch-recovery-result',
+            'evidence': {'recovery_id': recovery['recovery_id'], 'receipt': receipt}, 'receipt': receipt})
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['recovery']['receipts'][-1], receipt)
 
     def test_late_running_inventory_revokes_closed_proof_before_stale_query_rejection(self):
         f = self.f
