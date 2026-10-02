@@ -14,6 +14,7 @@ import entry_prepare as entry
 import stage_handoff as handoff
 import stage_dispatch as dispatch
 import workflow_control as control
+import execution_plan
 import test_stage_transfer as transfer_fixture
 import test_workflow_progress as progress_fixture
 
@@ -202,10 +203,41 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "execution_plan_stale")
         self.assertEqual(flow.checkpoint.read_bytes(), before)
 
+    def test_dependency_requires_stopped_exact_current_result(self):
+        flow = self.active_flow()
+        request = self.execution_request(flow)
+        authority = flow.state()['scope_authority']
+        refs = request['semantic']['plan_refs']
+        current = flow.state()['control']['context']['handoff_progress']['plan_authority']
+        first = {'state': 'accepted', 'stopped': False, 'plan_authority': current,
+                 'plan_refs': [refs[0]], 'git_result_snapshot': {'impl.py': 'saved'}}
+        with self.assertRaises(entry.PreparationError) as error:
+            execution_plan.validate_plan_refs(authority['execution_plan'], [refs[1]],
+                ['impl.py'], request['scope']['protected_paths'], [first], authority)
+        self.assertEqual(error.exception.code, 'execution_plan_stale')
+        first['stopped'] = True
+        first['plan_refs'][0] = {**refs[0], 'step_digest': 'historical-step'}
+        with self.assertRaises(entry.PreparationError) as error:
+            execution_plan.validate_plan_refs(authority['execution_plan'], [refs[1]],
+                ['impl.py'], request['scope']['protected_paths'], [first], authority)
+        self.assertEqual(error.exception.code, 'execution_plan_stale')
+        first['plan_refs'][0] = refs[0]
+        group = execution_plan.validate_plan_refs(authority['execution_plan'], [refs[1]],
+            ['impl.py'], request['scope']['protected_paths'], [first], authority)
+        self.assertEqual(group['ordered_step_ids'], ['FP1-02'])
+        first['plan_authority'] = {**current, 'revision': current['revision'] - 1}
+        with self.assertRaises(entry.PreparationError):
+            execution_plan.validate_plan_refs(authority['execution_plan'], [refs[1]],
+                ['impl.py'], request['scope']['protected_paths'], [first], authority)
+
     def test_activated_revision_rejects_old_refs_and_releases_new_group(self):
         flow = self.active_flow(generated=True)
+        controller_request, controller_settings = copy.deepcopy(flow.request), copy.deepcopy(flow.settings)
         old_request = self.execution_request(flow)
         report = revision_fixture.PlanRevisionProgressTests.report(self, flow)
+        revised_validation = copy.deepcopy(flow.state()['control']['context']['handoff_progress']['validation_plan'])
+        revised_validation['review_required'][0]['command'] += ' revised'
+        report['validation_plan'] = revised_validation
         old_manifest = flow.state()["scope_authority"]["scope"]["downstream"]["manifest"]
         additional = copy.deepcopy(next(item for item in old_manifest
                                         if item["path"] == "generated/impl_copy.py"))
@@ -231,6 +263,30 @@ class PlanDrivenDispatchTests(unittest.TestCase):
             "planning_commit": flow.flow_git("rev-parse", "HEAD")})
         self.assertEqual(activated["next_action"]["operation"], "plan-revision-activated", activated)
         self.assertEqual(flow.state()["scope_authority"]["revision"], 2)
+        self.assertEqual(flow.state()['control']['context']['handoff_progress']['validation_plan'],
+                         revised_validation)
+        dispatcher_port = {'record': flow.state()['dispatch'],
+                           'control': copy.deepcopy(flow.state()['control'])}
+        dispatch.record_for(dispatcher_port)
+        self.assertEqual(dispatcher_port['_current_stage3_progress']['plan_authority']['revision'], 2)
+        forged_port = copy.deepcopy(dispatcher_port)
+        forged_port['control']['context']['handoff_progress']['validation_plan']['review_required'][0]['command'] = 'forged-check'
+        forged_port['control']['context']['handoff_progress']['plan_digest'] = entry.digest(
+            forged_port['control']['context']['handoff_progress']['validation_plan'])
+        with self.assertRaises(control.ControlError):
+            dispatch.record_for(forged_port)
+        wrong_control = copy.deepcopy(dispatcher_port)
+        wrong_control['control']['context']['preference']['stage_current'] = not \
+            wrong_control['control']['context']['preference']['stage_current']
+        with self.assertRaises(entry.PreparationError):
+            dispatch.record_for(wrong_control)
+        wrong_checkpoint = flow.checkpoint.with_name('other-controller.json')
+        wrong_checkpoint.write_bytes(flow.checkpoint.read_bytes())
+        wrong_record = handoff.unseal(dispatcher_port['record'])
+        wrong_record['scope_checkpoint_path'] = str(wrong_checkpoint)
+        with self.assertRaises(entry.PreparationError):
+            dispatch.record_for({'record': handoff.seal(wrong_record),
+                                 'control': copy.deepcopy(dispatcher_port['control'])})
         request = self.execution_request(flow)
         saved = handoff.handle(request)
         dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "prepare", "handoff": saved,
@@ -252,9 +308,82 @@ class PlanDrivenDispatchTests(unittest.TestCase):
                          flow.state()["control"]["context"]["handoff_progress"]["executions"][0]["write_release"])
         stale_request = copy.deepcopy(request)
         stale_request["semantic"]["plan_refs"] = old_request["semantic"]["plan_refs"]
-        stale = flow.invoke("allocation", {"allocation_id": "stale-group", "operation": "prepare",
-            "handoff": stale_request})
-        self.assertEqual(stale["error"]["code"], "execution_plan_stale", stale)
+        with self.assertRaises(entry.PreparationError) as stale:
+            handoff.handle(stale_request)
+        self.assertEqual(stale.exception.code, 'execution_plan_stale')
+        implementation = b"print('revised staged behavior')\n"
+        (flow.flow / 'impl.py').write_bytes(implementation)
+        slot = flow.state()['allocations']['current-group']
+        result_payload = {'changed_paths': ['impl.py'],
+            'file_hashes': {'impl.py': hashlib.sha256(implementation).hexdigest()},
+            'tests': ['revised behavior passed'],
+            'write_release': bound['next_action']['result']['write_release'],
+            'plan_refs': request['semantic']['plan_refs'],
+            'plan_authority': flow.state()['control']['context']['handoff_progress']['plan_authority']}
+        received = flow.invoke('allocation', {'allocation_id': 'current-group', 'operation': 'receive',
+            'receipt': flow.receipt(slot['record'], 'stopped', 'result', ref='native:revised-agent'),
+            'result': {'delivery_id': 'revised-group-result', 'status': 'completed',
+                       'payload': result_payload}})
+        self.assertEqual(received['next_action']['result']['status'], 'received', received)
+        accepted_group = flow.invoke('allocation', {'allocation_id': 'current-group', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:revised-group'}})
+        self.assertEqual(accepted_group['next_action']['result']['status'], 'accepted', accepted_group)
+        flow.request, flow.settings = controller_request, controller_settings
+        flow.flow_git('add', 'impl.py')
+        flow.flow_git('commit', '-qm', 'revised staged implementation')
+        candidate = flow.flow_git('rev-parse', 'HEAD')
+
+        def mark_current_reviewable(_candidate, fixture_execution=False):
+            flow.invoke('observe', flow.observation('idle', 'result', ref='native:dispatcher'))
+            checkpoint = flow.state()['control']['context']['handoff_progress']
+            checks = transfer_fixture.checks_for(checkpoint['validation_plan']['review_required'], candidate)
+            result = flow.invoke('control', {'action': 'candidate-ready', 'evidence': {
+                'dispatcher_ref': 'native:dispatcher',
+                'attempt': flow.state()['control']['context']['carrier']['attempt'],
+                'commit': candidate, 'expected_target_head': flow.git('rev-parse', 'main'),
+                'binding': flow.binding, 'plan_digest': checkpoint['plan_digest'],
+                'plan_authority': checkpoint['plan_authority'], 'checks': checks},
+                'receipt': {'adapter': 'fixture', 'call_ref': 'focused-staged',
+                    'response_ref': 'focused-staged-result', 'raw': {'checks': checks,
+                        'source_unchanged': True, 'stopped': True,
+                        'dispatcher_ref': 'native:dispatcher'}}})
+            self.assertEqual(flow.state()['control']['context']['handoff_progress']['state'],
+                             'reviewable', result)
+            return {'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
+                    'plan_authority': checkpoint['plan_authority'], 'checks': checks}
+
+        flow.mark_reviewable = mark_current_reviewable
+        payload = {'artifacts': ['impl.py'], 'checks': ['revised behavior passed'],
+            'candidate_commit': candidate,
+            'review': {axis: {'candidate': candidate, 'reviewer_ref': axis,
+                              'status': 'accepted'} for axis in ('standards', 'spec')},
+            'verification': {'candidate': candidate, 'checks': []}}
+        accepted = flow.accept_current(payload, 'native:dispatcher', fixture_execution=False)
+        self.assertEqual(accepted['status'], 'accepted', accepted)
+        accepted_payload = flow.state()['accepted']['payload']
+        self.assertEqual(accepted_payload['verification']['validation_plan'], revised_validation)
+        self.assertEqual(flow.state()['handoff']['readiness']['scope_revision'], 1)
+        current_progress = flow.state()['control']['context']['handoff_progress']
+        bad_authority = copy.deepcopy(accepted_payload)
+        bad_authority['verification']['plan_authority']['revision'] = 1
+        with self.assertRaises((entry.PreparationError, control.ControlError)):
+            handoff.verify_result(3, bad_authority, flow.binding,
+                flow.state()['handoff']['scope'], str(flow.flow), 'native:dispatcher',
+                current_progress=current_progress)
+        bad_n5 = copy.deepcopy(accepted_payload)
+        bad_n5['verification']['plan_digest'] = '0' * 64
+        with self.assertRaises((entry.PreparationError, control.ControlError)):
+            handoff.verify_result(3, bad_n5, flow.binding,
+                flow.state()['handoff']['scope'], str(flow.flow), 'native:dispatcher',
+                current_progress=current_progress)
+        spec.write_text(spec.read_text() + '\nunauthorized planning bytes\n')
+        flow.flow_git('add', 'docs/spec.md')
+        flow.flow_git('commit', '-qm', 'unactivated planning change')
+        with self.assertRaisesRegex((entry.PreparationError, control.ControlError),
+                                    'planning bytes changed|unapproved commit changed'):
+            handoff.verify_result(3, accepted_payload, flow.binding,
+                flow.state()['handoff']['scope'], str(flow.flow), 'native:dispatcher',
+                current_progress=current_progress)
 
     def test_new_stage_three_rejects_explicit_direct_policy(self):
         case = transfer_fixture.StageTransferTests(methodName="runTest")

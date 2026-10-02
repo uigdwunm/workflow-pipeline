@@ -1,5 +1,6 @@
 """Controller plan revision at the durable C and real Git boundary."""
 import copy
+import hashlib
 import json
 import re
 import sys
@@ -141,13 +142,13 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertNotIn("write_release", stopped.get("next_action") or {})
         self.assertEqual(flow.state()["plan_revision_transaction"]["state"], "stopping")
 
-    def test_only_planning_commit_activates_one_current_plan_and_preserves_index(self):
+    def test_only_planning_commit_activates_one_current_plan_and_preserves_unrelated_index(self):
         flow = self.new_active_flow()
-        (flow.flow / "impl.py").write_text("pending implementation\n")
-        flow.flow_git("add", "impl.py")
+        (flow.flow / "unrelated.txt").write_text("existing staged note\n")
+        flow.flow_git("add", "unrelated.txt")
         before_index = progress.control_git.plan_revision_snapshot(flow.flow,
             flow.state()["scope_authority"], flow.state()["handoff"]["scope"]["protected_paths"],
-            ["docs/spec.md"])["index_entries"]["impl.py"]
+            ["docs/spec.md"])["index_entries"]["unrelated.txt"]
         report = self.report(flow)
         flow.invoke("prepare-plan-revision", report)
         prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
@@ -169,7 +170,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(flow.state()["scope_authority"]["revision"], 2)
         self.assertEqual(progress.control_git.plan_revision_snapshot(flow.flow,
             flow.state()["scope_authority"], flow.state()["handoff"]["scope"]["protected_paths"],
-            ["docs/spec.md"])["index_entries"]["impl.py"], before_index)
+            ["docs/spec.md"])["index_entries"]["unrelated.txt"], before_index)
         for operation, data in (("prepare-plan-revision", report),
                                 ("commit-plan-revision", {"revision_id": report["revision_id"],
                                     "controller_ref": "task", "write_release": release,
@@ -179,6 +180,159 @@ class PlanRevisionProgressTests(unittest.TestCase):
             self.assertTrue(replay["acknowledged"], replay)
             self.assertNotIn("write_release", replay["next_action"])
             self.assertEqual(flow.flow_git("rev-parse", "HEAD"), candidate)
+
+    def test_retired_function_id_cannot_be_reused_after_intermediate_revision(self):
+        flow = self.new_active_flow()
+        for number in (1, 2, 3):
+            report = self.report(flow)
+            report['revision_id'] = f'retired-id-{number}'
+            report['classification']['reference'] = f'controller:retired-id-{number}'
+            prepared = flow.invoke('prepare-plan-revision', report)
+            if prepared['next_action']['operation'] == 'stop-host':
+                prepared = flow.invoke('observe', flow.observation('stopped', 'result', ref='native:dispatcher'))
+            self.assertEqual(prepared['next_action']['operation'], 'plan-revision-prepared', prepared)
+            spec = flow.flow / 'docs/spec.md'
+            body = spec.read_text()
+            match = re.search(r'```execution-plan-v1\n(.*?)\n```', body, re.DOTALL)
+            plan = json.loads(match.group(1))
+            plan['plan_version'] += 1
+            if number in (1, 3):
+                helper = copy.deepcopy(plan['steps'][0])
+                helper['id'] = 'FP1-retired-helper'
+                helper['target']['symbol'] = 'retired_helper'
+                helper['depends_on'] = ['FP1-01']
+                plan['steps'].append(helper)
+            else:
+                plan['steps'] = [step for step in plan['steps'] if step['id'] != 'FP1-retired-helper']
+            spec.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                            .replace(f'Plan Version: {number}', f'Plan Version: {number + 1}'))
+            flow.flow_git('add', 'docs/spec.md')
+            flow.flow_git('commit', '--only', '-qm', f'retire function revision {number}', '--', 'docs/spec.md')
+            before = flow.state()['scope_authority']['revision']
+            commit_request = {'revision_id': report['revision_id'],
+                'controller_ref': 'task', 'write_release': prepared['next_action']['write_release'],
+                'planning_commit': flow.flow_git('rev-parse', 'HEAD')}
+            if number < 3:
+                outcome = flow.invoke('commit-plan-revision', commit_request)
+                self.assertEqual(outcome['next_action']['operation'], 'plan-revision-activated', outcome)
+                self.assertEqual(flow.state()['scope_authority']['revision'], before + 1)
+            else:
+                with self.assertRaises(fixture.fixture.transfer.entry.PreparationError) as error:
+                    flow.invoke('commit-plan-revision', commit_request)
+                self.assertEqual(error.exception.code, 'execution_plan_incomplete')
+                self.assertEqual(flow.state()['scope_authority']['revision'], before)
+
+    def test_inline_revision_b_delivery_reads_current_controller_plan_and_n5(self):
+        flow = fixture.fixture.ProgressTests(methodName='runTest')
+        flow.setUp()
+        self.addCleanup(flow.doCleanups)
+        flow.begin_dispatcher()
+        authority = flow.state()['scope_authority']
+        plan = copy.deepcopy(authority['execution_plan']['tickets'][0]['plan'])
+        plan['plan_version'] += 1
+        plan['steps'][0]['approach'].append('Use the revised private helper sequence')
+        helper_step = copy.deepcopy(plan['steps'][0])
+        helper_step['id'] = 'inline-private-helper'
+        helper_step['target'] = {'path': 'helper.py', 'symbol': 'helper', 'operation': 'add'}
+        helper_step['depends_on'] = [plan['steps'][0]['id']]
+        plan['steps'].append(helper_step)
+        old_manifest = authority['scope']['downstream']['manifest']
+        helper_manifest = copy.deepcopy(next(item for item in old_manifest if item['path'] == 'impl.py'))
+        helper_manifest['path'] = 'helper.py'
+        revised_manifest = sorted([*old_manifest, helper_manifest], key=lambda item: item['path'])
+        validation = copy.deepcopy(flow.state()['control']['context']['handoff_progress']['validation_plan'])
+        validation['review_required'][0]['command'] += ' revised'
+        report = {'revision_id': 'inline-private-1',
+            'expected_authority_revision': authority['revision'],
+            'expected_authority_digest': fixture.fixture.transfer.entry.digest(authority),
+            'controller_ref': 'task',
+            'classification': {'kind': 'internal', 'reference': 'controller:inline-private'},
+            'report': {'ticket_ids': [plan['ticket_id']], 'step_ids': [plan['steps'][0]['id']],
+                'reason': 'Reorder a private helper', 'production_facts': 'Same output and caller',
+                'contract_before': authority['execution_plan']['contract_digest'],
+                'contract_after': authority['execution_plan']['contract_digest'],
+                'dependency_impact': [plan['steps'][0]['id']],
+                'verification_impact': [plan['verifications'][0]['id']],
+                'carry_forward': [], 'manifest_diff': progress.stage_scope.manifest_diff(
+                    old_manifest, revised_manifest)}, 'planning_paths': [],
+            'manifest': revised_manifest, 'inline_plan': plan, 'validation_plan': validation}
+        flow.invoke('prepare-plan-revision', report)
+        prepared = flow.invoke('observe', flow.observation('stopped', 'result', ref='native:dispatcher'))
+        self.assertEqual(prepared['next_action']['operation'], 'plan-revision-prepared', prepared)
+        activated = flow.invoke('commit-plan-revision', {'revision_id': report['revision_id'],
+            'controller_ref': 'task', 'write_release': prepared['next_action']['write_release'],
+            'planning_commit': flow.flow_git('rev-parse', 'HEAD')})
+        self.assertEqual(activated['next_action']['operation'], 'plan-revision-activated', activated)
+        port = {'record': flow.state()['dispatch'], 'control': copy.deepcopy(flow.state()['control'])}
+        progress.dispatch.record_for(port)
+        self.assertEqual(port['_current_stage3_progress']['plan_authority']['revision'], 2)
+        self.assertEqual(port['_current_stage3_progress']['validation_plan'], validation)
+        controller_request = copy.deepcopy(flow.request)
+        controller_settings = copy.deepcopy(flow.settings)
+        allocation_input = flow.execution_input()
+        allocation_input['scope']['owned_paths'] = ['helper.py', 'impl.py']
+        allocation_input['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
+            allocation_input['scope'])
+        ticket = flow.state()['scope_authority']['execution_plan']['tickets'][0]
+        allocation_input['semantic']['plan_refs'].append({'ticket_id': ticket['ticket_id'],
+            'step_id': helper_step['id'], 'plan_version': ticket['plan_version'],
+            'source': ticket['source'], 'step_digest': fixture.fixture.transfer.entry.digest(helper_step)})
+        prepared_allocation = flow.invoke('allocation', {'allocation_id': 'inline-current', 'operation': 'prepare',
+            'handoff': allocation_input})
+        self.assertIsNotNone(prepared_allocation['next_action'], prepared_allocation)
+        self.assertEqual(prepared_allocation['next_action']['operation'], 'invoke-host', prepared_allocation)
+        slot = flow.state()['allocations']['inline-current']
+        bound = flow.invoke('allocation', {'allocation_id': 'inline-current', 'operation': 'bind',
+            'receipt': flow.receipt(slot['record'], ref='native:inline-agent')})
+        release = bound['next_action']['result']['write_release']
+        implementation = b"print('revised inline behavior')\n"
+        helper_bytes = b"def helper():\n    return 'revised inline behavior'\n"
+        (flow.flow / 'impl.py').write_bytes(implementation)
+        (flow.flow / 'helper.py').write_bytes(helper_bytes)
+        slot = flow.state()['allocations']['inline-current']
+        result_payload = {'changed_paths': ['helper.py', 'impl.py'],
+            'file_hashes': {'impl.py': hashlib.sha256(implementation).hexdigest(),
+                            'helper.py': hashlib.sha256(helper_bytes).hexdigest()},
+            'tests': ['revised behavior passed'], 'write_release': release,
+            'plan_refs': allocation_input['semantic']['plan_refs'],
+            'plan_authority': flow.state()['control']['context']['handoff_progress']['plan_authority']}
+        flow.invoke('allocation', {'allocation_id': 'inline-current', 'operation': 'receive',
+            'receipt': flow.receipt(slot['record'], 'stopped', 'result', ref='native:inline-agent'),
+            'result': {'delivery_id': 'inline-current-result', 'status': 'completed',
+                       'payload': result_payload}})
+        accepted_result = flow.invoke('allocation', {'allocation_id': 'inline-current',
+            'operation': 'accept', 'decision': {'reference': 'dispatcher:inline-current'}})
+        self.assertEqual(accepted_result['next_action']['result']['status'], 'accepted')
+        flow.request = controller_request
+        flow.settings = controller_settings
+        flow.flow_git('add', 'impl.py', 'helper.py')
+        flow.flow_git('commit', '-qm', 'revised inline implementation')
+        candidate = flow.flow_git('rev-parse', 'HEAD')
+        flow.invoke('observe', flow.observation('idle', 'result', ref='native:dispatcher'))
+        checkpoint = flow.state()['control']['context']['handoff_progress']
+        checks = fixture.fixture.transfer.checks_for(checkpoint['validation_plan']['review_required'], candidate)
+        ready = flow.invoke('control', {'action': 'candidate-ready', 'evidence': {
+            'dispatcher_ref': 'native:dispatcher',
+            'attempt': flow.state()['control']['context']['carrier']['attempt'],
+            'commit': candidate, 'expected_target_head': flow.git('rev-parse', 'main'),
+            'binding': flow.binding, 'plan_digest': checkpoint['plan_digest'],
+            'plan_authority': checkpoint['plan_authority'], 'checks': checks},
+            'receipt': {'adapter': 'fixture', 'call_ref': 'focused-inline',
+                'response_ref': 'focused-inline-result', 'raw': {'checks': checks,
+                    'source_unchanged': True, 'stopped': True,
+                    'dispatcher_ref': 'native:dispatcher'}}})
+        self.assertEqual(flow.state()['control']['context']['handoff_progress']['state'], 'reviewable', ready)
+        flow.mark_reviewable = lambda _candidate, fixture_execution=False: {
+            'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
+            'plan_authority': checkpoint['plan_authority'], 'checks': checks}
+        payload = {'artifacts': ['impl.py', 'helper.py'], 'checks': ['revised behavior passed'],
+            'candidate_commit': candidate,
+            'review': {axis: {'candidate': candidate, 'reviewer_ref': axis,
+                              'status': 'accepted'} for axis in ('standards', 'spec')},
+            'verification': {'candidate': candidate, 'checks': checks}}
+        accepted = flow.accept_current(payload, 'native:dispatcher', fixture_execution=False)
+        self.assertEqual(accepted['status'], 'accepted', accepted)
+        self.assertEqual(flow.state()['accepted']['payload']['verification']['validation_plan'], validation)
 
     def test_public_contract_change_keeps_prepared_barrier_without_activation(self):
         flow = self.new_active_flow()
@@ -222,7 +376,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
             flow.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
                 "controller_ref": "task", "write_release": prepared["next_action"]["write_release"],
                 "planning_commit": flow.flow_git("rev-parse", "HEAD")})
-        self.assertIn("index entries changed", str(error.exception))
+        self.assertIn("index stages or flags changed", str(error.exception))
         self.assertEqual(flow.checkpoint.read_bytes(), before)
 
     def test_manifest_refinement_and_new_path_activate_together(self):

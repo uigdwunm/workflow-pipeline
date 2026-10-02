@@ -123,7 +123,7 @@ def refresh(request, expected, *, after_work=False, _binding_to_verify=None):
     return current
 
 
-def source(current, evidence, stage):
+def source(current, evidence, stage, *, attached_controller_entry=None):
     root = entry.discussion_root(current) if current["requirement"]["kind"] == "discussion" else current["repository"]["root"]
     if evidence is None and stage < 2 and current["requirement"]["kind"] == "discussion":
         topic = entry.topic_read(root, current["requirement"]["attachment"])
@@ -133,8 +133,25 @@ def source(current, evidence, stage):
     require(isinstance(evidence, dict) and evidence.get("protocol") == requirement.PROTOCOL,
             "invalid_source", "complete successful A requirement result required")
     if evidence.get("source_kind") == "discussion":
-        actual = requirement.attached_result(current, evidence["checkpoint"]["checkpoint_id"])
+        original = current if current["requirement"]["kind"] == "discussion" else attached_controller_entry
+        require(isinstance(original, dict) and original.get('requirement', {}).get('kind') == 'discussion' and
+                original.get('repository', {}).get('git_common_dir') == current['repository'].get('git_common_dir'),
+                'source_changed', 'attached requirement needs the original Controller source entry')
+        actual = requirement.attached_result(original, evidence["checkpoint"]["checkpoint_id"])
         require(actual == evidence, "source_changed", "discussion checkpoint changed")
+        if original is not current:
+            identity = actual['requirement_identity']
+            data = entry.read_document(current['repository']['root'], identity['path'])
+            require(current['requirement'].get('kind') == 'frozen' and
+                    current['requirement'].get('path') == identity['path'] and
+                    current['requirement'].get('sha256') == identity['sha256'] and
+                    actual['commit'] is not None and
+                    data is not None and
+                    hashlib.sha256(blob(current['repository']['root'], actual['commit'], identity['path'])).hexdigest() ==
+                    identity['sha256'] and
+                    mode(current['repository']['root'], actual['commit'], identity['path']) == b'100644' and
+                    hashlib.sha256(data).hexdigest() == identity['sha256'],
+                    'source_changed', 'Execution Agent frozen source differs from original attached checkpoint')
         return actual["requirement_identity"], actual["commit"]
     requirement.validate_seal(evidence)
     require(evidence.get("kind") in ({"document", "frozen"} if stage < 2 else {"frozen"}),
@@ -317,7 +334,8 @@ def delivery(request, current, identity, source_commit, *, _binding_report=None)
     return {"source_commit": source_commit, "delivery_commit": delivered, "target_head": head}
 
 
-def verify_result(stage, payload, binding, scope, root, role_ref, integration_recovery=None):
+def verify_result(stage, payload, binding, scope, root, role_ref, integration_recovery=None,
+                  current_progress=None):
     """Verify completed Git facts. Semantic acceptance remains controller-owned."""
     common = {"artifacts", "checks"}
     extra = {0: {"requirement", "delivery"}, 1: {"requirement", "delivery"},
@@ -348,15 +366,26 @@ def verify_result(stage, payload, binding, scope, root, role_ref, integration_re
     elif stage == 3:
         candidate = commit(payload["candidate_commit"])
         control.keys(payload["verification"], control.DELIVERY_VERIFICATION_FIELDS)
+        planning_paths = set()
+        if current_progress is not None:
+            require(current_progress['binding'] == binding and
+                    current_progress['git_baseline_commit'] == scope['baseline'],
+                    'scope_changed', 'current Controller authority belongs to another Flow')
+            control.validate_deliverable(current_progress, candidate, payload['review'],
+                                         payload['verification'], role_ref)
+            effective = current_progress['execution_authority']['scope']
+            scope = {**scope, 'implementation_paths': effective['implementation_paths'],
+                     'closure_paths': effective['closure_paths'], 'downstream': effective['downstream']}
+            planning_paths = control_git.verified_planning_paths(Path(root), current_progress)
         require(entry.git_text(root, "rev-parse", "HEAD") == candidate, "result_changed", "candidate differs from actual HEAD")
         ancestor(root, binding["base_commit"], candidate)
         review_base = commit(payload["verification"]["expected_target_head"])
         ancestor(root, scope["baseline"], review_base); ancestor(root, review_base, candidate)
         changed = set(entry.git(root, "diff", "--name-only", "-z", review_base, candidate).stdout.decode().split("\0")) - {""}
         retained_paths = set((integration_recovery or {}).get('retained_paths', []))
-        changed -= retained_paths
+        changed -= retained_paths | planning_paths
         require(changed <= set(scope["implementation_paths"]), "invalid_scope", "candidate escapes implementation scope")
-        history_paths = control_git.incoming_changed_paths(Path(root), review_base, candidate) - retained_paths
+        history_paths = control_git.incoming_changed_paths(Path(root), review_base, candidate) - retained_paths - planning_paths
         require(history_paths <= set(scope["implementation_paths"]) and
                 not history_paths & set(scope["protected_paths"]),
                 "invalid_scope", "candidate history escapes implementation scope")
@@ -378,6 +407,8 @@ def verify_result(stage, payload, binding, scope, root, role_ref, integration_re
                 "cleanup_pending", "publication retained; workspace disposition is incomplete")
         root, protected_revision = primary, merged
     for relative in scope["protected_paths"]:
+        if stage == 3 and relative in planning_paths:
+            continue
         source_revision = (integration_recovery['retained_commit'] if integration_recovery is not None and
                            relative in integration_recovery['retained_paths'] else scope['baseline'])
         require(blob(root, source_revision, relative) == blob(root, protected_revision, relative) and
@@ -422,6 +453,77 @@ def current_readiness(readiness):
     """Read the original C checkpoint, never trust a caller's ready assertion."""
     import workflow_progress as progress
     return progress.read_scope_readiness(readiness)
+
+
+def verify_stage_checkpoint_pin(saved, context, checkpoint_path):
+    """Bind a B dispatch record to its original durable Controller checkpoint."""
+    import workflow_progress as progress
+    require(isinstance(checkpoint_path, str), 'invalid_checkpoint',
+            'Controller checkpoint path is required')
+    checkpoint = Path(checkpoint_path)
+    require(checkpoint.is_absolute() and str(checkpoint.resolve()) == checkpoint_path,
+            'invalid_checkpoint', 'canonical original Controller checkpoint required')
+    outer = progress.read_record(checkpoint)
+    state = outer.get(progress.KEY)
+    require(isinstance(state, dict), 'handoff_not_ready', 'original Controller checkpoint is unavailable')
+    progress.validate_state(state)
+    require(state.get('stage') == saved.get('stage') and state.get('checkpoint_path') == checkpoint_path and
+            state.get('handoff') == saved and state['control']['context'] == context and
+            (saved.get('readiness') is None or
+             saved['readiness']['checkpoint_path'] == checkpoint_path),
+            'handoff_not_ready', 'checkpoint pin differs from the original B input')
+    return state
+
+
+def current_stage3_state(saved, context, checkpoint_path=None):
+    """Read the active staged or inline authority without changing saved B bytes."""
+    import workflow_progress as progress
+    readiness = saved.get('readiness')
+    require(saved.get('stage') == 3 and saved.get('role') == 'implementation-dispatcher',
+            'handoff_not_ready', 'Stage-3 Dispatcher input required')
+    if readiness is not None:
+        original_path = readiness['checkpoint_path']
+        require(checkpoint_path is None or checkpoint_path == original_path,
+                'handoff_not_ready', 'Dispatcher checkpoint pin changed')
+    else:
+        require(checkpoint_path is not None, 'handoff_not_ready',
+                'standalone revision needs the original Controller checkpoint pin')
+        original_path = checkpoint_path
+    checkpoint = Path(original_path)
+    outer = progress.read_record(checkpoint)
+    state = outer.get(progress.KEY)
+    require(isinstance(state, dict), 'handoff_not_ready', 'original Controller checkpoint is unavailable')
+    progress.validate_state(state)
+    if state.get('stage') == 2:
+        require(readiness is not None, 'handoff_not_ready',
+                'standalone Dispatcher cannot read a planning-stage checkpoint')
+        progress.read_scope_readiness(readiness)
+        return None
+    state = verify_stage_checkpoint_pin(saved, context, original_path)
+    effective = (progress.consumed_scope_readiness(state, checkpoint)
+                 if readiness is not None else None)
+    require((readiness is None or state.get('consumed_readiness') == readiness and
+             effective is not None and state.get('scope_authority') == effective['scope_authority']) and
+            state.get('scope_authority') == (state['control']['context'].get('handoff_progress') or {}).get('execution_authority') and
+            (state.get('plan_revision_transaction') or {}).get('state') in (None, 'activated'),
+            'handoff_not_ready', 'B result must use the current activated Controller authority')
+    return state
+
+
+def attached_source_entry(saved):
+    """Read the original discussion source from C for a delegated executor."""
+    if saved.get('role') != 'execution-agent' or saved.get('requirement', {}).get('source_kind') != 'discussion':
+        return None
+    readiness = saved.get('readiness')
+    require(readiness is not None, 'source_changed',
+            'attached Execution Agent needs its current Controller readiness')
+    state = current_readiness(readiness)
+    parent = state.get('handoff') or {}
+    require(state.get('stage') == 3 and parent.get('role') == 'implementation-dispatcher' and
+            parent.get('requirement') == saved['requirement'] and
+            parent.get('binding') == saved['binding'],
+            'source_changed', 'Execution Agent source differs from original Controller handoff')
+    return parent['expected_entry']
 
 
 def inherited_planning_paths(predecessor):
@@ -564,14 +666,17 @@ def _prepare(request):
     require(not set(scope["protected_paths"]) & set(active_writes),
             "invalid_scope", "write scope overlaps protected paths")
     require(not set(scope["implementation_paths"] or []) & set(scope["closure_paths"] or []), "invalid_scope", "implementation and closure ownership overlap")
-    identity, source_commit = source(current, request["requirement"], stage)
+    parent = None
     if stage == 3 and role == "execution-agent" and request.get("readiness") is not None:
         parent = current_readiness(request["readiness"])
         current_authority = request["readiness"]["scope_authority"]
         require(parent.get("stage") == 3 and parent.get("handoff", {}).get("role") == "implementation-dispatcher" and
                 parent["handoff"]["binding"] == request["binding"] and
+                parent["handoff"]["requirement"] == request["requirement"] and
                 current_authority["scope"]["downstream"] == scope["downstream"],
                 "scope_changed", "allocation must inherit the current sealed Dispatcher scope")
+    identity, source_commit = source(current, request["requirement"], stage,
+        attached_controller_entry=parent['handoff']['expected_entry'] if parent is not None else None)
     if stage >= 2:
         require(identity["path"] not in (scope["closure_paths"] or []), "invalid_scope", "frozen requirement is never closure-owned")
         if stage == 2:

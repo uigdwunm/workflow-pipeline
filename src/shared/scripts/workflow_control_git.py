@@ -458,6 +458,8 @@ def verified_transition(payload):
     if action == 'receive':
         verify_delivery(repository, payload['baseline'], evidence)
     if action == 'plan-revision-activate':
+        require(progress is not None, 'missing dispatcher checkpoint')
+        verify_binding(repository, progress['binding'])
         require(evidence['planning_paths'] == evidence['snapshot']['planning_paths'],
                 'planning release paths changed')
         derived = (verify_inline_plan_revision if evidence['planning_paths'] == [] else

@@ -1882,6 +1882,8 @@ class Progress:
             require(authority is not None and authority.get("state") == "sealed", "scope_incomplete",
                     "seal the complete planning scope before accepting its publication")
             extra.update(scope_authority=copy.deepcopy(authority), scope_checkpoint_path=str(self.path.resolve()))
+        if s['stage'] >= 2 and operation == 'prepare':
+            extra['scope_checkpoint_path'] = str(self.path.resolve())
         request = {"protocol": handoff.PROTOCOL, "operation": operation, "control": copy.deepcopy(s["control"]), **extra}
         request["handoff" if operation == "prepare" else "record"] = copy.deepcopy(s["handoff"] if operation == "prepare" else s["dispatch"])
         s["transaction"], s["transaction_source"], s["transaction_result"] = request, copy.deepcopy(_source), None
@@ -2483,6 +2485,17 @@ class Progress:
         new_tickets = {item["ticket_id"]: item for item in catalog["tickets"]}
         require(set(old_tickets) == set(new_tickets), "contract_changed",
                 "internal revision cannot add or remove a behavior Ticket")
+        historical_ids = {step['id'] for prior in s.get('plan_revision_history', {}).values()
+                          if prior.get('state') == 'activated'
+                          for authority in (prior['old_authority'], prior['proposed_authority'])
+                          for ticket in authority['execution_plan']['tickets']
+                          for step in ticket['plan']['steps']}
+        current_ids = {step['id'] for ticket in old_tickets.values()
+                       for step in ticket['plan']['steps']}
+        new_ids = {step['id'] for ticket in new_tickets.values()
+                   for step in ticket['plan']['steps']}
+        require(not (historical_ids - current_ids) & new_ids,
+                'execution_plan_incomplete', 'retired function IDs cannot be reused')
         for ticket_id, prior in old_tickets.items():
             current = new_tickets[ticket_id]
             changed = prior["source"]["sha256"] != current["source"]["sha256"]

@@ -463,9 +463,18 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
         stale("function group must follow current dependency order without duplicate refs")
     completed = set()
     for result in completed_results:
-        if result.get("state") == "accepted" and result.get("plan_authority") == expected_authority:
-            completed.update(ref["step_id"] for ref in result.get("plan_refs", [])
-                  if isinstance(ref, dict) and ref.get("step_id") in steps)
+        if (result.get("state") != "accepted" or result.get("stopped") is not True or
+                result.get("plan_authority") != expected_authority or
+                not isinstance(result.get("git_result_snapshot"), dict)):
+            continue
+        for ref in result.get("plan_refs", []):
+            if not isinstance(ref, dict) or ref.get("step_id") not in steps:
+                continue
+            ticket, step = steps[ref["step_id"]]
+            if ref == {"ticket_id": ticket["ticket_id"], "step_id": step["id"],
+                       "plan_version": ticket["plan_version"], "source": ticket["source"],
+                       "step_digest": entry.digest(step)}:
+                completed.add(step["id"])
     available = set(completed)
     covered, required_read, verification_commands = set(), set(), set()
     selected_tickets = set()

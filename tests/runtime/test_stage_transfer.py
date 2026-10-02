@@ -22,6 +22,7 @@ import stage_dispatch as dispatch
 import supervision_protocol as supervision
 import workflow_control as control
 import workflow_control_git as control_git
+import workflow_progress as progress
 import discussion_protocol
 from test_workflow_control import plan_for, checks_for, verification_fixture
 
@@ -329,6 +330,28 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         return {'artifacts':['impl.py'],'checks':['CLI passed'],'candidate_commit':candidate,
                 'review':review,'verification':control.delivery_verification(self.context['handoff_progress'],'native:dispatcher')}
 
+    def mark_reviewable(self, candidate, *, fixture_execution=True):
+        if fixture_execution:
+            outer = progress.read_record(self.checkpoint)
+            self.fixture_accepted_execution(outer[progress.KEY]['control']['context'], candidate)
+            progress.atomic_save(self.checkpoint, outer)
+        self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        checks = checks_for(checkpoint['validation_plan']['review_required'], candidate)
+        ready = self.invoke('control', {'action': 'candidate-ready', 'evidence': {
+            'dispatcher_ref': 'native:dispatcher',
+            'attempt': self.state()['control']['context']['carrier']['attempt'],
+            'commit': candidate, 'expected_target_head': self.git('rev-parse', 'main'),
+            'binding': self.binding, 'plan_digest': checkpoint['plan_digest'],
+            'plan_authority': checkpoint['plan_authority'], 'checks': checks},
+            'receipt': {'adapter': 'fixture', 'call_ref': 'focused-stage3',
+                'response_ref': 'focused-stage3-result', 'raw': {'checks': checks,
+                    'source_unchanged': True, 'stopped': True,
+                    'dispatcher_ref': 'native:dispatcher'}}})
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'reviewable', ready)
+        return {'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
+                'plan_authority': checkpoint['plan_authority'], 'checks': checks}
+
     def test_real_a_freeze_and_flow_transfer_preserve_user_changes(self):
         (self.root / "existing.txt").write_text("user staged\n")
         self.git("add", "existing.txt")
@@ -522,20 +545,20 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         accepted = self.complete_design()["accepted"]
         next_input = self.input_for(3, accepted)
         self.context = self.context_for(3)
-        launched = self.launch(next_input)
-        bound = self.call("bind", launched["record"], receipt=self.receipt(launched["record"], ref="native:dispatcher"))
+        self.launch(next_input)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
         (self.flow / "impl.py").write_text("print('ok')\n")
         self.flow_git("add", "impl.py"); self.flow_git("commit", "-qm", "implement")
         candidate = self.flow_git("rev-parse", "HEAD")
         payload = {"artifacts": ["impl.py"], "checks": ["CLI passed"], "candidate_commit": candidate,
                    "review": {axis: {"candidate": candidate, "reviewer_ref": axis, "status": "accepted"} for axis in ("standards", "spec")},
                    "verification": {"candidate": candidate, "checks": ["CLI passed"]}}
-        payload = self.finalize_candidate(bound["record"], candidate)
-        received = self.call("receive", bound["record"], receipt=self.receipt(bound["record"], "stopped", "result", "native:dispatcher"),
-                             result={"delivery_id": "candidate", "status": "completed", "payload": payload})
-        done = self.call("accept", received["record"], decision={"reference": "accepted:candidate", "delivery_digest": received["record"]["delivery"]["digest"]})
-        self.assertEqual(done["accepted"]["payload"]["candidate_commit"], candidate)
-        closure = self.input_for(4, done["accepted"])
+        from test_workflow_progress import ProgressTests
+        self.accept_current = ProgressTests.accept_current.__get__(self, type(self))
+        done = self.accept_current(payload, 'native:dispatcher')
+        self.assertEqual(done['status'], 'accepted', done)
+        self.assertEqual(self.state()['accepted']['payload']['candidate_commit'], candidate)
+        closure = self.input_for(4, self.state()['accepted'])
         self.context = self.context_for(4)
         launched = self.launch(closure)
         self.assertEqual(launched["host_call"]["role"], "closure-agent")
@@ -700,32 +723,38 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         implementation["scope"]["protected_paths"] = sorted([self.requirement_path, "docs/adr.md", "docs/spec.md"])
         implementation["authorization"]["scope_digest"] = entry.digest(implementation["scope"])
         self.context = self.context_for(3)
-        launched = self.launch(implementation)
-        bound = self.call("bind", launched["record"], receipt=self.receipt(launched["record"], ref="native:dispatcher"))
+        self.launch(implementation)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
         (self.flow / "impl.py").write_text("print('done')\n")
         self.flow_git("add", "impl.py"); self.flow_git("commit", "-qm", "implementation")
         candidate = self.flow_git("rev-parse", "HEAD")
         payload = {"artifacts": ["impl.py"], "checks": ["CLI passed"], "candidate_commit": candidate,
                    "review": {axis: {"candidate": candidate, "reviewer_ref": axis, "status": "accepted"} for axis in ("standards", "spec")},
                    "verification": {"candidate": candidate, "checks": ["CLI passed"]}}
-        payload = self.finalize_candidate(bound["record"], candidate)
         # A planning write cannot be accepted as an implementation result.
         (self.flow / "docs/spec.md").write_text("unauthorized implementation edit\n")
         self.flow_git("add", "docs/spec.md"); self.flow_git("commit", "-qm", "invalid implementation planning edit")
         bad = copy.deepcopy(payload)
         bad["candidate_commit"] = self.flow_git("rev-parse", "HEAD")
-        bad["verification"]["candidate"] = bad["candidate_commit"]
+        review_plan = self.state()['control']['context']['handoff_progress']['validation_plan']
+        bad['verification'] = {'candidate': bad['candidate_commit'],
+            'expected_target_head': self.git('rev-parse', 'main'),
+            'validation_plan': review_plan, 'plan_digest': control.digest(review_plan),
+            'review_digest': 'diagnostic', 'review_decision': {}, 'attempts': [],
+            'dispatcher_ref': 'native:dispatcher',
+            'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}
         for axis in bad["review"].values():
             axis["candidate"] = bad["candidate_commit"]
-        self.assert_code("invalid_scope", lambda: self.call("receive", bound["record"],
-            receipt=self.receipt(bound["record"], "stopped", "result", "native:dispatcher"),
-            result={"delivery_id": "invalid-implementation", "status": "completed", "payload": bad}))
+        self.assert_code('invalid_scope', lambda: handoff.verify_result(3, bad,
+            self.binding, implementation['scope'], str(self.flow), 'native:dispatcher'))
         # Reverting in a new commit would retain the unauthorized planning edit
         # in candidate history. Discard that commit before resuming acceptance.
         self.flow_git("reset", "--hard", candidate)
-        received = self.call("receive", bound["record"], receipt=self.receipt(bound["record"], "stopped", "result", "native:dispatcher"),
-                             result={"delivery_id": "implementation", "status": "completed", "payload": payload})
-        accepted = self.call("accept", received["record"], decision={"reference": "accepted", "delivery_digest": received["record"]["delivery"]["digest"]})["accepted"]
+        from test_workflow_progress import ProgressTests
+        self.accept_current = ProgressTests.accept_current.__get__(self, type(self))
+        done = self.accept_current(payload, 'native:dispatcher')
+        self.assertEqual(done['status'], 'accepted', done)
+        accepted = self.state()['accepted']
         self.assertIn("docs/spec.md", accepted["handoff"]["scope"]["protected_paths"])
         self.assertEqual(handoff.render(accepted)["payload"]["protected_paths"], sorted([self.requirement_path, "docs/adr.md"]))
         closure = self.input_for(4, accepted)

@@ -7,8 +7,57 @@ from .state import (ProtocolError, _active_pending_write, _canonical_json, _floc
 from .handoffs import _handoff_mutation_context, _handoff_data, _store_handoff
 from .topic_dependencies import apply_gate_policy
 
+from pathlib import Path
 import workflow_control as _control
 import workflow_control_git as _git
+
+
+GIT_BACKED_ACTIONS = {
+    'start-design', 'start-dispatch', 'start-closure', 'design-result',
+    'plan-execution', 'assign', 'execution-result', 'accept-execution',
+    'plan-revision-activate', 'prepare-dispatch-recovery', 'recover-dispatch',
+    'escalate-implementation', 'capture-integration', 'candidate-ready',
+    'review-start', 'review-converged', 'validation-start', 'validation-result',
+    'validation-retry', 'invalidate-candidate', 'delivery-ready',
+    'accept-delivery', 'closure-result',
+}
+
+
+def _start_git_authority(request, context, evidence, action):
+    """Resolve a start baseline from the C-owned pending B request, not HEAD."""
+    import stage_handoff as _handoff
+    import workflow_progress as _progress
+
+    checkpoint_path = request.get('scope_checkpoint_path')
+    if not isinstance(checkpoint_path, str):
+        raise ProtocolError('invalid_request', 'attached start requires its original Controller checkpoint')
+    checkpoint = Path(checkpoint_path)
+    if not checkpoint.is_absolute() or str(checkpoint.resolve()) != checkpoint_path:
+        raise ProtocolError('invalid_request', 'attached start checkpoint must be canonical')
+    state = _progress.read_record(checkpoint).get(_progress.KEY)
+    pending = state.get('transaction') if isinstance(state, dict) else None
+    saved = pending.get('handoff') if isinstance(pending, dict) else None
+    if not isinstance(saved, dict):
+        raise ProtocolError('invalid_request', 'attached start has no persisted B input')
+    _handoff.unseal(saved)
+    expected_role = {'start-design': 'solution-designer',
+                     'start-dispatch': 'implementation-dispatcher',
+                     'start-closure': 'closure-agent'}[action]
+    if not (state.get('checkpoint_path') == checkpoint_path and
+            state.get('handoff') == saved and state.get('stage') == saved.get('stage') and
+            state.get('control', {}).get('context') == context and
+            pending.get('operation') == 'prepare' and
+            pending.get('scope_checkpoint_path') == checkpoint_path and
+            pending.get('control', {}).get('context') == context and
+            saved.get('role') == expected_role and
+            saved.get('binding') == evidence.get('binding')):
+        raise ProtocolError('invalid_request', 'attached start differs from the original C/B authority')
+    repository = saved['binding']['worktree']
+    baseline = saved['scope']['baseline']
+    if _git.snapshot(repository)['head'] != baseline or (action == 'start-dispatch' and
+            _git.git(Path(repository), 'status', '--porcelain')):
+        raise ProtocolError('source_changed', 'attached start changed after its frozen B baseline')
+    return repository, baseline
 
 
 def _entry_candidates(records, topic, request, owner_ref, identity):
@@ -69,7 +118,9 @@ def _store_entry(record, data):
 
 
 def workflow_control(request):
-    ledger_path, lock_path, project, owner_ref = _handoff_mutation_context(request, {'action', 'evidence'})
+    schema_request = {**request, 'scope_checkpoint_path': request.get('scope_checkpoint_path')}
+    ledger_path, lock_path, project, owner_ref = _handoff_mutation_context(
+        schema_request, {'action', 'evidence', 'scope_checkpoint_path'})
     with lock_path.open('a+b') as stream:
         _flock_with_timeout(stream)
         frontmatter, records = _load_records(ledger_path)
@@ -197,9 +248,29 @@ def workflow_control(request):
                     evidence['verified_commit_hash'] = identity['sha256']
                 else:
                     _git.verify_delivery(project, evidence['commit'], evidence)
-            control = _control.transition({'schema_version': 6 if action == 'plan-revision-activate'
-                                            else context['schema_version'], 'actor_ref': owner_ref,
-                'context': context, 'action': action, 'evidence': evidence})
+            transition_request = {'schema_version': 6 if action == 'plan-revision-activate'
+                                  else context['schema_version'], 'actor_ref': owner_ref,
+                                  'context': context, 'action': action, 'evidence': evidence}
+            if action in GIT_BACKED_ACTIONS:
+                # The ledger lock is the original control transaction boundary.
+                # Resolve the Flow from the persisted control slot once launched;
+                # start actions use the just-verified B binding in their evidence.
+                bound = selected.get('handoff_progress') or {}
+                binding = bound.get('binding') or evidence.get('binding')
+                if not isinstance(binding, dict) or not isinstance(binding.get('worktree'), str):
+                    raise ProtocolError('invalid_request', 'attached Git action has no bound Flow')
+                if action in {'start-design', 'start-dispatch', 'start-closure'}:
+                    repository, baseline = _start_git_authority(request, context, evidence, action)
+                else:
+                    repository = binding['repository'] if action == 'closure-result' else binding['worktree']
+                    if not isinstance(bound.get('git_baseline_commit'), str):
+                        raise ProtocolError('invalid_request', 'attached Git action has no frozen control baseline')
+                    baseline = bound['git_baseline_commit']
+                control = _git.verified_transition({
+                    'repository': repository, 'baseline': baseline,
+                    'request': transition_request})
+            else:
+                control = _control.transition(transition_request)
         except _control.ControlError as error:
             raise ProtocolError('invalid_request', str(error)) from error
         if action == 'standalone-entry':

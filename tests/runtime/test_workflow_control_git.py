@@ -169,7 +169,7 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertEqual(facts['parent'], sealed)
         (self.repo / 'impl.py').write_text('changed during revision\n')
         self.git('add', 'impl.py')
-        with self.assertRaisesRegex(control.ControlError, 'index entries changed'):
+        with self.assertRaisesRegex(control.ControlError, 'index stages or flags changed'):
             control_git.verify_plan_revision(self.repo, stopped, candidate)
 
     def test_changed_requirement_is_received_and_archived_after_takeover(self):
@@ -261,6 +261,19 @@ class WorkflowGitTests(unittest.TestCase):
             planned = self.call('plan-execution', self.execution_envelope(context, name, [name+'.py']), context)
             context = self.call('assign', {'task_id': name, 'agent_ref': name, 'allocation_digest': planned['allocation_digest']}, planned['context'])['context']
         return context
+
+    def accept_second_plan_step(self, context):
+        planned = self.call('plan-execution', self.execution_envelope(context, 'b', ['b.py']), context)
+        self.assertTrue(planned['ok'], planned)
+        assigned = self.call('assign', {'task_id': 'b', 'agent_ref': 'b',
+            'allocation_digest': planned['allocation_digest']}, planned['context'])
+        self.assertTrue(assigned['ok'], assigned)
+        (self.repo / 'b.py').write_text('verified second step\n')
+        received = self.call('execution-result', self.result_evidence('b', ['b.py']), assigned['context'])
+        self.assertTrue(received['ok'], received)
+        accepted = self.call('accept-execution', {'agent_ref': 'b', 'file_hashes': {}}, received['context'])
+        self.assertTrue(accepted['ok'], accepted)
+        return accepted['context']
 
     def test_allocation_rejects_implementation_written_before_first_executor(self):
         context = self.start_dispatcher()
@@ -361,7 +374,8 @@ class WorkflowGitTests(unittest.TestCase):
         (self.repo / 'a.py').write_text('task version\n')
         received = self.call('execution-result', self.result_evidence('a', ['a.py']), context)
         context = self.call('accept-execution', {'agent_ref':'a', 'file_hashes':{}}, received['context'])['context']
-        self.git('add', 'a.py'); self.git('commit', '-qm', 'accepted implementation')
+        context = self.accept_second_plan_step(context)
+        self.git('add', 'a.py', 'b.py'); self.git('commit', '-qm', 'accepted implementation')
         accepted = self.git('rev-parse', 'HEAD')
         primary = self.root / 'repository'
         (primary / 'a.py').write_text('parallel version\n')
@@ -388,15 +402,32 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertTrue(received['ok'], received)
         accepted_result = self.call('accept-execution', {'agent_ref':'resolver', 'file_hashes':{}}, received['context'])
         self.assertTrue(accepted_result['ok'], accepted_result)
+        planned_b = self.call('plan-execution', self.execution_envelope(accepted_result['context'],
+            'revalidate-b', ['b.py'], ['docs/draft.md'], behavior='revalidate retained b behavior',
+            tests=['retained behavior'], adopt_paths=['b.py'],
+            adoption_snapshot_digest=source['snapshot_digest']), accepted_result['context'])
+        self.assertTrue(planned_b['ok'], planned_b)
+        assigned_b = self.call('assign', {'task_id': 'revalidate-b', 'agent_ref': 'b-resolver',
+            'allocation_digest': planned_b['allocation_digest']}, planned_b['context'])
+        self.assertTrue(assigned_b['ok'], assigned_b)
+        adopted_b = {**self.result_evidence('b-resolver', []),
+            'adopted_paths': ['b.py'],
+            'file_hashes': {'b.py': hashlib.sha256((self.repo / 'b.py').read_bytes()).hexdigest()}}
+        received_b = self.call('execution-result', adopted_b, assigned_b['context'])
+        self.assertTrue(received_b['ok'], received_b)
+        accepted_b = self.call('accept-execution', {'agent_ref': 'b-resolver', 'file_hashes': {}},
+                               received_b['context'])
+        self.assertTrue(accepted_b['ok'], accepted_b)
         self.git('add', 'a.py'); self.git('commit', '-qm', 'verified final integration')
         candidate = self.git('rev-parse', 'HEAD')
-        checkpoint = accepted_result['context']['handoff_progress']
+        checkpoint = accepted_b['context']['handoff_progress']
         checks = test_workflow_control.checks_for(checkpoint['validation_plan']['review_required'], candidate)
         ready = self.call('candidate-ready', {'dispatcher_ref':'dispatcher',
-            'attempt':accepted_result['context']['carrier']['attempt'], 'commit':candidate,
+            'attempt':accepted_b['context']['carrier']['attempt'], 'commit':candidate,
             'expected_target_head':target, 'binding':checkpoint['binding'], 'plan_digest':checkpoint['plan_digest'],
+            'plan_authority': checkpoint['plan_authority'],
             'checks':checks, 'source':{'adapter':'fixture', 'call_ref':'focused', 'response_ref':'focused-result',
-                'raw':{'checks':checks, 'source_unchanged':True, 'stopped':True, 'dispatcher_ref':'dispatcher'}}}, accepted_result['context'])
+                'raw':{'checks':checks, 'source_unchanged':True, 'stopped':True, 'dispatcher_ref':'dispatcher'}}}, accepted_b['context'])
         self.assertTrue(ready['ok'], ready)
 
     def test_parallel_results_wait_for_peer_evidence_before_acceptance(self):
@@ -438,25 +469,27 @@ class WorkflowGitTests(unittest.TestCase):
         received = self.call('execution-result', self.result_evidence('a', ['a.py']), context)
         accepted = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
         self.assertTrue(accepted['ok'], accepted)
-        self.git('add', 'a.py'); self.git('commit', '-qm', 'accepted implementation')
-        progress = accepted['context']['handoff_progress']
+        current = self.accept_second_plan_step(accepted['context'])
+        self.git('add', 'a.py', 'b.py'); self.git('commit', '-qm', 'accepted implementation')
+        progress = current['handoff_progress']
         plan = progress['validation_plan']
         target = self.git('rev-parse', progress['binding']['target_branch'])
         def evidence(candidate):
             checks = test_workflow_control.checks_for(plan['review_required'], candidate)
             return {'dispatcher_ref': 'dispatcher', 'attempt': accepted['context']['carrier']['attempt'],
                     'commit': candidate, 'expected_target_head': target, 'binding': progress['binding'],
-                    'plan_digest': control.digest(plan), 'checks': checks,
+                    'plan_digest': control.digest(plan), 'plan_authority': progress['plan_authority'],
+                    'checks': checks,
                     'source': {'adapter': 'fixture', 'call_ref': 'focused', 'response_ref': 'focused-result',
                                'raw': {'checks': checks, 'source_unchanged': True,
                                        'stopped': True, 'dispatcher_ref': 'dispatcher'}}}
         self.assertTrue(self.call('candidate-ready', evidence(self.git('rev-parse', 'HEAD')),
-                                  accepted['context'])['ok'])
+                                  current)['ok'])
         target_file = self.repo/'a.py'
         target_file.chmod((target_file.stat().st_mode & 0o777) | 0o111)
         self.git('add', 'a.py'); self.git('commit', '-qm', 'dispatcher mode change')
         self.assertFalse(self.call('candidate-ready', evidence(self.git('rev-parse', 'HEAD')),
-                                   accepted['context'])['ok'])
+                                   current)['ok'])
 
     def test_candidate_rejects_reverted_out_of_scope_history(self):
         context = self.start_allocations()
