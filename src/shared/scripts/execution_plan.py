@@ -235,8 +235,13 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
                 isinstance(plan["spec_ref"], dict) and set(plan["spec_ref"]) == {"path", "section"},
                 "invalid function-plan identity: " + path)
     ticket_body = _committed_file(repository, commit, path)["body"]
-    _incomplete(("Ticket ID: " + plan["ticket_id"]).encode() in _ticket_contract({"path": path, "body": ticket_body}) and
-                ("Plan Version: " + str(plan["plan_version"])).encode() in ticket_body,
+    start, end = source["block_span"]
+    declarations = ticket_body[:start] + ticket_body[end:]
+    ticket_lines = re.findall(rb"(?m)^Ticket ID:[^\r\n]*\r?$", declarations)
+    version_lines = re.findall(rb"(?m)^Plan Version:[^\r\n]*\r?$", declarations)
+    _incomplete(len(ticket_lines) == 1 and len(version_lines) == 1 and
+                ticket_lines[0].removesuffix(b"\r") == ("Ticket ID: " + plan["ticket_id"]).encode() and
+                version_lines[0].removesuffix(b"\r") == ("Plan Version: " + str(plan["plan_version"])).encode(),
                 "Ticket identity/version differs from its function plan: " + path)
     _incomplete(plan["spec_ref"]["path"] in spec_sections and
                 isinstance(plan["spec_ref"]["section"], str) and

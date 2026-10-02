@@ -19,7 +19,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         self.addCleanup(case.doCleanups)
         return case
 
-    def rejected_plan(self, change, *, add_unplanned_test=False):
+    def rejected_plan(self, change, *, change_document=None, add_unplanned_test=False):
         case = self.new_flow()
         candidate = case.planning_candidate()
         path = case.flow.flow / "docs/spec.md"
@@ -28,6 +28,8 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         plan = json.loads(match.group(1))
         replacement = change(plan)
         updated = text[:match.start(1)] + replacement + text[match.end(1):]
+        if change_document is not None:
+            updated = change_document(updated)
         if updated != text:
             path.write_text(updated)
             case.flow.flow_git("add", "docs/spec.md")
@@ -50,6 +52,35 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
             case.flow.invoke("scope-propose", proposal)
         self.assertEqual(error.exception.code, "execution_plan_incomplete")
         self.assertEqual(case.flow.checkpoint.read_bytes(), before)
+
+    def test_ticket_identity_requires_unique_exact_document_lines(self):
+        def plan_ticket_id(plan):
+            plan["ticket_id"] = "FEP-1"
+            plan["contract_refs"] = [ref.replace("FEP-01:", "FEP-1:")
+                                     for ref in plan["contract_refs"]]
+            return json.dumps(plan)
+
+        cases = (
+            ("ticket prefix", plan_ticket_id,
+             lambda text: text.replace("Ticket ID: FEP-01\n", "Ticket ID: FEP-10\n")),
+            ("version prefix", json.dumps,
+             lambda text: text.replace("Plan Version: 1\n", "Plan Version: 10\n")),
+            ("missing ticket", json.dumps,
+             lambda text: text.replace("Ticket ID: FEP-01\n", "")),
+            ("duplicate ticket", json.dumps,
+             lambda text: text.replace("Ticket ID: FEP-01\n", "Ticket ID: FEP-01\nTicket ID: FEP-01\n")),
+            ("ambiguous ticket", json.dumps,
+             lambda text: text.replace("Ticket ID: FEP-01\n", "Ticket ID: FEP-01 extra\n")),
+            ("missing version", json.dumps,
+             lambda text: text.replace("Plan Version: 1\n", "")),
+            ("duplicate version", json.dumps,
+             lambda text: text.replace("Plan Version: 1\n", "Plan Version: 1\nPlan Version: 1\n")),
+            ("ambiguous version", json.dumps,
+             lambda text: text.replace("Plan Version: 1\n", "Plan Version: 1 extra\n")),
+        )
+        for label, change_plan, change_document in cases:
+            with self.subTest(label):
+                self.rejected_plan(change_plan, change_document=change_document)
 
     def test_spec_reference_requires_one_real_section_at_controller_boundary(self):
         self.rejected_plan(lambda plan: json.dumps({**plan,
