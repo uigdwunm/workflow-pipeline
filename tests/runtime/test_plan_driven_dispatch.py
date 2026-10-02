@@ -1,0 +1,320 @@
+"""Plan-bound allocation through the saved Controller, B handoff and Git seam."""
+import copy
+import hashlib
+import json
+import re
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import test_plan_revision_progress as revision_fixture
+import workflow_progress as progress
+import entry_prepare as entry
+import stage_handoff as handoff
+import stage_dispatch as dispatch
+import workflow_control as control
+import test_stage_transfer as transfer_fixture
+import test_workflow_progress as progress_fixture
+
+
+def inline_plan(requirement_path):
+    return {
+        "schema_version": 1, "ticket_id": "INLINE-1", "plan_version": 1,
+        "spec_ref": {"path": "inline", "section": "brief"},
+        "contract_refs": ["standalone:objective"], "blocked_by": [],
+        "verifications": [{"id": "V-inline", "behavior": "requested behavior is present",
+            "seam": "observed Python output", "commands": ["python3 scripts/run_tests.py --test-file tests/runtime/test_plan_driven_dispatch.py"]}],
+        "steps": [{"id": "inline-step", "target": {"path": "impl.py", "symbol": "run", "operation": "add"},
+            "capability": "implement the brief", "approach": ["write the requested implementation"],
+            "inputs": ["frozen brief"], "outputs": ["observable result"], "failures": ["invalid input is reported"],
+            "depends_on": [], "verification_refs": ["V-inline"],
+            "read_only": [requirement_path]}], "artifact_steps": []}
+
+
+class PlanDrivenDispatchTests(unittest.TestCase):
+    def active_flow(self, *, generated=False):
+        return revision_fixture.PlanRevisionProgressTests.new_active_flow(self, generated=generated)
+
+    def execution_request(self, flow):
+        state = flow.state()
+        authority = state["scope_authority"]
+        catalog = authority["execution_plan"]
+        request = flow.execution_input()
+        request["scope"] = copy.deepcopy(state["handoff"]["scope"])
+        request["scope"]["baseline"] = flow.flow_git("rev-parse", "HEAD")
+        for key in ("downstream", "implementation_paths", "closure_paths"):
+            request["scope"][key] = copy.deepcopy(authority["scope"][key])
+        request["scope"]["owned_paths"] = ["impl.py"]
+        request["authorization"]["scope_digest"] = entry.digest(request["scope"])
+        request["readiness"] = progress.consumed_scope_readiness(state, flow.checkpoint)
+        request["manifest_baseline"] = authority["scope"]["baseline"]
+        ticket = catalog["tickets"][0]
+        request["semantic"]["plan_refs"] = [
+            {"ticket_id": ticket["ticket_id"], "step_id": step_id,
+             "plan_version": ticket["plan_version"], "source": ticket["source"],
+             "step_digest": entry.digest(next(step for step in ticket["plan"]["steps"] if step["id"] == step_id))}
+            for step_id in catalog["ordered_step_ids"]]
+        request["semantic"]["authority_revision"] = authority["revision"]
+        request["semantic"]["authority_digest"] = entry.digest(authority)
+        request["semantic"]["plan_digest"] = catalog["plan_digest"]
+        return request
+
+    def test_current_group_from_activated_authority_prepares_with_generated_map(self):
+        flow = self.active_flow(generated=True)
+        request = self.execution_request(flow)
+        response = flow.invoke("allocation", {"allocation_id": "group", "operation": "prepare", "handoff": request})
+        self.assertIsNotNone(response.get("next_action"), response)
+        self.assertEqual(response["next_action"]["operation"], "invoke-host", response)
+        saved = flow.state()["allocations"]["group"]
+        self.assertEqual(saved["record"]["handoff"]["semantic"]["plan_refs"], request["semantic"]["plan_refs"])
+        self.assertEqual(saved["record"]["request"]["payload"]["current_scope_authority"]["revision"], 1)
+        self.assertEqual(saved["record"]["request"]["payload"]["semantic"]["execution_plan"]["plan_digest"],
+                         flow.state()["scope_authority"]["execution_plan"]["plan_digest"])
+        self.assertIn("generated/impl_copy.py", saved["record"]["request"]["payload"]["generated_outputs"]["impl.py"])
+
+    def test_bound_group_release_result_and_accept_use_the_same_plan_identity(self):
+        flow = self.active_flow()
+        request = self.execution_request(flow)
+        flow.invoke("allocation", {"allocation_id": "group", "operation": "prepare", "handoff": request})
+        slot = flow.state()["allocations"]["group"]
+        bound = flow.invoke("allocation", {"allocation_id": "group", "operation": "bind",
+            "receipt": flow.receipt(slot["record"], ref="native:plan-agent")})
+        release = bound["next_action"]["result"]["write_release"]
+        self.assertEqual(release, flow.state()["control"]["context"]["handoff_progress"]["executions"][0]["write_release"])
+        data = b"print('verified plan group')\n"
+        (flow.flow / "impl.py").write_bytes(data)
+        slot = flow.state()["allocations"]["group"]
+        payload = {"changed_paths": ["impl.py"], "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()},
+            "tests": ["fixture behavior passed"], "write_release": release,
+            "plan_refs": request["semantic"]["plan_refs"],
+            "plan_authority": flow.state()["control"]["context"]["handoff_progress"]["plan_authority"]}
+        received = flow.invoke("allocation", {"allocation_id": "group", "operation": "receive",
+            "receipt": flow.receipt(slot["record"], "stopped", "result", ref="native:plan-agent"),
+            "result": {"delivery_id": "group-result", "status": "completed", "payload": payload}})
+        self.assertEqual(received["next_action"]["result"]["status"], "received", received)
+        accepted = flow.invoke("allocation", {"allocation_id": "group", "operation": "accept",
+            "decision": {"reference": "dispatcher:accepted-current-group"}})
+        self.assertEqual(accepted["next_action"]["result"]["status"], "accepted", accepted)
+
+    def test_control_rejects_forged_step_even_with_matching_group_digest(self):
+        flow = self.active_flow()
+        request = self.execution_request(flow)
+        context = flow.state()["control"]["context"]
+        authority = context["handoff_progress"]["plan_authority"]
+        forged = copy.deepcopy(request["semantic"]["plan_refs"])
+        forged[0]["step_id"] = "unknown-step"
+        evidence = {"task_id": "forged-group", "paths": ["impl.py"],
+            "read_only": request["scope"]["protected_paths"], "behavior": "approved behavior",
+            "tests": ["python3 scripts/run_tests.py --test-file tests/runtime/test_plan_driven_dispatch.py"],
+            "git_operations": [], "configuration": request["configuration"],
+            "plan_refs": forged, "plan_authority": authority,
+            "group_digest": entry.digest([authority, forged])}
+        before = flow.checkpoint.read_bytes()
+        with self.assertRaises(entry.PreparationError) as error:
+            control.transition({"schema_version": context["schema_version"],
+                "actor_ref": context["controller_ref"], "context": context,
+                "action": "plan-execution", "evidence": evidence})
+        self.assertEqual(error.exception.code, "execution_plan_stale")
+        self.assertEqual(flow.checkpoint.read_bytes(), before)
+
+    def test_activated_revision_rejects_old_refs_and_releases_new_group(self):
+        flow = self.active_flow(generated=True)
+        old_request = self.execution_request(flow)
+        report = revision_fixture.PlanRevisionProgressTests.report(self, flow)
+        old_manifest = flow.state()["scope_authority"]["scope"]["downstream"]["manifest"]
+        additional = copy.deepcopy(next(item for item in old_manifest
+                                        if item["path"] == "generated/impl_copy.py"))
+        additional["path"] = "generated/second.py"
+        report["manifest"] = sorted([*old_manifest, additional], key=lambda item: item["path"])
+        report["generated_outputs"] = {"impl.py": ["generated/impl_copy.py", "generated/second.py"]}
+        report["report"]["manifest_diff"] = progress.stage_scope.manifest_diff(old_manifest, report["manifest"])
+        flow.invoke("prepare-plan-revision", report)
+        prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
+        release = prepared["next_action"]["write_release"]
+        spec = flow.flow / "docs/spec.md"
+        original = spec.read_text()
+        match = re.search(r"```execution-plan-v1\n(.*?)\n```", original, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan["plan_version"] = 2
+        plan["steps"][0]["approach"].append("Keep the current behavior with a revised private step")
+        spec.write_text((original[:match.start(1)] + json.dumps(plan) + original[match.end(1):])
+                        .replace("Plan Version: 1", "Plan Version: 2"))
+        flow.flow_git("add", "docs/spec.md")
+        flow.flow_git("commit", "--only", "-qm", "private plan revision", "--", "docs/spec.md")
+        activated = flow.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
+            "controller_ref": "task", "write_release": release,
+            "planning_commit": flow.flow_git("rev-parse", "HEAD")})
+        self.assertEqual(activated["next_action"]["operation"], "plan-revision-activated", activated)
+        self.assertEqual(flow.state()["scope_authority"]["revision"], 2)
+        request = self.execution_request(flow)
+        saved = handoff.handle(request)
+        dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "prepare", "handoff": saved,
+                         "control": {"context": flow.state()["control"]["context"], "discussion": None}})
+        current = flow.invoke("allocation", {"allocation_id": "current-group", "operation": "prepare",
+            "handoff": request})
+        self.assertIsNotNone(current.get("next_action"), current)
+        self.assertEqual(current["next_action"]["operation"], "invoke-host", current)
+        payload = flow.state()["allocations"]["current-group"]["record"]["request"]["payload"]
+        self.assertEqual(payload["current_scope_authority"]["revision"], 2)
+        self.assertEqual(payload["generated_outputs"]["impl.py"],
+                         ["generated/impl_copy.py", "generated/second.py"])
+        self.assertIn("generated/second.py", payload["scope"]["implementation_paths"])
+        slot = flow.state()["allocations"]["current-group"]
+        bound = flow.invoke("allocation", {"allocation_id": "current-group", "operation": "bind",
+            "receipt": flow.receipt(slot["record"], ref="native:revised-agent")})
+        self.assertEqual(bound["next_action"]["result"]["status"], "bound", bound)
+        self.assertEqual(bound["next_action"]["result"]["write_release"],
+                         flow.state()["control"]["context"]["handoff_progress"]["executions"][0]["write_release"])
+        stale_request = copy.deepcopy(request)
+        stale_request["semantic"]["plan_refs"] = old_request["semantic"]["plan_refs"]
+        stale = flow.invoke("allocation", {"allocation_id": "stale-group", "operation": "prepare",
+            "handoff": stale_request})
+        self.assertEqual(stale["error"]["code"], "execution_plan_stale", stale)
+
+    def test_new_stage_three_rejects_explicit_direct_policy(self):
+        case = transfer_fixture.StageTransferTests(methodName="runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        request = case.input_for(3)
+        request["semantic"]["implementation_policy"] = {"mode": "direct"}
+        with self.assertRaises(entry.PreparationError) as error:
+            handoff.handle(request)
+        self.assertEqual(error.exception.code, "invalid_policy")
+
+    def test_standalone_inline_function_plan_needs_no_ticket_document(self):
+        case = transfer_fixture.StageTransferTests(methodName="runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        request = case.input_for(3)
+        request["semantic"]["inline_plan"] = inline_plan(case.requirement_path)
+        request.pop("inline_authority")
+        saved = handoff.handle(request)
+        payload = handoff.render(saved)["payload"]
+        self.assertEqual(payload["execution_plan"]["tickets"][0]["plan"]["ticket_id"], "INLINE-1")
+        self.assertEqual(payload["current_scope_authority"]["kind"], "inline")
+
+    def test_standalone_inline_group_allocates_under_original_controller(self):
+        case = progress_fixture.ProgressTests(methodName="runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        request = case.input_for(3)
+        request["semantic"]["inline_plan"] = inline_plan(case.requirement_path)
+        request.pop("inline_authority")
+        case.context = case.context_for(3)
+        case.begin("continuous", request)
+        case.invoke("observe", case.observation(ref="native:dispatcher"))
+        authority = case.state()["handoff"]["inline_authority"]
+        execution = case.execution_input()
+        execution["scope"] = copy.deepcopy(case.state()["handoff"]["scope"])
+        execution["scope"]["owned_paths"] = ["impl.py"]
+        execution["authorization"]["scope_digest"] = entry.digest(execution["scope"])
+        record = authority["execution_plan"]["tickets"][0]
+        step = record["plan"]["steps"][0]
+        execution["semantic"].update(inline_plan=request["semantic"]["inline_plan"],
+            plan_refs=[{"ticket_id": record["ticket_id"], "step_id": step["id"],
+                "plan_version": record["plan_version"], "source": record["source"],
+                "step_digest": entry.digest(step)}],
+            authority_revision=authority["revision"], authority_digest=entry.digest(authority),
+            plan_digest=authority["execution_plan"]["plan_digest"])
+        prepared = case.invoke("allocation", {"allocation_id": "inline-group", "operation": "prepare",
+            "handoff": execution})
+        self.assertEqual(prepared["next_action"]["operation"], "invoke-host", prepared)
+
+    def test_inline_revision_switches_current_plan_without_document_commit(self):
+        case = progress_fixture.ProgressTests(methodName="runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        request = case.input_for(3)
+        request["semantic"]["inline_plan"] = inline_plan(case.requirement_path)
+        request.pop("inline_authority")
+        case.context = case.context_for(3)
+        case.begin("continuous", request)
+        case.invoke("observe", case.observation(ref="native:dispatcher"))
+        old = case.state()["scope_authority"]
+        old_execution = case.execution_input()
+        old_execution["scope"] = copy.deepcopy(case.state()["handoff"]["scope"])
+        old_execution["scope"]["owned_paths"] = ["impl.py"]
+        old_execution["authorization"]["scope_digest"] = entry.digest(old_execution["scope"])
+        first = old["execution_plan"]["tickets"][0]
+        first_step = first["plan"]["steps"][0]
+        old_refs = [{"ticket_id": first["ticket_id"], "step_id": first_step["id"],
+            "plan_version": first["plan_version"], "source": first["source"],
+            "step_digest": entry.digest(first_step)}]
+        old_execution["semantic"].update(inline_plan=request["semantic"]["inline_plan"],
+            plan_refs=old_refs, authority_revision=old["revision"],
+            authority_digest=entry.digest(old), plan_digest=old["execution_plan"]["plan_digest"])
+        old_prepared = case.invoke("allocation", {"allocation_id": "inline-v1", "operation": "prepare",
+            "handoff": old_execution})
+        self.assertEqual(old_prepared["next_action"]["operation"], "invoke-host", old_prepared)
+        old_slot = case.state()["allocations"]["inline-v1"]
+        old_bound = case.invoke("allocation", {"allocation_id": "inline-v1", "operation": "bind",
+            "receipt": case.receipt(old_slot["record"], ref="native:inline-v1")})
+        old_release = old_bound["next_action"]["result"]["write_release"]
+        old_slot = case.state()["allocations"]["inline-v1"]
+        old_payload = {"changed_paths": [], "file_hashes": {}, "tests": ["inline behavior checked"],
+            "write_release": old_release, "plan_refs": old_refs,
+            "plan_authority": case.state()["control"]["context"]["handoff_progress"]["plan_authority"]}
+        case.invoke("allocation", {"allocation_id": "inline-v1", "operation": "receive",
+            "receipt": case.receipt(old_slot["record"], "stopped", "result", ref="native:inline-v1"),
+            "result": {"delivery_id": "inline-v1-result", "status": "completed", "payload": old_payload}})
+        case.invoke("allocation", {"allocation_id": "inline-v1", "operation": "accept",
+            "decision": {"reference": "dispatcher:inline-v1-accepted"}})
+        old_record = case.state()["allocations"]["inline-v1"]["record"]
+        report = {"revision_id": "inline-private-1", "expected_authority_revision": old["revision"],
+            "expected_authority_digest": entry.digest(old), "controller_ref": "task",
+            "classification": {"kind": "internal", "reference": "controller:inline-private-revision"},
+            "report": {"ticket_ids": ["INLINE-1"], "step_ids": ["inline-step"],
+                "reason": "Change private implementation order", "production_facts": "The requested behavior is unchanged",
+                "contract_before": old["execution_plan"]["contract_digest"],
+                "contract_after": old["execution_plan"]["contract_digest"],
+                "dependency_impact": ["inline-step"], "verification_impact": ["V-inline"],
+                "carry_forward": []}, "planning_paths": [], "inline_plan": copy.deepcopy(request["semantic"]["inline_plan"])}
+        report["inline_plan"]["plan_version"] = 2
+        report["inline_plan"]["steps"][0]["approach"].append("Use the revised private sequence")
+        before = case.flow_git("rev-parse", "HEAD")
+        stopping = case.invoke("prepare-plan-revision", report)
+        self.assertEqual(stopping["next_action"]["operation"], "stop-host", stopping)
+        self.assertNotIn("write_release", stopping["next_action"])
+        prepared = case.invoke("observe", case.observation("stopped", "result", ref="native:dispatcher"))
+        self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared", prepared)
+        release = prepared["next_action"]["write_release"]
+        activated = case.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
+            "controller_ref": "task", "write_release": release, "planning_commit": before})
+        self.assertEqual(activated["next_action"]["operation"], "plan-revision-activated", activated)
+        current = case.state()["scope_authority"]
+        self.assertEqual(current["revision"], 2)
+        self.assertEqual(current["execution_plan"]["tickets"][0]["plan_version"], 2)
+        self.assertEqual(case.flow_git("rev-parse", "HEAD"), before)
+        with self.assertRaises(entry.PreparationError) as old_error:
+            dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "receive", "record": old_record,
+                "control": {"context": case.state()["control"]["context"], "discussion": None},
+                "receipt": case.receipt(old_record, "stopped", "result", ref="native:inline-v1"),
+                "result": {"delivery_id": "late-inline-v1", "status": "completed", "payload": old_payload}})
+        self.assertIn(old_error.exception.code, {"attempt_mismatch", "execution_plan_stale"})
+        execution = case.execution_input()
+        execution["scope"] = copy.deepcopy(case.state()["handoff"]["scope"])
+        execution["scope"]["downstream"] = copy.deepcopy(current["scope"]["downstream"])
+        execution["scope"]["owned_paths"] = ["impl.py"]
+        execution["authorization"]["scope_digest"] = entry.digest(execution["scope"])
+        step = current["execution_plan"]["tickets"][0]["plan"]["steps"][0]
+        execution["semantic"].update(inline_plan=report["inline_plan"],
+            plan_refs=[{"ticket_id": "INLINE-1", "step_id": step["id"], "plan_version": 2,
+                        "source": current["execution_plan"]["tickets"][0]["source"],
+                        "step_digest": entry.digest(step)}],
+            authority_revision=2, authority_digest=entry.digest(current),
+            plan_digest=current["execution_plan"]["plan_digest"])
+        new = case.invoke("allocation", {"allocation_id": "inline-v2", "operation": "prepare",
+            "handoff": execution})
+        self.assertEqual(new["next_action"]["operation"], "invoke-host", new)
+        old_request = copy.deepcopy(execution)
+        old_record = old["execution_plan"]["tickets"][0]
+        old_request["semantic"]["plan_refs"][0].update(plan_version=1, source=old_record["source"],
+            step_digest=entry.digest(old_record["plan"]["steps"][0]))
+        stale = case.invoke("allocation", {"allocation_id": "inline-old", "operation": "prepare",
+            "handoff": old_request})
+        self.assertEqual(stale["error"]["code"], "execution_plan_stale", stale)
+
+
+if __name__ == "__main__":
+    unittest.main()

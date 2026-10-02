@@ -414,3 +414,201 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
                "contract_projection": projection, "contract_digest": projection["digest"]}
     catalog["plan_digest"] = entry.digest({key: value for key, value in catalog.items() if key != "plan_digest"})
     return catalog
+
+
+def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_results, authority):
+    """Resolve one ordered writer group against the current sealed plan authority.
+
+    The catalog is supplied by C's verified authority. Callers must also compare
+    ``authority`` with C's current control projection at each lifecycle boundary.
+    """
+    def stale(message):
+        raise entry.PreparationError("execution_plan_stale", message)
+
+    if (not isinstance(catalog, dict) or catalog.get("plan_digest") !=
+            entry.digest({key: value for key, value in catalog.items() if key != "plan_digest"}) or
+            not isinstance(authority, dict) or authority.get("state") != "sealed" or
+            authority.get("execution_plan") != catalog):
+        stale("current sealed execution plan is missing or changed")
+    expected_authority = {"revision": authority["revision"],
+        "authority_digest": entry.digest(authority), "plan_digest": catalog["plan_digest"],
+        "contract_digest": catalog["contract_digest"]}
+    if not isinstance(plan_refs, list) or not plan_refs:
+        stale("allocation requires current function plan refs")
+    if (not isinstance(assigned_paths, list) or not assigned_paths or
+            len(assigned_paths) != len(set(assigned_paths)) or
+            not isinstance(read_only, list) or len(read_only) != len(set(read_only)) or
+            set(assigned_paths) & set(read_only)):
+        stale("allocation paths and read-only inputs must be exact and disjoint")
+    tickets = {ticket["ticket_id"]: ticket for ticket in catalog["tickets"]}
+    steps = {step["id"]: (ticket, step) for ticket in catalog["tickets"]
+             for step in ticket["plan"]["steps"]}
+    selected = []
+    for ref in plan_refs:
+        if not isinstance(ref, dict) or set(ref) != {"ticket_id", "step_id", "plan_version", "source", "step_digest"}:
+            stale("function plan ref has incomplete identity")
+        pair = steps.get(ref["step_id"])
+        if pair is None:
+            stale("unknown function plan ref: " + str(ref["step_id"]))
+        ticket, step = pair
+        if (ref["ticket_id"] != ticket["ticket_id"] or
+                ref["plan_version"] != ticket["plan_version"] or
+                ref["source"] != ticket["source"] or
+                ref["step_digest"] != entry.digest(step)):
+            stale("function plan source, version or step changed: " + step["id"])
+        selected.append(step["id"])
+    order = catalog["ordered_step_ids"]
+    if len(selected) != len(set(selected)) or selected != [step_id for step_id in order if step_id in selected]:
+        stale("function group must follow current dependency order without duplicate refs")
+    completed = set()
+    for result in completed_results:
+        if result.get("state") == "accepted" and result.get("plan_authority") == expected_authority:
+            completed.update(ref["step_id"] for ref in result.get("plan_refs", [])
+                  if isinstance(ref, dict) and ref.get("step_id") in steps)
+    available = set(completed)
+    covered, required_read, verification_commands = set(), set(), set()
+    selected_tickets = set()
+    for step_id in selected:
+        ticket, step = steps[step_id]
+        blockers = {item["id"] for other in ticket["plan"]["blocked_by"]
+                    for item in tickets[other]["plan"]["steps"]}
+        if not set(step["depends_on"]) | blockers <= available:
+            stale("function dependency is not completed or earlier in this group: " + step_id)
+        available.add(step_id)
+        selected_tickets.add(ticket["ticket_id"])
+        covered.add(step["target"]["path"])
+        required_read.update(step["read_only"])
+        verification_ids = set(step["verification_refs"])
+        for verification in ticket["plan"]["verifications"]:
+            if verification["id"] in verification_ids:
+                verification_commands.update(verification["commands"])
+    for ticket_id in selected_tickets:
+        covered.update(artifact["path"] for artifact in tickets[ticket_id]["plan"]["artifact_steps"])
+    manifest = authority["scope"]["downstream"]["manifest"]
+    for item in manifest:
+        if (item["owner"] == "implementation" and item["kind"] == "generated" and
+                any(source in covered for source in item["source_paths"])):
+            covered.add(item["path"])
+    if not set(assigned_paths) <= covered or not required_read <= set(read_only):
+        stale("assigned files or read-only inputs lack selected plan coverage")
+    if not verification_commands:
+        stale("selected function group has no behavior verification")
+    return {"plan_refs": copy_plan_refs(plan_refs), "plan_authority": expected_authority,
+            "ordered_step_ids": selected, "verification_commands": sorted(verification_commands),
+            "required_read_only": sorted(required_read), "group_digest": entry.digest([expected_authority, plan_refs])}
+
+
+def copy_plan_refs(refs):
+    return json.loads(json.dumps(refs, ensure_ascii=False))
+
+
+def collect_inline_plan(plan, scope, semantic, requirement_identity):
+    """Validate a standalone logical slice without inventing a Ticket document."""
+    _incomplete(isinstance(plan, dict) and set(plan) == {
+        "schema_version", "ticket_id", "plan_version", "spec_ref", "contract_refs",
+        "blocked_by", "verifications", "steps", "artifact_steps"},
+        "standalone inline plan needs the execution-plan-v1 fields")
+    _incomplete(plan["schema_version"] == 1 and type(plan["plan_version"]) is int and
+                plan["plan_version"] > 0 and isinstance(plan["ticket_id"], str) and
+                IDENTIFIER.fullmatch(plan["ticket_id"]) is not None and
+                plan["spec_ref"] == {"path": "inline", "section": "brief"} and
+                plan["blocked_by"] == [], "invalid standalone inline plan identity")
+    _strings(plan["contract_refs"], "inline contract_refs")
+    _incomplete(isinstance(plan["verifications"], list) and plan["verifications"],
+                "inline plan needs behavior verification")
+    verify_ids = []
+    for verification in plan["verifications"]:
+        _incomplete(isinstance(verification, dict) and set(verification) ==
+                    {"id", "behavior", "seam", "commands"} and
+                    isinstance(verification["id"], str) and IDENTIFIER.fullmatch(verification["id"]) and
+                    isinstance(verification["behavior"], str) and verification["behavior"].strip() and
+                    isinstance(verification["seam"], str) and verification["seam"].strip(),
+                    "incomplete inline behavior verification")
+        _strings(verification["commands"], "inline verification commands")
+        verify_ids.append(verification["id"])
+    _incomplete(len(verify_ids) == len(set(verify_ids)) and
+                isinstance(plan["steps"], list) and plan["steps"] and
+                isinstance(plan["artifact_steps"], list),
+                "duplicate verification or missing inline steps")
+    implementation = set(scope["implementation_paths"])
+    protected = set(scope["protected_paths"])
+    covered, steps, ids = set(), {}, []
+    for step in plan["steps"]:
+        _incomplete(isinstance(step, dict) and set(step) == {
+            "id", "target", "capability", "approach", "inputs", "outputs", "failures",
+            "depends_on", "verification_refs", "read_only"}, "incomplete inline function step")
+        target = step["target"]
+        _incomplete(isinstance(target, dict) and set(target) == {"path", "symbol", "operation"} and
+                    target["path"] in implementation and target["operation"] in {"add", "modify", "delete"} and
+                    isinstance(target["symbol"], str) and SYMBOL.fullmatch(target["symbol"]),
+                    "inline function target escapes implementation scope")
+        _incomplete(isinstance(step["id"], str) and IDENTIFIER.fullmatch(step["id"]) and
+                    isinstance(step["capability"], str) and step["capability"].strip(),
+                    "inline function identity or capability is incomplete")
+        for field in ("approach", "inputs", "outputs", "failures"):
+            _strings(step[field], field)
+        _ids(step["depends_on"], "inline depends_on", empty=True)
+        _ids(step["verification_refs"], "inline verification_refs")
+        _strings(step["read_only"], "inline read_only", empty=True)
+        _incomplete(set(step["verification_refs"]) <= set(verify_ids) and
+                    set(step["read_only"]) <= protected and
+                    not set(step["read_only"]) & implementation,
+                    "inline verification or read-only reference is invalid")
+        ids.append(step["id"])
+        steps[step["id"]] = step
+        covered.add(target["path"])
+    _incomplete(len(ids) == len(set(ids)), "duplicate inline function ID")
+    for artifact in plan["artifact_steps"]:
+        _incomplete(isinstance(artifact, dict) and set(artifact) ==
+                    {"id", "path", "operation", "capability", "approach", "verification_refs"} and
+                    artifact["path"] in implementation and artifact["operation"] in {"add", "modify", "delete"} and
+                    isinstance(artifact["id"], str) and IDENTIFIER.fullmatch(artifact["id"]) and
+                    isinstance(artifact["capability"], str) and artifact["capability"].strip() and
+                    isinstance(artifact["approach"], str) and artifact["approach"].strip(),
+                    "incomplete inline artifact step")
+        _ids(artifact["verification_refs"], "inline artifact verification_refs")
+        _incomplete(set(artifact["verification_refs"]) <= set(verify_ids) and
+                    artifact["id"] not in ids, "inline artifact verification or identity is invalid")
+        ids.append(artifact["id"])
+        covered.add(artifact["path"])
+    ordered, visiting, visited = [], set(), set()
+    def visit(step_id):
+        _incomplete(step_id in steps and step_id not in visiting,
+                    "unknown or cyclic inline function dependency")
+        if step_id in visited:
+            return
+        visiting.add(step_id)
+        for dep in steps[step_id]["depends_on"]:
+            visit(dep)
+        visiting.remove(step_id)
+        visited.add(step_id)
+        ordered.append(step_id)
+    for step_id in steps:
+        visit(step_id)
+    for item in scope["downstream"]["manifest"]:
+        if item["owner"] == "implementation":
+            _incomplete(item["path"] in covered or item["kind"] == "generated" and
+                        any(source in covered for source in item["source_paths"]),
+                        "inline plan lacks implementation path coverage: " + item["path"])
+    contract = {key: semantic[key] for key in
+                ("objective", "testing_basis", "completion_criteria", "constraints")}
+    projection = {"brief": contract, "requirement_identity": requirement_identity,
+                  "functional_contract": {"ticket_id": plan["ticket_id"],
+                      "contract_refs": plan["contract_refs"],
+                      "verifications": [{key: item[key] for key in ("id", "behavior", "seam")}
+                                        for item in plan["verifications"]]}}
+    record = {"ticket_id": plan["ticket_id"], "plan_version": plan["plan_version"],
+              "source": {"kind": "inline", "sha256": entry.digest(plan)},
+              "plan": copy_plan_refs([plan])[0], "covered_paths": sorted(covered)}
+    catalog = {"schema_version": 1, "commit": None, "requirement_identity": requirement_identity,
+               "tickets": [record], "ordered_step_ids": ordered,
+               "contract_projection": projection, "contract_digest": entry.digest(projection)}
+    catalog["plan_digest"] = entry.digest(catalog)
+    return catalog
+
+
+def inline_authority(plan, scope, semantic, requirement_identity, generated_outputs=None):
+    catalog = collect_inline_plan(plan, scope, semantic, requirement_identity)
+    return {"kind": "inline", "state": "sealed", "revision": scope["downstream"]["revision"],
+            "candidate_commit": scope["baseline"], "scope": copy_plan_refs([scope])[0],
+            "execution_plan": catalog, "generated_outputs": copy_plan_refs([generated_outputs or {}])[0]}

@@ -27,7 +27,7 @@ ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",
           "target", "delivery", "binding", "scope", "authorization", "configuration", "semantic"}
-OPTIONAL_FIELDS = {"readiness", "generated_outputs", "manifest_baseline"}
+OPTIONAL_FIELDS = {"readiness", "generated_outputs", "manifest_baseline", "inline_authority"}
 
 
 def require(condition, code, message):
@@ -486,9 +486,14 @@ def inherited_planning_candidate(request):
 
 
 def authority_generated_outputs(authority):
+    if authority.get('kind') == 'inline':
+        outputs = authority.get('generated_outputs', {})
+        require(isinstance(outputs, dict), "invalid_scope", "inline generated map must be complete")
+        return outputs
     proposal = authority.get("proposal")
     require(isinstance(proposal, dict), "invalid_scope", "sealed scope proposal required")
-    outputs = proposal.get("generated_outputs", {})
+    outputs = (authority.get("generated_outputs") if authority.get("revision", 1) > 1
+               else proposal.get("generated_outputs", {}))
     require(isinstance(outputs, dict), "invalid_scope", "generated output inventory must be an object")
     return outputs
 
@@ -514,6 +519,7 @@ def prepare(request):
 
 def _prepare(request):
     """Return the sealed input and this preparation's verified entry to C."""
+    request = copy.deepcopy(request)
     require(request.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime", "retain original stage-transfer runtime: " + str(request.get("protocol")))
     entry.fields(request, FIELDS | {"operation"}, OPTIONAL_FIELDS)
     stage, role = request["stage"], request["role"]
@@ -561,9 +567,10 @@ def _prepare(request):
     identity, source_commit = source(current, request["requirement"], stage)
     if stage == 3 and role == "execution-agent" and request.get("readiness") is not None:
         parent = current_readiness(request["readiness"])
+        current_authority = request["readiness"]["scope_authority"]
         require(parent.get("stage") == 3 and parent.get("handoff", {}).get("role") == "implementation-dispatcher" and
                 parent["handoff"]["binding"] == request["binding"] and
-                parent["handoff"]["scope"]["downstream"] == scope["downstream"],
+                current_authority["scope"]["downstream"] == scope["downstream"],
                 "scope_changed", "allocation must inherit the current sealed Dispatcher scope")
     if stage >= 2:
         require(identity["path"] not in (scope["closure_paths"] or []), "invalid_scope", "frozen requirement is never closure-owned")
@@ -602,7 +609,9 @@ def _prepare(request):
     require(authority["flow_mode"] in {"stepwise", "continuous"} and authority["scope_digest"] == entry.digest(scope),
             "authorization_changed", "authorization must bind the exact scope and flow mode")
     semantic = request["semantic"]
-    entry.fields(semantic, {"objective", "testing_basis", "completion_criteria", "constraints"}, {"validation_plan", "implementation_policy", "adopt_paths", "adoption_snapshot_digest"})
+    entry.fields(semantic, {"objective", "testing_basis", "completion_criteria", "constraints"},
+                 {"validation_plan", "implementation_policy", "adopt_paths", "adoption_snapshot_digest",
+                  "execution_plan", "inline_plan", "plan_refs", "authority_revision", "authority_digest", "plan_digest"})
     if stage == 3 and request["role"] == "implementation-dispatcher":
         control.validate_validation_plan(semantic.get("validation_plan"), request["binding"])
     if 'adopt_paths' in semantic or 'adoption_snapshot_digest' in semantic:
@@ -615,14 +624,54 @@ def _prepare(request):
     if 'implementation_policy' in semantic:
         require(isinstance(semantic['implementation_policy'], dict), 'invalid_policy', 'explicit policy must be an object')
         require(stage == 3 and role == 'implementation-dispatcher', 'invalid_policy', 'policy only belongs to the Stage-3 Dispatcher')
+        require(semantic['implementation_policy'].get('mode') == 'full', 'invalid_policy',
+                'new Stage-3 runs require full Execution Agent implementation')
         control.implementation_policy(semantic['implementation_policy'], controller_ref=current['actor']['controller_ref'],
             requirement_identity=identity, scope_digest=authority['scope_digest'], baseline=scope['baseline'])
-        if semantic['implementation_policy']['mode'] == 'direct':
-            require(current['actor']['role'] == 'controller', 'identity_mismatch',
-                    'only the original Controller can approve direct implementation')
-            assessment = semantic['implementation_policy']['assessment']
-            require(set(assessment['implementation_paths'] + assessment['test_paths']) <= set(scope['implementation_paths']),
-                    'invalid_scope', 'direct locations must be in the authorized implementation scope')
+    if stage == 3 and request.get('readiness') is None:
+        if role == 'implementation-dispatcher' and 'inline_plan' in semantic:
+            derived = execution_plan.inline_authority(semantic['inline_plan'], scope, semantic, identity,
+                request.get('generated_outputs', {}))
+            require(request.get('inline_authority', derived) == derived,
+                    'execution_plan_stale', 'standalone inline plan authority changed')
+            request['inline_authority'] = derived
+        elif role == 'execution-agent' and 'inline_plan' in semantic:
+            inline = request.get('inline_authority')
+            require(isinstance(inline, dict), 'execution_plan_stale',
+                    'execution allocation needs its original inline plan authority')
+            derived = execution_plan.inline_authority(semantic['inline_plan'], inline['scope'], semantic, identity,
+                inline.get('generated_outputs', {}))
+            require(inline == derived and scope['downstream'] == inline['scope']['downstream'] and
+                    scope['implementation_paths'] == inline['scope']['implementation_paths'],
+                    'execution_plan_stale', 'standalone plan or scope changed')
+            expected = {'authority_revision': inline['revision'], 'authority_digest': entry.digest(inline),
+                        'plan_digest': inline['execution_plan']['plan_digest']}
+            require(all(semantic.get(key) == value for key, value in expected.items()),
+                    'execution_plan_stale', 'standalone allocation names an older inline plan')
+        else:
+            require(False, 'execution_plan_incomplete',
+                    'standalone Stage 3 requires an inline function plan')
+    if stage == 3:
+        authority_record = (request['readiness']['scope_authority'] if request.get('readiness') is not None
+                            else request['inline_authority'])
+        catalog = authority_record['execution_plan']
+        plan_reference = {'authority_revision': authority_record['revision'],
+                          'authority_digest': entry.digest(authority_record),
+                          'plan_digest': catalog['plan_digest'],
+                          'contract_digest': catalog['contract_digest']}
+        require(semantic.get('execution_plan', plan_reference) == plan_reference,
+                'execution_plan_stale', 'Stage-3 input must reference the current sealed plan')
+        semantic['execution_plan'] = plan_reference
+    if stage == 3 and role == 'execution-agent' and request.get('readiness') is not None:
+        authority_record = request['readiness']['scope_authority']
+        expected = {'authority_revision': authority_record['revision'],
+                    'authority_digest': entry.digest(authority_record),
+                    'plan_digest': authority_record['execution_plan']['plan_digest']}
+        require(all(semantic.get(key) == value for key, value in expected.items()),
+                'execution_plan_stale', 'allocation names an older plan authority')
+        execution_plan.validate_plan_refs(authority_record['execution_plan'], semantic.get('plan_refs'),
+            scope['owned_paths'], scope['protected_paths'],
+            (parent['control']['context'].get('handoff_progress') or {}).get('executions', []), authority_record)
     entry.nonempty(semantic["objective"]); entry.nonempty(semantic["testing_basis"])
     strings(semantic["completion_criteria"]); strings(semantic["constraints"])
     phase_evidence({**request, "controller_ref": current["actor"]["controller_ref"],
@@ -705,6 +754,8 @@ def _prepare(request):
                     if "generated_outputs" in request else {}),
                  **({"manifest_baseline": request["manifest_baseline"]}
                     if "manifest_baseline" in request else {}),
+                 **({"inline_authority": copy.deepcopy(request["inline_authority"])}
+                    if "inline_authority" in request else {}),
                  "kind": "stage-input",
                  "controller_ref": current["actor"]["controller_ref"], "requirement_identity": identity,
                  "source_commit": source_commit, "delivery_facts": delivered, "selection": configuration})
@@ -729,6 +780,8 @@ def verify(saved):
                          if "generated_outputs" in body else {}),
                       **({"manifest_baseline": body["manifest_baseline"]}
                          if "manifest_baseline" in body else {}),
+                      **({"inline_authority": body["inline_authority"]}
+                         if "inline_authority" in body else {}),
                       "operation": "verify"})
     require(actual == saved, "handoff_changed", "stage input facts changed; retain the original handoff")
     return actual
@@ -811,6 +864,15 @@ def render(saved, *, readiness=None):
     payload["input_digest"] = saved["digest"]
     if "readiness" in body:
         payload["readiness"] = copy.deepcopy(body["readiness"])
+        if body['stage'] == 3:
+            authority = body['readiness']['scope_authority']
+            payload['current_scope_authority'] = copy.deepcopy(authority)
+            payload['execution_plan'] = copy.deepcopy(authority['execution_plan'])
+            payload['generated_outputs'] = copy.deepcopy(authority_generated_outputs(authority))
+    elif 'inline_authority' in body:
+        payload['current_scope_authority'] = copy.deepcopy(body['inline_authority'])
+        payload['execution_plan'] = copy.deepcopy(body['inline_authority']['execution_plan'])
+        payload['generated_outputs'] = copy.deepcopy(authority_generated_outputs(body['inline_authority']))
     if "generated_outputs" in body:
         payload["generated_outputs"] = copy.deepcopy(body["generated_outputs"])
     if "manifest_baseline" in body:

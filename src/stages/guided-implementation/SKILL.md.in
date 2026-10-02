@@ -24,7 +24,7 @@ Interpret user replies through
 
 Read [Workflow Control Protocol]({{resource:guided-implementation/references/workflow-control-protocol.md}}) before role preparation or transition. This stage uses Implementation Dispatcher and preserves the Workflow Controller.
 
-An authenticated non-root native implementation-dispatcher with the complete bound Stage-3 envelope follows {{resource:guided-implementation/references/execution-protocol.md}} directly. It never creates another dispatcher or a visible implementation task. Only the Workflow Controller performs the launch and independent review portions below. The default `full` policy allocates implementation writes to real Execution Agents under the shared exact-file contract and requires accepted deliveries. Only a Controller-approved, frozen `direct` policy permits the bound Dispatcher to implement itself. Read the bounded-direct rules in the Workflow Control Protocol before selecting that exception or converting it to full; the Controller never becomes an implementation writer.
+An authenticated non-root native implementation-dispatcher with the complete bound Stage-3 envelope follows {{resource:guided-implementation/references/execution-protocol.md}} directly. It never creates another dispatcher or a visible implementation task. Only the Workflow Controller performs the launch and independent review portions below. New Stage-3 runs use `full`: real Execution Agents own every implementation and repair edit under exact plan refs and file allocation. The Dispatcher arranges work, integrates accepted bytes, checks and commits; the Controller never becomes an implementation writer. Historical direct runs continue under their original pinned package.
 
 ## Native capacity at Stage 3
 
@@ -85,8 +85,9 @@ The payload's `flow_mode` field (`continuous` or `stepwise`) is the already-auth
 entry. It preserves the payload's explicit model/effort pair for the carrier;
 the dedicated native executor still follows the existing task-settings protocol.
 Use only the pending decisions selected by the shared progression contract.
-This carrier uses the default full implementation path because its confirmed
-runner input contains no original Controller decision for direct work.
+This carrier uses full Execution Agent implementation. A plan revision needs
+the original Controller's exact decision and planning bytes; if foreground
+ingress cannot supply them, return `technical_error` and retain the C barrier.
 
 The runner holds one foreground app-server across carrier turns, waiting for
 native roles, decisions, and pauses. Follow the shared progression contract's
@@ -134,14 +135,15 @@ fixed standalone implementation brief, as the complete implementation
 authority. For an inherited flow, keep the requirement draft protected and
 read-only, but do not use it to add or reinterpret implementation scope.
 For an inherited flow, before native dispatch require C's current
-`handoff_ready` and B's verified effective Stage-2 scope at the same sealed
-revision. Compare every planned
+`handoff_ready` and B's verified current Scope Authority, plan catalog and
+complete generated map at the same sealed revision. Compare every planned
 source, test, generated output and document with the manifest and its committed
 basis. Keep the stage-level implementation ceiling intact when assigning a
 subset to an Execution Agent. An unresolved scope, stale seal or missing file
-blocks the affected write. Once any Stage-3 preparation, intent or session is
-saved, scope correction rejects; retain the current boundary and report the
-missing scope to the original Controller without creating a new writer attempt. A standalone Stage-3 brief supplies its own complete sealed manifest.
+blocks the affected write. After Stage-3 preparation, the original Controller
+uses the bounded internal plan-revision transaction for contract-preserving
+changes; ordinary scope correction stays closed. A standalone Stage-3 brief
+supplies its own complete sealed manifest and one inline function plan.
 If that standalone manifest includes generated files, supply B's top-level
 `generated_outputs` source-to-outputs map before sealing the handoff; inherited
 flows use their saved authority map and cannot replace it at entry.
@@ -216,13 +218,10 @@ work.
 - Work only inside the verified worktree. Invoke the complete native
   `$implement` workflow, including `$tdd`, focused and affected checks, typecheck,
   lint or build where applicable, and commit a clean candidate.
-- Under `full`, allocate the first real production-boundary TDD slice and all
+- Allocate the first real production-boundary TDD slice and all
   subsequent implementation or repair edits to Execution Agents. The dispatcher
   integrates accepted bytes, runs checks and commits; every changed implementation
-  path must match an accepted delivery. Under a frozen `direct` policy, the same
-  Dispatcher performs that work with zero allocations and real candidate provenance.
-  Loss of eligibility stops edits and returns to the Controller for the one-way
-  conversion defined in the Workflow Control Protocol.
+  path must match an accepted delivery under the current function-plan authority.
 - The Implementation Dispatcher must not dispatch Standards or Spec review
   agents or receive the parent Session or CLI. It reports the exact candidate
   commit, changed paths, focused and full checks, remaining risks, and any

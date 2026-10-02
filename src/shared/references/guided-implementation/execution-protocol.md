@@ -39,14 +39,17 @@ separate. A carrier required for later recovery remains available.
 
 Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using the inherited registration_input fields from the verified handoff. Pass them unchanged to entry_prepare.py with this role’s actual host identity and cwd; keep registration_identity as the frozen source identity. File evidence is reread by the adapter, while inline registry/context remain paired. Missing evidence stops before work. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
-Under an approved `direct` policy, this bound Dispatcher performs the same
-`$implement`/`$tdd`, checks and Git work itself, with zero Execution allocations.
-Read [Bounded direct implementation](workflow-control-protocol.md#bounded-direct-implementation)
-for the frozen scope, real candidate provenance and one-way escalation contract.
-The Dispatcher cannot approve or rewrite that policy. Stop edits as soon as a
-condition becomes unknown or an exclusion appears; report the new fact to the
-Controller and retain all bytes and commits. Continue full work only after the
-original checkpoint records the conversion.
+Read C's current Scope Authority and full function-plan catalog before each
+allocation. Bind one ordered group of exact Ticket/step refs, source/version,
+step digests, files, read-only inputs and behavior verification. A dependency
+must be accepted under the current authority or earlier in the same group;
+same-file edits stay serial. Give the native child the full plan block and
+current generated map, then wait for its exact bound release. A revision
+invalidates old refs and releases; obtain a new allocation instead of asking
+the old Agent to continue. Run any generated-output build inside an Agent
+allocation that owns every exact output; the Dispatcher runs check-only
+validation before integrating accepted bytes. Historical direct runs use their
+pinned runtime.
 
 The dispatcher accepts the verified Flow Worktree binding inherited from
 Stage 2 or created by a qualified standalone Stage-3 entry. It must run

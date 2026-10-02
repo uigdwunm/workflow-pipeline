@@ -117,6 +117,34 @@ def changed_paths(repository, baseline):
     return sorted(set(tracked + untracked) - {''})
 
 
+def verified_planning_paths(repository, progress):
+    """Exclude only exact activated Controller planning deltas from implementation diff."""
+    planning = set()
+    for record in progress.get('plan_revisions', []):
+        evidence = record['evidence']
+        candidate = commit(evidence['planning_commit'])
+        if evidence['planning_paths'] == []:
+            require(evidence['git_facts']['changed_paths'] == [] and
+                    candidate == evidence['snapshot']['head'],
+                    'inline Controller revision changed Git bytes')
+            git(repository, 'merge-base', '--is-ancestor', candidate, 'HEAD')
+            continue
+        parent = commit(evidence['git_facts']['parent'])
+        git(repository, 'merge-base', '--is-ancestor', candidate, 'HEAD')
+        parents = git(repository, 'rev-list', '--parents', '-n', '1', candidate).decode().split()
+        require(parents == [candidate, parent], 'activated planning commit ancestry changed')
+        actual = sorted(filter(None, git(repository, 'diff', '--no-renames', '--name-only', '-z',
+                                          parent, candidate, '--').decode().split('\0')))
+        require(actual == evidence['git_facts']['changed_paths'] and
+                set(actual) <= set(evidence['planning_paths']),
+                'activated planning commit changed outside its exact release')
+        for relative in actual:
+            require(file_fingerprint(repository, relative) == committed_fingerprint(repository, candidate, relative),
+                    'activated planning bytes changed outside Controller window: ' + relative)
+        planning.update(actual)
+    return planning
+
+
 def retained_closure_paths(repository, progress):
     retained = progress.get('integration_retained') or {'paths':[]}
     for relative in retained['paths']:
@@ -219,12 +247,13 @@ def plan_revision_snapshot(repository, authority, protected_paths, planning_path
     allowed = set(paths(authority['scope']['implementation_paths'], empty=True))
     allowed.update(paths(list(additional_paths), empty=True))
     protected = set(paths(protected_paths, empty=True))
-    planning = set(paths(planning_paths))
+    planning = set(paths(planning_paths, empty=authority.get('kind') == 'inline'))
     require(planning <= protected and planning <= set(authority['scope']['closure_paths']),
             'planning release escapes closure-owned protected paths')
     git(repository, 'merge-base', '--is-ancestor', commit(authority['candidate_commit']), actual['head'])
-    require(not git(repository, 'status', '--porcelain', '-z', '--', *sorted(planning)),
-            'planning source was edited or staged before the Controller release')
+    if planning:
+        require(not git(repository, 'status', '--porcelain', '-z', '--', *sorted(planning)),
+                'planning source was edited or staged before the Controller release')
     require(all(file_fingerprint(repository, relative) ==
                 committed_fingerprint(repository, authority['candidate_commit'], relative)
                 for relative in protected),
@@ -275,6 +304,22 @@ def verify_plan_revision(repository, stopped, planning_commit):
     return {'parent': stopped['head'], 'commit': candidate,
             'changed_paths': sorted(changed), 'index_partition_unchanged': True,
             'implementation_partition_unchanged': True}
+
+
+def verify_inline_plan_revision(repository, stopped, planning_commit):
+    """An inline revision changes Controller metadata while preserving every Git byte."""
+    repository = Path(repository)
+    candidate = commit(planning_commit)
+    require(stopped['planning_paths'] == [] and candidate == stopped['head'],
+            'inline revision must keep the stopped HEAD and have no planning paths')
+    current = snapshot(repository)
+    require(all(current[key] == stopped[key] for key in ('head', 'branch', 'index_hash')),
+            'inline revision changed Git HEAD, branch or index')
+    require(all(file_fingerprint(repository, relative) == fingerprint
+                for relative, fingerprint in stopped['files'].items()),
+            'inline revision changed implementation or protected bytes')
+    return {'parent': stopped['head'], 'commit': candidate, 'changed_paths': [],
+            'index_partition_unchanged': True, 'implementation_partition_unchanged': True}
 
 
 def verify_stopped_snapshot(repository, stopped, current):
@@ -381,8 +426,8 @@ def verified_transition(payload):
     if action == 'plan-revision-activate':
         require(evidence['planning_paths'] == evidence['snapshot']['planning_paths'],
                 'planning release paths changed')
-        derived = verify_plan_revision(repository, evidence['snapshot'],
-                                       evidence['planning_commit'])
+        derived = (verify_inline_plan_revision if evidence['planning_paths'] == [] else
+                   verify_plan_revision)(repository, evidence['snapshot'], evidence['planning_commit'])
         require(evidence['git_facts'] == derived, 'planning Git facts differ from actual commit')
     if action == 'capture-integration':
         require(progress is not None and 'integration_target_head' in progress,
@@ -445,7 +490,9 @@ def verified_transition(payload):
         verify_binding(repository, progress['binding'])
         scope_base = git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip()
         scope_base = git(repository, 'merge-base', scope_base, 'HEAD').decode().strip()
-        require(set(changed_paths(repository, scope_base)) - retained_closure_paths(repository, progress) <= set(progress['allowed_paths']), 'actual Git diff escapes implementation scope')
+        excluded = retained_closure_paths(repository, progress) | verified_planning_paths(repository, progress)
+        require(set(changed_paths(repository, scope_base)) - excluded <= set(progress['allowed_paths']),
+                'actual Git diff escapes implementation scope')
     if action == 'escalate-implementation':
         actual = recovery_snapshot(repository, progress)[0]
         verify_stopped_snapshot(repository, evidence['snapshot'], actual)

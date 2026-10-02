@@ -358,6 +358,23 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(proposed["next_action"]["operation"], "scope-proposed", proposed)
         return proposed["next_action"]["proposal"]["digest"]
 
+    def planning_spec(self):
+        plan = {"schema_version": 1, "ticket_id": "FEP-01", "plan_version": 1,
+            "spec_ref": {"path": "docs/spec.md", "section": "Implementation Decisions"},
+            "contract_refs": ["FEP-01:What to build", "FEP-01:AC-1", "PRD:D1:Plan"],
+            "blocked_by": [], "verifications": [{"id": "V1", "behavior": "approved behavior",
+                "seam": "C/B/Git fixture", "commands":
+                ["python3 scripts/run_tests.py --test-file tests/runtime/test_workflow_progress.py"]}],
+            "steps": [{"id": "FP1-01", "target": {"path": "impl.py", "symbol": "run", "operation": "add"},
+                "capability": "implement approved behavior", "approach": ["implement and connect run"],
+                "inputs": ["approved design"], "outputs": ["observable result"],
+                "failures": ["invalid input is reported"], "depends_on": [],
+                "verification_refs": ["V1"], "read_only": []}], "artifact_steps": []}
+        return ("approved design\nTicket ID: FEP-01\nPlan Version: 1\n"
+                "**What to build:** approved behavior\n**Blocked by:** None\n"
+                "AC-1: approved behavior\n## Implementation Decisions\n### D1 — Plan\n"
+                "```execution-plan-v1\n" + json.dumps(plan) + "\n```\n")
+
     def seal_design_scope(self, proposal_digest):
         sealed = self.invoke("scope-seal", {"proposal_id": "proposal-1",
             "proposal_digest": proposal_digest, "controller_ref": "task",
@@ -367,7 +384,7 @@ class ProgressTests(transfer.StageTransferTests):
     def prepare_design_result(self, mode):
         self.begin(mode)
         self.invoke("observe", self.observation())
-        (self.flow / "docs/spec.md").write_text("approved design\n")
+        (self.flow / "docs/spec.md").write_text(self.planning_spec())
         self.flow_git("add", "docs/spec.md")
         self.flow_git("commit", "-qm", "plan")
         planning = self.flow_git("rev-parse", "HEAD")
@@ -383,7 +400,7 @@ class ProgressTests(transfer.StageTransferTests):
     def test_publication_requires_exact_readiness_and_stopped_writer(self):
         self.begin("continuous")
         self.invoke("observe", self.observation())
-        (self.flow / "docs/spec.md").write_text("approved design\n")
+        (self.flow / "docs/spec.md").write_text(self.planning_spec())
         self.flow_git("add", "docs/spec.md")
         self.flow_git("commit", "-qm", "plan")
         candidate = self.flow_git("rev-parse", "HEAD")
@@ -414,7 +431,7 @@ class ProgressTests(transfer.StageTransferTests):
     def test_resume_reconciles_missing_publication_receipt_and_stop_blocks_writes(self):
         self.begin("continuous")
         self.invoke("observe", self.observation())
-        (self.flow / "docs/spec.md").write_text("approved design\n")
+        (self.flow / "docs/spec.md").write_text(self.planning_spec())
         self.flow_git("add", "docs/spec.md")
         self.flow_git("commit", "-qm", "plan")
         candidate = self.flow_git("rev-parse", "HEAD")
@@ -1144,7 +1161,7 @@ class ProgressTests(transfer.StageTransferTests):
             calls.append(stage)
             response = self.finish_next(stage, mode)
             self.assertEqual(response["status"], "accepted", response)
-            result = response["completion"]["stage_result"]
+            result = runner._stage_projection(path, "stage" + str(stage), self.state())
             return {**result, "handoff": json.loads(result["handoff_json"])}
 
         with patch.object(runner, "_invoke", side_effect=carrier), redirect_stdout(io.StringIO()):
@@ -1259,6 +1276,35 @@ class ProgressTests(transfer.StageTransferTests):
         execution = self.input_for(3)
         execution.update(role="execution-agent", configuration=transfer.configuration("execution-agent"))
         execution["authorization"]["flow_mode"] = "continuous"
+        state = self.state()
+        parent = state["handoff"]
+        authority = state["scope_authority"]
+        execution["scope"] = copy.deepcopy(parent["scope"])
+        execution["scope"]["baseline"] = self.flow_git("rev-parse", "HEAD")
+        execution["scope"]["downstream"] = copy.deepcopy(authority["scope"]["downstream"])
+        execution["scope"]["implementation_paths"] = copy.deepcopy(authority["scope"]["implementation_paths"])
+        execution["scope"]["closure_paths"] = copy.deepcopy(authority["scope"]["closure_paths"])
+        execution["scope"]["owned_paths"] = ["impl.py"]
+        if parent.get("readiness") is not None:
+            execution.pop("inline_authority", None)
+            execution["semantic"].pop("inline_plan", None)
+            execution["readiness"] = progress.consumed_scope_readiness(state, self.checkpoint)
+            execution["manifest_baseline"] = authority["scope"]["baseline"]
+        else:
+            execution["inline_authority"] = copy.deepcopy(authority)
+            execution["semantic"]["inline_plan"] = copy.deepcopy(
+                authority["execution_plan"]["tickets"][0]["plan"])
+        refs = []
+        for ticket in authority["execution_plan"]["tickets"]:
+            for step in ticket["plan"]["steps"]:
+                if step["target"]["path"] in execution["scope"]["owned_paths"]:
+                    refs.append({"ticket_id": ticket["ticket_id"], "step_id": step["id"],
+                        "plan_version": ticket["plan_version"], "source": ticket["source"],
+                        "step_digest": transfer.entry.digest(step)})
+        execution["semantic"].update(plan_refs=refs, authority_revision=authority["revision"],
+            authority_digest=transfer.entry.digest(authority),
+            plan_digest=authority["execution_plan"]["plan_digest"])
+        execution["authorization"]["scope_digest"] = transfer.entry.digest(execution["scope"])
         return execution
 
     def prepare_execution(self):
@@ -1338,7 +1384,9 @@ class ProgressTests(transfer.StageTransferTests):
             "receipt": self.receipt(slot["record"], "stopped", "result", ref="native:executor"),
             "result": {"delivery_id": "stopped-slice", "status": "completed", "payload": {"changed_paths": ["impl.py"],
                 "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["fixture boundary passed"],
-                "write_release": transfer.dispatch.execution_release_token(slot["record"])}}})
+                "write_release": transfer.dispatch.execution_release_token(slot["record"]),
+                "plan_refs": slot["record"]["handoff"]["semantic"]["plan_refs"],
+                "plan_authority": self.state()["control"]["context"]["handoff_progress"]["plan_authority"]}}})
         self.assertEqual(received["next_action"]["result"]["status"], "received")
         accepted = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "accept", "decision": {"reference": "dispatcher:accept-stopped"}})
         self.assertEqual(accepted["status"], "pausing")
@@ -1360,7 +1408,9 @@ class ProgressTests(transfer.StageTransferTests):
             "receipt": self.receipt(slot["record"], "stopped", "result", ref="native:executor"),
             "result": {"delivery_id": "slice", "status": "completed", "payload": {"changed_paths": ["impl.py"],
                 "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["fixture boundary passed"],
-                "write_release": transfer.dispatch.execution_release_token(slot["record"])}}})
+                "write_release": transfer.dispatch.execution_release_token(slot["record"]),
+                "plan_refs": slot["record"]["handoff"]["semantic"]["plan_refs"],
+                "plan_authority": self.state()["control"]["context"]["handoff_progress"]["plan_authority"]}}})
         self.assertEqual(received["next_action"]["result"]["status"], "received", received)
         accepted = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "accept", "decision": {"reference": "dispatcher:accept"}})
         self.assertFalse(accepted["downstream_ready"])
@@ -1507,12 +1557,32 @@ class ProgressTests(transfer.StageTransferTests):
 
     def execution_transfer_request(self):
         parent = self.state()['handoff']
+        authority = self.state()['scope_authority']
         request = {key: copy.deepcopy(value) for key, value in parent.items()
                    if key in transfer.handoff.FIELDS | transfer.handoff.OPTIONAL_FIELDS}
         request.update(operation='prepare', role='execution-agent', predecessor=None,
                        configuration=transfer.configuration('execution-agent'))
         request['scope']['baseline'] = self.flow_git('rev-parse', 'HEAD')
-        request['scope']['owned_paths'] = copy.deepcopy(parent['scope']['implementation_paths'])
+        request['scope']['downstream'] = copy.deepcopy(authority['scope']['downstream'])
+        request['scope']['implementation_paths'] = copy.deepcopy(authority['scope']['implementation_paths'])
+        request['scope']['closure_paths'] = copy.deepcopy(authority['scope']['closure_paths'])
+        request['scope']['owned_paths'] = copy.deepcopy(authority['scope']['implementation_paths'])
+        if parent.get('readiness') is not None:
+            request['readiness'] = progress.consumed_scope_readiness(self.state(), self.checkpoint)
+            request['manifest_baseline'] = authority['scope']['baseline']
+        else:
+            request['inline_authority'] = copy.deepcopy(authority)
+            request['semantic']['inline_plan'] = copy.deepcopy(authority['execution_plan']['tickets'][0]['plan'])
+        refs = []
+        for ticket in authority['execution_plan']['tickets']:
+            for step in ticket['plan']['steps']:
+                if step['target']['path'] in request['scope']['owned_paths']:
+                    refs.append({'ticket_id': ticket['ticket_id'], 'step_id': step['id'],
+                        'plan_version': ticket['plan_version'], 'source': ticket['source'],
+                        'step_digest': transfer.entry.digest(step)})
+        request['semantic'].update(plan_refs=refs, authority_revision=authority['revision'],
+            authority_digest=transfer.entry.digest(authority),
+            plan_digest=authority['execution_plan']['plan_digest'])
         request['authorization']['scope_digest'] = transfer.entry.digest(request['scope'])
         request['semantic'].pop('validation_plan', None)
         request['semantic'].pop('implementation_policy', None)
@@ -1569,7 +1639,9 @@ class ProgressTests(transfer.StageTransferTests):
                     'file_hashes': {path: hashlib.sha256((self.flow / path).read_bytes()).hexdigest()
                                    for path in source['pending_paths']},
                     'tests': ['unchanged integrated implementation bytes verified'],
-                    'write_release': transfer.dispatch.execution_release_token(slot['record'])}}})
+                    'write_release': transfer.dispatch.execution_release_token(slot['record']),
+                    'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                    'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
             accepted = self.invoke('allocation', {'allocation_id': 'integrated-execution', 'operation': 'accept',
                 'decision': {'reference': 'dispatcher:accept-integrated-execution'}})
             self.assertEqual(accepted['next_action']['result']['status'], 'accepted', accepted)

@@ -16,6 +16,7 @@ import test_entry_prepare
 import entry_prepare as entry
 import requirement_prepare as requirement
 import stage_handoff as handoff
+import execution_plan
 import model_inventory
 import stage_dispatch as dispatch
 import supervision_protocol as supervision
@@ -141,12 +142,42 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
             state = progress.read_record(self.checkpoint).get(progress.KEY, {})
             if state.get("stage") == 2 and state.get("accepted") == predecessor:
                 request["readiness"] = progress.scope_readiness(state, self.checkpoint)
+        if stage == 3 and predecessor is None:
+            request["semantic"]["inline_plan"] = {
+                "schema_version": 1, "ticket_id": "INLINE-TRANSFER", "plan_version": 1,
+                "spec_ref": {"path": "inline", "section": "brief"},
+                "contract_refs": ["standalone:objective"], "blocked_by": [],
+                "verifications": [{"id": "V-inline", "behavior": "approved implementation behavior",
+                    "seam": "real B/C/Git fixture", "commands":
+                    ["python3 scripts/run_tests.py --test-file tests/runtime/test_stage_transfer.py"]}],
+                "steps": [{"id": "inline-implementation", "target": {"path": "impl.py", "symbol": "run", "operation": "add"},
+                    "capability": "implement the approved behavior", "approach": ["implement the fixed brief"],
+                    "inputs": ["frozen brief"], "outputs": ["observable result"],
+                    "failures": ["invalid input is reported"], "depends_on": [],
+                    "verification_refs": ["V-inline"], "read_only": [self.requirement_path]}],
+                "artifact_steps": []}
+            request["inline_authority"] = execution_plan.inline_authority(
+                request["semantic"]["inline_plan"], scope, request["semantic"],
+                self.frozen["requirement_identity"])
         return request
 
     def context_for(self, stage):
         return {"schema_version": 5, "controller_ref": "task", "topic_ref": None, "stage": stage,
                 "carrier": None, "preference": {"topic_current": False, "stage_current": False}, "flow_authority": None,
                 "requirement_identity": self.frozen["requirement_identity"], "handoff_progress": None}
+
+    def inline_execution_input(self):
+        execution = self.input_for(3)
+        execution.update(role="execution-agent", configuration=configuration("execution-agent"))
+        authority = execution["inline_authority"]
+        ticket = authority["execution_plan"]["tickets"][0]
+        step = ticket["plan"]["steps"][0]
+        execution["semantic"].update(plan_refs=[{"ticket_id": ticket["ticket_id"],
+            "step_id": step["id"], "plan_version": ticket["plan_version"],
+            "source": ticket["source"], "step_digest": entry.digest(step)}],
+            authority_revision=authority["revision"], authority_digest=entry.digest(authority),
+            plan_digest=authority["execution_plan"]["plan_digest"])
+        return execution
 
     def launch(self, input_data=None):
         value = input_data or self.input
@@ -199,7 +230,23 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.invoke("observe", self.observation())
         planning_paths = self.input["scope"]["owned_paths"]
         for path in planning_paths:
-            (self.flow / path).write_text("approved plan\nImplementation: impl.py\nClosure: CHANGELOG.md\n")
+            plan = {"schema_version": 1, "ticket_id": "FEP-01", "plan_version": 1,
+                "spec_ref": {"path": "docs/spec.md", "section": "Implementation Decisions"},
+                "contract_refs": ["FEP-01:What to build", "FEP-01:AC-1", "PRD:D1:Plan"],
+                "blocked_by": [], "verifications": [{"id": "V1", "behavior": "approved behavior",
+                    "seam": "real C/B/Git fixture", "commands":
+                    ["python3 scripts/run_tests.py --test-file tests/runtime/test_stage_transfer.py"]}],
+                "steps": [{"id": "FP1-01", "target": {"path": "impl.py", "symbol": "run", "operation": "add"},
+                    "capability": "implement approved behavior", "approach": ["write and connect run"],
+                    "inputs": ["approved design"], "outputs": ["observable result"],
+                    "failures": ["invalid input is reported"], "depends_on": [],
+                    "verification_refs": ["V1"], "read_only": []}], "artifact_steps": []}
+            content = "approved plan\nImplementation: impl.py\nClosure: CHANGELOG.md\n"
+            if path == "docs/spec.md":
+                content += ("Ticket ID: FEP-01\nPlan Version: 1\n**What to build:** approved behavior\n"
+                    "**Blocked by:** None\nAC-1: approved behavior\n## Implementation Decisions\n"
+                    "### D1 — Plan\n```execution-plan-v1\n" + json.dumps(plan) + "\n```\n")
+            (self.flow / path).write_text(content)
         self.flow_git("add", *planning_paths)
         self.flow_git("commit", "-qm", "planning")
         planning = self.flow_git("rev-parse", "HEAD")
@@ -584,8 +631,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.context = self.context_for(3)
         launch = self.launch(candidate)
         self.call("bind", launch["record"], receipt=self.receipt(launch["record"], ref="native:dispatcher"))
-        execution = self.input_for(3)
-        execution.update(role="execution-agent", configuration=configuration("execution-agent"))
+        execution = self.inline_execution_input()
         launched = self.launch(execution)
         self.assertEqual(launched["host_call"]["payload"]["write_authority"], 'await-bound-release')
         bound = self.call("bind", launched["record"], receipt=self.receipt(launched["record"], ref="native:executor"))
@@ -593,7 +639,9 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         (self.flow / "impl.py").write_bytes(data)
         message = {"delivery_id": "slice", "status": "completed", "payload": {"changed_paths": ["impl.py"],
                     "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["production CLI passed"],
-                    "write_release": bound["write_release"]}}
+                    "write_release": bound["write_release"],
+                    "plan_refs": execution["semantic"]["plan_refs"],
+                    "plan_authority": self.context["handoff_progress"]["plan_authority"]}}
         missing_release = copy.deepcopy(message)
         missing_release['payload'].pop('write_release')
         self.assert_code('invalid_request', lambda: self.call("receive", bound["record"],
@@ -607,8 +655,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.context = self.context_for(3)
         parent = self.launch(self.input_for(3))
         self.call("bind", parent["record"], receipt=self.receipt(parent["record"], ref="native:dispatcher"))
-        execution = self.input_for(3)
-        execution.update(role="execution-agent", configuration=configuration("execution-agent"))
+        execution = self.inline_execution_input()
         pending = self.launch(execution)["record"]
         self.context = control.transition({"schema_version": 5, "actor_ref": "task", "context": self.context,
                                            "action": "cancel", "evidence": {}})["context"]

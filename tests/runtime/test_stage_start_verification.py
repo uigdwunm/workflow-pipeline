@@ -22,6 +22,16 @@ class LaunchAssertions:
 
 
 class StageStartVerificationTests(LaunchAssertions, existing.ProgressTests):
+    def test_plan_group_cannot_allocate_over_unattributed_implementation_bytes(self):
+        self.begin_dispatcher()
+        request = self.execution_input()
+        (self.flow / 'impl.py').write_text('unattributed bytes\n')
+        result = self.invoke('allocation', {'allocation_id': 'dirty-plan-group',
+            'operation': 'prepare', 'handoff': request})
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertIsNone(self.state()['allocations']['dirty-plan-group']['record'])
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['executions'], [])
+
     def external_git(self, *args, repository=None):
         # Another Git writer must bypass the worker's subprocess.run observer.
         process = subprocess.Popen(['git', '-C', str(repository or self.flow), *args],

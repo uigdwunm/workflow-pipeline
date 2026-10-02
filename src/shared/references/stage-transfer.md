@@ -290,14 +290,15 @@ the adapter contract, not actual native tool behavior. Real creation, asynchrono
 ready resolution, stopped-writer proof and lost-response lookup need separate
 field acceptance. Do not launch business tasks just to manufacture that evidence.
 
-Only Stage-3 Dispatcher `semantic` may additionally carry the Controller-approved
-`implementation_policy`; omission means full. Direct requires the authenticated
-Controller as the preparing actor; a scripted carrier uses full. Freeze the policy in the sealed handoff and
-start-dispatch attempt. Execution Agent semantics may carry explicit `adopt_paths`
-and `adoption_snapshot_digest` only for eligible inherited-byte verification.
-[Workflow Control Protocol](guided-implementation/workflow-control-protocol.md#bounded-direct-implementation)
-owns admission, one-way conversion and adoption; B checks and transfers that
-authority, never creates an assessment or synthetic execution receipt.
+New Stage-3 inputs accept omitted or explicit `full` implementation policy.
+Staged B preparation rereads C's current Scope Authority, full plan catalog and
+generated map; Execution Agent semantics bind current plan refs, authority
+revision/digest and plan digest. Standalone B input carries an inline plan and
+contract projection prepared by the original Controller. B transfers exact
+read-only native payloads and the bound release; it never creates a synthetic
+execution receipt. Historical direct records use their original pinned runtime.
+Execution Agent semantics may carry explicit `adopt_paths` and
+`adoption_snapshot_digest` only for eligible inherited-byte verification.
 
 Stage-3 `semantic` includes the Controller-approved validation_plan described in
 [Workflow Control Protocol](guided-implementation/workflow-control-protocol.md).

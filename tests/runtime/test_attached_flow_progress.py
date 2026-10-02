@@ -202,7 +202,7 @@ class AttachedFlowTests(fixtures.ProgressTests):
                     with self.assertRaises(runner.WorkflowError):
                         runner._validate_record(changed)
 
-    def test_attached_stage3_direct_policy_reaches_review_without_execution(self):
+    def test_attached_stage3_rejects_direct_before_native_dispatch(self):
         from test_review_first_validation import ReviewFirstTests
         self.begin('stepwise')
         self.invoke('observe', self.observation())
@@ -225,17 +225,14 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.plan = lambda: value['semantic']['validation_plan']
         value['semantic']['implementation_policy'] = ReviewFirstTests.direct_policy(self, value)
         self.context = self.context_for(3)
-        self.begin('stepwise', value)
-        self.invoke('observe', self.observation(ref='native:dispatcher'))
-        (self.flow / 'impl.py').write_text("print('attached')\n")
-        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'direct attached output')
-        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
-        result = self.invoke('control', ReviewFirstTests.direct_candidate_request(self))
-        checkpoint = self.state()['control']['context']['handoff_progress']
-        self.assertEqual(checkpoint['state'], 'reviewable', result)
-        self.assertEqual(checkpoint['executions'], [])
-        self.assertEqual(self.state()['handoff']['authorization']['phase'], value['authorization']['phase'])
-        self.assertIsNone(self.state()['dispatch']['delivery'])
+        before = self.checkpoint.read_bytes()
+        with self.assertRaises(entry.PreparationError) as error:
+            self.invoke('start', {'handoff': value,
+                'control': {'context': self.context, 'discussion': None}})
+        self.assertEqual(error.exception.code, 'invalid_policy')
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertFalse((self.flow / 'impl.py').exists())
+        self.assertNotEqual(self.state()['dispatch']['request']['role'], 'implementation-dispatcher')
 
     def test_attached_plan_revision_uses_original_ledger_record(self):
         self.begin('stepwise')

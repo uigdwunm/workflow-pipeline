@@ -391,7 +391,23 @@ def _stage_projection(record_path: Path, stage: str, current: dict[str, Any]) ->
                     "scope_incomplete: accepted planning has no current sealed Stage-3 readiness; "
                     "inspect C and use scope-propose or scope-revise"
                 )
-    return stage_handoff.render(current["accepted"], readiness=readiness)["stage_result"]
+    result = stage_handoff.render(current["accepted"], readiness=readiness)["stage_result"]
+    if stage == "stage3" and current.get("scope_authority") is not None:
+        authority = current["scope_authority"]
+        catalog = authority["execution_plan"]
+        expected = {"revision": authority["revision"],
+            "authority_digest": entry_prepare.digest(authority),
+            "plan_digest": catalog["plan_digest"], "contract_digest": catalog["contract_digest"]}
+        progress = current["control"]["context"].get("handoff_progress") or {}
+        if progress.get("plan_authority") != expected:
+            raise WorkflowError("scope_changed: completed Stage 3 differs from current plan authority")
+        projection = json.loads(result["handoff_json"])
+        projection.update(current_scope_authority=authority, execution_plan=catalog,
+                          generated_outputs=stage_handoff.authority_generated_outputs(authority),
+                          implementation_paths=authority["scope"]["implementation_paths"],
+                          closure_paths=authority["scope"]["closure_paths"])
+        result["handoff_json"] = json.dumps(projection, ensure_ascii=False, sort_keys=True)
+    return result
 
 
 def _atomic_save(path: Path, state: dict[str, Any], *, require_launch_admission: bool = False) -> None:
@@ -641,9 +657,20 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         elif current_progress.get("stage") != 3 or (current_progress.get("scope_authority") or {}).get("state") != "sealed":
             raise WorkflowError("scope_changed: Stage 3 requires its consumed sealed scope authority")
         else:
-            readiness = progression.consumed_scope_readiness(current_progress, confirmed["run_record"])
+            authority = current_progress["scope_authority"]
+            readiness = ({"scope_revision": authority["revision"],
+                          "scope_authority": authority,
+                          "execution_plan": authority["execution_plan"]}
+                         if authority.get("kind") == "inline" else
+                         progression.consumed_scope_readiness(current_progress, confirmed["run_record"]))
             if readiness is None:
                 raise WorkflowError("scope_changed: Stage 3 consumed readiness no longer matches its saved authority")
+    revision = ((current_progress or {}).get("plan_revision_transaction") or {}) if stage == "stage3" else {}
+    revision_view = ({"revision_id": revision.get("input", {}).get("revision_id"),
+                      "state": revision.get("state"),
+                      "planning_paths": revision.get("input", {}).get("planning_paths", []),
+                      "expected_authority_revision": revision.get("old_authority", {}).get("revision")}
+                     if revision else None)
     prior = {
         name: state["stage_results"][name]
         for name in STAGES
@@ -683,6 +710,9 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
         "current_scope_authority": (current_progress.get("scope_authority") if stage in {"stage3", "stage4"}
                                     and current_progress is not None else None),
         "stage3_readiness": readiness,
+        "plan_revision_transaction": revision_view,
+        "controller_revision_ingress": {"status": "unavailable", "controller_ref": confirmed["controller_ref"]}
+                                      if stage == "stage3" else None,
         "settings": settings,
         "flow_mode": confirmed["flow_mode"],
         "progression_checkpoint": confirmed["run_record"],
@@ -704,6 +734,8 @@ def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continu
     return (
         f"Stage {stage[-1]} foreground workflow execution. {role}\n"
         "The root conversation owns user decisions. Stay within the supplied frozen requirement and current C scope authority. "
+        "A foreground carrier observes a prepared plan revision and transports only an authenticated original Controller decision and exact patch bytes. "
+        "This runner has no Controller patch ingress; when a revision needs Controller bytes, return technical_error and preserve the C transaction. "
         "The confirmed Stage-2 planning boundary is not a Stage-3 ceiling; Stage 3 consumes the latest sealed C readiness. "
         "Use the saved flow_mode and exact pending decisions; continuous mode skips only existing human stage gates. "
         "Do not start a daemon, scheduler, monitor, project, or discussion ledger. A carrier turn result never releases its foreground host.\n"
@@ -1079,6 +1111,13 @@ def _mark_failure(
 
 def _invoke(state, record_path, answer, continuing, host, *, control_turn=False):
     stage, confirmed = state["current_stage"], state["confirmed"]
+    if stage == "stage3":
+        current = progression.read_record(record_path).get(progression.KEY) or {}
+        revision = current.get("plan_revision_transaction") or {}
+        if revision.get("state") in {"prepared", "planning-committed"}:
+            return {"result": "needs_input", "needs_input_kind": "technical_error",
+                    "question": "controller_ingress_unavailable: the original Controller must supply the exact plan revision bytes and decision",
+                    "message": "", "artifacts": [], "evidence": [], "handoff_json": "{}"}
     _check_current_registry(confirmed, [int(stage[-1])])
     verify_identity(confirmed['packages']['runner'])
     verify_identity(confirmed['packages'][stage])

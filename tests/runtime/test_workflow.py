@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "skills/guided-implementation/scripts/workflow.py"
+SOURCE_SCRIPT = Path(__file__).resolve().parents[2] / "src/stages/guided-implementation/scripts/workflow.py"
 class WorkflowCliTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -55,6 +56,51 @@ class WorkflowCliTests(unittest.TestCase):
         payload = json.loads(prompt.rsplit('\n', 1)[1])
         self.assertEqual(payload['worktree'], str(self.worktree))
         self.assertEqual(payload['workspace_evidence']['field'], 'confirmed.workspace_evidence')
+
+    def test_foreground_plan_revision_without_controller_patch_ingress_is_technical_error(self):
+        spec = importlib.util.spec_from_file_location('stage3_source_runner', SOURCE_SCRIPT)
+        source = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(source)
+        state = {'current_stage': 'stage3', 'confirmed': {}}
+        with patch.object(source.progression, 'read_record', return_value={source.progression.KEY: {
+                'plan_revision_transaction': {'state': 'prepared'}}}):
+            result = source._invoke(state, self.record, None, True, None)
+        self.assertEqual(result['result'], 'needs_input')
+        self.assertEqual(result['needs_input_kind'], 'technical_error')
+        self.assertIn('controller_ingress_unavailable', result['question'])
+
+    def test_foreground_prompt_shows_current_plan_authority_and_revision_barrier(self):
+        spec = importlib.util.spec_from_file_location('stage3_source_prompt', SOURCE_SCRIPT)
+        source = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(source)
+        current = {'stage': 3, 'scope_authority': {'state': 'sealed', 'revision': 2},
+            'plan_revision_transaction': {'state': 'prepared', 'input': {
+                'revision_id': 'private-1', 'planning_paths': ['docs/spec.md']},
+                'old_authority': {'revision': 1}}}
+        confirmed = {'run_record': str(self.record), 'controller_ref': 'original-controller',
+            'frozen_requirement': {}, 'repository': str(self.repository), 'worktree': str(self.worktree),
+            'workspace_evidence': {}, 'git_common_dir': str(self.repository / '.git'),
+            'target_branch': 'main', 'authority_scope': {}, 'stages': {'stage3': {}},
+            'flow_mode': 'continuous',
+            'packages': {name: {'entry': '/fixture/SKILL.md'} for name in source.STAGES},
+            'registry_input': '/fixture/registry.json', 'registration_context': {}}
+        with patch.object(source.progression, 'read_record', return_value={source.progression.KEY: current}), \
+             patch.object(source.progression, 'consumed_scope_readiness', return_value={
+                 'scope_revision': 2, 'scope_authority': current['scope_authority']}):
+            prompt = source._stage_prompt({'confirmed': confirmed, 'stage_results': {}}, 'stage3', None, True)
+        payload = json.loads(prompt.rsplit('\n', 1)[1])
+        self.assertEqual(payload['current_scope_authority']['revision'], 2)
+        self.assertEqual(payload['plan_revision_transaction']['revision_id'], 'private-1')
+        self.assertEqual(payload['controller_revision_ingress']['status'], 'unavailable')
+        current['scope_authority'] = {'kind': 'inline', 'state': 'sealed', 'revision': 2,
+                                      'execution_plan': {'plan_digest': 'current-inline'}}
+        with patch.object(source.progression, 'read_record', return_value={source.progression.KEY: current}), \
+             patch.object(source.progression, 'consumed_scope_readiness',
+                          side_effect=AssertionError('standalone has no Stage-2 predecessor')):
+            standalone = source._stage_prompt({'confirmed': confirmed, 'stage_results': {}},
+                                              'stage3', None, True)
+        inline_payload = json.loads(standalone.rsplit('\n', 1)[1])
+        self.assertEqual(inline_payload['stage3_readiness']['execution_plan']['plan_digest'], 'current-inline')
 
     def test_unconfirmed_model_is_rejected(self):
         value = self.confirmed_input()
