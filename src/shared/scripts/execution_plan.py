@@ -69,7 +69,8 @@ def read_ticket_plan(repository, commit, path):
     _incomplete(len(raw) <= MAX_PLAN, "function plan exceeds size limit: " + path)
     try:
         plan = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object,
-                          parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+                          parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
+                          parse_float=lambda value: (_ for _ in ()).throw(ValueError(value)))
     except (UnicodeError, ValueError) as exc:
         raise entry.PreparationError("execution_plan_incomplete", "invalid function-plan JSON: " + path) from exc
     _incomplete(isinstance(plan, dict), "function plan must be a JSON object: " + path)
@@ -288,7 +289,8 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
     declared = _declared_blockers(contract, ticket_ids)
     _incomplete(set(blockers) == set(declared), "Ticket blocker differs from plan: " + path)
     verifications = plan["verifications"]
-    _incomplete(isinstance(verifications, list) and verifications, "behavior verification required: " + path)
+    _incomplete(isinstance(verifications, list) and verifications and len(verifications) <= 4096,
+                "bounded behavior verification required: " + path)
     verify_ids = []
     for item in verifications:
         _incomplete(isinstance(item, dict) and set(item) == {"id", "behavior", "seam", "commands"} and
@@ -300,7 +302,8 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
         verify_ids.append(item["id"])
     _incomplete(len(verify_ids) == len(set(verify_ids)), "duplicate verification ID: " + path)
     _incomplete(isinstance(plan["steps"], list) and isinstance(plan["artifact_steps"], list) and
-                (plan["steps"] or plan["artifact_steps"]),
+                (plan["steps"] or plan["artifact_steps"]) and
+                len(plan["steps"]) + len(plan["artifact_steps"]) <= 4096,
                 "Ticket needs function or artifact steps: " + path)
     ids, covered = [], set()
     for step in plan["steps"]:
@@ -354,7 +357,8 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
         covered.add(artifact["path"])
     _incomplete(len(ids) == len(set(ids)), "duplicate function/artifact ID: " + path)
     return {"ticket_id": plan["ticket_id"], "plan_version": plan["plan_version"], "source":
-            {key: source[key] for key in ("path", "commit", "mode", "sha256", "blob")},
+            {**{key: source[key] for key in ("path", "commit", "mode", "sha256", "blob")},
+             "plan_version": plan["plan_version"]},
             "plan": plan, "covered_paths": sorted(covered)}
 
 
@@ -365,7 +369,8 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
     sources = [_committed_file(repository, commit, path) for path in planning_paths]
     tickets = [item["path"] for item in sources if "/issues/" in item["path"] and item["path"].endswith(".md")]
     plan_paths = tickets or [item["path"] for item in sources if PLAN_BLOCK.search(item["body"])]
-    _incomplete(bool(plan_paths), "no committed function plan accompanies implementation scope")
+    _incomplete(bool(plan_paths) and len(plan_paths) <= 4096,
+                "bounded committed function plans required for implementation scope")
     plans = [read_ticket_plan(repository, commit, path) for path in plan_paths]
     ids = [item["plan"].get("ticket_id") for item in plans]
     _incomplete(all(isinstance(item, str) and IDENTIFIER.fullmatch(item) for item in ids) and
@@ -387,8 +392,9 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
     records = [tickets_by_id[ticket_id] for ticket_id in ticket_order]
     all_steps = {step["id"]: record["ticket_id"] for record in records
                  for step in record["plan"]["steps"] + record["plan"]["artifact_steps"]}
-    _incomplete(len(all_steps) == sum(len(record["plan"]["steps"] + record["plan"]["artifact_steps"])
-                                       for record in records), "duplicate plan ID across Tickets")
+    _incomplete(len(all_steps) <= 4096 and len(all_steps) ==
+                sum(len(record["plan"]["steps"] + record["plan"]["artifact_steps"])
+                    for record in records), "too many or duplicate plan IDs across Tickets")
     edges, source_order = {}, []
     for record in records:
         ticket = record["ticket_id"]
@@ -399,7 +405,7 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
                                 tickets_by_id[blocker]["plan"]["artifact_steps"]]
         for step in record["plan"]["steps"] + record["plan"]["artifact_steps"]:
             deps = step.get("depends_on", [])
-            _incomplete(all(dep in all_steps and dep != step["id"] and
+            _incomplete(len(deps) <= len(all_steps) and all(dep in all_steps and dep != step["id"] and
                             (all_steps[dep] == ticket or all_steps[dep] in record["plan"]["blocked_by"])
                         for dep in deps), "unknown or undeclared function dependency: " + step["id"])
             edges[step["id"]] = list(dict.fromkeys([*blockers, *deps]))
@@ -419,9 +425,93 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
                                      contract_refs={ref for plan in plans for ref in plan["plan"]["contract_refs"]})
     catalog = {"schema_version": 1, "commit": commit, "requirement_identity": requirement_identity,
                "tickets": records, "ordered_step_ids": ordered,
+               "sources": [{"path": item["path"], "commit": commit, "mode": item["mode"],
+                            "sha256": item["sha256"], "blob": item["blob"]} for item in sources],
                "contract_projection": projection, "contract_digest": projection["digest"]}
     catalog["plan_digest"] = entry.digest({key: value for key, value in catalog.items() if key != "plan_digest"})
     return catalog
+
+
+def authority_envelope(catalog, original_scope_revision, *, input_digest=None):
+    """Project one catalog into the exact Scope Authority plan schema."""
+    _incomplete(type(original_scope_revision) is int and original_scope_revision > 0,
+                "original Scope Authority revision is invalid")
+    _incomplete(isinstance(catalog, dict) and type(catalog.get("schema_version")) is int and
+                catalog["schema_version"] == 1 and
+                isinstance(catalog.get("tickets"), list) and len(catalog["tickets"]) <= 4096 and
+                isinstance(catalog.get("ordered_step_ids"), list) and
+                len(catalog["ordered_step_ids"]) <= 4096 and
+                catalog.get("plan_digest") ==
+                entry.digest({key: value for key, value in catalog.items() if key != "plan_digest"}),
+                "function-plan catalog digest changed")
+    if catalog["commit"] is None:
+        _incomplete(isinstance(input_digest, str) and re.fullmatch(r"[0-9a-f]{64}", input_digest),
+                    "inline plan requires original input digest")
+        _incomplete(len(catalog["tickets"]) == 1 and
+                    set(catalog["tickets"][0]["source"]) ==
+                    {"kind", "commit", "sha256", "plan_version"} and
+                    catalog["tickets"][0]["source"]["kind"] == "inline" and
+                    catalog["tickets"][0]["source"]["commit"] is None and
+                    catalog["tickets"][0]["source"]["plan_version"] ==
+                    catalog["tickets"][0]["plan_version"],
+                    "null planning commit requires an inline source")
+        sources = [{"kind": "inline", "commit": None, "sha256": catalog["tickets"][0]["source"]["sha256"],
+                    "input_digest": input_digest}]
+    else:
+        sources = copy_plan_refs(catalog.get("sources"))
+        _incomplete(isinstance(catalog["commit"], str) and
+                    re.fullmatch(r"[0-9a-f]{40}", catalog["commit"]) and
+                    isinstance(sources, list) and bool(sources) and len(sources) <= 4096 and
+                    all(isinstance(source, dict) and set(source) ==
+                        {"path", "commit", "mode", "sha256", "blob"} and
+                        source["commit"] == catalog["commit"] for source in sources),
+                    "staged plan source requires committed identity")
+    return {"schema_version": 1, "catalog": copy_plan_refs(catalog),
+            "plan_digest": catalog["plan_digest"], "contract_digest": catalog["contract_digest"],
+            "plan_commit": catalog["commit"], "sources": sources,
+            "original_scope_revision": original_scope_revision}
+
+
+def current_catalog(authority):
+    """Fail closed unless the current Scope Authority carries the canonical wrapper."""
+    envelope = authority.get("execution_plan") if isinstance(authority, dict) else None
+    if (not isinstance(envelope, dict) or set(envelope) != {
+            "schema_version", "catalog", "plan_digest", "contract_digest", "plan_commit",
+            "sources", "original_scope_revision"} or
+            type(envelope.get("schema_version")) is not int or envelope["schema_version"] != 1):
+        raise entry.PreparationError("execution_plan_stale", "current execution-plan envelope is invalid")
+    catalog = envelope.get("catalog")
+    try:
+        expected = authority_envelope(catalog, envelope["original_scope_revision"],
+            input_digest=(envelope["sources"][0].get("input_digest") if
+                          isinstance(envelope.get("sources"), list) and envelope["sources"] and
+                          isinstance(envelope["sources"][0], dict) else None))
+        tickets = catalog["tickets"]
+        if catalog["commit"] is None:
+            valid_sources = (len(tickets) == 1 and tickets[0]["source"].get("commit") is None and
+                tickets[0]["source"]["sha256"] == envelope["sources"][0]["sha256"])
+        else:
+            valid_sources = (len(envelope["sources"]) == len({source["path"] for source in envelope["sources"]}) and
+                all(set(ticket["source"]) ==
+                    {"path", "plan_version", "commit", "sha256", "mode", "blob"} and
+                    ticket["source"]["plan_version"] == ticket["plan_version"] and
+                    any(all(ticket["source"].get(key) == source[key] for key in
+                            ("path", "commit", "mode", "sha256", "blob"))
+                        for source in envelope["sources"])
+                    for ticket in tickets))
+    except (KeyError, TypeError, IndexError, ValueError, entry.PreparationError) as exc:
+        raise entry.PreparationError("execution_plan_stale", "current execution-plan envelope is invalid") from exc
+    if (envelope != expected or not valid_sources or
+            envelope["original_scope_revision"] > authority.get("revision", -1)):
+        raise entry.PreparationError("execution_plan_stale", "current execution-plan envelope changed")
+    return catalog
+
+
+def step_ref(ticket, step):
+    source = ticket["source"]
+    return {"ticket_id": ticket["ticket_id"], "step_id": step["id"],
+            "plan_version": ticket["plan_version"], "source_commit": source.get("commit"),
+            "source_sha256": source["sha256"], "step_digest": entry.digest(step)}
 
 
 def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_results, authority):
@@ -433,15 +523,13 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
     def stale(message):
         raise entry.PreparationError("execution_plan_stale", message)
 
-    if (not isinstance(catalog, dict) or catalog.get("plan_digest") !=
-            entry.digest({key: value for key, value in catalog.items() if key != "plan_digest"}) or
-            not isinstance(authority, dict) or authority.get("state") != "sealed" or
-            authority.get("execution_plan") != catalog):
+    if (not isinstance(authority, dict) or authority.get("state") != "sealed" or
+            current_catalog(authority) != catalog):
         stale("current sealed execution plan is missing or changed")
     expected_authority = {"revision": authority["revision"],
         "authority_digest": entry.digest(authority), "plan_digest": catalog["plan_digest"],
         "contract_digest": catalog["contract_digest"]}
-    if not isinstance(plan_refs, list) or not plan_refs:
+    if not isinstance(plan_refs, list) or not plan_refs or len(plan_refs) > len(catalog["ordered_step_ids"]):
         stale("allocation requires current function plan refs")
     if (not isinstance(assigned_paths, list) or not assigned_paths or
             len(assigned_paths) != len(set(assigned_paths)) or
@@ -453,16 +541,14 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
              for step in ticket["plan"]["steps"] + ticket["plan"]["artifact_steps"]}
     selected = []
     for ref in plan_refs:
-        if not isinstance(ref, dict) or set(ref) != {"ticket_id", "step_id", "plan_version", "source", "step_digest"}:
+        if not isinstance(ref, dict) or set(ref) != {"ticket_id", "step_id", "plan_version",
+                                                     "source_commit", "source_sha256", "step_digest"}:
             stale("function plan ref has incomplete identity")
         pair = steps.get(ref["step_id"])
         if pair is None:
             stale("unknown function plan ref: " + str(ref["step_id"]))
         ticket, step = pair
-        if (ref["ticket_id"] != ticket["ticket_id"] or
-                ref["plan_version"] != ticket["plan_version"] or
-                ref["source"] != ticket["source"] or
-                ref["step_digest"] != entry.digest(step)):
+        if ref != step_ref(ticket, step):
             stale("function plan source, version or step changed: " + step["id"])
         selected.append(step["id"])
     order = catalog["ordered_step_ids"]
@@ -478,9 +564,7 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
             if not isinstance(ref, dict) or ref.get("step_id") not in steps:
                 continue
             ticket, step = steps[ref["step_id"]]
-            if ref == {"ticket_id": ticket["ticket_id"], "step_id": step["id"],
-                       "plan_version": ticket["plan_version"], "source": ticket["source"],
-                       "step_digest": entry.digest(step)}:
+            if ref == step_ref(ticket, step):
                 completed.add(step["id"])
     available = set(completed)
     covered, required_read, verification_commands = set(), set(), set()
@@ -547,7 +631,7 @@ def _step_path(step):
 
 def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
     """Find affected functions from both plan versions and their dependency DAGs."""
-    old, new = old_authority['execution_plan'], new_authority['execution_plan']
+    old, new = current_catalog(old_authority), current_catalog(new_authority)
     old_tickets, old_steps = _catalog_steps(old)
     new_tickets, new_steps = _catalog_steps(new)
     _incomplete(set(old_tickets) == set(new_tickets), 'plan revision changed behavior Tickets')
@@ -620,7 +704,7 @@ def classify_retained_results(old_authority, new_authority, executions, carried_
                               changed_planning_paths):
     """Project accepted results into a new revision without editing original receipts."""
     impact = affected_plan_closure(old_authority, new_authority, changed_planning_paths)
-    old_catalog, new_catalog = old_authority['execution_plan'], new_authority['execution_plan']
+    old_catalog, new_catalog = current_catalog(old_authority), current_catalog(new_authority)
     _, old_steps = _catalog_steps(old_catalog)
     _, new_steps = _catalog_steps(new_catalog)
     old_ref = {'revision': old_authority['revision'],
@@ -665,13 +749,9 @@ def classify_retained_results(old_authority, new_authority, executions, carried_
             identity = old_plan_ref['step_id']
             old_ticket, old_step = old_steps[identity]
             new_ticket, new_step = new_steps[identity]
-            _incomplete(old_plan_ref == {'ticket_id': old_ticket['ticket_id'],
-                'step_id': identity, 'plan_version': old_ticket['plan_version'],
-                'source': old_ticket['source'], 'step_digest': entry.digest(old_step)} and
+            _incomplete(old_plan_ref == step_ref(old_ticket, old_step) and
                 old_step == new_step, 'accepted result plan ref changed: ' + identity)
-            mapped.append({'ticket_id': new_ticket['ticket_id'], 'step_id': identity,
-                           'plan_version': new_ticket['plan_version'], 'source': new_ticket['source'],
-                           'step_digest': entry.digest(new_step)})
+            mapped.append(step_ref(new_ticket, new_step))
         original = copy.deepcopy(result)
         carried.append({'state': 'accepted', 'stopped': True,
             'agent_ref': result['agent_ref'], 'task_id': result['task_id'],
@@ -707,13 +787,15 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
         "schema_version", "ticket_id", "plan_version", "spec_ref", "contract_refs",
         "blocked_by", "verifications", "steps", "artifact_steps"},
         "standalone inline plan needs the execution-plan-v1 fields")
-    _incomplete(plan["schema_version"] == 1 and type(plan["plan_version"]) is int and
+    _incomplete(type(plan["schema_version"]) is int and plan["schema_version"] == 1 and
+                type(plan["plan_version"]) is int and
                 plan["plan_version"] > 0 and isinstance(plan["ticket_id"], str) and
                 IDENTIFIER.fullmatch(plan["ticket_id"]) is not None and
                 plan["spec_ref"] == {"path": "inline", "section": "brief"} and
                 plan["blocked_by"] == [], "invalid standalone inline plan identity")
     _strings(plan["contract_refs"], "inline contract_refs")
-    _incomplete(isinstance(plan["verifications"], list) and plan["verifications"],
+    _incomplete(isinstance(plan["verifications"], list) and plan["verifications"] and
+                len(plan["verifications"]) <= 4096,
                 "inline plan needs behavior verification")
     verify_ids = []
     for verification in plan["verifications"]:
@@ -727,7 +809,8 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
         verify_ids.append(verification["id"])
     _incomplete(len(verify_ids) == len(set(verify_ids)) and
                 isinstance(plan["steps"], list) and isinstance(plan["artifact_steps"], list) and
-                (plan["steps"] or plan["artifact_steps"]),
+                (plan["steps"] or plan["artifact_steps"]) and
+                len(plan["steps"]) + len(plan["artifact_steps"]) <= 4096,
                 "duplicate verification or missing inline steps")
     implementation = set(scope["implementation_paths"])
     protected = set(scope["protected_paths"])
@@ -783,7 +866,8 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
         steps[artifact["id"]] = artifact
         covered.add(artifact["path"])
     edges = {step_id: step.get("depends_on", []) for step_id, step in steps.items()}
-    _incomplete(all(set(deps) <= set(steps) for deps in edges.values()),
+    _incomplete(all(len(deps) <= len(steps) and set(deps) <= set(steps)
+                    for deps in edges.values()),
                 "unknown inline function dependency")
     ordered = _stable_dependency_order(ids, edges, "inline function/artifact")
     for item in scope["downstream"]["manifest"]:
@@ -802,7 +886,8 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
                       "verifications": [{key: item[key] for key in ("id", "behavior", "seam")}
                                         for item in plan["verifications"]]}}
     record = {"ticket_id": plan["ticket_id"], "plan_version": plan["plan_version"],
-              "source": {"kind": "inline", "sha256": entry.digest(plan)},
+              "source": {"kind": "inline", "commit": None, "sha256": entry.digest(plan),
+                         "plan_version": plan["plan_version"]},
               "plan": copy_plan_refs([plan])[0], "covered_paths": sorted(covered)}
     catalog = {"schema_version": 1, "commit": None, "requirement_identity": requirement_identity,
                "tickets": [record], "ordered_step_ids": ordered,
@@ -811,8 +896,11 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
     return catalog
 
 
-def inline_authority(plan, scope, semantic, requirement_identity, generated_outputs=None, *, repository=None):
+def inline_authority(plan, scope, semantic, requirement_identity, generated_outputs=None, *,
+                     repository=None, original_scope_revision=None, input_digest=None):
     catalog = collect_inline_plan(plan, scope, semantic, requirement_identity, repository=repository)
     return {"kind": "inline", "state": "sealed", "revision": scope["downstream"]["revision"],
             "candidate_commit": scope["baseline"], "scope": copy_plan_refs([scope])[0],
-            "execution_plan": catalog, "generated_outputs": copy_plan_refs([generated_outputs or {}])[0]}
+            "execution_plan": authority_envelope(catalog, original_scope_revision or scope["downstream"]["revision"],
+                                                 input_digest=input_digest),
+            "generated_outputs": copy_plan_refs([generated_outputs or {}])[0]}

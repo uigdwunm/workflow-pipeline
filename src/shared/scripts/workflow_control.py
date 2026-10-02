@@ -544,7 +544,8 @@ def validate_progress(progress):
                     'invalid current plan authority')
             if 'execution_authority' in progress:
                 authority = progress['execution_authority']
-                catalog = authority['execution_plan']
+                from execution_plan import current_catalog
+                catalog = current_catalog(authority)
                 require(plan_authority == {'revision': authority['revision'],
                     'authority_digest': authority_digest(authority),
                     'plan_digest': catalog['plan_digest'],
@@ -1215,7 +1216,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                 'execution_plan_incomplete: dispatcher requires the current sealed catalog')
         if 'execution_authority' in evidence:
             authority = evidence['execution_authority']
-            catalog = authority['execution_plan']
+            from execution_plan import current_catalog
+            catalog = current_catalog(authority)
             require(evidence.get('plan_authority') == {'revision': authority['revision'],
                 'authority_digest': authority_digest(authority), 'plan_digest': catalog['plan_digest'],
                 'contract_digest': catalog['contract_digest']} and
@@ -1310,7 +1312,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             from execution_plan import validate_plan_refs
             authority = progress.get('execution_authority')
             require(authority is not None, 'execution_plan_stale: current catalog is unavailable')
-            group = validate_plan_refs(authority['execution_plan'], evidence['plan_refs'],
+            from execution_plan import current_catalog
+            group = validate_plan_refs(current_catalog(authority), evidence['plan_refs'],
                 assigned, evidence['read_only'],
                 progress.get('carried_results', []) + progress['executions'], authority)
             require(progress.get('plan_authority') == evidence['plan_authority'] == group['plan_authority'] and
@@ -1550,7 +1553,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             require('direct_provenance' not in evidence, 'full candidates require execution provenance')
             require(accepted, 'Stage-3 candidate requires an accepted Execution Agent')
             authority = progress['execution_authority']
-            catalog = authority['execution_plan']
+            from execution_plan import current_catalog, step_ref
+            catalog = current_catalog(authority)
             steps = {step['id']: (ticket, step) for ticket in catalog['tickets']
                      for step in ticket['plan']['steps'] + ticket['plan']['artifact_steps']}
             require(len(steps) == len(catalog['ordered_step_ids']) and
@@ -1565,9 +1569,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                     pair = steps.get(ref.get('step_id')) if isinstance(ref, dict) else None
                     require(pair is not None, 'candidate has a retired function step ref')
                     ticket, step = pair
-                    require(ref == {'ticket_id': ticket['ticket_id'], 'step_id': step['id'],
-                        'plan_version': ticket['plan_version'], 'source': ticket['source'],
-                        'step_digest': authority_digest(step)},
+                    require(ref == step_ref(ticket, step),
                         'candidate accepted result names a historical function step')
                     completed.add(step['id'])
             missing = [identity for identity in catalog['ordered_step_ids'] if identity not in completed]

@@ -247,7 +247,12 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.addCleanup(flow.doCleanups)
         flow.begin_dispatcher()
         authority = flow.state()['scope_authority']
-        plan = copy.deepcopy(authority['execution_plan']['tickets'][0]['plan'])
+        original_b0 = copy.deepcopy(fixture.fixture.transfer.handoff.unseal(flow.state()['handoff']))
+        original_b0.pop('inline_authority')
+        original_b0['semantic'].pop('execution_plan')
+        self.assertEqual(authority['execution_plan']['sources'][0]['input_digest'],
+                         fixture.fixture.transfer.entry.digest(original_b0))
+        plan = copy.deepcopy(authority['execution_plan']['catalog']['tickets'][0]['plan'])
         plan['plan_version'] += 1
         plan['steps'][0]['approach'].append('Use the revised private helper sequence')
         helper_step = copy.deepcopy(plan['steps'][0])
@@ -282,6 +287,11 @@ class PlanRevisionProgressTests(unittest.TestCase):
             'controller_ref': 'task', 'write_release': prepared['next_action']['write_release'],
             'planning_commit': flow.flow_git('rev-parse', 'HEAD')})
         self.assertEqual(activated['next_action']['operation'], 'plan-revision-activated', activated)
+        revised = flow.state()['scope_authority']['execution_plan']
+        self.assertEqual(revised['original_scope_revision'], authority['execution_plan']['original_scope_revision'])
+        self.assertIsNone(revised['plan_commit'])
+        self.assertEqual(revised['sources'][0]['input_digest'],
+                         authority['execution_plan']['sources'][0]['input_digest'])
         port = {'record': flow.state()['dispatch'], 'control': copy.deepcopy(flow.state()['control'])}
         progress.dispatch.record_for(port)
         self.assertEqual(port['_current_stage3_progress']['plan_authority']['revision'], 2)
@@ -292,15 +302,17 @@ class PlanRevisionProgressTests(unittest.TestCase):
         allocation_input['scope']['owned_paths'] = ['helper.py', 'impl.py']
         allocation_input['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
             allocation_input['scope'])
-        ticket = flow.state()['scope_authority']['execution_plan']['tickets'][0]
-        allocation_input['semantic']['plan_refs'].append({'ticket_id': ticket['ticket_id'],
-            'step_id': helper_step['id'], 'plan_version': ticket['plan_version'],
-            'source': ticket['source'], 'step_digest': fixture.fixture.transfer.entry.digest(helper_step)})
+        ticket = flow.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
+        allocation_input['semantic']['plan_refs'].append(progress.execution_plan.step_ref(ticket, helper_step))
         prepared_allocation = flow.invoke('allocation', {'allocation_id': 'inline-current', 'operation': 'prepare',
             'handoff': allocation_input})
         self.assertIsNotNone(prepared_allocation['next_action'], prepared_allocation)
         self.assertEqual(prepared_allocation['next_action']['operation'], 'invoke-host', prepared_allocation)
         slot = flow.state()['allocations']['inline-current']
+        payload = slot['record']['request']['payload']
+        self.assertEqual(payload['execution_plan']['sources'][0]['input_digest'],
+                         authority['execution_plan']['sources'][0]['input_digest'])
+        self.assertNotEqual(payload['input_digest'], payload['execution_plan']['sources'][0]['input_digest'])
         bound = flow.invoke('allocation', {'allocation_id': 'inline-current', 'operation': 'bind',
             'receipt': flow.receipt(slot['record'], ref='native:inline-agent')})
         release = bound['next_action']['result']['write_release']

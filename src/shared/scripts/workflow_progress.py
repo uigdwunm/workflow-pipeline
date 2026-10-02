@@ -491,9 +491,8 @@ def validate_state(state):
                 decision_records=change_decision_journal(state))
     if state["stage"] == 3 and state.get("scope_authority") is not None:
         authority = state["scope_authority"]
-        catalog = authority.get("execution_plan")
-        require(isinstance(catalog, dict) and catalog.get("plan_digest") ==
-                entry.digest({key: value for key, value in catalog.items() if key != "plan_digest"}) and
+        catalog = execution_plan.current_catalog(authority)
+        require(isinstance(catalog, dict) and
                 authority.get("revision") == authority.get("scope", {}).get("downstream", {}).get("revision"),
                 "scope_changed", "current Stage-3 plan authority differs from its sealed catalog")
         plan_authority = (state["control"]["context"].get("handoff_progress") or {}).get("plan_authority")
@@ -765,7 +764,12 @@ def corrected_scope_authority(transaction, receipt):
         "revision": scope["downstream"]["revision"], "scope": scope,
         "proposal": copy.deepcopy(transaction["envelope"]),
         "proposal_digest": entry.digest(transaction["envelope"]),
-        "execution_plan": copy.deepcopy(transaction["execution_plan"]),
+        "execution_plan": (execution_plan.authority_envelope(transaction["execution_plan"],
+            (old["execution_plan"]["original_scope_revision"] if old.get("execution_plan")
+             else old["revision"]))
+            if transaction["execution_plan"] is not None else None),
+        "generated_outputs": copy.deepcopy(transaction["envelope"].get(
+            "generated_outputs", handoff.authority_generated_outputs(old))),
         "seal_ref": receipt["revision_ref"],
         "revisions": [*old.get("revisions", []), copy.deepcopy(receipt)],
         "approved_changes": [*old.get("approved_changes", []), *([approved] if approved else [])]}
@@ -786,9 +790,8 @@ def verify_scope_authority(authority, *, initial_seal=None, revision_records=Non
             downstream["seal_ref"] == authority["seal_ref"],
             "scope_changed", "current downstream scope differs from its authority references")
     if downstream["implementation_required"]:
-        catalog = authority.get("execution_plan")
-        require(isinstance(catalog, dict) and catalog.get("plan_digest") ==
-                entry.digest({key: value for key, value in catalog.items() if key != "plan_digest"}) and
+        catalog = execution_plan.current_catalog(authority)
+        require(isinstance(catalog, dict) and
                 authority["proposal"].get("execution_plan") ==
                 {"plan_digest": catalog["plan_digest"], "contract_digest": catalog.get("contract_digest")},
                 "scope_changed", "sealed function plan differs from proposal identity")
@@ -2101,7 +2104,8 @@ class Progress:
             generated_outputs=generated_outputs_for(proposal["input"]))
         authority = {"state": "sealed", "revision": 1, "scope": scope,
                      "proposal": copy.deepcopy(proposal["envelope"]),
-                     "execution_plan": copy.deepcopy(proposal["execution_plan"]),
+                     "execution_plan": (execution_plan.authority_envelope(proposal["execution_plan"], 1)
+                                        if proposal["execution_plan"] is not None else None),
                      "proposal_digest": proposal["digest"],
                      "seal": copy.deepcopy(seal), "seal_ref": seal["seal_ref"], "candidate_commit": candidate,
                      "approved_changes": [change_evidence] if change_evidence is not None else []}
@@ -2291,7 +2295,7 @@ class Progress:
         require(data["report"]["contract_before"] == data["report"]["contract_after"] ==
                 authority["execution_plan"]["contract_digest"], "contract_changed",
                 "internal revision cannot change the sealed functional contract")
-        catalog = authority["execution_plan"]
+        catalog = execution_plan.current_catalog(authority)
         if "validation_plan" in data:
             try:
                 control.validate_revision_validation_plan(
@@ -2471,7 +2475,7 @@ class Progress:
         scope["downstream"]["implementation_required"] = bool(scope["implementation_paths"])
         scope["downstream"]["revision"] += 1
         sources = ([] if inline else sorted({item["path"] for item in
-                   old_authority["execution_plan"]["contract_projection"]["files"]}))
+                   execution_plan.current_catalog(old_authority)["contract_projection"]["files"]}))
         require(set(transaction["input"]["planning_paths"]) <= set(sources),
                 "invalid_scope", "new planning sources need an explicit current contract boundary")
         catalog = (execution_plan.collect_inline_plan(transaction["input"]["inline_plan"], scope,
@@ -2481,14 +2485,14 @@ class Progress:
                     sources, scope, s["handoff"]["requirement_identity"]))
         require(catalog["contract_digest"] == old_authority["execution_plan"]["contract_digest"],
                 "contract_changed", "planning commit changed the immutable functional contract")
-        old_tickets = {item["ticket_id"]: item for item in old_authority["execution_plan"]["tickets"]}
+        old_tickets = {item["ticket_id"]: item for item in execution_plan.current_catalog(old_authority)["tickets"]}
         new_tickets = {item["ticket_id"]: item for item in catalog["tickets"]}
         require(set(old_tickets) == set(new_tickets), "contract_changed",
                 "internal revision cannot add or remove a behavior Ticket")
         historical_ids = {step['id'] for prior in s.get('plan_revision_history', {}).values()
                           if prior.get('state') == 'activated'
                           for authority in (prior['old_authority'], prior['proposed_authority'])
-                          for ticket in authority['execution_plan']['tickets']
+                          for ticket in execution_plan.current_catalog(authority)['tickets']
                           for step in ticket['plan']['steps']}
         current_ids = {step['id'] for ticket in old_tickets.values()
                        for step in ticket['plan']['steps']}
@@ -2513,12 +2517,18 @@ class Progress:
         proposed = copy.deepcopy(old_authority)
         proposed.update(revision=old_authority["revision"] + 1,
                         candidate_commit=old_authority["candidate_commit"] if inline else data["planning_commit"],
-                        execution_plan=catalog,
+                        execution_plan=execution_plan.authority_envelope(catalog,
+                            old_authority["execution_plan"]["original_scope_revision"],
+                            input_digest=(old_authority["execution_plan"]["sources"][0]["input_digest"]
+                                          if inline else None)),
                         scope=scope, generated_outputs=copy.deepcopy(generated_outputs))
         if inline:
             require(proposed == execution_plan.inline_authority(transaction["input"]["inline_plan"],
                 scope, s["handoff"]["semantic"], s["handoff"]["requirement_identity"],
-                generated_outputs, repository=repository), "scope_changed", "inline authority projection changed")
+                generated_outputs, repository=repository,
+                original_scope_revision=old_authority["execution_plan"]["original_scope_revision"],
+                input_digest=old_authority["execution_plan"]["sources"][0]["input_digest"]),
+                "scope_changed", "inline authority projection changed")
         transaction.update(state="planning-committed", commit_input=copy.deepcopy(data),
                            git_facts=facts, proposed_authority=proposed)
         self.save()
@@ -4166,7 +4176,7 @@ class Progress:
                                 "execution_plan_stale", "standalone allocation changed its inline authority")
                         request["inline_authority"] = copy.deepcopy(inline)
                         request["semantic"].setdefault("inline_plan", copy.deepcopy(
-                            inline["execution_plan"]["tickets"][0]["plan"]))
+                            execution_plan.current_catalog(inline)["tickets"][0]["plan"]))
                 require(request["binding"] == s["handoff"]["binding"] and request["target"] == s["handoff"]["target"],
                         "binding_changed", "allocation must retain its dispatcher's flow")
                 retain_entry_pins(request, s["packages"])

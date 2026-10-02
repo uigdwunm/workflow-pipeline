@@ -90,7 +90,7 @@ class WorkflowGitTests(unittest.TestCase):
         semantic = {'objective': 'implement the frozen requirement', 'testing_basis': 'CLI',
                     'completion_criteria': ['CLI'], 'constraints': ['stay in scope']}
         authority = execution_plan.inline_authority(plan, scope, semantic,
-            context['requirement_identity'], repository=str(self.repo))
+            context['requirement_identity'], repository=str(self.repo), input_digest='9' * 64)
         catalog = authority['execution_plan']
         return {'execution_authority': authority,
                 'plan_authority': {'revision': authority['revision'],
@@ -100,12 +100,10 @@ class WorkflowGitTests(unittest.TestCase):
 
     def execution_envelope(self, context, task_id, paths, read_only=(), **extra):
         progress = context['handoff_progress']
-        catalog = progress['execution_authority']['execution_plan']
+        catalog = progress['execution_authority']['execution_plan']['catalog']
         ticket = catalog['tickets'][0]
         steps = {step['id']: step for step in ticket['plan']['steps']}
-        refs = [{'ticket_id': ticket['ticket_id'], 'step_id': step_id,
-                 'plan_version': ticket['plan_version'], 'source': ticket['source'],
-                 'step_digest': control.digest(steps[step_id])}
+        refs = [execution_plan.step_ref(ticket, steps[step_id])
                 for step_id in catalog['ordered_step_ids']
                 if steps[step_id]['target']['path'] in paths]
         envelope = {'task_id': task_id, 'paths': list(paths), 'read_only': list(read_only),

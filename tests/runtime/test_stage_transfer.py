@@ -82,10 +82,8 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         fingerprints = {name: control_git.file_fingerprint(self.flow, name) for name in owned}
         index = len(progress['executions'])
         authority = progress['execution_authority']
-        refs = [{'ticket_id': ticket['ticket_id'], 'step_id': step['id'],
-                 'plan_version': ticket['plan_version'], 'source': ticket['source'],
-                 'step_digest': entry.digest(step)}
-                for ticket in authority['execution_plan']['tickets']
+        refs = [execution_plan.step_ref(ticket, step)
+                for ticket in authority['execution_plan']['catalog']['tickets']
                 for step in ticket['plan']['steps'] if step['target']['path'] in owned]
         self.assertTrue(refs)
         progress['executions'].append({'task_id': 'fixture-execution-' + str(index),
@@ -166,9 +164,6 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                     "failures": ["invalid input is reported"], "depends_on": [],
                     "verification_refs": ["V-inline"], "read_only": [self.requirement_path]}],
                 "artifact_steps": []}
-            request["inline_authority"] = execution_plan.inline_authority(
-                request["semantic"]["inline_plan"], scope, request["semantic"],
-                self.frozen["requirement_identity"])
         return request
 
     def context_for(self, stage):
@@ -178,16 +173,38 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
 
     def inline_execution_input(self):
         execution = self.input_for(3)
+        execution["inline_authority"] = handoff.unseal(handoff.handle(execution))["inline_authority"]
         execution.update(role="execution-agent", configuration=configuration("execution-agent"))
         authority = execution["inline_authority"]
-        ticket = authority["execution_plan"]["tickets"][0]
+        ticket = authority["execution_plan"]["catalog"]["tickets"][0]
         step = ticket["plan"]["steps"][0]
-        execution["semantic"].update(plan_refs=[{"ticket_id": ticket["ticket_id"],
-            "step_id": step["id"], "plan_version": ticket["plan_version"],
-            "source": ticket["source"], "step_digest": entry.digest(step)}],
+        execution["semantic"].update(plan_refs=[execution_plan.step_ref(ticket, step)],
             authority_revision=authority["revision"], authority_digest=entry.digest(authority),
             plan_digest=authority["execution_plan"]["plan_digest"])
         return execution
+
+    def test_inline_source_uses_complete_original_b_input_seal(self):
+        saved = handoff.handle(self.input_for(3))
+        body = handoff.unseal(saved)
+        original = copy.deepcopy(body)
+        original.pop("inline_authority")
+        original["semantic"].pop("execution_plan")
+        b0_digest = entry.digest(original)
+        self.assertEqual(body["inline_authority"]["execution_plan"]["sources"][0]["input_digest"],
+                         b0_digest)
+        self.assertNotEqual(saved["digest"], b0_digest)
+        self.assertEqual(handoff.verify(saved), saved)
+        for field, update in (
+            ("entry", lambda data: data["entry"]["host"].update(thread_id="forged-thread")),
+            ("binding", lambda data: data["binding"].update(worktree="/tmp/forged-flow")),
+            ("authorization", lambda data: data["authorization"].update(reference="forged-approval")),
+            ("semantic", lambda data: data["semantic"].update(objective="forged objective")),
+        ):
+            with self.subTest(field=field):
+                forged = copy.deepcopy(body)
+                update(forged)
+                with self.assertRaises((entry.PreparationError, control.ControlError)):
+                    handoff.verify(handoff.seal(forged))
 
     def launch(self, input_data=None):
         value = input_data or self.input

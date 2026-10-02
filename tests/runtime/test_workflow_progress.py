@@ -14,6 +14,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
 import test_stage_transfer as transfer
 import workflow_progress as progress
+import execution_plan
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/stages/guided-implementation/scripts"))
 import workflow as runner
 from test_discussion_protocol import DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport
@@ -186,6 +187,8 @@ class ProgressTests(transfer.StageTransferTests):
 
     def begin(self, mode="stepwise", input_data=None):
         value = copy.deepcopy(input_data or self.input)
+        if value["authorization"]["flow_mode"] != mode:
+            value.pop("inline_authority", None)
         value["authorization"]["flow_mode"] = mode
         result = self.invoke("start", {"handoff": value, "control": {"context": self.context, "discussion": None}})
         self.assertEqual(result["next_action"]["operation"], "invoke-host")
@@ -1298,14 +1301,12 @@ class ProgressTests(transfer.StageTransferTests):
         else:
             execution["inline_authority"] = copy.deepcopy(authority)
             execution["semantic"]["inline_plan"] = copy.deepcopy(
-                authority["execution_plan"]["tickets"][0]["plan"])
+                authority["execution_plan"]["catalog"]["tickets"][0]["plan"])
         refs = []
-        for ticket in authority["execution_plan"]["tickets"]:
+        for ticket in authority["execution_plan"]["catalog"]["tickets"]:
             for step in ticket["plan"]["steps"]:
                 if step["target"]["path"] in execution["scope"]["owned_paths"]:
-                    refs.append({"ticket_id": ticket["ticket_id"], "step_id": step["id"],
-                        "plan_version": ticket["plan_version"], "source": ticket["source"],
-                        "step_digest": transfer.entry.digest(step)})
+                    refs.append(execution_plan.step_ref(ticket, step))
         execution["semantic"].update(plan_refs=refs, authority_revision=authority["revision"],
             authority_digest=transfer.entry.digest(authority),
             plan_digest=authority["execution_plan"]["plan_digest"])
@@ -1577,14 +1578,12 @@ class ProgressTests(transfer.StageTransferTests):
             request['manifest_baseline'] = authority['scope']['baseline']
         else:
             request['inline_authority'] = copy.deepcopy(authority)
-            request['semantic']['inline_plan'] = copy.deepcopy(authority['execution_plan']['tickets'][0]['plan'])
+            request['semantic']['inline_plan'] = copy.deepcopy(authority['execution_plan']['catalog']['tickets'][0]['plan'])
         refs = []
-        for ticket in authority['execution_plan']['tickets']:
+        for ticket in authority['execution_plan']['catalog']['tickets']:
             for step in ticket['plan']['steps']:
                 if step['target']['path'] in request['scope']['owned_paths']:
-                    refs.append({'ticket_id': ticket['ticket_id'], 'step_id': step['id'],
-                        'plan_version': ticket['plan_version'], 'source': ticket['source'],
-                        'step_digest': transfer.entry.digest(step)})
+                    refs.append(execution_plan.step_ref(ticket, step))
         request['semantic'].update(plan_refs=refs, authority_revision=authority['revision'],
             authority_digest=transfer.entry.digest(authority),
             plan_digest=authority['execution_plan']['plan_digest'])

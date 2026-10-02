@@ -13,6 +13,37 @@ import execution_plan
 
 
 class ExecutionPlanAdmissionTests(unittest.TestCase):
+    def test_sealed_scope_exposes_versioned_execution_plan_envelope(self):
+        case = self.new_flow()
+        case.finish_planned_design()
+        authority = case.flow.state()["scope_authority"]
+        envelope = authority["execution_plan"]
+        self.assertEqual(set(envelope), {"schema_version", "catalog", "plan_digest",
+            "contract_digest", "plan_commit", "sources", "original_scope_revision"})
+        self.assertEqual(envelope["schema_version"], 1)
+        self.assertEqual(envelope["original_scope_revision"], authority["revision"])
+        self.assertEqual(envelope["plan_commit"], authority["candidate_commit"])
+        self.assertEqual(envelope["plan_digest"], envelope["catalog"]["plan_digest"])
+        self.assertEqual(envelope["contract_digest"], envelope["catalog"]["contract_digest"])
+        self.assertTrue(envelope["sources"])
+        for ticket in envelope["catalog"]["tickets"]:
+            source = ticket["source"]
+            self.assertEqual(source["plan_version"], ticket["plan_version"])
+            self.assertEqual(source["commit"], envelope["plan_commit"])
+            self.assertIn(source["path"], {item["path"] for item in envelope["sources"]})
+            self.assertTrue(source["blob"])
+        forged = copy.deepcopy(authority)
+        forged["execution_plan"]["schema_version"] = True
+        with self.assertRaises(execution_plan.entry.PreparationError):
+            execution_plan.current_catalog(forged)
+        staged_without_commit = copy.deepcopy(envelope["catalog"])
+        staged_without_commit["commit"] = None
+        staged_without_commit["plan_digest"] = execution_plan.entry.digest({
+            key: value for key, value in staged_without_commit.items() if key != "plan_digest"})
+        with self.assertRaises(execution_plan.entry.PreparationError):
+            execution_plan.authority_envelope(staged_without_commit, authority["revision"],
+                                              input_digest="a" * 64)
+
     def new_flow(self):
         case = fixture.ScopeProgressTests(methodName="runTest")
         case.setUp()
@@ -253,11 +284,10 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         catalog = execution_plan.collect_execution_plan(str(case.flow.flow), candidate,
             ["docs/spec.md"], scope, {"path": "docs/requirement.md"})
         self.assertEqual(catalog["ordered_step_ids"], ["ART-1"])
-        authority = {"state": "sealed", "revision": 1, "scope": scope, "execution_plan": catalog}
+        authority = {"state": "sealed", "revision": 1, "scope": scope,
+                     "execution_plan": execution_plan.authority_envelope(catalog, 1)}
         ticket = catalog["tickets"][0]
-        ref = {"ticket_id": ticket["ticket_id"], "step_id": "ART-1",
-               "plan_version": ticket["plan_version"], "source": ticket["source"],
-               "step_digest": fixture.fixture.transfer.entry.digest(plan["artifact_steps"][0])}
+        ref = execution_plan.step_ref(ticket, plan["artifact_steps"][0])
         group = execution_plan.validate_plan_refs(catalog, [ref], ["prompt.md"], [], [], authority)
         self.assertEqual(group["ordered_step_ids"], ["ART-1"])
 

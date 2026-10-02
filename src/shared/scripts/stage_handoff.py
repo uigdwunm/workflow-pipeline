@@ -47,6 +47,20 @@ def unseal(value):
     return body
 
 
+def inline_input_digest(request, controller_ref, identity, source_commit, delivered, selection):
+    """Seal the complete original B0 body before derived inline identity fields."""
+    body = {k: copy.deepcopy(request[k]) for k in FIELDS}
+    body["semantic"].pop("execution_plan", None)
+    if "generated_outputs" in request:
+        body["generated_outputs"] = copy.deepcopy(request["generated_outputs"])
+    if "manifest_baseline" in request:
+        body["manifest_baseline"] = request["manifest_baseline"]
+    body.update(kind="stage-input", controller_ref=controller_ref,
+                requirement_identity=copy.deepcopy(identity), source_commit=source_commit,
+                delivery_facts=copy.deepcopy(delivered), selection=copy.deepcopy(selection))
+    return seal(body)["digest"]
+
+
 def commit(value):
     require(isinstance(value, str) and re.fullmatch("[0-9a-f]{40}", value), "invalid_commit", "full commit required")
     return value
@@ -442,7 +456,7 @@ def effective_scope(original_handoff, authority):
         catalog = execution_plan.collect_execution_plan(
             original["expected_entry"]["repository"]["root"], authority["candidate_commit"],
             original["scope"]["owned_paths"], scope, original["requirement_identity"])
-        require(authority.get("execution_plan") == catalog and
+        require(execution_plan.current_catalog(authority) == catalog and
                 authority.get("proposal", {}).get("execution_plan") ==
                 {"plan_digest": catalog["plan_digest"], "contract_digest": catalog["contract_digest"]},
                 "scope_changed", "sealed function plan differs from committed design")
@@ -747,8 +761,12 @@ def _prepare(request):
             requirement_identity=identity, scope_digest=authority['scope_digest'], baseline=scope['baseline'])
     if stage == 3 and request.get('readiness') is None:
         if role == 'implementation-dispatcher' and 'inline_plan' in semantic:
+            original_input = inline_input_digest(request, current['actor']['controller_ref'],
+                identity, source_commit, delivered,
+                control.select_configuration(request['configuration']))
             derived = execution_plan.inline_authority(semantic['inline_plan'], scope, semantic, identity,
-                request.get('generated_outputs', {}), repository=request['binding']['worktree'])
+                request.get('generated_outputs', {}), repository=request['binding']['worktree'],
+                input_digest=original_input)
             require(request.get('inline_authority', derived) == derived,
                     'execution_plan_stale', 'standalone inline plan authority changed')
             request['inline_authority'] = derived
@@ -757,7 +775,9 @@ def _prepare(request):
             require(isinstance(inline, dict), 'execution_plan_stale',
                     'execution allocation needs its original inline plan authority')
             derived = execution_plan.inline_authority(semantic['inline_plan'], inline['scope'], semantic, identity,
-                inline.get('generated_outputs', {}), repository=request['binding']['worktree'])
+                inline.get('generated_outputs', {}), repository=request['binding']['worktree'],
+                original_scope_revision=inline['execution_plan']['original_scope_revision'],
+                input_digest=inline['execution_plan']['sources'][0]['input_digest'])
             require(inline == derived and scope['downstream'] == inline['scope']['downstream'] and
                     scope['implementation_paths'] == inline['scope']['implementation_paths'],
                     'execution_plan_stale', 'standalone plan or scope changed')
@@ -771,7 +791,7 @@ def _prepare(request):
     if stage == 3:
         authority_record = (request['readiness']['scope_authority'] if request.get('readiness') is not None
                             else request['inline_authority'])
-        catalog = authority_record['execution_plan']
+        catalog = execution_plan.current_catalog(authority_record)
         plan_reference = {'authority_revision': authority_record['revision'],
                           'authority_digest': entry.digest(authority_record),
                           'plan_digest': catalog['plan_digest'],
@@ -786,7 +806,7 @@ def _prepare(request):
                     'plan_digest': authority_record['execution_plan']['plan_digest']}
         require(all(semantic.get(key) == value for key, value in expected.items()),
                 'execution_plan_stale', 'allocation names an older plan authority')
-        execution_plan.validate_plan_refs(authority_record['execution_plan'], semantic.get('plan_refs'),
+        execution_plan.validate_plan_refs(execution_plan.current_catalog(authority_record), semantic.get('plan_refs'),
             scope['owned_paths'], scope['protected_paths'],
             ((parent['control']['context'].get('handoff_progress') or {}).get('carried_results', []) +
              (parent['control']['context'].get('handoff_progress') or {}).get('executions', [])),

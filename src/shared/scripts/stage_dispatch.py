@@ -191,7 +191,7 @@ def prepared(request):
             if saved.get('readiness') is not None or saved.get('inline_authority') is not None:
                 authority = (saved['readiness']['scope_authority'] if saved.get('readiness') is not None
                              else saved['inline_authority'])
-                catalog = authority['execution_plan']
+                catalog = execution_plan.current_catalog(authority)
                 group = execution_plan.validate_plan_refs(catalog, saved['semantic'].get('plan_refs'),
                     scope['owned_paths'], scope['protected_paths'],
                     progress.get('carried_results', []) + progress.get('executions', []), authority)

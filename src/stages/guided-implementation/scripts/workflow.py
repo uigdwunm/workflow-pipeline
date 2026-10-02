@@ -394,7 +394,7 @@ def _stage_projection(record_path: Path, stage: str, current: dict[str, Any]) ->
     result = stage_handoff.render(current["accepted"], readiness=readiness)["stage_result"]
     if stage == "stage3" and current.get("scope_authority") is not None:
         authority = current["scope_authority"]
-        catalog = authority["execution_plan"]
+        catalog = authority["execution_plan"]["catalog"]
         expected = {"revision": authority["revision"],
             "authority_digest": entry_prepare.digest(authority),
             "plan_digest": catalog["plan_digest"], "contract_digest": catalog["contract_digest"]}

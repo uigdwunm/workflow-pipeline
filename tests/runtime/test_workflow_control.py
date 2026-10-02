@@ -77,13 +77,47 @@ def verification_fixture(candidate, dispatcher, cwd, target):
 
 
 class WorkflowControlTests(unittest.TestCase):
+    def test_revision_carries_unchanged_step_with_current_flat_ref(self):
+        authority, old_plan, refs = self.execution_plan_fixture(['src/a.py'])
+        revised = copy.deepcopy(authority)
+        revised['revision'] = 2
+        catalog = revised['execution_plan']['catalog']
+        ticket = catalog['tickets'][0]
+        ticket['plan_version'] = 2
+        ticket['source'].update(plan_version=2, sha256='5' * 64)
+        catalog['plan_digest'] = control.authority_digest({
+            key: value for key, value in catalog.items() if key != 'plan_digest'})
+        revised['execution_plan'] = execution_plan.authority_envelope(catalog, 1,
+            input_digest=authority['execution_plan']['sources'][0]['input_digest'])
+        original = {'state': 'accepted', 'stopped': True, 'plan_authority': old_plan,
+            'plan_refs': refs, 'paths': ['src/a.py'], 'agent_ref': 'native:agent',
+            'task_id': 'original', 'allocation_digest': 'allocation',
+            'file_hashes': {'src/a.py': 'f' * 64},
+            'git_result_snapshot': {'src/a.py': 'f' * 64}}
+        retained = execution_plan.classify_retained_results(authority, revised,
+            [original], [], None, {'files': {'src/a.py': 'f' * 64}},
+            {'src/a.py': None}, [])
+        self.assertEqual(len(retained['carried_results']), 1)
+        carried = retained['carried_results'][0]
+        self.assertEqual(carried['plan_refs'], [execution_plan.step_ref(
+            ticket, ticket['plan']['steps'][0])])
+        self.assertEqual(carried['plan_authority']['revision'], 2)
+        self.assertEqual(original['plan_refs'], refs)
+        forged = copy.deepcopy(original)
+        forged['plan_refs'][0]['source_sha256'] = '0' * 64
+        with self.assertRaises(execution_plan.entry.PreparationError):
+            execution_plan.classify_retained_results(authority, revised,
+                [forged], [], None, {'files': {'src/a.py': 'f' * 64}},
+                {'src/a.py': None}, [])
+
     def execution_plan_fixture(self, allowed_paths, verification_command='CLI test'):
         step = {'id': 'step-a', 'target': {'path': 'src/a.py', 'symbol': 'run', 'operation': 'add'},
                 'capability': 'implement behavior a', 'approach': ['implement run'],
                 'inputs': ['approved brief'], 'outputs': ['observable result'],
                 'failures': ['invalid input is reported'], 'depends_on': [],
                 'verification_refs': ['V-a'], 'read_only': []}
-        ticket_source = {'kind': 'inline', 'sha256': '4' * 64}
+        ticket_source = {'kind': 'inline', 'commit': None, 'sha256': '4' * 64,
+                         'plan_version': 1}
         ticket = {'ticket_id': 'INLINE-TEST', 'plan_version': 1, 'source': ticket_source,
                   'plan': {'blocked_by': [], 'steps': [step], 'artifact_steps': [],
                            'verifications': [{'id': 'V-a', 'behavior': 'behavior a',
@@ -93,15 +127,15 @@ class WorkflowControlTests(unittest.TestCase):
         catalog = {'schema_version': 1, 'commit': None, 'tickets': [ticket],
                    'ordered_step_ids': ['step-a'], 'contract_digest': '3' * 64}
         catalog['plan_digest'] = control.authority_digest(catalog)
-        authority = {'state': 'sealed', 'revision': 1, 'execution_plan': catalog,
+        authority = {'state': 'sealed', 'revision': 1,
+                     'execution_plan': execution_plan.authority_envelope(catalog, 1,
+                         input_digest='9' * 64),
                      'scope': {'implementation_paths': list(allowed_paths),
                                'protected_paths': ['docs/draft.md'],
                                'downstream': {'manifest': []}}}
         summary = {'revision': 1, 'authority_digest': control.authority_digest(authority),
                    'plan_digest': catalog['plan_digest'], 'contract_digest': catalog['contract_digest']}
-        refs = [{'ticket_id': ticket['ticket_id'], 'step_id': step['id'],
-                 'plan_version': ticket['plan_version'], 'source': ticket_source,
-                 'step_digest': control.authority_digest(step)}]
+        refs = [execution_plan.step_ref(ticket, step)]
         return authority, summary, refs
 
     def test_planning_commit_preserves_nonplanning_index_flags(self):
@@ -456,6 +490,8 @@ class WorkflowControlTests(unittest.TestCase):
             'file_hashes': {'src/a.py': 'd' * 64}, 'plan_refs': refs,
             'plan_authority': current_plan, 'write_release': 'release-slice'}, received['context'])
         self.assertTrue(self.call('candidate-ready', evidence, accepted['context'])['ok'])
+        stale_plan = {**evidence, 'plan_authority': {**current_plan, 'revision': 0}}
+        self.assertFalse(self.call('candidate-ready', stale_plan, accepted['context'])['ok'])
         extra = {**evidence, 'changed_paths': ['src/a.py', 'src/b.py'],
                  'file_hashes': {'src/a.py': 'd' * 64, 'src/b.py': 'e' * 64}}
         self.assertFalse(self.call('candidate-ready', extra, accepted['context'])['ok'])
@@ -682,12 +718,16 @@ class WorkflowControlTests(unittest.TestCase):
         context = bound['context']
         revised = copy.deepcopy(authority)
         revised['revision'] = 2
-        ticket = revised['execution_plan']['tickets'][0]
+        catalog = revised['execution_plan']['catalog']
+        ticket = catalog['tickets'][0]
         ticket['plan_version'] = 2
-        ticket['source'] = {'kind': 'inline', 'sha256': '5' * 64}
-        revised['execution_plan']['plan_digest'] = control.authority_digest({
-            key: value for key, value in revised['execution_plan'].items()
+        ticket['source'] = {'kind': 'inline', 'commit': None, 'sha256': '5' * 64,
+                            'plan_version': 2}
+        catalog['plan_digest'] = control.authority_digest({
+            key: value for key, value in catalog.items()
             if key != 'plan_digest'})
+        revised['execution_plan'] = execution_plan.authority_envelope(catalog, 1,
+            input_digest=authority['execution_plan']['sources'][0]['input_digest'])
         new = {'revision': 2, 'authority_digest': control.authority_digest(revised),
                'plan_digest': revised['execution_plan']['plan_digest'],
                'contract_digest': revised['execution_plan']['contract_digest']}

@@ -133,9 +133,9 @@ def execution_delta(repository, progress, execution, *, accepting=False):
 
 def verify_plan_read_only(repository, progress, allocation):
     """Bind implementation reads to current accepted content and mode."""
-    from execution_plan import validate_plan_refs
+    from execution_plan import current_catalog, validate_plan_refs
     authority = progress['execution_authority']
-    group = validate_plan_refs(authority['execution_plan'], allocation['plan_refs'],
+    group = validate_plan_refs(current_catalog(authority), allocation['plan_refs'],
         allocation['paths'], allocation['read_only'],
         progress.get('carried_results', []) + progress['executions'], authority)
     require(all(file_fingerprint(repository, relative) == fingerprint
