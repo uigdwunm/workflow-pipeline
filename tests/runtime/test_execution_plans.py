@@ -8,6 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import test_stage_scope_progress as fixture
+import test_stage_scope_transfer as git_fixture
+import execution_plan
 
 
 class ExecutionPlanAdmissionTests(unittest.TestCase):
@@ -48,6 +50,127 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
             case.flow.invoke("scope-propose", proposal)
         self.assertEqual(error.exception.code, "execution_plan_incomplete")
         self.assertEqual(case.flow.checkpoint.read_bytes(), before)
+
+    def test_spec_reference_requires_one_real_section_at_controller_boundary(self):
+        self.rejected_plan(lambda plan: json.dumps({**plan,
+            "spec_ref": {"path": "docs/spec.md", "section": "Absent section"}}))
+        case = self.new_flow()
+        candidate = case.planning_candidate()
+        path = case.flow.flow / "docs/spec.md"
+        path.write_text(path.read_text().replace("### D1 — Plan\n", "### D1 — Plan\n### D1 — Duplicate\n"))
+        case.flow.flow_git("add", "docs/spec.md")
+        case.flow.flow_git("commit", "-qm", "duplicate contract heading")
+        candidate = case.flow.flow_git("rev-parse", "HEAD")
+        state = case.flow.state()
+        proposal = {"proposal_id": "duplicate-heading", "expected_revision": 0,
+            "candidate_commit": candidate, "manifest": case.manifest(candidate),
+            "implementation_required": True,
+            "requirement_identity": copy.deepcopy(state["handoff"]["requirement_identity"]),
+            "binding": copy.deepcopy(state["handoff"]["binding"]),
+            "previous_scope_revision": 0}
+        before = case.flow.checkpoint.read_bytes()
+        with self.assertRaises(fixture.fixture.transfer.entry.PreparationError) as error:
+            case.flow.invoke("scope-propose", proposal)
+        self.assertEqual(error.exception.code, "execution_plan_incomplete")
+        self.assertEqual(case.flow.checkpoint.read_bytes(), before)
+
+    def test_ticket_projection_protects_bytes_after_plan_in_any_language(self):
+        prefix = b"# Ticket\nTicket ID: TASK-B\nPlan Version: 1\n**Blocked by:** None\n"
+        block = b"```execution-plan-v1\n{\"plan_version\":1}\n```\n"
+        tail = "## 后续行为\n- [ ] AC-2: 用户可见结果\n".encode()
+        source = {"path": "docs/issues/ticket.md", "mode": "100644", "body": prefix + block + tail,
+                  "sha256": "committed-document-identity"}
+        digest = lambda item: execution_plan.contract_projection("unused", "unused", [item])["digest"]
+        initial = digest(source)
+        self.assertEqual(initial, digest({**source, "body": prefix + block.replace(b":1", b":2") + tail}))
+        self.assertEqual(initial, digest({**source, "body": prefix.replace(b"Version: 1", b"Version: 2") + block + tail}))
+        self.assertNotEqual(initial, digest({**source, "body": prefix + block + tail.replace("用户可见".encode(), "不同".encode())}))
+
+    def test_explicit_private_section_contract_ref_is_protected(self):
+        original = b"## Further Notes\n### N2 - public promise\nStable API\n### N4 - inventory\nprivate table\n"
+        edited_public = original.replace(b"Stable API", b"Changed API")
+        edited_inventory = original.replace(b"private table", b"updated table")
+        source = lambda body: {"path": "docs/spec.md", "mode": "100644", "body": body,
+                               "sha256": "committed-document-identity"}
+        project = lambda body: execution_plan.contract_projection("unused", "unused", [source(body)],
+            spec_path="docs/spec.md", contract_refs=["PRD:N2:public promise"])["digest"]
+        self.assertNotEqual(project(original), project(edited_public))
+        self.assertEqual(project(original), project(edited_inventory))
+
+    def test_existing_non_python_function_uses_committed_source_and_caller_locations(self):
+        examples = (("impl.cc", "bool Widget::run() { return true; }\n"
+                     "bool call() { return Widget::run(); }\n", "Widget::run"),
+                    ("impl.js", "class Widget { run() { return true; } }\n"
+                     "new Widget().run();\n", "Widget.run"))
+        for target_path, code, symbol in examples:
+            with self.subTest(target_path=target_path):
+                case = git_fixture.StageScopeTransferTests(methodName="runTest")
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                (case.root / target_path).write_text(code)
+                case.git("add", target_path)
+                case.git("commit", "-qm", "existing non-Python function and caller")
+                baseline = case.git("rev-parse", "HEAD")
+                path = case.root / "docs/spec.md"
+                body = path.read_text()
+                match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+                plan = json.loads(match.group(1))
+                plan["steps"][0]["target"] = {"path": target_path, "symbol": symbol,
+                                                 "operation": "modify"}
+                plan["steps"][0]["approach"].extend([
+                    f"source-location: {target_path}:1", f"production-caller: {target_path}:2"])
+                path.write_text(body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                case.git("add", "docs/spec.md")
+                case.git("commit", "-qm", "plan existing non-Python target")
+                candidate = case.git("rev-parse", "HEAD")
+                manifest = [{"path": target, "owner": "implementation", "kind": "source",
+                             "operation": operation, "basis": {"commit": candidate,
+                                 "path": "docs/spec.md", "section": "Approved file decision"}}
+                            for target, operation in ((target_path, "modify"), ("impl.py", "add"),
+                                                      ("tests/test_impl.py", "add"))]
+                scope = {"baseline": baseline, "downstream": {"manifest": manifest}}
+                catalog = execution_plan.collect_execution_plan(str(case.root), candidate,
+                    ["docs/spec.md"], scope, {"path": "docs/requirement.md"})
+                self.assertEqual(catalog["tickets"][0]["plan"]["steps"][0]["target"]["symbol"], symbol)
+                if target_path == "impl.js":
+                    plan["steps"][0]["approach"][-1] = "production-caller: impl.js:99"
+                    committed = path.read_text()
+                    match = re.search(r"```execution-plan-v1\n(.*?)\n```", committed, re.DOTALL)
+                    path.write_text(committed[:match.start(1)] + json.dumps(plan) + committed[match.end(1):])
+                    case.git("add", "docs/spec.md")
+                    case.git("commit", "-qm", "invalid caller location")
+                    invalid = case.git("rev-parse", "HEAD")
+                    with self.assertRaises(fixture.fixture.transfer.entry.PreparationError) as error:
+                        execution_plan.collect_execution_plan(str(case.root), invalid,
+                            ["docs/spec.md"], scope, {"path": "docs/requirement.md"})
+                    self.assertEqual(error.exception.code, "execution_plan_incomplete")
+
+    def test_blocker_uses_stable_ticket_id_instead_of_prefix_inference(self):
+        case = git_fixture.StageScopeTransferTests(methodName="runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        path = case.root / "docs/spec.md"
+        body = path.read_text().replace("Ticket ID: FEP-01", "Ticket ID: TASK-B").replace(
+            "**Blocked by:** None", "**Blocked by:** TASK-A")
+        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan["ticket_id"] = "TASK-B"
+        plan["blocked_by"] = ["TASK-A"]
+        plan["contract_refs"] = [ref.replace("FEP-01:", "TASK-B:") for ref in plan["contract_refs"]]
+        path.write_text(body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+        case.git("add", "docs/spec.md")
+        case.git("commit", "-qm", "stable Ticket ID")
+        candidate = case.git("rev-parse", "HEAD")
+        source = execution_plan.read_ticket_plan(str(case.root), candidate, "docs/spec.md")
+        spec_sections = {"docs/spec.md": execution_plan._sections(path.read_bytes())}
+        record = execution_plan.validate_ticket_plan(source, str(case.root), candidate,
+            {"impl.py", "tests/test_impl.py"}, baseline=case.baseline, spec_sections=spec_sections,
+            ticket_ids=["TASK-A", "TASK-B"])
+        self.assertEqual(record["plan"]["blocked_by"], ["TASK-A"])
+        with self.assertRaises(fixture.fixture.transfer.entry.PreparationError):
+            execution_plan.validate_ticket_plan(source, str(case.root), candidate,
+                {"impl.py", "tests/test_impl.py"}, baseline=case.baseline,
+                spec_sections=spec_sections, ticket_ids=["TASK-B"])
 
     def test_invalid_contract_references_io_cycles_and_coverage_are_not_sealed(self):
         def changed(mutator):

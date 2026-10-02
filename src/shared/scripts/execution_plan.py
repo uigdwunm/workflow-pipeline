@@ -13,9 +13,12 @@ import stage_scope
 
 
 PLAN_BLOCK = re.compile(rb"(?m)^```execution-plan-v1\r?\n(.*?)\r?\n```[ \t]*$", re.DOTALL)
-HEADING = re.compile(rb"(?m)^### (N[0-9]+|D[0-9]+)\b[^\r\n]*$")
+HEADING = re.compile(rb"(?m)^(##|###) ([^\r\n]+)\r?$")
+SECTION_ID = re.compile(rb"^(N[0-9]+|D[0-9]+)\b")
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\Z")
 SYMBOL = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\Z")
+PLAN_VERSION_LINE = re.compile(rb"(?m)^Plan Version: [1-9][0-9]*\r?\n")
+SOURCE_LOCATION = re.compile(r"([^\s:]+):([1-9][0-9]*)\Z")
 MAX_DOCUMENT = 1024 * 1024
 MAX_PLAN = 256 * 1024
 require = entry.require
@@ -74,27 +77,39 @@ def read_ticket_plan(repository, commit, path):
 
 def _sections(body):
     found = list(HEADING.finditer(body))
-    return {match.group(1).decode(): body[match.start():found[index + 1].start() if index + 1 < len(found) else len(body)]
-            for index, match in enumerate(found)}
+    sections = {}
+    for index, match in enumerate(found):
+        if match.group(1) == b"##":
+            key = match.group(2).decode("utf-8", errors="replace")
+            end = next((item.start() for item in found[index + 1:] if item.group(1) == b"##"), len(body))
+        else:
+            section = SECTION_ID.match(match.group(2))
+            if section is None:
+                continue
+            key = section.group(1).decode()
+            end = found[index + 1].start() if index + 1 < len(found) else len(body)
+        _incomplete(key not in sections, "duplicate Spec section: " + key)
+        sections[key] = body[match.start():end]
+    return sections
 
 
 def _ticket_contract(source):
     body = source["body"]
-    if "/issues/" not in source["path"]:
-        block = PLAN_BLOCK.search(body)
-        _incomplete(block is not None, "inline function plan is missing: " + source["path"])
-        return body[:block.start()]
-    marker = body.find("\n## 实施与验证依据".encode("utf-8"))
-    if marker < 0:
-        marker = body.find("\n## 函数级执行计划".encode("utf-8"))
-    _incomplete(marker >= 0, "Ticket contract boundary is missing: " + source["path"])
-    # The first section contains the title, delivery behavior, Blocked by and ACs.
-    return body[:marker]
+    blocks = list(PLAN_BLOCK.finditer(body))
+    _incomplete(len(blocks) == 1, "exactly one function plan required: " + source["path"])
+    block = blocks[0]
+    protected = body[:block.start()] + body[block.end():]
+    # The version belongs to the plan identity and may increase with an internal
+    # revision. All other Ticket bytes, including later sections, are protected.
+    _incomplete(len(PLAN_VERSION_LINE.findall(protected)) <= 1,
+                "duplicate Ticket plan version: " + source["path"])
+    return PLAN_VERSION_LINE.sub(b"", protected)
 
 
-def contract_projection(repository, commit, sources, *, spec_path=None):
+def contract_projection(repository, commit, sources, *, spec_path=None, contract_refs=()):
     """Keep immutable contract bytes distinct from each whole-document identity."""
     projection = []
+    inline = not any("/issues/" in source["path"] for source in sources)
     for source in sources:
         path, body = source["path"], source["body"]
         if "/issues/" in path:
@@ -102,14 +117,21 @@ def contract_projection(repository, commit, sources, *, spec_path=None):
         elif path == spec_path:
             # N2 production evidence and N4 inventory are the enumerated private
             # revision surfaces. Every other Spec byte remains in the contract.
+            _sections(body)
             matches = list(HEADING.finditer(body))
-            spans = [(match.start(), matches[index + 1].start() if index + 1 < len(matches) else len(body))
-                     for index, match in enumerate(matches) if match.group(1) in (b"N2", b"N4")]
+            public = {ref.split(":", 2)[1] for ref in contract_refs if ref.startswith("PRD:")}
+            spans = []
+            for index, match in enumerate(matches):
+                section = SECTION_ID.match(match.group(2)) if match.group(1) == b"###" else None
+                if section is not None and section.group(1) in (b"N2", b"N4") and section.group(1).decode() not in public:
+                    spans.append((match.start(), matches[index + 1].start() if index + 1 < len(matches) else len(body)))
             protected = body
             for start, end in reversed(spans):
-                protected = protected[:start] + body[start:body.find(b"\n", start) + 1] + protected[end:]
-            if "/issues/" not in path:
+                line_end = body.find(b"\n", start, end)
+                protected = protected[:start] + body[start:line_end + 1 if line_end >= 0 else end] + protected[end:]
+            if inline:
                 protected = PLAN_BLOCK.sub(b"", protected)
+                protected = PLAN_VERSION_LINE.sub(b"", protected)
         else:
             protected = body
         projection.append({"path": path, "mode": source["mode"],
@@ -151,7 +173,57 @@ def _python_symbols(body):
     return result
 
 
-def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline, spec_sections):
+def _non_python_symbol(symbol):
+    """Check a bounded complete reference without assuming a language grammar."""
+    return (isinstance(symbol, str) and 0 < len(symbol.encode("utf-8")) <= 512 and
+            symbol.isprintable() and not any(char.isspace() for char in symbol) and
+            not symbol.startswith(("::", ".", "#", "/")) and
+            not symbol.endswith(("::", ".", "#", "/")) and
+            bool(re.findall(r"[\w$]+", symbol)))
+
+
+def _non_python_source_evidence(repository, baseline, target, approach):
+    """Verify designer-supplied committed locations, without parsing another language."""
+    leaf = re.findall(r"[\w$]+", target["symbol"])[-1]
+    for label in ("source-location", "production-caller"):
+        entries = [item[len(label) + 2:] for item in approach if item.startswith(label + ": ")]
+        _incomplete(len(entries) == 1, "existing non-Python target needs one " + label)
+        location = SOURCE_LOCATION.fullmatch(entries[0])
+        _incomplete(location is not None, "invalid " + label + " reference")
+        path, line_number = location.group(1), int(location.group(2))
+        stage_scope.validate_path(path, repository)
+        _incomplete(label != "source-location" or path == target["path"],
+                    "source-location must name the target file")
+        lines = _committed_file(repository, baseline, path)["body"].splitlines()
+        _incomplete(line_number <= len(lines) and leaf.encode("utf-8") in lines[line_number - 1],
+                    label + " does not identify the planned symbol in committed source: " + path)
+
+
+def _declared_blockers(contract, ticket_ids):
+    lines = re.findall(rb"(?m)^\*\*Blocked by:\*\* ([^\r\n]+)$", contract)
+    _incomplete(len(lines) == 1, "Ticket requires one Blocked by declaration")
+    declared = lines[0].decode("utf-8", errors="replace").strip()
+    if re.match(r"^None(?:\s|$)", declared):
+        _incomplete("," not in declared, "None cannot be combined with Ticket blockers")
+        return []
+    parts = [item.strip() for item in declared.split(",")]
+    _incomplete(all(parts), "Ticket blocker declaration is incomplete")
+    resolved = []
+    for item in parts:
+        if item in (ticket_ids or ()) or ticket_ids is None and IDENTIFIER.fullmatch(item):
+            resolved.append(item)
+            continue
+        # The published Tickets use short numeric labels. Resolve them against
+        # the actual committed stable Ticket IDs, never an assumed prefix.
+        matches = [value for value in ticket_ids or () if item.isdigit() and value.rsplit("-", 1)[-1] == item]
+        _incomplete(len(matches) == 1, "unknown or ambiguous Ticket blocker: " + item)
+        resolved.append(matches[0])
+    _incomplete(len(resolved) == len(set(resolved)), "duplicate Ticket blocker")
+    return resolved
+
+
+def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline, spec_sections,
+                         ticket_ids=None):
     """Validate one Ticket's function, artifact and behavior contracts."""
     plan, path = source["plan"], source["path"]
     _incomplete(set(plan) == {"schema_version", "ticket_id", "plan_version", "spec_ref", "contract_refs",
@@ -167,7 +239,8 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
                 ("Plan Version: " + str(plan["plan_version"])).encode() in ticket_body,
                 "Ticket identity/version differs from its function plan: " + path)
     _incomplete(plan["spec_ref"]["path"] in spec_sections and
-                isinstance(plan["spec_ref"]["section"], str) and plan["spec_ref"]["section"],
+                isinstance(plan["spec_ref"]["section"], str) and
+                plan["spec_ref"]["section"] in spec_sections[plan["spec_ref"]["path"]],
                 "Ticket Spec reference is missing: " + path)
     refs = _strings(plan["contract_refs"], "contract_refs")
     _incomplete(len(refs) == len(set(refs)), "duplicate contract reference: " + path)
@@ -179,13 +252,12 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
             _incomplete(needle in contract, "missing Ticket contract reference " + ref)
         elif ref.startswith("PRD:"):
             part = ref.split(":", 2)[1]
-            _incomplete(part in spec_sections[plan["spec_ref"]["path"]], "missing Spec contract reference " + ref)
+            _incomplete(part in spec_sections[plan["spec_ref"]["path"]],
+                        "missing Spec contract reference " + ref)
         else:
             _incomplete(False, "unknown contract reference " + ref)
     blockers = _ids(plan["blocked_by"], "blocked_by", empty=True)
-    _incomplete(b"**Blocked by:**" in contract, "Ticket blocker contract is missing: " + path)
-    declared_text = contract.split(b"**Blocked by:**", 1)[1].split(b"\n", 1)[0]
-    declared = ["FEP-" + item.decode().zfill(2) for item in re.findall(rb"\b[0-9]+\b", declared_text)]
+    declared = _declared_blockers(contract, ticket_ids)
     _incomplete(set(blockers) == set(declared), "Ticket blocker differs from plan: " + path)
     verifications = plan["verifications"]
     _incomplete(isinstance(verifications, list) and verifications, "behavior verification required: " + path)
@@ -208,12 +280,15 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
                     "function step fields are incomplete: " + path)
         target = step["target"]
         _incomplete(isinstance(target, dict) and set(target) == {"path", "symbol", "operation"} and
-                    target["operation"] in {"add", "modify", "delete"} and
-                    isinstance(target["symbol"], str) and SYMBOL.fullmatch(target["symbol"]),
+                    isinstance(target["path"], str) and
+                    isinstance(target["operation"], str) and target["operation"] in {"add", "modify", "delete"} and
+                    isinstance(target["symbol"], str) and 0 < len(target["symbol"].encode("utf-8")) <= 512 and
+                    (bool(SYMBOL.fullmatch(target["symbol"])) if target["path"].endswith(".py")
+                     else _non_python_symbol(target["symbol"])),
                     "function target is incomplete: " + path)
         stage_scope.validate_path(target["path"], repository)
-        _incomplete(target["path"] in manifest_paths and target["path"].endswith(".py"),
-                    "function target must name an implementation Python file: " + path)
+        _incomplete(target["path"] in manifest_paths,
+                    "function target must name an implementation file: " + path)
         for key in ("capability",):
             _incomplete(isinstance(step[key], str) and step[key].strip(), "function capability required: " + path)
         for key in ("approach", "inputs", "outputs", "failures", "verification_refs"):
@@ -230,8 +305,11 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
         covered.add(target["path"])
         if target["operation"] != "add":
             existing = _committed_file(repository, baseline, target["path"])
-            _incomplete(target["symbol"] in _python_symbols(existing["body"]),
-                        "existing Python symbol is missing: " + target["symbol"])
+            if target["path"].endswith(".py"):
+                _incomplete(target["symbol"] in _python_symbols(existing["body"]),
+                            "existing Python symbol is missing: " + target["symbol"])
+            else:
+                _non_python_source_evidence(repository, baseline, target, step["approach"])
     for artifact in plan["artifact_steps"]:
         _incomplete(isinstance(artifact, dict) and set(artifact) ==
                     {"id", "path", "operation", "capability", "approach", "verification_refs"} and
@@ -261,15 +339,17 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
     plan_paths = tickets or [item["path"] for item in sources if PLAN_BLOCK.search(item["body"])]
     _incomplete(bool(plan_paths), "no committed function plan accompanies implementation scope")
     plans = [read_ticket_plan(repository, commit, path) for path in plan_paths]
+    ids = [item["plan"].get("ticket_id") for item in plans]
+    _incomplete(all(isinstance(item, str) and IDENTIFIER.fullmatch(item) for item in ids) and
+                len(ids) == len(set(ids)), "duplicate or invalid Ticket ID")
     spec_paths = {item["plan"]["spec_ref"].get("path") for item in plans if isinstance(item["plan"].get("spec_ref"), dict)}
     _incomplete(all(path in planning_paths for path in spec_paths), "Spec plan reference escapes planning scope")
     spec_sections = {item["path"]: _sections(item["body"]) for item in sources if item["path"] in spec_paths}
     manifest = scope["downstream"]["manifest"]
     manifest_paths = {item["path"] for item in manifest if item["owner"] == "implementation"}
     records = [validate_ticket_plan(plan, repository, commit, manifest_paths,
-                                    baseline=scope["baseline"], spec_sections=spec_sections) for plan in plans]
-    ids = [record["ticket_id"] for record in records]
-    _incomplete(len(ids) == len(set(ids)), "duplicate Ticket ID")
+                                    baseline=scope["baseline"], spec_sections=spec_sections,
+                                    ticket_ids=ids) for plan in plans]
     tickets_by_id = {record["ticket_id"]: record for record in records}
     ticket_order, ticket_visiting, ticket_visited = [], set(), set()
     def visit_ticket(ticket_id):
@@ -322,7 +402,8 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
                         any(source in covered for source in item["source_paths"]),
                         "implementation path lacks function/artifact coverage: " + item["path"])
     projection = contract_projection(repository, commit, sources,
-                                     spec_path=next(iter(spec_paths)) if len(spec_paths) == 1 else None)
+                                     spec_path=next(iter(spec_paths)) if len(spec_paths) == 1 else None,
+                                     contract_refs={ref for plan in plans for ref in plan["plan"]["contract_refs"]})
     catalog = {"schema_version": 1, "commit": commit, "requirement_identity": requirement_identity,
                "tickets": records, "ordered_step_ids": ordered,
                "contract_projection": projection, "contract_digest": projection["digest"]}
