@@ -502,7 +502,7 @@ def copy_plan_refs(refs):
     return json.loads(json.dumps(refs, ensure_ascii=False))
 
 
-def collect_inline_plan(plan, scope, semantic, requirement_identity):
+def collect_inline_plan(plan, scope, semantic, requirement_identity, *, repository=None):
     """Validate a standalone logical slice without inventing a Ticket document."""
     _incomplete(isinstance(plan, dict) and set(plan) == {
         "schema_version", "ticket_id", "plan_version", "spec_ref", "contract_refs",
@@ -539,14 +539,26 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity):
             "depends_on", "verification_refs", "read_only"}, "incomplete inline function step")
         target = step["target"]
         _incomplete(isinstance(target, dict) and set(target) == {"path", "symbol", "operation"} and
-                    target["path"] in implementation and target["operation"] in {"add", "modify", "delete"} and
-                    isinstance(target["symbol"], str) and SYMBOL.fullmatch(target["symbol"]),
+                    isinstance(target["path"], str) and target["path"] in implementation and
+                    target["operation"] in {"add", "modify", "delete"} and
+                    isinstance(target["symbol"], str) and 0 < len(target["symbol"].encode("utf-8")) <= 512 and
+                    (bool(SYMBOL.fullmatch(target["symbol"])) if target["path"].endswith(".py")
+                     else _non_python_symbol(target["symbol"])),
                     "inline function target escapes implementation scope")
         _incomplete(isinstance(step["id"], str) and IDENTIFIER.fullmatch(step["id"]) and
                     isinstance(step["capability"], str) and step["capability"].strip(),
                     "inline function identity or capability is incomplete")
         for field in ("approach", "inputs", "outputs", "failures"):
             _strings(step[field], field)
+        if target["operation"] != "add":
+            _incomplete(repository is not None,
+                        "existing inline target needs its Git repository")
+            existing = _committed_file(repository, scope["baseline"], target["path"])
+            if target["path"].endswith(".py"):
+                _incomplete(target["symbol"] in _python_symbols(existing["body"]),
+                            "existing Python symbol is missing: " + target["symbol"])
+            else:
+                _non_python_source_evidence(repository, scope["baseline"], target, step["approach"])
         _ids(step["depends_on"], "inline depends_on", empty=True)
         _ids(step["verification_refs"], "inline verification_refs")
         _strings(step["read_only"], "inline read_only", empty=True)
@@ -607,8 +619,8 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity):
     return catalog
 
 
-def inline_authority(plan, scope, semantic, requirement_identity, generated_outputs=None):
-    catalog = collect_inline_plan(plan, scope, semantic, requirement_identity)
+def inline_authority(plan, scope, semantic, requirement_identity, generated_outputs=None, *, repository=None):
+    catalog = collect_inline_plan(plan, scope, semantic, requirement_identity, repository=repository)
     return {"kind": "inline", "state": "sealed", "revision": scope["downstream"]["revision"],
             "candidate_commit": scope["baseline"], "scope": copy_plan_refs([scope])[0],
             "execution_plan": catalog, "generated_outputs": copy_plan_refs([generated_outputs or {}])[0]}

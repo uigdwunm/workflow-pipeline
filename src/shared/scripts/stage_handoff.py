@@ -631,7 +631,7 @@ def _prepare(request):
     if stage == 3 and request.get('readiness') is None:
         if role == 'implementation-dispatcher' and 'inline_plan' in semantic:
             derived = execution_plan.inline_authority(semantic['inline_plan'], scope, semantic, identity,
-                request.get('generated_outputs', {}))
+                request.get('generated_outputs', {}), repository=request['binding']['worktree'])
             require(request.get('inline_authority', derived) == derived,
                     'execution_plan_stale', 'standalone inline plan authority changed')
             request['inline_authority'] = derived
@@ -640,7 +640,7 @@ def _prepare(request):
             require(isinstance(inline, dict), 'execution_plan_stale',
                     'execution allocation needs its original inline plan authority')
             derived = execution_plan.inline_authority(semantic['inline_plan'], inline['scope'], semantic, identity,
-                inline.get('generated_outputs', {}))
+                inline.get('generated_outputs', {}), repository=request['binding']['worktree'])
             require(inline == derived and scope['downstream'] == inline['scope']['downstream'] and
                     scope['implementation_paths'] == inline['scope']['implementation_paths'],
                     'execution_plan_stale', 'standalone plan or scope changed')

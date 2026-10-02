@@ -33,6 +33,90 @@ def inline_plan(requirement_path):
 
 
 class PlanDrivenDispatchTests(unittest.TestCase):
+    def existing_inline_request(self, path, source, symbol, approach, operation="modify"):
+        case = progress_fixture.ProgressTests(methodName="runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        (case.flow / path).write_text(source)
+        case.flow_git("add", path)
+        case.flow_git("commit", "-qm", "existing implementation target")
+        request = case.input_for(3)
+        scope = request["scope"]
+        scope["implementation_paths"] = [path]
+        scope["owned_paths"] = [path]
+        target = next(item for item in scope["downstream"]["manifest"]
+                      if item["owner"] == "implementation")
+        target.update(path=path, operation=operation)
+        request["authorization"]["scope_digest"] = entry.digest(scope)
+        plan = inline_plan(case.requirement_path)
+        plan["steps"][0]["target"] = {"path": path, "symbol": symbol,
+                                       "operation": operation}
+        plan["steps"][0]["approach"] = approach
+        request["semantic"]["inline_plan"] = plan
+        request.pop("inline_authority")
+        return case, request
+
+    def test_standalone_existing_python_symbol_must_exist_in_git_baseline(self):
+        for operation in ("modify", "delete"):
+            with self.subTest(operation=operation):
+                case, request = self.existing_inline_request(
+                    "impl.py", "def actual():\n    return True\n", "missing",
+                    ["change the existing function"], operation)
+                with self.assertRaises(entry.PreparationError) as error:
+                    handoff.handle(request)
+                self.assertEqual(error.exception.code, "execution_plan_incomplete")
+
+    def test_standalone_existing_non_python_sources_need_committed_locations(self):
+        examples = (("impl.js", "class Widget { run() { return true; } }\n"
+                     "new Widget().run();\n", "Widget.run", "modify"),
+                    ("impl.cc", "bool Widget::run() { return true; }\n"
+                     "bool call() { return Widget::run(); }\n", "Widget::run", "delete"))
+        for path, source, symbol, operation in examples:
+            with self.subTest(path=path):
+                evidence = [f"source-location: {path}:1",
+                            f"production-caller: {path}:2"]
+                case, request = self.existing_inline_request(path, source, symbol, evidence, operation)
+                saved = handoff.handle(request)
+                started = dispatch.handle({"protocol": handoff.PROTOCOL,
+                    "operation": "prepare", "handoff": saved,
+                    "control": {"context": case.context_for(3), "discussion": None}})
+                self.assertEqual(started["status"], "prepared")
+                catalog = started["checkpoint"]["context"]["handoff_progress"]["execution_authority"]["execution_plan"]
+                self.assertEqual(catalog["tickets"][0]["plan"]["steps"][0]["target"]["symbol"], symbol)
+
+                request["semantic"]["inline_plan"]["steps"][0]["approach"][-1] = \
+                    f"production-caller: {path}:99"
+                with self.assertRaises(entry.PreparationError) as error:
+                    handoff.handle(request)
+                self.assertEqual(error.exception.code, "execution_plan_incomplete")
+
+    def test_standalone_controller_checks_existing_source_before_dispatch(self):
+        case, request = self.existing_inline_request(
+            "impl.py", "def actual():\n    return True\n", "missing",
+            ["change the existing function"])
+        case.context = case.context_for(3)
+        with self.assertRaises(entry.PreparationError) as error:
+            case.invoke("start", {"handoff": request,
+                "control": {"context": case.context, "discussion": None}})
+        self.assertEqual(error.exception.code, "execution_plan_incomplete")
+        self.assertNotIn(progress.KEY, progress.read_record(case.checkpoint))
+
+        for path, source, symbol in (
+            ("impl.js", "class Widget { run() { return true; } }\n"
+             "new Widget().run();\n", "Widget.run"),
+            ("impl.cc", "bool Widget::run() { return true; }\n"
+             "bool call() { return Widget::run(); }\n", "Widget::run")):
+            with self.subTest(path=path):
+                evidence = [f"source-location: {path}:1",
+                            f"production-caller: {path}:2"]
+                case, request = self.existing_inline_request(path, source, symbol, evidence)
+                case.context = case.context_for(3)
+                started = case.begin("continuous", request)
+                self.assertEqual(started["next_action"]["operation"], "invoke-host")
+                authority = case.state()["control"]["context"]["handoff_progress"]["execution_authority"]
+                self.assertEqual(authority["execution_plan"]["tickets"][0]
+                                 ["plan"]["steps"][0]["target"]["symbol"], symbol)
+
     def active_flow(self, *, generated=False):
         return revision_fixture.PlanRevisionProgressTests.new_active_flow(self, generated=generated)
 

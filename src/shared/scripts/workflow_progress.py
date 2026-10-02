@@ -2308,7 +2308,8 @@ class Progress:
             proposed_scope["closure_paths"] = projected["closure_paths"]
             proposed_scope["owned_paths"] = copy.deepcopy(projected["implementation_paths"])
             new_catalog = execution_plan.collect_inline_plan(data["inline_plan"], proposed_scope,
-                s["handoff"]["semantic"], s["handoff"]["requirement_identity"])
+                s["handoff"]["semantic"], s["handoff"]["requirement_identity"],
+                repository=s["handoff"]["binding"]["worktree"])
             previous = catalog["tickets"][0]
             require(new_catalog["contract_digest"] == catalog["contract_digest"] and
                     new_catalog["tickets"][0]["ticket_id"] == previous["ticket_id"] and
@@ -2455,7 +2456,8 @@ class Progress:
         require(set(transaction["input"]["planning_paths"]) <= set(sources),
                 "invalid_scope", "new planning sources need an explicit current contract boundary")
         catalog = (execution_plan.collect_inline_plan(transaction["input"]["inline_plan"], scope,
-                    s["handoff"]["semantic"], s["handoff"]["requirement_identity"])
+                    s["handoff"]["semantic"], s["handoff"]["requirement_identity"],
+                    repository=repository)
                    if inline else execution_plan.collect_execution_plan(repository, data["planning_commit"],
                     sources, scope, s["handoff"]["requirement_identity"]))
         require(catalog["contract_digest"] == old_authority["execution_plan"]["contract_digest"],
@@ -2486,7 +2488,7 @@ class Progress:
         if inline:
             require(proposed == execution_plan.inline_authority(transaction["input"]["inline_plan"],
                 scope, s["handoff"]["semantic"], s["handoff"]["requirement_identity"],
-                generated_outputs), "scope_changed", "inline authority projection changed")
+                generated_outputs, repository=repository), "scope_changed", "inline authority projection changed")
         transaction.update(state="planning-committed", commit_input=copy.deepcopy(data),
                            git_facts=facts, proposed_authority=proposed)
         self.save()
