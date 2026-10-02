@@ -67,6 +67,29 @@ class PlanDrivenDispatchTests(unittest.TestCase):
                     handoff.handle(request)
                 self.assertEqual(error.exception.code, "execution_plan_incomplete")
 
+    def test_standalone_artifact_only_plan_prepares_a_real_agent_ref(self):
+        case, request = self.existing_inline_request(
+            "prompt.md", "# previous prompt\n", "unused", ["revise the prompt"])
+        plan = request["semantic"]["inline_plan"]
+        plan["steps"] = []
+        plan["artifact_steps"] = [{"id": "prompt-artifact", "path": "prompt.md",
+            "operation": "modify", "capability": "revise the prompt",
+            "approach": "write the approved prompt text", "verification_refs": ["V-inline"]}]
+        saved = handoff.handle(request)
+        prepared = dispatch.handle({"protocol": handoff.PROTOCOL,
+            "operation": "prepare", "handoff": saved,
+            "control": {"context": case.context_for(3), "discussion": None}})
+        self.assertEqual(prepared["status"], "prepared")
+        authority = prepared["checkpoint"]["context"]["handoff_progress"]["execution_authority"]
+        catalog = authority["execution_plan"]
+        self.assertEqual(catalog["ordered_step_ids"], ["prompt-artifact"])
+        ticket = catalog["tickets"][0]
+        ref = {"ticket_id": ticket["ticket_id"], "step_id": "prompt-artifact",
+            "plan_version": ticket["plan_version"], "source": ticket["source"],
+            "step_digest": entry.digest(plan["artifact_steps"][0])}
+        group = execution_plan.validate_plan_refs(catalog, [ref], ["prompt.md"], [], [], authority)
+        self.assertEqual(group["ordered_step_ids"], ["prompt-artifact"])
+
     def test_standalone_existing_non_python_sources_need_committed_locations(self):
         examples = (("impl.js", "class Widget { run() { return true; } }\n"
                      "new Widget().run();\n", "Widget.run", "modify"),
@@ -118,8 +141,9 @@ class PlanDrivenDispatchTests(unittest.TestCase):
                 self.assertEqual(authority["execution_plan"]["tickets"][0]
                                  ["plan"]["steps"][0]["target"]["symbol"], symbol)
 
-    def active_flow(self, *, generated=False):
-        return revision_fixture.PlanRevisionProgressTests.new_active_flow(self, generated=generated)
+    def active_flow(self, *, generated=False, read_dependency=False):
+        return revision_fixture.PlanRevisionProgressTests.new_active_flow(
+            self, generated=generated, read_dependency=read_dependency)
 
     def execution_request(self, flow):
         state = flow.state()
@@ -181,6 +205,42 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         accepted = flow.invoke("allocation", {"allocation_id": "group", "operation": "accept",
             "decision": {"reference": "dispatcher:accepted-current-group"}})
         self.assertEqual(accepted["next_action"]["result"]["status"], "accepted", accepted)
+
+    def test_later_native_allocation_reads_accepted_implementation_file(self):
+        flow = self.active_flow(read_dependency=True)
+        first = self.execution_request(flow)
+        first['semantic']['plan_refs'] = first['semantic']['plan_refs'][:1]
+        flow.invoke('allocation', {'allocation_id': 'first', 'operation': 'prepare', 'handoff': first})
+        slot = flow.state()['allocations']['first']
+        bound = flow.invoke('allocation', {'allocation_id': 'first', 'operation': 'bind',
+            'receipt': flow.receipt(slot['record'], ref='native:first')})
+        release = bound['next_action']['result']['write_release']
+        data = b'def prepare():\n    return "accepted"\n'
+        (flow.flow / 'impl.py').write_bytes(data)
+        slot = flow.state()['allocations']['first']
+        payload = {'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
+            'tests': ['fixture behavior passed'], 'write_release': release,
+            'plan_refs': first['semantic']['plan_refs'],
+            'plan_authority': flow.state()['control']['context']['handoff_progress']['plan_authority']}
+        flow.invoke('allocation', {'allocation_id': 'first', 'operation': 'receive',
+            'receipt': flow.receipt(slot['record'], 'stopped', 'result', ref='native:first'),
+            'result': {'delivery_id': 'first-result', 'status': 'completed', 'payload': payload}})
+        accepted = flow.invoke('allocation', {'allocation_id': 'first', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:accepted-first'}})
+        self.assertEqual(accepted['next_action']['result']['status'], 'accepted')
+
+        second = self.execution_request(flow)
+        second['scope']['owned_paths'] = ['later.py']
+        second['scope']['protected_paths'] = sorted([*second['scope']['protected_paths'], 'impl.py'])
+        second['authorization']['scope_digest'] = entry.digest(second['scope'])
+        second['semantic']['plan_refs'] = second['semantic']['plan_refs'][1:]
+        prepared = flow.invoke('allocation', {'allocation_id': 'later', 'operation': 'prepare',
+            'handoff': second})
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+        slot = flow.state()['allocations']['later']
+        bound = flow.invoke('allocation', {'allocation_id': 'later', 'operation': 'bind',
+            'receipt': flow.receipt(slot['record'], ref='native:later')})
+        self.assertTrue(bound['next_action']['result']['write_release'])
 
     def test_control_rejects_forged_step_even_with_matching_group_digest(self):
         flow = self.active_flow()

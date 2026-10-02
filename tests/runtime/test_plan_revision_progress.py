@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 
 class PlanRevisionProgressTests(unittest.TestCase):
-    def new_active_flow(self, *, generated=False):
+    def new_active_flow(self, *, generated=False, read_dependency=False):
         case = fixture.ScopeProgressTests(methodName="runTest")
         case.setUp()
         self.addCleanup(case.doCleanups)
@@ -30,9 +30,28 @@ class PlanRevisionProgressTests(unittest.TestCase):
                     "kind": "generated", "operation": "add",
                     "basis": {"commit": candidate, "path": "docs/spec.md",
                               "section": "approved design"}, "source_paths": ["impl.py"]})
+            if read_dependency:
+                manifest.append({"path": "later.py", "owner": "implementation", "kind": "source",
+                    "operation": "add", "basis": {"commit": candidate, "path": "docs/spec.md",
+                                                   "section": "approved design"}})
             return sorted(manifest, key=lambda item: item["path"])
 
         case.manifest = planning_manifest
+        if read_dependency:
+            original_candidate = case.planning_candidate
+            def planning_with_read_dependency(*args, **kwargs):
+                original_candidate(*args, **kwargs)
+                path = case.flow.flow / "docs/spec.md"
+                text = path.read_text()
+                match = re.search(r"```execution-plan-v1\n(.*?)\n```", text, re.DOTALL)
+                plan = json.loads(match.group(1))
+                plan["steps"][1]["target"] = {"path": "later.py", "symbol": "later", "operation": "add"}
+                plan["steps"][1]["read_only"] = ["impl.py"]
+                path.write_text(text[:match.start(1)] + json.dumps(plan) + text[match.end(1):])
+                case.flow.flow_git("add", "docs/spec.md")
+                case.flow.flow_git("commit", "-qm", "planned accepted implementation read")
+                return case.flow.flow_git("rev-parse", "HEAD")
+            case.planning_candidate = planning_with_read_dependency
         if generated:
             def propose_with_generated(candidate, *, implementation=True):
                 state = case.flow.state()

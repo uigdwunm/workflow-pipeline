@@ -223,6 +223,70 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         with self.subTest("duplicate JSON field"):
             self.rejected_plan(lambda plan: json.dumps(plan).replace('"plan_version": 1,',
                 '"plan_version": 1, "plan_version": 2,'))
+        with self.subTest("code capability cannot be an artifact-only plan"):
+            def artifact_without_function(plan):
+                plan['steps'] = []
+                plan['artifact_steps'] = [{'id': 'ART-1', 'path': 'impl.py',
+                    'operation': 'add', 'capability': 'implement code',
+                    'approach': 'write code', 'verification_refs': ['V1']}]
+                return json.dumps(plan)
+            self.rejected_plan(artifact_without_function)
+
+    def test_artifact_only_plan_seals_and_supplies_a_dispatchable_ref(self):
+        case = self.new_flow()
+        candidate = case.planning_candidate()
+        path = case.flow.flow / "docs/spec.md"
+        text = path.read_text()
+        match = re.search(r"```execution-plan-v1\n(.*?)\n```", text, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan["steps"] = []
+        plan["artifact_steps"] = [{"id": "ART-1", "path": "prompt.md", "operation": "add",
+            "capability": "provide the prompt artifact", "approach": "write the approved prompt",
+            "verification_refs": ["V1"]}]
+        path.write_text(text[:match.start(1)] + json.dumps(plan) + text[match.end(1):])
+        case.flow.flow_git("add", "docs/spec.md")
+        case.flow.flow_git("commit", "-qm", "artifact-only plan")
+        candidate = case.flow.flow_git("rev-parse", "HEAD")
+        scope = {"baseline": case.flow.flow_git("rev-parse", "HEAD~1"), "downstream": {"manifest": [
+            {"path": "prompt.md", "owner": "implementation", "kind": "source", "operation": "add",
+             "basis": {"commit": candidate, "path": "docs/spec.md", "section": "approved design"}}]}}
+        catalog = execution_plan.collect_execution_plan(str(case.flow.flow), candidate,
+            ["docs/spec.md"], scope, {"path": "docs/requirement.md"})
+        self.assertEqual(catalog["ordered_step_ids"], ["ART-1"])
+        authority = {"state": "sealed", "revision": 1, "scope": scope, "execution_plan": catalog}
+        ticket = catalog["tickets"][0]
+        ref = {"ticket_id": ticket["ticket_id"], "step_id": "ART-1",
+               "plan_version": ticket["plan_version"], "source": ticket["source"],
+               "step_digest": fixture.fixture.transfer.entry.digest(plan["artifact_steps"][0])}
+        group = execution_plan.validate_plan_refs(catalog, [ref], ["prompt.md"], [], [], authority)
+        self.assertEqual(group["ordered_step_ids"], ["ART-1"])
+
+    def test_ready_siblings_keep_source_order_when_first_depends_on_last(self):
+        case = self.new_flow()
+        candidate = case.planning_candidate()
+        path = case.flow.flow / "docs/spec.md"
+        text = path.read_text()
+        match = re.search(r"```execution-plan-v1\n(.*?)\n```", text, re.DOTALL)
+        plan = json.loads(match.group(1))
+        first, second = plan["steps"]
+        first["id"] = "A"
+        first["depends_on"] = ["C"]
+        second["id"] = "B"
+        second["depends_on"] = []
+        third = copy.deepcopy(second)
+        third["id"] = "C"
+        third["target"]["symbol"] = "third"
+        plan["steps"].append(third)
+        path.write_text(text[:match.start(1)] + json.dumps(plan) + text[match.end(1):])
+        case.flow.flow_git("add", "docs/spec.md")
+        case.flow.flow_git("commit", "-qm", "three sibling steps")
+        candidate = case.flow.flow_git("rev-parse", "HEAD")
+        scope = {"baseline": case.flow.flow_git("rev-parse", "HEAD~1"), "downstream": {"manifest": [
+            {"path": "impl.py", "owner": "implementation", "kind": "source", "operation": "add",
+             "basis": {"commit": candidate, "path": "docs/spec.md", "section": "approved design"}}]}}
+        catalog = execution_plan.collect_execution_plan(str(case.flow.flow), candidate,
+            ["docs/spec.md"], scope, {"path": "docs/requirement.md"})
+        self.assertEqual(catalog["ordered_step_ids"], ["B", "C", "A"])
 
 
 if __name__ == "__main__":

@@ -22,6 +22,8 @@ PLAN_VERSION_LINE = re.compile(rb"(?m)^Plan Version: [1-9][0-9]*\r?\n")
 SOURCE_LOCATION = re.compile(r"([^\s:]+):([1-9][0-9]*)\Z")
 MAX_DOCUMENT = 1024 * 1024
 MAX_PLAN = 256 * 1024
+CODE_SUFFIXES = {'.py', '.js', '.jsx', '.ts', '.tsx', '.go', '.rs', '.java',
+                 '.c', '.cc', '.cpp', '.h', '.hpp', '.sh'}
 require = entry.require
 
 
@@ -156,6 +158,26 @@ def _ids(value, label, *, empty=False):
     return items
 
 
+def _stable_dependency_order(source_order, edges, label):
+    """Choose the first source-order item whose declared predecessors are ready."""
+    remaining, completed, ordered = set(source_order), set(), []
+    while remaining:
+        ready = next((identity for identity in source_order
+                      if identity in remaining and set(edges[identity]) <= completed), None)
+        _incomplete(ready is not None, label + " dependency cycle")
+        ordered.append(ready)
+        completed.add(ready)
+        remaining.remove(ready)
+    return ordered
+
+
+def _code_source(item):
+    relative = item['path']
+    return (item['kind'] == 'source' and Path(relative).suffix.lower() in CODE_SUFFIXES and
+            not relative.startswith(('tests/', 'test/')) and
+            not Path(relative).name.startswith('test_'))
+
+
 def _python_symbols(body):
     try:
         tree = ast.parse(body.decode("utf-8"))
@@ -277,8 +299,9 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
         _strings(item["commands"], "verification commands")
         verify_ids.append(item["id"])
     _incomplete(len(verify_ids) == len(set(verify_ids)), "duplicate verification ID: " + path)
-    _incomplete(isinstance(plan["steps"], list) and plan["steps"], "Ticket needs function steps: " + path)
-    _incomplete(isinstance(plan["artifact_steps"], list), "artifact_steps must be a list: " + path)
+    _incomplete(isinstance(plan["steps"], list) and isinstance(plan["artifact_steps"], list) and
+                (plan["steps"] or plan["artifact_steps"]),
+                "Ticket needs function or artifact steps: " + path)
     ids, covered = [], set()
     for step in plan["steps"]:
         _incomplete(isinstance(step, dict) and set(step) == {"id", "target", "capability", "approach", "inputs",
@@ -303,7 +326,6 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
         _strings(step["read_only"], "read_only", empty=True)
         for read_path in step["read_only"]:
             stage_scope.validate_path(read_path, repository)
-            _incomplete(read_path not in manifest_paths, "read_only path is also implementation-owned: " + read_path)
         _incomplete(set(step["verification_refs"]) <= set(verify_ids),
                     "unknown behavior verification reference: " + path)
         _incomplete(isinstance(step["id"], str) and IDENTIFIER.fullmatch(step["id"]), "invalid step ID: " + path)
@@ -357,56 +379,41 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
                                     baseline=scope["baseline"], spec_sections=spec_sections,
                                     ticket_ids=ids) for plan in plans]
     tickets_by_id = {record["ticket_id"]: record for record in records}
-    ticket_order, ticket_visiting, ticket_visited = [], set(), set()
-    def visit_ticket(ticket_id):
-        _incomplete(ticket_id not in ticket_visiting, "Ticket dependency cycle: " + ticket_id)
-        if ticket_id in ticket_visited:
-            return
-        ticket_visiting.add(ticket_id)
-        for blocker in tickets_by_id[ticket_id]["plan"]["blocked_by"]:
-            _incomplete(blocker in tickets_by_id and blocker != ticket_id,
-                        "unknown Ticket blocker: " + ticket_id)
-            visit_ticket(blocker)
-        ticket_visiting.remove(ticket_id)
-        ticket_visited.add(ticket_id)
-        ticket_order.append(ticket_id)
-    for ticket_id in ids:
-        visit_ticket(ticket_id)
+    ticket_edges = {ticket_id: tickets_by_id[ticket_id]["plan"]["blocked_by"] for ticket_id in ids}
+    for ticket_id, blockers in ticket_edges.items():
+        _incomplete(all(blocker in tickets_by_id and blocker != ticket_id for blocker in blockers),
+                    "unknown Ticket blocker: " + ticket_id)
+    ticket_order = _stable_dependency_order(ids, ticket_edges, "Ticket")
     records = [tickets_by_id[ticket_id] for ticket_id in ticket_order]
-    all_steps = {step["id"]: record["ticket_id"] for record in records for step in record["plan"]["steps"]}
-    _incomplete(len(all_steps) == sum(len(record["plan"]["steps"]) for record in records),
-                "duplicate function ID across Tickets")
-    edges = {}
+    all_steps = {step["id"]: record["ticket_id"] for record in records
+                 for step in record["plan"]["steps"] + record["plan"]["artifact_steps"]}
+    _incomplete(len(all_steps) == sum(len(record["plan"]["steps"] + record["plan"]["artifact_steps"])
+                                       for record in records), "duplicate plan ID across Tickets")
+    edges, source_order = {}, []
     for record in records:
         ticket = record["ticket_id"]
         _incomplete(all(blocker in ids and blocker != ticket for blocker in record["plan"]["blocked_by"]),
                     "unknown Ticket blocker: " + ticket)
-        for step in record["plan"]["steps"]:
-            deps = step["depends_on"]
+        blockers = [step["id"] for blocker in record["plan"]["blocked_by"]
+                    for step in tickets_by_id[blocker]["plan"]["steps"] +
+                                tickets_by_id[blocker]["plan"]["artifact_steps"]]
+        for step in record["plan"]["steps"] + record["plan"]["artifact_steps"]:
+            deps = step.get("depends_on", [])
             _incomplete(all(dep in all_steps and dep != step["id"] and
                             (all_steps[dep] == ticket or all_steps[dep] in record["plan"]["blocked_by"])
                         for dep in deps), "unknown or undeclared function dependency: " + step["id"])
-            edges[step["id"]] = deps
-    ordered, visiting, visited = [], set(), set()
-    def visit(step_id):
-        _incomplete(step_id not in visiting, "function dependency cycle: " + step_id)
-        if step_id in visited:
-            return
-        visiting.add(step_id)
-        for dep in edges[step_id]:
-            visit(dep)
-        visiting.remove(step_id)
-        visited.add(step_id)
-        ordered.append(step_id)
-    for record in records:
-        for step in record["plan"]["steps"]:
-            visit(step["id"])
+            edges[step["id"]] = list(dict.fromkeys([*blockers, *deps]))
+            source_order.append(step["id"])
+    ordered = _stable_dependency_order(source_order, edges, "function/artifact")
     covered = {path for record in records for path in record["covered_paths"]}
+    function_paths = {step['target']['path'] for record in records for step in record['plan']['steps']}
     for item in manifest:
         if item["owner"] == "implementation":
             _incomplete(item["path"] in covered or item["kind"] == "generated" and
                         any(source in covered for source in item["source_paths"]),
                         "implementation path lacks function/artifact coverage: " + item["path"])
+            _incomplete(not _code_source(item) or item['path'] in function_paths,
+                        "code source requires a real function step: " + item['path'])
     projection = contract_projection(repository, commit, sources,
                                      spec_path=next(iter(spec_paths)) if len(spec_paths) == 1 else None,
                                      contract_refs={ref for plan in plans for ref in plan["plan"]["contract_refs"]})
@@ -443,7 +450,7 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
         stale("allocation paths and read-only inputs must be exact and disjoint")
     tickets = {ticket["ticket_id"]: ticket for ticket in catalog["tickets"]}
     steps = {step["id"]: (ticket, step) for ticket in catalog["tickets"]
-             for step in ticket["plan"]["steps"]}
+             for step in ticket["plan"]["steps"] + ticket["plan"]["artifact_steps"]}
     selected = []
     for ref in plan_refs:
         if not isinstance(ref, dict) or set(ref) != {"ticket_id", "step_id", "plan_version", "source", "step_digest"}:
@@ -477,23 +484,19 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
                 completed.add(step["id"])
     available = set(completed)
     covered, required_read, verification_commands = set(), set(), set()
-    selected_tickets = set()
     for step_id in selected:
         ticket, step = steps[step_id]
         blockers = {item["id"] for other in ticket["plan"]["blocked_by"]
-                    for item in tickets[other]["plan"]["steps"]}
-        if not set(step["depends_on"]) | blockers <= available:
+                    for item in tickets[other]["plan"]["steps"] + tickets[other]["plan"]["artifact_steps"]}
+        if not set(step.get("depends_on", [])) | blockers <= available:
             stale("function dependency is not completed or earlier in this group: " + step_id)
         available.add(step_id)
-        selected_tickets.add(ticket["ticket_id"])
-        covered.add(step["target"]["path"])
-        required_read.update(step["read_only"])
+        covered.add(step["target"]["path"] if "target" in step else step["path"])
+        required_read.update(step.get("read_only", []))
         verification_ids = set(step["verification_refs"])
         for verification in ticket["plan"]["verifications"]:
             if verification["id"] in verification_ids:
                 verification_commands.update(verification["commands"])
-    for ticket_id in selected_tickets:
-        covered.update(artifact["path"] for artifact in tickets[ticket_id]["plan"]["artifact_steps"])
     manifest = authority["scope"]["downstream"]["manifest"]
     for item in manifest:
         if (item["owner"] == "implementation" and item["kind"] == "generated" and
@@ -501,11 +504,27 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
             covered.add(item["path"])
     if not set(assigned_paths) <= covered or not required_read <= set(read_only):
         stale("assigned files or read-only inputs lack selected plan coverage")
+    implementation = {item['path'] for item in manifest if item['owner'] == 'implementation'}
+    if set(read_only) & implementation != required_read & implementation:
+        stale('implementation read-only inputs must match selected plan refs')
+    read_fingerprints = {}
+    for relative in set(read_only) & implementation:
+        owners = [result for result in completed_results if relative in result.get('paths', [])]
+        if not owners:
+            stale('implementation read-only input has no accepted owner: ' + relative)
+        owner = owners[-1]
+        fingerprint = (owner.get('git_result_snapshot') or {}).get(relative,
+            (owner.get('git_snapshot') or {}).get('files', {}).get(relative))
+        if (owner.get('state') != 'accepted' or owner.get('stopped') is not True or
+                owner.get('plan_authority') != expected_authority or fingerprint is None):
+            stale('implementation read-only input lacks a current accepted fingerprint: ' + relative)
+        read_fingerprints[relative] = fingerprint
     if not verification_commands:
         stale("selected function group has no behavior verification")
     return {"plan_refs": copy_plan_refs(plan_refs), "plan_authority": expected_authority,
             "ordered_step_ids": selected, "verification_commands": sorted(verification_commands),
-            "required_read_only": sorted(required_read), "group_digest": entry.digest([expected_authority, plan_refs])}
+            "required_read_only": sorted(required_read), "read_only_fingerprints": read_fingerprints,
+            "group_digest": entry.digest([expected_authority, plan_refs])}
 
 
 def copy_plan_refs(refs):
@@ -515,10 +534,15 @@ def copy_plan_refs(refs):
 def _catalog_steps(catalog):
     tickets = {ticket['ticket_id']: ticket for ticket in catalog['tickets']}
     steps = {step['id']: (ticket, step) for ticket in catalog['tickets']
-             for step in ticket['plan']['steps']}
-    _incomplete(len(steps) == sum(len(ticket['plan']['steps']) for ticket in catalog['tickets']),
+             for step in ticket['plan']['steps'] + ticket['plan']['artifact_steps']}
+    _incomplete(len(steps) == sum(len(ticket['plan']['steps'] + ticket['plan']['artifact_steps'])
+                                  for ticket in catalog['tickets']),
                 'ambiguous function identity in plan revision')
     return tickets, steps
+
+
+def _step_path(step):
+    return step['target']['path'] if 'target' in step else step['path']
 
 
 def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
@@ -550,10 +574,10 @@ def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
         affected_verifications.update(changed_checks)
         if (old_step != new_step or old_ticket['ticket_id'] != new_ticket['ticket_id'] or
                 old_ticket['plan']['blocked_by'] != new_ticket['plan']['blocked_by'] or
-                changed_checks or changed_sources.intersection(old_step['read_only']) or
-                changed_sources.intersection(new_step['read_only']) or
-                ownership(old_manifest.get(old_step['target']['path'])) !=
-                ownership(new_manifest.get(new_step['target']['path']))):
+                changed_checks or changed_sources.intersection(old_step.get('read_only', [])) or
+                changed_sources.intersection(new_step.get('read_only', [])) or
+                ownership(old_manifest.get(_step_path(old_step))) !=
+                ownership(new_manifest.get(_step_path(new_step)))):
             impacted.add(step_id)
     for ticket_id in old_tickets:
         before = {item['id']: item for item in old_tickets[ticket_id]['plan']['artifact_steps']}
@@ -564,20 +588,21 @@ def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
     dependents = {identity: set() for identity in set(old_steps) | set(new_steps)}
     for tickets, steps in ((old_tickets, old_steps), (new_tickets, new_steps)):
         for step_id, (ticket, step) in steps.items():
-            dependencies = set(step['depends_on'])
+            dependencies = set(step.get('depends_on', []))
             for blocker in ticket['plan']['blocked_by']:
                 _incomplete(blocker in tickets, 'unknown Ticket blocker in plan revision: ' + blocker)
-                dependencies.update(item['id'] for item in tickets[blocker]['plan']['steps'])
+                dependencies.update(item['id'] for item in
+                    tickets[blocker]['plan']['steps'] + tickets[blocker]['plan']['artifact_steps'])
             _incomplete(dependencies <= set(steps), 'unknown function dependency in plan revision: ' + step_id)
             for dependency in dependencies:
                 dependents[dependency].add(step_id)
     while True:
         expanded = impacted | {dependent for identity in impacted for dependent in dependents[identity]}
-        affected_paths.update(step['target']['path'] for step_id in expanded
+        affected_paths.update(_step_path(step) for step_id in expanded
                               for mapping in (old_steps, new_steps) if step_id in mapping
                               for _, step in (mapping[step_id],))
         expanded.update(step_id for step_id, (_, step) in {**old_steps, **new_steps}.items()
-                        if step['target']['path'] in affected_paths)
+                        if _step_path(step) in affected_paths)
         if expanded == impacted:
             break
         impacted = expanded
@@ -701,8 +726,8 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
         _strings(verification["commands"], "inline verification commands")
         verify_ids.append(verification["id"])
     _incomplete(len(verify_ids) == len(set(verify_ids)) and
-                isinstance(plan["steps"], list) and plan["steps"] and
-                isinstance(plan["artifact_steps"], list),
+                isinstance(plan["steps"], list) and isinstance(plan["artifact_steps"], list) and
+                (plan["steps"] or plan["artifact_steps"]),
                 "duplicate verification or missing inline steps")
     implementation = set(scope["implementation_paths"])
     protected = set(scope["protected_paths"])
@@ -737,8 +762,7 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
         _ids(step["verification_refs"], "inline verification_refs")
         _strings(step["read_only"], "inline read_only", empty=True)
         _incomplete(set(step["verification_refs"]) <= set(verify_ids) and
-                    set(step["read_only"]) <= protected and
-                    not set(step["read_only"]) & implementation,
+                    set(step["read_only"]) <= protected | implementation,
                     "inline verification or read-only reference is invalid")
         ids.append(step["id"])
         steps[step["id"]] = step
@@ -756,26 +780,20 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
         _incomplete(set(artifact["verification_refs"]) <= set(verify_ids) and
                     artifact["id"] not in ids, "inline artifact verification or identity is invalid")
         ids.append(artifact["id"])
+        steps[artifact["id"]] = artifact
         covered.add(artifact["path"])
-    ordered, visiting, visited = [], set(), set()
-    def visit(step_id):
-        _incomplete(step_id in steps and step_id not in visiting,
-                    "unknown or cyclic inline function dependency")
-        if step_id in visited:
-            return
-        visiting.add(step_id)
-        for dep in steps[step_id]["depends_on"]:
-            visit(dep)
-        visiting.remove(step_id)
-        visited.add(step_id)
-        ordered.append(step_id)
-    for step_id in steps:
-        visit(step_id)
+    edges = {step_id: step.get("depends_on", []) for step_id, step in steps.items()}
+    _incomplete(all(set(deps) <= set(steps) for deps in edges.values()),
+                "unknown inline function dependency")
+    ordered = _stable_dependency_order(ids, edges, "inline function/artifact")
     for item in scope["downstream"]["manifest"]:
         if item["owner"] == "implementation":
             _incomplete(item["path"] in covered or item["kind"] == "generated" and
                         any(source in covered for source in item["source_paths"]),
                         "inline plan lacks implementation path coverage: " + item["path"])
+            _incomplete(not _code_source(item) or
+                        any(step['target']['path'] == item['path'] for step in plan['steps']),
+                        "inline code source requires a real function step: " + item['path'])
     contract = {key: semantic[key] for key in
                 ("objective", "testing_basis", "completion_criteria", "constraints")}
     projection = {"brief": contract, "requirement_identity": requirement_identity,

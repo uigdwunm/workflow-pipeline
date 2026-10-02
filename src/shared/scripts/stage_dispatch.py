@@ -194,7 +194,7 @@ def prepared(request):
                 catalog = authority['execution_plan']
                 group = execution_plan.validate_plan_refs(catalog, saved['semantic'].get('plan_refs'),
                     scope['owned_paths'], scope['protected_paths'],
-                    progress.get('executions', []) + progress.get('carried_results', []), authority)
+                    progress.get('carried_results', []) + progress.get('executions', []), authority)
                 require(progress.get('plan_authority') == group['plan_authority'],
                         'execution_plan_stale', 'current control authority differs from allocation')
                 evidence.update(plan_refs=group['plan_refs'], plan_authority=group['plan_authority'],

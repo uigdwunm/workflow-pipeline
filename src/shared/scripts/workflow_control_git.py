@@ -131,6 +131,19 @@ def execution_delta(repository, progress, execution, *, accepting=False):
     return own, sorted(pending)
 
 
+def verify_plan_read_only(repository, progress, allocation):
+    """Bind implementation reads to current accepted content and mode."""
+    from execution_plan import validate_plan_refs
+    authority = progress['execution_authority']
+    group = validate_plan_refs(authority['execution_plan'], allocation['plan_refs'],
+        allocation['paths'], allocation['read_only'],
+        progress.get('carried_results', []) + progress['executions'], authority)
+    require(all(file_fingerprint(repository, relative) == fingerprint
+                for relative, fingerprint in group['read_only_fingerprints'].items()),
+            'accepted implementation read-only input changed')
+    return group['read_only_fingerprints']
+
+
 def changed_paths(repository, baseline):
     tracked = git(repository, 'diff', '--name-only', '-z', commit(baseline)).decode().split('\0')
     untracked = git(repository, 'ls-files', '--others', '--exclude-standard', '-z').decode().split('\0')
@@ -552,6 +565,7 @@ def verified_transition(payload):
             require(all(file_fingerprint(repository, p) == fingerprint for p, fingerprint in evidence['adoption_fingerprints'].items()),
                     'adopted bytes changed since the Controller snapshot')
         verify_execution_start(repository, progress)
+        verify_plan_read_only(repository, progress, evidence)
         before = snapshot(repository)
         before['files'] = {p: file_fingerprint(repository, p) for p in progress['allowed_paths']}
     if action == 'assign':
@@ -561,6 +575,7 @@ def verified_transition(payload):
         require(len(matches) == 1 and 'git_snapshot' in matches[0],
                 'execution allocation has no verified preparation snapshot')
         allocation = matches[0]
+        verify_plan_read_only(repository, progress, allocation)
         before = allocation['git_snapshot']
         current = snapshot(repository)
         require(all(current[key] == before[key] for key in ('head', 'branch', 'index_hash')),
@@ -570,6 +585,10 @@ def verified_transition(payload):
                 'assigned implementation changed before Execution Agent binding')
     if action == 'execution-result':
         execution = execution_record(progress, evidence['agent_ref'])
+        verify_plan_read_only(repository, progress, execution)
+        require(all(file_fingerprint(repository, relative) == execution['git_snapshot']['files'][relative]
+                    for relative in set(execution['read_only']) & set(progress['allowed_paths'])),
+                'implementation read-only bytes changed during execution')
         result_snapshot, pending_peers = execution_delta(repository, progress, execution)
         actual_changes = set(result_snapshot)
         result_snapshot.update({p: file_fingerprint(repository, p) for p in execution.get('adopt_paths', [])})
@@ -587,6 +606,10 @@ def verified_transition(payload):
         evidence['file_hashes'] = {p: implementation_hash(repository, p) for p in progress['allowed_paths']}
         if action == 'accept-execution':
             execution = execution_record(progress, evidence['agent_ref'])
+            verify_plan_read_only(repository, progress, execution)
+            require(all(file_fingerprint(repository, relative) == execution['git_snapshot']['files'][relative]
+                        for relative in set(execution['read_only']) & set(progress['allowed_paths'])),
+                    'implementation read-only bytes changed before acceptance')
             execution_delta(repository, progress, execution, accepting=True)
             evidence['file_hashes'] = {p: evidence['file_hashes'][p] for p in execution['file_hashes']}
     if action in {'candidate-ready', 'review-start', 'review-converged', 'validation-start', 'validation-result', 'validation-retry', 'delivery-ready', 'accept-delivery'}:

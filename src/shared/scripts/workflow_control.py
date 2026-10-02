@@ -1312,7 +1312,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             require(authority is not None, 'execution_plan_stale: current catalog is unavailable')
             group = validate_plan_refs(authority['execution_plan'], evidence['plan_refs'],
                 assigned, evidence['read_only'],
-                progress['executions'] + progress.get('carried_results', []), authority)
+                progress.get('carried_results', []) + progress['executions'], authority)
             require(progress.get('plan_authority') == evidence['plan_authority'] == group['plan_authority'] and
                     evidence.get('group_digest') == group['group_digest'] and
                     set(group['verification_commands']) <= set(evidence['tests']),
@@ -1321,6 +1321,10 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             raise ControlError('execution_plan_stale: current plan refs required')
         require(all(e['task_id'] != evidence['task_id'] for e in progress['executions']), 'execution identity reused')
         require(all(e.get('stopped') is True or not set(e['paths']) & set(assigned) for e in progress['executions']), 'concurrent file assignment overlap')
+        require(all(e.get('stopped') is True or
+                    (not set(e['paths']) & set(evidence['read_only']) and
+                     not set(e['read_only']) & set(assigned)) for e in progress['executions']),
+                'concurrent implementation read or writer overlap')
         if progress.get('recovery'):
             historical_unaccepted = set(progress['recovery']['revalidate'])
             require(all(e['state'] == 'cancelled' or e['agent_ref'] not in historical_unaccepted or
@@ -1548,7 +1552,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             authority = progress['execution_authority']
             catalog = authority['execution_plan']
             steps = {step['id']: (ticket, step) for ticket in catalog['tickets']
-                     for step in ticket['plan']['steps']}
+                     for step in ticket['plan']['steps'] + ticket['plan']['artifact_steps']}
             require(len(steps) == len(catalog['ordered_step_ids']) and
                     set(steps) == set(catalog['ordered_step_ids']),
                     'candidate function catalog has ambiguous step identities')

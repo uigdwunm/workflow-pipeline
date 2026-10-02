@@ -57,7 +57,7 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertTrue(result.stdout, result.stderr)
         return json.loads(result.stdout)
 
-    def plan_evidence(self, context, paths):
+    def plan_evidence(self, context, paths, *, accepted_read_only=False, declared_dependency=True):
         scope = {'baseline': self.base, 'owned_paths': paths,
                  'implementation_paths': paths, 'closure_paths': [],
                  'protected_paths': ['docs/draft.md'],
@@ -83,6 +83,10 @@ class WorkflowGitTests(unittest.TestCase):
                      'verification_refs': ['V-cli'], 'read_only': []}
                     for index, (path, item) in enumerate(zip(paths, scope['downstream']['manifest']))],
                 'artifact_steps': []}
+        if accepted_read_only:
+            if declared_dependency:
+                plan['steps'][1]['depends_on'] = [plan['steps'][0]['id']]
+            plan['steps'][1]['read_only'] = [paths[0]]
         semantic = {'objective': 'implement the frozen requirement', 'testing_basis': 'CLI',
                     'completion_criteria': ['CLI'], 'constraints': ['stay in scope']}
         authority = execution_plan.inline_authority(plan, scope, semantic,
@@ -238,7 +242,7 @@ class WorkflowGitTests(unittest.TestCase):
         self.git('add', '.'); self.git('commit', '-qm', 'unauthorized executor commit')
         self.assertFalse(self.call('execution-result', result, assigned['context'])['ok'])
 
-    def start_dispatcher(self):
+    def start_dispatcher(self, *, accepted_read_only=False, declared_dependency=True):
         helper = test_workflow_control.WorkflowControlTests()
         target = self.git('branch', '--show-current')
         receipt = subprocess.run([sys.executable, str(CLI.with_name('supervision_protocol.py')), 'start-worktree'],
@@ -246,7 +250,8 @@ class WorkflowGitTests(unittest.TestCase):
             text=True, capture_output=True, check=True)
         binding = json.loads(receipt.stdout)['binding']; self.repo = self.root / 'flow'
         context = helper.context(); context['stage'] = 3
-        plan = self.plan_evidence(context, ['a.py', 'b.py'])
+        plan = self.plan_evidence(context, ['a.py', 'b.py'], accepted_read_only=accepted_read_only,
+                                  declared_dependency=declared_dependency)
         started = self.call('start-dispatch', {'binding': binding, 'binding_verified': True,
             'allowed_paths': ['a.py', 'b.py'], 'protected_paths': ['docs/draft.md'], 'authority_digest': 'c' * 64,
             'testing_basis': 'CLI', 'validation_plan': __import__('test_workflow_control').plan_for(binding['worktree']),
@@ -309,6 +314,59 @@ class WorkflowGitTests(unittest.TestCase):
         envelope = self.execution_envelope(accepted['context'], 'next', ['b.py'],
             behavior='later slice', tests=['focused'])
         self.assertFalse(self.call('plan-execution', envelope, accepted['context'])['ok'])
+
+    def test_later_group_reads_exact_accepted_implementation(self):
+        context = self.start_dispatcher(accepted_read_only=True)
+        first = self.call('plan-execution', self.execution_envelope(context, 'a', ['a.py']), context)
+        self.assertTrue(first['ok'], first)
+        assigned = self.call('assign', {'task_id': 'a', 'agent_ref': 'a',
+            'allocation_digest': first['allocation_digest']}, first['context'])
+        self.assertTrue(assigned['ok'], assigned)
+        (self.repo / 'a.py').write_text('accepted first group\n')
+        received = self.call('execution-result', self.result_evidence('a', ['a.py']), assigned['context'])
+        self.assertTrue(received['ok'], received)
+        accepted = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
+        self.assertTrue(accepted['ok'], accepted)
+        context = accepted['context']
+        second = self.execution_envelope(context, 'b', ['b.py'], ['a.py'])
+        planned = self.call('plan-execution', second, context)
+        self.assertTrue(planned['ok'], planned)
+        self.assertFalse(self.call('plan-execution', self.execution_envelope(context, 'both',
+            ['a.py', 'b.py'], ['a.py']), context)['ok'])
+        reading = self.call('assign', {'task_id': 'b', 'agent_ref': 'b',
+            'allocation_digest': planned['allocation_digest']}, planned['context'])
+        self.assertTrue(reading['ok'], reading)
+        self.assertFalse(self.call('plan-execution', self.execution_envelope(reading['context'],
+            'rewrite-a', ['a.py']), reading['context'])['ok'])
+        rewriting = self.call('plan-execution', self.execution_envelope(context,
+            'rewrite-a', ['a.py']), context)
+        self.assertTrue(rewriting['ok'], rewriting)
+        active_writer = self.call('assign', {'task_id': 'rewrite-a', 'agent_ref': 'rewrite-a',
+            'allocation_digest': rewriting['allocation_digest']}, rewriting['context'])
+        self.assertTrue(active_writer['ok'], active_writer)
+        self.assertFalse(self.call('plan-execution', second, active_writer['context'])['ok'])
+        (self.repo / 'a.py').write_text('changed after acceptance\n')
+        self.assertFalse(self.call('plan-execution', second, context)['ok'])
+
+    def test_implementation_read_requires_acceptance_even_without_explicit_step_dependency(self):
+        context = self.start_dispatcher(accepted_read_only=True, declared_dependency=False)
+        envelope = self.execution_envelope(context, 'b', ['b.py'], ['a.py'])
+        self.assertFalse(self.call('plan-execution', envelope, context)['ok'])
+
+    def test_implementation_read_rechecks_bytes_before_native_binding(self):
+        context = self.start_dispatcher(accepted_read_only=True)
+        first = self.call('plan-execution', self.execution_envelope(context, 'a', ['a.py']), context)
+        assigned = self.call('assign', {'task_id': 'a', 'agent_ref': 'a',
+            'allocation_digest': first['allocation_digest']}, first['context'])
+        (self.repo / 'a.py').write_text('accepted input\n')
+        received = self.call('execution-result', self.result_evidence('a', ['a.py']), assigned['context'])
+        accepted = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
+        context = accepted['context']
+        planned = self.call('plan-execution', self.execution_envelope(context, 'b', ['b.py'], ['a.py']), context)
+        self.assertTrue(planned['ok'], planned)
+        (self.repo / 'a.py').write_text('changed before bind\n')
+        self.assertFalse(self.call('assign', {'task_id': 'b', 'agent_ref': 'b',
+            'allocation_digest': planned['allocation_digest']}, planned['context'])['ok'])
 
     def test_recovery_snapshot_outweighs_historical_acceptance_until_replacement_accepts(self):
         progress = {'git_baseline_commit': 'a' * 40, 'allowed_paths': ['impl.py'],

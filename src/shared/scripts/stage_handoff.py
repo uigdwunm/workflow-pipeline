@@ -642,13 +642,24 @@ def _prepare(request):
                            if isinstance(request["requirement"], dict) else None)
         require(isinstance(source_identity, dict) and isinstance(source_identity.get("path"), str),
                 "invalid_source", "complete frozen requirement identity required")
-        scope = stage_scope.validate_scope(scope, root, stage=stage,
+        # An Execution Agent can read a completed implementation file from an
+        # earlier group. The manifest remains implementation-owned; this one
+        # allocation protects that path only as a read input.
+        implementation_reads = []
+        if stage == 3 and role == 'execution-agent':
+            implementation_reads = sorted(set(scope['protected_paths']) &
+                                          set(scope['implementation_paths'] or []))
+        validation_scope = ({**scope, 'protected_paths': [path for path in scope['protected_paths']
+                             if path not in implementation_reads]} if implementation_reads else scope)
+        scope = stage_scope.validate_scope(validation_scope, root, stage=stage,
             requirement_path=source_identity["path"],
             planning_paths=planning_paths_for(request),
             manifest_baseline=inherited_manifest_baseline(request),
             candidate_commit=inherited_planning_candidate(request),
             generated_outputs=inherited_generated_outputs(request),
             _repository_facts=current["repository"])
+        if implementation_reads:
+            scope['protected_paths'] = request['scope']['protected_paths'][:]
         require((stage != 2 or scope["downstream"]["state"] == "unresolved") and
                 (stage == 2 or scope["downstream"]["state"] == "sealed"),
                 "scope_incomplete", "Stage 2 starts unresolved; downstream stages require a sealed manifest")
@@ -660,7 +671,8 @@ def _prepare(request):
         entry.fields(scope, {"baseline", "owned_paths", "protected_paths", "implementation_paths", "closure_paths"})
         for field in ("owned_paths", "protected_paths", "implementation_paths", "closure_paths"):
             paths(scope[field], root)
-    active_writes = scope["owned_paths"] + (scope["implementation_paths"] or [])
+    active_writes = scope["owned_paths"] + ([] if stage == 3 and role == 'execution-agent'
+                                           else scope["implementation_paths"] or [])
     if stage != 3:
         active_writes += scope["closure_paths"] or []
     require(not set(scope["protected_paths"]) & set(active_writes),
@@ -776,8 +788,8 @@ def _prepare(request):
                 'execution_plan_stale', 'allocation names an older plan authority')
         execution_plan.validate_plan_refs(authority_record['execution_plan'], semantic.get('plan_refs'),
             scope['owned_paths'], scope['protected_paths'],
-            ((parent['control']['context'].get('handoff_progress') or {}).get('executions', []) +
-             (parent['control']['context'].get('handoff_progress') or {}).get('carried_results', [])),
+            ((parent['control']['context'].get('handoff_progress') or {}).get('carried_results', []) +
+             (parent['control']['context'].get('handoff_progress') or {}).get('executions', [])),
             authority_record)
     entry.nonempty(semantic["objective"]); entry.nonempty(semantic["testing_basis"])
     strings(semantic["completion_criteria"]); strings(semantic["constraints"])
