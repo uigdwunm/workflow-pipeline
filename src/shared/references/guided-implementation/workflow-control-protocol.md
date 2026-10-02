@@ -176,6 +176,38 @@ A saved Stage-3 boundary rejects the request without changing writer authority,
 rolling back a stage or creating another attempt. Original business, host and
 dispatcher recovery retain their existing contracts within the sealed scope.
 
+## Stage-3 internal plan revision
+
+The original Controller alone may call C `prepare-plan-revision`,
+`commit-plan-revision` and `reconcile-plan-revision` for a private function-plan
+change inside the frozen behavior contract. The report names the current Scope
+Authority, affected Ticket/function/verification IDs, exact planning paths,
+production facts, unchanged contract digest and an internal classification with
+its Controller reference. A manifest change includes the exact new manifest and
+its reported diff. Public or uncertain impact requires the ordinary user-decision
+route; an internal report does not alter frozen requirements or acceptance.
+
+Preparation closes new allocations and old result acceptance, records the
+revision intent, and stops the original dispatcher, execution agents, reviewers,
+validation and outstanding calls. C grants one Controller-only planning release
+only after the complete original stop barrier and a Git snapshot of HEAD,
+branch, per-entry index identity, implementation and protected files. The
+release names only closure-owned planning paths that are also protected from
+implementation writers. Late results are retained for audit; unresolved native
+bind/lookup and stop calls are reconciled by their original identities.
+
+The Controller commits only those planning paths. C and the Git adapter verify
+the candidate's sole parent, exact changed paths, index partition, all frozen
+implementation/protected presence/content/modes, unchanged functional contract,
+monotonic Ticket plan versions and complete plan/manifest closure. A journaled
+planning commit activates one new Scope Authority and control plan revision;
+old allocations and candidate/review/validation attempts become historical
+sources for current-revision revalidation. An interrupted commit remains at
+`planning-committed` until the same revision is reconciled. Repeated activated
+prepare/commit/reconcile requests only acknowledge; they never grant another
+planning release. Pause and cancellation take priority, and fresh host activity
+or unresolved calls block activation even after the planning commit.
+
 ## Downstream execution
 
 Continuous 0/1 authorization freezes source_phase, stages=[2,3,4], exact scope,

@@ -47,6 +47,20 @@ delivered `resume_progression`, `answer_pending_delivery` and
 another carrier. A queued `controller_decision` is removed only when C records
 that exact decision as consumed; transport completion alone cannot discard it.
 
+## Internal function-plan revision
+
+During active Stage 3, the original Controller can revise a private function
+plan within the current functional contract through the existing C checkpoint.
+`prepare-plan-revision` records a full-stop intent and returns an exact
+Controller-only planning release after original native writers/calls settle.
+`commit-plan-revision` verifies one planning-only Git commit and atomically
+switches current Scope Authority and the control plan revision.
+`reconcile-plan-revision` reads the saved transaction and original Git/control
+facts; it never repeats a commit or restores a cancelled release. Planning
+sources stay protected from Dispatcher and Execution Agent writes. A new
+revision makes earlier allocations, candidate, review and validation evidence
+historical until current-revision revalidation.
+
 ## Final implementation recovery
 
 Stage 3's `expected_target_head` is its sealed review baseline, not a freshness

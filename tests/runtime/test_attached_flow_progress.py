@@ -1,6 +1,7 @@
 """Real attached A/B/C/Phase/Git closure; only native host receipts are fixtures."""
 import copy
 import json
+import re
 import tempfile
 import uuid
 import unittest
@@ -53,6 +54,17 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.phases = {}
         self.input = self.input_for(2)
         self.context = self.context_for(2)
+
+    def write_planning_spec(self):
+        from test_stage_scope_progress import ScopeProgressTests
+        plan = ScopeProgressTests.inline_plan(self)
+        content = ('approved design\nTicket ID: FEP-01\nPlan Version: 1\n'
+                   '**What to build:** approved behavior\n**Blocked by:** None\n'
+                   'AC-1: approved behavior\n## Implementation Decisions\n'
+                   '### D1 — Plan\n```execution-plan-v1\n' +
+                   json.dumps(plan, ensure_ascii=False) + '\n```\n')
+        (self.flow / 'docs/spec.md').write_text(content)
+        return content, plan
 
     def mutate(self, operation, **values):
         topic = entry.topic_read(str(self.root), self.attachment)
@@ -195,7 +207,7 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.begin('stepwise')
         self.invoke('observe', self.observation())
         self.activate_designer()
-        (self.flow / 'docs/spec.md').write_text('approved design\n')
+        self.write_planning_spec()
         self.flow_git('add', 'docs/spec.md'); self.flow_git('commit', '-qm', 'planning')
         candidate = self.flow_git('rev-parse', 'HEAD')
         proposal_digest = self.propose_design_scope(candidate)
@@ -225,6 +237,89 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.assertEqual(self.state()['handoff']['authorization']['phase'], value['authorization']['phase'])
         self.assertIsNone(self.state()['dispatch']['delivery'])
 
+    def test_attached_plan_revision_uses_original_ledger_record(self):
+        self.begin('stepwise')
+        self.invoke('observe', self.observation())
+        self.activate_designer()
+        content, plan = self.write_planning_spec()
+        self.flow_git('add', 'docs/spec.md')
+        self.flow_git('commit', '-qm', 'attached plan')
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        basis = {'commit': candidate, 'path': 'docs/spec.md', 'section': 'approved design'}
+        manifest = [{'path': path, 'owner': owner, 'kind': kind, 'operation': 'add', 'basis': basis}
+                    for path, owner, kind in [('CHANGELOG.md', 'closure', 'document'),
+                                              ('docs/spec.md', 'closure', 'document'),
+                                              ('impl.py', 'implementation', 'source')]]
+        state = self.state()
+        proposal = {'proposal_id': 'proposal-1', 'expected_revision': 0,
+            'candidate_commit': candidate, 'manifest': manifest, 'implementation_required': True,
+            'requirement_identity': copy.deepcopy(state['handoff']['requirement_identity']),
+            'binding': copy.deepcopy(state['handoff']['binding']), 'previous_scope_revision': 0}
+        proposed = self.invoke('scope-propose', proposal)
+        self.ready_publication(candidate, 'controller:planning')
+        self.seal_design_scope(proposed['next_action']['proposal']['digest'])
+        self.invoke('publication', {'candidate_commit': candidate, 'reference': 'controller:planning'})
+        pending = self.invoke('receive-publication')['pending']
+        self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
+            'answer': 'accept', 'reference': 'controller:accept-plan'})
+        self.complete_phase()
+        pending = self.state()['pending']
+        self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
+            'answer': 'confirm', 'reference': 'controller:enter-stage3'})
+        value = self.input_for(3, self.state()['accepted'])
+        self.context = self.context_for(3)
+        self.begin('stepwise', value)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        # This fixture's older Stage-2 helper ran with a local control port.
+        # Seed its already-bound Stage-3 context as the original ledger record,
+        # then exercise revision only through the real attached C/B port.
+        outer = progress.read_record(self.checkpoint)
+        current_context = copy.deepcopy(outer[progress.KEY]['control']['context'])
+        frontmatter, records = protocol._load_records(self.ledger)
+        records['Phase Results'].append({'result_id': 'WC-' + self.attachment['actor_topic_id'],
+            'result_kind': 'workflow-control', 'topic_id': self.attachment['actor_topic_id'],
+            'record_revision': 0, 'state': 'active',
+            'data_json': protocol._canonical_json(current_context)})
+        self.ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
+        topic = entry.topic_read(str(self.root), self.attachment)
+        outer[progress.KEY]['control']['discussion'] = {**self.base,
+            'expected_ledger_revision': topic['ledger_revision'],
+            'expected_topic_revision': topic['record_revision'],
+            'idempotency_key': str(uuid.uuid4())}
+        progress.atomic_save(self.checkpoint, outer)
+        authority = self.state()['scope_authority']
+        old_ledger = self.ledger
+        report = {'revision_id': 'attached-private-1',
+            'expected_authority_revision': authority['revision'],
+            'expected_authority_digest': entry.digest(authority), 'controller_ref': 'task',
+            'classification': {'kind': 'internal', 'reference': 'controller:attached-private'},
+            'report': {'ticket_ids': ['FEP-01'], 'step_ids': ['FP1-01'],
+                'reason': 'Move a private function', 'production_facts': 'Same output and caller',
+                'contract_before': authority['execution_plan']['contract_digest'],
+                'contract_after': authority['execution_plan']['contract_digest'],
+                'dependency_impact': ['FP1-01', 'FP1-02'], 'verification_impact': ['V1'],
+                'carry_forward': []}, 'planning_paths': ['docs/spec.md']}
+        self.invoke('prepare-plan-revision', report)
+        stopped = self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        spec = self.flow / 'docs/spec.md'
+        match = re.search(r'```execution-plan-v1\n(.*?)\n```', content, re.DOTALL)
+        updated = copy.deepcopy(plan)
+        updated['plan_version'] = 2
+        updated['steps'][0]['approach'].append('move private helper')
+        spec.write_text((content[:match.start(1)] + json.dumps(updated) + content[match.end(1):])
+                        .replace('Plan Version: 1', 'Plan Version: 2'))
+        self.flow_git('add', 'docs/spec.md')
+        self.flow_git('commit', '--only', '-qm', 'attached private revision', '--', 'docs/spec.md')
+        result = self.invoke('commit-plan-revision', {'revision_id': report['revision_id'],
+            'controller_ref': 'task', 'write_release': stopped['next_action']['write_release'],
+            'planning_commit': self.flow_git('rev-parse', 'HEAD')})
+        self.assertEqual(result['next_action']['operation'], 'plan-revision-activated')
+        self.assertEqual(self.ledger, old_ledger)
+        current = protocol.handle({**self.base, 'operation': 'read-topic'})['workflow_control']
+        self.assertEqual(current['controller_ref'], 'task')
+        self.assertEqual(current['topic_ref'], self.attachment['actor_topic_id'])
+        self.assertEqual(len(current['handoff_progress']['plan_revisions']), 1)
+
     def test_attached_flow_publication_cleanup_acceptance_and_phase_replay(self):
         self.attached_publication_chain()
 
@@ -235,7 +330,7 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.begin('stepwise')
         self.invoke('observe', self.observation())
         self.activate_designer()
-        (self.flow / 'docs/spec.md').write_text('approved design\n')
+        self.write_planning_spec()
         self.flow_git('add', 'docs/spec.md')
         self.flow_git('commit', '-qm', 'planning')
         candidate = self.flow_git('rev-parse', 'HEAD')

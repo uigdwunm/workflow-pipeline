@@ -67,8 +67,8 @@ def verification_fixture(candidate, dispatcher, cwd, target):
 
 
 class WorkflowControlTests(unittest.TestCase):
-    def call(self, action, evidence=None, context=None):
-        request = {'schema_version': 5, 'action': action,
+    def call(self, action, evidence=None, context=None, schema_version=5):
+        request = {'schema_version': schema_version, 'action': action,
                    'actor_ref': 'controller', 'context': context or self.context(),
                    'evidence': evidence or {}}
         result = subprocess.run([sys.executable, str(CLI)], input=json.dumps(request),
@@ -545,6 +545,39 @@ class WorkflowControlTests(unittest.TestCase):
         changed = copy.deepcopy(result['context'])
         changed['successor_control']['handoff_progress']['plan']['entry_authority']['stage'] = True
         self.assertFalse(self.call('decide', {'plan_id': result['plan']['plan_id'], 'intent': 'confirm'}, changed)['ok'])
+
+    def test_schema_six_plan_activation_advances_one_current_authority(self):
+        context = self.context(); context['stage'] = 3
+        started = self.call('start-dispatch', {'binding': self.binding(),
+            'binding_verified': True, 'allowed_paths': ['src/a.py'],
+            'protected_paths': ['docs/draft.md'], 'authority_digest': 'c' * 64,
+            'testing_basis': 'real CLI', 'validation_plan': plan_for(self.binding()['worktree']),
+            'configuration': self.configuration('implementation-dispatcher')}, context)
+        bound = self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']},
+                          started['context'])
+        context = bound['context']
+        old = {'revision': 1, 'authority_digest': '1' * 64,
+               'plan_digest': '2' * 64, 'contract_digest': '3' * 64}
+        new = {**old, 'revision': 2, 'authority_digest': '4' * 64,
+               'plan_digest': '5' * 64}
+        context['handoff_progress']['plan_authority'] = old
+        evidence = {'revision_id': 'private-1', 'old_authority': old, 'new_authority': new,
+            'new_scope': {'implementation_paths': ['src/a.py'],
+                          'protected_paths': ['docs/draft.md']},
+            'planning_commit': 'a' * 40, 'planning_paths': ['docs/draft.md'],
+            'snapshot': {'head': 'b' * 40, 'planning_paths': ['docs/draft.md']},
+            'classification': {'kind': 'internal', 'reference': 'controller:private'},
+            'git_facts': {'commit': 'a' * 40, 'changed_paths': ['docs/draft.md']}}
+        activated = self.call('plan-revision-activate', evidence, context, schema_version=6)
+        self.assertTrue(activated['ok'], activated)
+        self.assertEqual(activated['context']['schema_version'], 6)
+        self.assertEqual(activated['context']['handoff_progress']['plan_authority'], new)
+        self.assertEqual(len(activated['context']['handoff_progress']['plan_revisions']), 1)
+        replay = self.call('plan-revision-activate', evidence, activated['context'], schema_version=6)
+        self.assertTrue(replay['acknowledged'], replay)
+        changed = copy.deepcopy(evidence)
+        changed['new_authority']['contract_digest'] = '6' * 64
+        self.assertFalse(self.call('plan-revision-activate', changed, activated['context'], schema_version=6)['ok'])
 
 if __name__ == '__main__':
     unittest.main()

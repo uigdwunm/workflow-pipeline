@@ -79,6 +79,29 @@ class WorkflowGitTests(unittest.TestCase):
             control_git.scope_revision_snapshot(
                 self.repo, self.base, ['docs/draft.md'], ['later.py'])
 
+    def test_plan_revision_verifier_preserves_staged_implementation_partition(self):
+        (self.repo / 'docs/plan.md').write_text('private plan v1\n')
+        self.git('add', 'docs/plan.md')
+        self.git('commit', '-qm', 'sealed planning source')
+        sealed = self.git('rev-parse', 'HEAD')
+        authority = {'candidate_commit': sealed, 'scope': {
+            'implementation_paths': ['impl.py'], 'closure_paths': ['docs/plan.md']}}
+        (self.repo / 'impl.py').write_text('staged implementation\n')
+        self.git('add', 'impl.py')
+        stopped = control_git.plan_revision_snapshot(self.repo, authority,
+            ['docs/draft.md', 'docs/plan.md'], ['docs/plan.md'])
+        (self.repo / 'docs/plan.md').write_text('private plan v2\n')
+        self.git('add', 'docs/plan.md')
+        self.git('commit', '--only', '-qm', 'private plan revision', '--', 'docs/plan.md')
+        candidate = self.git('rev-parse', 'HEAD')
+        facts = control_git.verify_plan_revision(self.repo, stopped, candidate)
+        self.assertEqual(facts['changed_paths'], ['docs/plan.md'])
+        self.assertEqual(facts['parent'], sealed)
+        (self.repo / 'impl.py').write_text('changed during revision\n')
+        self.git('add', 'impl.py')
+        with self.assertRaisesRegex(control.ControlError, 'index entries changed'):
+            control_git.verify_plan_revision(self.repo, stopped, candidate)
+
     def test_changed_requirement_is_received_and_archived_after_takeover(self):
         helper = test_workflow_control.WorkflowControlTests()
         ctx = helper.bound()

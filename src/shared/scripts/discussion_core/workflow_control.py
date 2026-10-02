@@ -96,7 +96,7 @@ def workflow_control(request):
         if matches:
             record = matches[0]
             context = _json_field(record, 'data_json', 'workflow control')
-            if context.get('schema_version') != 5:
+            if context.get('schema_version') not in {5, 6}:
                 raise ProtocolError('legacy_run_requires_original_runtime', 'retain original package for embedded control schema ' + str(context.get('schema_version')))
             if context['controller_ref'] != owner_ref:
                 raise ProtocolError('document_ownership_conflict', 'controller identity changed')
@@ -197,7 +197,8 @@ def workflow_control(request):
                     evidence['verified_commit_hash'] = identity['sha256']
                 else:
                     _git.verify_delivery(project, evidence['commit'], evidence)
-            control = _control.transition({'schema_version': 5, 'actor_ref': owner_ref,
+            control = _control.transition({'schema_version': 6 if action == 'plan-revision-activate'
+                                            else context['schema_version'], 'actor_ref': owner_ref,
                 'context': context, 'action': action, 'evidence': evidence})
         except _control.ControlError as error:
             raise ProtocolError('invalid_request', str(error)) from error

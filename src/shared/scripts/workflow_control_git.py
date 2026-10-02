@@ -211,6 +211,72 @@ def scope_revision_snapshot(repository, baseline, protected_paths, proposed_path
             'proposed_paths': sorted(proposed)}
 
 
+def plan_revision_snapshot(repository, authority, protected_paths, planning_paths,
+                           additional_paths=()):
+    """Freeze the original implementation/index partitions before a planning write."""
+    repository = Path(repository)
+    actual = snapshot(repository)
+    allowed = set(paths(authority['scope']['implementation_paths'], empty=True))
+    allowed.update(paths(list(additional_paths), empty=True))
+    protected = set(paths(protected_paths, empty=True))
+    planning = set(paths(planning_paths))
+    require(planning <= protected and planning <= set(authority['scope']['closure_paths']),
+            'planning release escapes closure-owned protected paths')
+    git(repository, 'merge-base', '--is-ancestor', commit(authority['candidate_commit']), actual['head'])
+    require(not git(repository, 'status', '--porcelain', '-z', '--', *sorted(planning)),
+            'planning source was edited or staged before the Controller release')
+    require(all(file_fingerprint(repository, relative) ==
+                committed_fingerprint(repository, authority['candidate_commit'], relative)
+                for relative in protected),
+            'protected source differs from the current sealed authority')
+    raw_index = git(repository, 'ls-files', '--stage', '-z')
+    entries = {}
+    for record in filter(None, raw_index.split(b'\0')):
+        meta, separator, name = record.partition(b'\t')
+        require(separator and name, 'invalid Git index entry')
+        relative = name.decode('utf-8')
+        entries[relative] = hashlib.sha256(meta).hexdigest()
+    actual['index_entries'] = entries
+    actual['files'] = {relative: file_fingerprint(repository, relative)
+                       for relative in sorted(allowed | protected)}
+    actual['implementation_paths'] = sorted(allowed)
+    actual['planning_paths'] = sorted(planning)
+    return actual
+
+
+def verify_plan_revision(repository, stopped, planning_commit):
+    """Derive the exact one-commit planning delta without touching the index."""
+    repository = Path(repository)
+    candidate = commit(planning_commit)
+    current = snapshot(repository)
+    require(current['head'] == candidate and current['branch'] == stopped['branch'],
+            'planning HEAD or branch differs from the stopped original Flow')
+    parents = git(repository, 'rev-list', '--parents', '-n', '1', candidate).decode().split()
+    require(parents == [candidate, stopped['head']],
+            'planning candidate must have the frozen HEAD as its only parent')
+    planning = set(stopped['planning_paths'])
+    changed = set(filter(None, git(repository, 'diff', '--no-renames', '--name-only', '-z',
+                                   stopped['head'], candidate, '--').decode().split('\0')))
+    require(changed and changed <= planning, 'planning commit changed unapproved files')
+    raw_index = git(repository, 'ls-files', '--stage', '-z')
+    entries = {}
+    for record in filter(None, raw_index.split(b'\0')):
+        meta, separator, name = record.partition(b'\t')
+        require(separator and name, 'invalid Git index entry')
+        entries[name.decode('utf-8')] = hashlib.sha256(meta).hexdigest()
+    require({p: value for p, value in entries.items() if p not in planning} ==
+            {p: value for p, value in stopped['index_entries'].items() if p not in planning},
+            'implementation or unrelated Git index entries changed during planning')
+    require(all(file_fingerprint(repository, p) == before for p, before in stopped['files'].items()
+                if p not in planning),
+            'implementation or protected bytes changed during planning')
+    require(all(file_fingerprint(repository, p) == committed_fingerprint(repository, candidate, p)
+                for p in planning), 'planning worktree bytes differ from the planning commit')
+    return {'parent': stopped['head'], 'commit': candidate,
+            'changed_paths': sorted(changed), 'index_partition_unchanged': True,
+            'implementation_partition_unchanged': True}
+
+
 def verify_stopped_snapshot(repository, stopped, current):
     """Keep stopped bytes fixed while allowing an ordinary target advance."""
     require(isinstance(stopped, dict) and isinstance(current, dict) and set(stopped) == set(current),
@@ -312,6 +378,12 @@ def verified_transition(payload):
         require(payload['baseline'] == progress['git_baseline_commit'], 'frozen Git baseline changed')
     if action == 'receive':
         verify_delivery(repository, payload['baseline'], evidence)
+    if action == 'plan-revision-activate':
+        require(evidence['planning_paths'] == evidence['snapshot']['planning_paths'],
+                'planning release paths changed')
+        derived = verify_plan_revision(repository, evidence['snapshot'],
+                                       evidence['planning_commit'])
+        require(evidence['git_facts'] == derived, 'planning Git facts differ from actual commit')
     if action == 'capture-integration':
         require(progress is not None and 'integration_target_head' in progress,
                 'final integration recovery is missing')

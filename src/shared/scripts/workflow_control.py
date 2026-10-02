@@ -462,7 +462,7 @@ def validate_progress(progress):
             validate_scope_seal_evidence(seal['evidence'],
                                          {'requirement_identity': seal['evidence']['requirement_identity']}, progress)
     elif 'executions' in progress:
-        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'integration_target_head', 'integration_candidate', 'integration_source', 'integration_retained'}
+        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'integration_target_head', 'integration_candidate', 'integration_source', 'integration_retained', 'plan_authority', 'plan_revisions', 'plan_revision_sources'}
         if 'integration_target_head' in progress:
             for field in ('integration_target_head', 'integration_candidate'):
                 require(re.fullmatch('[0-9a-f]{40}', progress.get(field, '')), 'invalid final integration identity')
@@ -500,6 +500,27 @@ def validate_progress(progress):
             require(escalation['stop'].get('git_snapshot') == escalation['snapshot'], 'escalation stop snapshot changed')
         validate_validation_plan(progress['validation_plan'], progress['binding'])
         require(progress['plan_digest'] == digest(progress['validation_plan']), 'frozen validation plan changed')
+        if 'plan_authority' in progress:
+            plan_authority = progress['plan_authority']
+            keys(plan_authority, {'revision', 'authority_digest', 'plan_digest', 'contract_digest'})
+            require(type(plan_authority['revision']) is int and plan_authority['revision'] >= 1 and
+                    all(isinstance(plan_authority[key], str) and re.fullmatch('[0-9a-f]{64}', plan_authority[key])
+                        for key in ('authority_digest', 'plan_digest', 'contract_digest')),
+                    'invalid current plan authority')
+        if 'plan_revisions' in progress:
+            require('plan_authority' in progress and isinstance(progress['plan_revisions'], list) and
+                    len(progress['plan_revisions']) <= 32, 'invalid plan revision history')
+            for record in progress['plan_revisions']:
+                keys(record, {'controller_ref', 'evidence', 'revision_ref'})
+                require(record['revision_ref'] == digest({'controller_ref': record['controller_ref'],
+                    'evidence': record['evidence']}), 'plan revision record changed')
+        if 'plan_revision_sources' in progress:
+            require(isinstance(progress['plan_revision_sources'], list) and
+                    len(progress['plan_revision_sources']) <= 32 and
+                    all(isinstance(source, dict) and set(source) ==
+                        {'revision_id', 'executions', 'candidate', 'attempts'}
+                        for source in progress['plan_revision_sources']),
+                    'invalid preserved plan revision sources')
         if 'attempts' in progress:
             validate_attempt_identities(progress['attempts'])
         if 'recovery' in progress:
@@ -638,7 +659,7 @@ def validate_context(context):
         require(isinstance(successor, dict) and not ({'successor_control', 'retired_handoffs'} & set(successor)), 'only one successor slot and top-level history allowed')
         validate_context(successor)
         require(successor['controller_ref'] == context['controller_ref'] and successor['topic_ref'] == context['topic_ref'], 'successor controller/topic mismatch')
-    require(type(context['schema_version']) is int and context['schema_version'] == 5, 'legacy_run_requires_original_runtime: control schema ' + str(context.get('schema_version')))
+    require(type(context['schema_version']) is int and context['schema_version'] in {5, 6}, 'legacy_run_requires_original_runtime: control schema ' + str(context.get('schema_version')))
     require(isinstance(context.get('retired_handoffs', {}), dict), 'invalid retired handoff history')
     for handoff_id, retired in context.get('retired_handoffs', {}).items():
         keys(retired, {'controller_ref', 'topic_ref', 'stage', 'carrier', 'requirement_identity', 'plan',
@@ -789,7 +810,7 @@ def select_configuration(evidence):
 
 def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     keys(request, {'schema_version', 'action', 'actor_ref', 'context', 'evidence'})
-    require(type(request['schema_version']) is int and request['schema_version'] == 5, 'legacy_run_requires_original_runtime: control request schema ' + str(request.get('schema_version')))
+    require(type(request['schema_version']) is int and request['schema_version'] in {5, 6}, 'legacy_run_requires_original_runtime: control request schema ' + str(request.get('schema_version')))
     context = copy.deepcopy(request['context'])
     validate_context(context)
     require(request['actor_ref'] == context['controller_ref'], 'only authenticated controller writes control checkpoints')
@@ -910,6 +931,61 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         progress.setdefault('scope_revisions', []).append(record)
         require(len(progress['scope_revisions']) <= 32, 'scope revision history limit reached')
         return {'ok': True, 'context': context, 'effects': [], 'scope_revision': record}
+    elif action == 'plan-revision-activate':
+        keys(evidence, {'revision_id', 'old_authority', 'new_authority', 'new_scope',
+                        'planning_commit', 'planning_paths', 'snapshot', 'classification', 'git_facts'})
+        require(context['stage'] == 3 and progress is not None and 'executions' in progress and
+                progress['state'] not in {'cancelled', 'deliverable'},
+                'plan revision requires the active original dispatcher')
+        require(request['schema_version'] == 6, 'legacy_run_requires_original_runtime: plan revision requires control schema 6')
+        require(isinstance(evidence['revision_id'], str) and evidence['revision_id'], 'revision ID required')
+        keys(evidence['classification'], {'kind', 'reference'})
+        require(evidence['classification']['kind'] == 'internal' and
+                isinstance(evidence['classification']['reference'], str) and evidence['classification']['reference'],
+                'public or uncertain change requires user decision')
+        previous = next((record for record in progress.get('plan_revisions', [])
+                         if record['evidence']['revision_id'] == evidence['revision_id']), None)
+        record = {'controller_ref': context['controller_ref'], 'evidence': copy.deepcopy(evidence)}
+        record['revision_ref'] = digest(record)
+        if previous is not None:
+            require(previous == record, 'plan revision identity cannot be replaced')
+            return {'ok': True, 'context': context, 'effects': [],
+                    'plan_revision': previous, 'acknowledged': True}
+        require(progress.get('plan_authority') in (None, evidence['old_authority']),
+                'stale plan authority')
+        old, new = evidence['old_authority'], evidence['new_authority']
+        keys(old, {'revision', 'authority_digest', 'plan_digest', 'contract_digest'})
+        keys(new, set(old))
+        require(new['revision'] == old['revision'] + 1 and
+                new['contract_digest'] == old['contract_digest'] and
+                evidence['git_facts']['commit'] == evidence['planning_commit'] and
+                set(evidence['git_facts']['changed_paths']) <= set(evidence['planning_paths']),
+                'plan revision contract, Git or authority changed')
+        keys(evidence['new_scope'], {'implementation_paths', 'protected_paths'})
+        new_paths = paths(evidence['new_scope']['implementation_paths'], empty=True)
+        new_protected = paths(evidence['new_scope']['protected_paths'], empty=True)
+        require(not set(new_paths) & set(new_protected) and
+                set(progress['protected_paths']) <= set(new_protected),
+                'revised scope cannot remove protected sources')
+        progress.setdefault('plan_revision_sources', []).append({
+            'revision_id': evidence['revision_id'],
+            'executions': copy.deepcopy(progress['executions']),
+            'candidate': progress.get('candidate'),
+            'attempts': copy.deepcopy(progress.get('attempts', []))})
+        progress['executions'] = []
+        progress['allowed_paths'] = new_paths
+        progress['protected_paths'] = new_protected
+        progress.setdefault('plan_revisions', []).append(record)
+        progress['plan_authority'] = copy.deepcopy(new)
+        progress.pop('candidate', None)
+        progress.pop('candidate_evidence', None)
+        progress.pop('review_decision', None)
+        progress.pop('review_digest', None)
+        progress.pop('attempts', None)
+        progress.pop('accepted_delivery', None)
+        progress['state'] = 'implementing'
+        context['schema_version'] = 6
+        return {'ok': True, 'context': context, 'effects': [], 'plan_revision': record}
     elif action == 'native-dispatch-result':
         keys(evidence, {'attempt', 'status'})
         require(context['carrier'] is not None and context['carrier']['kind'] in {'solution-designer', 'implementation-dispatcher', 'closure-agent'} and
@@ -1590,7 +1666,7 @@ def transition(request: dict[str, Any]) -> dict[str, Any]:
     evidence = copy.deepcopy(request['evidence'])
     require(isinstance(evidence, dict), 'evidence must be an object')
     action = request['action']
-    require(type(request['schema_version']) is int and request['schema_version'] == 5, 'legacy_run_requires_original_runtime: control request schema')
+    require(type(request['schema_version']) is int and request['schema_version'] in {5, 6}, 'legacy_run_requires_original_runtime: control request schema')
     require(request['actor_ref'] == context['controller_ref'], 'only authenticated controller writes control checkpoints')
     if action in {'archive', 'archive-result'}:
         result = archive_transition(context, action, evidence)
