@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import entry_prepare as entry
 import requirement_prepare as requirement
 import stage_scope
+import execution_plan
 import workflow_control as control
 import workflow_control_git as control_git
 import supervision_protocol as supervision
@@ -406,6 +407,14 @@ def effective_scope(original_handoff, authority):
             downstream["seal_ref"] == authority.get("seal_ref") and
             downstream["proposal_ref"] == authority.get("proposal_digest"),
             "scope_changed", "sealed scope revision or references differ from current authority")
+    if downstream["implementation_required"]:
+        catalog = execution_plan.collect_execution_plan(
+            original["expected_entry"]["repository"]["root"], authority["candidate_commit"],
+            original["scope"]["owned_paths"], scope, original["requirement_identity"])
+        require(authority.get("execution_plan") == catalog and
+                authority.get("proposal", {}).get("execution_plan") ==
+                {"plan_digest": catalog["plan_digest"], "contract_digest": catalog["contract_digest"]},
+                "scope_changed", "sealed function plan differs from committed design")
     return scope
 
 

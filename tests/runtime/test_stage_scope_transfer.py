@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/shared/scripts
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import entry_prepare as entry
 import stage_handoff as handoff
+import execution_plan
 import test_stage_transfer as transfer_fixture
 import test_stage_scope_progress as progress_fixture
 
@@ -38,7 +40,15 @@ class StageScopeTransferTests(unittest.TestCase):
             "requirement_identity": {"path": "docs/requirement.md"}, "scope": self.unresolved,
             "controller_ref": "controller:test", "binding": {"worktree": str(self.root)},
             "source_commit": self.baseline, "role": "solution-designer"})
-        (self.root / "docs/spec.md").write_text("# Approved file decision\n", encoding="utf-8")
+        plan = progress_fixture.ScopeProgressTests.inline_plan(self)
+        plan["artifact_steps"] = [{"id": "AP1-01", "path": "tests/test_impl.py", "operation": "add",
+            "capability": "verify approved behavior", "approach": "test the public result",
+            "verification_refs": ["V1"]}]
+        (self.root / "docs/spec.md").write_text(
+            "# Approved file decision\nTicket ID: FEP-01\nPlan Version: 1\n"
+            "**What to build:** approved behavior\n**Blocked by:** None\nAC-1: approved behavior\n"
+            "## Implementation Decisions\n### D1 — Plan\n```execution-plan-v1\n" +
+            json.dumps(plan) + "\n```\n", encoding="utf-8")
         self.git("add", "docs/spec.md")
         self.git("commit", "-qm", "planning")
         self.candidate = self.git("rev-parse", "HEAD")
@@ -65,9 +75,16 @@ class StageScopeTransferTests(unittest.TestCase):
         scope["downstream"] = {"state": "sealed", "revision": 1,
             "implementation_required": implementation, "manifest": manifest,
             "proposal_ref": "proposal-digest", "seal_ref": "seal-reference"}
+        catalog = (execution_plan.collect_execution_plan(str(self.root), self.candidate,
+            self.unresolved["owned_paths"], scope, self.original["requirement_identity"])
+            if implementation else None)
+        proposal = {"generated_outputs": {}}
+        if catalog is not None:
+            proposal["execution_plan"] = {"plan_digest": catalog["plan_digest"],
+                                          "contract_digest": catalog["contract_digest"]}
         return {"state": "sealed", "revision": 1, "scope": scope,
                 "candidate_commit": self.candidate, "proposal_digest": "proposal-digest",
-                "seal_ref": "seal-reference", "proposal": {"generated_outputs": {}}}
+                "seal_ref": "seal-reference", "proposal": proposal, "execution_plan": catalog}
 
     def test_removed_bridge_is_not_an_accepted_stage_result(self):
         bridge = handoff.seal({"protocol": handoff.PROTOCOL,

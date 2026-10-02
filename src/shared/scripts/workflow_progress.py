@@ -28,6 +28,7 @@ import requirement_delivery
 import stage_handoff as handoff
 import stage_dispatch as dispatch
 import stage_scope
+import execution_plan
 import workflow_control as control
 import workflow_control_git as control_git
 import skill_preflight
@@ -620,6 +621,7 @@ def scope_readiness(state, checkpoint_path, *, persisted=None):
         phase_finalization_ref = entry.digest(result["phase_run"])
     return {"accepted_digest": accepted["digest"], "scope_revision": authority["revision"],
             "scope_seal": authority["seal_ref"], "scope_authority": copy.deepcopy(authority),
+            "execution_plan": copy.deepcopy(authority.get("execution_plan")),
             "publication": {"planning_commit": payload["planning_commit"],
                             "planning_merge_commit": payload["planning_merge_commit"],
                             "publication_request_digest": entry.digest(publication["request"])},
@@ -684,7 +686,9 @@ def corrected_scope_authority(transaction, receipt):
     approved = transaction.get("approved_change_evidence")
     return {**copy.deepcopy(old), "state": "sealed",
         "revision": scope["downstream"]["revision"], "scope": scope,
-        "proposal": copy.deepcopy(transaction["input"]), "proposal_digest": entry.digest(transaction["input"]),
+        "proposal": copy.deepcopy(transaction["envelope"]),
+        "proposal_digest": entry.digest(transaction["envelope"]),
+        "execution_plan": copy.deepcopy(transaction["execution_plan"]),
         "seal_ref": receipt["revision_ref"],
         "revisions": [*old.get("revisions", []), copy.deepcopy(receipt)],
         "approved_changes": [*old.get("approved_changes", []), *([approved] if approved else [])]}
@@ -704,6 +708,13 @@ def verify_scope_authority(authority, *, initial_seal=None, revision_records=Non
             downstream["proposal_ref"] == authority["proposal_digest"] and
             downstream["seal_ref"] == authority["seal_ref"],
             "scope_changed", "current downstream scope differs from its authority references")
+    if downstream["implementation_required"]:
+        catalog = authority.get("execution_plan")
+        require(isinstance(catalog, dict) and catalog.get("plan_digest") ==
+                entry.digest({key: value for key, value in catalog.items() if key != "plan_digest"}) and
+                authority["proposal"].get("execution_plan") ==
+                {"plan_digest": catalog["plan_digest"], "contract_digest": catalog.get("contract_digest")},
+                "scope_changed", "sealed function plan differs from proposal identity")
     seal = authority.get("seal")
     require(isinstance(seal, dict) and seal.get("seal_ref") ==
             control.digest({key: value for key, value in seal.items() if key != "seal_ref"}) and
@@ -1920,7 +1931,16 @@ class Progress:
         require(type(data["implementation_required"]) is bool and
                 data["implementation_required"] == bool(projection["implementation_paths"]),
                 "scope_incomplete", "implementation-required decision contradicts the complete manifest")
-        proposal_digest = entry.digest(data)
+        catalog = (execution_plan.collect_execution_plan(saved["binding"]["repository"], candidate,
+                    original_scope["owned_paths"],
+                    {"baseline": original_scope["baseline"], "downstream": {"manifest": data["manifest"]}},
+                    saved["requirement_identity"])
+                   if data["implementation_required"] else None)
+        envelope = copy.deepcopy(data)
+        if catalog is not None:
+            envelope["execution_plan"] = {"plan_digest": catalog["plan_digest"],
+                                          "contract_digest": catalog["contract_digest"]}
+        proposal_digest = entry.digest(envelope)
         scope = copy.deepcopy(original_scope)
         scope.update(projection)
         scope["downstream"] = {"state": "proposed", "revision": 0,
@@ -1930,7 +1950,8 @@ class Progress:
         stage_scope.validate_scope(scope, saved["binding"]["repository"], stage=2,
             requirement_path=saved["requirement_identity"]["path"], candidate_commit=candidate,
             generated_outputs=generated_outputs)
-        record = {"input": copy.deepcopy(data), "digest": proposal_digest, "scope": scope,
+        record = {"input": copy.deepcopy(data), "envelope": envelope,
+                  "execution_plan": catalog, "digest": proposal_digest, "scope": scope,
                   "target_head": supervision._branch_oid(Path(saved["binding"]["repository"]), saved["binding"]["target_branch"])}
         s["scope_proposals"][data["proposal_id"]] = record
         self.save()
@@ -1982,7 +2003,9 @@ class Progress:
             requirement_path=saved["requirement_identity"]["path"], candidate_commit=candidate,
             generated_outputs=generated_outputs_for(proposal["input"]))
         authority = {"state": "sealed", "revision": 1, "scope": scope,
-                     "proposal": copy.deepcopy(proposal["input"]), "proposal_digest": proposal["digest"],
+                     "proposal": copy.deepcopy(proposal["envelope"]),
+                     "execution_plan": copy.deepcopy(proposal["execution_plan"]),
+                     "proposal_digest": proposal["digest"],
                      "seal": copy.deepcopy(seal), "seal_ref": seal["seal_ref"], "candidate_commit": candidate,
                      "approved_changes": [change_evidence] if change_evidence is not None else []}
         s["scope_authority"] = authority
@@ -2049,9 +2072,18 @@ class Progress:
                     "scope_incomplete", "revision implementation requirement disagrees with manifest")
             proposed_scope = copy.deepcopy(old_scope)
             proposed_scope.update(projection)
+            catalog = (execution_plan.collect_execution_plan(data["binding"]["repository"],
+                        data["candidate_commit"], old_scope["owned_paths"],
+                        {"baseline": old_scope["baseline"], "downstream": {"manifest": data["manifest"]}},
+                        data["requirement_identity"])
+                       if data["implementation_required"] else None)
+            envelope = copy.deepcopy(data)
+            if catalog is not None:
+                envelope["execution_plan"] = {"plan_digest": catalog["plan_digest"],
+                                              "contract_digest": catalog["contract_digest"]}
             proposed_scope["downstream"] = {"state": "proposed", "revision": authority["revision"] + 1,
                 "implementation_required": data["implementation_required"],
-                "manifest": copy.deepcopy(data["manifest"]), "proposal_ref": entry.digest(data),
+                "manifest": copy.deepcopy(data["manifest"]), "proposal_ref": entry.digest(envelope),
                 "seal_ref": None}
             stage_scope.validate_scope(proposed_scope, data["binding"]["repository"], stage=2,
                 requirement_path=data["requirement_identity"]["path"],
@@ -2062,7 +2094,8 @@ class Progress:
             proposed = sorted(set(proposed_scope["implementation_paths"] + proposed_scope["closure_paths"]) - set(protected))
             snapshot = control_git.scope_revision_snapshot(data["binding"]["worktree"],
                 data["planning_merge_commit"], protected, proposed)
-            transaction = {"input": copy.deepcopy(data), "state": "prepared",
+            transaction = {"input": copy.deepcopy(data), "envelope": envelope,
+                "execution_plan": catalog, "state": "prepared",
                 "old_authority": copy.deepcopy(authority), "proposed_scope": proposed_scope,
                 "snapshot": snapshot, "control_result": None,
                 "approved_change_evidence": change_evidence}

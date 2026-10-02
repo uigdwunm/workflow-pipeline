@@ -252,6 +252,10 @@ At launch, freeze only the known planning and protection paths. Downstream
 implementation and closure paths are null until design is complete. Require the
 child to list every implementation and closure file in a committed Spec/Ticket
 decision, including tests, generated outputs and required documentation. Its
+implementation Tickets must also contain complete `execution-plan-v1` function
+plans before this seal: stable step IDs, exact targets, ordered approach, key
+inputs/outputs/failures, dependencies and shared behavior verifications. When
+there are no Tickets, the Spec carries one inline logical-slice plan. The
 completion evidence supplies the exact manifest and `implementation_required`;
 generated items also supply a source-to-outputs inventory that agrees with
 their per-item `source_paths` and enumerates every output file. The Controller
@@ -272,8 +276,9 @@ stopped host receipt. Submit its exact candidate, manifest and committed basis
 through C `scope-propose`, then submit `{candidate_commit,artifacts,checks}`
 through C `observe.publication_candidate`. The original Controller makes the
 corresponding `scope-seal` decision before publication. Check the returned
-current scope authority against the same requirement, target, binding and
-planning commit. Consume the original Controller readiness
+current scope authority against the same requirement, target, binding,
+planning commit, function-plan catalog and contract digest. Missing or invalid
+plan sources block the proposal before any write authority. Consume the original Controller readiness
 decision through C `decide`; this records existing authorization and adds no user
 approval. Then take the complete
 sorted repository-relative paths from its `本地规划路径` field and pass them
