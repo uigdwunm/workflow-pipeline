@@ -80,6 +80,13 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         hashes = {name: control_git.implementation_hash(self.flow, name) for name in owned}
         fingerprints = {name: control_git.file_fingerprint(self.flow, name) for name in owned}
         index = len(progress['executions'])
+        authority = progress['execution_authority']
+        refs = [{'ticket_id': ticket['ticket_id'], 'step_id': step['id'],
+                 'plan_version': ticket['plan_version'], 'source': ticket['source'],
+                 'step_digest': entry.digest(step)}
+                for ticket in authority['execution_plan']['tickets']
+                for step in ticket['plan']['steps'] if step['target']['path'] in owned]
+        self.assertTrue(refs)
         progress['executions'].append({'task_id': 'fixture-execution-' + str(index),
             'paths': owned, 'read_only': progress['protected_paths'],
             'behavior': 'fixture implementation', 'tests': ['focused fixture check'],
@@ -87,6 +94,8 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
             'agent_ref': 'native:executor-' + str(index), 'state': 'accepted',
             'stopped': True, 'file_hashes': hashes,
             'git_result_snapshot': fingerprints,
+            'plan_refs': refs, 'plan_authority': copy.deepcopy(progress['plan_authority']),
+            'group_digest': entry.digest([progress['plan_authority'], refs]),
             'allocation_digest': 'fixture-allocation-' + str(index)})
 
     def input_for(self, stage, predecessor=None):
@@ -304,12 +313,15 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
               'checks':checks_for(plan['review_required'],candidate),'source_unchanged':True,'stopped':True,'dispatcher_ref':'native:dispatcher'}}})
         apply('review-start', {'candidate':candidate})
         review, verification = verification_fixture(candidate,'native:dispatcher',self.flow,target)
+        for axis in review:
+            review[axis]['plan_authority'] = copy.deepcopy(progress['plan_authority'])
         apply('review-converged', {'candidate':candidate,'review':review,'reference':'fixture:convergence',
                                   'native_evidence':verification['review_decision']['native_evidence']})
         progress = self.context['handoff_progress']
         apply('validation-start', {'attempt_id':'final-'+candidate,'dispatcher_ref':'native:dispatcher',
               'carrier_attempt':self.context['carrier']['attempt'], 'candidate':candidate,'expected_target_head':target,
-              'plan_digest':progress['plan_digest'],'review_digest':progress['review_digest']})
+              'plan_digest':progress['plan_digest'],'plan_authority':progress['plan_authority'],
+              'review_digest':progress['review_digest']})
         checks = checks_for(plan['final_required'],candidate)
         apply('validation-result', {'attempt_id':'final-'+candidate,'checks':checks,
               'source':{'adapter':'fixture','call_ref':'command','response_ref':'command-result',

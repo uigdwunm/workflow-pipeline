@@ -671,7 +671,9 @@ def _prepare(request):
                 'execution_plan_stale', 'allocation names an older plan authority')
         execution_plan.validate_plan_refs(authority_record['execution_plan'], semantic.get('plan_refs'),
             scope['owned_paths'], scope['protected_paths'],
-            (parent['control']['context'].get('handoff_progress') or {}).get('executions', []), authority_record)
+            ((parent['control']['context'].get('handoff_progress') or {}).get('executions', []) +
+             (parent['control']['context'].get('handoff_progress') or {}).get('carried_results', [])),
+            authority_record)
     entry.nonempty(semantic["objective"]); entry.nonempty(semantic["testing_basis"])
     strings(semantic["completion_criteria"]); strings(semantic["constraints"])
     phase_evidence({**request, "controller_ref": current["actor"]["controller_ref"],

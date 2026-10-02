@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import json
 import re
@@ -500,6 +501,170 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
 
 def copy_plan_refs(refs):
     return json.loads(json.dumps(refs, ensure_ascii=False))
+
+
+def _catalog_steps(catalog):
+    tickets = {ticket['ticket_id']: ticket for ticket in catalog['tickets']}
+    steps = {step['id']: (ticket, step) for ticket in catalog['tickets']
+             for step in ticket['plan']['steps']}
+    _incomplete(len(steps) == sum(len(ticket['plan']['steps']) for ticket in catalog['tickets']),
+                'ambiguous function identity in plan revision')
+    return tickets, steps
+
+
+def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
+    """Find affected functions from both plan versions and their dependency DAGs."""
+    old, new = old_authority['execution_plan'], new_authority['execution_plan']
+    old_tickets, old_steps = _catalog_steps(old)
+    new_tickets, new_steps = _catalog_steps(new)
+    _incomplete(set(old_tickets) == set(new_tickets), 'plan revision changed behavior Tickets')
+    old_manifest = {item['path']: item for item in old_authority['scope']['downstream']['manifest']
+                    if item['owner'] == 'implementation'}
+    new_manifest = {item['path']: item for item in new_authority['scope']['downstream']['manifest']
+                    if item['owner'] == 'implementation'}
+    def ownership(item):
+        return None if item is None else {key: value for key, value in item.items()
+                                           if key != 'basis'}
+    changed_sources = set(changed_planning_paths)
+    impacted = set(old_steps) ^ set(new_steps)
+    affected_paths = {path for path in set(old_manifest) | set(new_manifest)
+                      if ownership(old_manifest.get(path)) != ownership(new_manifest.get(path))}
+    affected_verifications = set()
+    for step_id in set(old_steps) & set(new_steps):
+        old_ticket, old_step = old_steps[step_id]
+        new_ticket, new_step = new_steps[step_id]
+        old_checks = {item['id']: item for item in old_ticket['plan']['verifications']}
+        new_checks = {item['id']: item for item in new_ticket['plan']['verifications']}
+        referenced = set(old_step['verification_refs']) | set(new_step['verification_refs'])
+        changed_checks = {identity for identity in referenced
+                          if old_checks.get(identity) != new_checks.get(identity)}
+        affected_verifications.update(changed_checks)
+        if (old_step != new_step or old_ticket['ticket_id'] != new_ticket['ticket_id'] or
+                old_ticket['plan']['blocked_by'] != new_ticket['plan']['blocked_by'] or
+                changed_checks or changed_sources.intersection(old_step['read_only']) or
+                changed_sources.intersection(new_step['read_only']) or
+                ownership(old_manifest.get(old_step['target']['path'])) !=
+                ownership(new_manifest.get(new_step['target']['path']))):
+            impacted.add(step_id)
+    for ticket_id in old_tickets:
+        before = {item['id']: item for item in old_tickets[ticket_id]['plan']['artifact_steps']}
+        after = {item['id']: item for item in new_tickets[ticket_id]['plan']['artifact_steps']}
+        for identity in set(before) | set(after):
+            if before.get(identity) != after.get(identity):
+                affected_paths.update(item['path'] for item in (before.get(identity), after.get(identity)) if item)
+    dependents = {identity: set() for identity in set(old_steps) | set(new_steps)}
+    for tickets, steps in ((old_tickets, old_steps), (new_tickets, new_steps)):
+        for step_id, (ticket, step) in steps.items():
+            dependencies = set(step['depends_on'])
+            for blocker in ticket['plan']['blocked_by']:
+                _incomplete(blocker in tickets, 'unknown Ticket blocker in plan revision: ' + blocker)
+                dependencies.update(item['id'] for item in tickets[blocker]['plan']['steps'])
+            _incomplete(dependencies <= set(steps), 'unknown function dependency in plan revision: ' + step_id)
+            for dependency in dependencies:
+                dependents[dependency].add(step_id)
+    while True:
+        expanded = impacted | {dependent for identity in impacted for dependent in dependents[identity]}
+        affected_paths.update(step['target']['path'] for step_id in expanded
+                              for mapping in (old_steps, new_steps) if step_id in mapping
+                              for _, step in (mapping[step_id],))
+        expanded.update(step_id for step_id, (_, step) in {**old_steps, **new_steps}.items()
+                        if step['target']['path'] in affected_paths)
+        if expanded == impacted:
+            break
+        impacted = expanded
+    affected_verifications.update(reference for step_id in impacted
+        for mapping in (old_steps, new_steps) if step_id in mapping
+        for reference in mapping[step_id][1]['verification_refs'])
+    order = list(dict.fromkeys(old['ordered_step_ids'] + new['ordered_step_ids']))
+    return {'impacted_step_ids': [identity for identity in order if identity in impacted],
+            'retired_step_ids': [identity for identity in old['ordered_step_ids'] if identity not in new_steps],
+            'verification_ids': sorted(affected_verifications), 'paths': sorted(affected_paths)}
+
+
+def classify_retained_results(old_authority, new_authority, executions, carried_results,
+                              previous_revalidation_source, snapshot, baseline_fingerprints,
+                              changed_planning_paths):
+    """Project accepted results into a new revision without editing original receipts."""
+    impact = affected_plan_closure(old_authority, new_authority, changed_planning_paths)
+    old_catalog, new_catalog = old_authority['execution_plan'], new_authority['execution_plan']
+    _, old_steps = _catalog_steps(old_catalog)
+    _, new_steps = _catalog_steps(new_catalog)
+    old_ref = {'revision': old_authority['revision'],
+               'authority_digest': entry.digest(old_authority),
+               'plan_digest': old_catalog['plan_digest'],
+               'contract_digest': old_catalog['contract_digest']}
+    new_ref = {'revision': new_authority['revision'],
+               'authority_digest': entry.digest(new_authority),
+               'plan_digest': new_catalog['plan_digest'],
+               'contract_digest': new_catalog['contract_digest']}
+    allowed = set(new_authority['scope']['implementation_paths'])
+    _incomplete(allowed <= set(snapshot['files']) and allowed <= set(baseline_fingerprints),
+                'revision snapshot lacks exact implementation fingerprints')
+    # Historical carry is effective until a current writer replaces its path.
+    sources = list(carried_results) + list(executions)
+    latest_owner = {}
+    for index, result in enumerate(sources):
+        for relative in result['paths']:
+            latest_owner[relative] = index
+    carried = []
+    carried_paths = set()
+    for index, result in enumerate(sources):
+        if result.get('state') != 'accepted' or result.get('stopped') is not True:
+            continue
+        refs = result.get('plan_refs', [])
+        if not refs or result.get('plan_authority') != old_ref or not result.get('git_result_snapshot'):
+            continue
+        selected = [ref['step_id'] for ref in refs]
+        if (any(identity in impact['impacted_step_ids'] or identity not in new_steps
+                for identity in selected) or
+                any(relative not in allowed or relative in impact['paths'] or latest_owner[relative] != index
+                    for relative in result['paths'])):
+            continue
+        expected = {relative: result['git_result_snapshot'].get(relative,
+                    result.get('git_snapshot', {}).get('files', {}).get(relative))
+                    for relative in result['paths']}
+        if any(fingerprint is None or snapshot['files'][relative] != fingerprint
+               for relative, fingerprint in expected.items()):
+            continue
+        mapped = []
+        for old_plan_ref in refs:
+            identity = old_plan_ref['step_id']
+            old_ticket, old_step = old_steps[identity]
+            new_ticket, new_step = new_steps[identity]
+            _incomplete(old_plan_ref == {'ticket_id': old_ticket['ticket_id'],
+                'step_id': identity, 'plan_version': old_ticket['plan_version'],
+                'source': old_ticket['source'], 'step_digest': entry.digest(old_step)} and
+                old_step == new_step, 'accepted result plan ref changed: ' + identity)
+            mapped.append({'ticket_id': new_ticket['ticket_id'], 'step_id': identity,
+                           'plan_version': new_ticket['plan_version'], 'source': new_ticket['source'],
+                           'step_digest': entry.digest(new_step)})
+        original = copy.deepcopy(result)
+        carried.append({'state': 'accepted', 'stopped': True,
+            'agent_ref': result['agent_ref'], 'task_id': result['task_id'],
+            'allocation_digest': result['allocation_digest'], 'paths': copy.deepcopy(result['paths']),
+            'file_hashes': copy.deepcopy(result['file_hashes']),
+            'git_result_snapshot': copy.deepcopy(result['git_result_snapshot']),
+            'plan_refs': mapped, 'plan_authority': new_ref,
+            'source_result_digest': result.get('source_result_digest', entry.digest(original)),
+            'source_revision': result.get('source_revision', old_ref['revision'])})
+        carried_paths.update(result['paths'])
+    prior_pending = set((previous_revalidation_source or {}).get('pending_paths', []))
+    if previous_revalidation_source is not None:
+        _incomplete(all(snapshot['files'].get(relative) ==
+                        previous_revalidation_source['snapshot']['files'].get(relative)
+                        for relative in prior_pending if relative not in latest_owner),
+                    'unaccepted revision bytes changed before revalidation')
+    pending = []
+    for relative in sorted(allowed):
+        if snapshot['files'][relative] == baseline_fingerprints[relative] or relative in carried_paths:
+            continue
+        _incomplete(relative in latest_owner or relative in prior_pending,
+                    'unallocated implementation bytes cannot enter plan revision: ' + relative)
+        _incomplete(all(result.get('stopped') is True for result in sources
+                        if relative in result['paths']),
+                    'writer has not stopped for plan revision: ' + relative)
+        pending.append(relative)
+    return {'impact': impact, 'carried_results': carried, 'pending_paths': pending}
 
 
 def collect_inline_plan(plan, scope, semantic, requirement_identity, *, repository=None):

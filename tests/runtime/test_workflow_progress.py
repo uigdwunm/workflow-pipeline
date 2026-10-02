@@ -1073,7 +1073,9 @@ class ProgressTests(transfer.StageTransferTests):
             'plan_digest':transfer.control.digest(plan),'checks':checks},
             'receipt':{'adapter':'fixture','call_ref':'focused','response_ref':'focused-result','raw':{'checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':dispatcher}}})
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'reviewable',result)
-        return {'candidate':candidate,'plan_digest':transfer.control.digest(plan),'checks':checks}
+        return {'candidate':candidate,'plan_digest':transfer.control.digest(plan),
+                'checks':checks,'plan_authority':copy.deepcopy(
+                    self.state()['control']['context']['handoff_progress']['plan_authority'])}
 
     def accept_current(self, payload, role, *, fixture_execution=True):
         if self.state()['stage'] == 3:
@@ -1091,7 +1093,9 @@ class ProgressTests(transfer.StageTransferTests):
             candidate = payload['candidate_commit']
             checkpoint = self.state()['control']['context']['handoff_progress']
             review = {axis:{'candidate':candidate,'expected_target_head':checkpoint['expected_target_head'],
-                      'plan_digest':checkpoint['plan_digest'],'reviewer_ref':payload['review'][axis]['reviewer_ref'],
+                      'plan_digest':checkpoint['plan_digest'],
+                      'plan_authority':checkpoint['plan_authority'],
+                      'reviewer_ref':payload['review'][axis]['reviewer_ref'],
                       'status':'accepted','result_ref':'terminal-'+axis} for axis in ('standards','spec')}
             response = self.invoke('control', {'action':'review-converged',
                 'evidence':{'candidate':candidate,'review':review,'reference':'fixture:converged'},
@@ -1100,7 +1104,8 @@ class ProgressTests(transfer.StageTransferTests):
             self.assertEqual(checkpoint['state'],'final-validation-pending',response)
             context = self.state()['control']['context']
             start = {'attempt_id':'fixture-final','dispatcher_ref':role,'carrier_attempt':context['carrier']['attempt'],
-                     **{key:checkpoint[key] for key in ('candidate','expected_target_head','plan_digest','review_digest')}}
+                     **{key:checkpoint[key] for key in ('candidate','expected_target_head',
+                         'plan_digest','plan_authority','review_digest')}}
             response = self.invoke('control', {'action':'validation-start','evidence':start,
                 'receipt':{'adapter':'fixture','call_ref':'final','response_ref':'final-start','raw':{'decision':'run'}}})
             self.assertIsNotNone(response['next_action'], response)

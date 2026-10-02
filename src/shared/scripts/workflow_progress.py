@@ -1071,7 +1071,7 @@ class Progress:
                                 snapshot['sequence'] != transport.get('native_event_sequence', 0) or transport.get('state') == 'lost'):
                 pending.append({'kind':'current-descendants-stale'})
             else:
-                refs = {self.bound_ref()}
+                refs = {self.bound_ref()} | self.native_refs()
                 for transaction in s.get('control_transactions', {}).values():
                     if transaction.get('result') is not None and transaction['request']['action'] == 'recover-dispatch':
                         refs.update(transaction['result']['recovery']['host_evidence']['stopped_refs'])
@@ -1129,6 +1129,12 @@ class Progress:
             selected = s.get('control', {}).get('context', {})
         progress = selected.get('handoff_progress') or {}
         refs.update(item['agent_ref'] for item in progress.get('executions', []) if item.get('agent_ref'))
+        refs.update(item['agent_ref'] for item in progress.get('carried_results', [])
+                    if item.get('agent_ref'))
+        for source in progress.get('plan_revision_sources', []):
+            for item in source['executions'] + source['carried_results']:
+                if item.get('agent_ref'):
+                    refs.add(item['agent_ref'])
         recovery = progress.get('recovery')
         if recovery and recovery['state'] == 'ready':
             refs.add(recovery['receipts'][-1]['ref'])
@@ -1179,8 +1185,11 @@ class Progress:
             accepted = saved.get('accepted')
             if accepted and accepted['role_ref'] == ref and saved.get('host', {}).get('status') == 'stopped':
                 return saved['handoff']['controller_ref'], accepted['digest'], saved['handoff']['expected_entry']['actor']['thread_id']
-            for slot in saved.get('allocations', {}).values():
-                record = slot.get('record') or {}
+            slots = list(saved.get('allocations', {}).values())
+            slots.extend(slot for history in saved.get('plan_revision_allocation_history', [])
+                         for slot in history['allocations'].values())
+            for slot in slots:
+                record = handoff.unseal(slot['record']) if slot.get('record') else {}
                 accepted = record.get('acceptance')
                 if accepted and accepted['role_ref'] == ref and record['status'] == 'accepted':
                     return slot['owner_ref'], accepted['digest'], slot['handoff']['expected_entry']['actor']['thread_id']
@@ -2233,7 +2242,8 @@ class Progress:
         """Persist a Controller intent before asking the original host to stop."""
         entry.fields(data, {"revision_id", "expected_authority_revision",
             "expected_authority_digest", "controller_ref", "classification", "report",
-            "planning_paths"}, {"manifest", "generated_outputs", "inline_plan"})
+            "planning_paths"}, {"manifest", "generated_outputs", "inline_plan",
+                                 "validation_plan"})
         s = self.state
         require(s["stage"] == 3 and s.get("scope_authority") is not None,
                 "plan_revision_unavailable", "an active sealed Stage-3 authority is required")
@@ -2280,6 +2290,13 @@ class Progress:
                 authority["execution_plan"]["contract_digest"], "contract_changed",
                 "internal revision cannot change the sealed functional contract")
         catalog = authority["execution_plan"]
+        if "validation_plan" in data:
+            try:
+                control.validate_revision_validation_plan(
+                    s["control"]["context"]["handoff_progress"]["validation_plan"],
+                    data["validation_plan"], s["handoff"]["binding"])
+            except control.ControlError as error:
+                raise entry.PreparationError("invalid_plan_revision", str(error)) from error
         ticket_ids = {ticket["ticket_id"] for ticket in catalog["tickets"]}
         step_ids = {step["id"] for ticket in catalog["tickets"] for step in ticket["plan"]["steps"]}
         verification_ids = {item["id"] for ticket in catalog["tickets"]
@@ -2510,6 +2527,15 @@ class Progress:
                                           transaction["snapshot"], data["planning_commit"])
         old = transaction["old_authority"]
         new = transaction["proposed_authority"]
+        checkpoint = s["control"]["context"]["handoff_progress"]
+        repository = s["handoff"]["binding"]["worktree"]
+        baseline_fingerprints = {relative: control_git.committed_fingerprint(
+            repository, checkpoint["git_baseline_commit"], relative)
+            for relative in new["scope"]["implementation_paths"]}
+        retention = execution_plan.classify_retained_results(
+            old, new, checkpoint["executions"], checkpoint.get("carried_results", []),
+            checkpoint.get("revalidation_source"), transaction["snapshot"],
+            baseline_fingerprints, transaction["git_facts"]["changed_paths"])
         evidence = {"revision_id": data["revision_id"],
             "old_authority": {"revision": old["revision"], "authority_digest": entry.digest(old),
                 "plan_digest": old["execution_plan"]["plan_digest"],
@@ -2523,8 +2549,12 @@ class Progress:
             "new_scope": {"implementation_paths": new["scope"]["implementation_paths"],
                 "protected_paths": s["handoff"]["scope"]["protected_paths"]},
             "snapshot": transaction["snapshot"],
+            "baseline_fingerprints": baseline_fingerprints,
+            "retention": retention,
             "classification": transaction["input"]["classification"],
             "git_facts": transaction["git_facts"]}
+        if "validation_plan" in transaction["input"]:
+            evidence["validation_plan"] = copy.deepcopy(transaction["input"]["validation_plan"])
         result = self.control_action({"action": "plan-revision-activate", "evidence": evidence,
             "receipt": {"controller_ref": data["controller_ref"],
                         "reference": evidence["classification"]["reference"]}})
@@ -4234,13 +4264,18 @@ class Progress:
             if slot is None or slot['candidate'] != data['candidate']:
                 self.require_finalizations_released()
             control.validate_reviewable(s['control']['context']['handoff_progress'], data['candidate'], data['verification'])
-            binding, scope = s['handoff']['binding'], s['handoff']['scope']
+            binding = s['handoff']['binding']
+            scope = (s.get('scope_authority') or {}).get('scope', s['handoff']['scope'])
             observed = supervision.verify_worktree({'binding':binding,'platform_cwd':binding['worktree']})
             require(observed['current_commit'] == data['candidate'] and not supervision._full_status(Path(binding['worktree'])),
                     'candidate_changed', 'review requires the clean exact candidate')
             checkpoint = s['control']['context']['handoff_progress']
-            changed = set(supervision._changed_paths(Path(binding['repository']), checkpoint['expected_target_head'], data['candidate'])) - set(checkpoint.get('integration_retained', {}).get('paths', []))
-            require(set(changed) <= set(scope['implementation_paths']) and not set(changed) & set(scope['protected_paths']),
+            changed = (set(supervision._changed_paths(Path(binding['repository']),
+                checkpoint['expected_target_head'], data['candidate'])) -
+                set(checkpoint.get('integration_retained', {}).get('paths', [])) -
+                control_git.verified_planning_paths(Path(binding['worktree']), checkpoint))
+            require(set(changed) <= set(scope['implementation_paths']) and
+                    not set(changed) & set(checkpoint['protected_paths']),
                     'scope_changed', 'review candidate escaped implementation scope')
             if any(value['candidate'] != data['candidate'] for value in slots.values()):
                 require(all(value.get('stopped') for value in slots.values()), 'review_active', 'stop and reconcile both old review axes first')
@@ -4257,7 +4292,9 @@ class Progress:
                     'action_id':str(uuid.uuid4()), 'ref':None, 'stopped':False, 'receipts':[]}
             slots[data['axis']] = slot
             self.save()
-            return _view(s, {'operation':'invoke-review','axis':data['axis'], 'candidate':data['candidate'], 'action_id':slot['action_id']})
+            return _view(s, {'operation':'invoke-review','axis':data['axis'],
+                'candidate':data['candidate'], 'verification':copy.deepcopy(data['verification']),
+                'action_id':slot['action_id']})
         entry.fields(data, {'operation','axis','candidate','actor_ref','action_id','receipt'})
         require(data['operation'] == 'observe' and slot is not None and slot['candidate'] == data['candidate'] and
                 slot['action_id'] == data['action_id'], 'review_missing', 'observe the original exact review call')

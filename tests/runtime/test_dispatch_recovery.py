@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from test_workflow_progress import ProgressTests
 import stage_dispatch as dispatch
+import execution_plan
 
 
 class RecoveryFixture(ProgressTests):
@@ -24,6 +25,14 @@ class RecoveryFixture(ProgressTests):
             value['scope']['owned_paths'] = ['impl.py'] if self.request['host']['role'] == 'implementation-dispatcher' else ['extra.py', 'impl.py']
             import entry_prepare
             value['authorization']['scope_digest'] = entry_prepare.digest(value['scope'])
+            if predecessor is None:
+                plan = value['semantic']['inline_plan']
+                extra = copy.deepcopy(plan['steps'][0])
+                extra.update(id='inline-extra', target={'path': 'extra.py', 'symbol': 'run',
+                                                        'operation': 'add'})
+                plan['steps'].append(extra)
+                value['inline_authority'] = execution_plan.inline_authority(
+                    plan, value['scope'], value['semantic'], self.frozen['requirement_identity'])
         return value
 
     def execution_input(self):
@@ -41,7 +50,7 @@ class DispatchRecoveryTests(unittest.TestCase):
     def recovery_intent(self, *, accept=True, committed=False):
         request = self.prepare_mixed(accept=accept)
         if committed:
-            self.f.flow_git('add', 'extra.py')
+            self.f.flow_git('add', 'extra.py' if accept else 'impl.py')
             self.f.flow_git('commit', '-qm', 'retained dispatcher progress')
         prepared = self.f.invoke('control', request)['next_action']['result']['recovery']
         decision = {'reference':'controller:assume-snapshot','authority_digest':prepared['authority_digest'],
@@ -79,10 +88,38 @@ class DispatchRecoveryTests(unittest.TestCase):
             'receipt':f.receipt(slot['record'],'stopped','result',ref='native:executor'),
             'result':{'delivery_id':'slice','status':'completed','payload':{'changed_paths':['impl.py'],
                 'file_hashes':{'impl.py':hashlib.sha256(data).hexdigest()},'tests':['focused passed'],
-                'write_release':dispatch.execution_release_token(slot['record'])}}})
+                'write_release':dispatch.execution_release_token(slot['record']),
+                'plan_refs':slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_authority':f.state()['control']['context']['handoff_progress']['plan_authority']}}})
         if accept:
             f.invoke('allocation', {'allocation_id':'slice-one','operation':'accept','decision':{'reference':'dispatcher:accepted'}})
-        (f.flow/'extra.py').write_text('dispatcher bytes\n')
+            second = f.execution_input()
+            second['scope']['owned_paths'] = ['extra.py']
+            authority = f.state()['scope_authority']
+            ticket = authority['execution_plan']['tickets'][0]
+            step = next(item for item in ticket['plan']['steps'] if item['id'] == 'inline-extra')
+            second['semantic']['plan_refs'] = [{'ticket_id':ticket['ticket_id'],
+                'step_id':step['id'], 'plan_version':ticket['plan_version'],
+                'source':ticket['source'], 'step_digest':dispatch.entry.digest(step)}]
+            second['authorization']['scope_digest'] = dispatch.entry.digest(second['scope'])
+            prepared = f.invoke('allocation', {'allocation_id':'extra-slice','operation':'prepare',
+                                                 'handoff':second})
+            self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+            slot = f.state()['allocations']['extra-slice']
+            f.invoke('allocation', {'allocation_id':'extra-slice','operation':'bind',
+                'receipt':f.receipt(slot['record'], ref='native:extra-executor')})
+            extra = b'unaccepted agent bytes\n'
+            (f.flow/'extra.py').write_bytes(extra)
+            slot = f.state()['allocations']['extra-slice']
+            received = f.invoke('allocation', {'allocation_id':'extra-slice','operation':'receive',
+                'receipt':f.receipt(slot['record'],'stopped','result',ref='native:extra-executor'),
+                'result':{'delivery_id':'extra-slice-result','status':'completed','payload':{
+                    'changed_paths':['extra.py'], 'file_hashes':{'extra.py':hashlib.sha256(extra).hexdigest()},
+                    'tests':['second agent stopped after focused check'],
+                    'write_release':dispatch.execution_release_token(slot['record']),
+                    'plan_refs':slot['record']['handoff']['semantic']['plan_refs'],
+                    'plan_authority':f.state()['control']['context']['handoff_progress']['plan_authority']}}})
+            self.assertEqual(received['next_action']['result']['status'], 'received', received)
         f.settings['thread_id'] = 'task'
         f.request['host'].update(thread_id='task',role='controller',source_ref=None); f.request['host'].pop('actor_ref',None)
         # The external host attests nonresumability; stopped alone does not.
@@ -92,7 +129,9 @@ class DispatchRecoveryTests(unittest.TestCase):
         progress = f.state()['control']['context']
         evidence = {'dispatcher_ref':'native:dispatcher','attempt':progress['carrier']['attempt'],
                     'reference':'controller:recover','reason':'original identity cannot resume',
-                    'stop_receipts':[stopped['receipt']['receipt_ref'], f.state()['allocations']['slice-one']['record']['receipts'][-1]['receipt_ref']],
+            'stop_receipts':[stopped['receipt']['receipt_ref']] + [
+                slot['record']['receipts'][-1]['receipt_ref']
+                for slot in f.state()['allocations'].values()],
                     'call_receipts':[stopped['provenance']['response_ref']]}
         return {'action':'prepare-dispatch-recovery','evidence':evidence,
                 'receipt':{'controller_ref':'task','reference':'controller:recover'}}
@@ -100,13 +139,13 @@ class DispatchRecoveryTests(unittest.TestCase):
     def test_prepares_mixed_uncommitted_bytes_without_commit_or_cleaning(self):
         request = self.prepare_mixed(); f = self.f
         f.flow_git('add','extra.py'); f.flow_git('commit','-qm','dispatcher checkpoint')
-        (f.flow/'extra.py').write_text('dispatcher bytes\ncontinued uncommitted\n')
         before = f.flow_git('rev-parse','HEAD'), f.flow_git('status','--porcelain')
         result = f.invoke('control', request)
         self.assertEqual(result['next_action']['operation'], 'control-effects', result)
         recovery = result['next_action']['result']['recovery']
         self.assertEqual(recovery['ownership']['accepted'], ['impl.py'])
-        self.assertEqual(recovery['ownership']['dispatcher'], ['extra.py'])
+        self.assertEqual(recovery['ownership']['unaccepted'], ['extra.py'])
+        self.assertEqual(recovery['ownership']['dispatcher'], [])
         self.assertEqual(before, (f.flow_git('rev-parse','HEAD'), f.flow_git('status','--porcelain')))
 
     def test_unique_prepared_successor_activates_and_duplicate_does_not_clear_later_state(self):
@@ -264,7 +303,9 @@ class DispatchRecoveryTests(unittest.TestCase):
             'receipt':f.receipt(slot['record'],'stopped','result',ref='native:new-executor'),
             'result':{'delivery_id':'new-slice','status':'completed','payload':{'changed_paths':['impl.py'],
                 'file_hashes':{'impl.py':hashlib.sha256(data).hexdigest()},'tests':['successor focused check passed'],
-                'write_release':dispatch.execution_release_token(slot['record'])}}})
+                'write_release':dispatch.execution_release_token(slot['record']),
+                'plan_refs':slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_authority':f.state()['control']['context']['handoff_progress']['plan_authority']}}})
         self.assertEqual((received.get('next_action') or {}).get('result', {}).get('status'), 'received', received.get('error'))
         accepted = f.invoke('allocation', {'allocation_id':'replacement-slice','operation':'accept',
             'decision':{'reference':'replacement:accepted'}})
@@ -298,11 +339,16 @@ class DispatchRecoveryTests(unittest.TestCase):
         parent['scope']['protected_paths'].append('existing.txt')
         import entry_prepare
         parent['authorization']['scope_digest'] = entry_prepare.digest(parent['scope'])
+        parent['inline_authority'] = execution_plan.inline_authority(
+            parent['semantic']['inline_plan'], parent['scope'], parent['semantic'],
+            f.frozen['requirement_identity'])
         f.begin('continuous',parent); f.invoke('observe',f.observation(ref='native:dispatcher'))
         original = f.state()['control']['context']['handoff_progress']['git_baseline_commit']
         (f.flow/'existing.txt').write_text('changed original protection\n')
         f.flow_git('add','existing.txt'); f.flow_git('commit','-qm','invalid protected commit')
-        execution = f.execution_input(); execution['scope']['protected_paths'].append('existing.txt')
+        execution = f.execution_input()
+        if 'existing.txt' not in execution['scope']['protected_paths']:
+            execution['scope']['protected_paths'].append('existing.txt')
         execution['authorization']['scope_digest'] = entry_prepare.digest(execution['scope'])
         result = f.invoke('allocation',{'allocation_id':'protected-drift','operation':'prepare','handoff':execution})
         self.assertEqual(result['status'],'blocked')

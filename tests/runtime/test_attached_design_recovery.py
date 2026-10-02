@@ -31,10 +31,10 @@ class AttachedDesignRecoveryTests(DesignRecoveryTests):
             continued = f.invoke('observe', f.observation('idle', 'result', ref='native:replacement'))
         self.assertEqual(continued['next_action']['operation'], 'continue-host', continued)
         self.assertEqual(continued['next_action']['payload']['ref'], 'native:replacement')
-        (f.flow/'docs/spec.md').write_text('completed recovered design\n')
+        (f.flow/'docs/spec.md').write_text(f.planning_spec())
         f.flow_git('add', 'docs/spec.md'); f.flow_git('commit', '-qm', 'recovered planning')
         candidate = f.flow_git('rev-parse', 'HEAD')
-        proposal_digest = f.propose_design_scope(candidate, 'completed recovered design')
+        proposal_digest = f.propose_design_scope(candidate)
         stopped = f.observation('stopped', 'result', ref='native:replacement')
         stopped['lifecycle']['pages'][0]['response']['data'].append(
             {'id':'native:designer','status':{'type':'idle'}})
