@@ -215,6 +215,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
             case.flow.invoke("scope-propose", proposal)
         self.assertEqual(error.exception.code, "execution_plan_incomplete")
         self.assertIn("existing Python symbol is missing: Widget", str(error.exception))
+        self.assertIn("impl.py", str(error.exception))
         self.assertEqual(case.flow.checkpoint.read_bytes(), before)
 
     def test_staged_python_qualified_methods_and_async_function_remain_valid(self):

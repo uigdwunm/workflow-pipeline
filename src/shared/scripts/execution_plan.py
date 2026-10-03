@@ -339,7 +339,8 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
             existing = _committed_file(repository, baseline, target["path"])
             if target["path"].endswith(".py"):
                 _incomplete(target["symbol"] in _python_symbols(existing["body"]),
-                            "existing Python symbol is missing: " + target["symbol"])
+                            "existing Python symbol is missing: " + target["symbol"] +
+                            " (target: " + target["path"] + ")")
             else:
                 _non_python_source_evidence(repository, baseline, target, step["approach"])
     for artifact in plan["artifact_steps"]:
@@ -851,7 +852,8 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
             existing = _committed_file(repository, scope["baseline"], target["path"])
             if target["path"].endswith(".py"):
                 _incomplete(target["symbol"] in _python_symbols(existing["body"]),
-                            "existing Python symbol is missing: " + target["symbol"])
+                            "existing Python symbol is missing: " + target["symbol"] +
+                            " (target: " + target["path"] + ")")
             else:
                 _non_python_source_evidence(repository, scope["baseline"], target, step["approach"])
         _ids(step["depends_on"], "inline depends_on", empty=True)

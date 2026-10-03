@@ -91,6 +91,7 @@ class PlanDrivenDispatchTests(unittest.TestCase):
                             "control": {"context": case.context_for(3), "discussion": None}})
                 self.assertEqual(error.exception.code, "execution_plan_incomplete")
                 self.assertIn("existing Python symbol is missing: Widget", str(error.exception))
+                self.assertIn("impl.py", str(error.exception))
                 self.assertEqual(case.checkpoint.read_bytes() if case.checkpoint.exists() else None,
                                  before)
 
