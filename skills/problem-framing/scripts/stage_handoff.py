@@ -524,20 +524,35 @@ def current_stage3_state(saved, context, checkpoint_path=None):
     return state
 
 
-def accepted_stage3_progress(predecessor):
+def accepted_stage3_progress(predecessor, checkpoint_path=None):
     """Recover the exact accepted Stage-3 authority across Stage-4 replay."""
     import workflow_progress as progress
     prior = unseal(predecessor)
     saved = prior["handoff"]
     readiness = saved.get("readiness")
-    if readiness is None:
+    if readiness is None and checkpoint_path is None:
+        inline = saved.get("inline_authority") or {}
+        original_plan = inline.get("execution_plan") or {}
+        initial = {"revision": inline.get("revision"),
+            "authority_digest": entry.digest(inline),
+            "plan_digest": original_plan.get("plan_digest"),
+            "contract_digest": original_plan.get("contract_digest")}
+        require(prior.get("payload", {}).get("verification", {}).get("plan_authority") == initial,
+                "handoff_not_ready", "revised standalone acceptance needs its original Controller checkpoint pin")
         return None
-    checkpoint = Path(readiness["checkpoint_path"])
+    original_path = readiness["checkpoint_path"] if readiness is not None else checkpoint_path
+    require(checkpoint_path is None or checkpoint_path == original_path,
+            "handoff_not_ready", "Stage-4 checkpoint pin changed")
+    checkpoint = Path(original_path)
+    require(checkpoint.is_absolute() and str(checkpoint.resolve()) == original_path,
+            "invalid_checkpoint", "canonical original Controller checkpoint required")
     outer = progress.read_record(checkpoint)
     current = outer.get(progress.KEY)
     require(isinstance(current, dict), "handoff_not_ready",
             "original Controller checkpoint is unavailable")
     progress.validate_state(current)
+    require(current.get("checkpoint_path") == original_path,
+            "handoff_not_ready", "Stage-4 checkpoint differs from its original path")
     history = current.get("history", [])
     snapshots = [(current, history)] + [(state, history[:index])
                                       for index, state in enumerate(history)]
@@ -549,13 +564,30 @@ def accepted_stage3_progress(predecessor):
     state, earlier = matches[0]
     prior_state = {**state, "history": earlier}
     progress.validate_state(prior_state)
-    effective = progress.consumed_scope_readiness(prior_state, checkpoint)
+    effective = (progress.consumed_scope_readiness(prior_state, checkpoint)
+                 if readiness is not None else None)
     current_progress = state["control"]["context"].get("handoff_progress") or {}
+    initial = readiness["scope_authority"] if readiness is not None else saved.get("inline_authority")
+    require(isinstance(initial, dict), "handoff_not_ready",
+            "Stage-3 launch lacks its original authority")
+    lineage = initial
+    revisions = [*state.get("plan_revision_history", {}).values()]
+    if state.get("plan_revision_transaction") is not None:
+        revisions.append(state["plan_revision_transaction"])
+    for revision in sorted(revisions, key=lambda item: item["old_authority"]["revision"]):
+        require(revision["state"] == "activated" and revision["old_authority"] == lineage,
+                "handoff_not_ready", "Stage-3 plan revision lost its original lineage")
+        lineage = revision["proposed_authority"]
     require(state.get("status") == "accepted" and
             (state.get("dispatch") or {}).get("acceptance") == predecessor and
-            state.get("consumed_readiness") == readiness and effective is not None and
-            state.get("scope_authority") == effective["scope_authority"] ==
-            current_progress.get("execution_authority") and
+            state.get("consumed_readiness") == readiness and
+            (readiness is None or effective is not None and
+             state.get("scope_authority") == effective["scope_authority"]) and
+            state.get("scope_authority") == lineage == current_progress.get("execution_authority") and
+            lineage["execution_plan"]["contract_digest"] ==
+            initial["execution_plan"]["contract_digest"] and
+            lineage["scope"]["protected_paths"] == initial["scope"]["protected_paths"] and
+            current_progress.get("git_baseline_commit") == saved["scope"]["baseline"] and
             (state.get("plan_revision_transaction") or {}).get("state") in (None, "activated"),
             "handoff_not_ready", "Stage-4 predecessor lacks current activated Controller authority")
     return current_progress
@@ -670,7 +702,7 @@ def prepare(request):
     return _prepare(request)[0]
 
 
-def _prepare(request):
+def _prepare(request, *, checkpoint_path=None):
     """Return the sealed input and this preparation's verified entry to C."""
     request = copy.deepcopy(request)
     require(request.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime", "retain original stage-transfer runtime: " + str(request.get("protocol")))
@@ -895,7 +927,8 @@ def _prepare(request):
                 "source_changed", "predecessor controller or requirement differs")
         if old["stage"] >= 2:
             require(old["binding"] == request["binding"], "binding_changed", "successor must retain the exact Flow Worktree")
-            prior_progress = accepted_stage3_progress(predecessor) if old["stage"] == 3 else None
+            prior_progress = (accepted_stage3_progress(predecessor, checkpoint_path)
+                              if old["stage"] == 3 else None)
             verify_result(old["stage"], prior["payload"], old["binding"], old["scope"], root,
                           prior["role_ref"], old['authorization'].get('integration_recovery'),
                           prior_progress)
@@ -907,6 +940,8 @@ def _prepare(request):
                             mode(root, prior["payload"]["planning_merge_commit"], relative) ==
                             mode(root, published_target, relative),
                             "source_changed", "sealed planning bytes changed at the implementation baseline")
+            accepted_scope = (prior_progress["execution_authority"]["scope"]
+                              if prior_progress is not None else old["scope"])
             protected = set(old["scope"]["protected_paths"])
             if old["stage"] == 2:
                 protected.update(prior["payload"]["planning_paths"])
@@ -915,16 +950,19 @@ def _prepare(request):
                         scope["closure_paths"] == effective["closure_paths"],
                         "scope_changed", "Stage 3 must use the current sealed scope without widening or narrowing it")
             if stage == 4:
-                protected -= set(old["scope"]["closure_paths"])
+                protected -= set(accepted_scope["closure_paths"])
             require(protected <= set(scope["protected_paths"]), "scope_changed", "successor must protect inherited planning and source paths")
             if old["stage"] == 3:
-                require(scope["downstream"] == old["scope"]["downstream"] and
-                        scope["implementation_paths"] == old["scope"]["implementation_paths"] and
-                        scope["closure_paths"] == old["scope"]["closure_paths"],
+                require(scope["owned_paths"] == accepted_scope["closure_paths"] and
+                        scope["downstream"] == accepted_scope["downstream"] and
+                        scope["implementation_paths"] == accepted_scope["implementation_paths"] and
+                        scope["closure_paths"] == accepted_scope["closure_paths"],
                         "scope_changed", "closure must retain the Stage-3 accepted scope revision")
         if stage == 4:
             require(prior["payload"]["candidate_commit"] == current["repository"]["head"] and scope["baseline"] == old["scope"]["baseline"] and
-                    old["scope"]["closure_paths"] == scope["closure_paths"], "scope_changed", "closure must retain accepted candidate and documentation scope")
+                    (prior_progress["execution_authority"]["scope"]["closure_paths"]
+                     if prior_progress is not None else old["scope"]["closure_paths"]) == scope["closure_paths"],
+                    "scope_changed", "closure must retain accepted candidate and documentation scope")
     require(stage != 4 or predecessor is not None, "predecessor_incomplete", "inherited closure requires an accepted implementation result")
     saved = seal({**{k: copy.deepcopy(request[k]) for k in FIELDS},
                  **({"readiness": copy.deepcopy(request["readiness"])} if "readiness" in request else {}),
@@ -948,11 +986,11 @@ def require_current_protocol(value):
             'retain original stage-transfer runtime ' + str(value.get('protocol')) + '; package digests ' + str(pins))
 
 
-def verify(saved):
+def verify(saved, *, checkpoint_path=None):
     body = unseal(saved)
     require_current_protocol(body)
     entry.fields(body, FIELDS | {"kind", "controller_ref", "requirement_identity", "source_commit", "delivery_facts", "selection"}, OPTIONAL_FIELDS)
-    actual = prepare({**{k: body[k] for k in FIELDS},
+    actual = _prepare({**{k: body[k] for k in FIELDS},
                       **({"readiness": body["readiness"]} if "readiness" in body else {}),
                       **({"generated_outputs": body["generated_outputs"]}
                          if "generated_outputs" in body else {}),
@@ -960,12 +998,12 @@ def verify(saved):
                          if "manifest_baseline" in body else {}),
                       **({"inline_authority": body["inline_authority"]}
                          if "inline_authority" in body else {}),
-                      "operation": "verify"})
+                      "operation": "verify"}, checkpoint_path=checkpoint_path)[0]
     require(actual == saved, "handoff_changed", "stage input facts changed; retain the original handoff")
     return actual
 
 
-def _render_verified(saved, readiness):
+def _render_verified(saved, readiness, current_progress=None):
     """Project a C-verified acceptance; caller owns the current readback."""
     body = unseal(saved)
     require_current_protocol(body)
@@ -999,8 +1037,10 @@ def _render_verified(saved, readiness):
                           protected_paths=sorted(set(original["scope"]["protected_paths"] +
                                                      payload["planning_paths"])))
     elif stage == 3:
-        projection.update({k: original["scope"][k] for k in ("implementation_paths", "closure_paths", "protected_paths")})
-        projection["protected_paths"] = sorted(set(original["scope"]["protected_paths"]) - set(original["scope"]["closure_paths"]))
+        scope = (current_progress["execution_authority"]["scope"]
+                 if current_progress is not None else original["scope"])
+        projection.update({k: scope[k] for k in ("implementation_paths", "closure_paths")})
+        projection["protected_paths"] = sorted(set(original["scope"]["protected_paths"]) - set(scope["closure_paths"]))
     elif stage == 4:
         projection["ancestor_verified"] = True
     rendered = json.dumps(projection, ensure_ascii=False, sort_keys=True, indent=2)
@@ -1011,7 +1051,7 @@ def _render_verified(saved, readiness):
     return result
 
 
-def render(saved, *, readiness=None):
+def render(saved, *, readiness=None, checkpoint_path=None):
     body = unseal(saved)
     require_current_protocol(body)
     if body.get("status") == "accepted":
@@ -1022,7 +1062,9 @@ def render(saved, *, readiness=None):
             require(source_state.get("accepted") == saved, "handoff_not_ready",
                     "readiness belongs to another planning result")
             effective_scope(original, readiness["scope_authority"])
-        return _render_verified(saved, readiness)
+        current_progress = (accepted_stage3_progress(saved, checkpoint_path)
+                            if original["stage"] == 3 and checkpoint_path is not None else None)
+        return _render_verified(saved, readiness, current_progress)
     require(body.get("kind") == "stage-input" and body.get("protocol") == PROTOCOL, "invalid_evidence", "stage input required")
     # Stable machine payload is also the readable footer; no independently
     # reconstructed hashes, paths, or status assertions occur in templates.

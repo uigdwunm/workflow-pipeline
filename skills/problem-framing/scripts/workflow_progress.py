@@ -931,7 +931,8 @@ def _view(state, next_action=None, acknowledged=False, *, verified_readiness=Non
         if state["stage"] == 4:
             result["workflow_completion"] = verify_completion(state)
         result["completion"] = (handoff._render_verified(state["accepted"], readiness)
-            if state["stage"] == 2 else handoff.render(state["accepted"]))
+            if state["stage"] == 2 else handoff.render(state["accepted"],
+                checkpoint_path=state["checkpoint_path"] if state["stage"] == 3 else None))
     elif state["status"] == "accepted" and not state.get("phase_complete", True) and next_action is None:
         result["next_action"] = {"operation": "complete-original-phase", "phase": state["handoff"]["authorization"].get("phase")}
     if state.get("business_block"):
@@ -1769,7 +1770,8 @@ class Progress:
             if "name" in identity:
                 retained[identity["name"]] = identity
         retain_entry_pins(request, retained)
-        saved, resolved = handoff._prepare(request)
+        saved, resolved = handoff._prepare(request,
+            checkpoint_path=str(self.path.resolve()) if old and old['stage'] == 3 and request['stage'] == 4 else None)
         mode = request["authorization"]["flow_mode"]
         require(old is None or mode == old["mode"], "authorization_changed", "mode cannot change without its exact decision")
         for root in (resolved["repository"]["root"], (request.get("binding") or {}).get("worktree")):
@@ -3111,7 +3113,7 @@ class Progress:
     def verify_launch(self):
         s, saved = self.state, self.state["handoff"]
         if saved["stage"] >= 2 or saved["entry"]["source"]["kind"] != "discussion":
-            handoff.verify(saved)
+            handoff.verify(saved, checkpoint_path=str(self.path.resolve()) if saved['stage'] == 4 else None)
             return
         # reserve-launch legitimately changed the original ledger control view.
         # Bind owner/settings/pins with B's post-mutation verifier, then require

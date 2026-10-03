@@ -837,6 +837,11 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(stage3["status"], "accepted", stage3)
         predecessor = flow.state()["accepted"]
         stage4_input = flow.input_for(4, predecessor)
+        current_scope = flow.state()['scope_authority']['scope']
+        for key in ('downstream', 'implementation_paths', 'closure_paths'):
+            stage4_input['scope'][key] = copy.deepcopy(current_scope[key])
+        stage4_input['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
+            stage4_input['scope'])
         self.assertEqual(progress.handoff.prepare(stage4_input)["stage"], 4)
         original_checkpoint = flow.checkpoint.read_bytes()
         altered = progress.read_record(flow.checkpoint)
@@ -887,7 +892,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.git("commit", "-qm", "parallel target changes implementation")
         target = flow.git("rev-parse", "main")
         flow.context = flow.context_for(4)
-        flow.begin("continuous", flow.input_for(4, predecessor))
+        flow.begin("continuous", stage4_input)
         flow.invoke("observe", flow.observation(ref="native:closure"))
         observed = flow.observation("stopped", "result", ref="native:closure")
         observed["closure"] = {"ref": "native:closure", "candidate": accepted,
@@ -1336,12 +1341,148 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(accepted['status'], 'accepted', accepted)
         self.assertEqual(flow.state()['accepted']['payload']['verification']['validation_plan'], validation)
         predecessor = flow.state()['accepted']
+        completion = progress.handoff.render(predecessor,
+            checkpoint_path=str(flow.checkpoint))['payload']
+        self.assertIn('helper.py', completion['implementation_paths'])
+        self.assertEqual(completion['closure_paths'],
+                         flow.state()['scope_authority']['scope']['closure_paths'])
         closure = flow.input_for(4, predecessor)
         current_scope = flow.state()['scope_authority']['scope']
         for key in ('downstream', 'implementation_paths', 'closure_paths'):
             closure['scope'][key] = copy.deepcopy(current_scope[key])
         closure['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(closure['scope'])
-        self.assertEqual(progress.handoff.prepare(closure)['stage'], 4)
+        with self.assertRaises(progress.entry.PreparationError) as missing_pin:
+            progress.handoff.prepare(closure)
+        self.assertEqual(missing_pin.exception.code, 'handoff_not_ready')
+        stale = copy.deepcopy(closure)
+        stale['scope']['implementation_paths'] = predecessor['handoff']['scope']['implementation_paths']
+        stale['scope']['downstream'] = predecessor['handoff']['scope']['downstream']
+        stale['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(stale['scope'])
+        before = flow.checkpoint.read_bytes()
+        flow.context = flow.context_for(4)
+        with self.assertRaises(progress.entry.PreparationError):
+            flow.invoke('start', {'handoff': stale, 'control': {'context': flow.context, 'discussion': None}})
+        self.assertEqual(flow.checkpoint.read_bytes(), before)
+        widened = copy.deepcopy(closure)
+        widened['scope']['owned_paths'] = ['helper.py']
+        widened['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(widened['scope'])
+        with self.assertRaises(progress.entry.PreparationError):
+            flow.invoke('start', {'handoff': widened, 'control': {'context': flow.context, 'discussion': None}})
+        self.assertEqual(flow.checkpoint.read_bytes(), before)
+        started = flow.begin('continuous', closure)
+        self.assertEqual(started['next_action']['operation'], 'invoke-host')
+        stage4 = flow.state()
+        self.assertEqual(stage4['handoff']['scope']['implementation_paths'],
+                         current_scope['implementation_paths'])
+        self.assertEqual(stage4['handoff']['scope']['baseline'],
+                         predecessor['handoff']['scope']['baseline'])
+        self.assertEqual(stage4['dispatch']['scope_checkpoint_path'], str(flow.checkpoint))
+        self.assertEqual(progress.handoff.verify(stage4['handoff'],
+                         checkpoint_path=str(flow.checkpoint)), stage4['handoff'])
+        forged = progress.handoff.unseal(stage4['dispatch'])
+        forged['scope_checkpoint_path'] = str(flow.checkpoint.with_name('forged-progress.json'))
+        forged = progress.handoff.seal(forged)
+        with self.assertRaises(progress.entry.PreparationError):
+            progress.dispatch.record_for({'record': forged,
+                'control': copy.deepcopy(stage4['control'])})
+        original_checkpoint = flow.checkpoint.read_bytes()
+        changed = progress.read_record(flow.checkpoint)
+        changed[progress.KEY]['history'][-1]['plan_revision_transaction']['state'] = 'prepared'
+        try:
+            progress.atomic_save(flow.checkpoint, changed)
+            with self.assertRaises(progress.entry.PreparationError):
+                progress.handoff.verify(stage4['handoff'], checkpoint_path=str(flow.checkpoint))
+        finally:
+            flow.checkpoint.write_bytes(original_checkpoint)
+
+    def test_staged_private_helper_revision_reaches_current_stage4_handoff(self):
+        flow = self.new_active_flow()
+        authority = flow.state()['scope_authority']
+        report = self.report(flow)
+        manifest = copy.deepcopy(authority['scope']['downstream']['manifest'])
+        helper = copy.deepcopy(next(item for item in manifest if item['path'] == 'impl.py'))
+        helper['path'] = 'helper.py'
+        manifest = sorted([*manifest, helper], key=lambda item: item['path'])
+        report['manifest'] = manifest
+        report['report']['manifest_diff'] = progress.stage_scope.manifest_diff(
+            authority['scope']['downstream']['manifest'], manifest)
+        flow.invoke('prepare-plan-revision', report)
+        prepared = flow.invoke('observe', flow.observation('stopped', 'result',
+            ref='native:dispatcher'))
+        planning = flow.flow / 'docs/spec.md'
+        body = planning.read_text()
+        match = re.search(r'```execution-plan-v1\n(.*?)\n```', body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan['plan_version'] += 1
+        plan['steps'][0]['approach'].append('Use the new private helper')
+        extra = copy.deepcopy(plan['steps'][0])
+        extra['id'] = 'staged-private-helper'
+        extra['target'] = {'path': 'helper.py', 'symbol': 'helper', 'operation': 'add'}
+        extra['depends_on'] = [plan['steps'][0]['id']]
+        plan['steps'].append(extra)
+        planning.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                            .replace('Plan Version: 1', 'Plan Version: 2'))
+        flow.flow_git('add', 'docs/spec.md')
+        flow.flow_git('commit', '--only', '-qm', 'revise staged private helper',
+                      '--', 'docs/spec.md')
+        activated = flow.invoke('commit-plan-revision', {
+            'revision_id': report['revision_id'], 'controller_ref': 'task',
+            'write_release': prepared['next_action']['write_release'],
+            'planning_commit': flow.flow_git('rev-parse', 'HEAD')})
+        self.assertEqual(activated['next_action']['operation'], 'plan-revision-activated',
+                         activated)
+        controller_request = copy.deepcopy(flow.request)
+        controller_settings = copy.deepcopy(flow.settings)
+        ticket = flow.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
+        self.accept_planned_group(flow, ticket, ['FP1-01', 'FP1-02', 'staged-private-helper'], {
+            'impl.py': b"print('staged behavior')\n",
+            'helper.py': b"def helper():\n    return 'staged behavior'\n",
+        }, 'staged-helper')
+        flow.request = controller_request
+        flow.settings = controller_settings
+        flow.flow_git('add', 'impl.py', 'helper.py')
+        flow.flow_git('commit', '-qm', 'implement staged private helper')
+        candidate = flow.flow_git('rev-parse', 'HEAD')
+        flow.invoke('observe', flow.observation('idle', 'result', ref='native:dispatcher'))
+        checkpoint = flow.state()['control']['context']['handoff_progress']
+        checks = fixture.fixture.transfer.checks_for(
+            checkpoint['validation_plan']['review_required'], candidate)
+        ready = flow.invoke('control', {'action': 'candidate-ready', 'evidence': {
+            'dispatcher_ref': 'native:dispatcher',
+            'attempt': flow.state()['control']['context']['carrier']['attempt'],
+            'commit': candidate, 'expected_target_head': flow.git('rev-parse', 'main'),
+            'binding': flow.binding, 'plan_digest': checkpoint['plan_digest'],
+            'plan_authority': checkpoint['plan_authority'], 'checks': checks},
+            'receipt': {'adapter': 'fixture', 'call_ref': 'focused-staged',
+                'response_ref': 'focused-staged-result', 'raw': {'checks': checks,
+                    'source_unchanged': True, 'stopped': True,
+                    'dispatcher_ref': 'native:dispatcher'}}})
+        self.assertEqual(flow.state()['control']['context']['handoff_progress']['state'],
+                         'reviewable', ready.get('error'))
+        flow.mark_reviewable = lambda _candidate, fixture_execution=False: {
+            'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
+            'plan_authority': checkpoint['plan_authority'], 'checks': checks}
+        payload = {'artifacts': ['impl.py', 'helper.py'], 'checks': ['staged behavior passed'],
+            'candidate_commit': candidate,
+            'review': {axis: {'candidate': candidate, 'reviewer_ref': axis,
+                              'status': 'accepted'} for axis in ('standards', 'spec')},
+            'verification': {'candidate': candidate}}
+        accepted = flow.accept_current(payload, 'native:dispatcher', fixture_execution=False)
+        self.assertEqual(accepted['status'], 'accepted', accepted)
+        predecessor = flow.state()['accepted']
+        current_scope = flow.state()['scope_authority']['scope']
+        closure = flow.input_for(4, predecessor)
+        for key in ('downstream', 'implementation_paths', 'closure_paths'):
+            closure['scope'][key] = copy.deepcopy(current_scope[key])
+        closure['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
+            closure['scope'])
+        flow.context = flow.context_for(4)
+        started = flow.begin('continuous', closure)
+        self.assertEqual(started['next_action']['operation'], 'invoke-host')
+        stage4 = flow.state()
+        self.assertEqual(stage4['dispatch']['scope_checkpoint_path'], str(flow.checkpoint))
+        self.assertEqual(progress.handoff.verify(stage4['handoff'],
+            checkpoint_path=str(flow.checkpoint)), stage4['handoff'])
 
     def test_public_contract_change_keeps_prepared_barrier_without_activation(self):
         flow = self.new_active_flow()

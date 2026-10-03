@@ -120,7 +120,8 @@ def design_scope(request, saved, payload):
 
 def prepared(request):
     entry.fields(request, {"protocol", "operation", "handoff", "control"}, {"scope_checkpoint_path"})
-    saved = handoff.verify(request["handoff"])
+    saved = handoff.verify(request["handoff"],
+                           checkpoint_path=request.get("scope_checkpoint_path"))
     actor = saved["expected_entry"]["actor"]
     require(actor["role"] in {"controller", "scripted-carrier", "implementation-dispatcher"},
             "role_mismatch", "only the authorized controller/carrier may prepare dispatch")
@@ -265,6 +266,9 @@ def record_for(request):
     elif record["handoff"]["stage"] == 3 and record["handoff"]["role"] == "implementation-dispatcher":
         require(not (request['control']['context'].get('handoff_progress') or {}).get('plan_revisions'),
                 'handoff_not_ready', 'revised standalone delivery needs its original Controller checkpoint pin')
+    if record["handoff"]["stage"] == 4 and "scope_checkpoint_path" in record:
+        handoff.verify_stage_checkpoint_pin(record["handoff"], request["control"]["context"],
+                                            record["scope_checkpoint_path"])
     return record
 
 
