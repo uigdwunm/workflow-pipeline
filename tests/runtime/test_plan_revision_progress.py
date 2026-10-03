@@ -152,6 +152,120 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 "verification_impact": ["V1"], "carry_forward": []},
             "planning_paths": ["docs/spec.md"]}
 
+    def accept_planned_step(self, flow, ticket, identity, relative, content, allocation_id):
+        execution = flow.execution_input()
+        execution["scope"]["owned_paths"] = [relative]
+        step = next(item for item in ticket["plan"]["steps"] if item["id"] == identity)
+        execution["scope"]["protected_paths"] += step["read_only"]
+        execution["authorization"]["scope_digest"] = fixture.fixture.transfer.entry.digest(
+            execution["scope"])
+        execution["semantic"]["plan_refs"] = [progress.execution_plan.step_ref(ticket, step)]
+        prepared = flow.invoke("allocation", {"allocation_id": allocation_id,
+            "operation": "prepare", "handoff": execution})
+        self.assertEqual(prepared["next_action"]["operation"], "invoke-host", prepared)
+        slot = flow.state()["allocations"][allocation_id]
+        bound = flow.invoke("allocation", {"allocation_id": allocation_id,
+            "operation": "bind", "receipt": flow.receipt(slot["record"], ref=allocation_id)})
+        release = bound["next_action"]["result"]["write_release"]
+        (flow.flow / relative).write_bytes(content)
+        result = {"changed_paths": [relative],
+            "file_hashes": {relative: hashlib.sha256(content).hexdigest()},
+            "tests": ["behavior passed"], "write_release": release,
+            "plan_refs": execution["semantic"]["plan_refs"],
+            "plan_authority": flow.state()["control"]["context"]["handoff_progress"]["plan_authority"]}
+        flow.invoke("allocation", {"allocation_id": allocation_id, "operation": "receive",
+            "receipt": flow.receipt(slot["record"], "stopped", "result", ref=allocation_id),
+            "result": {"delivery_id": allocation_id + "-result", "status": "completed",
+                       "payload": result}})
+        delivered = flow.invoke("allocation", {"allocation_id": allocation_id,
+            "operation": "accept", "decision": {"reference": "dispatcher:" + allocation_id}})
+        self.assertEqual(delivered["next_action"]["result"]["status"], "accepted")
+
+    def test_revision_revalidates_reader_after_accepted_input_changes(self):
+        flow = self.new_active_flow(read_dependency=True)
+        ticket = flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0]
+        self.accept_planned_step(flow, ticket, "FP1-01", "impl.py", b"def impl():\n    return 1\n", "first-b")
+        self.accept_planned_step(flow, ticket, "FP1-02", "later.py", b"def later():\n    return 1\n", "old-a")
+        self.accept_planned_step(flow, ticket, "FP1-01", "impl.py", b"def impl():\n    return 2\n", "new-b")
+        report = self.report(flow)
+        report["report"].update(step_ids=["FP1-03"], dependency_impact=["FP1-03"],
+            verification_impact=["V3"], carry_forward=["FP1-01", "FP1-02"])
+        flow.invoke("prepare-plan-revision", report)
+        prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
+        self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
+        source = flow.flow / "docs/spec.md"
+        body = source.read_text()
+        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan["plan_version"] = 2
+        plan["steps"][2]["approach"].append("revise unrelated private implementation")
+        source.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                          .replace("Plan Version: 1", "Plan Version: 2"))
+        flow.flow_git("add", "docs/spec.md")
+        flow.flow_git("commit", "--only", "-qm", "revise independent step", "--", "docs/spec.md")
+        activated = flow.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
+            "controller_ref": "task", "write_release": prepared["next_action"]["write_release"],
+            "planning_commit": flow.flow_git("rev-parse", "HEAD")})
+        self.assertEqual(activated["next_action"]["operation"], "plan-revision-activated", activated)
+        retention = flow.state()["control"]["context"]["handoff_progress"]
+        self.assertEqual({item["paths"][0] for item in retention["carried_results"]}, {"impl.py"})
+        self.assertIn("later.py", retention["revalidation_source"]["pending_paths"])
+
+    def test_consecutive_revisions_keep_the_original_reader_witness(self):
+        flow = self.new_active_flow(read_dependency=True)
+        ticket = flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0]
+        self.accept_planned_step(flow, ticket, "FP1-01", "impl.py", b"def impl():\n    return 1\n", "first-b")
+        self.accept_planned_step(flow, ticket, "FP1-02", "later.py", b"def later():\n    return 1\n", "old-a")
+
+        def revise_independent(number):
+            report = self.report(flow)
+            report["revision_id"] = f"independent-{number}"
+            report["classification"]["reference"] = f"controller:independent-{number}"
+            report["report"].update(step_ids=["FP1-03"], dependency_impact=["FP1-03"],
+                verification_impact=["V3"], carry_forward=["FP1-01", "FP1-02"])
+            flow.invoke("prepare-plan-revision", report)
+            stopped = flow.observation("stopped", "result", ref="native:dispatcher")
+            if number > 1:
+                stopped["lifecycle"]["pages"][0]["response"]["data"].extend(
+                    {"id": ref, "status": {"type": "idle"}} for ref in ("first-b", "old-a"))
+            prepared = flow.invoke("observe", stopped)
+            self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared", prepared)
+            source = flow.flow / "docs/spec.md"
+            body = source.read_text()
+            match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+            plan = json.loads(match.group(1))
+            plan["plan_version"] = number + 1
+            plan["steps"][2]["approach"].append(f"independent revision {number}")
+            source.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                              .replace(f"Plan Version: {number}", f"Plan Version: {number + 1}"))
+            flow.flow_git("add", "docs/spec.md")
+            flow.flow_git("commit", "--only", "-qm", f"independent revision {number}",
+                          "--", "docs/spec.md")
+            activated = flow.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
+                "controller_ref": "task", "write_release": prepared["next_action"]["write_release"],
+                "planning_commit": flow.flow_git("rev-parse", "HEAD")})
+            self.assertEqual(activated["next_action"]["operation"], "plan-revision-activated", activated)
+            return flow.state()["control"]["context"]["handoff_progress"]
+
+        first = revise_independent(1)
+        carried_reader = next(item for item in first["carried_results"] if item["paths"] == ["later.py"])
+        original_input = carried_reader["read_only_fingerprints"]["impl.py"]
+        tampered = copy.deepcopy(flow.state()["control"]["context"])
+        original_reader = next(item for item in
+            tampered["handoff_progress"]["plan_revision_sources"][0]["executions"]
+            if item["agent_ref"] == "old-a")
+        original_reader["git_snapshot"]["files"].pop("impl.py")
+        self.assertIsNone(progress.execution_plan.accepted_read_fingerprints(
+            original_reader, {"impl.py"}))
+        with self.assertRaisesRegex(progress.control.ControlError, "original accepted"):
+            progress.control.validate_context(tampered)
+        self.accept_planned_step(flow, flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0],
+            "FP1-01", "impl.py", b"def impl():\n    return 2\n", "new-b")
+        second = revise_independent(2)
+        self.assertEqual({item["paths"][0] for item in second["carried_results"]}, {"impl.py"})
+        self.assertIn("later.py", second["revalidation_source"]["pending_paths"])
+        self.assertNotEqual(original_input, second["revalidation_source"]["snapshot"]["files"]["impl.py"])
+
     def test_revision_revalidates_independent_readers_and_carries_unrelated_result(self):
         flow = self.new_active_flow(read_dependency=True)
         original = flow.state()["scope_authority"]

@@ -110,6 +110,16 @@ class WorkflowControlTests(unittest.TestCase):
                 [forged], [], None, {'files': {'src/a.py': 'f' * 64}},
                 {'src/a.py': None}, [])
 
+    def test_newer_accepted_result_without_git_witness_cannot_use_older_receipt(self):
+        authority, summary, refs = self.execution_plan_fixture(['src/a.py'])
+        original = {'state': 'accepted', 'stopped': True, 'plan_authority': summary,
+            'plan_refs': refs, 'paths': ['src/a.py'],
+            'git_result_snapshot': {'src/a.py': 'f' * 64}}
+        missing = {**original, 'git_result_snapshot': None}
+        catalog = execution_plan.current_catalog(authority)
+        self.assertEqual(execution_plan.current_accepted_steps(
+            catalog, [original, missing], authority), set())
+
     def execution_plan_fixture(self, allowed_paths, verification_command='CLI test'):
         step = {'id': 'step-a', 'target': {'path': 'src/a.py', 'symbol': 'run', 'operation': 'add'},
                 'capability': 'implement behavior a', 'approach': ['implement run'],
@@ -499,6 +509,8 @@ class WorkflowControlTests(unittest.TestCase):
         accepted = self.call('accept-execution', {'agent_ref': 'executor',
             'file_hashes': {'src/a.py': 'd' * 64}, 'plan_refs': refs,
             'plan_authority': current_plan, 'write_release': 'release-slice'}, received['context'])
+        accepted['context']['handoff_progress']['executions'][-1]['git_result_snapshot'] = {
+            'src/a.py': 'd' * 64}
         self.assertTrue(self.call('candidate-ready', evidence, accepted['context'])['ok'])
         stale_plan = {**evidence, 'plan_authority': {**current_plan, 'revision': 0}}
         self.assertFalse(self.call('candidate-ready', stale_plan, accepted['context'])['ok'])

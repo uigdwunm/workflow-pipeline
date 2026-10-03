@@ -621,6 +621,71 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertFalse(self.call('candidate-ready', evidence(self.git('rev-parse', 'HEAD')),
                                    current)['ok'])
 
+    def candidate_reader_after_input_change(self, input_change):
+        context = self.start_dispatcher(accepted_read_only=True)
+        def accept(current, task, relative, body, read_only=(), executable=False):
+            planned = self.call('plan-execution', self.execution_envelope(
+                current, task, [relative], read_only), current)
+            self.assertTrue(planned['ok'], planned)
+            assigned = self.call('assign', {'task_id': task, 'agent_ref': task,
+                'allocation_digest': planned['allocation_digest']}, planned['context'])
+            self.assertTrue(assigned['ok'], assigned)
+            target = self.repo / relative
+            if body is None:
+                target.unlink()
+            else:
+                target.write_text(body)
+                if executable:
+                    target.chmod(0o755)
+            result = {'agent_ref': task, 'stopped': True, 'changed_paths': [relative],
+                'file_hashes': {relative: None if body is None else
+                    hashlib.sha256(target.read_bytes()).hexdigest()},
+                'tests': ['CLI passed'], 'git_unchanged': True}
+            received = self.call('execution-result', result,
+                                 assigned['context'])
+            self.assertTrue(received['ok'], received)
+            accepted = self.call('accept-execution', {'agent_ref': task, 'file_hashes': {}},
+                                 received['context'])
+            self.assertTrue(accepted['ok'], accepted)
+            return accepted['context']
+
+        context = accept(context, 'first-b', 'a.py', 'first accepted input\n')
+        context = accept(context, 'old-a', 'b.py', 'reader using first input\n', ['a.py'])
+        replacement = {'content': 'second accepted input\n',
+                       'mode': 'first accepted input\n', 'absence': None}[input_change]
+        context = accept(context, 'new-b', 'a.py', replacement,
+                         executable=input_change == 'mode')
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'accepted implementation')
+        progress = context['handoff_progress']
+        target = self.git('rev-parse', progress['binding']['target_branch'])
+        def candidate_evidence():
+            candidate = self.git('rev-parse', 'HEAD')
+            checks = test_workflow_control.checks_for(
+                progress['validation_plan']['review_required'], candidate)
+            return {'dispatcher_ref': 'dispatcher', 'attempt': context['carrier']['attempt'],
+                'commit': candidate, 'expected_target_head': target, 'binding': progress['binding'],
+                'plan_digest': control.digest(progress['validation_plan']),
+                'plan_authority': progress['plan_authority'], 'checks': checks,
+                'source': {'adapter': 'fixture', 'call_ref': 'focused',
+                    'response_ref': 'focused-result', 'raw': {'checks': checks,
+                        'source_unchanged': True, 'stopped': True, 'dispatcher_ref': 'dispatcher'}}}
+        self.assertFalse(self.call('candidate-ready', candidate_evidence(), context)['ok'])
+        context = accept(context, 'new-a', 'b.py', 'reader revalidated with second input\n', ['a.py'])
+        self.git('add', 'b.py')
+        self.git('commit', '-qm', 'fresh accepted reader')
+        progress = context['handoff_progress']
+        self.assertTrue(self.call('candidate-ready', candidate_evidence(), context)['ok'])
+
+    def test_candidate_requires_fresh_reader_after_accepted_input_changes(self):
+        self.candidate_reader_after_input_change('content')
+
+    def test_candidate_requires_fresh_reader_after_accepted_input_mode_changes(self):
+        self.candidate_reader_after_input_change('mode')
+
+    def test_candidate_requires_fresh_reader_after_accepted_input_disappears(self):
+        self.candidate_reader_after_input_change('absence')
+
     def test_candidate_rejects_reverted_out_of_scope_history(self):
         context = self.start_allocations()
         (self.repo/'a.py').write_text('accepted bytes\n')

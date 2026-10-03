@@ -564,18 +564,7 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
     order = catalog["ordered_step_ids"]
     if len(selected) != len(set(selected)) or selected != [step_id for step_id in order if step_id in selected]:
         stale("function group must follow current dependency order without duplicate refs")
-    completed = set()
-    for result in completed_results:
-        if (result.get("state") != "accepted" or result.get("stopped") is not True or
-                result.get("plan_authority") != expected_authority or
-                not isinstance(result.get("git_result_snapshot"), dict)):
-            continue
-        for ref in result.get("plan_refs", []):
-            if not isinstance(ref, dict) or ref.get("step_id") not in steps:
-                continue
-            ticket, step = steps[ref["step_id"]]
-            if ref == step_ref(ticket, step):
-                completed.add(step["id"])
+    completed = current_accepted_steps(catalog, completed_results, authority)
     available = set(completed)
     covered, required_read, verification_commands = set(), set(), set()
     for step_id in selected:
@@ -607,10 +596,12 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
         if not owners:
             stale('implementation read-only input has no accepted owner: ' + relative)
         owner = owners[-1]
-        fingerprint = (owner.get('git_result_snapshot') or {}).get(relative,
-            (owner.get('git_snapshot') or {}).get('files', {}).get(relative))
+        delivered = owner.get('git_result_snapshot') or {}
+        started = (owner.get('git_snapshot') or {}).get('files', {})
+        has_fingerprint = relative in delivered or relative in started
+        fingerprint = delivered[relative] if relative in delivered else started.get(relative)
         if (owner.get('state') != 'accepted' or owner.get('stopped') is not True or
-                owner.get('plan_authority') != expected_authority or fingerprint is None):
+                owner.get('plan_authority') != expected_authority or not has_fingerprint):
             stale('implementation read-only input lacks a current accepted fingerprint: ' + relative)
         read_fingerprints[relative] = fingerprint
     if not verification_commands:
@@ -619,6 +610,64 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
             "ordered_step_ids": selected, "verification_commands": sorted(verification_commands),
             "required_read_only": sorted(required_read), "read_only_fingerprints": read_fingerprints,
             "group_digest": entry.digest([expected_authority, plan_refs])}
+
+
+def accepted_read_fingerprints(result, required):
+    """Return the accepted read witness, never reconstructing it from later bytes."""
+    required = set(required)
+    if not required and 'source_result_digest' not in result:
+        return {}
+    if 'source_result_digest' in result:
+        witness = result.get('read_only_fingerprints')
+    else:
+        snapshot = result.get('git_snapshot')
+        witness = snapshot.get('files') if isinstance(snapshot, dict) else None
+    if not isinstance(witness, dict) or not required <= set(witness):
+        return None
+    if 'source_result_digest' in result and set(witness) != required:
+        return None
+    return {relative: witness[relative] for relative in required}
+
+
+def current_accepted_steps(catalog, results, authority, current_fingerprints=None):
+    """Select each step's newest accepted result and check its original inputs."""
+    expected = {'revision': authority['revision'],
+        'authority_digest': entry.digest(authority), 'plan_digest': catalog['plan_digest'],
+        'contract_digest': catalog['contract_digest']}
+    _, steps = _catalog_steps(catalog)
+    implementation = {item['path'] for item in authority['scope']['downstream']['manifest']
+                      if item['owner'] == 'implementation'}
+    latest_steps, latest_outputs = {}, {}
+    for result in results:
+        if (result.get('state') != 'accepted' or result.get('stopped') is not True or
+                result.get('plan_authority') != expected):
+            continue
+        delivered = result.get('git_result_snapshot')
+        for relative in result.get('paths', []):
+            started = (result.get('git_snapshot') or {}).get('files', {})
+            if not isinstance(delivered, dict):
+                latest_outputs.pop(relative, None)
+            elif relative in delivered:
+                latest_outputs[relative] = delivered[relative]
+            elif relative in started:
+                latest_outputs[relative] = started[relative]
+        for ref in result.get('plan_refs', []):
+            pair = steps.get(ref.get('step_id')) if isinstance(ref, dict) else None
+            if pair is not None and ref == step_ref(*pair):
+                latest_steps[ref['step_id']] = result
+    completed = set()
+    for identity, result in latest_steps.items():
+        if not isinstance(result.get('git_result_snapshot'), dict):
+            continue
+        required = set(steps[identity][1].get('read_only', [])) & implementation
+        witness = accepted_read_fingerprints(result, required)
+        if witness is None:
+            continue
+        expected_inputs = latest_outputs if current_fingerprints is None else current_fingerprints
+        if all(relative in expected_inputs and expected_inputs[relative] == fingerprint
+               for relative, fingerprint in witness.items()):
+            completed.add(identity)
+    return completed
 
 
 def copy_plan_refs(refs):
@@ -729,6 +778,7 @@ def classify_retained_results(old_authority, new_authority, executions, carried_
                'plan_digest': new_catalog['plan_digest'],
                'contract_digest': new_catalog['contract_digest']}
     allowed = set(new_authority['scope']['implementation_paths'])
+    old_implementation = set(old_authority['scope']['implementation_paths'])
     _incomplete(allowed <= set(snapshot['files']) and allowed <= set(baseline_fingerprints),
                 'revision snapshot lacks exact implementation fingerprints')
     # Historical carry is effective until a current writer replaces its path.
@@ -751,11 +801,21 @@ def classify_retained_results(old_authority, new_authority, executions, carried_
                 any(relative not in allowed or relative in impact['paths'] or latest_owner[relative] != index
                     for relative in result['paths'])):
             continue
-        expected = {relative: result['git_result_snapshot'].get(relative,
-                    result.get('git_snapshot', {}).get('files', {}).get(relative))
+        delivered = result['git_result_snapshot']
+        started = result.get('git_snapshot', {}).get('files', {})
+        expected = {relative: delivered[relative] if relative in delivered else started.get(relative)
                     for relative in result['paths']}
-        if any(fingerprint is None or snapshot['files'][relative] != fingerprint
+        if any((relative not in delivered and relative not in started) or
+               snapshot['files'][relative] != fingerprint
                for relative, fingerprint in expected.items()):
+            continue
+        required_reads = {relative for identity in selected
+            for relative in old_steps[identity][1].get('read_only', [])
+            if relative in old_implementation}
+        read_fingerprints = accepted_read_fingerprints(result, required_reads)
+        if read_fingerprints is None or any(
+                snapshot['files'].get(relative) != fingerprint
+                for relative, fingerprint in read_fingerprints.items()):
             continue
         mapped = []
         for old_plan_ref in refs:
@@ -771,6 +831,7 @@ def classify_retained_results(old_authority, new_authority, executions, carried_
             'allocation_digest': result['allocation_digest'], 'paths': copy.deepcopy(result['paths']),
             'file_hashes': copy.deepcopy(result['file_hashes']),
             'git_result_snapshot': copy.deepcopy(result['git_result_snapshot']),
+            'read_only_fingerprints': read_fingerprints,
             'plan_refs': mapped, 'plan_authority': new_ref,
             'source_result_digest': result.get('source_result_digest', entry.digest(original)),
             'source_revision': result.get('source_revision', old_ref['revision'])})

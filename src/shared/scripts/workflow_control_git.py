@@ -685,6 +685,17 @@ def verified_transition(payload):
         history_paths = incoming_changed_paths(repository, evidence['expected_target_head'], evidence['commit']) - excluded
         require(history_paths <= set(progress['allowed_paths']) and not history_paths & set(progress['protected_paths']),
                 'candidate history escapes implementation scope or changes protected sources')
+        if not direct_implementation(progress):
+            from execution_plan import current_catalog, current_accepted_steps
+            catalog = current_catalog(progress['execution_authority'])
+            accepted = progress.get('carried_results', []) + [execution for execution in progress['executions']
+                if execution['state'] == 'accepted' and execution['agent_ref'] is not None]
+            actual_fingerprints = {relative: file_fingerprint(repository, relative)
+                                   for relative in progress['allowed_paths']}
+            completed = current_accepted_steps(catalog, accepted,
+                progress['execution_authority'], actual_fingerprints)
+            require(set(catalog['ordered_step_ids']) <= completed,
+                    'candidate has a stale or unverified accepted implementation read')
         accepted_fingerprints = {p: fingerprint for result in progress.get('carried_results', [])
                                  for p, fingerprint in result['git_result_snapshot'].items()}
         for execution in progress['executions']:

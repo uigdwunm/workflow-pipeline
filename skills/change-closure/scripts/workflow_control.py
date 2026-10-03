@@ -576,13 +576,15 @@ def validate_progress(progress):
             for result in progress['carried_results']:
                 keys(result, {'state', 'stopped', 'agent_ref', 'task_id', 'allocation_digest',
                               'paths', 'file_hashes', 'git_result_snapshot', 'plan_refs',
-                              'plan_authority', 'source_result_digest', 'source_revision'})
+                              'read_only_fingerprints', 'plan_authority',
+                              'source_result_digest', 'source_revision'})
                 require(result['state'] == 'accepted' and result['stopped'] is True and
                         result['plan_authority'] == progress.get('plan_authority') and
                         isinstance(result['source_revision'], int) and
                         result['source_revision'] < progress['plan_authority']['revision'],
                         'carried result lacks current plan authority')
                 paths(result['paths']); hashes(result['file_hashes']); hashes(result['git_result_snapshot'])
+                hashes(result['read_only_fingerprints'])
         if 'revalidation_source' in progress:
             source = progress['revalidation_source']
             keys(source, {'revision_id', 'authority_digest', 'snapshot',
@@ -612,7 +614,16 @@ def validate_progress(progress):
                             item.get('agent_ref') == carried['agent_ref'] and
                             item.get('paths') == carried['paths'] and
                             item.get('file_hashes') == carried['file_hashes'] and
-                            item.get('git_result_snapshot') == carried['git_result_snapshot']
+                            item.get('git_result_snapshot') == carried['git_result_snapshot'] and
+                            isinstance(item.get('git_snapshot'), dict) and
+                            set(carried['read_only_fingerprints']) ==
+                                set(item.get('read_only', [])) &
+                                set(item['git_snapshot'].get('files', {})) and
+                            carried['read_only_fingerprints'] == {
+                                relative: item['git_snapshot']['files'].get(relative)
+                                for relative in carried['read_only_fingerprints']} and
+                            set(carried['read_only_fingerprints']) <=
+                                set(item['git_snapshot'].get('files', {}))
                             for item in originals)
                         for carried in progress['carried_results']),
                     'carried result lacks an original accepted Execution Agent receipt')
@@ -1554,25 +1565,13 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             require('direct_provenance' not in evidence, 'full candidates require execution provenance')
             require(accepted, 'Stage-3 candidate requires an accepted Execution Agent')
             authority = progress['execution_authority']
-            from execution_plan import current_catalog, step_ref
+            from execution_plan import current_catalog, current_accepted_steps
             catalog = current_catalog(authority)
-            steps = {step['id']: (ticket, step) for ticket in catalog['tickets']
-                     for step in ticket['plan']['steps'] + ticket['plan']['artifact_steps']}
-            require(len(steps) == len(catalog['ordered_step_ids']) and
-                    set(steps) == set(catalog['ordered_step_ids']),
-                    'candidate function catalog has ambiguous step identities')
-            completed = set()
             for result in accepted:
                 require(result.get('plan_authority') == progress['plan_authority'] and
                         isinstance(result.get('plan_refs'), list) and result['plan_refs'],
                         'candidate has an accepted result without current function plan refs')
-                for ref in result['plan_refs']:
-                    pair = steps.get(ref.get('step_id')) if isinstance(ref, dict) else None
-                    require(pair is not None, 'candidate has a retired function step ref')
-                    ticket, step = pair
-                    require(ref == step_ref(ticket, step),
-                        'candidate accepted result names a historical function step')
-                    completed.add(step['id'])
+            completed = current_accepted_steps(catalog, accepted, authority)
             missing = [identity for identity in catalog['ordered_step_ids'] if identity not in completed]
             require(not missing, 'candidate requires an accepted result for current function step: ' +
                     missing[0] if missing else 'candidate function steps are complete')
