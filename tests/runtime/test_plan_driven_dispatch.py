@@ -249,6 +249,8 @@ class PlanDrivenDispatchTests(unittest.TestCase):
     def test_current_group_from_activated_authority_prepares_with_generated_map(self):
         flow = self.active_flow(generated=True)
         request = self.execution_request(flow)
+        request['scope']['owned_paths'] = ['generated/impl_copy.py', 'impl.py']
+        request['authorization']['scope_digest'] = entry.digest(request['scope'])
         response = flow.invoke("allocation", {"allocation_id": "group", "operation": "prepare", "handoff": request})
         self.assertIsNotNone(response.get("next_action"), response)
         self.assertEqual(response["next_action"]["operation"], "invoke-host", response)
@@ -282,6 +284,174 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         accepted = flow.invoke("allocation", {"allocation_id": "group", "operation": "accept",
             "decision": {"reference": "dispatcher:accepted-current-group"}})
         self.assertEqual(accepted["next_action"]["result"]["status"], "accepted", accepted)
+        authority = flow.state()['scope_authority']
+        execution = flow.state()['control']['context']['handoff_progress']['executions'][0]
+        self.assertEqual(execution_plan.current_accepted_steps(
+            authority['execution_plan']['catalog'], [execution], authority),
+            set(authority['execution_plan']['catalog']['ordered_step_ids']))
+
+    def test_multifile_group_cannot_release_with_only_one_target_owned(self):
+        flow = self.active_flow(read_dependency=True)
+        request = self.execution_request(flow)
+        refs = [ref for ref in request['semantic']['plan_refs']
+                if ref['step_id'] in {'FP1-01', 'FP1-03'}]
+        self.assertEqual([ref['step_id'] for ref in refs], ['FP1-01', 'FP1-03'])
+        request['semantic']['plan_refs'] = refs
+        with self.assertRaises(entry.PreparationError) as error:
+            handoff.prepare(request)
+        self.assertEqual(error.exception.code, 'execution_plan_stale')
+
+        prepared = flow.invoke('allocation', {'allocation_id': 'incomplete-group',
+                                             'operation': 'prepare', 'handoff': request})
+        self.assertEqual(prepared['status'], 'blocked', prepared)
+        self.assertEqual(prepared['error']['code'], 'execution_plan_stale')
+        self.assertIsNone(prepared['next_action'])
+
+        context = flow.state()['control']['context']
+        authority = context['handoff_progress']['plan_authority']
+        evidence = {'task_id': 'incomplete-group', 'paths': ['impl.py'],
+                    'read_only': request['scope']['protected_paths'],
+                    'behavior': 'approved behavior',
+                    'tests': ['python3 scripts/run_tests.py --test-file tests/runtime/test_plan_driven_dispatch.py'],
+                    'git_operations': [], 'configuration': request['configuration'],
+                    'plan_refs': refs, 'plan_authority': authority,
+                    'group_digest': entry.digest([authority, refs])}
+        with self.assertRaises(entry.PreparationError) as error:
+            control.transition({'schema_version': context['schema_version'],
+                'actor_ref': context['controller_ref'], 'context': context,
+                'action': 'plan-execution', 'evidence': evidence})
+        self.assertEqual(error.exception.code, 'execution_plan_stale')
+
+    def test_old_accepted_owner_cannot_complete_an_unowned_step_ref(self):
+        flow = self.active_flow(read_dependency=True)
+        authority = flow.state()['scope_authority']
+        catalog = authority['execution_plan']['catalog']
+        ticket = catalog['tickets'][0]
+        revision_fixture.PlanRevisionProgressTests.accept_planned_step(
+            self, flow, ticket, 'FP1-01', 'impl.py', b'def run():\n    return 1\n',
+            'single-owner')
+        accepted = copy.deepcopy(flow.state()['control']['context']['handoff_progress']['executions'][0])
+        owned_completion = execution_plan.current_accepted_steps(catalog, [accepted], authority)
+        self.assertIn('FP1-01', owned_completion)
+        missing_step = next(step for step in ticket['plan']['steps'] if step['id'] == 'FP1-03')
+        accepted['plan_refs'].append(execution_plan.step_ref(ticket, missing_step))
+        completed = execution_plan.current_accepted_steps(catalog, [accepted], authority)
+        self.assertNotIn('FP1-03', completed)
+
+    def test_complete_multifile_group_owns_both_final_fingerprints(self):
+        flow = self.active_flow(read_dependency=True)
+        request = self.execution_request(flow)
+        request['semantic']['plan_refs'] = [ref for ref in request['semantic']['plan_refs']
+                                            if ref['step_id'] in {'FP1-01', 'FP1-03'}]
+        request['scope']['owned_paths'] = ['impl.py', 'independent.py']
+        request['authorization']['scope_digest'] = entry.digest(request['scope'])
+        prepared = flow.invoke('allocation', {'allocation_id': 'complete-group',
+                                             'operation': 'prepare', 'handoff': request})
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+        slot = flow.state()['allocations']['complete-group']
+        bound = flow.invoke('allocation', {'allocation_id': 'complete-group', 'operation': 'bind',
+            'receipt': flow.receipt(slot['record'], ref='native:complete-group')})
+        release = bound['next_action']['result']['write_release']
+        contents = {'impl.py': b'def run():\n    return 1\n',
+                    'independent.py': b'def independent():\n    return 2\n'}
+        for relative, body in contents.items():
+            (flow.flow / relative).write_bytes(body)
+        slot = flow.state()['allocations']['complete-group']
+        result = {'changed_paths': sorted(contents),
+                  'file_hashes': {relative: hashlib.sha256(body).hexdigest()
+                                  for relative, body in contents.items()},
+                  'tests': ['two public behaviors passed'], 'write_release': release,
+                  'plan_refs': request['semantic']['plan_refs'],
+                  'plan_authority': flow.state()['control']['context']['handoff_progress']['plan_authority']}
+        flow.invoke('allocation', {'allocation_id': 'complete-group', 'operation': 'receive',
+            'receipt': flow.receipt(slot['record'], 'stopped', 'result', ref='native:complete-group'),
+            'result': {'delivery_id': 'complete-group-result', 'status': 'completed',
+                       'payload': result}})
+        accepted = flow.invoke('allocation', {'allocation_id': 'complete-group', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:complete-group'}})
+        self.assertEqual(accepted['next_action']['result']['status'], 'accepted')
+        authority = flow.state()['scope_authority']
+        execution = flow.state()['control']['context']['handoff_progress']['executions'][0]
+        actual = {relative: progress.control_git.file_fingerprint(flow.flow, relative)
+                  for relative in contents}
+        self.assertEqual(execution_plan.accepted_owned_fingerprints(execution), actual)
+        self.assertEqual(execution_plan.current_accepted_steps(
+            authority['execution_plan']['catalog'], [execution], authority, actual),
+            {'FP1-01', 'FP1-03'})
+
+    def test_unowned_accepted_ref_cannot_unlock_a_dependent_group(self):
+        flow = revision_fixture.PlanRevisionProgressTests.new_active_flow(
+            self, read_dependency=True, grouped_reads=True)
+        authority = flow.state()['scope_authority']
+        catalog = authority['execution_plan']['catalog']
+        ticket = catalog['tickets'][0]
+        for identity, relative, body in (
+                ('FP1-01', 'impl.py', b'def run():\n    return 1\n'),
+                ('FP1-02', 'later.py', b'def later():\n    return 2\n')):
+            revision_fixture.PlanRevisionProgressTests.accept_planned_step(
+                self, flow, ticket, identity, relative, body, 'owner-' + identity)
+        results = copy.deepcopy(flow.state()['control']['context']['handoff_progress']['executions'])
+        independent = next(step for step in ticket['plan']['steps'] if step['id'] == 'FP1-03')
+        results[-1]['plan_refs'].append(execution_plan.step_ref(ticket, independent))
+        downstream = next(step for step in ticket['plan']['steps'] if step['id'] == 'FP1-04')
+        with self.assertRaises(entry.PreparationError) as error:
+            execution_plan.validate_plan_refs(catalog,
+                [execution_plan.step_ref(ticket, downstream)], ['downstream.py'], [],
+                results, authority)
+        self.assertEqual(error.exception.code, 'execution_plan_stale')
+
+    def test_fake_accepted_ref_cannot_make_git_candidate_ready(self):
+        flow = progress_fixture.ProgressTests(methodName='runTest')
+        flow.setUp()
+        self.addCleanup(flow.doCleanups)
+        request = flow.input_for(3)
+        scope = request['scope']
+        scope['implementation_paths'] = scope['owned_paths'] = ['helper.py', 'impl.py']
+        helper_manifest = copy.deepcopy(next(item for item in scope['downstream']['manifest']
+                                             if item['path'] == 'impl.py'))
+        helper_manifest['path'] = 'helper.py'
+        scope['downstream']['manifest'].append(helper_manifest)
+        scope['downstream']['manifest'].sort(key=lambda item: item['path'])
+        request['authorization']['scope_digest'] = entry.digest(scope)
+        plan = request['semantic']['inline_plan']
+        helper_step = copy.deepcopy(plan['steps'][0])
+        helper_step['id'] = 'inline-helper'
+        helper_step['target'] = {'path': 'helper.py', 'symbol': 'helper', 'operation': 'add'}
+        helper_step['read_only'] = []
+        plan['steps'].append(helper_step)
+        flow.context = flow.context_for(3)
+        flow.begin('continuous', request)
+        flow.invoke('observe', flow.observation(ref='native:dispatcher'))
+        (flow.flow / 'impl.py').write_bytes(b'def run():\n    return 1\n')
+        flow.flow_git('add', 'impl.py')
+        flow.flow_git('commit', '-qm', 'legacy incomplete group')
+        candidate = flow.flow_git('rev-parse', 'HEAD')
+        outer = progress.read_record(flow.checkpoint)
+        context = outer[progress.KEY]['control']['context']
+        flow.fixture_accepted_execution(context, candidate)
+        execution = context['handoff_progress']['executions'][0]
+        authority = context['handoff_progress']['execution_authority']
+        ticket = authority['execution_plan']['catalog']['tickets'][0]
+        execution['plan_refs'].append(execution_plan.step_ref(ticket, helper_step))
+        execution['group_digest'] = entry.digest([execution['plan_authority'], execution['plan_refs']])
+        checkpoint = context['handoff_progress']
+        checks = transfer_fixture.checks_for(checkpoint['validation_plan']['review_required'], candidate)
+        evidence = {
+            'dispatcher_ref': 'native:dispatcher',
+            'attempt': context['carrier']['attempt'],
+            'commit': candidate, 'expected_target_head': flow.git('rev-parse', 'main'),
+            'binding': flow.binding, 'plan_digest': checkpoint['plan_digest'],
+            'plan_authority': checkpoint['plan_authority'], 'checks': checks,
+            'source': {'adapter': 'fixture', 'call_ref': 'focused-incomplete',
+                'response_ref': 'focused-incomplete-result', 'raw': {'checks': checks,
+                    'source_unchanged': True, 'stopped': True,
+                    'dispatcher_ref': 'native:dispatcher'}}}
+        with self.assertRaises(control.ControlError) as error:
+            progress.control_git.verified_transition({'repository': str(flow.flow),
+                'baseline': request['scope']['baseline'], 'request': {
+                    'schema_version': context['schema_version'], 'actor_ref': 'task',
+                    'context': context, 'action': 'candidate-ready', 'evidence': evidence}})
+        self.assertIn('current function step', str(error.exception))
 
     def test_later_native_allocation_reads_accepted_implementation_file(self):
         flow = self.active_flow(read_dependency=True)
@@ -470,6 +640,8 @@ class PlanDrivenDispatchTests(unittest.TestCase):
             dispatch.record_for({'record': handoff.seal(wrong_record),
                                  'control': copy.deepcopy(dispatcher_port['control'])})
         request = self.execution_request(flow)
+        request['scope']['owned_paths'] = ['generated/impl_copy.py', 'generated/second.py', 'impl.py']
+        request['authorization']['scope_digest'] = entry.digest(request['scope'])
         saved = handoff.handle(request)
         dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "prepare", "handoff": saved,
                          "control": {"context": flow.state()["control"]["context"], "discussion": None}})
@@ -495,9 +667,15 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         self.assertEqual(stale.exception.code, 'execution_plan_stale')
         implementation = b"print('revised staged behavior')\n"
         (flow.flow / 'impl.py').write_bytes(implementation)
+        for relative in ('generated/impl_copy.py', 'generated/second.py'):
+            generated = flow.flow / relative
+            generated.parent.mkdir(parents=True, exist_ok=True)
+            generated.write_bytes(implementation)
         slot = flow.state()['allocations']['current-group']
-        result_payload = {'changed_paths': ['impl.py'],
-            'file_hashes': {'impl.py': hashlib.sha256(implementation).hexdigest()},
+        owned_paths = ['generated/impl_copy.py', 'generated/second.py', 'impl.py']
+        result_payload = {'changed_paths': owned_paths,
+            'file_hashes': {relative: hashlib.sha256(implementation).hexdigest()
+                            for relative in owned_paths},
             'tests': ['revised behavior passed'],
             'write_release': bound['next_action']['result']['write_release'],
             'plan_refs': request['semantic']['plan_refs'],
@@ -511,7 +689,7 @@ class PlanDrivenDispatchTests(unittest.TestCase):
             'decision': {'reference': 'dispatcher:revised-group'}})
         self.assertEqual(accepted_group['next_action']['result']['status'], 'accepted', accepted_group)
         flow.request, flow.settings = controller_request, controller_settings
-        flow.flow_git('add', 'impl.py')
+        flow.flow_git('add', *owned_paths)
         flow.flow_git('commit', '-qm', 'revised staged implementation')
         candidate = flow.flow_git('rev-parse', 'HEAD')
 

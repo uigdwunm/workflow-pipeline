@@ -586,7 +586,7 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
         stale("function group must follow current dependency order without duplicate refs")
     completed = current_accepted_steps(catalog, completed_results, authority)
     available = set(completed)
-    covered, required_read, verification_commands = set(), set(), set()
+    required_read, verification_commands = set(), set()
     for step_id in selected:
         ticket, step = steps[step_id]
         blockers = {item["id"] for other in ticket["plan"]["blocked_by"]
@@ -594,19 +594,15 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
         if not set(step.get("depends_on", [])) | blockers <= available:
             stale("function dependency is not completed or earlier in this group: " + step_id)
         available.add(step_id)
-        covered.add(step["target"]["path"] if "target" in step else step["path"])
         required_read.update(step.get("read_only", []))
         verification_ids = set(step["verification_refs"])
         for verification in ticket["plan"]["verifications"]:
             if verification["id"] in verification_ids:
                 verification_commands.update(verification["commands"])
     manifest = authority["scope"]["downstream"]["manifest"]
-    for item in manifest:
-        if (item["owner"] == "implementation" and item["kind"] == "generated" and
-                any(source in covered for source in item["source_paths"])):
-            covered.add(item["path"])
-    if not set(assigned_paths) <= covered or not required_read <= set(read_only):
-        stale("assigned files or read-only inputs lack selected plan coverage")
+    covered = selected_owned_paths(steps, selected, manifest)
+    if set(assigned_paths) != covered or not required_read <= set(read_only):
+        stale("assigned files must own every selected target and generated output")
     implementation = {item['path'] for item in manifest if item['owner'] == 'implementation'}
     if set(read_only) & implementation != required_read & implementation:
         stale('implementation read-only inputs must match selected plan refs')
@@ -628,6 +624,15 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
             "ordered_step_ids": selected, "verification_commands": sorted(verification_commands),
             "required_read_only": sorted(required_read), "read_only_fingerprints": read_fingerprints,
             "group_digest": entry.digest([expected_authority, plan_refs])}
+
+
+def selected_owned_paths(steps, selected, manifest):
+    """Resolve the complete file ownership of selected function and artifact steps."""
+    targets = {steps[identity][1].get('target', steps[identity][1])['path']
+               for identity in selected}
+    return targets | {item['path'] for item in manifest
+        if item['owner'] == 'implementation' and item['kind'] == 'generated' and
+        any(source in targets for source in item['source_paths'])}
 
 
 def accepted_read_fingerprints(result, required):
@@ -697,7 +702,8 @@ def current_accepted_steps(catalog, results, authority, current_fingerprints=Non
         'authority_digest': entry.digest(authority), 'plan_digest': catalog['plan_digest'],
         'contract_digest': catalog['contract_digest']}
     _, steps = _catalog_steps(catalog)
-    implementation = {item['path'] for item in authority['scope']['downstream']['manifest']
+    manifest = authority['scope']['downstream']['manifest']
+    implementation = {item['path'] for item in manifest
                       if item['owner'] == 'implementation'}
     latest_steps, latest_outputs = {}, {}
     for result in results:
@@ -727,6 +733,10 @@ def current_accepted_steps(catalog, results, authority, current_fingerprints=Non
             [identity for identity in catalog['ordered_step_ids'] if identity in selected])
         witness = None
         if valid_refs:
+            required_owned = selected_owned_paths(steps, selected, manifest)
+            valid_refs = (owned is not None and set(owned) == required_owned and
+                          set(result['paths']) == required_owned)
+        if valid_refs:
             required = {relative for identity in selected
                         for relative in steps[identity][1].get('read_only', [])
                         if relative in implementation}
@@ -735,11 +745,15 @@ def current_accepted_steps(catalog, results, authority, current_fingerprints=Non
             latest_steps[identity] = (result, witness)
     completed = set()
     for identity, (result, witness) in latest_steps.items():
-        if witness is None or accepted_owned_fingerprints(result) is None:
+        owned = accepted_owned_fingerprints(result)
+        if witness is None or owned is None:
             continue
         expected_inputs = latest_outputs if current_fingerprints is None else current_fingerprints
-        if all(relative in expected_inputs and expected_inputs[relative] == fingerprint
-               for relative, fingerprint in witness.items()):
+        required_owned = selected_owned_paths(steps, [identity], manifest)
+        if (all(relative in expected_inputs and expected_inputs[relative] == fingerprint
+                for relative, fingerprint in witness.items()) and
+                all(expected_inputs.get(relative) == owned.get(relative)
+                    for relative in required_owned)):
             completed.add(identity)
     return completed
 
@@ -870,8 +884,10 @@ def classify_retained_results(old_authority, new_authority, executions, carried_
         if not refs or result.get('plan_authority') != old_ref:
             continue
         selected = [ref['step_id'] for ref in refs]
-        if (any(identity in impact['impacted_step_ids'] or identity not in new_steps
+        if (any(identity in impact['impacted_step_ids'] or identity not in old_steps or identity not in new_steps
                 for identity in selected) or
+                set(result['paths']) != selected_owned_paths(
+                    old_steps, selected, old_authority['scope']['downstream']['manifest']) or
                 any(relative not in allowed or relative in impact['paths'] or latest_owner[relative] != index
                     for relative in result['paths'])):
             continue

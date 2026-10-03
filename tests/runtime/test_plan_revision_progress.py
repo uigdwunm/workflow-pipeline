@@ -1335,6 +1335,13 @@ class PlanRevisionProgressTests(unittest.TestCase):
         accepted = flow.accept_current(payload, 'native:dispatcher', fixture_execution=False)
         self.assertEqual(accepted['status'], 'accepted', accepted)
         self.assertEqual(flow.state()['accepted']['payload']['verification']['validation_plan'], validation)
+        predecessor = flow.state()['accepted']
+        closure = flow.input_for(4, predecessor)
+        current_scope = flow.state()['scope_authority']['scope']
+        for key in ('downstream', 'implementation_paths', 'closure_paths'):
+            closure['scope'][key] = copy.deepcopy(current_scope[key])
+        closure['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(closure['scope'])
+        self.assertEqual(progress.handoff.prepare(closure)['stage'], 4)
 
     def test_public_contract_change_keeps_prepared_barrier_without_activation(self):
         flow = self.new_active_flow()
