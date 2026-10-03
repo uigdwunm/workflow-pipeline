@@ -764,6 +764,176 @@ class PlanRevisionProgressTests(unittest.TestCase):
     def test_capture_integration_accepts_current_planning_and_retained_note_only(self):
         self.integration_after_plan_revision(retained_note=True)
 
+    def test_final_integration_snapshot_supersedes_carried_and_revision_bytes(self):
+        flow = self.new_active_flow(read_dependency=True)
+        controller_thread = flow.state()["handoff"]["expected_entry"]["actor"]["thread_id"]
+        ticket = flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0]
+        for identity, relative in (("FP1-01", "impl.py"), ("FP1-02", "later.py"),
+                                   ("FP1-03", "independent.py"),
+                                   ("FP1-04", "downstream.py"), ("FP1-05", "reader.py")):
+            self.accept_planned_step(flow, ticket, identity, relative,
+                ("def " + relative.removesuffix(".py") + "():\n    return 1\n").encode(),
+                "accepted-" + identity)
+        report = self.report(flow)
+        report["report"].update(step_ids=["FP1-02"],
+            dependency_impact=["FP1-02", "FP1-04", "FP1-05"],
+            verification_impact=["V2"], carry_forward=["FP1-01", "FP1-03"])
+        flow.invoke("prepare-plan-revision", report)
+        prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
+        self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
+        planning = flow.flow / "docs/spec.md"
+        body = planning.read_text()
+        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan["plan_version"] = 2
+        plan["steps"][1]["approach"].append("revise private implementation")
+        planning.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                            .replace("Plan Version: 1", "Plan Version: 2"))
+        flow.flow_git("add", "docs/spec.md")
+        flow.flow_git("commit", "--only", "-qm", "revise plan before final integration",
+                      "--", "docs/spec.md")
+        flow.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
+            "controller_ref": "task", "write_release": prepared["next_action"]["write_release"],
+            "planning_commit": flow.flow_git("rev-parse", "HEAD")})
+        ticket = flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0]
+        progress_before = flow.state()["control"]["context"]["handoff_progress"]
+        self.assertTrue(progress_before["carried_results"])
+        self.assertTrue(progress_before["revalidation_source"]["pending_paths"])
+        original_carry = copy.deepcopy(progress_before["carried_results"])
+        original_revision = copy.deepcopy(progress_before["plan_revisions"])
+        original_source = copy.deepcopy(progress_before["revalidation_source"])
+        original_receipts = copy.deepcopy(progress_before["plan_revision_sources"])
+        observed = flow.observation
+
+        def with_historical_agents(*args, **kwargs):
+            evidence = observed(*args, **kwargs)
+            if "lifecycle" in evidence:
+                known = {item["id"] for item in evidence["lifecycle"]["pages"][0]["response"]["data"]}
+                evidence["lifecycle"]["pages"][0]["response"]["data"].extend(
+                    {"id": ref, "status": {"type": "idle"}}
+                    for ref in {item["agent_ref"] for source in original_receipts
+                                for item in source["executions"] if item["agent_ref"]} - known)
+            return evidence
+
+        for identity, relative in (("FP1-02", "later.py"),
+                                   ("FP1-04", "downstream.py"), ("FP1-05", "reader.py")):
+            self.accept_planned_step(flow, ticket, identity, relative,
+                ("def " + relative.removesuffix(".py") + "():\n    return 2\n").encode(),
+                "revalidated-" + identity)
+
+        flow.flow_git("add", "impl.py", "later.py", "independent.py", "downstream.py", "reader.py")
+        flow.flow_git("commit", "-qm", "accepted plan revision implementation")
+        accepted = flow.flow_git("rev-parse", "HEAD")
+        flow.settings["thread_id"] = controller_thread
+        flow.request["host"].update(thread_id=controller_thread, role="controller", source_ref=None)
+        flow.request["host"].pop("actor_ref", None)
+        payload = {"artifacts": ["impl.py", "later.py", "independent.py", "downstream.py", "reader.py"],
+            "checks": ["current plan verified"], "candidate_commit": accepted,
+            "review": {axis: {"candidate": accepted, "reviewer_ref": axis, "status": "accepted"}
+                       for axis in ("standards", "spec")},
+            "verification": {"candidate": accepted}}
+        with patch.object(flow, "observation", side_effect=with_historical_agents):
+            stage3 = flow.accept_current(payload, "native:dispatcher", fixture_execution=False)
+        self.assertEqual(stage3["status"], "accepted", stage3)
+        predecessor = flow.state()["accepted"]
+        (flow.root / "impl.py").write_text("def impl():\n    return 99\n")
+        (flow.root / "later.py").write_text("def later():\n    return 99\n")
+        flow.git("add", "impl.py", "later.py")
+        flow.git("commit", "-qm", "parallel target changes implementation")
+        target = flow.git("rev-parse", "main")
+        flow.context = flow.context_for(4)
+        flow.begin("continuous", flow.input_for(4, predecessor))
+        flow.invoke("observe", flow.observation(ref="native:closure"))
+        observed = flow.observation("stopped", "result", ref="native:closure")
+        observed["closure"] = {"ref": "native:closure", "candidate": accepted,
+            "merge": None, "ancestor_verified": False, "changed_paths": [],
+            "binding": flow.binding, "checks": [], "worktree_removed": False,
+            "branch_removed": False, "disposition": "deleted", "disposition_verified": False,
+            "implementation_problem": "target changed implementation bytes"}
+        blocked = flow.invoke("observe", observed)
+        self.assertEqual(blocked["next_action"]["operation"], "implementation-recovery")
+        recovery = flow.invoke("implementation-recovery", {"reference": "controller:target-race",
+            "closure_digest": flow.state()["handoff"]["digest"]})
+        self.assertEqual(flow.state()["stage"], 3, recovery)
+        flow.invoke("observe", flow.observation("idle", "result", ref="native:dispatcher"))
+        merge = subprocess.run(["git", "-C", str(flow.flow), "merge", "--no-edit", target],
+                               capture_output=True, text=True)
+        self.assertNotEqual(merge.returncode, 0, merge.stdout)
+        (flow.flow / "impl.py").write_bytes(b"def impl():\n    return 3\n")
+        (flow.flow / "later.py").write_bytes(b"def later():\n    return 4\n")
+        flow.flow_git("add", "impl.py", "later.py")
+        flow.flow_git("commit", "-qm", "resolve final integration")
+        integrated_candidate = flow.flow_git("rev-parse", "HEAD")
+        flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
+        captured = flow.invoke("control", {"action": "capture-integration",
+            "evidence": {"reference": "controller:target-race"},
+            "receipt": {"controller_ref": "task", "reference": "controller:target-race"}})
+        self.assertNotEqual(captured["status"], "blocked", captured)
+        current_progress = flow.state()["control"]["context"]["handoff_progress"]
+        source = current_progress["integration_source"]
+        self.assertEqual(current_progress["carried_results"], original_carry)
+        self.assertEqual(current_progress["plan_revisions"], original_revision)
+        self.assertEqual(current_progress["revalidation_source"], original_source)
+        self.assertEqual(current_progress["plan_revision_sources"], original_receipts)
+        self.assertTrue({"impl.py", "later.py"} <= set(source["pending_paths"]))
+        carried_impl = next(result for result in original_carry if "impl.py" in result["paths"])
+        self.assertNotEqual(source["snapshot"]["files"]["impl.py"],
+                            carried_impl["owned_final_fingerprints"]["impl.py"])
+        self.assertNotEqual(source["snapshot"]["files"]["later.py"],
+                            original_source["snapshot"]["files"]["later.py"])
+        self.assertEqual(source["snapshot"]["files"]["impl.py"],
+                         progress.control_git.file_fingerprint(flow.flow, "impl.py"))
+
+        def reaccept(identity, relative):
+            step = next(item for item in ticket["plan"]["steps"] if item["id"] == identity)
+            with patch.dict(flow.settings), patch.dict(flow.request["host"]):
+                execution = flow.execution_input()
+                execution["scope"]["owned_paths"] = [relative]
+                execution["scope"]["protected_paths"] += step["read_only"]
+                execution["authorization"]["scope_digest"] = fixture.fixture.transfer.entry.digest(
+                    execution["scope"])
+                execution["semantic"].update(
+                    plan_refs=[progress.execution_plan.step_ref(ticket, step)],
+                    adopt_paths=[relative], adoption_snapshot_digest=source["snapshot_digest"])
+                allocation_id = "integrated-" + identity
+                prepared = flow.invoke("allocation", {"allocation_id": allocation_id,
+                    "operation": "prepare", "handoff": execution})
+                self.assertEqual(prepared["next_action"]["operation"], "invoke-host", prepared)
+                slot = flow.state()["allocations"][allocation_id]
+                bound = flow.invoke("allocation", {"allocation_id": allocation_id,
+                    "operation": "bind", "receipt": flow.receipt(slot["record"], ref=allocation_id)})
+                release = bound["next_action"]["result"]["write_release"]
+                content = (flow.flow / relative).read_bytes()
+                result = {"changed_paths": [], "adopted_paths": [relative],
+                    "file_hashes": {relative: hashlib.sha256(content).hexdigest()},
+                    "tests": ["integrated behavior passed"], "write_release": release,
+                    "plan_refs": execution["semantic"]["plan_refs"],
+                    "plan_authority": flow.state()["control"]["context"]["handoff_progress"]["plan_authority"]}
+                flow.invoke("allocation", {"allocation_id": allocation_id, "operation": "receive",
+                    "receipt": flow.receipt(slot["record"], "stopped", "result", ref=allocation_id),
+                    "result": {"delivery_id": allocation_id + "-result", "status": "completed",
+                               "payload": result}})
+                accepted_result = flow.invoke("allocation", {"allocation_id": allocation_id,
+                    "operation": "accept", "decision": {"reference": "dispatcher:" + allocation_id}})
+                self.assertEqual(accepted_result["next_action"]["result"]["status"], "accepted")
+
+        for identity, relative in (("FP1-01", "impl.py"), ("FP1-02", "later.py"),
+                                   ("FP1-03", "independent.py"),
+                                   ("FP1-04", "downstream.py"), ("FP1-05", "reader.py")):
+            reaccept(identity, relative)
+        final_progress = flow.state()["control"]["context"]["handoff_progress"]
+        self.assertEqual(final_progress["carried_results"], original_carry)
+        self.assertEqual(final_progress["revalidation_source"], original_source)
+        self.assertEqual(final_progress["plan_revision_sources"], original_receipts)
+        payload["candidate_commit"] = integrated_candidate
+        payload["review"] = {axis: {"candidate": integrated_candidate,
+            "reviewer_ref": "integrated-" + axis, "status": "accepted"}
+            for axis in ("standards", "spec")}
+        with patch.object(flow, "observation", side_effect=with_historical_agents):
+            replaced = flow.accept_current(payload, "native:dispatcher", fixture_execution=False)
+        self.assertEqual(replaced["status"], "accepted", replaced)
+        self.assertNotEqual(flow.state()["accepted"]["digest"], predecessor["digest"])
+
     def test_artifact_only_and_mixed_reports_revise_at_controller_git_boundary(self):
         for mode in ("only", "mixed"):
             with self.subTest(mode=mode):

@@ -16,7 +16,7 @@ import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from workflow_control import ControlError, MAX_BYTES, keys, path, paths, require, transition, decode_json, validate_context, execution_record, direct_implementation, adoption_source, implementation_policy
+from workflow_control import ControlError, MAX_BYTES, keys, path, paths, require, transition, decode_json, validate_context, execution_record, direct_implementation, adoption_source, implementation_policy, current_accepted_results
 
 
 def git(repository, *arguments):
@@ -136,8 +136,7 @@ def verify_plan_read_only(repository, progress, allocation):
     from execution_plan import current_catalog, validate_plan_refs
     authority = progress['execution_authority']
     group = validate_plan_refs(current_catalog(authority), allocation['plan_refs'],
-        allocation['paths'], allocation['read_only'],
-        progress.get('carried_results', []) + progress['executions'], authority)
+        allocation['paths'], allocation['read_only'], current_accepted_results(progress), authority)
     require(all(file_fingerprint(repository, relative) == fingerprint
                 for relative, fingerprint in group['read_only_fingerprints'].items()),
             'accepted implementation read-only input changed')
@@ -298,7 +297,7 @@ def recovery_snapshot(repository, progress):
         return actual, {'designer': sorted(changed)}, []
     owners, accepted_fingerprints, revalidate = {}, {}, []
     from execution_plan import accepted_owned_fingerprints
-    for result in progress.get('carried_results', []):
+    for result in ([] if progress.get('integration_source') is not None else progress.get('carried_results', [])):
         fingerprints = accepted_owned_fingerprints(result)
         require(fingerprints is not None, 'carried execution lacks verified owned fingerprints')
         for relative, fingerprint in fingerprints.items():
@@ -435,18 +434,20 @@ def verify_execution_start(repository, progress):
     expected = {p: committed_fingerprint(repository, baseline, p)
                 for p in progress['allowed_paths']}
     if progress.get('integration_source') is not None:
-        expected = {p: progress['integration_source']['snapshot']['files'][p] for p in progress['allowed_paths']}
-    revision_source = progress.get('revalidation_source')
-    if revision_source is not None:
-        require(revision_source['authority_digest'] == progress['plan_authority']['authority_digest'],
-                'plan revision adoption belongs to an older authority')
-        expected.update({p: revision_source['snapshot']['files'][p]
-                         for p in revision_source['pending_paths']})
-    for result in progress.get('carried_results', []):
-        from execution_plan import accepted_owned_fingerprints
-        fingerprints = accepted_owned_fingerprints(result)
-        require(fingerprints is not None, 'carried execution lacks verified owned fingerprints')
-        expected.update(fingerprints)
+        expected = {p: progress['integration_source']['snapshot']['files'][p]
+                    for p in progress['allowed_paths']}
+    else:
+        revision_source = progress.get('revalidation_source')
+        if revision_source is not None:
+            require(revision_source['authority_digest'] == progress['plan_authority']['authority_digest'],
+                    'plan revision adoption belongs to an older authority')
+            expected.update({p: revision_source['snapshot']['files'][p]
+                             for p in revision_source['pending_paths']})
+        for result in progress.get('carried_results', []):
+            from execution_plan import accepted_owned_fingerprints
+            fingerprints = accepted_owned_fingerprints(result)
+            require(fingerprints is not None, 'carried execution lacks verified owned fingerprints')
+            expected.update(fingerprints)
     escalation = None if progress.get('integration_source') is not None else progress.get('implementation_escalation')
     if escalation is not None:
         inherited = escalation['snapshot']
@@ -698,8 +699,7 @@ def verified_transition(payload):
         if not direct_implementation(progress):
             from execution_plan import current_catalog, current_accepted_steps
             catalog = current_catalog(progress['execution_authority'])
-            accepted = progress.get('carried_results', []) + [execution for execution in progress['executions']
-                if execution['state'] == 'accepted' and execution['agent_ref'] is not None]
+            accepted = current_accepted_results(progress)
             actual_fingerprints = {relative: file_fingerprint(repository, relative)
                                    for relative in progress['allowed_paths']}
             completed = current_accepted_steps(catalog, accepted,
@@ -709,7 +709,7 @@ def verified_transition(payload):
                     missing[0] if missing else 'candidate function steps are complete')
         from execution_plan import accepted_owned_fingerprints
         accepted_fingerprints = {}
-        for result in progress.get('carried_results', []):
+        for result in ([] if progress.get('integration_source') is not None else progress.get('carried_results', [])):
             fingerprints = accepted_owned_fingerprints(result)
             require(fingerprints is not None, 'carried execution lacks verified owned fingerprints')
             accepted_fingerprints.update(fingerprints)
@@ -731,10 +731,10 @@ def verified_transition(payload):
                     file_fingerprint(repository, relative) == accepted_fingerprints[relative]
                     for relative in candidate_paths),
                 'candidate content or mode differs from accepted Execution Agent delivery')
-        source = progress.get('revalidation_source')
+        source = progress.get('integration_source') or progress.get('revalidation_source')
         if source is not None:
             require(set(source['pending_paths']) <= set(accepted_fingerprints),
-                    'plan revision bytes require fresh Execution Agent revalidation')
+                    'adopted bytes require fresh Execution Agent revalidation')
         evidence.update(clean=True, changed_paths=candidate_paths,
                         file_hashes={p: implementation_hash(repository, p) for p in progress['allowed_paths']})
     if action in {'review-start', 'review-converged', 'validation-start', 'validation-result', 'validation-retry', 'delivery-ready', 'accept-delivery'}:

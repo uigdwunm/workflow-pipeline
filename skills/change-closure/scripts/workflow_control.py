@@ -133,6 +133,13 @@ def adoption_source(progress):
     return None
 
 
+def current_accepted_results(progress):
+    """Final integration requires fresh acceptance under its captured bytes."""
+    carried = [] if progress.get('integration_source') is not None else progress.get('carried_results', [])
+    return carried + [execution for execution in progress['executions']
+                      if execution['state'] == 'accepted' and execution['agent_ref'] is not None]
+
+
 def execution_record(progress, ref):
     text(ref)
     require(progress is not None and 'executions' in progress, 'no execution checkpoint')
@@ -1330,7 +1337,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             from execution_plan import current_catalog
             group = validate_plan_refs(current_catalog(authority), evidence['plan_refs'],
                 assigned, evidence['read_only'],
-                progress.get('carried_results', []) + progress['executions'], authority)
+                current_accepted_results(progress), authority)
             require(progress.get('plan_authority') == evidence['plan_authority'] == group['plan_authority'] and
                     evidence.get('group_digest') == group['group_digest'] and
                     set(group['verification_commands']) <= set(evidence['tests']),
@@ -1551,9 +1558,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             return {'ok': True, 'context': context, 'effects': [], 'acknowledged': True}
         require(progress['state'] == 'implementing', 'candidate is not implementing')
         require(all(e['stopped'] and e['state'] in {'accepted', 'cancelled'} for e in progress['executions']), 'all executions must stop and be accepted')
-        accepted = (progress.get('carried_results', []) +
-                    [e for e in progress['executions']
-                     if e['state'] == 'accepted' and e['agent_ref'] is not None])
+        accepted = current_accepted_results(progress)
         if direct_implementation(progress):
             require(not progress['executions'], 'direct candidate cannot contain Execution allocations')
             proof = evidence.get('direct_provenance')

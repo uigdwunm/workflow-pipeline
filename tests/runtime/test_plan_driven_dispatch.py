@@ -47,7 +47,10 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         case = progress_fixture.ProgressTests(methodName="runTest")
         case.setUp()
         self.addCleanup(case.doCleanups)
-        (case.flow / path).write_text(source)
+        if isinstance(source, bytes):
+            (case.flow / path).write_bytes(source)
+        else:
+            (case.flow / path).write_text(source)
         case.flow_git("add", path)
         case.flow_git("commit", "-qm", "existing implementation target")
         request = case.input_for(3)
@@ -75,6 +78,28 @@ class PlanDrivenDispatchTests(unittest.TestCase):
                 with self.assertRaises(entry.PreparationError) as error:
                     handoff.handle(request)
                 self.assertEqual(error.exception.code, "execution_plan_incomplete")
+
+    def test_inline_unparseable_python_target_reports_committed_path_at_b_and_c(self):
+        for source, cause in ((b"def broken():\n    return '\xff'\n", UnicodeError),
+                              ("def broken(:\n    pass\n", SyntaxError)):
+            for boundary in ("B", "C"):
+                with self.subTest(cause=cause.__name__, boundary=boundary):
+                    case, request = self.existing_inline_request(
+                        "impl.py", source, "broken", ["change the existing function"])
+                    before = case.checkpoint.read_bytes() if case.checkpoint.exists() else None
+                    head = case.flow_git("rev-parse", "HEAD")
+                    with self.assertRaises(entry.PreparationError) as error:
+                        if boundary == "B":
+                            handoff.handle(request)
+                        else:
+                            case.invoke("start", {"handoff": request,
+                                "control": {"context": case.context_for(3), "discussion": None}})
+                    self.assertEqual(error.exception.code, "execution_plan_incomplete")
+                    self.assertIn("impl.py", str(error.exception))
+                    self.assertIsInstance(error.exception.__cause__, cause)
+                    self.assertEqual(case.checkpoint.read_bytes() if case.checkpoint.exists() else None,
+                                     before)
+                    self.assertEqual(case.flow_git("rev-parse", "HEAD"), head)
 
     def test_standalone_python_class_is_not_a_function_target_at_b_and_c(self):
         source = "class Widget:\n    def run(self):\n        return True\n"

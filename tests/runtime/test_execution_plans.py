@@ -170,9 +170,10 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
                     "spec_ref": {"path": malformed, "section": "Implementation Decisions"}}),
                     context="spec_ref.path: docs/spec.md")
 
-    def staged_python_target(self, symbol):
+    def staged_python_target(self, symbol, source=None):
         case = self.new_flow()
-        source = ("class Widget:\n"
+        if source is None:
+            source = ("class Widget:\n"
                   "    def instance(self):\n        return True\n"
                   "    @classmethod\n    def klass(cls):\n        return True\n"
                   "    @staticmethod\n    def static():\n        return True\n"
@@ -180,7 +181,10 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
                   "    class Inner:\n"
                   "        def nested(self):\n            return True\n"
                   "async def top_level():\n    return True\n")
-        (case.flow.flow / "impl.py").write_text(source)
+        if isinstance(source, bytes):
+            (case.flow.flow / "impl.py").write_bytes(source)
+        else:
+            (case.flow.flow / "impl.py").write_text(source)
         case.flow.flow_git("add", "impl.py")
         case.flow.flow_git("commit", "-qm", "existing Python targets")
         case.flow.input["expected_entry"] = fixture.fixture.transfer.entry.resolve(case.flow.request)
@@ -217,6 +221,21 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         self.assertIn("existing Python symbol is missing: Widget", str(error.exception))
         self.assertIn("impl.py", str(error.exception))
         self.assertEqual(case.flow.checkpoint.read_bytes(), before)
+
+    def test_staged_unparseable_python_target_reports_committed_path(self):
+        for source, cause in ((b"def broken():\n    return '\xff'\n", UnicodeError),
+                              ("def broken(:\n    pass\n", SyntaxError)):
+            with self.subTest(cause=cause.__name__):
+                case, proposal = self.staged_python_target("broken", source)
+                before = case.flow.checkpoint.read_bytes()
+                head = case.flow.flow_git("rev-parse", "HEAD")
+                with self.assertRaises(fixture.fixture.transfer.entry.PreparationError) as error:
+                    case.flow.invoke("scope-propose", proposal)
+                self.assertEqual(error.exception.code, "execution_plan_incomplete")
+                self.assertIn("impl.py", str(error.exception))
+                self.assertIsInstance(error.exception.__cause__, cause)
+                self.assertEqual(case.flow.checkpoint.read_bytes(), before)
+                self.assertEqual(case.flow.flow_git("rev-parse", "HEAD"), head)
 
     def test_staged_python_qualified_methods_and_async_function_remain_valid(self):
         for symbol in ("Widget.instance", "Widget.klass", "Widget.static",

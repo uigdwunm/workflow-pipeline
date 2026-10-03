@@ -179,11 +179,12 @@ def _code_source(item):
             not Path(relative).name.startswith('test_'))
 
 
-def _python_symbols(body):
+def _python_symbols(body, target_path):
     try:
         tree = ast.parse(body.decode("utf-8"))
     except (UnicodeError, SyntaxError) as exc:
-        raise entry.PreparationError("execution_plan_incomplete", "existing Python target is not parseable") from exc
+        raise entry.PreparationError("execution_plan_incomplete",
+            "existing Python target is not parseable: " + target_path) from exc
     result = set()
 
     def walk(nodes, prefix=""):
@@ -338,7 +339,7 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
         if target["operation"] != "add":
             existing = _committed_file(repository, baseline, target["path"])
             if target["path"].endswith(".py"):
-                _incomplete(target["symbol"] in _python_symbols(existing["body"]),
+                _incomplete(target["symbol"] in _python_symbols(existing["body"], target["path"]),
                             "existing Python symbol is missing: " + target["symbol"] +
                             " (target: " + target["path"] + ")")
             else:
@@ -986,7 +987,7 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
                         "existing inline target needs its Git repository")
             existing = _committed_file(repository, scope["baseline"], target["path"])
             if target["path"].endswith(".py"):
-                _incomplete(target["symbol"] in _python_symbols(existing["body"]),
+                _incomplete(target["symbol"] in _python_symbols(existing["body"], target["path"]),
                             "existing Python symbol is missing: " + target["symbol"] +
                             " (target: " + target["path"] + ")")
             else:
