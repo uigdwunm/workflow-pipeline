@@ -235,7 +235,7 @@ class ScopeProgressTests(unittest.TestCase):
         self.assertTrue(accepted["planning_complete"], accepted)
         self.assertTrue(accepted["handoff_ready"], accepted)
         self.assertEqual(accepted["readiness"]["scope_revision"], 1)
-        catalog = accepted["readiness"]["execution_plan"]
+        catalog = accepted["readiness"]["execution_plan"]["catalog"]
         self.assertEqual(catalog["ordered_step_ids"], ["FP1-01", "FP1-02"])
         self.assertEqual([step["verification_refs"] for step in catalog["tickets"][0]["plan"]["steps"]],
                          [["V1"], ["V1"]])

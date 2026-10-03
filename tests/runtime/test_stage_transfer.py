@@ -167,7 +167,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         return request
 
     def context_for(self, stage):
-        return {"schema_version": 5, "controller_ref": "task", "topic_ref": None, "stage": stage,
+        return {"schema_version": 6, "controller_ref": "task", "topic_ref": None, "stage": stage,
                 "carrier": None, "preference": {"topic_current": False, "stage_current": False}, "flow_authority": None,
                 "requirement_identity": self.frozen["requirement_identity"], "handoff_progress": None}
 
@@ -558,6 +558,13 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         for operation in (handoff.verify, handoff.render):
             self.assert_code('legacy_run_requires_original_runtime', lambda: operation(saved))
 
+    def test_previous_stage_transfer_protocol_requires_original_runtime(self):
+        saved = handoff.unseal(handoff.handle(self.input))
+        saved['protocol'] = 'workflow-stage-transfer-v13'
+        saved = handoff.seal(saved)
+        for operation in (handoff.verify, handoff.render):
+            self.assert_code('legacy_run_requires_original_runtime', lambda: operation(saved))
+
     def test_accepted_design_consumed_by_stage3_and_actual_candidate_review(self):
         accepted = self.complete_design()["accepted"]
         next_input = self.input_for(3, accepted)
@@ -664,7 +671,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         ctx = self.context_for(1)
         def transition(action, evidence):
             nonlocal ctx
-            result = control.transition({"schema_version": 5, "actor_ref": "task", "context": ctx, "action": action, "evidence": evidence})
+            result = control.transition({"schema_version": 6, "actor_ref": "task", "context": ctx, "action": action, "evidence": evidence})
             ctx = result["context"]
             return result
         prepared = transition("prepare", {"target": "local", "project": "project", "title": "Discuss", "missing_context": [],
@@ -709,7 +716,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.call("bind", parent["record"], receipt=self.receipt(parent["record"], ref="native:dispatcher"))
         execution = self.inline_execution_input()
         pending = self.launch(execution)["record"]
-        self.context = control.transition({"schema_version": 5, "actor_ref": "task", "context": self.context,
+        self.context = control.transition({"schema_version": 6, "actor_ref": "task", "context": self.context,
                                            "action": "cancel", "evidence": {}})["context"]
         unknown = self.call("reconcile", pending, receipt=self.receipt(pending, "unknown", "lookup", None))
         self.assertEqual(self.context["handoff_progress"]["executions"][0]["state"], "dispatch-pending")
@@ -722,7 +729,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         import workflow_control_git
         def recover(stopped):
             return workflow_control_git.verified_transition({"repository": str(self.flow), "baseline": execution["scope"]["baseline"],
-                "request": {"schema_version": 5, "actor_ref": "task", "context": self.context, "action": "recover-dispatch",
+                "request": {"schema_version": 6, "actor_ref": "task", "context": self.context, "action": "recover-dispatch",
                             "evidence": {"stopped_refs": stopped, "file_hashes": {}, "replacement_ref": "native:replacement"}}})
         with self.assertRaises(control.ControlError):
             recover([])

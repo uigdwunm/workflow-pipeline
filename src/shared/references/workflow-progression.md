@@ -97,7 +97,7 @@ permits cleanup-only; this recovery never rolls back or republishes it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v17","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v18","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -421,13 +421,11 @@ Every `continue-host` issuance checks consumed business intent, original
 authority/identity/source, stop intent and current unused proof. The same save
 consumes proof and records issuance; repeating advance returns exact lookup.
 
-Stage-3 `start` preserves the implementation policy from the sealed handoff;
-omission means full. The foreground scripted carrier has no frozen Controller
-direct decision in its confirmed runner input and therefore uses full. Read
-[Bounded direct implementation](guided-implementation/workflow-control-protocol.md#bounded-direct-implementation)
-for admission and candidate-source rules. C retains the original native
-Dispatcher result/stop and Git snapshot for direct candidate provenance; zero
-allocations never close the stop barrier on their own.
+Stage-3 `start` preserves the full implementation policy from the sealed handoff;
+omission means full. Every new route uses real Execution Agent allocations and
+requires accepted current-plan delivery for changed implementation bytes. The
+original Controller owns private function-plan revisions. Historical direct
+runs continue under their original pinned runtime and records.
 
 ### Retiring accepted native agents
 
@@ -529,14 +527,13 @@ receipt reconciliation. A finished turn can satisfy the stop barrier while its
 unarchived identity remains retained for resume; new native creation, including
 Dispatcher replacement, still waits for verified resource release. Saved creation
 intents remain queryable while that gate is closed. Historical runs retain their original pinned runtime;
-v17 does not migrate them.
+v18 does not migrate them.
 
 ## Dispatcher allocations
 
-Allocations require full mode. Direct converts through the original control
-transaction before any allocation; explicit inherited-byte adoption then uses
-the same B allocation path, result and acceptance, with separate changed/adopted
-paths and the frozen adoption snapshot.
+Allocations use full mode. Eligible inherited bytes from plan revision or final
+integration recovery pass through the same B allocation, result and acceptance
+path, with separate changed/adopted paths and the frozen adoption snapshot.
 
 Pass the returned `checkpoint` to the native dispatcher alongside B's unchanged
 bootstrap payload. Its `allocation` operation uses
@@ -835,9 +832,9 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 9 and pin workflow-progress-v17 /
-workflow-stage-transfer-v13 / flow-worktree-v3 packages with control compatibility
-key 10. Earlier progress protocols and runner records require their original
+New runner records use outer version 10 and pin workflow-progress-v18 /
+workflow-stage-transfer-v14 / flow-worktree-v3 packages with control compatibility
+key 11 and control JSON schema 6. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete
 registration is required for live actions. No installation is implied.

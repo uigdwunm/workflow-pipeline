@@ -39,7 +39,7 @@ class ProgressTests(transfer.StageTransferTests):
         context['controller_ref'] = 'task'
         def apply(action, evidence):
             nonlocal context
-            result = progress.control.transition({'schema_version': 5, 'actor_ref': 'task',
+            result = progress.control.transition({'schema_version': 6, 'actor_ref': 'task',
                 'context': context, 'action': action, 'evidence': evidence})
             context = result['context']
             return result
@@ -144,10 +144,13 @@ class ProgressTests(transfer.StageTransferTests):
     def test_new_runtime_rejects_old_control_and_c_without_writes(self):
         self.begin()
         saved = progress.read_record(self.checkpoint)
-        for version in ('control', 'workflow-progress-v9', 'workflow-progress-v11'):
+        for version in ('control', 'workflow-progress-v9', 'workflow-progress-v11',
+                        'workflow-progress-v17', 'runner-9'):
             old = copy.deepcopy(saved)
             if version == 'control':
-                old[progress.KEY]['control']['context']['schema_version'] = 3
+                old[progress.KEY]['control']['context']['schema_version'] = 5
+            elif version == 'runner-9':
+                old['version'] = 9
             else:
                 old[progress.KEY]['protocol'] = version
             progress.atomic_save(self.checkpoint, old)
@@ -156,6 +159,17 @@ class ProgressTests(transfer.StageTransferTests):
                 self.invoke('inspect')
             self.assertEqual(error.exception.code, 'legacy_run_requires_original_runtime')
             self.assertEqual(self.checkpoint.read_bytes(), before)
+
+    def test_scope_readiness_requires_original_runtime_for_previous_progress(self):
+        self.begin()
+        old = progress.read_record(self.checkpoint)
+        old[progress.KEY]['protocol'] = 'workflow-progress-v17'
+        progress.atomic_save(self.checkpoint, old)
+        before = self.checkpoint.read_bytes()
+        with self.assertRaises(transfer.entry.PreparationError) as error:
+            progress.read_scope_readiness({'checkpoint_path': str(self.checkpoint)})
+        self.assertEqual(error.exception.code, 'legacy_run_requires_original_runtime')
+        self.assertEqual(self.checkpoint.read_bytes(), before)
 
     def test_unknown_business_control_blocks_start_and_supplied_stop_is_rejected(self):
         self.begin()

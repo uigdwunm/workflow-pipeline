@@ -124,6 +124,14 @@ def workflow_control(request):
     with lock_path.open('a+b') as stream:
         _flock_with_timeout(stream)
         frontmatter, records = _load_records(ledger_path)
+        matches = [r for r in records['Phase Results'] if r.get('result_kind') == 'workflow-control'
+                   and r.get('topic_id') == request['actor_topic_id']]
+        if len(matches) > 1:
+            raise ProtocolError('state_corrupt', 'multiple workflow control checkpoints')
+        context = _json_field(matches[0], 'data_json', 'workflow control') if matches else None
+        if context is not None and context.get('schema_version') != 6:
+            raise ProtocolError('legacy_run_requires_original_runtime',
+                                'retain original package for embedded control schema ' + str(context.get('schema_version')))
         replay = _idempotent_result(records, request)
         if replay is not None:
             return replay
@@ -136,26 +144,19 @@ def workflow_control(request):
         evidence = dict(request['evidence'])
         if action in {'prepare', 'decide', 'reserve-launch', 'standalone-entry', 'choose-dedicated'}:
             apply_gate_policy(records, 'prepare-handoff', request['actor_topic_id'])
-        matches = [r for r in records['Phase Results'] if r.get('result_kind') == 'workflow-control'
-                   and r.get('topic_id') == request['actor_topic_id']]
-        if len(matches) > 1:
-            raise ProtocolError('state_corrupt', 'multiple workflow control checkpoints')
         topic_path = project / topic['topic_document_path']
         identity = {'path': topic_path.relative_to(project).as_posix(),
                     'sha256': _sha256(_require_regular_nosymlink(topic_path, 'topic document')),
                     'version': topic_revision}
         if matches:
             record = matches[0]
-            context = _json_field(record, 'data_json', 'workflow control')
-            if context.get('schema_version') not in {5, 6}:
-                raise ProtocolError('legacy_run_requires_original_runtime', 'retain original package for embedded control schema ' + str(context.get('schema_version')))
             if context['controller_ref'] != owner_ref:
                 raise ProtocolError('document_ownership_conflict', 'controller identity changed')
         else:
             record = {'result_id': 'WC-' + request['actor_topic_id'], 'result_kind': 'workflow-control',
                       'topic_id': request['actor_topic_id'], 'record_revision': 0, 'state': 'active'}
             records['Phase Results'].append(record)
-            context = {'schema_version': 5, 'controller_ref': owner_ref,
+            context = {'schema_version': 6, 'controller_ref': owner_ref,
                        'topic_ref': request['actor_topic_id'], 'stage': topic['current_phase'],
                        'carrier': None, 'preference': {'topic_current': False, 'stage_current': False},
                        'flow_authority': None, 'requirement_identity': identity, 'handoff_progress': None}
@@ -248,8 +249,7 @@ def workflow_control(request):
                     evidence['verified_commit_hash'] = identity['sha256']
                 else:
                     _git.verify_delivery(project, evidence['commit'], evidence)
-            transition_request = {'schema_version': 6 if action == 'plan-revision-activate'
-                                  else context['schema_version'], 'actor_ref': owner_ref,
+            transition_request = {'schema_version': context['schema_version'], 'actor_ref': owner_ref,
                                   'context': context, 'action': action, 'evidence': evidence}
             if action in GIT_BACKED_ACTIONS:
                 # The ledger lock is the original control transaction boundary.

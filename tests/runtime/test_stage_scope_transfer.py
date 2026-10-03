@@ -84,7 +84,8 @@ class StageScopeTransferTests(unittest.TestCase):
                                           "contract_digest": catalog["contract_digest"]}
         return {"state": "sealed", "revision": 1, "scope": scope,
                 "candidate_commit": self.candidate, "proposal_digest": "proposal-digest",
-                "seal_ref": "seal-reference", "proposal": proposal, "execution_plan": catalog}
+                "seal_ref": "seal-reference", "proposal": proposal,
+                "execution_plan": execution_plan.authority_envelope(catalog, 1) if catalog else None}
 
     def test_removed_bridge_is_not_an_accepted_stage_result(self):
         bridge = handoff.seal({"protocol": handoff.PROTOCOL,
@@ -93,7 +94,7 @@ class StageScopeTransferTests(unittest.TestCase):
             handoff.render(bridge)
 
     def test_control_rejects_removed_takeover_and_stage_three_revision(self):
-        context = {"schema_version": 5, "controller_ref": "controller:test", "topic_ref": None,
+        context = {"schema_version": 6, "controller_ref": "controller:test", "topic_ref": None,
                    "stage": 3, "carrier": None, "preference": {"topic_current": False,
                    "stage_current": False}, "flow_authority": None, "handoff_progress": None,
                    "requirement_identity": {"path": "docs/requirement.md", "sha256": "a" * 64,
@@ -101,7 +102,7 @@ class StageScopeTransferTests(unittest.TestCase):
         for action in ("scope-revise", "start-dispatch-revision", "scope-recover-legacy",
                        "scope-recover-legacy-reserve", "scope-recover-legacy-supersede"):
             with self.subTest(action=action), self.assertRaises(handoff.control.ControlError):
-                handoff.control.transition({"schema_version": 5, "actor_ref": "controller:test",
+                handoff.control.transition({"schema_version": 6, "actor_ref": "controller:test",
                                             "context": context, "action": action, "evidence": {}})
         with self.assertRaises(handoff.control.ControlError):
             handoff.control.validate_context({**context, "legacy_takeover": {}})
@@ -230,13 +231,16 @@ class StageScopeTransferTests(unittest.TestCase):
             "test_real_a_freeze_and_flow_transfer_preserve_user_changes")
         fixture.setUp()
         try:
-            original = fixture.input_for(3)["scope"]["baseline"]
+            allocation = fixture.inline_execution_input()
+            original = allocation["scope"]["baseline"]
             (fixture.flow / "impl.py").write_text("print('existing work')\n", encoding="utf-8")
             fixture.flow_git("add", "impl.py")
             fixture.flow_git("commit", "-qm", "existing implementation")
-            allocation = fixture.input_for(3)
-            allocation.update(role="execution-agent",
-                              configuration=transfer_fixture.configuration("execution-agent"))
+            refreshed = fixture.input_for(3)
+            allocation["entry"] = refreshed["entry"]
+            allocation["expected_entry"] = refreshed["expected_entry"]
+            allocation["scope"]["baseline"] = fixture.flow_git("rev-parse", "HEAD")
+            allocation["authorization"]["scope_digest"] = entry.digest(allocation["scope"])
             with self.assertRaises(entry.PreparationError):
                 handoff.handle(allocation)
             allocation["manifest_baseline"] = original

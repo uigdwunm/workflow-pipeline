@@ -15,7 +15,7 @@ import shlex
 import sys
 from typing import Any
 
-MAX_BYTES = 1048576
+MAX_BYTES = 262144
 CONTEXT_FIELDS = {'schema_version', 'controller_ref', 'topic_ref', 'stage', 'carrier',
                   'preference', 'flow_authority', 'requirement_identity', 'handoff_progress'}
 DELIVERY_VERIFICATION_FIELDS = {'candidate', 'expected_target_head', 'validation_plan', 'plan_digest',
@@ -753,13 +753,14 @@ def validate_context(context):
     require(isinstance(context, dict) and CONTEXT_FIELDS <= set(context) <=
             CONTEXT_FIELDS | {'successor_control', 'retired_handoffs'},
             'invalid context fields')
+    require(type(context['schema_version']) is int and context['schema_version'] == 6,
+            'legacy_run_requires_original_runtime: control schema ' + str(context.get('schema_version')))
     require(len(json.dumps(context).encode()) <= MAX_BYTES, 'control history exceeds byte limit')
     if context.get('successor_control') is not None:
         successor = context['successor_control']
         require(isinstance(successor, dict) and not ({'successor_control', 'retired_handoffs'} & set(successor)), 'only one successor slot and top-level history allowed')
         validate_context(successor)
         require(successor['controller_ref'] == context['controller_ref'] and successor['topic_ref'] == context['topic_ref'], 'successor controller/topic mismatch')
-    require(type(context['schema_version']) is int and context['schema_version'] in {5, 6}, 'legacy_run_requires_original_runtime: control schema ' + str(context.get('schema_version')))
     require(isinstance(context.get('retired_handoffs', {}), dict), 'invalid retired handoff history')
     for handoff_id, retired in context.get('retired_handoffs', {}).items():
         keys(retired, {'controller_ref', 'topic_ref', 'stage', 'carrier', 'requirement_identity', 'plan',
@@ -910,7 +911,7 @@ def select_configuration(evidence):
 
 def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     keys(request, {'schema_version', 'action', 'actor_ref', 'context', 'evidence'})
-    require(type(request['schema_version']) is int and request['schema_version'] in {5, 6}, 'legacy_run_requires_original_runtime: control request schema ' + str(request.get('schema_version')))
+    require(type(request['schema_version']) is int and request['schema_version'] == 6, 'legacy_run_requires_original_runtime: control request schema ' + str(request.get('schema_version')))
     context = copy.deepcopy(request['context'])
     validate_context(context)
     require(request['actor_ref'] == context['controller_ref'], 'only authenticated controller writes control checkpoints')
@@ -1905,7 +1906,7 @@ def transition(request: dict[str, Any]) -> dict[str, Any]:
     evidence = copy.deepcopy(request['evidence'])
     require(isinstance(evidence, dict), 'evidence must be an object')
     action = request['action']
-    require(type(request['schema_version']) is int and request['schema_version'] in {5, 6}, 'legacy_run_requires_original_runtime: control request schema')
+    require(type(request['schema_version']) is int and request['schema_version'] == 6, 'legacy_run_requires_original_runtime: control request schema')
     require(request['actor_ref'] == context['controller_ref'], 'only authenticated controller writes control checkpoints')
     if action in {'archive', 'archive-result'}:
         result = archive_transition(context, action, evidence)

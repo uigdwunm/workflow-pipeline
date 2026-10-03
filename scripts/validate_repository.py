@@ -330,17 +330,25 @@ WORKFLOW_CONTROL_ENTRIES = (
 WORKFLOW_CONTROL_REFERENCE_MARKERS = (
     "schema_version", "controller_ref", "plan-execution",
     "workflow_control_git.py", "cleanup-only", "select-configuration",
+    "prepare-plan-revision", "Controller-only planning release",
 )
 
 
 def validate_workflow_control_docs(repository: Path) -> list[dict[str, str]]:
-    """Validate the published role contract once closure installs its authority.
-
-    The Stage-3 tree still carries its previous documentation contract. A
-    temporary final-doc tree and the Stage-4 publication install the reference
-    atomically, at which point every role consumer must satisfy this contract.
-    """
+    """Validate the published role contract required by new five-package releases."""
     if not (repository / WORKFLOW_CONTROL_REFERENCE).is_file():
+        manifest = repository / 'skills/guided-implementation/package.json'
+        if manifest.is_file():
+            try:
+                metadata = json.loads(manifest.read_text(encoding='utf-8'))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                metadata = None
+            if (isinstance(metadata, dict) and
+                    isinstance(metadata.get('compatibility_key'), dict) and
+                    metadata['compatibility_key'].get('execution_plan') == 'execution-plan-v1'):
+                return [{'code': 'workflow-control-contract',
+                         'path': WORKFLOW_CONTROL_REFERENCE,
+                         'marker': 'workflow-control-protocol.md'}]
         return []
     issues = []
     for relative_path in WORKFLOW_CONTROL_ENTRIES:
@@ -354,7 +362,8 @@ def validate_workflow_control_docs(repository: Path) -> list[dict[str, str]]:
             issues.append({"code": "workflow-control-contract", "path": WORKFLOW_CONTROL_REFERENCE, "marker": marker})
     obsolete = ("post-archive", "Post-archive", "Dedicated Implementation Task",
                 "Phase 0 never propagates continuous mode", "a stage-0 route is always stepwise",
-                "原任务状态：已停止", "原任务行为：创建后停止", "原任务不等待其结果")
+                "原任务状态：已停止", "原任务行为：创建后停止", "原任务不等待其结果",
+                "## Bounded direct implementation", "bounded direct exception")
     for target in (repository / "skills").rglob("*.md"):
         text = target.read_text(encoding="utf-8")
         for marker in obsolete:

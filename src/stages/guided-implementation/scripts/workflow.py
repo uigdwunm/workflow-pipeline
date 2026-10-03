@@ -597,7 +597,7 @@ def _host_pending(instance, request):
 
 def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
     return CheckpointState({
-        "version": 9,
+        "version": 10,
         "confirmed": confirmed,
         "status": "active",
         "current_stage": "stage2",
@@ -609,9 +609,9 @@ def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_record(state: dict[str, Any]) -> dict[str, Any]:
-    if state.get("version") in {1, 2, 3, 4, 5, 6, 7, 8}:
+    if state.get("version") in {1, 2, 3, 4, 5, 6, 7, 8, 9}:
         raise WorkflowError('legacy_run_requires_original_runtime: record version ' + str(state.get('version')) + '; retain original package digests ' + str({k:v.get('bundle_digest') for k,v in state.get('confirmed',{}).get('packages',{}).items()}))
-    if state.get("version") != 9:
+    if state.get("version") != 10:
         raise WorkflowError("unsupported run record version")
     if "recovery_source" in state:
         raise WorkflowError("unsupported run record recovery_source")
@@ -1878,7 +1878,7 @@ def _request_control(record_path, operation, *, live):
     record_path = _absolute_path(str(record_path), "run_record")
     with progression.record_lock(record_path):
         state = progression.read_record(record_path)
-        if state.get("version") != 9:
+        if state.get("version") != 10:
             raise WorkflowError("legacy_run_requires_original_runtime: control requires the original pinned record")
         member = state.get(progression.KEY)
         pin = state.get("confirmed", {}).get("packages", {}).get("runner")

@@ -31,8 +31,6 @@ class RecoveryFixture(ProgressTests):
                 extra.update(id='inline-extra', target={'path': 'extra.py', 'symbol': 'run',
                                                         'operation': 'add'})
                 plan['steps'].append(extra)
-                value['inline_authority'] = execution_plan.inline_authority(
-                    plan, value['scope'], value['semantic'], self.frozen['requirement_identity'])
         return value
 
     def execution_input(self):
@@ -96,11 +94,9 @@ class DispatchRecoveryTests(unittest.TestCase):
             second = f.execution_input()
             second['scope']['owned_paths'] = ['extra.py']
             authority = f.state()['scope_authority']
-            ticket = authority['execution_plan']['tickets'][0]
+            ticket = authority['execution_plan']['catalog']['tickets'][0]
             step = next(item for item in ticket['plan']['steps'] if item['id'] == 'inline-extra')
-            second['semantic']['plan_refs'] = [{'ticket_id':ticket['ticket_id'],
-                'step_id':step['id'], 'plan_version':ticket['plan_version'],
-                'source':ticket['source'], 'step_digest':dispatch.entry.digest(step)}]
+            second['semantic']['plan_refs'] = [execution_plan.step_ref(ticket, step)]
             second['authorization']['scope_digest'] = dispatch.entry.digest(second['scope'])
             prepared = f.invoke('allocation', {'allocation_id':'extra-slice','operation':'prepare',
                                                  'handoff':second})
@@ -339,9 +335,6 @@ class DispatchRecoveryTests(unittest.TestCase):
         parent['scope']['protected_paths'].append('existing.txt')
         import entry_prepare
         parent['authorization']['scope_digest'] = entry_prepare.digest(parent['scope'])
-        parent['inline_authority'] = execution_plan.inline_authority(
-            parent['semantic']['inline_plan'], parent['scope'], parent['semantic'],
-            f.frozen['requirement_identity'])
         f.begin('continuous',parent); f.invoke('observe',f.observation(ref='native:dispatcher'))
         original = f.state()['control']['context']['handoff_progress']['git_baseline_commit']
         (f.flow/'existing.txt').write_text('changed original protection\n')

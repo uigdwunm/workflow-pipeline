@@ -1,5 +1,6 @@
 """Control decisions consume actual Git evidence through the production adapter."""
 import hashlib
+import copy
 import json
 from pathlib import Path
 import subprocess
@@ -53,7 +54,7 @@ class WorkflowGitTests(unittest.TestCase):
                         write_release=execution['write_release'])
         result = subprocess.run([sys.executable, str(CLI)], text=True, capture_output=True,
             input=json.dumps({'repository': str(self.repo), 'baseline': self.base,
-                'request': {'schema_version': 5, 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
+                'request': {'schema_version': context['schema_version'], 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
         self.assertTrue(result.stdout, result.stderr)
         return json.loads(result.stdout)
 
@@ -300,6 +301,79 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertFalse(self.call('assign', binding, planned['context'])['ok'])
         (self.repo/'a.py').unlink()
         self.assertTrue(self.call('assign', binding, planned['context'])['ok'])
+
+    def test_git_enrichment_rejects_a_checkpoint_over_capacity_before_release(self):
+        context = self.start_dispatcher()
+        envelope = self.execution_envelope(context, 'capacity', ['a.py'])
+        request = {'schema_version': context['schema_version'], 'action': 'plan-execution',
+                   'actor_ref': 'controller', 'context': context, 'evidence': envelope}
+        payload = {'repository': str(self.repo), 'baseline': self.base, 'request': request}
+        pure = control.transition(request)
+        enriched = control_git.verified_transition(payload)
+        pure_size = len(json.dumps(pure['context']).encode())
+        enriched_size = len(json.dumps(enriched['context']).encode())
+        self.assertGreater(enriched_size, pure_size)
+        capacity = pure_size + (enriched_size - pure_size) // 2
+        original = copy.deepcopy(context)
+
+        with patch.object(control, 'MAX_BYTES', capacity), patch.object(control_git, 'MAX_BYTES', capacity):
+            self.assertTrue(control.transition(request)['ok'])
+            with self.assertRaisesRegex(control.ControlError, 'control history exceeds byte limit'):
+                control_git.verified_transition(payload)
+
+        self.assertEqual(context, original)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        self.assertNotIn('write_release', context['handoff_progress']['executions'][-1]
+                         if context['handoff_progress']['executions'] else {})
+
+    def test_dispatch_baseline_enrichment_obeys_checkpoint_capacity(self):
+        helper = test_workflow_control.WorkflowControlTests()
+        target = self.git('branch', '--show-current')
+        binding = supervision.start_worktree({'repository': str(self.repo),
+            'worktree': str(self.root / 'flow'), 'branch': 'codex/flow',
+            'target_branch': target})['binding']
+        self.repo = self.root / 'flow'
+        context = helper.context()
+        context['stage'] = 3
+        evidence = {'binding': binding, 'binding_verified': True,
+            'allowed_paths': ['a.py', 'b.py'], 'protected_paths': ['docs/draft.md'],
+            'authority_digest': 'c' * 64, 'testing_basis': 'CLI',
+            'validation_plan': test_workflow_control.plan_for(binding['worktree']),
+            'configuration': helper.configuration('implementation-dispatcher'),
+            **self.plan_evidence(context, ['a.py', 'b.py'])}
+        request = {'schema_version': context['schema_version'], 'action': 'start-dispatch',
+                   'actor_ref': 'controller', 'context': context, 'evidence': evidence}
+        payload = {'repository': str(self.repo), 'baseline': self.base, 'request': request}
+        pure = control.transition(request)
+        enriched = control_git.verified_transition(payload)
+        self.assertEqual(enriched['context']['handoff_progress']['git_baseline_commit'], self.base)
+        capacity = (len(json.dumps(pure['context']).encode()) +
+                    len(json.dumps(enriched['context']).encode())) // 2
+        with patch.object(control, 'MAX_BYTES', capacity), patch.object(control_git, 'MAX_BYTES', capacity):
+            self.assertTrue(control.transition(request)['ok'])
+            with self.assertRaisesRegex(control.ControlError, 'control history exceeds byte limit'):
+                control_git.verified_transition(payload)
+
+    def test_execution_result_snapshot_enrichment_obeys_checkpoint_capacity(self):
+        context = self.start_allocations()
+        (self.repo / 'a.py').write_text('accepted behavior\n')
+        execution = context['handoff_progress']['executions'][0]
+        evidence = {**self.result_evidence('a', ['a.py']),
+                    'plan_refs': execution['plan_refs'],
+                    'plan_authority': execution['plan_authority'],
+                    'write_release': execution['write_release']}
+        request = {'schema_version': context['schema_version'], 'action': 'execution-result',
+                   'actor_ref': 'controller', 'context': context, 'evidence': evidence}
+        payload = {'repository': str(self.repo), 'baseline': self.base, 'request': request}
+        pure = control.transition(request)
+        enriched = control_git.verified_transition(payload)
+        self.assertIn('git_result_snapshot', enriched['context']['handoff_progress']['executions'][0])
+        capacity = (len(json.dumps(pure['context']).encode()) +
+                    len(json.dumps(enriched['context']).encode())) // 2
+        with patch.object(control, 'MAX_BYTES', capacity), patch.object(control_git, 'MAX_BYTES', capacity):
+            self.assertTrue(control.transition(request)['ok'])
+            with self.assertRaisesRegex(control.ControlError, 'control history exceeds byte limit'):
+                control_git.verified_transition(payload)
 
     def test_later_allocation_rejects_unaccepted_dispatcher_changes(self):
         context = self.start_allocations()

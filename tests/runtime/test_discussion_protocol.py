@@ -1163,6 +1163,45 @@ class DiscussionProtocolScenarioFixture:
 
 class DiscussionProtocolEvolutionTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport):
 
+    def test_attached_control_uses_schema_six_and_rejects_old_embedded_schema(self) -> None:
+        def source_control(request):
+            completed = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parents[2]
+                                     / 'src/shared/scripts/discussion_protocol.py')],
+                input=json.dumps(request), capture_output=True, text=True)
+            self.assertTrue(completed.stdout, completed.stderr)
+            return completed.returncode, json.loads(completed.stdout), completed.stderr
+
+        project = self.make_project("attached-control-schema", git=True)
+        code, topic, stderr = source_control(self.request(project, conversation_ref="discussion-task"))
+        self.assertEqual(code, 0, stderr)
+        request = self.evolution_request(topic, operation="workflow-control",
+            expected_revision=1, expected_topic_revision=1,
+            action="choose-dedicated", evidence={"intent": "explicit-dedicated"})
+        code, created, stderr = source_control(request)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(created["control"]["context"]["schema_version"], 6)
+
+        ledger = Path(str(topic["ledger_path"]))
+        frontmatter, records = PROTOCOL._load_records(ledger)
+        embedded = next(record for record in records["Phase Results"]
+                        if record.get("result_kind") == "workflow-control")
+        embedded["data_json"] = PROTOCOL._canonical_json(
+            {**created["control"]["context"], "schema_version": 5})
+        ledger.write_bytes(PROTOCOL._render_records_ledger(frontmatter, records))
+        before = ledger.read_bytes()
+        code, replay_rejected, _ = source_control(request)
+        self.assertEqual(code, 1)
+        self.assertEqual(replay_rejected["error"]["code"], "legacy_run_requires_original_runtime")
+        self.assertEqual(ledger.read_bytes(), before)
+        code, rejected, _ = source_control(self.evolution_request(topic,
+            operation="workflow-control", expected_revision=created["ledger_revision"],
+            expected_topic_revision=1, action="choose-dedicated",
+            evidence={"intent": "explicit-dedicated"}))
+        self.assertEqual(code, 1)
+        self.assertEqual(rejected["error"]["code"], "legacy_run_requires_original_runtime")
+        self.assertEqual(ledger.read_bytes(), before)
+
     def test_bootstrap_replay_reads_evolved_ledger_without_rewriting_it(self) -> None:
         project = self.make_project("bootstrap-replay-after-evolution", git=False)
         invocation_id = str(uuid.uuid4())

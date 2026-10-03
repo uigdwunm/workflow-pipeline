@@ -1,8 +1,8 @@
 # Package execution and action preflight
 
 Registration provenance and controlled recovery require preparation=workflow-preparation-v5,
-stage_transfer=workflow-stage-transfer-v13, workflow_progress=workflow-progress-v17,
-and topic_gate=phase-0-1-discussion-v2. The topic gate key separates packages
+stage_transfer=workflow-stage-transfer-v14, workflow_progress=workflow-progress-v18,
+execution_plan=execution-plan-v1, and topic_gate=phase-0-1-discussion-v2. The topic gate key separates packages
 that allow discussion behind a closed dependency from the older blanket guard.
 Preparation v5 retains stable actor identity and permits the original Stage-2
 conversation Controller to freeze in a verified independent source checkout. Requirement freeze preserves unrelated edits made since
@@ -11,8 +11,8 @@ Entry requests use workflow-entry-v4 and requirement requests use requirement-fr
 Old pinned runs keep their original packages and records; ordinary new-package
 operations reject incompatible exchanges instead of filling missing identity
 fields.
-Runner outer version 9 requires workflow-progress-v17, workflow-stage-transfer-v13
-and control compatibility key 10 (JSON schema 5). Supervision flow-worktree-v3
+Runner outer version 10 requires workflow-progress-v18, workflow-stage-transfer-v14
+and control compatibility key 11 (JSON schema 6). Supervision flow-worktree-v3
 requires lifecycle provenance and disposition; requirement-delivery-v2 accepts
 bounded Stage-2 conversation delivery. Discussion request/ledger, requirement-freeze
 and thread-settings retain their existing versions. Older records require
@@ -20,13 +20,16 @@ their original pinned runtime for ordinary execution. Missing implementation_pol
 compatible new input means full; it never supplies direct provenance to an old
 candidate. This change does not install packages or update active registrations.
 
-Progression v16 retains native lifecycle admission, sealed Stage-2 downstream
+Progression v18 retains native lifecycle admission, sealed Stage-2 downstream
 scope and lifecycle-aware completion. The scope envelope has internal `version:1`;
-its manifest supplies implementation and closure path projections. Corrections
-are limited to accepted Stage 2 before any saved Stage-3 preparation, launch
-intent or session. Old checkpoints and pins fail the normal protocol guard and
-require their original runtime; there is no compatibility takeover entry.
-The five package roots include `scripts/stage_scope.py`.
+its manifest supplies implementation and closure path projections. The five
+package roots include `scripts/stage_scope.py` and `scripts/execution_plan.py`.
+Stage-2 readiness requires the complete function-plan catalog. The original
+Controller may activate a bounded internal plan revision only through the
+current stopped-writer transaction and exact planning release. Stage-3 allocation,
+candidate review and final validation use the current plan authority. Old
+checkpoints and pins require their original runtime; new packages reject legacy
+records before host calls or writes.
 
 For a Stage-2/3/4 Controller, also run the
 [native host preflight]({{resource:shared/references/workflow-progression.md}}#native-host-admission)
@@ -131,7 +134,7 @@ activation and archive protocol is satisfied; installation never supplies author
 
 The foreground runner belongs only to Stage 3's package. Start requires a current
 registry snapshot and freezes runner plus Stage 2/3/4 identities in outer record
-version 9. The runner pins the confirmed-input file as `registry_input`, rereads its current
+version 10. The runner pins the confirmed-input file as `registry_input`, rereads its current
 `registry` and `registry_context` before every executor launch, and rechecks all remaining targets on
 resume. The trusted host/controller must refresh that evidence when registrations
 change; executor filesystem discovery is not registration evidence. To supply a

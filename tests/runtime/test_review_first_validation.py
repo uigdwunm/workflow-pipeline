@@ -46,8 +46,6 @@ class ReviewFirstTests(fixture.ProgressTests):
                      verification_refs=['V-other'])
         plan['steps'].append(other)
         value['authorization']['scope_digest'] = transfer.entry.digest(scope)
-        value['inline_authority'] = execution_plan.inline_authority(
-            plan, scope, value['semantic'], self.frozen['requirement_identity'])
         self.begin('continuous', value)
         self.invoke('observe', self.observation(ref='native:dispatcher'))
 
@@ -74,10 +72,8 @@ class ReviewFirstTests(fixture.ProgressTests):
         second = self.execution_input()
         second['scope']['owned_paths'] = ['other.py']
         second['semantic']['plan_refs'] = [ref for ref in [
-            {'ticket_id': ticket['ticket_id'], 'step_id': step['id'],
-             'plan_version': ticket['plan_version'], 'source': ticket['source'],
-             'step_digest': transfer.entry.digest(step)}
-            for ticket in self.state()['scope_authority']['execution_plan']['tickets']
+            execution_plan.step_ref(ticket, step)
+            for ticket in self.state()['scope_authority']['execution_plan']['catalog']['tickets']
             for step in ticket['plan']['steps']] if ref['step_id'] == 'inline-other']
         second['authorization']['scope_digest'] = transfer.entry.digest(second['scope'])
         prepared = self.invoke('allocation', {'allocation_id': 'affected-old', 'operation': 'prepare',
@@ -199,11 +195,9 @@ class ReviewFirstTests(fixture.ProgressTests):
         adoption = self.execution_input()
         adoption['scope']['owned_paths'] = ['other.py']
         authority = self.state()['scope_authority']
-        ticket = authority['execution_plan']['tickets'][0]
+        ticket = authority['execution_plan']['catalog']['tickets'][0]
         step = next(item for item in ticket['plan']['steps'] if item['id'] == 'inline-other')
-        adoption['semantic']['plan_refs'] = [{'ticket_id': ticket['ticket_id'],
-            'step_id': step['id'], 'plan_version': ticket['plan_version'],
-            'source': ticket['source'], 'step_digest': transfer.entry.digest(step)}]
+        adoption['semantic']['plan_refs'] = [execution_plan.step_ref(ticket, step)]
         adoption['semantic']['adopt_paths'] = ['other.py']
         adoption['semantic']['adoption_snapshot_digest'] = current['revalidation_source']['snapshot_digest']
         adoption['authorization']['scope_digest'] = transfer.entry.digest(adoption['scope'])
@@ -346,7 +340,7 @@ class ReviewFirstTests(fixture.ProgressTests):
         original = control.delivery_verification(prior, 'native:dispatcher')
         self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
         old = self.state()['scope_authority']
-        revised = copy.deepcopy(old['execution_plan']['tickets'][0]['plan'])
+        revised = copy.deepcopy(old['execution_plan']['catalog']['tickets'][0]['plan'])
         revised['plan_version'] += 1
         revised['steps'][0]['approach'] = ['same contract with a revised private implementation']
         contract_digest = old['execution_plan']['contract_digest']
@@ -392,8 +386,6 @@ class ReviewFirstTests(fixture.ProgressTests):
         other.update(id='inline-other', target={'path': 'other.py', 'symbol': 'run', 'operation': 'add'})
         plan['steps'].append(other)
         value['authorization']['scope_digest'] = transfer.entry.digest(scope)
-        value['inline_authority'] = execution_plan.inline_authority(
-            plan, scope, value['semantic'], self.frozen['requirement_identity'])
         self.begin('continuous', value)
         self.invoke('observe', self.observation(ref='native:dispatcher'))
 
@@ -467,11 +459,9 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.assertIn('function step', str(missing_step.exception))
         other_execution = self.execution_input()
         other_execution['scope']['owned_paths'] = ['other.py']
-        ticket = self.state()['scope_authority']['execution_plan']['tickets'][0]
+        ticket = self.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
         other_step = next(item for item in ticket['plan']['steps'] if item['id'] == 'inline-other')
-        other_execution['semantic']['plan_refs'] = [{'ticket_id': ticket['ticket_id'],
-            'step_id': other_step['id'], 'plan_version': ticket['plan_version'],
-            'source': ticket['source'], 'step_digest': transfer.entry.digest(other_step)}]
+        other_execution['semantic']['plan_refs'] = [execution_plan.step_ref(ticket, other_step)]
         other_execution['authorization']['scope_digest'] = transfer.entry.digest(other_execution['scope'])
         prepared = self.invoke('allocation', {'allocation_id': 'other-current',
             'operation': 'prepare', 'handoff': other_execution})
@@ -522,7 +512,7 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.begin_dispatcher()
         self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
         old = self.state()['scope_authority']
-        revised = copy.deepcopy(old['execution_plan']['tickets'][0]['plan'])
+        revised = copy.deepcopy(old['execution_plan']['catalog']['tickets'][0]['plan'])
         revised['plan_version'] += 1
         revised['steps'][0]['approach'] = ['revised private function approach']
         contract_digest = old['execution_plan']['contract_digest']
@@ -555,7 +545,7 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
         old = self.state()['scope_authority']
         original_validation = copy.deepcopy(self.state()['control']['context']['handoff_progress']['validation_plan'])
-        revised = copy.deepcopy(old['execution_plan']['tickets'][0]['plan'])
+        revised = copy.deepcopy(old['execution_plan']['catalog']['tickets'][0]['plan'])
         revised['plan_version'] += 1
         revised['steps'][0]['approach'] = ['revised private function test seam']
         validation = copy.deepcopy(original_validation)

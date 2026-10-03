@@ -34,7 +34,7 @@ import workflow_control_git as control_git
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v17"
+PROTOCOL = "workflow-progress-v18"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -363,7 +363,7 @@ def validate_state(state):
         workspace_evidence(state['handoff']['binding'], state['handoff']['controller_ref'], state['workspace_evidence'])
         require(isinstance(native_host, dict) and native_host.get('adapter') in {'collaboration', 'app-server'} and
                 isinstance(native_host.get('instance'), str) and bool(native_host['instance']),
-                'invalid_checkpoint', 'v13 requires the originally admitted native host')
+                'invalid_checkpoint', 'the original admitted native host is required')
         if native_host['adapter'] == 'collaboration':
             require(set(native_host) == {'adapter', 'instance', 'controller_ref', 'baseline_refs'} and
                     isinstance(native_host['controller_ref'], str) and
@@ -601,11 +601,13 @@ def read_scope_readiness(readiness):
     require(path.is_absolute() and str(path.resolve()) == str(path),
             "invalid_checkpoint", "canonical absolute progression checkpoint required")
     outer = read_record(path)
-    require(outer.get("version") in (None, 9), "legacy_run_requires_original_runtime",
-            "scope readiness requires a standalone record or runner version 9")
+    require(outer.get("version") in (None, 10), "legacy_run_requires_original_runtime",
+            "scope readiness requires a standalone record or runner version 10")
     state = outer.get(KEY)
-    require(isinstance(state, dict) and state.get("protocol") == PROTOCOL,
-            "handoff_not_ready", "current progression checkpoint is unavailable")
+    require(isinstance(state, dict), "handoff_not_ready",
+            "current progression checkpoint is unavailable")
+    require(state.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime",
+            "retain original progression runtime " + str(state.get("protocol")))
     validate_state(state)
     require(state.get("checkpoint_path") == str(path), "handoff_not_ready",
             "readiness must name the original current checkpoint")
@@ -4745,14 +4747,14 @@ def handle(path, request):
         outer = read_record(path)
         if request["operation"] == "scope-revise":
             require_scope_correction_available(outer)
-        require(outer.get("version") in (None, 9), "legacy_run_requires_original_runtime", "progression requires a standalone record or runner version 9")
+        require(outer.get("version") in (None, 10), "legacy_run_requires_original_runtime", "progression requires a standalone record or runner version 10")
         member = outer.get(KEY)
         pinned_protocol = outer.get("confirmed", {}).get("packages", {}).get("runner", {}).get("compatibility_key", {}).get("workflow_progress")
         require((member is None or isinstance(member, dict) and member.get("protocol") == PROTOCOL) and
                 (pinned_protocol is None or pinned_protocol == PROTOCOL),
                 "legacy_run_requires_original_runtime", "all operations require the original pinned progression runtime")
         if member is not None:
-            require(member.get("control",{}).get("context",{}).get("schema_version") in {5, 6},
+            require(member.get("control",{}).get("context",{}).get("schema_version") == 6,
                     "legacy_run_requires_original_runtime", "retain the original embedded control runtime")
         if request["operation"] == "deliver-requirement":
             return deliver_requirement(path, outer, request.get("data", {}))

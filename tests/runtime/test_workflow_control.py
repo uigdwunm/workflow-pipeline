@@ -201,7 +201,7 @@ class WorkflowControlTests(unittest.TestCase):
                 control_git.plan_revision_snapshot(root, authority,
                     ['planning.md'], ['planning.md'])
 
-    def call(self, action, evidence=None, context=None, schema_version=5):
+    def call(self, action, evidence=None, context=None, schema_version=6):
         request = {'schema_version': schema_version, 'action': action,
                    'actor_ref': 'controller', 'context': context or self.context(),
                    'evidence': evidence or {}}
@@ -227,11 +227,21 @@ class WorkflowControlTests(unittest.TestCase):
                 'inherited': None, 'upgrade_attempted': False}
 
     def context(self):
-        return {'schema_version': 5, 'controller_ref': 'controller', 'topic_ref': None,
+        return {'schema_version': 6, 'controller_ref': 'controller', 'topic_ref': None,
                 'stage': 0, 'carrier': None,
                 'preference': {'topic_current': False, 'stage_current': False},
                 'flow_authority': None, 'requirement_identity': {'path': 'docs/draft.md',
-                    'sha256': 'a' * 64, 'version': 1}, 'handoff_progress': None}
+                'sha256': 'a' * 64, 'version': 1}, 'handoff_progress': None}
+
+    def test_previous_control_schema_requires_its_original_runtime(self):
+        current = self.context()
+        previous = copy.deepcopy(current)
+        previous['schema_version'] = 5
+        rejected_context = self.call('select-configuration', {}, previous)
+        rejected_request = self.call('select-configuration', {}, current, schema_version=5)
+        self.assertIn('legacy_run_requires_original_runtime', rejected_context['error'])
+        self.assertIn('legacy_run_requires_original_runtime', rejected_request['error'])
+        self.assertEqual(previous['schema_version'], 5)
 
     def test_preparation_freezes_one_plan_without_creating_a_task(self):
         result = self.call('prepare', {'target': 'local', 'project': 'project',

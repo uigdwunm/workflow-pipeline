@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print a reproducible T13/T14 field acceptance worksheet; creates no tasks.
+"""Print a reproducible T13/T14 and FEP T3 field worksheet; creates no tasks.
 
 Run after automated validation. Supply a release root to record real bundle
 identities. Host registration, Matt execution and Agent behavior stay explicitly
@@ -43,11 +43,26 @@ def main():
             'Restore the same pinned version and refresh registry. Resume the original session/attempt at the first unfinished action; do not repeat planning, candidate or merge.',
             'Verify merge-success/cleanup-pending recovery runs cleanup only. Retain transcript, exact receipts, Git ancestry and resource-removal evidence.'],
         'evidence':{'transcript':None,'registry_and_identities':None,'native_role_receipts':None,'handoffs':None,'same_requirement_and_flow':None,'failure_and_recovery':None,'archive_order':None}})
+    rows.append({'test':'T3','status':'not_run',
+        'setup':'Use a disposable repository and real host task with the reviewed 1.3.0 five-package candidate. Record effective registration, exact package identities, original Controller and native receipts before each action.',
+        'steps':[
+            'Publish a complete function-plan catalog through the real Stage-2 proposal, seal and current readiness path; prove a missing or stale plan blocks entry.',
+            'Bind and release grouped plan refs to a real native Execution Agent; return exact file hashes, reject a stale release, and verify the Dispatcher does not write implementation bytes.',
+            'Ask the original Controller for a contract-internal plan revision; prove all writers stopped, exact planning bytes committed, one current authority activated, and old reviews invalidated.',
+            'Prove unchanged accepted results carry-forward and changed bytes require stopped-agent adoption with current refs before a new candidate and both review axes.',
+            'Exercise the user-decision gate for a contract-changing request without widening the internal revision.',
+            'Exercise standalone, foreground and attached routes with their original Controller ingress and preserved ledger/run identity.',
+            'Read back original 1.2.3 active registrations and pins; verify the new runtime rejects legacy executable records without migration or installation side effects.',
+        ],
+        'evidence':{'host_transcript':None,'current_registry_and_package_identities':None,
+            'plan_catalog_and_revision_commits':None,'native_bind_release_and_result_receipts':None,
+            'git_snapshots_and_file_hashes':None,'review_and_validation_receipts':None,
+            'user_gate_and_route_results':None,'legacy_pins_readback':None}})
     print(json.dumps({'automated_agent_claim':False,'installation_changes_authorized':False,'checks':rows,
         'local_sync':['Record actual registry links and old real roots/digests before requesting installation-change authorization.',
             'With that separate authorization, install to a new immutable directory using the user’s actual manager; keep old versions until active runs end.',
             'Switch new-task registration, refresh the host task and read back the effective registry plus package digest.',
-            'If verification fails, restore the saved link and retain old runner versions for version-1 records. Never edit manager private state.']},ensure_ascii=False,indent=2))
+            'If verification fails, restore the saved link and retain old runner versions for their pinned records. Never edit manager private state.']},ensure_ascii=False,indent=2))
 
 
 if __name__=='__main__':main()

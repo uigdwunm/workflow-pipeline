@@ -679,6 +679,9 @@ def verified_transition(payload):
         result['pending_peer_refs'] = pending_peers
     if action == 'plan-execution':
         result['context']['handoff_progress']['executions'][-1]['git_snapshot'] = before
+    # Git evidence is attached after the pure transition. Keep the original
+    # checkpoint inside its bound capacity before any caller persists it.
+    validate_context(result['context'])
     return result
 
 
