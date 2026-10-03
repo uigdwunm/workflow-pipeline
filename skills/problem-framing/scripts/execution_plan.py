@@ -651,17 +651,32 @@ def current_accepted_steps(catalog, results, authority, current_fingerprints=Non
                 latest_outputs[relative] = delivered[relative]
             elif relative in started:
                 latest_outputs[relative] = started[relative]
-        for ref in result.get('plan_refs', []):
-            pair = steps.get(ref.get('step_id')) if isinstance(ref, dict) else None
-            if pair is not None and ref == step_ref(*pair):
-                latest_steps[ref['step_id']] = result
-    completed = set()
-    for identity, result in latest_steps.items():
-        if not isinstance(result.get('git_result_snapshot'), dict):
+        refs = result.get('plan_refs')
+        if not isinstance(refs, list) or not refs:
             continue
-        required = set(steps[identity][1].get('read_only', [])) & implementation
-        witness = accepted_read_fingerprints(result, required)
-        if witness is None:
+        selected = []
+        valid_refs = True
+        for ref in refs:
+            pair = steps.get(ref.get('step_id')) if isinstance(ref, dict) else None
+            if pair is None:
+                valid_refs = False
+                continue
+            selected.append(ref['step_id'])
+            if ref != step_ref(*pair):
+                valid_refs = False
+        valid_refs = (valid_refs and len(selected) == len(set(selected)) and selected ==
+            [identity for identity in catalog['ordered_step_ids'] if identity in selected])
+        witness = None
+        if valid_refs:
+            required = {relative for identity in selected
+                        for relative in steps[identity][1].get('read_only', [])
+                        if relative in implementation}
+            witness = accepted_read_fingerprints(result, required)
+        for identity in selected:
+            latest_steps[identity] = (result, witness)
+    completed = set()
+    for identity, (result, witness) in latest_steps.items():
+        if witness is None or not isinstance(result.get('git_result_snapshot'), dict):
             continue
         expected_inputs = latest_outputs if current_fingerprints is None else current_fingerprints
         if all(relative in expected_inputs and expected_inputs[relative] == fingerprint
