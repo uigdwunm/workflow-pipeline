@@ -236,9 +236,9 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(delivered["next_action"]["result"]["status"], "accepted")
 
     def accept_planned_group(self, flow, ticket, identities, contents, allocation_id,
-                             read_only=()):
+                             read_only=(), owned_paths=None):
         execution = flow.execution_input()
-        execution["scope"]["owned_paths"] = sorted(contents)
+        execution["scope"]["owned_paths"] = sorted(contents if owned_paths is None else owned_paths)
         execution["scope"]["protected_paths"] += list(read_only)
         execution["authorization"]["scope_digest"] = fixture.fixture.transfer.entry.digest(
             execution["scope"])
@@ -268,7 +268,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
             "operation": "accept", "decision": {"reference": "dispatcher:" + allocation_id}})
         self.assertEqual(delivered["next_action"]["result"]["status"], "accepted")
 
-    def carried_mixed_group(self):
+    def carried_mixed_group(self, replacement_contents=None):
         flow = self.new_active_flow(read_dependency=True, grouped_reads=True)
         controller_request = copy.deepcopy(flow.request)
         controller_settings = copy.deepcopy(flow.settings)
@@ -279,6 +279,10 @@ class PlanRevisionProgressTests(unittest.TestCase):
             {"later.py": b"def later():\n    return 1\n",
              "independent.py": b"def independent():\n    return 1\n"},
             "mixed-group", read_only=["impl.py"])
+        if replacement_contents is not None:
+            self.accept_planned_group(flow, ticket, {"FP1-02", "FP1-03"},
+                replacement_contents, "replacement-group", read_only=["impl.py"],
+                owned_paths=["independent.py", "later.py"])
 
         report = self.report(flow)
         report["report"].update(step_ids=["FP1-05"], dependency_impact=["FP1-05"],
@@ -307,6 +311,145 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(set(carried_group["read_only_fingerprints"]), {"impl.py"})
         current_ticket = flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0]
         return flow, current_ticket, controller_request, controller_settings
+
+    def test_zero_delta_group_carries_all_owned_fingerprints_and_reader_dependency(self):
+        flow, ticket, _, _ = self.carried_mixed_group(replacement_contents={})
+        checkpoint = flow.state()["control"]["context"]["handoff_progress"]
+        carried = next(item for item in checkpoint["carried_results"]
+                       if item["paths"] == ["independent.py", "later.py"])
+        self.assertEqual(carried["git_result_snapshot"], {})
+        self.assertEqual(set(carried["owned_final_fingerprints"]), set(carried["paths"]))
+        self.accept_planned_step(flow, ticket, "FP1-04", "downstream.py",
+                                 b"def downstream():\n    return 1\n", "downstream-after-zero-delta")
+        context = flow.state()["control"]["context"]
+        original = next(item for item in context["handoff_progress"]["plan_revision_sources"][0]["executions"]
+                        if item["agent_ref"] == "replacement-group")
+        self.assertEqual(original["git_result_snapshot"], {})
+        for corruption in ("original-start", "original-delta", "source-digest",
+                           "start-projection", "final-projection"):
+            with self.subTest(corruption=corruption):
+                tampered = copy.deepcopy(context)
+                state = tampered["handoff_progress"]
+                archived = next(item for item in state["plan_revision_sources"][0]["executions"]
+                                if item["agent_ref"] == "replacement-group")
+                carried = next(item for item in state["carried_results"]
+                               if item["agent_ref"] == "replacement-group")
+                if corruption == "original-start":
+                    archived["git_snapshot"]["files"]["independent.py"] = "0" * 64
+                elif corruption == "original-delta":
+                    archived["git_result_snapshot"]["independent.py"] = "0" * 64
+                elif corruption == "source-digest":
+                    carried["source_result_digest"] = "0" * 64
+                elif corruption == "start-projection":
+                    carried["source_owned_start_fingerprints"]["independent.py"] = "0" * 64
+                else:
+                    carried["owned_final_fingerprints"]["independent.py"] = "0" * 64
+                if corruption not in {"original-start", "original-delta"}:
+                    revision = state["plan_revisions"][-1]
+                    revision["evidence"]["retention"]["carried_results"] = copy.deepcopy(
+                        state["carried_results"])
+                    revision["revision_ref"] = progress.control.digest({
+                        "controller_ref": revision["controller_ref"],
+                        "evidence": revision["evidence"]})
+                with self.assertRaisesRegex(progress.control.ControlError,
+                                            "original accepted|owned fingerprints"):
+                    progress.control.validate_context(tampered)
+
+        relative = flow.flow / "independent.py"
+        original_bytes = relative.read_bytes()
+        original_mode = relative.stat().st_mode & 0o7777
+        for mutation in ("content", "mode", "presence"):
+            with self.subTest(mutation=mutation):
+                if mutation == "content":
+                    relative.write_bytes(original_bytes + b"# changed\n")
+                elif mutation == "mode":
+                    relative.chmod(0o755)
+                else:
+                    relative.unlink()
+                with self.assertRaisesRegex(progress.control.ControlError,
+                                            "accepted content, existence or mode changed"):
+                    progress.control_git.recovery_snapshot(
+                        flow.flow, context["handoff_progress"])
+                if mutation == "presence":
+                    relative.write_bytes(original_bytes)
+                else:
+                    relative.write_bytes(original_bytes)
+                relative.chmod(original_mode)
+
+    def test_partial_delta_group_can_enter_candidate_with_unchanged_owned_path(self):
+        flow, ticket, _, _ = self.carried_mixed_group(
+            replacement_contents={"later.py": b"def later():\n    return 2\n"})
+        checkpoint = flow.state()["control"]["context"]["handoff_progress"]
+        carried = next(item for item in checkpoint["carried_results"]
+                       if item["paths"] == ["independent.py", "later.py"])
+        self.assertEqual(set(carried["git_result_snapshot"]), {"later.py"})
+        self.assertEqual(set(carried["owned_final_fingerprints"]), set(carried["paths"]))
+        self.accept_planned_step(flow, ticket, "FP1-04", "downstream.py",
+                                 b"def downstream():\n    return 1\n", "candidate-downstream")
+        self.accept_planned_step(flow, ticket, "FP1-05", "reader.py",
+                                 b"def reader():\n    return 1\n", "candidate-reader")
+        flow.flow_git("add", "impl.py", "later.py", "independent.py", "downstream.py", "reader.py")
+        flow.flow_git("commit", "-qm", "accepted partial delta implementation")
+        candidate = flow.flow_git("rev-parse", "HEAD")
+        checkpoint = flow.state()["control"]["context"]["handoff_progress"]
+        checks = fixture.fixture.transfer.checks_for(
+            checkpoint["validation_plan"]["review_required"], candidate)
+        evidence = {
+            "dispatcher_ref": "native:dispatcher",
+            "attempt": flow.state()["control"]["context"]["carrier"]["attempt"],
+            "commit": candidate, "expected_target_head": flow.git("rev-parse", "main"),
+            "binding": flow.binding, "plan_digest": checkpoint["plan_digest"],
+            "plan_authority": checkpoint["plan_authority"], "checks": checks,
+            "source": {"adapter": "fixture", "call_ref": "focused-partial-group",
+                "response_ref": "focused-partial-group-result", "raw": {"checks": checks,
+                    "source_unchanged": True, "stopped": True,
+                    "dispatcher_ref": "native:dispatcher"}}}
+        ready = progress.control_git.verified_transition({"repository": str(flow.flow),
+            "baseline": checkpoint["git_baseline_commit"], "request": {
+                "schema_version": 6, "action": "candidate-ready", "actor_ref": "task",
+                "context": flow.state()["control"]["context"], "evidence": evidence}})
+        self.assertEqual(ready["context"]["handoff_progress"]["state"], "reviewable")
+
+    def test_zero_delta_owned_evidence_survives_two_activated_revisions(self):
+        flow, _, _, _ = self.carried_mixed_group(replacement_contents={})
+        first = flow.state()["control"]["context"]["handoff_progress"]
+        original = next(item for item in first["carried_results"]
+                        if item["agent_ref"] == "replacement-group")
+        report = self.report(flow)
+        report["revision_id"] = "zero-delta-second"
+        report["classification"]["reference"] = "controller:zero-delta-second"
+        report["report"].update(step_ids=["FP1-05"], dependency_impact=["FP1-05"],
+            verification_impact=["V2"], carry_forward=["FP1-01", "FP1-02", "FP1-03"])
+        flow.invoke("prepare-plan-revision", report)
+        stopped = flow.observation("stopped", "result", ref="native:dispatcher")
+        stopped["lifecycle"]["pages"][0]["response"]["data"].extend(
+            {"id": ref, "status": {"type": "idle"}}
+            for ref in ("input-owner", "mixed-group", "replacement-group"))
+        prepared = flow.invoke("observe", stopped)
+        self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
+        source = flow.flow / "docs/spec.md"
+        body = source.read_text()
+        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan["plan_version"] = 3
+        plan["steps"][4]["approach"].append("revise unrelated reader again")
+        source.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                          .replace("Plan Version: 2", "Plan Version: 3"))
+        flow.flow_git("add", "docs/spec.md")
+        flow.flow_git("commit", "--only", "-qm", "revise unrelated reader again", "--", "docs/spec.md")
+        activated = flow.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
+            "controller_ref": "task", "write_release": prepared["next_action"]["write_release"],
+            "planning_commit": flow.flow_git("rev-parse", "HEAD")})
+        self.assertEqual(activated["next_action"]["operation"], "plan-revision-activated")
+        second = flow.state()["control"]["context"]["handoff_progress"]
+        carried = next(item for item in second["carried_results"]
+                       if item["agent_ref"] == "replacement-group")
+        for field in ("git_result_snapshot", "source_owned_start_fingerprints",
+                      "owned_final_fingerprints", "source_result_digest", "source_revision"):
+            self.assertEqual(carried[field], original[field], field)
+        ticket = flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0]
+        self.accept_planned_step(flow, ticket, "FP1-04", "downstream.py",
+                                 b"def downstream():\n    return 1\n", "after-two-zero-delta-revisions")
 
     def test_carried_group_with_mixed_reads_satisfies_later_dependencies(self):
         flow, current_ticket, _, _ = self.carried_mixed_group()

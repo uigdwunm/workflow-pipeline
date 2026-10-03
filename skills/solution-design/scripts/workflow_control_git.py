@@ -297,6 +297,13 @@ def recovery_snapshot(repository, progress):
     if 'design_input' in progress:
         return actual, {'designer': sorted(changed)}, []
     owners, accepted_fingerprints, revalidate = {}, {}, []
+    from execution_plan import accepted_owned_fingerprints
+    for result in progress.get('carried_results', []):
+        fingerprints = accepted_owned_fingerprints(result)
+        require(fingerprints is not None, 'carried execution lacks verified owned fingerprints')
+        for relative, fingerprint in fingerprints.items():
+            owners[relative] = result['agent_ref']
+            accepted_fingerprints[relative] = fingerprint
     for execution in progress['executions']:
         if execution['state'] == 'cancelled':
             continue
@@ -436,7 +443,10 @@ def verify_execution_start(repository, progress):
         expected.update({p: revision_source['snapshot']['files'][p]
                          for p in revision_source['pending_paths']})
     for result in progress.get('carried_results', []):
-        expected.update(result['git_result_snapshot'])
+        from execution_plan import accepted_owned_fingerprints
+        fingerprints = accepted_owned_fingerprints(result)
+        require(fingerprints is not None, 'carried execution lacks verified owned fingerprints')
+        expected.update(fingerprints)
     escalation = None if progress.get('integration_source') is not None else progress.get('implementation_escalation')
     if escalation is not None:
         inherited = escalation['snapshot']
@@ -697,8 +707,12 @@ def verified_transition(payload):
             missing = [identity for identity in catalog['ordered_step_ids'] if identity not in completed]
             require(not missing, 'candidate requires an accepted result for current function step: ' +
                     missing[0] if missing else 'candidate function steps are complete')
-        accepted_fingerprints = {p: fingerprint for result in progress.get('carried_results', [])
-                                 for p, fingerprint in result['git_result_snapshot'].items()}
+        from execution_plan import accepted_owned_fingerprints
+        accepted_fingerprints = {}
+        for result in progress.get('carried_results', []):
+            fingerprints = accepted_owned_fingerprints(result)
+            require(fingerprints is not None, 'carried execution lacks verified owned fingerprints')
+            accepted_fingerprints.update(fingerprints)
         for execution in progress['executions']:
             if execution['state'] == 'accepted':
                 require('git_result_snapshot' in execution,

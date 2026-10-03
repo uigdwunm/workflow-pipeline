@@ -93,6 +93,7 @@ class WorkflowControlTests(unittest.TestCase):
             'plan_refs': refs, 'paths': ['src/a.py'], 'agent_ref': 'native:agent',
             'task_id': 'original', 'allocation_digest': 'allocation',
             'file_hashes': {'src/a.py': 'f' * 64},
+            'git_snapshot': {'files': {'src/a.py': None}},
             'git_result_snapshot': {'src/a.py': 'f' * 64}}
         retained = execution_plan.classify_retained_results(authority, revised,
             [original], [], None, {'files': {'src/a.py': 'f' * 64}},
@@ -102,7 +103,15 @@ class WorkflowControlTests(unittest.TestCase):
         self.assertEqual(carried['plan_refs'], [execution_plan.step_ref(
             ticket, ticket['plan']['steps'][0])])
         self.assertEqual(carried['plan_authority']['revision'], 2)
+        self.assertEqual(carried['source_owned_start_fingerprints'], {'src/a.py': None})
+        self.assertEqual(carried['owned_final_fingerprints'], {'src/a.py': 'f' * 64})
         self.assertEqual(original['plan_refs'], refs)
+        missing_start = copy.deepcopy(original)
+        del missing_start['git_snapshot']
+        with self.assertRaises(execution_plan.entry.PreparationError):
+            execution_plan.classify_retained_results(authority, revised,
+                [missing_start], [], None, {'files': {'src/a.py': 'f' * 64}},
+                {'src/a.py': None}, [])
         forged = copy.deepcopy(original)
         forged['plan_refs'][0]['source_sha256'] = '0' * 64
         with self.assertRaises(execution_plan.entry.PreparationError):
@@ -119,6 +128,31 @@ class WorkflowControlTests(unittest.TestCase):
         catalog = execution_plan.current_catalog(authority)
         self.assertEqual(execution_plan.current_accepted_steps(
             catalog, [original, missing], authority), set())
+
+    def test_zero_delta_result_does_not_carry_after_owned_fingerprint_changes(self):
+        authority, old_plan, refs = self.execution_plan_fixture(['src/a.py'])
+        revised = copy.deepcopy(authority)
+        revised['revision'] = 2
+        ticket = revised['execution_plan']['catalog']['tickets'][0]
+        ticket['plan_version'] = 2
+        ticket['source'].update(plan_version=2, sha256='5' * 64)
+        catalog = revised['execution_plan']['catalog']
+        catalog['plan_digest'] = control.authority_digest({
+            key: value for key, value in catalog.items() if key != 'plan_digest'})
+        revised['execution_plan'] = execution_plan.authority_envelope(catalog, 1,
+            input_digest=authority['execution_plan']['sources'][0]['input_digest'])
+        original = {'state': 'accepted', 'stopped': True, 'plan_authority': old_plan,
+            'plan_refs': refs, 'paths': ['src/a.py'], 'agent_ref': 'native:agent',
+            'task_id': 'original', 'allocation_digest': 'allocation', 'file_hashes': {},
+            'git_snapshot': {'files': {'src/a.py': 'f' * 64}},
+            'git_result_snapshot': {}}
+        for label, current in (('content', 'e' * 64), ('mode', 'd' * 64),
+                               ('presence', None)):
+            with self.subTest(label=label):
+                retention = execution_plan.classify_retained_results(authority, revised,
+                    [original], [], None, {'files': {'src/a.py': current}},
+                    {'src/a.py': None}, [])
+                self.assertEqual(retention['carried_results'], [])
 
     def execution_plan_fixture(self, allowed_paths, verification_command='CLI test'):
         step = {'id': 'step-a', 'target': {'path': 'src/a.py', 'symbol': 'run', 'operation': 'add'},
@@ -509,9 +543,13 @@ class WorkflowControlTests(unittest.TestCase):
         accepted = self.call('accept-execution', {'agent_ref': 'executor',
             'file_hashes': {'src/a.py': 'd' * 64}, 'plan_refs': refs,
             'plan_authority': current_plan, 'write_release': 'release-slice'}, received['context'])
+        accepted['context']['handoff_progress']['executions'][-1]['git_snapshot'] = {
+            'head': 'a' * 40, 'branch': self.binding()['branch'],
+            'index_hash': '0' * 64, 'files': {'src/a.py': None, 'src/b.py': None}}
         accepted['context']['handoff_progress']['executions'][-1]['git_result_snapshot'] = {
             'src/a.py': 'd' * 64}
-        self.assertTrue(self.call('candidate-ready', evidence, accepted['context'])['ok'])
+        ready = self.call('candidate-ready', evidence, accepted['context'])
+        self.assertTrue(ready['ok'], ready)
         stale_plan = {**evidence, 'plan_authority': {**current_plan, 'revision': 0}}
         self.assertFalse(self.call('candidate-ready', stale_plan, accepted['context'])['ok'])
         extra = {**evidence, 'changed_paths': ['src/a.py', 'src/b.py'],

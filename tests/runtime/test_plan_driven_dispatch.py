@@ -358,7 +358,9 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         refs = request['semantic']['plan_refs']
         current = flow.state()['control']['context']['handoff_progress']['plan_authority']
         first = {'state': 'accepted', 'stopped': False, 'plan_authority': current,
-                 'plan_refs': [refs[0]], 'git_result_snapshot': {'impl.py': 'saved'}}
+                 'plan_refs': [refs[0]], 'paths': ['impl.py'],
+                 'git_snapshot': {'files': {'impl.py': None}},
+                 'git_result_snapshot': {'impl.py': 'f' * 64}}
         with self.assertRaises(entry.PreparationError) as error:
             execution_plan.validate_plan_refs(authority['execution_plan']['catalog'], [refs[1]],
                 ['impl.py'], request['scope']['protected_paths'], [first], authority)

@@ -577,14 +577,20 @@ def validate_progress(progress):
                 keys(result, {'state', 'stopped', 'agent_ref', 'task_id', 'allocation_digest',
                               'paths', 'file_hashes', 'git_result_snapshot', 'plan_refs',
                               'read_only_fingerprints', 'plan_authority',
-                              'source_result_digest', 'source_revision'})
+                              'source_result_digest', 'source_revision',
+                              'source_owned_start_fingerprints', 'owned_final_fingerprints'})
                 require(result['state'] == 'accepted' and result['stopped'] is True and
                         result['plan_authority'] == progress.get('plan_authority') and
                         isinstance(result['source_revision'], int) and
                         result['source_revision'] < progress['plan_authority']['revision'],
                         'carried result lacks current plan authority')
                 paths(result['paths']); hashes(result['file_hashes']); hashes(result['git_result_snapshot'])
-                hashes(result['read_only_fingerprints'])
+                hashes(result['read_only_fingerprints']); hashes(result['owned_final_fingerprints'])
+                hashes(result['source_owned_start_fingerprints'])
+                require(set(result['owned_final_fingerprints']) == set(result['paths']),
+                        'carried result lacks complete owned fingerprints')
+                require(set(result['source_owned_start_fingerprints']) == set(result['paths']),
+                        'carried result lacks original owned start fingerprints')
         if 'revalidation_source' in progress:
             source = progress['revalidation_source']
             keys(source, {'revision_id', 'authority_digest', 'snapshot',
@@ -607,14 +613,11 @@ def validate_progress(progress):
                         'snapshot_digest': digest(latest['snapshot']),
                         'pending_paths': latest['retention']['pending_paths']},
                     'current carry-forward or revalidation differs from activated revision')
+            from execution_plan import original_carried_fingerprints
             originals = [item for source in progress.get('plan_revision_sources', [])
                          for item in source['executions']]
             require(all(any(item.get('state') == 'accepted' and
-                            authority_digest(item) == carried['source_result_digest'] and
-                            item.get('agent_ref') == carried['agent_ref'] and
-                            item.get('paths') == carried['paths'] and
-                            item.get('file_hashes') == carried['file_hashes'] and
-                            item.get('git_result_snapshot') == carried['git_result_snapshot'] and
+                            original_carried_fingerprints(carried, [item]) is not None and
                             isinstance(item.get('git_snapshot'), dict) and
                             set(carried['read_only_fingerprints']) ==
                                 set(item.get('read_only', [])) &
@@ -1592,11 +1595,23 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                     {p: proof['stop']['git_snapshot']['files'][p] for p in changed},
                     'direct candidate paths or fingerprints differ from its stopped snapshot')
         else:
-            accepted_hashes = {}
+            from execution_plan import accepted_owned_fingerprints
+            accepted_hashes, accepted_fingerprints = {}, {}
             for execution in accepted:
-                accepted_hashes.update(execution['file_hashes'])
-            require(changed <= set(accepted_hashes), 'candidate contains implementation paths without accepted Execution Agent delivery')
-            require(all(evidence['file_hashes'].get(p) == accepted_hashes[p] for p in changed),
+                owned = accepted_owned_fingerprints(execution)
+                require(owned is not None, 'accepted execution lacks owned fingerprint evidence')
+                for relative, fingerprint in owned.items():
+                    accepted_fingerprints[relative] = fingerprint
+                    if relative in execution['file_hashes']:
+                        accepted_hashes[relative] = execution['file_hashes'][relative]
+                    else:
+                        accepted_hashes.pop(relative, None)
+            require(changed <= set(accepted_fingerprints),
+                    'candidate contains implementation paths without accepted Execution Agent delivery')
+            require(changed <= set(evidence['file_hashes']),
+                    'candidate lacks actual file hashes for changed paths')
+            require(all(evidence['file_hashes'].get(p) == accepted_hashes[p]
+                        for p in changed & set(accepted_hashes)),
                     'candidate bytes differ from accepted Execution Agent delivery')
         progress.update(state='reviewable', candidate=evidence['commit'], tests=evidence['checks'],
                         expected_target_head=evidence['expected_target_head'], candidate_evidence=evidence)
