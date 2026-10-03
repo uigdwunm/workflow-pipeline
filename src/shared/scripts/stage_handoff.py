@@ -524,6 +524,43 @@ def current_stage3_state(saved, context, checkpoint_path=None):
     return state
 
 
+def accepted_stage3_progress(predecessor):
+    """Recover the exact accepted Stage-3 authority across Stage-4 replay."""
+    import workflow_progress as progress
+    prior = unseal(predecessor)
+    saved = prior["handoff"]
+    readiness = saved.get("readiness")
+    if readiness is None:
+        return None
+    checkpoint = Path(readiness["checkpoint_path"])
+    outer = progress.read_record(checkpoint)
+    current = outer.get(progress.KEY)
+    require(isinstance(current, dict), "handoff_not_ready",
+            "original Controller checkpoint is unavailable")
+    progress.validate_state(current)
+    history = current.get("history", [])
+    snapshots = [(current, history)] + [(state, history[:index])
+                                      for index, state in enumerate(history)]
+    matches = [(state, earlier) for state, earlier in snapshots
+               if state.get("stage") == 3 and state.get("handoff") == saved and
+               state.get("accepted") == predecessor]
+    require(matches and all(state == matches[0][0] for state, _ in matches),
+            "handoff_not_ready", "Stage-4 predecessor differs from the original Controller acceptance")
+    state, earlier = matches[0]
+    prior_state = {**state, "history": earlier}
+    progress.validate_state(prior_state)
+    effective = progress.consumed_scope_readiness(prior_state, checkpoint)
+    current_progress = state["control"]["context"].get("handoff_progress") or {}
+    require(state.get("status") == "accepted" and
+            (state.get("dispatch") or {}).get("acceptance") == predecessor and
+            state.get("consumed_readiness") == readiness and effective is not None and
+            state.get("scope_authority") == effective["scope_authority"] ==
+            current_progress.get("execution_authority") and
+            (state.get("plan_revision_transaction") or {}).get("state") in (None, "activated"),
+            "handoff_not_ready", "Stage-4 predecessor lacks current activated Controller authority")
+    return current_progress
+
+
 def attached_source_entry(saved):
     """Read the original discussion source from C for a delegated executor."""
     if saved.get('role') != 'execution-agent' or saved.get('requirement', {}).get('source_kind') != 'discussion':
@@ -858,8 +895,10 @@ def _prepare(request):
                 "source_changed", "predecessor controller or requirement differs")
         if old["stage"] >= 2:
             require(old["binding"] == request["binding"], "binding_changed", "successor must retain the exact Flow Worktree")
+            prior_progress = accepted_stage3_progress(predecessor) if old["stage"] == 3 else None
             verify_result(old["stage"], prior["payload"], old["binding"], old["scope"], root,
-                          prior["role_ref"], old['authorization'].get('integration_recovery'))
+                          prior["role_ref"], old['authorization'].get('integration_recovery'),
+                          prior_progress)
             if old["stage"] == 2:
                 published_target = scope['baseline']
                 for relative in prior["payload"]["planning_paths"]:

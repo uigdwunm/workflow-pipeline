@@ -803,10 +803,10 @@ class PlanRevisionProgressTests(unittest.TestCase):
         original_revision = copy.deepcopy(progress_before["plan_revisions"])
         original_source = copy.deepcopy(progress_before["revalidation_source"])
         original_receipts = copy.deepcopy(progress_before["plan_revision_sources"])
-        observed = flow.observation
+        original_observation = flow.observation
 
         def with_historical_agents(*args, **kwargs):
-            evidence = observed(*args, **kwargs)
+            evidence = original_observation(*args, **kwargs)
             if "lifecycle" in evidence:
                 known = {item["id"] for item in evidence["lifecycle"]["pages"][0]["response"]["data"]}
                 evidence["lifecycle"]["pages"][0]["response"]["data"].extend(
@@ -836,6 +836,51 @@ class PlanRevisionProgressTests(unittest.TestCase):
             stage3 = flow.accept_current(payload, "native:dispatcher", fixture_execution=False)
         self.assertEqual(stage3["status"], "accepted", stage3)
         predecessor = flow.state()["accepted"]
+        stage4_input = flow.input_for(4, predecessor)
+        self.assertEqual(progress.handoff.prepare(stage4_input)["stage"], 4)
+        original_checkpoint = flow.checkpoint.read_bytes()
+        altered = progress.read_record(flow.checkpoint)
+        altered[progress.KEY]["control"]["context"]["handoff_progress"]["plan_revisions"][-1]["evidence"]["planning_commit"] = accepted
+        try:
+            progress.atomic_save(flow.checkpoint, altered)
+            with self.assertRaises((progress.entry.PreparationError,
+                                    progress.control_git.ControlError)):
+                progress.handoff.prepare(stage4_input)
+        finally:
+            flow.checkpoint.write_bytes(original_checkpoint)
+        self.assertEqual(progress.handoff.prepare(stage4_input)["stage"], 4)
+        current_progress = flow.state()["control"]["context"]["handoff_progress"]
+        requirement = flow.flow / flow.state()["handoff"]["requirement_identity"]["path"]
+        original_requirement = requirement.read_bytes()
+        try:
+            requirement.write_bytes(original_requirement + b"unauthorized requirement change\n")
+            with self.assertRaises((progress.entry.PreparationError,
+                                    progress.control_git.ControlError)):
+                progress.handoff.prepare(stage4_input)
+        finally:
+            requirement.write_bytes(original_requirement)
+        original_planning = planning.read_bytes()
+        try:
+            planning.write_bytes(original_planning + b"unapproved planning change\n")
+            with self.assertRaises(progress.control_git.ControlError):
+                progress.control_git.verified_planning_paths(flow.flow, current_progress)
+        finally:
+            planning.write_bytes(original_planning)
+        try:
+            planning.chmod(0o755)
+            with self.assertRaises(progress.control_git.ControlError):
+                progress.control_git.verified_planning_paths(flow.flow, current_progress)
+        finally:
+            planning.chmod(0o644)
+        try:
+            planning.write_bytes(original_planning + b"index-only planning change\n")
+            flow.flow_git("add", "docs/spec.md")
+            planning.write_bytes(original_planning)
+            with self.assertRaises(progress.control_git.ControlError):
+                progress.control_git.verified_planning_paths(flow.flow, current_progress)
+        finally:
+            flow.flow_git("reset", "-q", "--", "docs/spec.md")
+            planning.write_bytes(original_planning)
         (flow.root / "impl.py").write_text("def impl():\n    return 99\n")
         (flow.root / "later.py").write_text("def later():\n    return 99\n")
         flow.git("add", "impl.py", "later.py")
@@ -855,7 +900,8 @@ class PlanRevisionProgressTests(unittest.TestCase):
         recovery = flow.invoke("implementation-recovery", {"reference": "controller:target-race",
             "closure_digest": flow.state()["handoff"]["digest"]})
         self.assertEqual(flow.state()["stage"], 3, recovery)
-        flow.invoke("observe", flow.observation("idle", "result", ref="native:dispatcher"))
+        with patch.object(flow, "observation", side_effect=with_historical_agents):
+            flow.invoke("observe", flow.observation("idle", "result", ref="native:dispatcher"))
         merge = subprocess.run(["git", "-C", str(flow.flow), "merge", "--no-edit", target],
                                capture_output=True, text=True)
         self.assertNotEqual(merge.returncode, 0, merge.stdout)
@@ -864,7 +910,8 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.flow_git("add", "impl.py", "later.py")
         flow.flow_git("commit", "-qm", "resolve final integration")
         integrated_candidate = flow.flow_git("rev-parse", "HEAD")
-        flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
+        with patch.object(flow, "observation", side_effect=with_historical_agents):
+            flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
         captured = flow.invoke("control", {"action": "capture-integration",
             "evidence": {"reference": "controller:target-race"},
             "receipt": {"controller_ref": "task", "reference": "controller:target-race"}})
@@ -933,6 +980,16 @@ class PlanRevisionProgressTests(unittest.TestCase):
             replaced = flow.accept_current(payload, "native:dispatcher", fixture_execution=False)
         self.assertEqual(replaced["status"], "accepted", replaced)
         self.assertNotEqual(flow.state()["accepted"]["digest"], predecessor["digest"])
+        after_integration = self.report(flow)
+        after_integration["revision_id"] = "after-final-integration"
+        after_integration["classification"]["reference"] = "controller:after-final-integration"
+        saved_checkpoint = flow.checkpoint.read_bytes()
+        saved_head = flow.flow_git("rev-parse", "HEAD")
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            flow.invoke("prepare-plan-revision", after_integration)
+        self.assertEqual(error.exception.code, "plan_revision_unavailable")
+        self.assertEqual(flow.checkpoint.read_bytes(), saved_checkpoint)
+        self.assertEqual(flow.flow_git("rev-parse", "HEAD"), saved_head)
 
     def test_artifact_only_and_mixed_reports_revise_at_controller_git_boundary(self):
         for mode in ("only", "mixed"):
