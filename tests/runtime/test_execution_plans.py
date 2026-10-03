@@ -13,6 +13,49 @@ import execution_plan
 
 
 class ExecutionPlanAdmissionTests(unittest.TestCase):
+    def test_inline_plan_reports_malformed_arrays_with_field_context(self):
+        flow = fixture.fixture.ProgressTests(methodName="runTest")
+        flow.setUp()
+        self.addCleanup(flow.doCleanups)
+        flow.begin_dispatcher()
+        state = flow.state()
+        authority = state["scope_authority"]
+        plan = copy.deepcopy(authority["execution_plan"]["catalog"]["tickets"][0]["plan"])
+        scope = copy.deepcopy(authority["scope"])
+        scope["implementation_paths"].append("prompt.md")
+        artifact_manifest = copy.deepcopy(next(item for item in
+            scope["downstream"]["manifest"] if item["path"] == "impl.py"))
+        artifact_manifest["path"] = "prompt.md"
+        scope["downstream"]["manifest"].append(artifact_manifest)
+        plan["artifact_steps"] = [{"id": "ART-1", "path": "prompt.md", "operation": "add",
+            "capability": "provide approved artifact", "approach": "write approved prompt",
+            "verification_refs": [plan["verifications"][0]["id"]]}]
+        arguments = (scope, state["handoff"]["semantic"],
+                     state["handoff"]["requirement_identity"])
+        valid = execution_plan.collect_inline_plan(plan, *arguments, repository=str(flow.flow))
+        self.assertEqual(valid["ordered_step_ids"][-1], "ART-1")
+        cases = (
+            ("function operation array", lambda item: item["steps"][0]["target"].update(
+                operation=["add"]), "inline function target"),
+            ("function operation object", lambda item: item["steps"][0]["target"].update(
+                operation={"add": True}), "inline function target"),
+            ("artifact path array", lambda item: item["artifact_steps"][0].update(
+                path=["prompt.md"]), "inline artifact step"),
+            ("artifact operation array", lambda item: item["artifact_steps"][0].update(
+                operation=["add"]), "inline artifact step"),
+            ("approach nested array", lambda item: item["steps"][0].update(
+                approach=[["implement"]]), "approach"),
+        )
+        for label, change, context in cases:
+            with self.subTest(label=label):
+                malformed = copy.deepcopy(plan)
+                change(malformed)
+                with self.assertRaises(execution_plan.entry.PreparationError) as error:
+                    execution_plan.collect_inline_plan(malformed, *arguments,
+                                                       repository=str(flow.flow))
+                self.assertEqual(error.exception.code, "execution_plan_incomplete")
+                self.assertIn(context, str(error.exception))
+
     def test_sealed_scope_exposes_versioned_execution_plan_envelope(self):
         case = self.new_flow()
         case.finish_planned_design()

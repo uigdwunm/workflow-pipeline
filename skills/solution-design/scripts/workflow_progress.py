@@ -2306,7 +2306,8 @@ class Progress:
             except control.ControlError as error:
                 raise entry.PreparationError("invalid_plan_revision", str(error)) from error
         ticket_ids = {ticket["ticket_id"] for ticket in catalog["tickets"]}
-        step_ids = {step["id"] for ticket in catalog["tickets"] for step in ticket["plan"]["steps"]}
+        step_ids = {step["id"] for ticket in catalog["tickets"]
+                    for step in ticket["plan"]["steps"] + ticket["plan"]["artifact_steps"]}
         verification_ids = {item["id"] for ticket in catalog["tickets"]
                             for item in ticket["plan"]["verifications"]}
         require(set(data["report"]["ticket_ids"]) <= ticket_ids and
@@ -2495,13 +2496,13 @@ class Progress:
                           if prior.get('state') == 'activated'
                           for authority in (prior['old_authority'], prior['proposed_authority'])
                           for ticket in execution_plan.current_catalog(authority)['tickets']
-                          for step in ticket['plan']['steps']}
+                          for step in ticket['plan']['steps'] + ticket['plan']['artifact_steps']}
         current_ids = {step['id'] for ticket in old_tickets.values()
-                       for step in ticket['plan']['steps']}
+                       for step in ticket['plan']['steps'] + ticket['plan']['artifact_steps']}
         new_ids = {step['id'] for ticket in new_tickets.values()
-                   for step in ticket['plan']['steps']}
+                   for step in ticket['plan']['steps'] + ticket['plan']['artifact_steps']}
         require(not (historical_ids - current_ids) & new_ids,
-                'execution_plan_incomplete', 'retired function IDs cannot be reused')
+                'execution_plan_incomplete', 'retired step IDs cannot be reused')
         for ticket_id, prior in old_tickets.items():
             current = new_tickets[ticket_id]
             changed = prior["source"]["sha256"] != current["source"]["sha256"]

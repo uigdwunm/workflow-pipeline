@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 
 class PlanRevisionProgressTests(unittest.TestCase):
-    def new_active_flow(self, *, generated=False, read_dependency=False):
+    def new_active_flow(self, *, generated=False, read_dependency=False, artifact_mode=None):
         case = fixture.ScopeProgressTests(methodName="runTest")
         case.setUp()
         self.addCleanup(case.doCleanups)
@@ -22,6 +22,13 @@ class PlanRevisionProgressTests(unittest.TestCase):
 
         def planning_manifest(candidate, *, implementation=True):
             manifest = original_manifest(candidate, implementation=implementation)
+            if artifact_mode == "only":
+                manifest = [item for item in manifest if item["path"] != "impl.py"]
+            if artifact_mode is not None:
+                manifest.append({"path": "prompt.md", "owner": "implementation",
+                    "kind": "source", "operation": "add",
+                    "basis": {"commit": candidate, "path": "docs/spec.md",
+                              "section": "approved design"}})
             manifest.append({"path": "docs/spec.md", "owner": "closure", "kind": "document",
                 "operation": "add", "basis": {"commit": candidate, "path": "docs/spec.md",
                     "section": "approved design"}})
@@ -37,6 +44,27 @@ class PlanRevisionProgressTests(unittest.TestCase):
             return sorted(manifest, key=lambda item: item["path"])
 
         case.manifest = planning_manifest
+        if artifact_mode is not None:
+            original_candidate = case.planning_candidate
+            def planning_with_artifact(*args, **kwargs):
+                original_candidate(*args, **kwargs)
+                path = case.flow.flow / "docs/spec.md"
+                text = path.read_text()
+                match = re.search(r"```execution-plan-v1\n(.*?)\n```", text, re.DOTALL)
+                plan = json.loads(match.group(1))
+                if artifact_mode == "only":
+                    plan["steps"] = []
+                plan["artifact_steps"] = [{"id": "ART-1", "path": "prompt.md",
+                    "operation": "add", "capability": "provide the approved prompt artifact",
+                    "approach": "write the approved prompt", "verification_refs": ["V1"]}]
+                updated = text[:match.start(1)] + json.dumps(plan) + text[match.end(1):]
+                if artifact_mode == "only":
+                    updated = updated.replace("Implementation: impl.py", "Implementation: prompt.md")
+                path.write_text(updated)
+                case.flow.flow_git("add", "docs/spec.md")
+                case.flow.flow_git("commit", "-qm", "plan artifact step")
+                return case.flow.flow_git("rev-parse", "HEAD")
+            case.planning_candidate = planning_with_artifact
         if read_dependency:
             original_candidate = case.planning_candidate
             def planning_with_read_dependency(*args, **kwargs):
@@ -93,6 +121,80 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 "dependency_impact": ["FP1-01", "FP1-02"],
                 "verification_impact": ["V1"], "carry_forward": []},
             "planning_paths": ["docs/spec.md"]}
+
+    def test_artifact_only_and_mixed_reports_revise_at_controller_git_boundary(self):
+        for mode in ("only", "mixed"):
+            with self.subTest(mode=mode):
+                flow = self.new_active_flow(artifact_mode=mode)
+                report = self.report(flow)
+                current_ids = ["ART-1"] if mode == "only" else ["FP1-01", "ART-1"]
+                report["report"]["step_ids"] = current_ids
+                report["report"]["dependency_impact"] = current_ids
+                first = flow.invoke("prepare-plan-revision", report)
+                self.assertEqual(first["next_action"]["operation"], "stop-host", first)
+                prepared = flow.invoke("observe", flow.observation(
+                    "stopped", "result", ref="native:dispatcher"))
+                self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
+                spec = flow.flow / "docs/spec.md"
+                body = spec.read_text()
+                match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+                plan = json.loads(match.group(1))
+                plan["plan_version"] = 2
+                plan["artifact_steps"][0]["approach"] = "write the revised private prompt"
+                spec.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                                .replace("Plan Version: 1", "Plan Version: 2"))
+                flow.flow_git("add", "docs/spec.md")
+                flow.flow_git("commit", "--only", "-qm", "revise artifact plan", "--", "docs/spec.md")
+                outcome = flow.invoke("commit-plan-revision", {
+                    "revision_id": report["revision_id"], "controller_ref": "task",
+                    "write_release": prepared["next_action"]["write_release"],
+                    "planning_commit": flow.flow_git("rev-parse", "HEAD")})
+                self.assertEqual(outcome["next_action"]["operation"], "plan-revision-activated")
+                self.assertEqual(flow.state()["scope_authority"]["revision"], 2)
+
+    def test_retired_artifact_id_cannot_be_reused_after_intermediate_revision(self):
+        flow = self.new_active_flow(artifact_mode="mixed")
+        for number in (1, 2, 3):
+            report = self.report(flow)
+            report["revision_id"] = f"retired-artifact-{number}"
+            report["classification"]["reference"] = f"controller:retired-artifact-{number}"
+            report["report"]["step_ids"] = ["ART-1"]
+            report["report"]["dependency_impact"] = ["ART-1"]
+            prepared = flow.invoke("prepare-plan-revision", report)
+            if prepared["next_action"]["operation"] == "stop-host":
+                prepared = flow.invoke("observe", flow.observation(
+                    "stopped", "result", ref="native:dispatcher"))
+            self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
+            spec = flow.flow / "docs/spec.md"
+            body = spec.read_text()
+            match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+            plan = json.loads(match.group(1))
+            plan["plan_version"] += 1
+            if number in (1, 3):
+                artifact = copy.deepcopy(plan["artifact_steps"][0])
+                artifact["id"] = "ART-retired"
+                plan["artifact_steps"].append(artifact)
+            else:
+                plan["artifact_steps"] = [item for item in plan["artifact_steps"]
+                                          if item["id"] != "ART-retired"]
+            spec.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                            .replace(f"Plan Version: {number}", f"Plan Version: {number + 1}"))
+            flow.flow_git("add", "docs/spec.md")
+            flow.flow_git("commit", "--only", "-qm", f"retire artifact revision {number}",
+                          "--", "docs/spec.md")
+            before = flow.state()["scope_authority"]["revision"]
+            request = {"revision_id": report["revision_id"], "controller_ref": "task",
+                       "write_release": prepared["next_action"]["write_release"],
+                       "planning_commit": flow.flow_git("rev-parse", "HEAD")}
+            if number < 3:
+                outcome = flow.invoke("commit-plan-revision", request)
+                self.assertEqual(outcome["next_action"]["operation"], "plan-revision-activated")
+                self.assertEqual(flow.state()["scope_authority"]["revision"], before + 1)
+            else:
+                with self.assertRaises(fixture.fixture.transfer.entry.PreparationError) as error:
+                    flow.invoke("commit-plan-revision", request)
+                self.assertEqual(error.exception.code, "execution_plan_incomplete")
+                self.assertEqual(flow.state()["scope_authority"]["revision"], before)
 
     def test_active_writer_blocks_planning_release_before_any_document_edit(self):
         flow = self.new_active_flow()

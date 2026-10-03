@@ -822,6 +822,7 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
         target = step["target"]
         _incomplete(isinstance(target, dict) and set(target) == {"path", "symbol", "operation"} and
                     isinstance(target["path"], str) and target["path"] in implementation and
+                    isinstance(target["operation"], str) and
                     target["operation"] in {"add", "modify", "delete"} and
                     isinstance(target["symbol"], str) and 0 < len(target["symbol"].encode("utf-8")) <= 512 and
                     (bool(SYMBOL.fullmatch(target["symbol"])) if target["path"].endswith(".py")
@@ -854,7 +855,9 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
     for artifact in plan["artifact_steps"]:
         _incomplete(isinstance(artifact, dict) and set(artifact) ==
                     {"id", "path", "operation", "capability", "approach", "verification_refs"} and
-                    artifact["path"] in implementation and artifact["operation"] in {"add", "modify", "delete"} and
+                    isinstance(artifact["path"], str) and artifact["path"] in implementation and
+                    isinstance(artifact["operation"], str) and
+                    artifact["operation"] in {"add", "modify", "delete"} and
                     isinstance(artifact["id"], str) and IDENTIFIER.fullmatch(artifact["id"]) and
                     isinstance(artifact["capability"], str) and artifact["capability"].strip() and
                     isinstance(artifact["approach"], str) and artifact["approach"].strip(),
