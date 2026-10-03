@@ -126,7 +126,8 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         self.addCleanup(case.doCleanups)
         return case
 
-    def rejected_plan(self, change, *, change_document=None, add_unplanned_test=False):
+    def rejected_plan(self, change, *, change_document=None, add_unplanned_test=False,
+                      context=None):
         case = self.new_flow()
         candidate = case.planning_candidate()
         path = case.flow.flow / "docs/spec.md"
@@ -158,7 +159,71 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         with self.assertRaises(fixture.fixture.transfer.entry.PreparationError) as error:
             case.flow.invoke("scope-propose", proposal)
         self.assertEqual(error.exception.code, "execution_plan_incomplete")
+        if context is not None:
+            self.assertIn(context, str(error.exception))
         self.assertEqual(case.flow.checkpoint.read_bytes(), before)
+
+    def test_malformed_committed_spec_path_reports_source_and_field_at_scope_proposal(self):
+        for malformed in (["docs/spec.md"], {"path": "docs/spec.md"}):
+            with self.subTest(malformed=malformed):
+                self.rejected_plan(lambda plan: json.dumps({**plan,
+                    "spec_ref": {"path": malformed, "section": "Implementation Decisions"}}),
+                    context="spec_ref.path: docs/spec.md")
+
+    def staged_python_target(self, symbol):
+        case = self.new_flow()
+        source = ("class Widget:\n"
+                  "    def instance(self):\n        return True\n"
+                  "    @classmethod\n    def klass(cls):\n        return True\n"
+                  "    @staticmethod\n    def static():\n        return True\n"
+                  "    async def later(self):\n        return True\n"
+                  "    class Inner:\n"
+                  "        def nested(self):\n            return True\n"
+                  "async def top_level():\n    return True\n")
+        (case.flow.flow / "impl.py").write_text(source)
+        case.flow.flow_git("add", "impl.py")
+        case.flow.flow_git("commit", "-qm", "existing Python targets")
+        case.flow.input["expected_entry"] = fixture.fixture.transfer.entry.resolve(case.flow.request)
+        case.flow.input["scope"]["baseline"] = case.flow.flow_git("rev-parse", "HEAD")
+        case.flow.input["authorization"]["scope_digest"] = \
+            fixture.fixture.transfer.entry.digest(case.flow.input["scope"])
+        candidate = case.planning_candidate()
+        path = case.flow.flow / "docs/spec.md"
+        body = path.read_text()
+        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan["steps"][0]["target"].update(symbol=symbol, operation="modify")
+        path.write_text(body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+        case.flow.flow_git("add", "docs/spec.md")
+        case.flow.flow_git("commit", "-qm", "plan existing Python target")
+        candidate = case.flow.flow_git("rev-parse", "HEAD")
+        state = case.flow.state()
+        manifest = case.manifest(candidate)
+        next(item for item in manifest if item["path"] == "impl.py")["operation"] = "modify"
+        proposal = {"proposal_id": "existing-python", "expected_revision": 0,
+            "candidate_commit": candidate, "manifest": manifest,
+            "implementation_required": True,
+            "requirement_identity": copy.deepcopy(state["handoff"]["requirement_identity"]),
+            "binding": copy.deepcopy(state["handoff"]["binding"]),
+            "previous_scope_revision": 0}
+        return case, proposal
+
+    def test_staged_python_class_is_not_a_function_target(self):
+        case, proposal = self.staged_python_target("Widget")
+        before = case.flow.checkpoint.read_bytes()
+        with self.assertRaises(fixture.fixture.transfer.entry.PreparationError) as error:
+            case.flow.invoke("scope-propose", proposal)
+        self.assertEqual(error.exception.code, "execution_plan_incomplete")
+        self.assertIn("existing Python symbol is missing: Widget", str(error.exception))
+        self.assertEqual(case.flow.checkpoint.read_bytes(), before)
+
+    def test_staged_python_qualified_methods_and_async_function_remain_valid(self):
+        for symbol in ("Widget.instance", "Widget.klass", "Widget.static",
+                       "Widget.later", "Widget.Inner.nested", "top_level"):
+            with self.subTest(symbol=symbol):
+                case, proposal = self.staged_python_target(symbol)
+                result = case.flow.invoke("scope-propose", proposal)
+                self.assertEqual(result["next_action"]["operation"], "scope-proposed")
 
     def test_ticket_identity_requires_unique_exact_document_lines(self):
         def plan_ticket_id(plan):

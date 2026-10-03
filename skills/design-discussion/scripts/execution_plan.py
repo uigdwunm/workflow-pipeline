@@ -190,9 +190,10 @@ def _python_symbols(body):
         for node in nodes:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 name = prefix + node.name
-                result.add(name)
                 if isinstance(node, ast.ClassDef):
                     walk(node.body, name + ".")
+                else:
+                    result.add(name)
     walk(tree.body)
     return result
 
@@ -376,7 +377,14 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
     ids = [item["plan"].get("ticket_id") for item in plans]
     _incomplete(all(isinstance(item, str) and IDENTIFIER.fullmatch(item) for item in ids) and
                 len(ids) == len(set(ids)), "duplicate or invalid Ticket ID")
-    spec_paths = {item["plan"]["spec_ref"].get("path") for item in plans if isinstance(item["plan"].get("spec_ref"), dict)}
+    spec_paths = set()
+    for item in plans:
+        spec_ref = item["plan"].get("spec_ref")
+        if isinstance(spec_ref, dict):
+            spec_path = spec_ref.get("path")
+            _incomplete(isinstance(spec_path, str) and bool(spec_path),
+                        "invalid spec_ref.path: " + item["path"])
+            spec_paths.add(spec_path)
     _incomplete(all(path in planning_paths for path in spec_paths), "Spec plan reference escapes planning scope")
     spec_sections = {item["path"]: _sections(item["body"]) for item in sources if item["path"] in spec_paths}
     manifest = scope["downstream"]["manifest"]

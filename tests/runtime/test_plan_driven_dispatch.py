@@ -76,6 +76,42 @@ class PlanDrivenDispatchTests(unittest.TestCase):
                     handoff.handle(request)
                 self.assertEqual(error.exception.code, "execution_plan_incomplete")
 
+    def test_standalone_python_class_is_not_a_function_target_at_b_and_c(self):
+        source = "class Widget:\n    def run(self):\n        return True\n"
+        for boundary in ("B", "C"):
+            with self.subTest(boundary=boundary):
+                case, request = self.existing_inline_request(
+                    "impl.py", source, "Widget", ["change the existing function"])
+                before = case.checkpoint.read_bytes() if case.checkpoint.exists() else None
+                with self.assertRaises(entry.PreparationError) as error:
+                    if boundary == "B":
+                        handoff.handle(request)
+                    else:
+                        case.invoke("start", {"handoff": request,
+                            "control": {"context": case.context_for(3), "discussion": None}})
+                self.assertEqual(error.exception.code, "execution_plan_incomplete")
+                self.assertIn("existing Python symbol is missing: Widget", str(error.exception))
+                self.assertEqual(case.checkpoint.read_bytes() if case.checkpoint.exists() else None,
+                                 before)
+
+    def test_standalone_qualified_python_methods_and_async_function_remain_valid(self):
+        source = ("class Widget:\n"
+                  "    def instance(self):\n        return True\n"
+                  "    @classmethod\n    def klass(cls):\n        return True\n"
+                  "    @staticmethod\n    def static():\n        return True\n"
+                  "    async def later(self):\n        return True\n"
+                  "    class Inner:\n"
+                  "        def nested(self):\n            return True\n"
+                  "async def top_level():\n    return True\n")
+        for symbol in ("Widget.instance", "Widget.klass", "Widget.static",
+                       "Widget.later", "Widget.Inner.nested", "top_level"):
+            with self.subTest(symbol=symbol):
+                case, request = self.existing_inline_request(
+                    "impl.py", source, symbol, ["change the existing function"])
+                case.context = case.context_for(3)
+                started = case.begin("continuous", request)
+                self.assertEqual(started["next_action"]["operation"], "invoke-host")
+
     def test_inline_schema_version_rejects_float_alias(self):
         case, request = self.existing_inline_request(
             "impl.py", "def run():\n    return True\n", "run",
