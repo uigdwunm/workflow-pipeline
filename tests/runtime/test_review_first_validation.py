@@ -13,16 +13,6 @@ import test_stage_transfer as transfer
 
 class ReviewFirstTests(fixture.ProgressTests):
     # Only reuse public fixture operations, not the inherited test inventory.
-    def fixture_accepted_execution(self, context, candidate):
-        super().fixture_accepted_execution(context, candidate)
-        checkpoint = context['handoff_progress']
-        baseline = checkpoint['git_baseline_commit']
-        snapshot = control_git.snapshot(self.flow)
-        snapshot['head'] = baseline
-        snapshot['files'] = {relative: control_git.committed_fingerprint(
-            self.flow, baseline, relative) for relative in checkpoint['allowed_paths']}
-        checkpoint['executions'][-1]['git_snapshot'] = snapshot
-
     def input_for(self, stage, predecessor=None):
         value = super().input_for(stage, predecessor)
         if stage == 3:

@@ -510,6 +510,13 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
             'answer': 'confirm', 'reference': 'controller:enter-stage3'})
         self.finish_next(3, 'stepwise')
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        accepted_execution = checkpoint['executions'][-1]
+        self.assertEqual(accepted_execution['git_snapshot']['head'], checkpoint['git_baseline_commit'])
+        self.assertEqual(set(accepted_execution['git_snapshot']['files']), set(checkpoint['allowed_paths']))
+        self.assertIsNone(accepted_execution['git_snapshot']['files']['impl.py'])
+        self.assertEqual(accepted_execution['git_result_snapshot']['impl.py'],
+                         progress.control_git.file_fingerprint(self.flow, 'impl.py'))
         self.complete_phase()
         pending = self.state()['pending']
         self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],

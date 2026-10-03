@@ -7,6 +7,7 @@ import subprocess
 import sys
 import uuid
 import hashlib
+import os
 import tempfile
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -75,6 +76,24 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         # Review and transfer fixtures start from committed code. Allocation
         # mechanics have their own tests; supply their accepted result here.
         progress = context['handoff_progress']
+        baseline = progress['git_baseline_commit']
+        self.assertEqual(self.flow_git('rev-parse', baseline), baseline)
+        self.flow_git('merge-base', '--is-ancestor', baseline, candidate)
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment['GIT_INDEX_FILE'] = str(Path(directory) / 'baseline.index')
+            subprocess.run(['git', '-C', str(self.flow), 'read-tree', baseline],
+                           env=environment, capture_output=True, check=True)
+            baseline_index = subprocess.run(
+                ['git', '-C', str(self.flow), 'ls-files', '--stage', '-v', '-z'],
+                env=environment, capture_output=True, check=True).stdout
+        git_snapshot = {
+            'head': baseline,
+            'branch': self.flow_git('symbolic-ref', '--short', 'HEAD'),
+            'index_hash': hashlib.sha256(baseline_index).hexdigest(),
+            'files': {name: control_git.committed_fingerprint(self.flow, baseline, name)
+                      for name in progress['allowed_paths']},
+        }
         changed = set(self.flow_git('diff', '--name-only', self.git('rev-parse', 'main'), candidate).splitlines())
         owned = sorted(changed & set(progress['allowed_paths']))
         self.assertTrue(owned)
@@ -92,6 +111,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
             'git_operations': [], 'configuration': progress['configuration'],
             'agent_ref': 'native:executor-' + str(index), 'state': 'accepted',
             'stopped': True, 'file_hashes': hashes,
+            'git_snapshot': git_snapshot,
             'git_result_snapshot': fingerprints,
             'plan_refs': refs, 'plan_authority': copy.deepcopy(progress['plan_authority']),
             'group_digest': entry.digest([progress['plan_authority'], refs]),
