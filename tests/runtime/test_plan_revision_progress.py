@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import re
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -14,7 +15,8 @@ from unittest.mock import patch
 
 
 class PlanRevisionProgressTests(unittest.TestCase):
-    def new_active_flow(self, *, generated=False, read_dependency=False, artifact_mode=None):
+    def new_active_flow(self, *, generated=False, read_dependency=False, artifact_mode=None,
+                        retained_note=False):
         case = fixture.ScopeProgressTests(methodName="runTest")
         case.setUp()
         self.addCleanup(case.doCleanups)
@@ -38,12 +40,23 @@ class PlanRevisionProgressTests(unittest.TestCase):
                     "basis": {"commit": candidate, "path": "docs/spec.md",
                               "section": "approved design"}, "source_paths": ["impl.py"]})
             if read_dependency:
-                manifest.append({"path": "later.py", "owner": "implementation", "kind": "source",
-                    "operation": "add", "basis": {"commit": candidate, "path": "docs/spec.md",
-                                                   "section": "approved design"}})
+                for relative in ("later.py", "independent.py", "downstream.py", "reader.py"):
+                    manifest.append({"path": relative, "owner": "implementation", "kind": "source",
+                        "operation": "add", "basis": {"commit": candidate, "path": "docs/spec.md",
+                                                       "section": "approved design"}})
             return sorted(manifest, key=lambda item: item["path"])
 
         case.manifest = planning_manifest
+        if retained_note:
+            original_candidate = case.planning_candidate
+            def planning_with_retained_note(*args, **kwargs):
+                original_candidate(*args, **kwargs)
+                source = case.flow.flow / "docs/spec.md"
+                source.write_text(source.read_text() + "### N4 — Private inventory\nInitial note.\n")
+                case.flow.flow_git("add", "docs/spec.md")
+                case.flow.flow_git("commit", "-qm", "private inventory note")
+                return case.flow.flow_git("rev-parse", "HEAD")
+            case.planning_candidate = planning_with_retained_note
         if artifact_mode is not None:
             original_candidate = case.planning_candidate
             def planning_with_artifact(*args, **kwargs):
@@ -75,6 +88,23 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 plan = json.loads(match.group(1))
                 plan["steps"][1]["target"] = {"path": "later.py", "symbol": "later", "operation": "add"}
                 plan["steps"][1]["read_only"] = ["impl.py"]
+                plan["steps"][1]["depends_on"] = []
+                for identity in ("V2", "V3"):
+                    verification = copy.deepcopy(plan["verifications"][0])
+                    verification["id"] = identity
+                    verification["behavior"] = "independent reader behavior" if identity == "V2" else "unrelated behavior"
+                    plan["verifications"].append(verification)
+                plan["steps"][1]["verification_refs"] = ["V2"]
+                for identity, relative, dependencies, reads in (
+                    ("FP1-03", "independent.py", [], []),
+                    ("FP1-04", "downstream.py", ["FP1-02"], []),
+                    ("FP1-05", "reader.py", [], ["later.py"])):
+                    step = copy.deepcopy(plan["steps"][1])
+                    step.update(id=identity, target={"path": relative,
+                        "symbol": relative.removesuffix(".py"), "operation": "add"},
+                        depends_on=dependencies, read_only=reads,
+                        verification_refs=["V3"] if identity == "FP1-03" else ["V2"])
+                    plan["steps"].append(step)
                 path.write_text(text[:match.start(1)] + json.dumps(plan) + text[match.end(1):])
                 case.flow.flow_git("add", "docs/spec.md")
                 case.flow.flow_git("commit", "-qm", "planned accepted implementation read")
@@ -121,6 +151,186 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 "dependency_impact": ["FP1-01", "FP1-02"],
                 "verification_impact": ["V1"], "carry_forward": []},
             "planning_paths": ["docs/spec.md"]}
+
+    def test_revision_revalidates_independent_readers_and_carries_unrelated_result(self):
+        flow = self.new_active_flow(read_dependency=True)
+        original = flow.state()["scope_authority"]
+        ticket = original["execution_plan"]["catalog"]["tickets"][0]
+        accepted = []
+        for identity, relative in (("FP1-01", "impl.py"), ("FP1-02", "later.py"),
+                                   ("FP1-03", "independent.py"),
+                                   ("FP1-04", "downstream.py"),
+                                   ("FP1-05", "reader.py")):
+            execution = flow.execution_input()
+            execution["scope"]["owned_paths"] = [relative]
+            step = next(item for item in ticket["plan"]["steps"] if item["id"] == identity)
+            execution["scope"]["protected_paths"] += step["read_only"]
+            execution["authorization"]["scope_digest"] = fixture.fixture.transfer.entry.digest(
+                execution["scope"])
+            execution["semantic"]["plan_refs"] = [progress.execution_plan.step_ref(ticket, step)]
+            allocation_id = "accepted-" + identity
+            prepared = flow.invoke("allocation", {"allocation_id": allocation_id,
+                "operation": "prepare", "handoff": execution})
+            self.assertIsNotNone(prepared["next_action"], prepared)
+            self.assertEqual(prepared["next_action"]["operation"], "invoke-host", prepared)
+            slot = flow.state()["allocations"][allocation_id]
+            bound = flow.invoke("allocation", {"allocation_id": allocation_id,
+                "operation": "bind", "receipt": flow.receipt(slot["record"], ref=allocation_id)})
+            release = bound["next_action"]["result"]["write_release"]
+            content = ("def " + relative.removesuffix(".py") + "():\n    return 1\n").encode()
+            (flow.flow / relative).write_bytes(content)
+            result = {"changed_paths": [relative],
+                "file_hashes": {relative: hashlib.sha256(content).hexdigest()},
+                "tests": ["behavior passed"], "write_release": release,
+                "plan_refs": execution["semantic"]["plan_refs"],
+                "plan_authority": flow.state()["control"]["context"]["handoff_progress"]["plan_authority"]}
+            flow.invoke("allocation", {"allocation_id": allocation_id, "operation": "receive",
+                "receipt": flow.receipt(slot["record"], "stopped", "result", ref=allocation_id),
+                "result": {"delivery_id": allocation_id + "-result", "status": "completed",
+                           "payload": result}})
+            delivered = flow.invoke("allocation", {"allocation_id": allocation_id,
+                "operation": "accept", "decision": {"reference": "dispatcher:" + allocation_id}})
+            self.assertEqual(delivered["next_action"]["result"]["status"], "accepted")
+            accepted.append(allocation_id)
+        report = self.report(flow)
+        report["report"].update(step_ids=["FP1-01"], dependency_impact=["FP1-01", "FP1-02",
+            "FP1-04", "FP1-05"], verification_impact=["V1", "V2"],
+            carry_forward=["FP1-03"])
+        flow.invoke("prepare-plan-revision", report)
+        prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
+        self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
+        source = flow.flow / "docs/spec.md"
+        body = source.read_text()
+        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan["plan_version"] = 2
+        plan["steps"][0]["approach"].append("retain the public behavior with revised internals")
+        source.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                          .replace("Plan Version: 1", "Plan Version: 2"))
+        flow.flow_git("add", "docs/spec.md")
+        flow.flow_git("commit", "--only", "-qm", "revise accepted writer", "--", "docs/spec.md")
+        activated = flow.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
+            "controller_ref": "task", "write_release": prepared["next_action"]["write_release"],
+            "planning_commit": flow.flow_git("rev-parse", "HEAD")})
+        self.assertEqual(activated["next_action"]["operation"], "plan-revision-activated", activated)
+        retention = flow.state()["control"]["context"]["handoff_progress"]
+        self.assertEqual({item["paths"][0] for item in retention["carried_results"]},
+                         {"independent.py"})
+        self.assertEqual(set(retention["revalidation_source"]["pending_paths"]),
+                         {"impl.py", "later.py", "downstream.py", "reader.py"})
+
+    def integration_after_plan_revision(self, *, retained_note):
+        flow = self.new_active_flow(retained_note=retained_note)
+        report = self.report(flow)
+        flow.invoke("prepare-plan-revision", report)
+        prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
+        source = flow.flow / "docs/spec.md"
+        body = source.read_text()
+        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan["plan_version"] = 2
+        plan["steps"][0]["approach"].append("revise private helper sequence")
+        source.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                          .replace("Plan Version: 1", "Plan Version: 2"))
+        flow.flow_git("add", "docs/spec.md")
+        flow.flow_git("commit", "--only", "-qm", "Controller plan revision", "--", "docs/spec.md")
+        activated = flow.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
+            "controller_ref": "task", "write_release": prepared["next_action"]["write_release"],
+            "planning_commit": flow.flow_git("rev-parse", "HEAD")})
+        self.assertEqual(activated["next_action"]["operation"], "plan-revision-activated")
+        execution = flow.execution_input()
+        allocated = flow.invoke("allocation", {"allocation_id": "integrated-implementation",
+            "operation": "prepare", "handoff": execution})
+        self.assertEqual(allocated["next_action"]["operation"], "invoke-host", allocated)
+        slot = flow.state()["allocations"]["integrated-implementation"]
+        bound = flow.invoke("allocation", {"allocation_id": "integrated-implementation",
+            "operation": "bind", "receipt": flow.receipt(slot["record"], ref="native:integrated")})
+        release = bound["next_action"]["result"]["write_release"]
+        implementation = b"def prepare():\n    return 'current'\ndef execute():\n    return prepare()\n"
+        (flow.flow / "impl.py").write_bytes(implementation)
+        result = {"changed_paths": ["impl.py"],
+            "file_hashes": {"impl.py": hashlib.sha256(implementation).hexdigest()},
+            "tests": ["current behavior passed"], "write_release": release,
+            "plan_refs": execution["semantic"]["plan_refs"],
+            "plan_authority": flow.state()["control"]["context"]["handoff_progress"]["plan_authority"]}
+        flow.invoke("allocation", {"allocation_id": "integrated-implementation",
+            "operation": "receive", "receipt": flow.receipt(slot["record"], "stopped", "result",
+            ref="native:integrated"), "result": {"delivery_id": "integrated-result",
+            "status": "completed", "payload": result}})
+        accepted = flow.invoke("allocation", {"allocation_id": "integrated-implementation",
+            "operation": "accept", "decision": {"reference": "dispatcher:accepted"}})
+        self.assertEqual(accepted["next_action"]["result"]["status"], "accepted")
+        flow.flow_git("add", "impl.py")
+        flow.flow_git("commit", "-qm", "accepted current implementation")
+        accepted_commit = flow.flow_git("rev-parse", "HEAD")
+        if retained_note:
+            source.write_text(source.read_text().replace("Initial note.", "Closure note."))
+            flow.flow_git("add", "docs/spec.md")
+            flow.flow_git("commit", "-qm", "closure private inventory note")
+        retained_commit = flow.flow_git("rev-parse", "HEAD")
+        retained_paths = ["docs/spec.md"] if retained_note else []
+        (flow.root / "parallel.md").write_text("parallel target work\n")
+        flow.git("add", "parallel.md")
+        flow.git("commit", "-qm", "parallel target work")
+        target = flow.git("rev-parse", "main")
+        flow.flow_git("merge", "--no-edit", target)
+        context = copy.deepcopy(flow.state()["control"]["context"])
+        checkpoint = context["handoff_progress"]
+        checkpoint.update(integration_candidate=retained_commit, integration_target_head=target,
+            integration_retained={"commit": retained_commit, "paths": retained_paths},
+            validation_history=[{"candidate": accepted_commit}])
+        self.assertEqual(checkpoint["plan_authority"]["revision"], 2)
+        self.assertEqual(checkpoint["git_baseline_commit"],
+                         flow.state()["handoff"]["scope"]["baseline"])
+
+        def control(action, evidence, current=context):
+            command = Path(progress.control_git.__file__)
+            response = subprocess.run([sys.executable, str(command)], input=json.dumps({
+                "repository": str(flow.flow), "baseline": checkpoint["git_baseline_commit"],
+                "request": {"schema_version": current["schema_version"], "action": action,
+                    "actor_ref": current["controller_ref"], "context": current,
+                    "evidence": evidence}}), capture_output=True, text=True)
+            self.assertTrue(response.stdout, response.stderr)
+            return json.loads(response.stdout)
+
+        captured = control("capture-integration", {"reference": "controller:target-race"})
+        self.assertTrue(captured["ok"], captured)
+        integration = captured["context"]["handoff_progress"]["integration_source"]
+        self.assertEqual(integration["pending_paths"], ["impl.py"])
+        current = captured["context"]
+        current_progress = current["handoff_progress"]
+        group = progress.execution_plan.validate_plan_refs(
+            progress.execution_plan.current_catalog(current_progress["execution_authority"]),
+            execution["semantic"]["plan_refs"], ["impl.py"],
+            current_progress["protected_paths"], [], current_progress["execution_authority"])
+        evidence = {"task_id": "adopt-current", "paths": ["impl.py"],
+            "read_only": current["handoff_progress"]["protected_paths"],
+            "behavior": "revalidate integrated implementation", "tests": group["verification_commands"],
+            "git_operations": [], "configuration": execution["configuration"],
+            "plan_refs": execution["semantic"]["plan_refs"],
+            "plan_authority": current["handoff_progress"]["plan_authority"],
+            "group_digest": group["group_digest"],
+            "adopt_paths": ["impl.py"],
+            "adoption_snapshot_digest": integration["snapshot_digest"]}
+        planned = control("plan-execution", evidence, current)
+        self.assertTrue(planned["ok"], planned)
+
+        source.write_text(source.read_text() + "external planning byte\n")
+        self.assertFalse(control("capture-integration", {"reference": "controller:target-race"})["ok"])
+        source.write_text(source.read_text().replace("external planning byte\n", ""))
+        source.chmod(0o755)
+        self.assertFalse(control("capture-integration", {"reference": "controller:target-race"})["ok"])
+        source.chmod(0o644)
+        source.write_text(source.read_text() + "index-only change\n")
+        flow.flow_git("add", "docs/spec.md")
+        source.write_text(source.read_text().replace("index-only change\n", ""))
+        self.assertFalse(control("capture-integration", {"reference": "controller:target-race"})["ok"])
+
+    def test_capture_integration_excludes_verified_controller_planning_delta(self):
+        self.integration_after_plan_revision(retained_note=False)
+
+    def test_capture_integration_accepts_current_planning_and_retained_note_only(self):
+        self.integration_after_plan_revision(retained_note=True)
 
     def test_artifact_only_and_mixed_reports_revise_at_controller_git_boundary(self):
         for mode in ("only", "mixed"):

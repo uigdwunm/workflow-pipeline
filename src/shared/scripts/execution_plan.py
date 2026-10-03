@@ -346,6 +346,7 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
                     {"id", "path", "operation", "capability", "approach", "verification_refs"} and
                     isinstance(artifact["id"], str) and IDENTIFIER.fullmatch(artifact["id"]) and
                     isinstance(artifact["path"], str) and artifact["path"] in manifest_paths and
+                    isinstance(artifact["operation"], str) and
                     artifact["operation"] in {"add", "modify", "delete"} and
                     isinstance(artifact["capability"], str) and artifact["capability"].strip() and
                     isinstance(artifact["approach"], str) and artifact["approach"].strip(),
@@ -687,6 +688,9 @@ def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
                               for _, step in (mapping[step_id],))
         expanded.update(step_id for step_id, (_, step) in {**old_steps, **new_steps}.items()
                         if _step_path(step) in affected_paths)
+        expanded.update(step_id for mapping in (old_steps, new_steps)
+                        for step_id, (_, step) in mapping.items()
+                        if affected_paths.intersection(step.get('read_only', [])))
         if expanded == impacted:
             break
         impacted = expanded

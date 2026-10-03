@@ -56,6 +56,39 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
                 self.assertEqual(error.exception.code, "execution_plan_incomplete")
                 self.assertIn(context, str(error.exception))
 
+    def test_staged_artifact_operation_reports_ticket_path_at_scope_seal(self):
+        for operation in (["add"], {"add": True}):
+            with self.subTest(operation=operation):
+                case = self.new_flow()
+                candidate = case.planning_candidate()
+                source = case.flow.flow / "docs/spec.md"
+                body = source.read_text()
+                match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+                plan = json.loads(match.group(1))
+                plan["artifact_steps"] = [{"id": "ART-1", "path": "prompt.md",
+                    "operation": operation, "capability": "provide approved artifact",
+                    "approach": "write approved prompt", "verification_refs": ["V1"]}]
+                source.write_text(body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                case.flow.flow_git("add", "docs/spec.md")
+                case.flow.flow_git("commit", "-qm", "malformed artifact operation")
+                candidate = case.flow.flow_git("rev-parse", "HEAD")
+                manifest = case.manifest(candidate)
+                manifest.append({"path": "prompt.md", "owner": "implementation", "kind": "source",
+                    "operation": "add", "basis": {"commit": candidate, "path": "docs/spec.md",
+                    "section": "approved design"}})
+                proposal = {"proposal_id": "artifact-operation", "expected_revision": 0,
+                    "candidate_commit": candidate, "manifest": manifest,
+                    "implementation_required": True,
+                    "requirement_identity": copy.deepcopy(case.flow.state()["handoff"]["requirement_identity"]),
+                    "binding": copy.deepcopy(case.flow.state()["handoff"]["binding"]),
+                    "previous_scope_revision": 0}
+                before = case.flow.checkpoint.read_bytes()
+                with self.assertRaises(fixture.fixture.transfer.entry.PreparationError) as error:
+                    case.flow.invoke("scope-propose", proposal)
+                self.assertEqual(error.exception.code, "execution_plan_incomplete")
+                self.assertIn("docs/spec.md", str(error.exception))
+                self.assertEqual(case.flow.checkpoint.read_bytes(), before)
+
     def test_sealed_scope_exposes_versioned_execution_plan_envelope(self):
         case = self.new_flow()
         case.finish_planned_design()

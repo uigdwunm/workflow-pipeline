@@ -175,14 +175,65 @@ def verified_planning_paths(repository, progress):
         activated.add(candidate)
         for relative in actual:
             planning[relative] = committed_fingerprint(repository, candidate, relative)
+    retained = progress.get('integration_retained')
+    retained_revisions = set()
+    retained_planning = set()
+    if retained is not None:
+        retained_paths = retained_closure_paths(repository, progress)
+        retained_commit = commit(retained['commit'])
+        require(commit(progress['integration_candidate']) == retained_commit,
+                'retained closure commit differs from integration candidate')
+        history = progress.get('validation_history', [])
+        accepted = commit(history[-1]['candidate']) if history and history[-1].get('candidate') else retained_commit
+        git(repository, 'merge-base', '--is-ancestor', accepted, retained_commit)
+        git(repository, 'merge-base', '--is-ancestor', retained_commit, 'HEAD')
+        actual = set(filter(None, git(repository, 'diff', '--no-renames', '--name-only', '-z',
+                                      accepted, retained_commit).decode().split('\0')))
+        require(actual == retained_paths and
+                incoming_changed_paths(repository, accepted, retained_commit) <= retained_paths and
+                retained_paths <= set(progress['execution_authority']['scope']['closure_paths']),
+                'retained closure history escapes its exact document paths')
+        from execution_plan import collect_execution_plan, current_catalog
+        catalog = current_catalog(progress['execution_authority'])
+        planning_sources = {source['path']: source for source in catalog['sources']
+                            if 'path' in source}
+        retained_planning = retained_paths & set(planning_sources)
+        retained_revisions = set(git(repository, 'rev-list',
+                                     accepted + '..' + retained_commit).decode().splitlines())
+        if retained_planning:
+            source_paths = sorted(planning_sources)
+            original_plans = {ticket['ticket_id']: ticket['plan'] for ticket in catalog['tickets']}
+            for revision in retained_revisions:
+                changed = set(filter(None, git(repository, 'diff', '--no-renames', '--name-only', '-z',
+                    revision + '^1', revision).decode().split('\0')))
+                if not changed & retained_planning:
+                    continue
+                checked = collect_execution_plan(str(repository), revision, source_paths,
+                    progress['execution_authority']['scope'], catalog['requirement_identity'])
+                require(checked['contract_digest'] == catalog['contract_digest'] and
+                        {ticket['ticket_id']: ticket['plan'] for ticket in checked['tickets']} == original_plans and
+                        all(source['mode'] == planning_sources[source['path']]['mode']
+                            for source in checked['sources']),
+                        'retained closure changed the current planning contract or function plan')
     for relative, expected in planning.items():
+        if relative in retained_planning:
+            expected = committed_fingerprint(repository, retained['commit'], relative)
         require(file_fingerprint(repository, relative) == expected,
                 'activated planning bytes changed outside Controller window: ' + relative)
-    if planning:
+    for relative in set(planning) | retained_planning:
+        tree = git(repository, 'ls-tree', '-z', 'HEAD', '--', relative)
+        index = git(repository, 'ls-files', '--stage', '-v', '-z', '--', relative)
+        header, separator, name = tree.partition(b'\t')
+        fields = header.split(b' ')
+        require(separator and name == relative.encode() + b'\0' and len(fields) == 3 and
+                index == b'H ' + fields[0] + b' ' + fields[2] + b' 0\t' + name,
+                'current planning Git index differs from HEAD: ' + relative)
+    if planning or retained_planning:
         for revision in git(repository, 'rev-list', progress['git_baseline_commit'] + '..HEAD').decode().splitlines():
             changed = set(filter(None, git(repository, 'diff', '--no-renames', '--name-only', '-z',
                                           revision + '^1', revision).decode().split('\0')))
-            require(not changed & set(planning) or revision in activated,
+            require(not changed & (set(planning) | retained_planning) or
+                    revision in activated | retained_revisions,
                     'unapproved commit changed protected planning bytes')
     return set(planning)
 
@@ -497,10 +548,11 @@ def verified_transition(payload):
         else:
             git(repository, 'merge-base', '--is-ancestor', target, actual['head'])
         retained = retained_closure_paths(repository, progress)
-        pending = sorted(set(changed_paths(repository, target)) - retained)
+        planning = verified_planning_paths(repository, progress)
+        pending = sorted(set(changed_paths(repository, target)) - retained - planning)
         require(set(pending) <= set(progress['allowed_paths']) and not set(pending) & set(progress['protected_paths']),
                 'final integration changes escape implementation authority')
-        for relative in set(progress['protected_paths']) - retained:
+        for relative in set(progress['protected_paths']) - retained - planning:
             require(file_fingerprint(repository, relative) == committed_fingerprint(repository, payload['baseline'], relative),
                     'final integration changed protected source: ' + relative)
         actual['files'] = {p: file_fingerprint(repository, p) for p in progress['allowed_paths'] + progress['protected_paths']}
