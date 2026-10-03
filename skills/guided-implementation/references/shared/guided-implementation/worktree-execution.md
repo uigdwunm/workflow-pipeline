@@ -181,7 +181,7 @@ scheduler or queue.
 
 ## Exact publication recovery (flow-worktree-v3)
 
-The stage owner uses workflow-progress-v17 for durable publication. The Python
+The stage owner uses workflow-progress-v18 for durable publication. The Python
 publishers accept a `record` callback that persists each immutable fact in the
 existing owner checkpoint before the next effect. A callback failure stops the
 operation; lost response recovery reads Git before deciding what remains. Raw

@@ -28,12 +28,13 @@ import requirement_delivery
 import stage_handoff as handoff
 import stage_dispatch as dispatch
 import stage_scope
+import execution_plan
 import workflow_control as control
 import workflow_control_git as control_git
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v17"
+PROTOCOL = "workflow-progress-v18"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -362,7 +363,7 @@ def validate_state(state):
         workspace_evidence(state['handoff']['binding'], state['handoff']['controller_ref'], state['workspace_evidence'])
         require(isinstance(native_host, dict) and native_host.get('adapter') in {'collaboration', 'app-server'} and
                 isinstance(native_host.get('instance'), str) and bool(native_host['instance']),
-                'invalid_checkpoint', 'v13 requires the originally admitted native host')
+                'invalid_checkpoint', 'the original admitted native host is required')
         if native_host['adapter'] == 'collaboration':
             require(set(native_host) == {'adapter', 'instance', 'controller_ref', 'baseline_refs'} and
                     isinstance(native_host['controller_ref'], str) and
@@ -488,6 +489,68 @@ def validate_state(state):
                 requirement_identity=state["handoff"]["requirement_identity"],
                 binding=state["handoff"]["binding"],
                 decision_records=change_decision_journal(state))
+    if state["stage"] == 3 and state.get("scope_authority") is not None:
+        authority = state["scope_authority"]
+        catalog = execution_plan.current_catalog(authority)
+        require(isinstance(catalog, dict) and
+                authority.get("revision") == authority.get("scope", {}).get("downstream", {}).get("revision"),
+                "scope_changed", "current Stage-3 plan authority differs from its sealed catalog")
+        plan_authority = (state["control"]["context"].get("handoff_progress") or {}).get("plan_authority")
+        if plan_authority is not None:
+            require(plan_authority == {"revision": authority["revision"],
+                    "authority_digest": entry.digest(authority),
+                    "plan_digest": catalog["plan_digest"],
+                    "contract_digest": catalog["contract_digest"]},
+                    "scope_changed", "control and current Scope Authority disagree")
+            require((state["control"]["context"].get("handoff_progress") or {}).get(
+                "execution_authority") == authority,
+                "scope_changed", "control catalog differs from current Scope Authority")
+        transactions = [*state.get("plan_revision_history", {}).values()]
+        if state.get("plan_revision_transaction") is not None:
+            transactions.append(state["plan_revision_transaction"])
+        require(isinstance(state.get("plan_revision_history", {}), dict) and
+                len(state.get("plan_revision_history", {})) <= 32,
+                "invalid_checkpoint", "plan revision history is not bounded")
+        seen = set()
+        for transaction in transactions:
+            require(isinstance(transaction, dict) and transaction.get("state") in
+                    {"stopping", "prepared", "planning-committed", "activated"} and
+                    isinstance(transaction.get("input"), dict) and
+                    transaction.get("input_digest") == entry.digest(transaction["input"]) and
+                    isinstance(transaction.get("old_authority"), dict),
+                    "invalid_checkpoint", "plan revision intent changed")
+            revision_id = transaction["input"].get("revision_id")
+            require(isinstance(revision_id, str) and revision_id and revision_id not in seen,
+                    "invalid_checkpoint", "duplicate plan revision identity")
+            seen.add(revision_id)
+            if transaction["state"] != "stopping":
+                require(isinstance(transaction.get("snapshot"), dict) and
+                        isinstance(transaction["input"].get("controller_ref"), str) and
+                        isinstance(transaction["input"].get("planning_paths"), list),
+                        "invalid_checkpoint", "prepared planning snapshot is incomplete")
+                expected_release = entry.digest({"revision_id": revision_id,
+                    "controller_ref": transaction["input"]["controller_ref"],
+                    "planning_paths": transaction["input"]["planning_paths"],
+                    "snapshot": transaction["snapshot"],
+                    "input_digest": transaction["input_digest"]})
+                require(transaction.get("write_release") == expected_release,
+                        "invalid_checkpoint", "plan revision release changed")
+            if transaction["state"] in {"planning-committed", "activated"}:
+                require(isinstance(transaction.get("commit_input"), dict) and
+                        isinstance(transaction.get("git_facts"), dict) and
+                        isinstance(transaction.get("proposed_authority"), dict) and
+                        transaction["commit_input"].get("revision_id") == revision_id and
+                        transaction.get("git_facts", {}).get("commit") ==
+                        transaction["commit_input"].get("planning_commit") and
+                        transaction.get("proposed_authority", {}).get("revision") ==
+                        transaction["old_authority"]["revision"] + 1,
+                        "invalid_checkpoint", "planning commit journal changed")
+            if transaction["state"] == "activated":
+                require(transaction.get("control_result", {}).get("evidence", {}).get("revision_id") == revision_id,
+                        "invalid_checkpoint", "activated control receipt changed")
+        require(all(item.get("state") == "activated" and key == item["input"]["revision_id"]
+                    for key, item in state.get("plan_revision_history", {}).items()),
+                "invalid_checkpoint", "historical revision cannot reopen")
     return state
 
 
@@ -538,11 +601,13 @@ def read_scope_readiness(readiness):
     require(path.is_absolute() and str(path.resolve()) == str(path),
             "invalid_checkpoint", "canonical absolute progression checkpoint required")
     outer = read_record(path)
-    require(outer.get("version") in (None, 9), "legacy_run_requires_original_runtime",
-            "scope readiness requires a standalone record or runner version 9")
+    require(outer.get("version") in (None, 10), "legacy_run_requires_original_runtime",
+            "scope readiness requires a standalone record or runner version 10")
     state = outer.get(KEY)
-    require(isinstance(state, dict) and state.get("protocol") == PROTOCOL,
-            "handoff_not_ready", "current progression checkpoint is unavailable")
+    require(isinstance(state, dict), "handoff_not_ready",
+            "current progression checkpoint is unavailable")
+    require(state.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime",
+            "retain original progression runtime " + str(state.get("protocol")))
     validate_state(state)
     require(state.get("checkpoint_path") == str(path), "handoff_not_ready",
             "readiness must name the original current checkpoint")
@@ -620,6 +685,7 @@ def scope_readiness(state, checkpoint_path, *, persisted=None):
         phase_finalization_ref = entry.digest(result["phase_run"])
     return {"accepted_digest": accepted["digest"], "scope_revision": authority["revision"],
             "scope_seal": authority["seal_ref"], "scope_authority": copy.deepcopy(authority),
+            "execution_plan": copy.deepcopy(authority.get("execution_plan")),
             "publication": {"planning_commit": payload["planning_commit"],
                             "planning_merge_commit": payload["planning_merge_commit"],
                             "publication_request_digest": entry.digest(publication["request"])},
@@ -638,7 +704,6 @@ def consumed_scope_readiness(state, checkpoint_path):
     path = Path(checkpoint_path).resolve()
     if (state.get("checkpoint_path") != str(path) or readiness.get("checkpoint_path") != str(path) or
             state.get("handoff", {}).get("readiness") != readiness or
-            state.get("scope_authority") != readiness.get("scope_authority") or
             not state.get("history")):
         return None
     old = state["history"][-1]
@@ -674,7 +739,22 @@ def consumed_scope_readiness(state, checkpoint_path):
         requirement_identity=old["handoff"]["requirement_identity"],
         binding=old["handoff"]["binding"],
         decision_records=change_decision_journal(state))
-    return copy.deepcopy(readiness)
+    current = state.get("scope_authority")
+    if current == readiness["scope_authority"]:
+        return copy.deepcopy(readiness)
+    transaction = state.get("plan_revision_transaction") or {}
+    if (transaction.get("state") != "activated" or
+            transaction.get("proposed_authority") != current or
+            current.get("execution_plan", {}).get("contract_digest") !=
+            readiness["execution_plan"]["contract_digest"] or
+            current.get("scope", {}).get("baseline") !=
+            readiness["scope_authority"]["scope"]["baseline"]):
+        return None
+    updated = copy.deepcopy(readiness)
+    updated.update(scope_revision=current["revision"], scope_seal=current["seal_ref"],
+                   scope_authority=copy.deepcopy(current),
+                   execution_plan=copy.deepcopy(current["execution_plan"]))
+    return updated
 
 
 def corrected_scope_authority(transaction, receipt):
@@ -684,7 +764,14 @@ def corrected_scope_authority(transaction, receipt):
     approved = transaction.get("approved_change_evidence")
     return {**copy.deepcopy(old), "state": "sealed",
         "revision": scope["downstream"]["revision"], "scope": scope,
-        "proposal": copy.deepcopy(transaction["input"]), "proposal_digest": entry.digest(transaction["input"]),
+        "proposal": copy.deepcopy(transaction["envelope"]),
+        "proposal_digest": entry.digest(transaction["envelope"]),
+        "execution_plan": (execution_plan.authority_envelope(transaction["execution_plan"],
+            (old["execution_plan"]["original_scope_revision"] if old.get("execution_plan")
+             else old["revision"]))
+            if transaction["execution_plan"] is not None else None),
+        "generated_outputs": copy.deepcopy(transaction["envelope"].get(
+            "generated_outputs", handoff.authority_generated_outputs(old))),
         "seal_ref": receipt["revision_ref"],
         "revisions": [*old.get("revisions", []), copy.deepcopy(receipt)],
         "approved_changes": [*old.get("approved_changes", []), *([approved] if approved else [])]}
@@ -704,6 +791,12 @@ def verify_scope_authority(authority, *, initial_seal=None, revision_records=Non
             downstream["proposal_ref"] == authority["proposal_digest"] and
             downstream["seal_ref"] == authority["seal_ref"],
             "scope_changed", "current downstream scope differs from its authority references")
+    if downstream["implementation_required"]:
+        catalog = execution_plan.current_catalog(authority)
+        require(isinstance(catalog, dict) and
+                authority["proposal"].get("execution_plan") ==
+                {"plan_digest": catalog["plan_digest"], "contract_digest": catalog.get("contract_digest")},
+                "scope_changed", "sealed function plan differs from proposal identity")
     seal = authority.get("seal")
     require(isinstance(seal, dict) and seal.get("seal_ref") ==
             control.digest({key: value for key, value in seal.items() if key != "seal_ref"}) and
@@ -983,7 +1076,7 @@ class Progress:
                                 snapshot['sequence'] != transport.get('native_event_sequence', 0) or transport.get('state') == 'lost'):
                 pending.append({'kind':'current-descendants-stale'})
             else:
-                refs = {self.bound_ref()}
+                refs = {self.bound_ref()} | self.native_refs()
                 for transaction in s.get('control_transactions', {}).values():
                     if transaction.get('result') is not None and transaction['request']['action'] == 'recover-dispatch':
                         refs.update(transaction['result']['recovery']['host_evidence']['stopped_refs'])
@@ -1041,6 +1134,12 @@ class Progress:
             selected = s.get('control', {}).get('context', {})
         progress = selected.get('handoff_progress') or {}
         refs.update(item['agent_ref'] for item in progress.get('executions', []) if item.get('agent_ref'))
+        refs.update(item['agent_ref'] for item in progress.get('carried_results', [])
+                    if item.get('agent_ref'))
+        for source in progress.get('plan_revision_sources', []):
+            for item in source['executions'] + source['carried_results']:
+                if item.get('agent_ref'):
+                    refs.add(item['agent_ref'])
         recovery = progress.get('recovery')
         if recovery and recovery['state'] == 'ready':
             refs.add(recovery['receipts'][-1]['ref'])
@@ -1091,8 +1190,11 @@ class Progress:
             accepted = saved.get('accepted')
             if accepted and accepted['role_ref'] == ref and saved.get('host', {}).get('status') == 'stopped':
                 return saved['handoff']['controller_ref'], accepted['digest'], saved['handoff']['expected_entry']['actor']['thread_id']
-            for slot in saved.get('allocations', {}).values():
-                record = slot.get('record') or {}
+            slots = list(saved.get('allocations', {}).values())
+            slots.extend(slot for history in saved.get('plan_revision_allocation_history', [])
+                         for slot in history['allocations'].values())
+            for slot in slots:
+                record = handoff.unseal(slot['record']) if slot.get('record') else {}
                 accepted = record.get('acceptance')
                 if accepted and accepted['role_ref'] == ref and record['status'] == 'accepted':
                     return slot['owner_ref'], accepted['digest'], slot['handoff']['expected_entry']['actor']['thread_id']
@@ -1785,6 +1887,8 @@ class Progress:
             require(authority is not None and authority.get("state") == "sealed", "scope_incomplete",
                     "seal the complete planning scope before accepting its publication")
             extra.update(scope_authority=copy.deepcopy(authority), scope_checkpoint_path=str(self.path.resolve()))
+        if s['stage'] >= 2 and operation == 'prepare':
+            extra['scope_checkpoint_path'] = str(self.path.resolve())
         request = {"protocol": handoff.PROTOCOL, "operation": operation, "control": copy.deepcopy(s["control"]), **extra}
         request["handoff" if operation == "prepare" else "record"] = copy.deepcopy(s["handoff"] if operation == "prepare" else s["dispatch"])
         s["transaction"], s["transaction_source"], s["transaction_result"] = request, copy.deepcopy(_source), None
@@ -1829,6 +1933,15 @@ class Progress:
         operation = request["operation"]
         if operation == "prepare":
             s["step"] = "launch"
+            if (s["stage"] == 3 and s.get("scope_authority") is None and
+                    s["handoff"].get("inline_authority") is not None):
+                s["scope_authority"] = copy.deepcopy(s["handoff"]["inline_authority"])
+            if s["stage"] == 3 and s.get("scope_authority") is not None:
+                authority = s["scope_authority"]
+                s["control"]["context"]["handoff_progress"]["plan_authority"] = {
+                    "revision": authority["revision"], "authority_digest": entry.digest(authority),
+                    "plan_digest": authority["execution_plan"]["plan_digest"],
+                    "contract_digest": authority["execution_plan"]["contract_digest"]}
         elif operation in {"bind", "reconcile"}:
             s["step"] = "bound" if result["status"] == "bound" else "host-response"
             if result["status"] == "not-created":
@@ -1920,7 +2033,16 @@ class Progress:
         require(type(data["implementation_required"]) is bool and
                 data["implementation_required"] == bool(projection["implementation_paths"]),
                 "scope_incomplete", "implementation-required decision contradicts the complete manifest")
-        proposal_digest = entry.digest(data)
+        catalog = (execution_plan.collect_execution_plan(saved["binding"]["repository"], candidate,
+                    original_scope["owned_paths"],
+                    {"baseline": original_scope["baseline"], "downstream": {"manifest": data["manifest"]}},
+                    saved["requirement_identity"])
+                   if data["implementation_required"] else None)
+        envelope = copy.deepcopy(data)
+        if catalog is not None:
+            envelope["execution_plan"] = {"plan_digest": catalog["plan_digest"],
+                                          "contract_digest": catalog["contract_digest"]}
+        proposal_digest = entry.digest(envelope)
         scope = copy.deepcopy(original_scope)
         scope.update(projection)
         scope["downstream"] = {"state": "proposed", "revision": 0,
@@ -1930,7 +2052,8 @@ class Progress:
         stage_scope.validate_scope(scope, saved["binding"]["repository"], stage=2,
             requirement_path=saved["requirement_identity"]["path"], candidate_commit=candidate,
             generated_outputs=generated_outputs)
-        record = {"input": copy.deepcopy(data), "digest": proposal_digest, "scope": scope,
+        record = {"input": copy.deepcopy(data), "envelope": envelope,
+                  "execution_plan": catalog, "digest": proposal_digest, "scope": scope,
                   "target_head": supervision._branch_oid(Path(saved["binding"]["repository"]), saved["binding"]["target_branch"])}
         s["scope_proposals"][data["proposal_id"]] = record
         self.save()
@@ -1982,7 +2105,10 @@ class Progress:
             requirement_path=saved["requirement_identity"]["path"], candidate_commit=candidate,
             generated_outputs=generated_outputs_for(proposal["input"]))
         authority = {"state": "sealed", "revision": 1, "scope": scope,
-                     "proposal": copy.deepcopy(proposal["input"]), "proposal_digest": proposal["digest"],
+                     "proposal": copy.deepcopy(proposal["envelope"]),
+                     "execution_plan": (execution_plan.authority_envelope(proposal["execution_plan"], 1)
+                                        if proposal["execution_plan"] is not None else None),
+                     "proposal_digest": proposal["digest"],
                      "seal": copy.deepcopy(seal), "seal_ref": seal["seal_ref"], "candidate_commit": candidate,
                      "approved_changes": [change_evidence] if change_evidence is not None else []}
         s["scope_authority"] = authority
@@ -2049,9 +2175,18 @@ class Progress:
                     "scope_incomplete", "revision implementation requirement disagrees with manifest")
             proposed_scope = copy.deepcopy(old_scope)
             proposed_scope.update(projection)
+            catalog = (execution_plan.collect_execution_plan(data["binding"]["repository"],
+                        data["candidate_commit"], old_scope["owned_paths"],
+                        {"baseline": old_scope["baseline"], "downstream": {"manifest": data["manifest"]}},
+                        data["requirement_identity"])
+                       if data["implementation_required"] else None)
+            envelope = copy.deepcopy(data)
+            if catalog is not None:
+                envelope["execution_plan"] = {"plan_digest": catalog["plan_digest"],
+                                              "contract_digest": catalog["contract_digest"]}
             proposed_scope["downstream"] = {"state": "proposed", "revision": authority["revision"] + 1,
                 "implementation_required": data["implementation_required"],
-                "manifest": copy.deepcopy(data["manifest"]), "proposal_ref": entry.digest(data),
+                "manifest": copy.deepcopy(data["manifest"]), "proposal_ref": entry.digest(envelope),
                 "seal_ref": None}
             stage_scope.validate_scope(proposed_scope, data["binding"]["repository"], stage=2,
                 requirement_path=data["requirement_identity"]["path"],
@@ -2062,7 +2197,8 @@ class Progress:
             proposed = sorted(set(proposed_scope["implementation_paths"] + proposed_scope["closure_paths"]) - set(protected))
             snapshot = control_git.scope_revision_snapshot(data["binding"]["worktree"],
                 data["planning_merge_commit"], protected, proposed)
-            transaction = {"input": copy.deepcopy(data), "state": "prepared",
+            transaction = {"input": copy.deepcopy(data), "envelope": envelope,
+                "execution_plan": catalog, "state": "prepared",
                 "old_authority": copy.deepcopy(authority), "proposed_scope": proposed_scope,
                 "snapshot": snapshot, "control_result": None,
                 "approved_change_evidence": change_evidence}
@@ -2109,6 +2245,350 @@ class Progress:
         s["pending"] = pending
         self.save()
         return _view(s, {"operation": "scope-revision-sealed", "authority": s["scope_authority"]})
+
+    def prepare_plan_revision(self, data):
+        """Persist a Controller intent before asking the original host to stop."""
+        entry.fields(data, {"revision_id", "expected_authority_revision",
+            "expected_authority_digest", "controller_ref", "classification", "report",
+            "planning_paths"}, {"manifest", "generated_outputs", "inline_plan",
+                                 "validation_plan"})
+        s = self.state
+        require(s["stage"] == 3 and s.get("scope_authority") is not None,
+                "plan_revision_unavailable", "an active sealed Stage-3 authority is required")
+        require(data["controller_ref"] == s["handoff"]["controller_ref"] ==
+                s["control"]["context"]["controller_ref"],
+                "identity_mismatch", "only the original Controller may revise the plan")
+        entry.nonempty(data["revision_id"])
+        prior = s.get("plan_revision_transaction")
+        historical = s.get("plan_revision_history", {}).get(data["revision_id"])
+        if historical is not None:
+            require(historical["input"] == data, "plan_revision_conflict",
+                    "historical revision ID was reused with different content")
+            return _view(s, {"operation": "plan-revision-activated",
+                             "revision_id": data["revision_id"]}, acknowledged=True)
+        if prior is not None and prior["input"]["revision_id"] == data["revision_id"]:
+            require(prior["input"] == data, "plan_revision_conflict",
+                    "revision ID was reused with different content")
+            return self.reconcile_plan_revision({"revision_id": data["revision_id"]})
+        require(prior is None or prior["state"] == "activated", "plan_revision_pending",
+                "finish the existing plan revision before opening another")
+        require(s["status"] not in {"accepted", "cancelled", "cancelling"} and
+                (s.get("dispatch") or {}).get("status") == "bound",
+                "plan_revision_unavailable", "revision requires the active original dispatcher")
+        entry.fields(data["classification"], {"kind", "reference"})
+        require(data["classification"]["kind"] == "internal", "user_decision_required",
+                "public or uncertain contract impact requires the original user decision")
+        entry.nonempty(data["classification"]["reference"])
+        entry.fields(data["report"], {"ticket_ids", "step_ids", "reason",
+            "production_facts", "contract_before", "contract_after", "dependency_impact",
+            "verification_impact", "carry_forward"}, {"manifest_diff"})
+        for field in ("ticket_ids", "step_ids", "dependency_impact", "verification_impact"):
+            require(isinstance(data["report"][field], list) and data["report"][field] and
+                    len(data["report"][field]) == len(set(data["report"][field])),
+                    "invalid_request", "revision report requires exact unique " + field)
+        require(isinstance(data["report"]["carry_forward"], list), "invalid_request",
+                "carry-forward proposals must be explicit")
+        for field in ("reason", "production_facts", "contract_before", "contract_after"):
+            entry.nonempty(data["report"][field])
+        authority = s["scope_authority"]
+        require(data["expected_authority_revision"] == authority["revision"] and
+                data["expected_authority_digest"] == entry.digest(authority),
+                "stale_plan_revision", "report must name the exact current authority")
+        require(data["report"]["contract_before"] == data["report"]["contract_after"] ==
+                authority["execution_plan"]["contract_digest"], "contract_changed",
+                "internal revision cannot change the sealed functional contract")
+        catalog = execution_plan.current_catalog(authority)
+        if "validation_plan" in data:
+            try:
+                control.validate_revision_validation_plan(
+                    s["control"]["context"]["handoff_progress"]["validation_plan"],
+                    data["validation_plan"], s["handoff"]["binding"])
+            except control.ControlError as error:
+                raise entry.PreparationError("invalid_plan_revision", str(error)) from error
+        ticket_ids = {ticket["ticket_id"] for ticket in catalog["tickets"]}
+        step_ids = {step["id"] for ticket in catalog["tickets"] for step in ticket["plan"]["steps"]}
+        verification_ids = {item["id"] for ticket in catalog["tickets"]
+                            for item in ticket["plan"]["verifications"]}
+        require(set(data["report"]["ticket_ids"]) <= ticket_ids and
+                set(data["report"]["step_ids"] + data["report"]["dependency_impact"]) <= step_ids and
+                set(data["report"]["verification_impact"]) <= verification_ids,
+                "invalid_plan_revision", "report references unknown current Ticket, step or verification")
+        planning = data["planning_paths"]
+        require(isinstance(planning, list) and planning == sorted(set(planning)) and
+                (planning or authority.get("kind") == "inline"),
+                "invalid_request", "exact sorted planning paths required")
+        closure = set(authority["scope"]["closure_paths"])
+        require(set(planning) <= closure and set(planning) <= set(s["handoff"]["scope"]["protected_paths"]),
+                "invalid_scope", "planning paths must be closure-owned protected planning files")
+        old_manifest = authority["scope"]["downstream"]["manifest"]
+        proposed_manifest = data.get("manifest", old_manifest)
+        stage_scope.manifest_projection(proposed_manifest)
+        if authority.get("kind") == "inline":
+            require(planning == [] and isinstance(data.get("inline_plan"), dict),
+                    "invalid_plan_revision", "inline revision needs exact Controller plan bytes and no planning file")
+            proposed_scope = copy.deepcopy(authority["scope"])
+            proposed_scope["downstream"]["manifest"] = copy.deepcopy(proposed_manifest)
+            projected = stage_scope.manifest_projection(proposed_manifest)
+            proposed_scope["implementation_paths"] = projected["implementation_paths"]
+            proposed_scope["closure_paths"] = projected["closure_paths"]
+            proposed_scope["owned_paths"] = copy.deepcopy(projected["implementation_paths"])
+            new_catalog = execution_plan.collect_inline_plan(data["inline_plan"], proposed_scope,
+                s["handoff"]["semantic"], s["handoff"]["requirement_identity"],
+                repository=s["handoff"]["binding"]["worktree"])
+            previous = catalog["tickets"][0]
+            require(new_catalog["contract_digest"] == catalog["contract_digest"] and
+                    new_catalog["tickets"][0]["ticket_id"] == previous["ticket_id"] and
+                    new_catalog["tickets"][0]["plan_version"] == previous["plan_version"] + 1,
+                    "contract_changed", "inline revision must preserve contract and advance its plan version")
+        else:
+            require("inline_plan" not in data, "invalid_plan_revision",
+                    "committed planning revision cannot replace an inline plan")
+        if "manifest_diff" in data["report"]:
+            require(data["report"]["manifest_diff"] ==
+                    stage_scope.manifest_diff(old_manifest, proposed_manifest),
+                    "scope_changed", "reported manifest diff differs from exact proposal")
+        else:
+            require(proposed_manifest == old_manifest, "scope_changed",
+                    "manifest change requires its exact reported diff")
+        if "generated_outputs" in data:
+            require(isinstance(data["generated_outputs"], dict), "invalid_request",
+                    "generated output inventory must be an exact map")
+        require(not s.get("scope_revision_transaction") and not s.get("final_integration_recovery") and
+                not s.get("publication_transaction"), "plan_revision_unavailable",
+                "another publication or revision recovery has priority")
+        if prior is not None:
+            s.setdefault("plan_revision_history", {})[prior["input"]["revision_id"]] = copy.deepcopy(prior)
+        s["plan_revision_transaction"] = {"state": "stopping", "input": copy.deepcopy(data),
+            "input_digest": entry.digest(data), "old_authority": copy.deepcopy(authority)}
+        self.save()
+        return self.advance_plan_revision()
+
+    def advance_plan_revision(self):
+        s = self.state
+        transaction = s["plan_revision_transaction"]
+        if s["status"] in {"paused", "cancelled", "pausing", "cancelling"}:
+            return _view(s, {"operation": "plan-revision-suspended", "state": transaction["state"]})
+        if transaction["state"] != "stopping":
+            if transaction["state"] == "planning-committed":
+                return _view(s, {"operation": "reconcile-plan-revision",
+                    "revision_id": transaction["input"]["revision_id"]})
+            if transaction["state"] == "prepared":
+                pending = self.stop_barrier_pending()
+                if s["host"]["status"] != "stopped" or pending:
+                    return _view(s, {"operation": "reconcile-stop-barrier", "pending": pending})
+                current = control_git.snapshot(s["handoff"]["binding"]["worktree"])
+                if current["head"] != transaction["snapshot"]["head"]:
+                    return _view(s, {"operation": "inspect-planning-commit",
+                        "revision_id": transaction["input"]["revision_id"],
+                        "expected_parent": transaction["snapshot"]["head"],
+                        "current_head": current["head"]})
+            return _view(s, {"operation": "plan-revision-" + transaction["state"],
+                             "revision_id": transaction["input"]["revision_id"],
+                             **({"write_release": transaction["write_release"]}
+                                if transaction["state"] == "prepared" else {})})
+        if s["host"]["status"] != "stopped":
+            if self.unresolved_host_actions():
+                return self.query_host()
+            if any(action["operation"] == "stop-host" for action in
+                   [s.get("host_action") or {}, *s.get("retained_host_actions", [])]):
+                return self.query_host()
+            return self.effect("stop-host", {"subject": self.subject(), "ref": self.bound_ref()})
+        pending = self.stop_barrier_pending()
+        if pending or self.unresolved_control_transactions() or s["transaction"] is not None:
+            return _view(s, {"operation": "reconcile-stop-barrier", "pending": pending})
+        proposed = transaction["input"].get("manifest", transaction["old_authority"]["scope"]["downstream"]["manifest"])
+        proposed_paths = stage_scope.manifest_projection(proposed)["implementation_paths"]
+        snapshot = control_git.plan_revision_snapshot(s["handoff"]["binding"]["worktree"],
+            transaction["old_authority"], s["handoff"]["scope"]["protected_paths"],
+            transaction["input"]["planning_paths"],
+            additional_paths=sorted(set(proposed_paths) - set(transaction["old_authority"]["scope"]["implementation_paths"])))
+        transaction["snapshot"] = snapshot
+        transaction["state"] = "prepared"
+        transaction["write_release"] = entry.digest({"revision_id": transaction["input"]["revision_id"],
+            "controller_ref": transaction["input"]["controller_ref"],
+            "planning_paths": transaction["input"]["planning_paths"],
+            "snapshot": snapshot, "input_digest": transaction["input_digest"]})
+        self.save()
+        return self.advance_plan_revision()
+
+    def reconcile_plan_revision(self, data):
+        entry.fields(data, {"revision_id"})
+        historical = self.state.get("plan_revision_history", {}).get(data["revision_id"])
+        if historical is not None:
+            return _view(self.state, {"operation": "plan-revision-activated",
+                                      "revision_id": data["revision_id"]}, acknowledged=True)
+        transaction = self.state.get("plan_revision_transaction")
+        require(transaction is not None and transaction["input"]["revision_id"] == data["revision_id"],
+                "plan_revision_missing", "reconcile the exact saved revision")
+        if transaction["state"] == "activated":
+            return _view(self.state, {"operation": "plan-revision-activated",
+                                      "revision_id": data["revision_id"]}, acknowledged=True)
+        if transaction["state"] == "planning-committed":
+            if self.state["status"] in {"paused", "pausing", "cancelled", "cancelling"}:
+                return self.advance_plan_revision()
+            return self.activate_plan_revision()
+        return self.advance_plan_revision()
+
+    def commit_plan_revision(self, data):
+        entry.fields(data, {"revision_id", "controller_ref", "write_release", "planning_commit"})
+        s = self.state
+        transaction = s.get("plan_revision_transaction")
+        historical = s.get("plan_revision_history", {}).get(data["revision_id"])
+        if historical is not None:
+            require(data == historical["commit_input"], "plan_revision_conflict",
+                    "historical planning commit input changed")
+            return _view(s, {"operation": "plan-revision-activated",
+                             "revision_id": data["revision_id"]}, acknowledged=True)
+        require(transaction is not None and data["revision_id"] == transaction["input"]["revision_id"],
+                "plan_revision_missing", "commit the exact prepared Controller revision")
+        require(data["controller_ref"] == transaction["input"]["controller_ref"],
+                "identity_mismatch", "only the original Controller may commit planning")
+        if transaction["state"] == "activated":
+            require(data == transaction["commit_input"], "plan_revision_conflict",
+                    "activated revision input changed")
+            return _view(s, {"operation": "plan-revision-activated",
+                             "authority": s["scope_authority"]}, acknowledged=True)
+        require(transaction["state"] in {"prepared", "planning-committed"} and
+                data["write_release"] == transaction["write_release"],
+                "plan_revision_unavailable", "the exact prepared write release is required")
+        require(s["status"] not in {"paused", "pausing", "cancelled", "cancelling"},
+                "plan_revision_suspended", "paused or cancelled revisions cannot activate")
+        require(s["host"]["status"] == "stopped" and not self.stop_barrier_pending() and
+                not self.unresolved_host_actions() and not self.unresolved_control_transactions() and
+                s["transaction"] is None, "host_evidence_missing",
+                "all original writers and calls must remain settled")
+        if transaction["state"] == "planning-committed":
+            require(data == transaction["commit_input"], "plan_revision_conflict",
+                    "planning commit input changed")
+            return self.activate_plan_revision()
+        repository = s["handoff"]["binding"]["worktree"]
+        old_authority = transaction["old_authority"]
+        inline = old_authority.get("kind") == "inline"
+        facts = (control_git.verify_inline_plan_revision if inline else
+                 control_git.verify_plan_revision)(repository, transaction["snapshot"],
+                                                   data["planning_commit"])
+        scope = copy.deepcopy(old_authority["scope"])
+        scope["downstream"]["manifest"] = copy.deepcopy(transaction["input"].get("manifest",
+            old_authority["scope"]["downstream"]["manifest"]))
+        projected = stage_scope.manifest_projection(scope["downstream"]["manifest"])
+        scope["implementation_paths"] = projected["implementation_paths"]
+        scope["closure_paths"] = projected["closure_paths"]
+        scope["owned_paths"] = copy.deepcopy(scope["implementation_paths"])
+        scope["downstream"]["implementation_required"] = bool(scope["implementation_paths"])
+        scope["downstream"]["revision"] += 1
+        sources = ([] if inline else sorted({item["path"] for item in
+                   execution_plan.current_catalog(old_authority)["contract_projection"]["files"]}))
+        require(set(transaction["input"]["planning_paths"]) <= set(sources),
+                "invalid_scope", "new planning sources need an explicit current contract boundary")
+        catalog = (execution_plan.collect_inline_plan(transaction["input"]["inline_plan"], scope,
+                    s["handoff"]["semantic"], s["handoff"]["requirement_identity"],
+                    repository=repository)
+                   if inline else execution_plan.collect_execution_plan(repository, data["planning_commit"],
+                    sources, scope, s["handoff"]["requirement_identity"]))
+        require(catalog["contract_digest"] == old_authority["execution_plan"]["contract_digest"],
+                "contract_changed", "planning commit changed the immutable functional contract")
+        old_tickets = {item["ticket_id"]: item for item in execution_plan.current_catalog(old_authority)["tickets"]}
+        new_tickets = {item["ticket_id"]: item for item in catalog["tickets"]}
+        require(set(old_tickets) == set(new_tickets), "contract_changed",
+                "internal revision cannot add or remove a behavior Ticket")
+        historical_ids = {step['id'] for prior in s.get('plan_revision_history', {}).values()
+                          if prior.get('state') == 'activated'
+                          for authority in (prior['old_authority'], prior['proposed_authority'])
+                          for ticket in execution_plan.current_catalog(authority)['tickets']
+                          for step in ticket['plan']['steps']}
+        current_ids = {step['id'] for ticket in old_tickets.values()
+                       for step in ticket['plan']['steps']}
+        new_ids = {step['id'] for ticket in new_tickets.values()
+                   for step in ticket['plan']['steps']}
+        require(not (historical_ids - current_ids) & new_ids,
+                'execution_plan_incomplete', 'retired function IDs cannot be reused')
+        for ticket_id, prior in old_tickets.items():
+            current = new_tickets[ticket_id]
+            changed = prior["source"]["sha256"] != current["source"]["sha256"]
+            require(current["plan_version"] == prior["plan_version"] + (1 if changed else 0),
+                    "invalid_plan_revision", "Ticket plan version must advance exactly once: " + ticket_id)
+        generated_outputs = transaction["input"].get("generated_outputs",
+            old_authority.get("generated_outputs",
+                old_authority.get("proposal", {}).get("generated_outputs", {})))
+        stage_scope.validate_scope(scope, s["handoff"]["binding"]["repository"], stage=3,
+            requirement_path=s["handoff"]["requirement_identity"]["path"],
+            planning_paths=sources or None,
+            candidate_commit=old_authority["candidate_commit"] if inline else data["planning_commit"],
+            manifest_baseline=scope["baseline"],
+            generated_outputs=generated_outputs)
+        proposed = copy.deepcopy(old_authority)
+        proposed.update(revision=old_authority["revision"] + 1,
+                        candidate_commit=old_authority["candidate_commit"] if inline else data["planning_commit"],
+                        execution_plan=execution_plan.authority_envelope(catalog,
+                            old_authority["execution_plan"]["original_scope_revision"],
+                            input_digest=(old_authority["execution_plan"]["sources"][0]["input_digest"]
+                                          if inline else None)),
+                        scope=scope, generated_outputs=copy.deepcopy(generated_outputs))
+        if inline:
+            require(proposed == execution_plan.inline_authority(transaction["input"]["inline_plan"],
+                scope, s["handoff"]["semantic"], s["handoff"]["requirement_identity"],
+                generated_outputs, repository=repository,
+                original_scope_revision=old_authority["execution_plan"]["original_scope_revision"],
+                input_digest=old_authority["execution_plan"]["sources"][0]["input_digest"]),
+                "scope_changed", "inline authority projection changed")
+        transaction.update(state="planning-committed", commit_input=copy.deepcopy(data),
+                           git_facts=facts, proposed_authority=proposed)
+        self.save()
+        return self.activate_plan_revision()
+
+    def activate_plan_revision(self):
+        s = self.state
+        transaction = s["plan_revision_transaction"]
+        require(transaction["state"] == "planning-committed", "plan_revision_unavailable",
+                "activation requires the verified planning commit")
+        require(s["status"] not in {"paused", "pausing", "cancelled", "cancelling"},
+                "plan_revision_suspended", "paused or cancelled planning commit cannot activate")
+        require(s["host"]["status"] == "stopped" and not self.stop_barrier_pending() and
+                not self.unresolved_host_actions() and s["transaction"] is None,
+                "host_evidence_missing", "original writers and host calls must still be stopped")
+        data = transaction["commit_input"]
+        (control_git.verify_inline_plan_revision if transaction["old_authority"].get("kind") == "inline" else
+         control_git.verify_plan_revision)(s["handoff"]["binding"]["worktree"],
+                                          transaction["snapshot"], data["planning_commit"])
+        old = transaction["old_authority"]
+        new = transaction["proposed_authority"]
+        checkpoint = s["control"]["context"]["handoff_progress"]
+        repository = s["handoff"]["binding"]["worktree"]
+        baseline_fingerprints = {relative: control_git.committed_fingerprint(
+            repository, checkpoint["git_baseline_commit"], relative)
+            for relative in new["scope"]["implementation_paths"]}
+        retention = execution_plan.classify_retained_results(
+            old, new, checkpoint["executions"], checkpoint.get("carried_results", []),
+            checkpoint.get("revalidation_source"), transaction["snapshot"],
+            baseline_fingerprints, transaction["git_facts"]["changed_paths"])
+        evidence = {"revision_id": data["revision_id"],
+            "old_authority": {"revision": old["revision"], "authority_digest": entry.digest(old),
+                "plan_digest": old["execution_plan"]["plan_digest"],
+                "contract_digest": old["execution_plan"]["contract_digest"]},
+            "new_authority": {"revision": new["revision"], "authority_digest": entry.digest(new),
+                "plan_digest": new["execution_plan"]["plan_digest"],
+                "contract_digest": new["execution_plan"]["contract_digest"]},
+            "new_execution_authority": copy.deepcopy(new),
+            "planning_commit": data["planning_commit"],
+            "planning_paths": transaction["input"]["planning_paths"],
+            "new_scope": {"implementation_paths": new["scope"]["implementation_paths"],
+                "protected_paths": s["handoff"]["scope"]["protected_paths"]},
+            "snapshot": transaction["snapshot"],
+            "baseline_fingerprints": baseline_fingerprints,
+            "retention": retention,
+            "classification": transaction["input"]["classification"],
+            "git_facts": transaction["git_facts"]}
+        if "validation_plan" in transaction["input"]:
+            evidence["validation_plan"] = copy.deepcopy(transaction["input"]["validation_plan"])
+        result = self.control_action({"action": "plan-revision-activate", "evidence": evidence,
+            "receipt": {"controller_ref": data["controller_ref"],
+                        "reference": evidence["classification"]["reference"]}})
+        if transaction["state"] == "planning-committed":
+            transaction["state"] = "activated"
+            s["scope_authority"] = copy.deepcopy(new)
+            self.save()
+        return _view(s, {"operation": "plan-revision-activated", "authority": s["scope_authority"],
+                         "control": result["next_action"]["result"]})
 
     def message_key(self, data):
         return entry.digest({"request": self.state["dispatch"]["request"]["digest"],
@@ -2496,6 +2976,8 @@ class Progress:
         intent = self.stop_intent()
         if intent is not None:
             return self.advance_stop(intent)
+        if (s.get("plan_revision_transaction") or {}).get("state") not in (None, "activated"):
+            return self.advance_plan_revision()
         if native_finalization_action(s) is not None:
             return _view(s, native_finalization_action(s))
         if (s.get("scope_revision_transaction") or {}).get("state") not in (None,):
@@ -2553,7 +3035,7 @@ class Progress:
                 "result": s.get("last_observation"), "decision": s.get("last_decision"),
                 "intent": s.get("resume_intent") or s.get("continuation_intent"),
                 **({"request": copy.deepcopy(s["dispatch"]["request"])} if
-                   (s.get("continuation_intent") or {}).get("kind") in {"scope-revision", "final-integration"} else {}),
+                   (s.get("continuation_intent") or {}).get("kind") in {"scope-revision", "plan-revision", "final-integration"} else {}),
                 **({"validation_attempt":s["control"]["context"]["handoff_progress"]["attempts"][-1]} if
                    (s["control"]["context"].get("handoff_progress") or {}).get("state") == "validating" else {})})
         if s["step"] == "received":
@@ -2687,6 +3169,12 @@ class Progress:
             if s["step"] == "continue" and self.stop_intent() is None and s["transaction"] is None:
                 return self.advance()
             return _view(s, acknowledged=True)
+        if (s.get("plan_revision_transaction") or {}).get("state") not in (None, "activated") and "result" in data:
+            s.setdefault("plan_revision_late_results", []).append({"event_id": data["event_id"],
+                "message_digest": message_key, "observation": copy.deepcopy(data)})
+            s["events"][data["event_id"]]["applied"] = True
+            self.save()
+            return self.advance()
         # Host facts can be retained while a prior business transaction is unresolved.
         if s["transaction"] is not None and ("result" in data or receipt["event"] != "result"):
             intent = self.stop_intent()
@@ -2817,6 +3305,8 @@ class Progress:
         return self.advance()
 
     def decide(self, data):
+        require((self.state.get("plan_revision_transaction") or {}).get("state") in (None, "activated"),
+                "plan_revision_pending", "old decisions are closed during plan revision")
         require((self.state.get("scope_revision_transaction") or {}).get("state") in (None,),
                 "scope_revision_pending", "old acceptance and stage-entry decisions are closed during revision")
         s = self.state
@@ -3149,10 +3639,13 @@ class Progress:
         return self.finish_publication(result)
 
     def control_action(self, data):
+        require((self.state.get("plan_revision_transaction") or {}).get("state") in (None, "activated") or
+                data.get("action") == "plan-revision-activate",
+                "plan_revision_pending", "old control lease is closed during plan revision")
         entry.fields(data, {"action", "evidence", "receipt"})
         entry.nonempty(data["action"])
         require(data["action"] in {"successor-ready", "archive", "archive-result",
-                    "scope-seal", "scope-revise", "escalate-implementation", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "capture-integration", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
+                    "scope-seal", "scope-revise", "plan-revision-activate", "escalate-implementation", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "capture-integration", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
                 "invalid_operation", "use the original bounded control recovery/closure operation")
         require(isinstance(data["receipt"], dict) and data["receipt"], "host_evidence_missing", "original authenticated host/controller evidence required")
         s = self.state
@@ -3171,6 +3664,13 @@ class Progress:
         if (s.get("scope_revision_transaction") or {}).get("state") not in (None,):
             require(data["action"] == "scope-revise", "scope_revision_pending",
                     "scope revision has closed the old control lease")
+        if data["action"] == "plan-revision-activate":
+            transaction = s.get("plan_revision_transaction")
+            require(transaction is not None and transaction["state"] == "planning-committed" and
+                    data["evidence"]["revision_id"] == transaction["input"]["revision_id"] and
+                    data["receipt"] == {"controller_ref": transaction["input"]["controller_ref"],
+                        "reference": transaction["input"]["classification"]["reference"]},
+                    "plan_revision_conflict", "activation must retain the saved original Controller decision")
         if data['action'] in {'archive', 'archive-result'}:
             return self.archive_action(data)
         if data['action'] == 'successor-ready':
@@ -3407,7 +3907,16 @@ class Progress:
         self.save()
         # Retain exact ledger envelope on a lost response; never promote slots by hand.
         try:
-            result, applied = dispatch.checkpoint(transactions[identity]["port"], s["handoff"], data["action"], data["evidence"])
+            if data["action"] == "plan-revision-activate" and s["control"]["discussion"] is None:
+                result = control_git.verified_transition({"repository": s["handoff"]["binding"]["worktree"],
+                    "baseline": s["control"]["context"]["handoff_progress"]["git_baseline_commit"],
+                    "request": {"schema_version": 6, "action": data["action"],
+                        "actor_ref": s["control"]["context"]["controller_ref"],
+                        "context": transactions[identity]["port"]["context"],
+                        "evidence": data["evidence"]}})
+                applied = None
+            else:
+                result, applied = dispatch.checkpoint(transactions[identity]["port"], s["handoff"], data["action"], data["evidence"])
         except control.ControlError as error:
             # This pure/Git read-only boundary definitively rejected before any
             # durable control mutation. OS/transport/ledger failures stay unknown.
@@ -3423,6 +3932,20 @@ class Progress:
             receipt = result["scope_revision"]
             correction.update(state="sealed", control_result=copy.deepcopy(receipt))
             s["scope_authority"] = corrected_scope_authority(correction, receipt)
+        if data["action"] == "plan-revision-activate":
+            transaction = s["plan_revision_transaction"]
+            transaction["control_result"] = copy.deepcopy(result["plan_revision"])
+            s["scope_authority"] = copy.deepcopy(transaction["proposed_authority"])
+            transaction["state"] = "activated"
+            s.setdefault("plan_revision_allocation_history", []).append({
+                "revision_id": transaction["input"]["revision_id"],
+                "allocations": copy.deepcopy(s.pop("allocations", {}))})
+            if s.get("review_activity"):
+                s.setdefault("review_history", []).append(copy.deepcopy(s.pop("review_activity")))
+            s["status"] = "active"
+            s["step"] = "continue"
+            s["continuation_intent"] = {"kind": "plan-revision",
+                "revision_id": transaction["input"]["revision_id"]}
         if data["action"] == "validation-result":
             s.pop("deferred_validation", None)
         if s["status"] == "blocked":
@@ -3577,6 +4100,18 @@ class Progress:
         operation = data["operation"]
         require(operation in {"prepare", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown allocation operation")
         s = self.state
+        plan_state = (s.get("plan_revision_transaction") or {}).get("state")
+        if plan_state in {"prepared", "planning-committed"} and operation in {"bind", "reconcile", "receive", "accept"}:
+            s.setdefault("plan_revision_late_allocations", []).append(copy.deepcopy(data))
+            if isinstance(data.get("receipt"), dict) and data["receipt"].get("ref"):
+                s.setdefault("native_adverse", {})[data["receipt"]["ref"]] = copy.deepcopy(data)
+            s["lifecycle_snapshot"] = None
+            self.save()
+            return _view(s, {"operation": "audit-late-allocation", "allocation_id": identity,
+                             "revision_id": s["plan_revision_transaction"]["input"]["revision_id"]})
+        require(plan_state in (None, "activated") or
+                plan_state == "stopping" and operation in {"bind", "reconcile", "receive"},
+                "plan_revision_pending", "new allocation or acceptance is closed during plan revision")
         require(s["stage"] == 3 and s["handoff"]["role"] == "implementation-dispatcher", "role_mismatch", "allocation belongs to the Stage-3 dispatcher")
         self.require_controls_reconciled()
         slots = s.setdefault("allocations", {})
@@ -3604,8 +4139,17 @@ class Progress:
                 request.setdefault("target", s["handoff"]["target"])
                 request.setdefault("delivery", s["handoff"]["delivery"])
                 parent_scope = s["handoff"]["scope"]
-                manifest_base = ((s["handoff"].get("readiness") or {}).get("scope_authority") or {}).get("scope", {}).get(
-                    "baseline", s["handoff"].get("manifest_baseline", parent_scope["baseline"]))
+                current_readiness = (consumed_scope_readiness(s, self.path)
+                                     if "readiness" in s["handoff"] else None)
+                if "readiness" in s["handoff"]:
+                    require(current_readiness is not None, "scope_changed",
+                            "current Stage-3 plan authority is unavailable")
+                current_scope = (current_readiness["scope_authority"]["scope"]
+                                 if current_readiness is not None else
+                                 s["scope_authority"]["scope"] if (s.get("scope_authority") or {}).get("kind") == "inline"
+                                 else parent_scope)
+                manifest_base = current_scope.get("baseline", s["handoff"].get(
+                    "manifest_baseline", parent_scope["baseline"]))
                 require("manifest_baseline" not in request or
                         request["manifest_baseline"] == manifest_base,
                         "scope_changed", "allocation must retain the sealed manifest baseline")
@@ -3614,17 +4158,27 @@ class Progress:
                     request['authorization']['integration_recovery'] = copy.deepcopy(s['handoff']['authorization']['integration_recovery'])
                 if "readiness" in s["handoff"]:
                     require("readiness" not in request or
-                            request["readiness"] == s["handoff"]["readiness"],
+                            request["readiness"] == current_readiness,
                             "scope_changed", "allocation readiness differs from its Dispatcher")
-                    request["readiness"] = copy.deepcopy(s["handoff"]["readiness"])
+                    request["readiness"] = copy.deepcopy(current_readiness)
                     require("generated_outputs" not in request, "scope_changed",
                             "inherited generated inventory belongs to the sealed authority")
                 else:
-                    generated = s["handoff"].get("generated_outputs", {})
+                    generated = (s["scope_authority"].get("generated_outputs", {})
+                                 if (s.get("scope_authority") or {}).get("kind") == "inline"
+                                 else s["handoff"].get("generated_outputs", {}))
                     require("generated_outputs" not in request or request["generated_outputs"] == generated,
                             "scope_changed", "allocation generated inventory differs from its Dispatcher")
-                    if "generated_outputs" in s["handoff"]:
+                    if generated:
                         request["generated_outputs"] = copy.deepcopy(generated)
+                    if "inline_authority" in s["handoff"]:
+                        inline = s["scope_authority"]
+                        require("inline_authority" not in request or
+                                request["inline_authority"] == inline,
+                                "execution_plan_stale", "standalone allocation changed its inline authority")
+                        request["inline_authority"] = copy.deepcopy(inline)
+                        request["semantic"].setdefault("inline_plan", copy.deepcopy(
+                            execution_plan.current_catalog(inline)["tickets"][0]["plan"]))
                 require(request["binding"] == s["handoff"]["binding"] and request["target"] == s["handoff"]["target"],
                         "binding_changed", "allocation must retain its dispatcher's flow")
                 retain_entry_pins(request, s["packages"])
@@ -3634,9 +4188,10 @@ class Progress:
                         "identity_mismatch", "only the bound native dispatcher allocates execution agents")
                 saved = handoff.handle(request)
                 parent_scope, scope = s["handoff"]["scope"], saved["scope"]
-                require(scope["implementation_paths"] == parent_scope["implementation_paths"] and
-                        scope["closure_paths"] == parent_scope["closure_paths"] and
-                        set(scope["owned_paths"]) <= set(parent_scope["implementation_paths"]) and
+                require(scope["implementation_paths"] == current_scope["implementation_paths"] and
+                        scope["closure_paths"] == current_scope["closure_paths"] and
+                        scope["downstream"] == current_scope["downstream"] and
+                        set(scope["owned_paths"]) <= set(current_scope["implementation_paths"]) and
                         set(parent_scope["protected_paths"]) <= set(scope["protected_paths"]),
                         "scope_changed", "allocation must retain parent scope and protections")
                 handoff.ancestor(saved['expected_entry']['repository']['root'], parent_scope['baseline'], scope['baseline'])
@@ -3669,6 +4224,12 @@ class Progress:
         slot["transaction"] = copy.deepcopy(request)
         self.save()
         result = dispatch.handle(request)
+        if plan_state == "stopping":
+            # B still authenticates the outstanding original native bind/result,
+            # but its ordinary ready receipt cannot release an old executor
+            # after the Controller has closed allocation authority.
+            result = copy.deepcopy(result)
+            result.pop("write_release", None)
         if "checkpoint" in result:
             s["control"]["context"] = result["checkpoint"]["context"]
             s["control_receipt"] = result["checkpoint"].get("discussion_receipt")
@@ -3728,13 +4289,18 @@ class Progress:
             if slot is None or slot['candidate'] != data['candidate']:
                 self.require_finalizations_released()
             control.validate_reviewable(s['control']['context']['handoff_progress'], data['candidate'], data['verification'])
-            binding, scope = s['handoff']['binding'], s['handoff']['scope']
+            binding = s['handoff']['binding']
+            scope = (s.get('scope_authority') or {}).get('scope', s['handoff']['scope'])
             observed = supervision.verify_worktree({'binding':binding,'platform_cwd':binding['worktree']})
             require(observed['current_commit'] == data['candidate'] and not supervision._full_status(Path(binding['worktree'])),
                     'candidate_changed', 'review requires the clean exact candidate')
             checkpoint = s['control']['context']['handoff_progress']
-            changed = set(supervision._changed_paths(Path(binding['repository']), checkpoint['expected_target_head'], data['candidate'])) - set(checkpoint.get('integration_retained', {}).get('paths', []))
-            require(set(changed) <= set(scope['implementation_paths']) and not set(changed) & set(scope['protected_paths']),
+            changed = (set(supervision._changed_paths(Path(binding['repository']),
+                checkpoint['expected_target_head'], data['candidate'])) -
+                set(checkpoint.get('integration_retained', {}).get('paths', [])) -
+                control_git.verified_planning_paths(Path(binding['worktree']), checkpoint))
+            require(set(changed) <= set(scope['implementation_paths']) and
+                    not set(changed) & set(checkpoint['protected_paths']),
                     'scope_changed', 'review candidate escaped implementation scope')
             if any(value['candidate'] != data['candidate'] for value in slots.values()):
                 require(all(value.get('stopped') for value in slots.values()), 'review_active', 'stop and reconcile both old review axes first')
@@ -3751,7 +4317,9 @@ class Progress:
                     'action_id':str(uuid.uuid4()), 'ref':None, 'stopped':False, 'receipts':[]}
             slots[data['axis']] = slot
             self.save()
-            return _view(s, {'operation':'invoke-review','axis':data['axis'], 'candidate':data['candidate'], 'action_id':slot['action_id']})
+            return _view(s, {'operation':'invoke-review','axis':data['axis'],
+                'candidate':data['candidate'], 'verification':copy.deepcopy(data['verification']),
+                'action_id':slot['action_id']})
         entry.fields(data, {'operation','axis','candidate','actor_ref','action_id','receipt'})
         require(data['operation'] == 'observe' and slot is not None and slot['candidate'] == data['candidate'] and
                 slot['action_id'] == data['action_id'], 'review_missing', 'observe the original exact review call')
@@ -4179,14 +4747,14 @@ def handle(path, request):
         outer = read_record(path)
         if request["operation"] == "scope-revise":
             require_scope_correction_available(outer)
-        require(outer.get("version") in (None, 9), "legacy_run_requires_original_runtime", "progression requires a standalone record or runner version 9")
+        require(outer.get("version") in (None, 10), "legacy_run_requires_original_runtime", "progression requires a standalone record or runner version 10")
         member = outer.get(KEY)
         pinned_protocol = outer.get("confirmed", {}).get("packages", {}).get("runner", {}).get("compatibility_key", {}).get("workflow_progress")
         require((member is None or isinstance(member, dict) and member.get("protocol") == PROTOCOL) and
                 (pinned_protocol is None or pinned_protocol == PROTOCOL),
                 "legacy_run_requires_original_runtime", "all operations require the original pinned progression runtime")
         if member is not None:
-            require(member.get("control",{}).get("context",{}).get("schema_version") == 5,
+            require(member.get("control",{}).get("context",{}).get("schema_version") == 6,
                     "legacy_run_requires_original_runtime", "retain the original embedded control runtime")
         if request["operation"] == "deliver-requirement":
             return deliver_requirement(path, outer, request.get("data", {}))
@@ -4211,6 +4779,9 @@ def handle(path, request):
             (operation == "scope-seal" and data.get("proposal_id") in owner.state.get("scope_seals", {})) or
             (operation == "scope-revise" and (data.get("revision_id") in owner.state.get("scope_revisions", {}) or
              data.get("revision_id") == (owner.state.get("scope_revision_transaction") or {}).get("input", {}).get("revision_id"))) or
+            (operation in {"prepare-plan-revision", "commit-plan-revision", "reconcile-plan-revision"} and
+             (data.get("revision_id") == (owner.state.get("plan_revision_transaction") or {}).get("input", {}).get("revision_id") or
+              data.get("revision_id") in owner.state.get("plan_revision_history", {}))) or
             (operation == "recover-business" and data.get("decision_id") in owner.state.get("recovery_decisions", {})) or
             (operation == "decide" and (data.get("decision_id") in owner.state.get("decisions", {}) or
              owner.state.get("deferred_decisions", {}).get(data.get("decision_id"), {}).get("decision") == data)))
@@ -4241,6 +4812,9 @@ def handle(path, request):
             if operation == "scope-propose": return owner.scope_propose(data)
             if operation == "scope-seal": return owner.scope_seal(data)
             if operation == "scope-revise": return owner.scope_revise(data)
+            if operation == "prepare-plan-revision": return owner.prepare_plan_revision(data)
+            if operation == "commit-plan-revision": return owner.commit_plan_revision(data)
+            if operation == "reconcile-plan-revision": return owner.reconcile_plan_revision(data)
             if operation == "observe": return owner.observe(data)
             if operation == "decide": return owner.decide(data)
             if operation == "publication": return owner.publication(data)
@@ -4267,7 +4841,9 @@ def handle(path, request):
         except entry.ERROR_TYPES + (control.ControlError,) as error:
             if operation == 'native-finalize':
                 raise
-            if (operation in {"scope-propose", "scope-seal", "scope-revise"} or
+            if (operation in {"scope-propose", "scope-seal", "scope-revise",
+                              "prepare-plan-revision", "commit-plan-revision",
+                              "reconcile-plan-revision"} or
                     getattr(error, "code", None) in {"scope_revision_pending", "scope_conflict", "stale_scope_revision"}):
                 raise
             if operation == 'control' and data.get('action') in {'archive', 'archive-result'}:

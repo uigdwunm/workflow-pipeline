@@ -22,12 +22,10 @@ standalone base and scope base, and use no planning source or protected source
 unless the brief explicitly identifies one. The explicit invocation authorizes
 only this bounded local implementation flow.
 
-Choose `full` by default. Before launch, the Controller may approve the bounded
-`direct` exception only under [Workflow Control Protocol](workflow-control-protocol.md#bounded-direct-implementation),
-freeze its evidence and briefly disclose the concrete reason. User-requested
-full takes priority. This technical choice adds no user approval step and gives
-the Controller no implementation authority. A carrier forwards the Controller
-decision; the Dispatcher cannot supply its own approval.
+Use `full` for each new Stage-3 launch. For standalone entry, the original
+Controller freezes one inline execution-plan-v1 logical slice and its user
+contract projection inside B input; no Ticket document is required. The
+Dispatcher reads the sealed plan and never supplies its own revision decision.
 
 Launch one native Implementation Dispatcher in the verified Flow Worktree. For
 an A/B handoff, use Workflow progression start and observe with the actual native receipt: they own
@@ -97,11 +95,10 @@ requirement changes still require the existing user decision.
 
 ## Accept
 
-Before review, verify the candidate source under the bound policy: accepted real
-Execution deliveries for full, or actual bound Dispatcher result/stop and Git
-provenance for direct. An empty allocation list is not stopped-writer evidence.
-If direct eligibility is lost, use the same-attempt escalation contract before
-further edits; do not create a replacement Dispatcher for ordinary conversion.
+Before review, verify that every implementation byte comes from accepted real
+Execution Agent deliveries under the current plan refs and authority. An empty
+allocation list is not stopped-writer evidence. The original Controller alone
+classifies and commits an internal plan revision after the full stop barrier.
 
 This review contract is authoritative. Require a clean committed candidate plus
 focused and affected checks. The Originating Task pins the exact candidate commit and
@@ -111,7 +108,7 @@ point and candidate to both Standards and Spec review axes. Give the Spec axis
 the committed planning artifacts for an inherited flow or the exact fixed
 standalone brief. It dispatches the Standards and Spec review axes independently
 and records their results
-separately. Neither reviewer may be the Dispatcher, including in direct mode.
+separately. Neither reviewer may be the Dispatcher.
 Do not accept a candidate until both axes correspond to that exact
 fixed point and candidate commit and have no unresolved actionable findings.
 Then record `review-converged` with semantic result references matching the two

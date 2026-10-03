@@ -1,10 +1,11 @@
 {
-  "bundle_digest": "ad787e5481818cf2ea6e3f2308f52225235415b49876e2806c0d5f2f60323ea0",
+  "bundle_digest": "a1a5795abbe33a2c927fe3e824f69ae66c1aaf8df068b2f6f93193a03f0f211b",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
-    "control": 10,
+    "control": 11,
     "discussion_request": 1,
     "entry": "workflow-entry-v4",
+    "execution_plan": "execution-plan-v1",
     "handoff": "workflow-controller-v1",
     "ledger_read": [
       1,
@@ -14,12 +15,12 @@
     "ledger_write": 3,
     "preparation": "workflow-preparation-v5",
     "requirement_delivery": "requirement-delivery-v2",
-    "runner": 9,
-    "stage_transfer": "workflow-stage-transfer-v13",
+    "runner": 10,
+    "stage_transfer": "workflow-stage-transfer-v14",
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "topic_gate": "phase-0-1-discussion-v2",
-    "workflow_progress": "workflow-progress-v17"
+    "workflow_progress": "workflow-progress-v18"
   },
   "external_actions": {
     "dispatch": [
@@ -38,7 +39,7 @@
     },
     "SKILL.md": {
       "mode": "0644",
-      "sha256": "145b131830743302cdeb9981aa20f95bababe6eb4b96d41f23d4c283d0784697"
+      "sha256": "d488d0a169f5fdeab8609c101528550c06da66460db3130d020cb8a65742277c"
     },
     "agents/openai.yaml": {
       "mode": "0644",
@@ -58,15 +59,15 @@
     },
     "references/shared/entry-preparation.md": {
       "mode": "0644",
-      "sha256": "b38b17973294ec1d800c4be0c5da2cd191a8b637ec46d9bd01187567bdcdcd58"
+      "sha256": "20e0eec3a4e96b88594857ebbde712e6c7bfdbc9781b541083082ba163aa7039"
     },
     "references/shared/guided-implementation/execution-protocol.md": {
       "mode": "0644",
-      "sha256": "86de2b8348feebd7eaf107b0983720f8027d87788674e797a4956206acf0a1d1"
+      "sha256": "777e8ef16727d413294ce2f921fa35a1f8cf0c21cb0715e24199bf22c2bbf560"
     },
     "references/shared/guided-implementation/originating-task-protocol.md": {
       "mode": "0644",
-      "sha256": "470a0d5df3b8c36951b3bdd1e2a03180a26a1acd3a6f2a6e157e22788a1783dd"
+      "sha256": "79f12cc31049adc1301c18fa38fd3c179c2635be536da52af1a7a0f2831d7ffc"
     },
     "references/shared/guided-implementation/thread-settings-protocol.md": {
       "mode": "0644",
@@ -74,15 +75,15 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "9334b47aa45a432fa55e95fbdca6a0923cdb2bd3d2fe90d5717ceab8acdcac2d"
+      "sha256": "98c11280a7e27b7dfbae7557f3165f25cc6cd042a713da7c6f764364dfea8624"
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "51aaa1c536674c3a1e274251acb4abfb64d1fdf9284a453e66075b81ba1d5381"
+      "sha256": "2b17ed31bf378983775755d96f56d5e8733875e4c143a19f386f75d74969bb5b"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "5ca367f3229203c14c02e395e39905b3383ed936263fb8c345b6fe62888655ba"
+      "sha256": "3b5ec9a01b102a5beef60e4813149b6d15a27f972fa7d63e680da0f4093ffc5d"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -94,11 +95,11 @@
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
-      "sha256": "e35484fa2ef23409af12de3b2932de3cff3393d44f7798f0bdfe5cdc5aa865f3"
+      "sha256": "bc5f2d03fcbccaf8105e6ba1629f72d240a4970113b58ba8ef936b02c81ca31b"
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "73245aa8731c18ad4e880551e766c43c47253b5f41609931a38668a1bfe4739d"
+      "sha256": "1562cc82a42c8049e38ae9e8ba1cdeb9f09efccce2d59b23421888ce671bbd01"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -162,7 +163,7 @@
     },
     "scripts/discussion_core/workflow_control.py": {
       "mode": "0644",
-      "sha256": "49b798a6ebf13893e824a3aec482d458676e3dc357b1b88ba2388fd992a85b78"
+      "sha256": "7688e6043275483a61550e815b131e3636cbb9f62759748dec267e2245206a86"
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
@@ -171,6 +172,10 @@
     "scripts/entry_prepare.py": {
       "mode": "0644",
       "sha256": "38dbd920a7026ada29392184283938fcfd4ab11b51e7582e0c98b5baf28d0606"
+    },
+    "scripts/execution_plan.py": {
+      "mode": "0644",
+      "sha256": "fc3262b6f2888238fd2b9fa1cd4d2ebfa3c7385f5ebe640bef315cc5e0a26f74"
     },
     "scripts/foreground_host.py": {
       "mode": "0644",
@@ -198,11 +203,11 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "d36785eabecbcab7032171ca778639a082859cb58c36b232c186e0c14b0f51b8"
+      "sha256": "d5e5aa76b33df65bbfaf15cd9cf12a99c9dd77564b69589af2f7899a52d73769"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "bfeabdacc720d9537f2461482e68327d63a97b750453f1cd1664a737d4344b48"
+      "sha256": "2038991217a4045e11651d155deee197ae2d35d70e2402ace0ff24083c61e93d"
     },
     "scripts/stage_scope.py": {
       "mode": "0644",
@@ -226,28 +231,28 @@
     },
     "scripts/workflow.py": {
       "mode": "0644",
-      "sha256": "058175c239fe49007949189b2fafd174a350f176651c9bfb2a3ce84b99bdc01f"
+      "sha256": "052cb2ad58f4a8dcfeec3966e94e33944c193572d03931da4ccbb0527f29675e"
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "fb96e99f51e6143bd829ccc9948cb32b8e7231f3fcc7e6c648df566f3db4b62e"
+      "sha256": "b176dea42f8aa45237c4d99b43c4e0b3c5c63192fc5a629aed38584172b4ecf6"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "ea7fae3d3196013d464d07aef286d60034ed1339ab26e14d18da206fd4150bc9"
+      "sha256": "c1fd6578d7ed0fe11b931f5ca73e4f9c45b899ae56d7f726aaa71a66c701bee7"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "5c8f1cd8161c47dfbb1ba2e543eccd0902b2c68b0ba65c3dd949d74eee7220de"
+      "sha256": "a206c29f4a0863058f13018d9a8254da1ea69a26a6e78f14fb51aacc75ec4fc6"
     },
     "scripts/workflow_stage_result.schema.json": {
       "mode": "0644",
-      "sha256": "dd8b56b3464501a8102e80276373c9685cea2c1e2dbc3c4e5a5e38a7dacdbec5"
+      "sha256": "e7461c0e88fed6cf4ab6469172a38238604e6b233f22b2e22f8edaf62caae577"
     }
   },
   "format_version": 1,
   "name": "guided-implementation",
-  "release": "1.2.3",
+  "release": "1.3.0",
   "resources": [
     "design-discussion/references/confirmation-contract.md",
     "design-discussion/references/ledger-protocol.md",
@@ -292,6 +297,7 @@
     "shared/references/stage-transfer.md",
     "shared/references/workflow-progression.md",
     "shared/scripts/entry_prepare.py",
+    "shared/scripts/execution_plan.py",
     "shared/scripts/host_skill_registry.py",
     "shared/scripts/model_inventory.py",
     "shared/scripts/requirement_delivery.py",
@@ -303,6 +309,6 @@
     "shared/scripts/workflow_progress.py",
     "solution-design/references/conversation-source.md"
   ],
-  "source_revision": "workflow-pipeline-v1.2.3",
+  "source_revision": "workflow-pipeline-v1.3.0",
   "stage": 3
 }
