@@ -243,19 +243,28 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         accepted = flow.invoke('allocation', {'allocation_id': 'first', 'operation': 'accept',
             'decision': {'reference': 'dispatcher:accepted-first'}})
         self.assertEqual(accepted['next_action']['result']['status'], 'accepted')
+        accepted_impl = flow.state()['control']['context']['handoff_progress']['executions'][0][
+            'git_result_snapshot']['impl.py']
 
         second = self.execution_request(flow)
         second['scope']['owned_paths'] = ['later.py']
         second['scope']['protected_paths'] = sorted([*second['scope']['protected_paths'], 'impl.py'])
         second['authorization']['scope_digest'] = entry.digest(second['scope'])
-        second['semantic']['plan_refs'] = second['semantic']['plan_refs'][1:]
+        second['semantic']['plan_refs'] = [ref for ref in second['semantic']['plan_refs']
+                                           if ref['step_id'] == 'FP1-02']
+        self.assertEqual(len(second['semantic']['plan_refs']), 1)
         prepared = flow.invoke('allocation', {'allocation_id': 'later', 'operation': 'prepare',
             'handoff': second})
+        self.assertIsNotNone(prepared['next_action'], prepared)
         self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
         slot = flow.state()['allocations']['later']
         bound = flow.invoke('allocation', {'allocation_id': 'later', 'operation': 'bind',
             'receipt': flow.receipt(slot['record'], ref='native:later')})
-        self.assertTrue(bound['next_action']['result']['write_release'])
+        execution = flow.state()['control']['context']['handoff_progress']['executions'][-1]
+        self.assertEqual(execution['agent_ref'], 'native:later')
+        self.assertIn('impl.py', execution['read_only'])
+        self.assertEqual(execution['git_snapshot']['files']['impl.py'], accepted_impl)
+        self.assertEqual(bound['next_action']['result']['write_release'], execution['write_release'])
 
     def test_control_rejects_forged_step_even_with_matching_group_digest(self):
         flow = self.active_flow()
