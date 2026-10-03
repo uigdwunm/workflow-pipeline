@@ -181,13 +181,22 @@ class ReviewFirstTests(fixture.ProgressTests):
                         'source_unchanged': True, 'stopped': True,
                         'dispatcher_ref': 'native:dispatcher'}}}
         if storage == 'committed':
+            progress = self.state()['control']['context']['handoff_progress']
+            catalog = execution_plan.current_catalog(progress['execution_authority'])
+            accepted = progress['carried_results'] + [execution for execution in progress['executions']
+                if execution['state'] == 'accepted' and execution['agent_ref'] is not None]
+            fingerprints = {relative: control_git.file_fingerprint(self.flow, relative)
+                            for relative in progress['allowed_paths']}
+            self.assertEqual(execution_plan.current_accepted_steps(
+                catalog, accepted, progress['execution_authority'], fingerprints),
+                {'inline-implementation'})
             with self.assertRaises(control.ControlError) as stale_result:
                 control_git.verified_transition({'repository': str(self.flow),
                     'baseline': current['git_baseline_commit'],
                     'request': {'schema_version': 6, 'action': 'candidate-ready',
                         'actor_ref': 'task', 'context': copy.deepcopy(self.state()['control']['context']),
                         'evidence': candidate_request('before-fresh-adoption')['evidence']}})
-            self.assertIn('Execution Agent delivery', str(stale_result.exception))
+            self.assertIn('current function step: inline-other', str(stale_result.exception))
         if advance_target:
             (self.root / 'impl.py').write_text("print('upstream sibling')\n")
             self.git('add', 'impl.py')
@@ -441,6 +450,15 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.flow_git('add', 'impl.py')
         self.flow_git('commit', '-qm', 'new accepted writer replaces carried bytes')
         candidate = self.flow_git('rev-parse', 'HEAD')
+        progress = self.state()['control']['context']['handoff_progress']
+        catalog = execution_plan.current_catalog(progress['execution_authority'])
+        accepted = progress['carried_results'] + [execution for execution in progress['executions']
+            if execution['state'] == 'accepted' and execution['agent_ref'] is not None]
+        fingerprints = {relative: control_git.file_fingerprint(self.flow, relative)
+                        for relative in progress['allowed_paths']}
+        self.assertEqual(execution_plan.current_accepted_steps(
+            catalog, accepted, progress['execution_authority'], fingerprints),
+            {'inline-implementation'})
         checks = fixture.transfer.checks_for(self.plan()['review_required'], candidate)
         incomplete = {'dispatcher_ref': 'native:dispatcher',
             'attempt': self.state()['control']['context']['carrier']['attempt'],
@@ -456,7 +474,7 @@ class ReviewFirstTests(fixture.ProgressTests):
                 'request': {'schema_version': 6, 'action': 'candidate-ready', 'actor_ref': 'task',
                     'context': copy.deepcopy(self.state()['control']['context']),
                     'evidence': incomplete}})
-        self.assertIn('function step', str(missing_step.exception))
+        self.assertIn('current function step: inline-other', str(missing_step.exception))
         other_execution = self.execution_input()
         other_execution['scope']['owned_paths'] = ['other.py']
         ticket = self.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]

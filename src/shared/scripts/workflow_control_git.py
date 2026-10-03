@@ -694,8 +694,9 @@ def verified_transition(payload):
                                    for relative in progress['allowed_paths']}
             completed = current_accepted_steps(catalog, accepted,
                 progress['execution_authority'], actual_fingerprints)
-            require(set(catalog['ordered_step_ids']) <= completed,
-                    'candidate has a stale or unverified accepted implementation read')
+            missing = [identity for identity in catalog['ordered_step_ids'] if identity not in completed]
+            require(not missing, 'candidate requires an accepted result for current function step: ' +
+                    missing[0] if missing else 'candidate function steps are complete')
         accepted_fingerprints = {p: fingerprint for result in progress.get('carried_results', [])
                                  for p, fingerprint in result['git_result_snapshot'].items()}
         for execution in progress['executions']:
