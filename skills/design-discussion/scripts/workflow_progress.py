@@ -2282,12 +2282,16 @@ class Progress:
         entry.fields(data["report"], {"ticket_ids", "step_ids", "reason",
             "production_facts", "contract_before", "contract_after", "dependency_impact",
             "verification_impact", "carry_forward"}, {"manifest_diff"})
-        for field in ("ticket_ids", "step_ids", "dependency_impact", "verification_impact"):
-            require(isinstance(data["report"][field], list) and data["report"][field] and
-                    len(data["report"][field]) == len(set(data["report"][field])),
+        for field in ("ticket_ids", "step_ids", "dependency_impact", "verification_impact",
+                      "carry_forward"):
+            items = data["report"][field]
+            require(isinstance(items, list) and (field == "carry_forward" or bool(items)),
                     "invalid_request", "revision report requires exact unique " + field)
-        require(isinstance(data["report"]["carry_forward"], list), "invalid_request",
-                "carry-forward proposals must be explicit")
+            for index, item in enumerate(items):
+                require(isinstance(item, str) and execution_plan.IDENTIFIER.fullmatch(item) is not None,
+                        "invalid_request", f"report.{field}[{index}] requires a valid ID")
+            require(len(items) == len(set(items)), "invalid_request",
+                    "revision report requires exact unique " + field)
         for field in ("reason", "production_facts", "contract_before", "contract_after"):
             entry.nonempty(data["report"][field])
         authority = s["scope_authority"]
@@ -2312,10 +2316,15 @@ class Progress:
                             for item in ticket["plan"]["verifications"]}
         require(set(data["report"]["ticket_ids"]) <= ticket_ids and
                 set(data["report"]["step_ids"] + data["report"]["dependency_impact"]) <= step_ids and
-                set(data["report"]["verification_impact"]) <= verification_ids,
+                set(data["report"]["verification_impact"]) <= verification_ids and
+                set(data["report"]["carry_forward"]) <= step_ids,
                 "invalid_plan_revision", "report references unknown current Ticket, step or verification")
         planning = data["planning_paths"]
-        require(isinstance(planning, list) and planning == sorted(set(planning)) and
+        require(isinstance(planning, list), "invalid_request", "exact sorted planning paths required")
+        for index, relative in enumerate(planning):
+            require(isinstance(relative, str) and bool(relative), "invalid_request",
+                    f"planning_paths[{index}] requires a path")
+        require(planning == sorted(set(planning)) and
                 (planning or authority.get("kind") == "inline"),
                 "invalid_request", "exact sorted planning paths required")
         closure = set(authority["scope"]["closure_paths"])

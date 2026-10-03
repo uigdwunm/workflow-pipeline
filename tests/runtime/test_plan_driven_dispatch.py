@@ -324,6 +324,33 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "execution_plan_stale")
         self.assertEqual(flow.checkpoint.read_bytes(), before)
 
+    def test_control_rejects_non_scalar_plan_ref_before_hash_lookup(self):
+        flow = self.active_flow()
+        request = self.execution_request(flow)
+        context = flow.state()["control"]["context"]
+        authority = context["handoff_progress"]["plan_authority"]
+        before = flow.checkpoint.read_bytes()
+        for field, value in (("step_id", ["FP1-01"]),
+                             ("step_id", {"id": "FP1-01"}),
+                             ("plan_version", True),
+                             ("source_commit", ["unexpected"])):
+            with self.subTest(field=field, value=value):
+                refs = copy.deepcopy(request["semantic"]["plan_refs"])
+                refs[0][field] = value
+                evidence = {"task_id": "malformed-ref", "paths": ["impl.py"],
+                    "read_only": request["scope"]["protected_paths"], "behavior": "approved behavior",
+                    "tests": ["python3 scripts/run_tests.py --test-file tests/runtime/test_plan_driven_dispatch.py"],
+                    "git_operations": [], "configuration": request["configuration"],
+                    "plan_refs": refs, "plan_authority": authority,
+                    "group_digest": entry.digest([authority, refs])}
+                with self.assertRaises(entry.PreparationError) as error:
+                    control.transition({"schema_version": context["schema_version"],
+                        "actor_ref": context["controller_ref"], "context": context,
+                        "action": "plan-execution", "evidence": evidence})
+                self.assertEqual(error.exception.code, "execution_plan_stale")
+                self.assertIn(f"plan_refs[0].{field}", str(error.exception))
+                self.assertEqual(flow.checkpoint.read_bytes(), before)
+
     def test_dependency_requires_stopped_exact_current_result(self):
         flow = self.active_flow()
         request = self.execution_request(flow)

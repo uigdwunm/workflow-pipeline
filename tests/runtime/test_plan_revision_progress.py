@@ -156,6 +156,55 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 "verification_impact": ["V1"], "carry_forward": []},
             "planning_paths": ["docs/spec.md"]}
 
+    def test_prepare_plan_revision_rejects_non_string_report_ids_before_saving(self):
+        flow = self.new_active_flow()
+        before = flow.checkpoint.read_bytes()
+        head = flow.flow_git("rev-parse", "HEAD")
+        for field, value in (("ticket_ids", {"id": "FEP-01"}),
+                             ("step_ids", ["FP1-01"]),
+                             ("dependency_impact", {"id": "FP1-01"}),
+                             ("verification_impact", ["V1"])):
+            with self.subTest(field=field):
+                report = self.report(flow)
+                report["report"][field] = [value]
+                with self.assertRaises(progress.entry.PreparationError) as error:
+                    flow.invoke("prepare-plan-revision", report)
+                self.assertEqual(error.exception.code, "invalid_request")
+                self.assertIn(f"report.{field}[0]", str(error.exception))
+                self.assertEqual(flow.checkpoint.read_bytes(), before)
+                self.assertEqual(flow.flow_git("rev-parse", "HEAD"), head)
+
+    def test_prepare_plan_revision_rejects_non_string_carry_and_planning_paths(self):
+        for field in ("carry_forward", "planning_paths"):
+            with self.subTest(field=field):
+                flow = self.new_active_flow()
+                before = flow.checkpoint.read_bytes()
+                head = flow.flow_git("rev-parse", "HEAD")
+                report = self.report(flow)
+                if field == "carry_forward":
+                    report["report"][field] = [["FP1-01"]]
+                else:
+                    report[field] = [["docs/spec.md"]]
+                with self.assertRaises(progress.entry.PreparationError) as error:
+                    flow.invoke("prepare-plan-revision", report)
+                self.assertEqual(error.exception.code, "invalid_request")
+                self.assertIn(f"{field}[0]", str(error.exception))
+                self.assertEqual(flow.checkpoint.read_bytes(), before)
+                self.assertEqual(flow.flow_git("rev-parse", "HEAD"), head)
+
+    def test_prepare_plan_revision_rejects_duplicate_or_unknown_carry_steps(self):
+        flow = self.new_active_flow()
+        before = flow.checkpoint.read_bytes()
+        for carry, code in ((["FP1-01", "FP1-01"], "invalid_request"),
+                            (["missing-step"], "invalid_plan_revision")):
+            with self.subTest(carry=carry):
+                report = self.report(flow)
+                report["report"]["carry_forward"] = carry
+                with self.assertRaises(progress.entry.PreparationError) as error:
+                    flow.invoke("prepare-plan-revision", report)
+                self.assertEqual(error.exception.code, code)
+                self.assertEqual(flow.checkpoint.read_bytes(), before)
+
     def accept_planned_step(self, flow, ticket, identity, relative, content, allocation_id):
         execution = flow.execution_input()
         execution["scope"]["owned_paths"] = [relative]

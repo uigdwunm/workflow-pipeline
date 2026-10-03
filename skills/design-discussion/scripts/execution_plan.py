@@ -541,19 +541,38 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
         "contract_digest": catalog["contract_digest"]}
     if not isinstance(plan_refs, list) or not plan_refs or len(plan_refs) > len(catalog["ordered_step_ids"]):
         stale("allocation requires current function plan refs")
-    if (not isinstance(assigned_paths, list) or not assigned_paths or
-            len(assigned_paths) != len(set(assigned_paths)) or
-            not isinstance(read_only, list) or len(read_only) != len(set(read_only)) or
+    for field, values in (("assigned_paths", assigned_paths), ("read_only", read_only)):
+        if not isinstance(values, list) or field == "assigned_paths" and not values:
+            stale("allocation paths and read-only inputs must be exact and disjoint")
+        for index, relative in enumerate(values):
+            if not isinstance(relative, str) or not relative:
+                stale(f"{field}[{index}] requires a path")
+    if (len(assigned_paths) != len(set(assigned_paths)) or
+            len(read_only) != len(set(read_only)) or
             set(assigned_paths) & set(read_only)):
         stale("allocation paths and read-only inputs must be exact and disjoint")
     tickets = {ticket["ticket_id"]: ticket for ticket in catalog["tickets"]}
     steps = {step["id"]: (ticket, step) for ticket in catalog["tickets"]
              for step in ticket["plan"]["steps"] + ticket["plan"]["artifact_steps"]}
     selected = []
-    for ref in plan_refs:
+    for index, ref in enumerate(plan_refs):
         if not isinstance(ref, dict) or set(ref) != {"ticket_id", "step_id", "plan_version",
                                                      "source_commit", "source_sha256", "step_digest"}:
-            stale("function plan ref has incomplete identity")
+            stale(f"plan_refs[{index}] has incomplete identity")
+        for field in ("ticket_id", "step_id"):
+            value = ref[field]
+            if not isinstance(value, str) or IDENTIFIER.fullmatch(value) is None:
+                stale(f"plan_refs[{index}].{field} requires a valid ID")
+        if type(ref["plan_version"]) is not int or ref["plan_version"] <= 0:
+            stale(f"plan_refs[{index}].plan_version requires a positive integer")
+        source_commit = ref["source_commit"]
+        if source_commit is not None and (not isinstance(source_commit, str) or
+                re.fullmatch(r"[0-9a-f]{40}", source_commit) is None):
+            stale(f"plan_refs[{index}].source_commit requires a full commit")
+        for field in ("source_sha256", "step_digest"):
+            value = ref[field]
+            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                stale(f"plan_refs[{index}].{field} requires a SHA-256 digest")
         pair = steps.get(ref["step_id"])
         if pair is None:
             stale("unknown function plan ref: " + str(ref["step_id"]))
