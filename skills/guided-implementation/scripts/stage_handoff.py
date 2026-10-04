@@ -715,6 +715,13 @@ def _prepare(request, *, checkpoint_path=None):
     verify_discussion_binding(current, request["binding"])
     scope = request["scope"]
     root = current["repository"]["root"]
+    stage3_progress = None
+    if stage == 4:
+        require(request.get("predecessor") is not None, "predecessor_incomplete",
+                "inherited closure requires an accepted implementation result")
+        stage3_progress = accepted_stage3_progress(request["predecessor"], checkpoint_path)
+    current_authority = (stage3_progress["execution_authority"]
+                         if stage3_progress is not None else None)
     require("manifest_baseline" not in request or stage == 3 and role == "execution-agent",
             "invalid_scope", "separate manifest baseline belongs to an Execution Agent allocation")
     require("generated_outputs" not in request or
@@ -738,8 +745,10 @@ def _prepare(request, *, checkpoint_path=None):
             requirement_path=source_identity["path"],
             planning_paths=planning_paths_for(request),
             manifest_baseline=inherited_manifest_baseline(request),
-            candidate_commit=inherited_planning_candidate(request),
-            generated_outputs=inherited_generated_outputs(request),
+            candidate_commit=(current_authority["candidate_commit"] if current_authority is not None
+                              else inherited_planning_candidate(request)),
+            generated_outputs=(authority_generated_outputs(current_authority) if current_authority is not None
+                               else inherited_generated_outputs(request)),
             _repository_facts=current["repository"])
         if implementation_reads:
             scope['protected_paths'] = request['scope']['protected_paths'][:]
@@ -927,8 +936,7 @@ def _prepare(request, *, checkpoint_path=None):
                 "source_changed", "predecessor controller or requirement differs")
         if old["stage"] >= 2:
             require(old["binding"] == request["binding"], "binding_changed", "successor must retain the exact Flow Worktree")
-            prior_progress = (accepted_stage3_progress(predecessor, checkpoint_path)
-                              if old["stage"] == 3 else None)
+            prior_progress = stage3_progress if old["stage"] == 3 else None
             verify_result(old["stage"], prior["payload"], old["binding"], old["scope"], root,
                           prior["role_ref"], old['authorization'].get('integration_recovery'),
                           prior_progress)

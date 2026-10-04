@@ -309,6 +309,46 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         self.assertEqual(initial, digest({**source, "body": prefix.replace(b"Version: 1", b"Version: 2") + block + tail}))
         self.assertNotEqual(initial, digest({**source, "body": prefix + block + tail.replace("用户可见".encode(), "不同".encode())}))
 
+    def test_ticket_comments_are_records_but_contract_and_unknown_sections_remain_fixed(self):
+        prefix = (b"# Ticket\nTicket ID: TASK-B\nPlan Version: 1\n"
+                  b"**What to build:** approved behavior\n**Blocked by:** None\n"
+                  b"- [ ] AC-1: approved result\n")
+        block = b"```execution-plan-v1\n{\"plan_version\":1}\n```\n"
+        body = prefix + block + b"\n## Comments\nInitial implementation note.\n"
+        source = {"path": "docs/issues/ticket.md", "mode": "100644", "body": body,
+                  "sha256": "committed-document-identity"}
+        project = lambda value: execution_plan.contract_projection("unused", "unused",
+            [{**source, "body": value}])["digest"]
+        initial = project(body)
+        self.assertEqual(initial, project(body.replace(b"Initial implementation note.",
+                                                        b"Archived implementation note.")))
+        self.assertNotEqual(initial, project(body.replace(b"approved behavior", b"changed behavior")))
+        self.assertNotEqual(initial, project(body.replace(b"approved result", b"changed result")))
+        self.assertNotEqual(initial, project(body.replace(b"**Blocked by:** None", b"**Blocked by:** TASK-A")))
+        self.assertNotEqual(initial, project(body + b"\n## Unknown\nnew behavior\n"))
+        for declaration in (b"- [ ] AC-2: changed result\n", b"### D8 New promise\n",
+                            b"**What to build:** changed behavior\n"):
+            with self.subTest(declaration=declaration):
+                with self.assertRaises(execution_plan.entry.PreparationError):
+                    project(body + declaration)
+
+    def test_spec_archive_notes_leave_public_sections_and_unknown_text_protected(self):
+        body = b"## Approved behavior\nAC-1: approved result\n### D1 - public contract\nStable API\n"
+        source = lambda value: {"path": "docs/spec.md", "mode": "100644",
+                                "body": value, "sha256": "committed-document-identity"}
+        project = lambda value: execution_plan.contract_projection("unused", "unused", [source(value)],
+            spec_path="docs/spec.md", contract_refs=["PRD:D1:public contract"])["digest"]
+        initial = project(body)
+        self.assertEqual(initial, project(body + b"\n## Archive Notes\nStage 4 review accepted.\n"))
+        self.assertNotEqual(initial, project(body.replace(b"Stable API", b"Changed API")))
+        self.assertNotEqual(initial, project(body + b"\n## Unknown\nNew obligation\n"))
+        referenced = lambda value: execution_plan.contract_projection("unused", "unused", [source(value)],
+            spec_path="docs/spec.md", contract_refs=["PRD:Archive Notes:record"])["digest"]
+        self.assertNotEqual(referenced(body + b"\n## Archive Notes\nInitial note.\n"),
+                            referenced(body + b"\n## Archive Notes\nChanged note.\n"))
+        with self.assertRaises(execution_plan.entry.PreparationError):
+            project(body + b"\n## Archive Notes\n### D8 New obligation\n")
+
     def test_explicit_private_section_contract_ref_is_protected(self):
         original = b"## Further Notes\n### N2 - public promise\nStable API\n### N4 - inventory\nprivate table\n"
         edited_public = original.replace(b"Stable API", b"Changed API")

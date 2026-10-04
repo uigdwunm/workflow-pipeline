@@ -104,10 +104,34 @@ def _ticket_contract(source):
     block = blocks[0]
     protected = body[:block.start()] + body[block.end():]
     # The version belongs to the plan identity and may increase with an internal
-    # revision. All other Ticket bytes, including later sections, are protected.
+    # revision. A named Comments record below is the only other private area.
     _incomplete(len(PLAN_VERSION_LINE.findall(protected)) <= 1,
                 "duplicate Ticket plan version: " + source["path"])
-    return PLAN_VERSION_LINE.sub(b"", protected)
+    protected = PLAN_VERSION_LINE.sub(b"", protected)
+    return _without_record_section(protected, b"Comments", source["path"])
+
+
+def _without_record_section(body, label, path):
+    """Exclude one named record section while retaining every other document byte."""
+    headings = [match for match in HEADING.finditer(body) if match.group(1) == b"##"]
+    records = [index for index, match in enumerate(headings) if match.group(2) == label]
+    _incomplete(len(records) <= 1, "duplicate " + label.decode() + " section: " + path)
+    if not records:
+        return body
+    index = records[0]
+    start = headings[index].start()
+    end = headings[index + 1].start() if index + 1 < len(headings) else len(body)
+    record = body[start:end]
+    _incomplete(not re.search(rb"(?m)^(?:Ticket ID:|Plan Version:|\*\*What to build:\*\*|"
+                              rb"\*\*Blocked by:\*\*|[-*] \[[ xX]\] AC-[0-9]+:|AC-[0-9]+:|"
+                              rb"### (?:N[0-9]+|D[0-9]+)\b)", record),
+                "public Ticket declaration in " + label.decode() + " section: " + path)
+    prefix = body[:start]
+    if prefix.endswith(b"\r\n\r\n"):
+        prefix = prefix[:-2]
+    elif prefix.endswith(b"\n\n"):
+        prefix = prefix[:-1]
+    return prefix + body[end:]
 
 
 def contract_projection(repository, commit, sources, *, spec_path=None, contract_refs=()):
@@ -136,6 +160,8 @@ def contract_projection(repository, commit, sources, *, spec_path=None, contract
             if inline:
                 protected = PLAN_BLOCK.sub(b"", protected)
                 protected = PLAN_VERSION_LINE.sub(b"", protected)
+            if "Archive Notes" not in public:
+                protected = _without_record_section(protected, b"Archive Notes", path)
         else:
             protected = body
         projection.append({"path": path, "mode": source["mode"],

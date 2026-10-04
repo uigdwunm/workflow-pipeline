@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 class PlanRevisionProgressTests(unittest.TestCase):
     def new_active_flow(self, *, generated=False, read_dependency=False, grouped_reads=False,
-                        artifact_mode=None, retained_note=False):
+                        artifact_mode=None, retained_note=False, ticket=False):
         case = fixture.ScopeProgressTests(methodName="runTest")
         case.setUp()
         self.addCleanup(case.doCleanups)
@@ -34,6 +34,10 @@ class PlanRevisionProgressTests(unittest.TestCase):
             manifest.append({"path": "docs/spec.md", "owner": "closure", "kind": "document",
                 "operation": "add", "basis": {"commit": candidate, "path": "docs/spec.md",
                     "section": "approved design"}})
+            if ticket:
+                manifest.append({"path": "docs/issues/FEP-01.md", "owner": "closure",
+                    "kind": "document", "operation": "add", "basis": {"commit": candidate,
+                        "path": "docs/issues/FEP-01.md", "section": "approved design"}})
             if generated:
                 manifest.append({"path": "generated/impl_copy.py", "owner": "implementation",
                     "kind": "generated", "operation": "add",
@@ -49,8 +53,8 @@ class PlanRevisionProgressTests(unittest.TestCase):
         case.manifest = planning_manifest
         if retained_note:
             original_candidate = case.planning_candidate
-            def planning_with_retained_note(*args, **kwargs):
-                original_candidate(*args, **kwargs)
+            def planning_with_retained_note(*args, _original=original_candidate, **kwargs):
+                _original(*args, **kwargs)
                 source = case.flow.flow / "docs/spec.md"
                 source.write_text(source.read_text() + "### N4 — Private inventory\nInitial note.\n")
                 case.flow.flow_git("add", "docs/spec.md")
@@ -59,8 +63,8 @@ class PlanRevisionProgressTests(unittest.TestCase):
             case.planning_candidate = planning_with_retained_note
         if artifact_mode is not None:
             original_candidate = case.planning_candidate
-            def planning_with_artifact(*args, **kwargs):
-                original_candidate(*args, **kwargs)
+            def planning_with_artifact(*args, _original=original_candidate, **kwargs):
+                _original(*args, **kwargs)
                 path = case.flow.flow / "docs/spec.md"
                 text = path.read_text()
                 match = re.search(r"```execution-plan-v1\n(.*?)\n```", text, re.DOTALL)
@@ -80,8 +84,8 @@ class PlanRevisionProgressTests(unittest.TestCase):
             case.planning_candidate = planning_with_artifact
         if read_dependency:
             original_candidate = case.planning_candidate
-            def planning_with_read_dependency(*args, **kwargs):
-                original_candidate(*args, **kwargs)
+            def planning_with_read_dependency(*args, _original=original_candidate, **kwargs):
+                _original(*args, **kwargs)
                 path = case.flow.flow / "docs/spec.md"
                 text = path.read_text()
                 match = re.search(r"```execution-plan-v1\n(.*?)\n```", text, re.DOTALL)
@@ -128,6 +132,21 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 case.assertEqual(response["next_action"]["operation"], "scope-proposed")
                 return data, response["next_action"]["proposal"]["digest"]
             case.propose = propose_with_generated
+        if ticket:
+            case.flow.input['scope']['owned_paths'] = ['docs/issues/FEP-01.md', 'docs/spec.md']
+            case.flow.input['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
+                case.flow.input['scope'])
+            original_candidate = case.planning_candidate
+            def planning_with_ticket(*args, _original=original_candidate, **kwargs):
+                _original(*args, **kwargs)
+                issue = case.flow.flow / 'docs/issues/FEP-01.md'
+                issue.parent.mkdir(parents=True, exist_ok=True)
+                issue.write_text((case.flow.flow / 'docs/spec.md').read_text() +
+                                 '\n## Comments\nInitial implementation note.\n')
+                case.flow.flow_git('add', 'docs/issues/FEP-01.md')
+                case.flow.flow_git('commit', '-qm', 'publish Ticket plan')
+                return case.flow.flow_git('rev-parse', 'HEAD')
+            case.planning_candidate = planning_with_ticket
         case.finish_planned_design()
         predecessor = case.flow.state()["accepted"]
         authority = case.flow.state()["scope_authority"]
@@ -135,6 +154,9 @@ class PlanRevisionProgressTests(unittest.TestCase):
         request["scope"]["downstream"] = copy.deepcopy(authority["scope"]["downstream"])
         request["scope"]["implementation_paths"] = copy.deepcopy(authority["scope"]["implementation_paths"])
         request["scope"]["closure_paths"] = copy.deepcopy(authority["scope"]["closure_paths"])
+        if ticket:
+            request["scope"]["protected_paths"] = sorted(set(request["scope"]["protected_paths"] +
+                                                              ["docs/issues/FEP-01.md"]))
         request["authorization"]["scope_digest"] = fixture.fixture.transfer.entry.digest(request["scope"])
         case.flow.context = case.flow.context_for(3)
         case.flow.begin("continuous", request)
@@ -154,7 +176,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 "contract_after": authority["execution_plan"]["contract_digest"],
                 "dependency_impact": ["FP1-01", "FP1-02"],
                 "verification_impact": ["V1"], "carry_forward": []},
-            "planning_paths": ["docs/spec.md"]}
+            "planning_paths": [authority['execution_plan']['catalog']['tickets'][0]['source']['path']]}
 
     def test_prepare_plan_revision_rejects_non_string_report_ids_before_saving(self):
         flow = self.new_active_flow()
@@ -765,7 +787,13 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.integration_after_plan_revision(retained_note=True)
 
     def test_final_integration_snapshot_supersedes_carried_and_revision_bytes(self):
-        flow = self.new_active_flow(read_dependency=True)
+        self.final_integration_snapshot(ticket=False)
+
+    def test_ticket_comments_and_spec_archive_survive_full_final_integration_recovery(self):
+        self.final_integration_snapshot(ticket=True)
+
+    def final_integration_snapshot(self, *, ticket):
+        flow = self.new_active_flow(read_dependency=True, ticket=ticket)
         controller_thread = flow.state()["handoff"]["expected_entry"]["actor"]["thread_id"]
         ticket = flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0]
         for identity, relative in (("FP1-01", "impl.py"), ("FP1-02", "later.py"),
@@ -781,7 +809,8 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.invoke("prepare-plan-revision", report)
         prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
         self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
-        planning = flow.flow / "docs/spec.md"
+        planning_path = "docs/issues/FEP-01.md" if ticket else "docs/spec.md"
+        planning = flow.flow / planning_path
         body = planning.read_text()
         match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
         plan = json.loads(match.group(1))
@@ -789,9 +818,9 @@ class PlanRevisionProgressTests(unittest.TestCase):
         plan["steps"][1]["approach"].append("revise private implementation")
         planning.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
                             .replace("Plan Version: 1", "Plan Version: 2"))
-        flow.flow_git("add", "docs/spec.md")
+        flow.flow_git("add", planning_path)
         flow.flow_git("commit", "--only", "-qm", "revise plan before final integration",
-                      "--", "docs/spec.md")
+                      "--", planning_path)
         flow.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
             "controller_ref": "task", "write_release": prepared["next_action"]["write_release"],
             "planning_commit": flow.flow_git("rev-parse", "HEAD")})
@@ -879,12 +908,12 @@ class PlanRevisionProgressTests(unittest.TestCase):
             planning.chmod(0o644)
         try:
             planning.write_bytes(original_planning + b"index-only planning change\n")
-            flow.flow_git("add", "docs/spec.md")
+            flow.flow_git("add", planning_path)
             planning.write_bytes(original_planning)
             with self.assertRaises(progress.control_git.ControlError):
                 progress.control_git.verified_planning_paths(flow.flow, current_progress)
         finally:
-            flow.flow_git("reset", "-q", "--", "docs/spec.md")
+            flow.flow_git("reset", "-q", "--", planning_path)
             planning.write_bytes(original_planning)
         (flow.root / "impl.py").write_text("def impl():\n    return 99\n")
         (flow.root / "later.py").write_text("def later():\n    return 99\n")
@@ -894,6 +923,14 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.context = flow.context_for(4)
         flow.begin("continuous", stage4_input)
         flow.invoke("observe", flow.observation(ref="native:closure"))
+        if ticket:
+            issue = flow.flow / planning_path
+            issue.write_text(issue.read_text().replace(
+                'Initial implementation note.', 'Stage 4 archived implementation note.'))
+            spec = flow.flow / 'docs/spec.md'
+            spec.write_text(spec.read_text() + '\n## Archive Notes\nStage 4 review accepted.\n')
+            flow.flow_git('add', planning_path, 'docs/spec.md')
+            flow.flow_git('commit', '-qm', 'retain Ticket and Spec closure notes')
         observed = flow.observation("stopped", "result", ref="native:closure")
         observed["closure"] = {"ref": "native:closure", "candidate": accepted,
             "merge": None, "ancestor_verified": False, "changed_paths": [],
@@ -917,6 +954,9 @@ class PlanRevisionProgressTests(unittest.TestCase):
         integrated_candidate = flow.flow_git("rev-parse", "HEAD")
         with patch.object(flow, "observation", side_effect=with_historical_agents):
             flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
+        if ticket:
+            progress.control_git.verified_planning_paths(
+                flow.flow, flow.state()['control']['context']['handoff_progress'])
         captured = flow.invoke("control", {"action": "capture-integration",
             "evidence": {"reference": "controller:target-race"},
             "receipt": {"controller_ref": "task", "reference": "controller:target-race"}})
@@ -950,6 +990,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 allocation_id = "integrated-" + identity
                 prepared = flow.invoke("allocation", {"allocation_id": allocation_id,
                     "operation": "prepare", "handoff": execution})
+                self.assertIsNotNone(prepared["next_action"], prepared)
                 self.assertEqual(prepared["next_action"]["operation"], "invoke-host", prepared)
                 slot = flow.state()["allocations"][allocation_id]
                 bound = flow.invoke("allocation", {"allocation_id": allocation_id,
@@ -1239,7 +1280,11 @@ class PlanRevisionProgressTests(unittest.TestCase):
         old_manifest = authority['scope']['downstream']['manifest']
         helper_manifest = copy.deepcopy(next(item for item in old_manifest if item['path'] == 'impl.py'))
         helper_manifest['path'] = 'helper.py'
-        revised_manifest = sorted([*old_manifest, helper_manifest], key=lambda item: item['path'])
+        generated_manifest = {'path': 'generated/helper_copy.py', 'owner': 'implementation',
+            'kind': 'generated', 'operation': 'add', 'basis': copy.deepcopy(helper_manifest['basis']),
+            'source_paths': ['helper.py']}
+        revised_manifest = sorted([*old_manifest, helper_manifest, generated_manifest],
+                                  key=lambda item: item['path'])
         validation = copy.deepcopy(flow.state()['control']['context']['handoff_progress']['validation_plan'])
         validation['review_required'][0]['command'] += ' revised'
         report = {'revision_id': 'inline-private-1',
@@ -1256,6 +1301,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 'carry_forward': [], 'manifest_diff': progress.stage_scope.manifest_diff(
                     old_manifest, revised_manifest)}, 'planning_paths': [],
             'manifest': revised_manifest, 'inline_plan': plan, 'validation_plan': validation}
+        report['generated_outputs'] = {'helper.py': ['generated/helper_copy.py']}
         flow.invoke('prepare-plan-revision', report)
         prepared = flow.invoke('observe', flow.observation('stopped', 'result', ref='native:dispatcher'))
         self.assertEqual(prepared['next_action']['operation'], 'plan-revision-prepared', prepared)
@@ -1275,7 +1321,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         controller_request = copy.deepcopy(flow.request)
         controller_settings = copy.deepcopy(flow.settings)
         allocation_input = flow.execution_input()
-        allocation_input['scope']['owned_paths'] = ['helper.py', 'impl.py']
+        allocation_input['scope']['owned_paths'] = ['generated/helper_copy.py', 'helper.py', 'impl.py']
         allocation_input['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
             allocation_input['scope'])
         ticket = flow.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
@@ -1294,12 +1340,15 @@ class PlanRevisionProgressTests(unittest.TestCase):
         release = bound['next_action']['result']['write_release']
         implementation = b"print('revised inline behavior')\n"
         helper_bytes = b"def helper():\n    return 'revised inline behavior'\n"
+        (flow.flow / 'generated').mkdir()
         (flow.flow / 'impl.py').write_bytes(implementation)
         (flow.flow / 'helper.py').write_bytes(helper_bytes)
+        (flow.flow / 'generated/helper_copy.py').write_bytes(helper_bytes)
         slot = flow.state()['allocations']['inline-current']
-        result_payload = {'changed_paths': ['helper.py', 'impl.py'],
+        result_payload = {'changed_paths': ['generated/helper_copy.py', 'helper.py', 'impl.py'],
             'file_hashes': {'impl.py': hashlib.sha256(implementation).hexdigest(),
-                            'helper.py': hashlib.sha256(helper_bytes).hexdigest()},
+                            'helper.py': hashlib.sha256(helper_bytes).hexdigest(),
+                            'generated/helper_copy.py': hashlib.sha256(helper_bytes).hexdigest()},
             'tests': ['revised behavior passed'], 'write_release': release,
             'plan_refs': allocation_input['semantic']['plan_refs'],
             'plan_authority': flow.state()['control']['context']['handoff_progress']['plan_authority']}
@@ -1312,7 +1361,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(accepted_result['next_action']['result']['status'], 'accepted')
         flow.request = controller_request
         flow.settings = controller_settings
-        flow.flow_git('add', 'impl.py', 'helper.py')
+        flow.flow_git('add', 'impl.py', 'helper.py', 'generated/helper_copy.py')
         flow.flow_git('commit', '-qm', 'revised inline implementation')
         candidate = flow.flow_git('rev-parse', 'HEAD')
         flow.invoke('observe', flow.observation('idle', 'result', ref='native:dispatcher'))
@@ -1332,7 +1381,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.mark_reviewable = lambda _candidate, fixture_execution=False: {
             'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
             'plan_authority': checkpoint['plan_authority'], 'checks': checks}
-        payload = {'artifacts': ['impl.py', 'helper.py'], 'checks': ['revised behavior passed'],
+        payload = {'artifacts': ['impl.py', 'helper.py', 'generated/helper_copy.py'], 'checks': ['revised behavior passed'],
             'candidate_commit': candidate,
             'review': {axis: {'candidate': candidate, 'reviewer_ref': axis,
                               'status': 'accepted'} for axis in ('standards', 'spec')},
@@ -1402,8 +1451,13 @@ class PlanRevisionProgressTests(unittest.TestCase):
         manifest = copy.deepcopy(authority['scope']['downstream']['manifest'])
         helper = copy.deepcopy(next(item for item in manifest if item['path'] == 'impl.py'))
         helper['path'] = 'helper.py'
-        manifest = sorted([*manifest, helper], key=lambda item: item['path'])
+        helper['basis']['section'] = 'D1'
+        generated = {'path': 'generated/helper_copy.py', 'owner': 'implementation',
+            'kind': 'generated', 'operation': 'add', 'basis': copy.deepcopy(helper['basis']),
+            'source_paths': ['helper.py']}
+        manifest = sorted([*manifest, helper, generated], key=lambda item: item['path'])
         report['manifest'] = manifest
+        report['generated_outputs'] = {'helper.py': ['generated/helper_copy.py']}
         report['report']['manifest_diff'] = progress.stage_scope.manifest_diff(
             authority['scope']['downstream']['manifest'], manifest)
         flow.invoke('prepare-plan-revision', report)
@@ -1434,13 +1488,15 @@ class PlanRevisionProgressTests(unittest.TestCase):
         controller_request = copy.deepcopy(flow.request)
         controller_settings = copy.deepcopy(flow.settings)
         ticket = flow.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
+        (flow.flow / 'generated').mkdir()
         self.accept_planned_group(flow, ticket, ['FP1-01', 'FP1-02', 'staged-private-helper'], {
             'impl.py': b"print('staged behavior')\n",
             'helper.py': b"def helper():\n    return 'staged behavior'\n",
+            'generated/helper_copy.py': b"def helper():\n    return 'staged behavior'\n",
         }, 'staged-helper')
         flow.request = controller_request
         flow.settings = controller_settings
-        flow.flow_git('add', 'impl.py', 'helper.py')
+        flow.flow_git('add', 'impl.py', 'helper.py', 'generated/helper_copy.py')
         flow.flow_git('commit', '-qm', 'implement staged private helper')
         candidate = flow.flow_git('rev-parse', 'HEAD')
         flow.invoke('observe', flow.observation('idle', 'result', ref='native:dispatcher'))
@@ -1462,7 +1518,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.mark_reviewable = lambda _candidate, fixture_execution=False: {
             'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
             'plan_authority': checkpoint['plan_authority'], 'checks': checks}
-        payload = {'artifacts': ['impl.py', 'helper.py'], 'checks': ['staged behavior passed'],
+        payload = {'artifacts': ['impl.py', 'helper.py', 'generated/helper_copy.py'], 'checks': ['staged behavior passed'],
             'candidate_commit': candidate,
             'review': {axis: {'candidate': candidate, 'reviewer_ref': axis,
                               'status': 'accepted'} for axis in ('standards', 'spec')},
@@ -1477,6 +1533,27 @@ class PlanRevisionProgressTests(unittest.TestCase):
         closure['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
             closure['scope'])
         flow.context = flow.context_for(4)
+        before = flow.checkpoint.read_bytes()
+        stale_map = copy.deepcopy(closure)
+        generated_item = next(item for item in stale_map['scope']['downstream']['manifest']
+                              if item['path'] == 'generated/helper_copy.py')
+        generated_item['source_paths'] = ['impl.py']
+        stale_map['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
+            stale_map['scope'])
+        with self.assertRaises(progress.entry.PreparationError):
+            flow.invoke('start', {'handoff': stale_map,
+                'control': {'context': flow.context, 'discussion': None}})
+        self.assertEqual(flow.checkpoint.read_bytes(), before)
+        stale_basis = copy.deepcopy(closure)
+        helper_item = next(item for item in stale_basis['scope']['downstream']['manifest']
+                           if item['path'] == 'helper.py')
+        helper_item['basis']['section'] = 'approved design'
+        stale_basis['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
+            stale_basis['scope'])
+        with self.assertRaises(progress.entry.PreparationError):
+            flow.invoke('start', {'handoff': stale_basis,
+                'control': {'context': flow.context, 'discussion': None}})
+        self.assertEqual(flow.checkpoint.read_bytes(), before)
         started = flow.begin('continuous', closure)
         self.assertEqual(started['next_action']['operation'], 'invoke-host')
         stage4 = flow.state()

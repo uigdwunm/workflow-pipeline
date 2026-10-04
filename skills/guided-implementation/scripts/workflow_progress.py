@@ -2277,6 +2277,8 @@ class Progress:
         require(s["status"] not in {"accepted", "cancelled", "cancelling"} and
                 (s.get("dispatch") or {}).get("status") == "bound",
                 "plan_revision_unavailable", "revision requires the active original dispatcher")
+        require((s["control"]["context"].get("handoff_progress") or {}).get("state") != "validating",
+                "plan_revision_unavailable", "settle the original final validation attempt before revising the plan")
         entry.fields(data["classification"], {"kind", "reference"})
         require(data["classification"]["kind"] == "internal", "user_decision_required",
                 "public or uncertain contract impact requires the original user decision")

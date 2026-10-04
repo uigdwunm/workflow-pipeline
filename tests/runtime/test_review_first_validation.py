@@ -382,6 +382,46 @@ class ReviewFirstTests(fixture.ProgressTests):
             control.validate_deliverable(current, candidate, prior['review_decision']['review'],
                                          original, 'native:dispatcher')
 
+    def test_plan_revision_waits_for_original_final_validation_result(self):
+        candidate = self.start_final()
+        old = self.state()['scope_authority']
+        revised = copy.deepcopy(old['execution_plan']['catalog']['tickets'][0]['plan'])
+        revised['plan_version'] += 1
+        revised['steps'][0]['approach'] = ['same contract with a revised private implementation']
+        contract_digest = old['execution_plan']['contract_digest']
+        request = {'revision_id': 'during-final-1',
+            'expected_authority_revision': old['revision'],
+            'expected_authority_digest': transfer.entry.digest(old),
+            'controller_ref': 'task',
+            'classification': {'kind': 'internal', 'reference': 'controller:during-final-1'},
+            'report': {'ticket_ids': ['INLINE-TRANSFER'],
+                'step_ids': ['inline-implementation'], 'reason': 'Revise a private function',
+                'production_facts': 'Same behavior needs a different implementation',
+                'contract_before': contract_digest, 'contract_after': contract_digest,
+                'dependency_impact': ['inline-implementation'],
+                'verification_impact': ['V-inline'], 'carry_forward': []},
+            'planning_paths': [], 'inline_plan': revised}
+        before_checkpoint = self.checkpoint.read_bytes()
+        before_head = self.flow_git('rev-parse', 'HEAD')
+        with self.assertRaises(transfer.entry.PreparationError) as error:
+            self.invoke('prepare-plan-revision', request)
+        self.assertEqual(error.exception.code, 'plan_revision_unavailable')
+        self.assertEqual(self.checkpoint.read_bytes(), before_checkpoint)
+        self.assertEqual(self.flow_git('rev-parse', 'HEAD'), before_head)
+        self.assertIsNone(self.state().get('plan_revision_transaction'))
+        checks = transfer.checks_for(self.plan()['final_required'], candidate)
+        result = self.invoke('control', {'action': 'validation-result',
+            'evidence': {'attempt_id': 'final-1', 'checks': checks},
+            'receipt': {'adapter': 'fixture-controller', 'call_ref': 'full-command',
+                'response_ref': 'full-observed', 'raw': {'attempt_id': 'final-1',
+                    'checks': checks, 'source_unchanged': True, 'stopped': True,
+                    'dispatcher_ref': 'native:dispatcher'}}})
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],
+                         'deliverable', result)
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        prepared = self.invoke('prepare-plan-revision', request)
+        self.assertEqual(prepared['next_action']['operation'], 'plan-revision-prepared', prepared)
+
     def test_new_accepted_writer_overrides_carried_bytes_at_candidate(self):
         self.context = self.context_for(3)
         value = self.input_for(3)
