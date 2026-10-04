@@ -193,9 +193,19 @@ def verified_planning_paths(repository, progress):
                 retained_paths <= set(progress['execution_authority']['scope']['closure_paths']),
                 'retained closure history escapes its exact document paths')
         from execution_plan import collect_execution_plan, current_catalog
-        catalog = current_catalog(progress['execution_authority'])
-        planning_sources = {source['path']: source for source in catalog['sources']
-                            if 'path' in source}
+        authority = progress['execution_authority']
+        catalog = current_catalog(authority)
+        if authority.get('kind') == 'inline':
+            require(catalog['commit'] is None and 'sources' not in catalog and
+                    len(catalog['tickets']) == 1 and
+                    catalog['tickets'][0]['source']['kind'] == 'inline',
+                    'inline planning source shape changed')
+            planning_sources = {}
+        else:
+            require(catalog['commit'] is not None and
+                    isinstance(catalog.get('sources'), list) and bool(catalog['sources']),
+                    'staged planning sources missing')
+            planning_sources = {source['path']: source for source in catalog['sources']}
         retained_planning = retained_paths & set(planning_sources)
         retained_revisions = set(git(repository, 'rev-list',
                                      accepted + '..' + retained_commit).decode().splitlines())

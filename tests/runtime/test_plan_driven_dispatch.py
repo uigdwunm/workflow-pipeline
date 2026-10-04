@@ -855,6 +855,24 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         case.flow_git("merge", "--no-edit", "main")
         integrated = case.flow_git("rev-parse", "HEAD")
         case.invoke("observe", case.observation("stopped", "result", ref="native:dispatcher"))
+        inline_authority = case.state()["control"]["context"]["handoff_progress"]["execution_authority"]
+        inline_catalog = inline_authority["execution_plan"]["catalog"]
+        self.assertEqual(inline_authority["kind"], "inline")
+        self.assertIsNone(inline_catalog["commit"])
+        self.assertNotIn("sources", inline_catalog)
+        self.assertEqual(len(inline_catalog["tickets"]), 1)
+        requirement = case.flow / case.requirement_path
+        original_requirement = requirement.read_bytes()
+        checkpoint = case.checkpoint.read_bytes()
+        requirement.write_bytes(original_requirement + b"unauthorized inline source change\n")
+        try:
+            rejected = case.invoke("control", {"action": "capture-integration",
+                "evidence": {"reference": "controller:inline-race"},
+                "receipt": {"controller_ref": "task", "reference": "controller:inline-race"}})
+            self.assertEqual(rejected["status"], "blocked", rejected)
+        finally:
+            requirement.write_bytes(original_requirement)
+            case.checkpoint.write_bytes(checkpoint)
         captured = case.invoke("control", {"action": "capture-integration",
             "evidence": {"reference": "controller:inline-race"},
             "receipt": {"controller_ref": "task", "reference": "controller:inline-race"}})

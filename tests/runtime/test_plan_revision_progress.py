@@ -747,6 +747,14 @@ class PlanRevisionProgressTests(unittest.TestCase):
             self.assertTrue(response.stdout, response.stderr)
             return json.loads(response.stdout)
 
+        if retained_note:
+            malformed = copy.deepcopy(context)
+            malformed_catalog = malformed["handoff_progress"]["execution_authority"][
+                "execution_plan"]["catalog"]
+            self.assertIsNotNone(malformed_catalog["commit"])
+            del malformed_catalog["sources"]
+            self.assertFalse(control("capture-integration", {"reference": "controller:target-race"},
+                                     malformed)["ok"])
         captured = control("capture-integration", {"reference": "controller:target-race"})
         self.assertTrue(captured["ok"], captured)
         integration = captured["context"]["handoff_progress"]["integration_source"]
