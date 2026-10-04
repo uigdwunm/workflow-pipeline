@@ -104,11 +104,11 @@ def _ticket_contract(source):
     block = blocks[0]
     protected = body[:block.start()] + body[block.end():]
     # The version belongs to the plan identity and may increase with an internal
-    # revision. A named Comments record below is the only other private area.
+    # revision. Existing Comments remain part of the immutable contract.
     _incomplete(len(PLAN_VERSION_LINE.findall(protected)) <= 1,
                 "duplicate Ticket plan version: " + source["path"])
     protected = PLAN_VERSION_LINE.sub(b"", protected)
-    return _without_record_section(protected, b"Comments", source["path"])
+    return protected
 
 
 def _without_record_section(body, label, path):
@@ -134,14 +134,54 @@ def _without_record_section(body, label, path):
     return prefix + body[end:]
 
 
-def contract_projection(repository, commit, sources, *, spec_path=None, contract_refs=()):
+def _retained_record_body(original, current, label, path):
+    """Keep original record bytes in a verified Stage-4 append projection."""
+    def record(body):
+        headings = [match for match in HEADING.finditer(body) if match.group(1) == b"##"]
+        matches = [index for index, match in enumerate(headings) if match.group(2) == label]
+        _incomplete(len(matches) <= 1, "duplicate " + label.decode() + " section: " + path)
+        if not matches:
+            return None
+        index = matches[0]
+        return (headings[index].start(),
+                headings[index + 1].start() if index + 1 < len(headings) else len(body))
+
+    old, new = record(original), record(current)
+    if new is None:
+        return current
+    if old is None:
+        # A newly appended record may contain ordinary notes, not a new
+        # public declaration hidden below its heading.
+        _without_record_section(current, label, path)
+        _incomplete(new[1] == len(current) and current[new[0]:].strip() != b"## " + label,
+                    "retained record must be an ordinary terminal append: " + path)
+        return _without_record_section(current, label, path)
+    old_bytes, new_bytes = original[old[0]:old[1]], current[new[0]:new[1]]
+    if new_bytes == old_bytes:
+        return current
+    _incomplete(old[1] == len(original) and new[1] == len(current) and
+                new_bytes.startswith(old_bytes) and len(new_bytes) > len(old_bytes),
+                "retained record rewrote existing bytes: " + path)
+    _without_record_section(b"## " + label + b"\n" + new_bytes[len(old_bytes):], label, path)
+    return current[:new[0]] + old_bytes
+
+
+def contract_projection(repository, commit, sources, *, spec_path=None, contract_refs=(),
+                        retained_record_baseline=None):
     """Keep immutable contract bytes distinct from each whole-document identity."""
     projection = []
     inline = not any("/issues/" in source["path"] for source in sources)
     for source in sources:
         path, body = source["path"], source["body"]
+        if retained_record_baseline is not None and path in retained_record_baseline:
+            original = retained_record_baseline[path]
+            if "/issues/" in path:
+                body = _retained_record_body(original, body, b"Comments", path)
+            elif path == spec_path and "Archive Notes" not in {
+                    ref.split(":", 2)[1] for ref in contract_refs if ref.startswith("PRD:")}:
+                body = _retained_record_body(original, body, b"Archive Notes", path)
         if "/issues/" in path:
-            protected = _ticket_contract(source)
+            protected = _ticket_contract({**source, "body": body})
         elif path == spec_path:
             # N2 production evidence and N4 inventory are the enumerated private
             # revision surfaces. Every other Spec byte remains in the contract.
@@ -160,8 +200,6 @@ def contract_projection(repository, commit, sources, *, spec_path=None, contract
             if inline:
                 protected = PLAN_BLOCK.sub(b"", protected)
                 protected = PLAN_VERSION_LINE.sub(b"", protected)
-            if "Archive Notes" not in public:
-                protected = _without_record_section(protected, b"Archive Notes", path)
         else:
             protected = body
         projection.append({"path": path, "mode": source["mode"],
@@ -392,7 +430,8 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
             "plan": plan, "covered_paths": sorted(covered)}
 
 
-def collect_execution_plan(repository, commit, planning_paths, scope, requirement_identity):
+def collect_execution_plan(repository, commit, planning_paths, scope, requirement_identity,
+                           *, retained_record_baseline=None):
     """Build one deterministic catalog from committed Ticket or inline Spec plans."""
     _incomplete(isinstance(planning_paths, list) and planning_paths == sorted(set(planning_paths)),
                 "exact sorted planning paths required")
@@ -459,7 +498,8 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
                         "code source requires a real function step: " + item['path'])
     projection = contract_projection(repository, commit, sources,
                                      spec_path=next(iter(spec_paths)) if len(spec_paths) == 1 else None,
-                                     contract_refs={ref for plan in plans for ref in plan["plan"]["contract_refs"]})
+                                     contract_refs={ref for plan in plans for ref in plan["plan"]["contract_refs"]},
+                                     retained_record_baseline=retained_record_baseline)
     catalog = {"schema_version": 1, "commit": commit, "requirement_identity": requirement_identity,
                "tickets": records, "ordered_step_ids": ordered,
                "sources": [{"path": item["path"], "commit": commit, "mode": item["mode"],

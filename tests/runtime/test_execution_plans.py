@@ -309,7 +309,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         self.assertEqual(initial, digest({**source, "body": prefix.replace(b"Version: 1", b"Version: 2") + block + tail}))
         self.assertNotEqual(initial, digest({**source, "body": prefix + block + tail.replace("用户可见".encode(), "不同".encode())}))
 
-    def test_ticket_comments_are_records_but_contract_and_unknown_sections_remain_fixed(self):
+    def test_ticket_comments_and_unknown_sections_remain_in_the_contract(self):
         prefix = (b"# Ticket\nTicket ID: TASK-B\nPlan Version: 1\n"
                   b"**What to build:** approved behavior\n**Blocked by:** None\n"
                   b"- [ ] AC-1: approved result\n")
@@ -320,8 +320,8 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         project = lambda value: execution_plan.contract_projection("unused", "unused",
             [{**source, "body": value}])["digest"]
         initial = project(body)
-        self.assertEqual(initial, project(body.replace(b"Initial implementation note.",
-                                                        b"Archived implementation note.")))
+        self.assertNotEqual(initial, project(body.replace(b"Initial implementation note.",
+                                                           b"Archived implementation note.")))
         self.assertNotEqual(initial, project(body.replace(b"approved behavior", b"changed behavior")))
         self.assertNotEqual(initial, project(body.replace(b"approved result", b"changed result")))
         self.assertNotEqual(initial, project(body.replace(b"**Blocked by:** None", b"**Blocked by:** TASK-A")))
@@ -329,25 +329,39 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         for declaration in (b"- [ ] AC-2: changed result\n", b"### D8 New promise\n",
                             b"**What to build:** changed behavior\n"):
             with self.subTest(declaration=declaration):
-                with self.assertRaises(execution_plan.entry.PreparationError):
-                    project(body + declaration)
+                self.assertNotEqual(initial, project(body + declaration))
+        retained = lambda value: execution_plan.contract_projection("unused", "unused",
+            [{**source, "body": value}], retained_record_baseline={source["path"]: body})["digest"]
+        self.assertEqual(initial, retained(body + b"Verification: Stage 4 passed.\n"))
+        with self.assertRaises(execution_plan.entry.PreparationError):
+            retained(body.replace(b"Initial implementation note.", b"Forged old note.") +
+                     b"Verification: Stage 4 passed.\n")
+        with self.assertRaises(execution_plan.entry.PreparationError):
+            retained(body + b"- [ ] AC-2: new promise\n")
 
-    def test_spec_archive_notes_leave_public_sections_and_unknown_text_protected(self):
+    def test_spec_archive_notes_and_unknown_text_remain_in_the_contract(self):
         body = b"## Approved behavior\nAC-1: approved result\n### D1 - public contract\nStable API\n"
         source = lambda value: {"path": "docs/spec.md", "mode": "100644",
                                 "body": value, "sha256": "committed-document-identity"}
         project = lambda value: execution_plan.contract_projection("unused", "unused", [source(value)],
             spec_path="docs/spec.md", contract_refs=["PRD:D1:public contract"])["digest"]
         initial = project(body)
-        self.assertEqual(initial, project(body + b"\n## Archive Notes\nStage 4 review accepted.\n"))
+        appended = body + b"\n## Archive Notes\nVerification: Stage 4 review accepted.\n"
+        self.assertNotEqual(initial, project(appended))
         self.assertNotEqual(initial, project(body.replace(b"Stable API", b"Changed API")))
         self.assertNotEqual(initial, project(body + b"\n## Unknown\nNew obligation\n"))
         referenced = lambda value: execution_plan.contract_projection("unused", "unused", [source(value)],
             spec_path="docs/spec.md", contract_refs=["PRD:Archive Notes:record"])["digest"]
         self.assertNotEqual(referenced(body + b"\n## Archive Notes\nInitial note.\n"),
                             referenced(body + b"\n## Archive Notes\nChanged note.\n"))
+        self.assertNotEqual(initial, project(body + b"\n## Archive Notes\n### D8 New obligation\n"))
+        retained = lambda value: execution_plan.contract_projection("unused", "unused",
+            [source(value)], spec_path="docs/spec.md",
+            contract_refs=["PRD:D1:public contract"],
+            retained_record_baseline={"docs/spec.md": body})["digest"]
+        self.assertEqual(initial, retained(appended))
         with self.assertRaises(execution_plan.entry.PreparationError):
-            project(body + b"\n## Archive Notes\n### D8 New obligation\n")
+            retained(body + b"\n## Archive Notes\nAC-2: New public promise\n")
 
     def test_explicit_private_section_contract_ref_is_protected(self):
         original = b"## Further Notes\n### N2 - public promise\nStable API\n### N4 - inventory\nprivate table\n"
@@ -359,6 +373,10 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
             spec_path="docs/spec.md", contract_refs=["PRD:N2:public promise"])["digest"]
         self.assertNotEqual(project(original), project(edited_public))
         self.assertEqual(project(original), project(edited_inventory))
+        private = lambda body: execution_plan.contract_projection("unused", "unused", [source(body)],
+            spec_path="docs/spec.md", contract_refs=[])["digest"]
+        self.assertEqual(private(original), private(edited_public))
+        self.assertEqual(private(original), private(edited_inventory))
 
     def test_existing_non_python_function_uses_committed_source_and_caller_locations(self):
         examples = (("impl.cc", "bool Widget::run() { return true; }\n"

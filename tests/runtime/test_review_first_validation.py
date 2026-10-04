@@ -3,6 +3,7 @@ import copy
 import hashlib
 import sys
 from pathlib import Path
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
 import test_workflow_progress as fixture
 import workflow_control as control
@@ -774,6 +775,100 @@ class ReviewFirstTests(fixture.ProgressTests):
                 'protected_paths':[self.requirement_path],'configuration':fixture.transfer.configuration('closure-agent')}}
         result = adapter.verified_transition({'repository':str(self.flow),'baseline':self.state()['handoff']['scope']['baseline'],'request':request})
         self.assertEqual(result['context']['handoff_progress']['state'], 'closure-pending')
+
+    def test_inline_recovery_retries_durable_allocation_before_host_action(self):
+        self.begin_dispatcher()
+        implementation = b"print('accepted')\n"
+        (self.flow / 'impl.py').write_bytes(implementation)
+        self.flow_git('add', 'impl.py')
+        self.flow_git('commit', '-qm', 'accepted implementation')
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        outer = fixture.progress.read_record(self.checkpoint)
+        self.fixture_accepted_execution(outer[fixture.progress.KEY]['control']['context'], candidate)
+        fixture.progress.atomic_save(self.checkpoint, outer)
+        self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        payload = {'artifacts': ['impl.py'], 'checks': ['behavior passed'],
+            'candidate_commit': candidate,
+            'review': {axis: {'candidate': candidate, 'reviewer_ref': axis,
+                'status': 'accepted'} for axis in ('standards', 'spec')},
+            'verification': {'candidate': candidate}}
+        self.assertEqual(self.accept_current(payload, 'native:dispatcher',
+            fixture_execution=False)['status'], 'accepted')
+        predecessor = self.state()['accepted']
+        (self.root / 'parallel.md').write_text('target advance\n')
+        self.git('add', 'parallel.md')
+        self.git('commit', '-qm', 'advance target')
+        self.context = self.context_for(4)
+        self.begin('continuous', self.input_for(4, predecessor))
+        self.invoke('observe', self.observation(ref='native:closure'))
+        observed = self.observation('stopped', 'result', ref='native:closure')
+        observed['closure'] = {'ref': 'native:closure', 'candidate': candidate,
+            'merge': None, 'ancestor_verified': False, 'changed_paths': [],
+            'binding': self.binding, 'checks': [], 'worktree_removed': False,
+            'branch_removed': False, 'disposition': 'deleted',
+            'disposition_verified': False,
+            'implementation_problem': 'target advanced before publication'}
+        self.assertEqual(self.invoke('observe', observed)['next_action']['operation'],
+            'implementation-recovery')
+        self.invoke('implementation-recovery', {'reference': 'controller:target-race',
+            'closure_digest': self.state()['handoff']['digest']})
+        self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        self.flow_git('merge', '--no-edit', 'main')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        captured = self.invoke('control', {'action': 'capture-integration',
+            'evidence': {'reference': 'controller:target-race'},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:target-race'}})
+        self.assertNotEqual(captured['status'], 'blocked', captured)
+        source = self.state()['control']['context']['handoff_progress']['integration_source']
+        self.assertEqual(source['pending_paths'], ['impl.py'])
+        with patch.dict(self.settings, thread_id='dispatcher-runtime'):
+            execution = self.inherited_execution_input()
+            execution['scope']['owned_paths'] = ['impl.py']
+            execution['authorization']['scope_digest'] = transfer.entry.digest(execution['scope'])
+            execution['semantic'].update(adopt_paths=['impl.py'],
+                adoption_snapshot_digest=source['snapshot_digest'])
+            with patch.object(fixture.progress.Progress, 'issue_allocation',
+                    side_effect=RuntimeError('interrupt after B record')):
+                with self.assertRaisesRegex(RuntimeError, 'interrupt after B record'):
+                    self.invoke('allocation', {'allocation_id': 'integrated',
+                        'operation': 'prepare', 'handoff': execution})
+            slot = self.state()['allocations']['integrated']
+            self.assertIsNotNone(slot['record'])
+            self.assertIsNone(slot.get('action'))
+            self.assertNotIn('readiness', slot['handoff'])
+            with self.assertRaises(transfer.entry.PreparationError):
+                transfer.handoff.verify(slot['handoff'])
+            with self.assertRaises(transfer.entry.PreparationError):
+                transfer.dispatch.handle({'protocol': transfer.handoff.PROTOCOL,
+                    'operation': 'prepare', 'handoff': slot['handoff'],
+                    'control': copy.deepcopy(self.state()['control'])})
+            saved_record = copy.deepcopy(slot['record'])
+            retried = self.invoke('allocation', {'allocation_id': 'integrated',
+                'operation': 'prepare', 'handoff': execution})
+            self.assertEqual((retried.get('next_action') or {}).get('operation'),
+                             'invoke-host', retried.get('error'))
+            self.assertEqual(self.state()['allocations']['integrated']['record'], saved_record)
+            bound = self.invoke('allocation', {'allocation_id': 'integrated',
+                'operation': 'bind', 'receipt': self.receipt(saved_record,
+                    ref='native:integrated-executor')})
+            self.assertEqual(bound['next_action']['result']['status'], 'bound', bound)
+            record = self.state()['allocations']['integrated']['record']
+            received = self.invoke('allocation', {'allocation_id': 'integrated',
+                'operation': 'receive', 'receipt': self.receipt(record, 'stopped',
+                    'result', ref='native:integrated-executor'),
+                'result': {'delivery_id': 'integrated-result', 'status': 'completed',
+                    'payload': {'changed_paths': [], 'adopted_paths': ['impl.py'],
+                        'file_hashes': {'impl.py': hashlib.sha256(implementation).hexdigest()},
+                        'tests': ['integrated behavior passed'],
+                        'write_release': transfer.dispatch.execution_release_token(record),
+                        'plan_refs': record['handoff']['semantic']['plan_refs'],
+                        'plan_authority': self.state()['control']['context'][
+                            'handoff_progress']['plan_authority']}}})
+            self.assertEqual(received['next_action']['result']['status'], 'received', received)
+            accepted = self.invoke('allocation', {'allocation_id': 'integrated',
+                'operation': 'accept',
+                'decision': {'reference': 'dispatcher:integrated'}})
+            self.assertEqual(accepted['next_action']['result']['status'], 'accepted', accepted)
 
     def test_legacy_control_is_rejected_without_mutating_input(self):
         old = self.context_for(3)

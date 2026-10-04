@@ -192,7 +192,7 @@ def verified_planning_paths(repository, progress):
                 incoming_changed_paths(repository, accepted, retained_commit) <= retained_paths and
                 retained_paths <= set(progress['execution_authority']['scope']['closure_paths']),
                 'retained closure history escapes its exact document paths')
-        from execution_plan import collect_execution_plan, current_catalog
+        from execution_plan import _committed_file, collect_execution_plan, current_catalog
         authority = progress['execution_authority']
         catalog = current_catalog(authority)
         if authority.get('kind') == 'inline':
@@ -212,13 +212,16 @@ def verified_planning_paths(repository, progress):
         if retained_planning:
             source_paths = sorted(planning_sources)
             original_plans = {ticket['ticket_id']: ticket['plan'] for ticket in catalog['tickets']}
+            record_baseline = {relative: _committed_file(repository, catalog['commit'], relative)['body']
+                               for relative in retained_planning}
             for revision in retained_revisions:
                 changed = set(filter(None, git(repository, 'diff', '--no-renames', '--name-only', '-z',
                     revision + '^1', revision).decode().split('\0')))
                 if not changed & retained_planning:
                     continue
                 checked = collect_execution_plan(str(repository), revision, source_paths,
-                    progress['execution_authority']['scope'], catalog['requirement_identity'])
+                    progress['execution_authority']['scope'], catalog['requirement_identity'],
+                    retained_record_baseline=record_baseline)
                 require(checked['contract_digest'] == catalog['contract_digest'] and
                         {ticket['ticket_id']: ticket['plan'] for ticket in checked['tickets']} == original_plans and
                         all(source['mode'] == planning_sources[source['path']]['mode']
@@ -269,6 +272,68 @@ def incoming_changed_paths(repository, target, candidate):
                 '--name-only', '-z', parent, revision, '--').decode().split('\0')))
         changed.update(introduced)
     return changed
+
+
+def verified_retired_history_paths(repository, progress, candidate, historical_paths, controller_ref):
+    """Admit a retired helper only through its original accepted, committed lifecycle."""
+    records = progress.get('plan_revisions', [])
+    sources = progress.get('plan_revision_sources', [])
+    require(len(records) == len(sources), 'plan revision history lacks original execution receipts')
+    baseline = commit(progress['git_baseline_commit'])
+    current = set(progress['allowed_paths'])
+    protected = set(progress['protected_paths'])
+    admitted = set()
+    for relative in historical_paths - current - protected:
+        original = committed_fingerprint(repository, baseline, relative)
+        if (committed_fingerprint(repository, candidate, relative) != original or
+                file_fingerprint(repository, relative) != original):
+            continue
+        for index, (record, source) in enumerate(zip(records, sources)):
+            evidence = record['evidence']
+            if (record['controller_ref'] != controller_ref or
+                    source['revision_id'] != evidence['revision_id'] or
+                    any(prior['revision_id'] != original['evidence']['revision_id']
+                        for prior, original in zip(sources[:index], records[:index])) or
+                    relative in evidence['new_scope']['implementation_paths'] or
+                    relative in evidence['planning_paths'] or
+                    evidence['snapshot']['files'].get(relative) != original):
+                continue
+            retirement = commit(evidence['snapshot']['head'])
+            git(repository, 'merge-base', '--is-ancestor', retirement,
+                commit(evidence['planning_commit']))
+            git(repository, 'merge-base', '--is-ancestor',
+                commit(evidence['planning_commit']), candidate)
+            if relative in incoming_changed_paths(repository, retirement, candidate):
+                continue
+            accepted = [item for prior in sources[:index + 1]
+                        for item in prior['executions']
+                        if relative in item['paths'] and item['state'] == 'accepted' and
+                           item['stopped'] is True and 'git_snapshot' in item and
+                           'git_result_snapshot' in item]
+            changes = [(item['git_snapshot']['head'], item['git_snapshot']['files'][relative],
+                        item['git_result_snapshot'].get(relative,
+                            item['git_snapshot']['files'][relative])) for item in accepted]
+            changes = [change for change in changes if change[1] != change[2]]
+            if len(changes) < 2 or changes[0][1] != original or changes[-1][2] != original:
+                continue
+            revisions = []
+            for line in git(repository, 'rev-list', '--reverse', '--parents',
+                            baseline + '..' + retirement).decode().splitlines():
+                revision, *parents = line.split()
+                if not parents or committed_fingerprint(repository, revision, relative) == \
+                        committed_fingerprint(repository, parents[0], relative):
+                    continue
+                revisions.append((revision, parents))
+            if len(revisions) != len(changes):
+                continue
+            if all(len(parents) == 1 and parent == start and
+                   committed_fingerprint(repository, parent, relative) == before and
+                   committed_fingerprint(repository, revision, relative) == after
+                   for (revision, parents), (start, before, after) in zip(revisions, changes)
+                   for parent in parents):
+                admitted.add(relative)
+                break
+    return admitted
 
 
 def recovery_snapshot(repository, progress):
@@ -704,7 +769,10 @@ def verified_transition(payload):
         excluded = retained_closure_paths(repository, progress) | verified_planning_paths(repository, progress)
         candidate_paths = sorted(set(changed_paths(repository, evidence['expected_target_head'])) - excluded)
         history_paths = incoming_changed_paths(repository, evidence['expected_target_head'], evidence['commit']) - excluded
-        require(history_paths <= set(progress['allowed_paths']) and not history_paths & set(progress['protected_paths']),
+        retired = verified_retired_history_paths(repository, progress, evidence['commit'],
+                                                history_paths, request['context']['controller_ref'])
+        require(history_paths - retired <= set(progress['allowed_paths']) and
+                not history_paths & set(progress['protected_paths']),
                 'candidate history escapes implementation scope or changes protected sources')
         if not direct_implementation(progress):
             from execution_plan import current_catalog, current_accepted_steps

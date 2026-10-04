@@ -962,8 +962,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.invoke("observe", flow.observation(ref="native:closure"))
         if ticket:
             issue = flow.flow / planning_path
-            issue.write_text(issue.read_text().replace(
-                'Initial implementation note.', 'Stage 4 archived implementation note.'))
+            issue.write_text(issue.read_text() + 'Verification: Stage 4 accepted.\n')
             spec = flow.flow / 'docs/spec.md'
             spec.write_text(spec.read_text() + '\n## Archive Notes\nStage 4 review accepted.\n')
             flow.flow_git('add', planning_path, 'docs/spec.md')
@@ -1668,6 +1667,66 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(flow.checkpoint.read_bytes(), before)
         self.assertEqual(flow.state()["plan_revision_transaction"]["state"], "prepared")
 
+    def test_plan_revision_cannot_change_ticket_comments_or_spec_archive(self):
+        for ticket in (False, True):
+            with self.subTest(ticket=ticket):
+                flow = self.new_active_flow(ticket=ticket)
+                report = self.report(flow)
+                flow.invoke('prepare-plan-revision', report)
+                prepared = flow.invoke('observe', flow.observation(
+                    'stopped', 'result', ref='native:dispatcher'))
+                relative = 'docs/issues/FEP-01.md' if ticket else 'docs/spec.md'
+                source = flow.flow / relative
+                body = source.read_text()
+                match = re.search(r'```execution-plan-v1\n(.*?)\n```', body, re.DOTALL)
+                plan = json.loads(match.group(1))
+                plan['plan_version'] += 1
+                plan['steps'][0]['approach'].append('revise private helper')
+                body = (body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                body = body.replace('Plan Version: 1', 'Plan Version: 2')
+                if ticket:
+                    body = body.replace('Initial implementation note.',
+                        'Changed existing implementation note.')
+                else:
+                    body += '\n## Archive Notes\nUnreviewed historical claim.\n'
+                source.write_text(body)
+                flow.flow_git('add', relative)
+                flow.flow_git('commit', '--only', '-qm', 'private plan and record rewrite',
+                              '--', relative)
+                before = flow.checkpoint.read_bytes()
+                with self.assertRaises(progress.entry.PreparationError) as error:
+                    flow.invoke('commit-plan-revision', {'revision_id': report['revision_id'],
+                        'controller_ref': 'task',
+                        'write_release': prepared['next_action']['write_release'],
+                        'planning_commit': flow.flow_git('rev-parse', 'HEAD')})
+                self.assertEqual(error.exception.code, 'contract_changed')
+                self.assertEqual(flow.checkpoint.read_bytes(), before)
+
+    def test_formal_revision_allows_private_n4_inventory_with_plan_change(self):
+        flow = self.new_active_flow(retained_note=True)
+        report = self.report(flow)
+        flow.invoke('prepare-plan-revision', report)
+        prepared = flow.invoke('observe', flow.observation(
+            'stopped', 'result', ref='native:dispatcher'))
+        source = flow.flow / 'docs/spec.md'
+        body = source.read_text()
+        match = re.search(r'```execution-plan-v1\n(.*?)\n```', body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan['plan_version'] += 1
+        plan['steps'][0]['approach'].append('revise private helper')
+        source.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                          .replace('Plan Version: 1', 'Plan Version: 2')
+                          .replace('Initial note.', 'Updated private inventory.'))
+        flow.flow_git('add', 'docs/spec.md')
+        flow.flow_git('commit', '--only', '-qm', 'revise plan and N4 inventory',
+                      '--', 'docs/spec.md')
+        activated = flow.invoke('commit-plan-revision', {'revision_id': report['revision_id'],
+            'controller_ref': 'task',
+            'write_release': prepared['next_action']['write_release'],
+            'planning_commit': flow.flow_git('rev-parse', 'HEAD')})
+        self.assertEqual(activated['next_action']['operation'], 'plan-revision-activated',
+                         activated)
+
     def test_implementation_index_drift_rejects_planning_commit(self):
         flow = self.new_active_flow()
         report = self.report(flow)
@@ -1740,6 +1799,9 @@ class PlanRevisionProgressTests(unittest.TestCase):
                                  b"def impl():\n    return 1\n", "retired-input")
         self.accept_planned_step(flow, ticket, "FP1-02", "later.py",
                                  b"def later():\n    return 1\n", "retired-helper")
+        flow.flow_git('add', 'impl.py', 'later.py')
+        flow.flow_git('commit', '-qm', 'commit accepted helper implementation')
+        implemented_helper = flow.flow_git('rev-parse', 'HEAD')
         flow.request = controller_request
         flow.settings = controller_settings
         old_manifest = authority["scope"]["downstream"]["manifest"]
@@ -1779,6 +1841,10 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.accept_planned_step(flow, ticket, "FP1-02", "later.py", None,
                                  "retired-helper-cleanup")
         self.assertFalse((flow.flow / "later.py").exists())
+        flow.flow_git('add', '-u', 'later.py')
+        flow.flow_git('commit', '-qm', 'commit accepted helper cleanup')
+        cleaned_helper = flow.flow_git('rev-parse', 'HEAD')
+        self.assertNotEqual(implemented_helper, cleaned_helper)
         flow.request = controller_request
         flow.settings = controller_settings
         flow.invoke("prepare-plan-revision", report)
@@ -1802,6 +1868,61 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(activated["next_action"]["operation"], "plan-revision-activated", activated)
         self.assertNotIn("later.py", flow.state()["scope_authority"]["scope"]["implementation_paths"])
         self.assertNotIn("later.py", flow.state()["control"]["context"]["handoff_progress"]["allowed_paths"])
+        flow.invoke('advance')
+        flow.invoke('observe', flow.observation('running', 'result', ref='native:dispatcher'))
+        current_ticket = flow.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
+        for identity, relative in (('FP1-03', 'independent.py'),
+                                   ('FP1-04', 'downstream.py'), ('FP1-05', 'reader.py')):
+            self.accept_planned_step(flow, current_ticket, identity, relative,
+                (f'def {relative.removesuffix(".py")}():\n    return 2\n').encode(),
+                'current-' + identity)
+        flow.flow_git('add', 'independent.py', 'downstream.py', 'reader.py')
+        flow.flow_git('commit', '-qm', 'commit current plan implementation')
+        candidate = flow.flow_git('rev-parse', 'HEAD')
+        flow.request = controller_request
+        flow.settings = controller_settings
+        flow.settings['thread_id'] = 'task'
+        flow.request['host'].update(thread_id='task', role='controller', source_ref=None)
+        flow.request['host'].pop('actor_ref', None)
+        checkpoint = flow.state()['control']['context']['handoff_progress']
+        checks = fixture.fixture.transfer.checks_for(
+            checkpoint['validation_plan']['review_required'], candidate)
+        evidence = {
+            'dispatcher_ref': 'native:dispatcher',
+            'attempt': flow.state()['control']['context']['carrier']['attempt'],
+            'commit': candidate, 'expected_target_head': flow.git('rev-parse', 'main'),
+            'binding': flow.binding, 'plan_digest': checkpoint['plan_digest'],
+            'plan_authority': checkpoint['plan_authority'], 'checks': checks,
+            'source': {'adapter': 'fixture', 'call_ref': 'retired-helper-ready',
+                'response_ref': 'retired-helper-ready-result',
+                'raw': {'checks': checks, 'source_unchanged': True, 'stopped': True,
+                        'dispatcher_ref': 'native:dispatcher'}}}
+        ready = progress.control_git.verified_transition({'repository': str(flow.flow),
+            'baseline': checkpoint['git_baseline_commit'], 'request': {
+                'schema_version': 6, 'action': 'candidate-ready', 'actor_ref': 'task',
+                'context': copy.deepcopy(flow.state()['control']['context']),
+                'evidence': evidence}})
+        self.assertTrue(ready['ok'], ready)
+        self.assertEqual(ready['context']['handoff_progress']['state'], 'reviewable')
+        (flow.flow / 'later.py').write_text('unauthorized retired helper\n')
+        flow.flow_git('add', 'later.py')
+        flow.flow_git('commit', '-qm', 'unaccepted retired helper rewrite')
+        (flow.flow / 'later.py').unlink()
+        flow.flow_git('add', '-u', 'later.py')
+        flow.flow_git('commit', '-qm', 'revert unaccepted retired helper rewrite')
+        forged_candidate = flow.flow_git('rev-parse', 'HEAD')
+        forged_evidence = copy.deepcopy(evidence)
+        forged_evidence['commit'] = forged_candidate
+        forged_evidence['checks'] = fixture.fixture.transfer.checks_for(
+            checkpoint['validation_plan']['review_required'], forged_candidate)
+        forged_evidence['source']['raw']['checks'] = forged_evidence['checks']
+        with self.assertRaisesRegex(progress.control.ControlError,
+                                    'candidate history escapes implementation scope'):
+            progress.control_git.verified_transition({'repository': str(flow.flow),
+                'baseline': checkpoint['git_baseline_commit'], 'request': {
+                    'schema_version': 6, 'action': 'candidate-ready', 'actor_ref': 'task',
+                    'context': copy.deepcopy(flow.state()['control']['context']),
+                    'evidence': forged_evidence}})
 
     def test_retired_helper_with_unaccepted_bytes_cannot_receive_planning_release(self):
         flow = self.new_active_flow(read_dependency=True)

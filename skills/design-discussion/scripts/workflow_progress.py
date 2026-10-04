@@ -4160,7 +4160,10 @@ class Progress:
                 if slot["record"] is not None:
                     if slot.get("action") is None:
                         self.require_allocation_active()
-                        handoff.verify(slot["handoff"])
+                        checkpoint_path = (str(self.path.resolve())
+                            if 'integration_recovery' in slot['handoff']['authorization'] and
+                               'readiness' not in slot['handoff'] else None)
+                        handoff.verify(slot["handoff"], checkpoint_path=checkpoint_path)
                         return self.issue_allocation(identity, slot)
                     if slot["record"]["status"] in {"received", "accepted", "not-created"}:
                         return _view(s, {"operation": "allocation-result", "allocation_id": identity, "result": slot["result"]}, acknowledged=True)
