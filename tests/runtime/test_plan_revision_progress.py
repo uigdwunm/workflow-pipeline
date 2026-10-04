@@ -178,6 +178,29 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 "verification_impact": ["V1"], "carry_forward": []},
             "planning_paths": [authority['execution_plan']['catalog']['tickets'][0]['source']['path']]}
 
+    def test_revision_entries_reject_non_string_ids_without_changing_state(self):
+        flow = self.new_active_flow()
+        before = flow.checkpoint.read_bytes()
+        head = flow.flow_git("rev-parse", "HEAD")
+        for operation in ("prepare-plan-revision", "commit-plan-revision",
+                          "reconcile-plan-revision"):
+            for invalid in ([], {}, "", "  "):
+                with self.subTest(operation=operation, invalid=invalid):
+                    if operation == "prepare-plan-revision":
+                        request = self.report(flow)
+                    elif operation == "commit-plan-revision":
+                        request = {"revision_id": "internal-1", "controller_ref": "task",
+                                   "write_release": "unused", "planning_commit": head}
+                    else:
+                        request = {"revision_id": "internal-1"}
+                    request["revision_id"] = invalid
+                    with self.assertRaises(progress.entry.PreparationError) as error:
+                        flow.invoke(operation, request)
+                    self.assertEqual(error.exception.code, "invalid_request")
+                    self.assertIn("revision_id", str(error.exception))
+                    self.assertEqual(flow.checkpoint.read_bytes(), before)
+                    self.assertEqual(flow.flow_git("rev-parse", "HEAD"), head)
+
     def test_prepare_plan_revision_rejects_non_string_report_ids_before_saving(self):
         flow = self.new_active_flow()
         before = flow.checkpoint.read_bytes()
@@ -227,7 +250,8 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 self.assertEqual(error.exception.code, code)
                 self.assertEqual(flow.checkpoint.read_bytes(), before)
 
-    def accept_planned_step(self, flow, ticket, identity, relative, content, allocation_id):
+    def accept_planned_step(self, flow, ticket, identity, relative, content, allocation_id,
+                            *, accept=True):
         execution = flow.execution_input()
         execution["scope"]["owned_paths"] = [relative]
         step = next(item for item in ticket["plan"]["steps"] if item["id"] == identity)
@@ -243,9 +267,12 @@ class PlanRevisionProgressTests(unittest.TestCase):
         bound = flow.invoke("allocation", {"allocation_id": allocation_id,
             "operation": "bind", "receipt": flow.receipt(slot["record"], ref=allocation_id)})
         release = bound["next_action"]["result"]["write_release"]
-        (flow.flow / relative).write_bytes(content)
+        if content is None:
+            (flow.flow / relative).unlink()
+        else:
+            (flow.flow / relative).write_bytes(content)
         result = {"changed_paths": [relative],
-            "file_hashes": {relative: hashlib.sha256(content).hexdigest()},
+            "file_hashes": {relative: None if content is None else hashlib.sha256(content).hexdigest()},
             "tests": ["behavior passed"], "write_release": release,
             "plan_refs": execution["semantic"]["plan_refs"],
             "plan_authority": flow.state()["control"]["context"]["handoff_progress"]["plan_authority"]}
@@ -253,6 +280,8 @@ class PlanRevisionProgressTests(unittest.TestCase):
             "receipt": flow.receipt(slot["record"], "stopped", "result", ref=allocation_id),
             "result": {"delivery_id": allocation_id + "-result", "status": "completed",
                        "payload": result}})
+        if not accept:
+            return
         delivered = flow.invoke("allocation", {"allocation_id": allocation_id,
             "operation": "accept", "decision": {"reference": "dispatcher:" + allocation_id}})
         self.assertEqual(delivered["next_action"]["result"]["status"], "accepted")
@@ -1700,6 +1729,156 @@ class PlanRevisionProgressTests(unittest.TestCase):
                          ["helper.py", "impl.py"])
         self.assertEqual(flow.state()["control"]["context"]["handoff_progress"]["allowed_paths"],
                          ["helper.py", "impl.py"])
+
+    def test_retired_helper_with_accepted_bytes_cannot_receive_planning_release(self):
+        flow = self.new_active_flow(read_dependency=True)
+        controller_request = copy.deepcopy(flow.request)
+        controller_settings = copy.deepcopy(flow.settings)
+        authority = flow.state()["scope_authority"]
+        ticket = authority["execution_plan"]["catalog"]["tickets"][0]
+        self.accept_planned_step(flow, ticket, "FP1-01", "impl.py",
+                                 b"def impl():\n    return 1\n", "retired-input")
+        self.accept_planned_step(flow, ticket, "FP1-02", "later.py",
+                                 b"def later():\n    return 1\n", "retired-helper")
+        flow.request = controller_request
+        flow.settings = controller_settings
+        old_manifest = authority["scope"]["downstream"]["manifest"]
+        manifest = [item for item in old_manifest if item["path"] != "later.py"]
+        report = self.report(flow)
+        report["manifest"] = manifest
+        report["report"].update(step_ids=["FP1-02"],
+                                dependency_impact=["FP1-04", "FP1-05"],
+                                verification_impact=["V2"],
+                                manifest_diff=progress.stage_scope.manifest_diff(old_manifest, manifest))
+        requested = flow.invoke("prepare-plan-revision", report)
+        self.assertEqual(requested["next_action"]["operation"], "stop-host", requested)
+        before = flow.flow_git("rev-parse", "HEAD")
+        stopped = flow.observation("stopped", "result", ref="native:dispatcher")
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            flow.invoke("observe", stopped)
+        self.assertEqual(error.exception.code, "invalid_plan_revision")
+        self.assertIn("later.py", str(error.exception))
+        self.assertEqual(flow.state()["scope_authority"], authority)
+        self.assertIsNone(flow.state().get("plan_revision_transaction"))
+        self.assertEqual(flow.flow_git("rev-parse", "HEAD"), before)
+        self.assertIn("later.py", flow.state()["control"]["context"]["handoff_progress"]["allowed_paths"])
+        with self.assertRaises(progress.entry.PreparationError) as missing:
+            flow.invoke("reconcile-plan-revision", {"revision_id": report["revision_id"]})
+        self.assertEqual(missing.exception.code, "plan_revision_missing")
+        resumed = flow.invoke("advance")
+        self.assertEqual(resumed["next_action"]["operation"], "inspect-host-state", resumed)
+        repeat = flow.invoke("advance")
+        self.assertEqual(repeat["next_action"]["action_id"], resumed["next_action"]["action_id"])
+        resumed = flow.invoke("observe", flow.observation("idle", "result", ref="native:dispatcher"))
+        self.assertEqual(resumed["next_action"]["operation"], "continue-host", resumed)
+        repeat = flow.invoke("advance")
+        self.assertEqual(repeat["next_action"]["operation"], "lookup-exact-action", repeat)
+        self.assertEqual(repeat["next_action"]["action"]["action_id"],
+                         resumed["next_action"]["action_id"])
+        flow.invoke("observe", flow.observation("idle", "result", ref="native:dispatcher"))
+        self.accept_planned_step(flow, ticket, "FP1-02", "later.py", None,
+                                 "retired-helper-cleanup")
+        self.assertFalse((flow.flow / "later.py").exists())
+        flow.request = controller_request
+        flow.settings = controller_settings
+        flow.invoke("prepare-plan-revision", report)
+        prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
+        self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared", prepared)
+        source = flow.flow / "docs/spec.md"
+        body = source.read_text()
+        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan["plan_version"] = 2
+        plan["steps"] = [step for step in plan["steps"] if step["id"] != "FP1-02"]
+        next(step for step in plan["steps"] if step["id"] == "FP1-04")["depends_on"] = []
+        next(step for step in plan["steps"] if step["id"] == "FP1-05")["read_only"] = []
+        source.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                          .replace("Plan Version: 1", "Plan Version: 2"))
+        flow.flow_git("add", "docs/spec.md")
+        flow.flow_git("commit", "--only", "-qm", "retire baseline helper", "--", "docs/spec.md")
+        activated = flow.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
+            "controller_ref": "task", "write_release": prepared["next_action"]["write_release"],
+            "planning_commit": flow.flow_git("rev-parse", "HEAD")})
+        self.assertEqual(activated["next_action"]["operation"], "plan-revision-activated", activated)
+        self.assertNotIn("later.py", flow.state()["scope_authority"]["scope"]["implementation_paths"])
+        self.assertNotIn("later.py", flow.state()["control"]["context"]["handoff_progress"]["allowed_paths"])
+
+    def test_retired_helper_with_unaccepted_bytes_cannot_receive_planning_release(self):
+        flow = self.new_active_flow(read_dependency=True)
+        controller_request = copy.deepcopy(flow.request)
+        controller_settings = copy.deepcopy(flow.settings)
+        authority = flow.state()["scope_authority"]
+        ticket = authority["execution_plan"]["catalog"]["tickets"][0]
+        self.accept_planned_step(flow, ticket, "FP1-01", "impl.py",
+                                 b"def impl():\n    return 1\n", "pending-input")
+        self.accept_planned_step(flow, ticket, "FP1-02", "later.py",
+                                 b"def later():\n    return 1\n", "pending-helper", accept=False)
+        executions = flow.state()["control"]["context"]["handoff_progress"]["executions"]
+        self.assertEqual(executions[-1]["state"], "received")
+        self.assertTrue(executions[-1]["stopped"])
+        flow.request = controller_request
+        flow.settings = controller_settings
+        old_manifest = authority["scope"]["downstream"]["manifest"]
+        manifest = [item for item in old_manifest if item["path"] != "later.py"]
+        report = self.report(flow)
+        report["manifest"] = manifest
+        report["report"].update(step_ids=["FP1-02"],
+                                dependency_impact=["FP1-04", "FP1-05"],
+                                verification_impact=["V2"],
+                                manifest_diff=progress.stage_scope.manifest_diff(old_manifest, manifest))
+        flow.invoke("prepare-plan-revision", report)
+        before = flow.flow_git("rev-parse", "HEAD")
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
+        self.assertEqual(error.exception.code, "invalid_plan_revision")
+        self.assertIn("later.py", str(error.exception))
+        self.assertEqual(flow.state()["scope_authority"], authority)
+        self.assertIsNone(flow.state().get("plan_revision_transaction"))
+        self.assertEqual(flow.flow_git("rev-parse", "HEAD"), before)
+        inspected = flow.invoke("advance")
+        self.assertEqual(inspected["next_action"]["operation"], "inspect-host-state")
+        uncertain = flow.observation("unknown", "result", ref="native:dispatcher")
+        unresolved = flow.invoke("observe", uncertain)
+        self.assertNotEqual((unresolved.get("next_action") or {}).get("operation"), "continue-host")
+        replay = flow.invoke("observe", uncertain, revision=0)
+        self.assertTrue(replay["acknowledged"])
+        self.assertEqual(flow.state()["scope_authority"], authority)
+
+    def test_paused_retired_helper_rejection_keeps_original_recovery(self):
+        flow = self.new_active_flow(read_dependency=True)
+        controller_request = copy.deepcopy(flow.request)
+        controller_settings = copy.deepcopy(flow.settings)
+        authority = flow.state()["scope_authority"]
+        ticket = authority["execution_plan"]["catalog"]["tickets"][0]
+        self.accept_planned_step(flow, ticket, "FP1-01", "impl.py",
+                                 b"def impl():\n    return 1\n", "paused-input")
+        self.accept_planned_step(flow, ticket, "FP1-02", "later.py",
+                                 b"def later():\n    return 1\n", "paused-helper")
+        flow.request = controller_request
+        flow.settings = controller_settings
+        old_manifest = authority["scope"]["downstream"]["manifest"]
+        manifest = [item for item in old_manifest if item["path"] != "later.py"]
+        report = self.report(flow)
+        report["manifest"] = manifest
+        report["report"].update(step_ids=["FP1-02"],
+                                dependency_impact=["FP1-04", "FP1-05"],
+                                verification_impact=["V2"],
+                                manifest_diff=progress.stage_scope.manifest_diff(old_manifest, manifest))
+        flow.invoke("prepare-plan-revision", report)
+        flow.invoke("pause")
+        flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
+        self.assertEqual(flow.state()["status"], "paused")
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            flow.invoke("resume")
+        self.assertEqual(error.exception.code, "invalid_plan_revision")
+        self.assertIn("later.py", str(error.exception))
+        self.assertEqual(flow.state()["status"], "active")
+        self.assertEqual(flow.state()["scope_authority"], authority)
+        self.assertIsNone(flow.state().get("plan_revision_transaction"))
+        inspected = flow.invoke("advance")
+        self.assertEqual(inspected["next_action"]["operation"], "inspect-host-state", inspected)
+        resumed = flow.invoke("observe", flow.observation("idle", "result", ref="native:dispatcher"))
+        self.assertEqual(resumed["next_action"]["operation"], "continue-host", resumed)
 
     def test_generated_output_cannot_disappear_without_a_new_full_inventory(self):
         flow = self.new_active_flow(generated=True)

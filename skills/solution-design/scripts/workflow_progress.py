@@ -42,6 +42,10 @@ NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAge
 require = entry.require
 
 
+class _RejectedPlanRevision(entry.PreparationError):
+    """A stopped revision was safely rejected before its planning write release."""
+
+
 def validate_native_event(event):
     require(isinstance(event, dict) and isinstance(event.get('method'), str) and event['method'] in {'item/started','item/completed'} and
             isinstance(event.get('params'), dict) and isinstance(event['params'].get('item'), dict) and
@@ -2416,6 +2420,25 @@ class Progress:
             transaction["old_authority"], s["handoff"]["scope"]["protected_paths"],
             transaction["input"]["planning_paths"],
             additional_paths=sorted(set(proposed_paths) - set(transaction["old_authority"]["scope"]["implementation_paths"])))
+        retired_paths = sorted(set(transaction["old_authority"]["scope"]["implementation_paths"]) -
+                               set(proposed_paths))
+        nonbaseline = [relative for relative in retired_paths
+            if snapshot["files"][relative] != control_git.committed_fingerprint(
+                s["handoff"]["binding"]["worktree"],
+                s["control"]["context"]["handoff_progress"]["git_baseline_commit"], relative)]
+        if nonbaseline:
+            # No planning write was released: keep the old authority usable for
+            # a real Execution Agent to restore these paths before retrying.
+            s.pop("plan_revision_transaction")
+            s["status"] = "active"
+            s["step"] = "continue"
+            s.pop("error", None)
+            s["continuation_intent"] = {"kind": "plan-revision-rejected",
+                "revision_id": transaction["input"]["revision_id"],
+                "retired_paths": nonbaseline}
+            self.save()
+            raise _RejectedPlanRevision("invalid_plan_revision",
+                "retired implementation paths still differ from baseline: " + ", ".join(nonbaseline))
         transaction["snapshot"] = snapshot
         transaction["state"] = "prepared"
         transaction["write_release"] = entry.digest({"revision_id": transaction["input"]["revision_id"],
@@ -4791,6 +4814,10 @@ def handle(path, request):
             return _view(owner.state)
         # Exact duplicate observations/decisions may ACK even with an old revision.
         data = request.get("data", {})
+        if operation in {"prepare-plan-revision", "commit-plan-revision", "reconcile-plan-revision"}:
+            require(isinstance(data, dict) and isinstance(data.get("revision_id"), str) and
+                    bool(data["revision_id"].strip()), "invalid_request",
+                    "revision_id requires a nonempty string")
         duplicate = owner.state is not None and ((operation == 'native-finalize' and any(
             record.get('prepare') == data or data in record['receipts'] for record in owner.state.get('native_finalizations', []))) or (operation == "observe" and
             owner.state["events"].get(data.get("event_id"), {}).get("applied")) or
@@ -4860,7 +4887,8 @@ def handle(path, request):
         except entry.ERROR_TYPES + (control.ControlError,) as error:
             if operation == 'native-finalize':
                 raise
-            if (operation in {"scope-propose", "scope-seal", "scope-revise",
+            if (isinstance(error, _RejectedPlanRevision) or
+                    operation in {"scope-propose", "scope-seal", "scope-revise",
                               "prepare-plan-revision", "commit-plan-revision",
                               "reconcile-plan-revision"} or
                     getattr(error, "code", None) in {"scope_revision_pending", "scope_conflict", "stale_scope_revision"}):
