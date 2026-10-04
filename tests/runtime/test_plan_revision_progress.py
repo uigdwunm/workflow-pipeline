@@ -1924,6 +1924,60 @@ class PlanRevisionProgressTests(unittest.TestCase):
                     'context': copy.deepcopy(flow.state()['control']['context']),
                     'evidence': forged_evidence}})
 
+        flow.flow_git('reset', '--hard', candidate)
+        ready = flow.invoke('control', {'action': 'candidate-ready', 'evidence': {
+            key: copy.deepcopy(value) for key, value in evidence.items() if key != 'source'},
+            'receipt': evidence['source']})
+        self.assertEqual(flow.state()['control']['context']['handoff_progress']['state'],
+                         'reviewable', ready)
+        flow.mark_reviewable = lambda _candidate, fixture_execution=False: {
+            'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
+            'plan_authority': checkpoint['plan_authority'], 'checks': checks}
+        payload = {'artifacts': ['impl.py', 'independent.py', 'downstream.py', 'reader.py'],
+            'checks': ['retired helper behavior passed'], 'candidate_commit': candidate,
+            'review': {axis: {'candidate': candidate, 'reviewer_ref': axis,
+                              'status': 'accepted'} for axis in ('standards', 'spec')},
+            'verification': {'candidate': candidate}}
+        original_observation = flow.observation
+        historical_refs = {item['agent_ref'] for source in checkpoint['plan_revision_sources']
+                           for item in source['executions'] if item['agent_ref']}
+        def with_historical_agents(*args, **kwargs):
+            observation = original_observation(*args, **kwargs)
+            if 'lifecycle' in observation:
+                members = observation['lifecycle']['pages'][0]['response']['data']
+                known = {item['id'] for item in members}
+                members.extend({'id': ref, 'status': {'type': 'idle'}}
+                               for ref in historical_refs - known)
+            return observation
+        with patch.object(flow, 'observation', side_effect=with_historical_agents):
+            accepted = flow.accept_current(payload, 'native:dispatcher', fixture_execution=False)
+        self.assertEqual(accepted['status'], 'accepted', accepted)
+        predecessor = flow.state()['accepted']
+        current_scope = flow.state()['scope_authority']['scope']
+        closure = flow.input_for(4, predecessor)
+        for key in ('downstream', 'implementation_paths', 'closure_paths'):
+            closure['scope'][key] = copy.deepcopy(current_scope[key])
+        closure['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
+            closure['scope'])
+        with self.assertRaises(progress.entry.PreparationError) as wrong_pin:
+            progress.handoff.prepare(closure, checkpoint_path=str(flow.checkpoint.with_name('other.json')))
+        self.assertEqual(wrong_pin.exception.code, 'handoff_not_ready')
+        stale = copy.deepcopy(closure)
+        stale['scope']['implementation_paths'] = predecessor['handoff']['scope']['implementation_paths']
+        stale['scope']['downstream'] = predecessor['handoff']['scope']['downstream']
+        stale['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(stale['scope'])
+        with self.assertRaises(progress.entry.PreparationError):
+            progress.handoff.prepare(stale, checkpoint_path=str(flow.checkpoint))
+        prepared_closure = progress.handoff.prepare(closure, checkpoint_path=str(flow.checkpoint))
+        self.assertEqual(progress.handoff.verify(prepared_closure,
+            checkpoint_path=str(flow.checkpoint)), prepared_closure)
+        flow.context = flow.context_for(4)
+        started = flow.begin('continuous', closure)
+        self.assertEqual(started['next_action']['operation'], 'invoke-host', started)
+        stage4 = flow.state()
+        self.assertEqual(progress.handoff.verify(stage4['handoff'],
+            checkpoint_path=str(flow.checkpoint)), stage4['handoff'])
+
     def test_retired_helper_with_unaccepted_bytes_cannot_receive_planning_release(self):
         flow = self.new_active_flow(read_dependency=True)
         controller_request = copy.deepcopy(flow.request)

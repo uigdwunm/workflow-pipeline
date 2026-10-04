@@ -400,7 +400,12 @@ def verify_result(stage, payload, binding, scope, root, role_ref, integration_re
         changed -= retained_paths | planning_paths
         require(changed <= set(scope["implementation_paths"]), "invalid_scope", "candidate escapes implementation scope")
         history_paths = control_git.incoming_changed_paths(Path(root), review_base, candidate) - retained_paths - planning_paths
-        require(history_paths <= set(scope["implementation_paths"]) and
+        retired_paths = set()
+        if current_progress is not None and current_progress.get('plan_revisions'):
+            retired_paths = control_git.verified_retired_history_paths(
+                Path(root), current_progress, candidate, history_paths,
+                current_progress['plan_revisions'][-1]['controller_ref'])
+        require(history_paths - retired_paths <= set(scope["implementation_paths"]) and
                 not history_paths & set(scope["protected_paths"]),
                 "invalid_scope", "candidate history escapes implementation scope")
         control.validate_review(candidate, payload["review"], payload["verification"], role_ref)
