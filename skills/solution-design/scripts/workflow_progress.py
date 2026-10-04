@@ -4200,7 +4200,10 @@ class Progress:
                 require(actor["role"] == "implementation-dispatcher" and self.bound_ref() in
                         {actor["thread_id"], "codex-thread:" + actor["thread_id"], actor.get("actor_ref")},
                         "identity_mismatch", "only the bound native dispatcher allocates execution agents")
-                saved = handoff.handle(request)
+                inline_recovery = ('integration_recovery' in request['authorization'] and
+                                   request.get('readiness') is None)
+                saved = (handoff.prepare(request, checkpoint_path=str(self.path.resolve()))
+                         if inline_recovery else handoff.handle(request))
                 parent_scope, scope = s["handoff"]["scope"], saved["scope"]
                 require(scope["implementation_paths"] == current_scope["implementation_paths"] and
                         scope["closure_paths"] == current_scope["closure_paths"] and
@@ -4225,6 +4228,8 @@ class Progress:
         if operation == "prepare":
             self.require_allocation_active()
         request = {"protocol": handoff.PROTOCOL, "operation": operation, "control": copy.deepcopy(s["control"])}
+        if 'integration_recovery' in slot['handoff']['authorization'] and 'readiness' not in slot['handoff']:
+            request['scope_checkpoint_path'] = str(self.path.resolve())
         if operation == "prepare":
             request["handoff"] = slot["handoff"]
         else:

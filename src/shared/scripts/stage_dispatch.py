@@ -157,6 +157,41 @@ def design_scope(request, saved, payload):
     return effective
 
 
+def inline_recovery_allocation(request, saved):
+    """Require the exact C-owned allocation transaction for inline recovery."""
+    if ('integration_recovery' not in saved['authorization'] or
+            saved.get('readiness') is not None or saved['role'] != 'execution-agent'):
+        return
+    recorded_path = (request.get('record') or {}).get('scope_checkpoint_path')
+    checkpoint_path = request.get('scope_checkpoint_path', recorded_path)
+    require(recorded_path is None or checkpoint_path == recorded_path,
+            'authority_changed', 'inline recovery checkpoint pin changed')
+    state = handoff.verify_inline_recovery_pin(
+        saved, saved['controller_ref'], saved['requirement_identity'],
+        checkpoint_path)
+    require(state['control'] == request['control'], 'authority_changed',
+            'allocation must use the original current Controller control port')
+    slots = [slot for slot in state.get('allocations', {}).values()
+             if slot.get('handoff') == saved and
+             slot.get('owner_ref') == state['control']['context']['carrier']['ref']]
+    require(len(slots) == 1, 'authority_missing',
+            'inline recovery requires its exact C-owned allocation')
+    slot = slots[0]
+    if request.get('operation') == 'prepare':
+        authorized = slot.get('record') is None and slot.get('transaction') == request
+    elif slot.get('transaction') is not None:
+        authorized = slot['transaction'] == request and slot.get('record') == request.get('record')
+    else:
+        # C clears a completed transaction after saving B's returned record.
+        # That immutable record supports readback; C serves completed replays.
+        authorized = (request.get('operation') is None and
+                      slot.get('record') == request.get('record') and
+                      (slot.get('result') or {}).get('record') == request.get('record') and
+                      slot['record']['status'] in {'received', 'accepted', 'not-created'})
+    require(authorized,
+            'authority_missing', 'inline recovery requires its exact C-owned allocation transaction')
+
+
 def prepared(request):
     entry.fields(request, {"protocol", "operation", "handoff", "control"}, {"scope_checkpoint_path"})
     saved = handoff.verify(request["handoff"],
@@ -180,9 +215,17 @@ def prepared(request):
     require(context["controller_ref"] == saved["controller_ref"], "identity_mismatch", "control owner differs")
     checkpoint_path = request.get('scope_checkpoint_path')
     if checkpoint_path is not None:
-        require(saved['stage'] >= 2 and saved['role'] != 'execution-agent',
-                'invalid_request', 'Controller checkpoint pin belongs to its stage carrier')
-        handoff.verify_stage_checkpoint_pin(saved, context, checkpoint_path)
+        if saved['role'] == 'execution-agent':
+            require(saved.get('readiness') is None and
+                    'integration_recovery' in saved['authorization'],
+                    'invalid_checkpoint', 'Execution Agent checkpoint pin belongs to inline final recovery')
+            inline_recovery_allocation(request, saved)
+        else:
+            require(saved['stage'] >= 2, 'invalid_request',
+                    'Controller checkpoint pin belongs to its stage carrier')
+            handoff.verify_stage_checkpoint_pin(saved, context, checkpoint_path)
+    elif saved['role'] == 'execution-agent' and 'integration_recovery' in saved['authorization']:
+        inline_recovery_allocation(request, saved)
     role, scope = saved["role"], saved["scope"]
     if saved["stage"] < 2:
         # User choice and attached entry authority are prepared/decided by the
@@ -287,6 +330,7 @@ def record_for(request):
     require(launch["input_digest"] == record["handoff"]["digest"], "identity_mismatch", "request belongs to another input")
     control.validate_context(request["control"]["context"])
     require(request["control"]["context"]["controller_ref"] == launch["controller_ref"], "identity_mismatch", "checkpoint owner changed")
+    inline_recovery_allocation(request, record['handoff'])
     if request["control"]["discussion"] is not None:
         envelope = request["control"]["discussion"]
         verify_discussion_port(envelope, record["handoff"])
@@ -427,7 +471,8 @@ def bind_discussion(port, record, receipt):
 
 
 def bound(request):
-    entry.fields(request, {"protocol", "operation", "record", "control", "receipt"})
+    entry.fields(request, {"protocol", "operation", "record", "control", "receipt"},
+                 {"scope_checkpoint_path"})
     record = record_for(request)
     require(not any(isinstance(receipt, dict) and receipt.get("event") == "existing-dispatcher"
                     for receipt in record["receipts"]),

@@ -1647,8 +1647,10 @@ class ProgressTests(transfer.StageTransferTests):
             slot = self.state()['allocations']['integrated-execution']
             self.assertEqual(slot['handoff']['controller_ref'], parent['controller_ref'])
             self.assertEqual(slot['handoff']['requirement_identity'], parent['requirement_identity'])
-            self.invoke('allocation', {'allocation_id': 'integrated-execution', 'operation': 'bind',
+            bound = self.invoke('allocation', {'allocation_id': 'integrated-execution', 'operation': 'bind',
                 'receipt': self.receipt(slot['record'], ref=executor)})
+            self.assertIsNotNone(bound['next_action'], bound)
+            self.assertEqual(bound['next_action']['result']['status'], 'bound', bound)
             slot = self.state()['allocations']['integrated-execution']
             self.invoke('allocation', {'allocation_id': 'integrated-execution', 'operation': 'receive',
                 'receipt': self.receipt(slot['record'], 'stopped', 'result', ref=executor),
@@ -1663,6 +1665,21 @@ class ProgressTests(transfer.StageTransferTests):
             accepted = self.invoke('allocation', {'allocation_id': 'integrated-execution', 'operation': 'accept',
                 'decision': {'reference': 'dispatcher:accept-integrated-execution'}})
             self.assertEqual(accepted['next_action']['result']['status'], 'accepted', accepted)
+            if parent.get('readiness') is None:
+                current = self.state()
+                completed = current['allocations']['integrated-execution']
+                self.assertIsNone(completed['transaction'])
+                self.assertEqual(transfer.dispatch.record_for({
+                    'record': completed['record'], 'control': current['control']}),
+                    transfer.handoff.unseal(completed['record']))
+                ready = next(receipt for receipt in completed['record']['receipts']
+                             if receipt['status'] == 'ready')
+                with self.assertRaises(transfer.entry.PreparationError) as error:
+                    transfer.dispatch.handle({'protocol': transfer.handoff.PROTOCOL,
+                        'operation': 'bind', 'record': completed['record'],
+                        'control': current['control'], 'receipt': ready,
+                        'scope_checkpoint_path': str(self.checkpoint.resolve())})
+                self.assertEqual(error.exception.code, 'authority_missing')
         self.assertEqual(progress.control_git.snapshot(self.flow), before)
 
     def final_recovery_chain(self, retain_docs=False, replay_host=False, publication_race=False):

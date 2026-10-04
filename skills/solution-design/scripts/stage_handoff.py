@@ -469,6 +469,61 @@ def current_readiness(readiness):
     return progress.read_scope_readiness(readiness)
 
 
+def verify_inline_recovery_pin(request, controller_ref, identity, checkpoint_path):
+    """Read the original C recovery and current inline authority, not a readiness claim."""
+    import workflow_progress as progress
+    require(isinstance(checkpoint_path, str), 'authority_missing',
+            'inline final recovery requires the original Controller checkpoint')
+    checkpoint = Path(checkpoint_path)
+    require(checkpoint.is_absolute() and str(checkpoint.resolve()) == checkpoint_path,
+            'invalid_checkpoint', 'canonical original Controller checkpoint required')
+    state = progress.read_record(checkpoint).get(progress.KEY)
+    require(isinstance(state, dict), 'authority_missing',
+            'original Controller recovery checkpoint is unavailable')
+    progress.validate_state(state)
+    recovery = request['authorization']['integration_recovery']
+    closure = unseal(recovery['closure'])
+    original = closure['predecessor']
+    current = state['control']['context']
+    current_progress = current.get('handoff_progress') or {}
+    dispatcher = state.get('dispatch') or {}
+    launch = dispatcher.get('request') or {}
+    carrier = current.get('carrier') or {}
+    source = current_progress.get('integration_source') or {}
+    retained = current_progress.get('integration_retained') or {}
+    matches = [prior for prior in state.get('history', [])
+               if prior.get('stage') == 3 and prior.get('accepted') == original]
+    require(len(matches) == 1 and state.get('stage') == 3 and
+            state.get('checkpoint_path') == checkpoint_path and
+            state.get('final_integration_recovery') == {
+                'reference': source.get('reference'), 'closure_handoff': recovery['closure']} and
+            state.get('handoff', {}).get('authorization', {}).get('integration_recovery') == recovery and
+            state.get('handoff', {}).get('role') == 'implementation-dispatcher' and
+            state['handoff']['controller_ref'] == controller_ref == current['controller_ref'] and
+            state['handoff']['requirement_identity'] == identity and
+            state['handoff']['binding'] == request['binding'] == current_progress.get('binding') and
+            state['handoff']['target'] == request['target'] and
+            state['handoff']['requirement'] == request['requirement'] and
+            state.get('scope_authority') == request.get('inline_authority') ==
+                current_progress.get('execution_authority') and
+            state['scope_authority'].get('kind') == 'inline' and
+            request['scope']['implementation_paths'] == current_progress.get('allowed_paths') and
+            set(state['handoff']['scope']['protected_paths']) <= set(request['scope']['protected_paths']) and
+            dispatcher.get('handoff') == state['handoff'] and
+            launch.get('attempt') == carrier.get('attempt') ==
+                matches[0].get('dispatch', {}).get('request', {}).get('attempt') and
+            launch.get('input_digest') == state['handoff']['digest'] and
+            carrier.get('ref') == matches[0].get('control', {}).get('context', {}).get('carrier', {}).get('ref') and
+            request['expected_entry']['actor']['role'] == 'implementation-dispatcher' and
+            carrier.get('ref') in {request['expected_entry']['actor'].get('thread_id'),
+                                   request['expected_entry']['actor'].get('actor_ref'),
+                                   'codex-thread:' + request['expected_entry']['actor'].get('thread_id', '')} and
+            source.get('snapshot_digest') == entry.digest(source.get('snapshot')) and
+            retained == {'commit': recovery['retained_commit'], 'paths': recovery['retained_paths']},
+            'authority_missing', 'inline allocation must retain the original captured C recovery')
+    return state
+
+
 def verify_stage_checkpoint_pin(saved, context, checkpoint_path):
     """Bind a B dispatch record to its original durable Controller checkpoint."""
     import workflow_progress as progress
@@ -698,8 +753,8 @@ def inherited_generated_outputs(request):
     return request.get("generated_outputs", {})
 
 
-def prepare(request):
-    return _prepare(request)[0]
+def prepare(request, *, checkpoint_path=None):
+    return _prepare(request, checkpoint_path=checkpoint_path)[0]
 
 
 def _prepare(request, *, checkpoint_path=None):
@@ -710,6 +765,10 @@ def _prepare(request, *, checkpoint_path=None):
     stage, role = request["stage"], request["role"]
     require(type(stage) is int and stage in ROLES and role in {ROLES[stage], "execution-agent" if stage == 3 else ROLES[stage]},
             "role_mismatch", "stage and role differ")
+    if checkpoint_path is not None and role == 'execution-agent':
+        require(request.get('readiness') is None and
+                'integration_recovery' in request['authorization'],
+                'invalid_checkpoint', 'Execution Agent checkpoint pin belongs to inline final recovery')
     current = refresh(request["entry"], request["expected_entry"], _binding_to_verify=request["binding"])
     require(current["entry"]["stage"] == stage, "role_mismatch", "entry must be prepared for the target stage")
     verify_discussion_binding(current, request["binding"])
@@ -808,9 +867,15 @@ def _prepare(request, *, checkpoint_path=None):
     authority = request["authorization"]
     entry.fields(authority, {"reference", "flow_mode", "scope_digest"}, {"phase", "control_plan_id", "integration_recovery"})
     if 'integration_recovery' in authority:
-        require(role == 'execution-agent' and request.get('readiness') is not None and
-                current_readiness(request['readiness'])['handoff']['authorization'].get('integration_recovery') ==
-                authority['integration_recovery'], 'authority_missing', 'only final recovery allocations inherit closure authority')
+        require(role == 'execution-agent', 'authority_missing',
+                'only final recovery allocations inherit closure authority')
+        if request.get('readiness') is not None:
+            require(current_readiness(request['readiness'])['handoff']['authorization'].get('integration_recovery') ==
+                    authority['integration_recovery'], 'authority_missing',
+                    'only final recovery allocations inherit closure authority')
+        else:
+            verify_inline_recovery_pin(request, current['actor']['controller_ref'], identity,
+                                       checkpoint_path)
     if "control_plan_id" in authority:
         require(stage < 2, "invalid_request", "control_plan_id selects a dedicated plan only")
         entry.nonempty(authority["control_plan_id"])

@@ -881,6 +881,45 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         self.assertEqual(current["integration_retained"]["paths"], [])
         self.assertIsNotNone(current["integration_source"])
         with patch.dict(case.settings, thread_id="dispatcher-runtime"), patch.dict(case.request["host"]):
+            direct = case.inherited_execution_input()
+            direct["scope"]["owned_paths"] = copy.deepcopy(current["integration_source"]["pending_paths"])
+            direct["manifest_baseline"] = case.state()["scope_authority"]["scope"]["baseline"]
+            direct["authorization"]["scope_digest"] = entry.digest(direct["scope"])
+            direct["semantic"].update(adopt_paths=copy.deepcopy(direct["scope"]["owned_paths"]),
+                adoption_snapshot_digest=current["integration_source"]["snapshot_digest"])
+            with self.assertRaises(entry.PreparationError) as error:
+                handoff.prepare(direct)
+            self.assertEqual(error.exception.code, 'authority_missing', str(error.exception))
+            pinned = handoff.prepare(direct, checkpoint_path=str(case.checkpoint.resolve()))
+            with self.assertRaises(entry.PreparationError) as error:
+                dispatch.handle({'protocol': handoff.PROTOCOL, 'operation': 'prepare',
+                    'handoff': pinned, 'control': copy.deepcopy(case.state()['control']),
+                    'scope_checkpoint_path': str(case.checkpoint.resolve())})
+            self.assertEqual(error.exception.code, 'authority_missing')
+            forged = case.checkpoint.with_name('forged-inline-recovery.json')
+            forged.write_bytes(case.checkpoint.read_bytes())
+            with self.assertRaises(entry.PreparationError) as error:
+                handoff.prepare(direct, checkpoint_path=str(forged.resolve()))
+            self.assertEqual(error.exception.code, 'authority_missing')
+            checkpoint_bytes = case.checkpoint.read_bytes()
+            for field in ('attempt', 'binding', 'authority', 'snapshot'):
+                outer = progress.read_record(case.checkpoint)
+                state = outer[progress.KEY]
+                if field == 'attempt':
+                    state['control']['context']['carrier']['attempt'] = '0' * 64
+                elif field == 'binding':
+                    state['handoff']['binding']['branch'] = 'codex/other-flow'
+                elif field == 'authority':
+                    state['scope_authority']['revision'] += 1
+                else:
+                    state['control']['context']['handoff_progress']['integration_source']['snapshot_digest'] = '0' * 64
+                progress.atomic_save(case.checkpoint, outer)
+                try:
+                    with self.subTest(stale_pin=field), self.assertRaises((entry.PreparationError, control.ControlError)):
+                        handoff.prepare(direct, checkpoint_path=str(case.checkpoint.resolve()))
+                finally:
+                    case.checkpoint.write_bytes(checkpoint_bytes)
+        with patch.dict(case.settings, thread_id="dispatcher-runtime"), patch.dict(case.request["host"]):
             execution = case.inherited_execution_input()
             execution["scope"]["owned_paths"] = copy.deepcopy(current["integration_source"]["pending_paths"])
             execution["authorization"]["scope_digest"] = entry.digest(execution["scope"])
