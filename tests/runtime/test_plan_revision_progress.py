@@ -1807,6 +1807,9 @@ class PlanRevisionProgressTests(unittest.TestCase):
         old_manifest = authority["scope"]["downstream"]["manifest"]
         manifest = [item for item in old_manifest if item["path"] != "later.py"]
         report = self.report(flow)
+        if use_new_id:
+            report['revision_id'] = 'internal-9'
+        rejected_id = report['revision_id']
         report["manifest"] = manifest
         report["report"].update(step_ids=["FP1-02"],
                                 dependency_impact=["FP1-04", "FP1-05"],
@@ -1872,6 +1875,16 @@ class PlanRevisionProgressTests(unittest.TestCase):
             self.assertEqual(conflict.exception.code, "plan_revision_conflict")
             self.assertEqual(flow.checkpoint.read_bytes(), before_conflict)
             self.assertEqual(flow.flow_git("rev-parse", "HEAD"), before)
+        if use_new_id:
+            another_report = copy.deepcopy(report)
+            another_report['revision_id'] = 'internal-8'
+            with self.assertRaises(progress.entry.PreparationError) as another_rejection:
+                flow.invoke('prepare-plan-revision', another_report)
+            self.assertEqual(another_rejection.exception.code, 'invalid_plan_revision')
+            another = flow.state()['plan_revision_history']['internal-8']
+            self.assertEqual(another['state'], 'rejected')
+            self.assertEqual(another['old_authority'], authority)
+            self.assertEqual(another['rejection']['stop'], rejected['rejection']['stop'])
         resumed = flow.invoke("advance")
         self.assertEqual(resumed["next_action"]["operation"], "inspect-host-state", resumed)
         repeat = flow.invoke("advance")
@@ -1940,7 +1953,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         retry_transaction = flow.state()["plan_revision_transaction"]
         self.assertEqual(retry_transaction["state"], "stopping")
         if use_new_id:
-            self.assertEqual(flow.state()["plan_revision_history"]["internal-1"], rejected)
+            self.assertEqual(flow.state()["plan_revision_history"][rejected_id], rejected)
             self.assertNotIn("prior_rejections", retry_transaction)
         else:
             self.assertEqual(retry_transaction["prior_rejections"], [rejected["rejection"]])
@@ -1966,9 +1979,9 @@ class PlanRevisionProgressTests(unittest.TestCase):
             "planning_commit": flow.flow_git("rev-parse", "HEAD")})
         self.assertEqual(activated["next_action"]["operation"], "plan-revision-activated", activated)
         if use_new_id:
-            self.assertEqual(flow.state()["plan_revision_history"]["internal-1"], rejected)
+            self.assertEqual(flow.state()["plan_revision_history"][rejected_id], rejected)
             self.assertEqual(flow.state()["plan_revision_transaction"]["state"], "activated")
-            old_reconcile = flow.invoke("reconcile-plan-revision", {"revision_id": "internal-1"})
+            old_reconcile = flow.invoke("reconcile-plan-revision", {"revision_id": rejected_id})
             self.assertEqual(old_reconcile["next_action"]["operation"], "plan-revision-rejected")
         self.assertNotIn("later.py", flow.state()["scope_authority"]["scope"]["implementation_paths"])
         self.assertNotIn("later.py", flow.state()["control"]["context"]["handoff_progress"]["allowed_paths"])
@@ -2055,14 +2068,18 @@ class PlanRevisionProgressTests(unittest.TestCase):
             return observation
         with patch.object(flow, 'observation', side_effect=with_historical_agents):
             if use_new_id:
-                with self.assertRaises(progress.entry.PreparationError) as render_error:
-                    flow.accept_current(payload, 'native:dispatcher', fixture_execution=False)
-                self.assertEqual(render_error.exception.code, 'handoff_not_ready')
-                self.assertIn('Stage-3 plan revision lost its original lineage', str(render_error.exception))
+                with patch.object(progress.handoff, 'render', side_effect=RuntimeError('lost accepted response')):
+                    with self.assertRaisesRegex(RuntimeError, 'lost accepted response'):
+                        flow.accept_current(payload, 'native:dispatcher', fixture_execution=False)
                 self.assertEqual(flow.state()['status'], 'accepted')
             else:
                 accepted = flow.accept_current(payload, 'native:dispatcher', fixture_execution=False)
                 self.assertEqual(accepted['status'], 'accepted', accepted)
+        if use_new_id:
+            replayed = flow.invoke('inspect')
+            self.assertEqual(replayed['status'], 'accepted')
+            self.assertEqual(replayed['completion'], flow.invoke('inspect')['completion'])
+            self.assertEqual(replayed['completion']['payload']['candidate_commit'], candidate)
         predecessor = flow.state()['accepted']
         current_scope = flow.state()['scope_authority']['scope']
         closure = flow.input_for(4, predecessor)
@@ -2080,11 +2097,35 @@ class PlanRevisionProgressTests(unittest.TestCase):
         with self.assertRaises(progress.entry.PreparationError):
             progress.handoff.prepare(stale, checkpoint_path=str(flow.checkpoint))
         if use_new_id:
-            with self.assertRaises(progress.entry.PreparationError) as lineage:
-                progress.handoff.prepare(closure, checkpoint_path=str(flow.checkpoint))
-            self.assertEqual(lineage.exception.code, "handoff_not_ready")
-            self.assertIn("Stage-3 plan revision lost its original lineage", str(lineage.exception))
-            return
+            original_checkpoint = progress.read_record(flow.checkpoint)
+            for mutation in ('unknown-state', 'wrong-old-authority', 'reordered-history',
+                             'wrong-rejection-evidence'):
+                changed = copy.deepcopy(original_checkpoint)
+                rejected_entry = changed[progress.KEY]['plan_revision_history'][rejected_id]
+                if mutation == 'unknown-state':
+                    rejected_entry['state'] = 'unknown'
+                elif mutation == 'wrong-old-authority':
+                    rejected_entry['old_authority']['scope']['implementation_paths'] = ['forged.py']
+                elif mutation == 'reordered-history':
+                    rejected_entry['old_authority'] = copy.deepcopy(
+                        changed[progress.KEY]['plan_revision_transaction']['proposed_authority'])
+                    rejected_entry['rejection']['result']['retired_paths'] = ['impl.py']
+                    rejected_entry['rejection']['result']['message'] = (
+                        'retired implementation paths still differ from baseline: impl.py')
+                if mutation in ('wrong-old-authority', 'reordered-history'):
+                    rejected_entry['rejection']['result']['evidence_digest'] = progress.entry.digest({
+                        'input_digest': rejected_entry['input_digest'],
+                        'old_authority_digest': progress.entry.digest(rejected_entry['old_authority']),
+                        'snapshot': rejected_entry['rejection']['snapshot'],
+                        'stop': rejected_entry['rejection']['stop'],
+                        'accepted_executions': rejected_entry['rejection']['accepted_executions'],
+                        'retired_paths': rejected_entry['rejection']['result']['retired_paths']})
+                elif mutation == 'wrong-rejection-evidence':
+                    rejected_entry['rejection']['result']['message'] = 'forged rejection'
+                progress.atomic_save(flow.checkpoint, changed)
+                with self.subTest(mutation=mutation), self.assertRaises(progress.entry.PreparationError):
+                    flow.invoke('inspect')
+                progress.atomic_save(flow.checkpoint, original_checkpoint)
         prepared_closure = progress.handoff.prepare(closure, checkpoint_path=str(flow.checkpoint))
         self.assertEqual(progress.handoff.verify(prepared_closure,
             checkpoint_path=str(flow.checkpoint)), prepared_closure)
@@ -2098,7 +2139,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
     def test_retired_helper_with_accepted_bytes_cannot_receive_planning_release(self):
         self.retired_helper_revision_scenario()
 
-    def test_rejected_revision_id_blocks_stage4_after_different_id_activates(self):
+    def test_rejected_revision_id_remains_audit_after_different_id_activates(self):
         self.retired_helper_revision_scenario(use_new_id=True)
 
     def test_retired_helper_with_unaccepted_bytes_cannot_receive_planning_release(self):

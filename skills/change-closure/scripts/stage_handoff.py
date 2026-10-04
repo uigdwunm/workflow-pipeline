@@ -632,12 +632,21 @@ def accepted_stage3_progress(predecessor, checkpoint_path=None):
             "Stage-3 launch lacks its original authority")
     lineage = initial
     revisions = [*state.get("plan_revision_history", {}).values()]
-    if state.get("plan_revision_transaction") is not None:
-        revisions.append(state["plan_revision_transaction"])
-    for revision in sorted(revisions, key=lambda item: item["old_authority"]["revision"]):
-        require(revision["state"] == "activated" and revision["old_authority"] == lineage,
+    transaction = state.get("plan_revision_transaction")
+    if transaction is not None:
+        require(all(revision["old_authority"]["revision"] <= transaction["old_authority"]["revision"]
+                    for revision in revisions), "handoff_not_ready",
+                "Stage-3 plan revision history follows its current transaction")
+        revisions.append(transaction)
+    for revision in sorted(revisions, key=lambda item: (
+            item["old_authority"]["revision"], item["state"] == "activated")):
+        require(revision["old_authority"] == lineage,
                 "handoff_not_ready", "Stage-3 plan revision lost its original lineage")
-        lineage = revision["proposed_authority"]
+        if revision["state"] == "activated":
+            lineage = revision["proposed_authority"]
+        else:
+            require(revision["state"] == "rejected", "handoff_not_ready",
+                    "Stage-3 plan revision lacks a final Controller decision")
     require(state.get("status") == "accepted" and
             (state.get("dispatch") or {}).get("acceptance") == predecessor and
             state.get("consumed_readiness") == readiness and
