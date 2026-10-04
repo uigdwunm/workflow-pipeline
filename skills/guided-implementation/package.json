@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "7b3ee5cfb204130ac335141ecdd5c7193a63ff21eef3a5d2d405ac5b01150b73",
+  "bundle_digest": "690affba5088f9f19ba3509f2090df4a16663cb417409026d50929af001effd1",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 11,
@@ -203,7 +203,7 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "5b15791c1ef7f6e3644e3e8e93c7af2e04d3cd2e825a506faedc8a9caade99f7"
+      "sha256": "657d999058cc66cfb2ebfd1594f0f5b4c2ed0caa66874798d35e71bfe5d079ef"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",

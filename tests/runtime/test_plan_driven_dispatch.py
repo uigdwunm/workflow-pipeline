@@ -6,6 +6,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import test_plan_revision_progress as revision_fixture
@@ -791,6 +792,103 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         prepared = case.invoke("allocation", {"allocation_id": "inline-group", "operation": "prepare",
             "handoff": execution})
         self.assertEqual(prepared["next_action"]["operation"], "invoke-host", prepared)
+
+    def test_inline_final_integration_recovery_keeps_protected_source_locked(self):
+        case = progress_fixture.ProgressTests(methodName="runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        request = case.input_for(3)
+        request["semantic"]["inline_plan"] = inline_plan(case.requirement_path)
+        request.pop("inline_authority", None)
+        case.context = case.context_for(3)
+        case.begin("continuous", request)
+        case.invoke("observe", case.observation(ref="native:dispatcher"))
+        with patch.dict(case.settings), patch.dict(case.request["host"]):
+            execution = case.execution_input()
+            allocated = case.invoke("allocation", {"allocation_id": "original-inline",
+                "operation": "prepare", "handoff": execution})
+            self.assertEqual(allocated["next_action"]["operation"], "invoke-host", allocated)
+            slot = case.state()["allocations"]["original-inline"]
+            bound = case.invoke("allocation", {"allocation_id": "original-inline",
+                "operation": "bind", "receipt": case.receipt(slot["record"], ref="native:inline-agent")})
+            content = b"def run():\n    return 'original'\n"
+            (case.flow / "impl.py").write_bytes(content)
+            case.invoke("allocation", {"allocation_id": "original-inline", "operation": "receive",
+                "receipt": case.receipt(slot["record"], "stopped", "result", ref="native:inline-agent"),
+                "result": {"delivery_id": "original-inline", "status": "completed", "payload": {
+                    "changed_paths": ["impl.py"], "file_hashes": {"impl.py": hashlib.sha256(content).hexdigest()},
+                    "tests": ["inline behavior passed"],
+                    "write_release": bound["next_action"]["result"]["write_release"],
+                    "plan_refs": execution["semantic"]["plan_refs"],
+                    "plan_authority": case.state()["control"]["context"]["handoff_progress"]["plan_authority"]}}})
+            accepted = case.invoke("allocation", {"allocation_id": "original-inline",
+                "operation": "accept", "decision": {"reference": "dispatcher:inline"}})
+            self.assertEqual(accepted["next_action"]["result"]["status"], "accepted")
+        case.flow_git("add", "impl.py")
+        case.flow_git("commit", "-qm", "accepted inline implementation")
+        candidate = case.flow_git("rev-parse", "HEAD")
+        payload = {"artifacts": ["impl.py"], "checks": ["inline behavior passed"],
+            "candidate_commit": candidate,
+            "review": {axis: {"candidate": candidate, "reviewer_ref": axis, "status": "accepted"}
+                       for axis in ("standards", "spec")},
+            "verification": {"candidate": candidate}}
+        original = case.accept_current(payload, "native:dispatcher", fixture_execution=False)
+        self.assertEqual(original["status"], "accepted", original)
+        predecessor = case.state()["accepted"]
+        (case.root / "other-task.md").write_text("parallel target work\n")
+        case.git("add", "other-task.md")
+        case.git("commit", "-qm", "parallel target work")
+        case.context = case.context_for(4)
+        case.begin("continuous", case.input_for(4, predecessor))
+        case.invoke("observe", case.observation(ref="native:closure"))
+        observed = case.observation("stopped", "result", ref="native:closure")
+        observed["closure"] = {"ref": "native:closure", "candidate": candidate, "merge": None,
+            "ancestor_verified": False, "changed_paths": [], "binding": case.binding, "checks": [],
+            "worktree_removed": False, "branch_removed": False, "disposition": "deleted",
+            "disposition_verified": False, "implementation_problem": "target advanced"}
+        self.assertEqual(case.invoke("observe", observed)["next_action"]["operation"],
+                         "implementation-recovery")
+        recovered = case.invoke("implementation-recovery", {"reference": "controller:inline-race",
+            "closure_digest": case.state()["handoff"]["digest"]})
+        self.assertEqual(case.state()["stage"], 3, recovered)
+        case.invoke("observe", case.observation("idle", "result", ref="native:dispatcher"))
+        case.flow_git("merge", "--no-edit", "main")
+        integrated = case.flow_git("rev-parse", "HEAD")
+        case.invoke("observe", case.observation("stopped", "result", ref="native:dispatcher"))
+        captured = case.invoke("control", {"action": "capture-integration",
+            "evidence": {"reference": "controller:inline-race"},
+            "receipt": {"controller_ref": "task", "reference": "controller:inline-race"}})
+        self.assertNotEqual(captured["status"], "blocked", captured)
+        current = case.state()["control"]["context"]["handoff_progress"]
+        self.assertEqual(current["integration_retained"]["paths"], [])
+        self.assertIsNotNone(current["integration_source"])
+        with patch.dict(case.settings, thread_id="dispatcher-runtime"), patch.dict(case.request["host"]):
+            execution = case.inherited_execution_input()
+            execution["scope"]["owned_paths"] = copy.deepcopy(current["integration_source"]["pending_paths"])
+            execution["authorization"]["scope_digest"] = entry.digest(execution["scope"])
+            execution["semantic"].update(adopt_paths=copy.deepcopy(execution["scope"]["owned_paths"]),
+                adoption_snapshot_digest=current["integration_source"]["snapshot_digest"])
+            self.assertIsNone(execution.get("readiness"))
+            requirement = case.flow / case.requirement_path
+            original_requirement = requirement.read_bytes()
+            checkpoint = case.checkpoint.read_bytes()
+            requirement.write_bytes(original_requirement + b"unauthorized inline source change\n")
+            try:
+                rejected = case.invoke("allocation", {"allocation_id": "tampered-inline",
+                    "operation": "prepare", "handoff": execution})
+                self.assertEqual(rejected["status"], "blocked", rejected)
+                self.assertNotIn("write_release", rejected.get("next_action") or {})
+            finally:
+                requirement.write_bytes(original_requirement)
+                case.checkpoint.write_bytes(checkpoint)
+        case.revalidate_integrated_execution()
+        payload["candidate_commit"] = integrated
+        payload["review"] = {axis: {"candidate": integrated,
+            "reviewer_ref": "integrated-" + axis, "status": "accepted"}
+            for axis in ("standards", "spec")}
+        replaced = case.accept_current(payload, "native:dispatcher", fixture_execution=False)
+        self.assertEqual(replaced["status"], "accepted", replaced)
+        self.assertNotEqual(case.state()["accepted"]["digest"], predecessor["digest"])
 
     def test_inline_revision_switches_current_plan_without_document_commit(self):
         case = progress_fixture.ProgressTests(methodName="runTest")

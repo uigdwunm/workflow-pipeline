@@ -795,11 +795,11 @@ class PlanRevisionProgressTests(unittest.TestCase):
     def final_integration_snapshot(self, *, ticket):
         flow = self.new_active_flow(read_dependency=True, ticket=ticket)
         controller_thread = flow.state()["handoff"]["expected_entry"]["actor"]["thread_id"]
-        ticket = flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0]
+        ticket_record = flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0]
         for identity, relative in (("FP1-01", "impl.py"), ("FP1-02", "later.py"),
                                    ("FP1-03", "independent.py"),
                                    ("FP1-04", "downstream.py"), ("FP1-05", "reader.py")):
-            self.accept_planned_step(flow, ticket, identity, relative,
+            self.accept_planned_step(flow, ticket_record, identity, relative,
                 ("def " + relative.removesuffix(".py") + "():\n    return 1\n").encode(),
                 "accepted-" + identity)
         report = self.report(flow)
@@ -824,7 +824,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.invoke("commit-plan-revision", {"revision_id": report["revision_id"],
             "controller_ref": "task", "write_release": prepared["next_action"]["write_release"],
             "planning_commit": flow.flow_git("rev-parse", "HEAD")})
-        ticket = flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0]
+        ticket_record = flow.state()["scope_authority"]["execution_plan"]["catalog"]["tickets"][0]
         progress_before = flow.state()["control"]["context"]["handoff_progress"]
         self.assertTrue(progress_before["carried_results"])
         self.assertTrue(progress_before["revalidation_source"]["pending_paths"])
@@ -846,7 +846,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
 
         for identity, relative in (("FP1-02", "later.py"),
                                    ("FP1-04", "downstream.py"), ("FP1-05", "reader.py")):
-            self.accept_planned_step(flow, ticket, identity, relative,
+            self.accept_planned_step(flow, ticket_record, identity, relative,
                 ("def " + relative.removesuffix(".py") + "():\n    return 2\n").encode(),
                 "revalidated-" + identity)
 
@@ -976,8 +976,58 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(source["snapshot"]["files"]["impl.py"],
                          progress.control_git.file_fingerprint(flow.flow, "impl.py"))
 
+        if ticket:
+            with patch.dict(flow.settings), patch.dict(flow.request["host"]):
+                protected_input = flow.execution_input()
+                protected_input["semantic"].update(
+                    adopt_paths=["impl.py"], adoption_snapshot_digest=source["snapshot_digest"])
+                protected_handoff = progress.handoff.handle(protected_input)
+            current_control = flow.state()["control"]["context"]
+
+            def reject_protected(control_context=current_control, handoff=protected_handoff):
+                with self.assertRaises((progress.entry.PreparationError,
+                                        progress.control_git.ControlError)):
+                    progress.dispatch.handle({"protocol": progress.handoff.PROTOCOL,
+                        "operation": "prepare", "handoff": handoff,
+                        "control": {"context": control_context, "discussion": None}})
+
+            forged = copy.deepcopy(current_control)
+            forged["handoff_progress"]["integration_retained"]["commit"] = integrated_candidate
+            forged["handoff_progress"]["integration_candidate"] = integrated_candidate
+            reject_protected(forged)
+            original_ticket = planning.read_bytes()
+            planning.write_bytes(original_ticket + b"unactivated planning commit\n")
+            flow.flow_git("add", planning_path)
+            flow.flow_git("commit", "-qm", "unactivated planning change")
+            try:
+                reject_protected()
+            finally:
+                flow.flow_git("reset", "--hard", integrated_candidate)
+            planning.write_bytes(original_ticket + b"unapproved public or plan bytes\n")
+            try:
+                reject_protected()
+            finally:
+                planning.write_bytes(original_ticket)
+            planning.chmod(0o755)
+            try:
+                reject_protected()
+            finally:
+                planning.chmod(0o644)
+            planning.write_bytes(original_ticket + b"index-only planning bytes\n")
+            flow.flow_git("add", planning_path)
+            planning.write_bytes(original_ticket)
+            try:
+                reject_protected()
+            finally:
+                flow.flow_git("reset", "-q", "--", planning_path)
+            requirement.write_bytes(original_requirement + b"unapproved requirement bytes\n")
+            try:
+                reject_protected()
+            finally:
+                requirement.write_bytes(original_requirement)
+
         def reaccept(identity, relative):
-            step = next(item for item in ticket["plan"]["steps"] if item["id"] == identity)
+            step = next(item for item in ticket_record["plan"]["steps"] if item["id"] == identity)
             with patch.dict(flow.settings), patch.dict(flow.request["host"]):
                 execution = flow.execution_input()
                 execution["scope"]["owned_paths"] = [relative]
@@ -985,7 +1035,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 execution["authorization"]["scope_digest"] = fixture.fixture.transfer.entry.digest(
                     execution["scope"])
                 execution["semantic"].update(
-                    plan_refs=[progress.execution_plan.step_ref(ticket, step)],
+                    plan_refs=[progress.execution_plan.step_ref(ticket_record, step)],
                     adopt_paths=[relative], adoption_snapshot_digest=source["snapshot_digest"])
                 allocation_id = "integrated-" + identity
                 prepared = flow.invoke("allocation", {"allocation_id": allocation_id,

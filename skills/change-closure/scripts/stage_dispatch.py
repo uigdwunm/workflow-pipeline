@@ -33,6 +33,17 @@ def verify_discussion_port(envelope, saved):
             "discussion_identity_conflict", "control envelope differs from pinned discussion project")
 
 
+def protected_index_matches_head(repository, relative):
+    tree = control_git.git(repository, 'ls-tree', '-z', 'HEAD', '--', relative)
+    index = control_git.git(repository, 'ls-files', '--stage', '-v', '-z', '--', relative)
+    if not tree:
+        return not index
+    header, separator, name = tree.partition(b'\t')
+    fields = header.split(b' ')
+    return (separator and name == relative.encode() + b'\0' and len(fields) == 3 and
+            index == b'H ' + fields[0] + b' ' + fields[2] + b' 0\t' + name)
+
+
 def checkpoint(port, request, action, evidence, *, checkpoint_path=None):
     """Apply the existing authority, never a transport-record shadow ledger.
 
@@ -77,10 +88,38 @@ their exact idempotency key and revisions must be retained on an unknown result.
             handoff.ancestor(repository, authority_base, baseline)
             authority = request.get('readiness', {}).get('scope_authority')
             protected_commit = authority['candidate_commit'] if authority is not None else authority_base
+            repository_path = Path(repository)
+            integration = progress.get('integration_source')
+            approved = set()
+            if integration is not None:
+                require(progress.get('integration_retained') is not None,
+                        'source_changed', 'captured integration lacks its retained closure authority')
+                if request.get('readiness') is not None:
+                    import workflow_progress
+                    checkpoint_state = workflow_progress.read_record(
+                        Path(request['readiness']['checkpoint_path'])).get(workflow_progress.KEY)
+                    require(checkpoint_state is not None and
+                            checkpoint_state['control']['context'] == context,
+                            'authority_changed', 'captured integration differs from the current Controller checkpoint')
+                control_git.git(repository_path, 'merge-base', '--is-ancestor',
+                                integration['snapshot']['head'], baseline)
+                verified = (control_git.verified_planning_paths(repository_path, progress) |
+                            control_git.retained_closure_paths(repository_path, progress))
+                # Only the original C readiness pin can authorize a changed
+                # protected document. Inline runs keep their original byte lock.
+                if request.get('readiness') is not None:
+                    approved = verified
             for relative in progress['protected_paths']:
-                original = control_git.committed_fingerprint(Path(repository), protected_commit, relative)
-                require(control_git.committed_fingerprint(Path(repository), baseline, relative) == original and
-                        control_git.file_fingerprint(Path(repository), relative) == original,
+                original = control_git.committed_fingerprint(repository_path, protected_commit, relative)
+                expected = (integration['snapshot']['files'][relative]
+                            if integration is not None and relative in approved else original)
+                require((integration is None or
+                         integration['snapshot']['files'][relative] == expected and
+                         control_git.committed_fingerprint(repository_path,
+                             integration['snapshot']['head'], relative) == expected) and
+                        control_git.committed_fingerprint(repository_path, baseline, relative) == expected and
+                        control_git.file_fingerprint(repository_path, relative) == expected and
+                        (integration is None or protected_index_matches_head(repository_path, relative)),
                         'source_changed', 'allocation cannot move or change a protected source')
             # scope.baseline is this execution's current-HEAD snapshot. The
             # controller's frozen scope base remains the Git authority boundary.
