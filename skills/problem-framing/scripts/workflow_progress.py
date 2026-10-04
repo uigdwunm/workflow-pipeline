@@ -518,7 +518,7 @@ def validate_state(state):
         seen = set()
         for transaction in transactions:
             require(isinstance(transaction, dict) and transaction.get("state") in
-                    {"stopping", "prepared", "planning-committed", "activated"} and
+                    {"stopping", "prepared", "planning-committed", "activated", "rejected"} and
                     isinstance(transaction.get("input"), dict) and
                     transaction.get("input_digest") == entry.digest(transaction["input"]) and
                     isinstance(transaction.get("old_authority"), dict),
@@ -527,7 +527,42 @@ def validate_state(state):
             require(isinstance(revision_id, str) and revision_id and revision_id not in seen,
                     "invalid_checkpoint", "duplicate plan revision identity")
             seen.add(revision_id)
-            if transaction["state"] != "stopping":
+            require(isinstance(transaction.get("prior_rejections", []), list),
+                    "invalid_checkpoint", "plan revision rejection history changed")
+            rejections = [*transaction.get("prior_rejections", [])]
+            if transaction["state"] == "rejected":
+                rejections.append(transaction.get("rejection"))
+                require("snapshot" not in transaction and "write_release" not in transaction and
+                        "commit_input" not in transaction, "invalid_checkpoint",
+                        "rejected revision cannot hold a planning release")
+            for rejection in rejections:
+                require(isinstance(rejection, dict) and isinstance(rejection.get("snapshot"), dict) and
+                        isinstance(rejection.get("stop"), dict) and
+                        isinstance(rejection.get("accepted_executions"), list) and
+                        all(isinstance(identity, str) for identity in rejection["accepted_executions"]) and
+                        rejection["accepted_executions"] == sorted(set(rejection["accepted_executions"])) and
+                        isinstance(rejection["stop"].get("receipt"), dict) and
+                        rejection["stop"].get("receipt", {}).get("status") == "stopped" and
+                        isinstance(rejection.get("result"), dict) and
+                        set(rejection["result"]) == {"code", "message", "retired_paths", "evidence_digest"} and
+                        rejection["result"].get("code") == "invalid_plan_revision" and
+                        isinstance(rejection["result"].get("retired_paths"), list) and
+                        bool(rejection["result"]["retired_paths"]) and
+                        all(isinstance(relative, str) for relative in rejection["result"]["retired_paths"]) and
+                        rejection["result"]["retired_paths"] == sorted(set(rejection["result"]["retired_paths"])) and
+                        rejection["result"]["message"] ==
+                        "retired implementation paths still differ from baseline: " +
+                        ", ".join(rejection["result"]["retired_paths"]) and
+                        set(rejection["result"]["retired_paths"]) <=
+                        set(transaction["old_authority"]["scope"]["implementation_paths"]) and
+                        rejection["result"].get("evidence_digest") == entry.digest({
+                            "input_digest": transaction["input_digest"],
+                            "old_authority_digest": entry.digest(transaction["old_authority"]),
+                            "snapshot": rejection["snapshot"], "stop": rejection["stop"],
+                            "accepted_executions": rejection["accepted_executions"],
+                            "retired_paths": rejection["result"]["retired_paths"]}),
+                        "invalid_checkpoint", "plan revision rejection evidence changed")
+            if transaction["state"] not in {"stopping", "rejected"}:
                 require(isinstance(transaction.get("snapshot"), dict) and
                         isinstance(transaction["input"].get("controller_ref"), str) and
                         isinstance(transaction["input"].get("planning_paths"), list),
@@ -552,9 +587,9 @@ def validate_state(state):
             if transaction["state"] == "activated":
                 require(transaction.get("control_result", {}).get("evidence", {}).get("revision_id") == revision_id,
                         "invalid_checkpoint", "activated control receipt changed")
-        require(all(item.get("state") == "activated" and key == item["input"]["revision_id"]
+        require(all(item.get("state") in {"activated", "rejected"} and key == item["input"]["revision_id"]
                     for key, item in state.get("plan_revision_history", {}).items()),
-                "invalid_checkpoint", "historical revision cannot reopen")
+                "invalid_checkpoint", "historical revision identity changed")
     return state
 
 
@@ -2252,6 +2287,87 @@ class Progress:
         self.save()
         return _view(s, {"operation": "scope-revision-sealed", "authority": s["scope_authority"]})
 
+    def rejected_plan_revision(self, transaction):
+        return _view(self.state, {"operation": "plan-revision-rejected",
+            "revision_id": transaction["input"]["revision_id"],
+            "result": copy.deepcopy(transaction["rejection"]["result"])}, acknowledged=True)
+
+    def plan_revision_path_changes(self, repository, start, end, relative):
+        try:
+            control_git.git(repository, "merge-base", "--is-ancestor", start, end)
+            commits = control_git.git(repository, "rev-list", "--first-parent", "--reverse",
+                                      start + ".." + end).decode().splitlines()
+            previous_commit = start
+            previous = control_git.committed_fingerprint(repository, start, relative)
+            changes = []
+            for commit in commits:
+                parents = control_git.git(repository, "rev-list", "--parents", "-n", "1", commit).decode().split()
+                if parents != [commit, previous_commit]:
+                    return None
+                current = control_git.committed_fingerprint(repository, commit, relative)
+                if current != previous:
+                    changes.append(current)
+                previous_commit, previous = commit, current
+            return changes if previous_commit == end else None
+        except control.ControlError:
+            return None
+
+    def plan_revision_retry_ready(self, transaction):
+        s = self.state
+        host = s["host"]
+        proof = host.get("proof") or {}
+        if (s["status"] not in {"active", "blocked"} or
+                (s["status"] == "blocked" and
+                 (s.get("error") or {}).get("code") != "business_result_missing") or
+                self.stop_intent() is not None or
+                s.get("transport_loss") is not None or s.get("business_block") is not None or
+                s["scope_authority"] != transaction["old_authority"] or
+                host["status"] not in {"idle", "turn-completed"} or
+                proof.get("generation") != host["generation"] or
+                proof.get("receipt", {}).get("ref") != self.bound_ref() or
+                proof.get("receipt", {}).get("status") not in {"idle", "turn-completed"} or
+                proof.get("event_id") == transaction["rejection"]["stop"].get("event_id") or
+                self.unresolved_host_actions() or
+                self.unresolved_control_transactions() or s["transaction"] is not None):
+            return False
+        repository = Path(s["handoff"]["binding"]["worktree"])
+        head = control_git.snapshot(repository)["head"]
+        checkpoint = s["control"]["context"]["handoff_progress"]
+        baseline = checkpoint["git_baseline_commit"]
+        rejection = transaction["rejection"]
+        rejected_head = rejection["snapshot"]["head"]
+        previously_accepted = set(rejection["accepted_executions"])
+        for relative in rejection["result"]["retired_paths"]:
+            expected = control_git.committed_fingerprint(repository, baseline, relative)
+            if (control_git.file_fingerprint(repository, relative) != expected or
+                    control_git.committed_fingerprint(repository, head, relative) != expected or
+                    control_git.git(repository, "status", "--porcelain", "-z", "--", relative)):
+                return False
+            cleaned = False
+            for execution in checkpoint["executions"]:
+                if (execution["state"] != "accepted" or
+                        execution["allocation_digest"] in previously_accepted or
+                        execution.get("plan_authority") != checkpoint["plan_authority"] or
+                        relative not in execution["paths"] or
+                        execution.get("git_snapshot", {}).get("files", {}).get(relative) !=
+                        rejection["snapshot"]["files"][relative] or
+                        relative not in execution.get("git_result_snapshot", {}) or
+                        execution.get("git_result_snapshot", {}).get(relative) != expected):
+                    continue
+                allocation_head = execution["git_snapshot"]["head"]
+                before = self.plan_revision_path_changes(repository, rejected_head,
+                                                         allocation_head, relative)
+                after = self.plan_revision_path_changes(repository, allocation_head, head, relative)
+                committed_at_allocation = control_git.committed_fingerprint(
+                    repository, allocation_head, relative)
+                if (before == [] and after == ([] if committed_at_allocation == expected else [expected]) and
+                        execution["git_snapshot"]["files"][relative] != expected):
+                    cleaned = True
+                    break
+            if not cleaned:
+                return False
+        return True
+
     def prepare_plan_revision(self, data):
         """Persist a Controller intent before asking the original host to stop."""
         entry.fields(data, {"revision_id", "expected_authority_revision",
@@ -2267,11 +2383,16 @@ class Progress:
         entry.nonempty(data["revision_id"])
         prior = s.get("plan_revision_transaction")
         historical = s.get("plan_revision_history", {}).get(data["revision_id"])
+        retry = None
         if historical is not None:
             require(historical["input"] == data, "plan_revision_conflict",
                     "historical revision ID was reused with different content")
-            return _view(s, {"operation": "plan-revision-activated",
-                             "revision_id": data["revision_id"]}, acknowledged=True)
+            if historical["state"] == "activated":
+                return _view(s, {"operation": "plan-revision-activated",
+                                 "revision_id": data["revision_id"]}, acknowledged=True)
+            if not self.plan_revision_retry_ready(historical):
+                return self.rejected_plan_revision(historical)
+            retry = historical
         if prior is not None and prior["input"]["revision_id"] == data["revision_id"]:
             require(prior["input"] == data, "plan_revision_conflict",
                     "revision ID was reused with different content")
@@ -2376,8 +2497,12 @@ class Progress:
                 "another publication or revision recovery has priority")
         if prior is not None:
             s.setdefault("plan_revision_history", {})[prior["input"]["revision_id"]] = copy.deepcopy(prior)
+        if retry is not None:
+            s["plan_revision_history"].pop(data["revision_id"])
         s["plan_revision_transaction"] = {"state": "stopping", "input": copy.deepcopy(data),
-            "input_digest": entry.digest(data), "old_authority": copy.deepcopy(authority)}
+            "input_digest": entry.digest(data), "old_authority": copy.deepcopy(authority),
+            **({"prior_rejections": copy.deepcopy([*retry.get("prior_rejections", []),
+                retry["rejection"]])} if retry is not None else {})}
         self.save()
         return self.advance_plan_revision()
 
@@ -2429,6 +2554,22 @@ class Progress:
         if nonbaseline:
             # No planning write was released: keep the old authority usable for
             # a real Execution Agent to restore these paths before retrying.
+            message = "retired implementation paths still differ from baseline: " + ", ".join(nonbaseline)
+            stop = copy.deepcopy(s["host"]["last_stop"])
+            accepted_executions = sorted(execution["allocation_digest"] for execution in
+                s["control"]["context"]["handoff_progress"]["executions"]
+                if execution["state"] == "accepted")
+            transaction["rejection"] = {"snapshot": snapshot, "stop": stop,
+                "accepted_executions": accepted_executions,
+                "result": {"code": "invalid_plan_revision", "message": message,
+                    "retired_paths": nonbaseline,
+                    "evidence_digest": entry.digest({"input_digest": transaction["input_digest"],
+                        "old_authority_digest": entry.digest(transaction["old_authority"]),
+                        "snapshot": snapshot, "stop": stop,
+                        "accepted_executions": accepted_executions,
+                        "retired_paths": nonbaseline})}}
+            transaction["state"] = "rejected"
+            s.setdefault("plan_revision_history", {})[transaction["input"]["revision_id"]] = copy.deepcopy(transaction)
             s.pop("plan_revision_transaction")
             s["status"] = "active"
             s["step"] = "continue"
@@ -2437,8 +2578,7 @@ class Progress:
                 "revision_id": transaction["input"]["revision_id"],
                 "retired_paths": nonbaseline}
             self.save()
-            raise _RejectedPlanRevision("invalid_plan_revision",
-                "retired implementation paths still differ from baseline: " + ", ".join(nonbaseline))
+            raise _RejectedPlanRevision("invalid_plan_revision", message)
         transaction["snapshot"] = snapshot
         transaction["state"] = "prepared"
         transaction["write_release"] = entry.digest({"revision_id": transaction["input"]["revision_id"],
@@ -2452,6 +2592,8 @@ class Progress:
         entry.fields(data, {"revision_id"})
         historical = self.state.get("plan_revision_history", {}).get(data["revision_id"])
         if historical is not None:
+            if historical["state"] == "rejected":
+                return self.rejected_plan_revision(historical)
             return _view(self.state, {"operation": "plan-revision-activated",
                                       "revision_id": data["revision_id"]}, acknowledged=True)
         transaction = self.state.get("plan_revision_transaction")
@@ -2472,6 +2614,8 @@ class Progress:
         transaction = s.get("plan_revision_transaction")
         historical = s.get("plan_revision_history", {}).get(data["revision_id"])
         if historical is not None:
+            require(historical["state"] == "activated", "plan_revision_unavailable",
+                    "rejected revision has no planning write release")
             require(data == historical["commit_input"], "plan_revision_conflict",
                     "historical planning commit input changed")
             return _view(s, {"operation": "plan-revision-activated",
