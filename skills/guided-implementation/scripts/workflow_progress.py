@@ -3018,6 +3018,32 @@ class Progress:
         host["generation"] += 1
         host["proof"], host["query"] = None, None
 
+    def host_observation_facts(self, data):
+        """Read only the current response/call indexes before admitting a poll."""
+        host, receipt = self.state['host'], data['receipt']
+        provenance = data.get('provenance')
+        valid = (isinstance(receipt, dict) and isinstance(provenance, dict) and
+                 set(provenance) == {'call_ref', 'response_ref', 'action_id'} and
+                 all(isinstance(value, str) and value.strip() for value in provenance.values()))
+        facts = {'valid': valid, 'conflict': False, 'duplicate': False, 'causal': False}
+        if not valid:
+            return facts
+        response_key = entry.digest([receipt['adapter'], provenance['response_ref']])
+        call_key = entry.digest([receipt['adapter'], provenance['call_ref']])
+        fingerprint = entry.digest({'provenance': provenance,
+            'receipt': {key: value for key, value in receipt.items() if key != 'receipt_ref'},
+            'action_resolution': data.get('action_resolution')})
+        previous = host['seen'].get(response_key)
+        conflict = ((previous is not None and previous != fingerprint) or
+                    (call_key in host['calls'] and host['calls'][call_key] != provenance['action_id']))
+        action = host.get('query') or self.state.get('host_action')
+        facts.update(response_key=response_key, call_key=call_key, fingerprint=fingerprint,
+            conflict=conflict, duplicate=previous == fingerprint and not conflict,
+            causal=(not conflict and action is not None and
+                data.get('action_id') == provenance['action_id'] == action['action_id'] and
+                action['generation'] == host['generation'] and not action.get('resolved')))
+        return facts
+
     def record_host(self, data):
         """Only trusted adapter ingress writes host facts, never B replay.
 
@@ -3033,33 +3059,18 @@ class Progress:
             return
         status = receipt["status"]
         provenance = data.get("provenance")
-        # Unavailable/malformed causal records cannot hide adverse host facts.
-        valid = (isinstance(provenance, dict) and set(provenance) == {"call_ref", "response_ref", "action_id"}
-                 and all(isinstance(value, str) and value.strip() for value in provenance.values()))
-        conflict = False
-        duplicate = False
-        if valid:
-            response_key = entry.digest([receipt["adapter"], provenance["response_ref"]])
-            call_key = entry.digest([receipt["adapter"], provenance["call_ref"]])
-            identity = {"provenance": provenance,
-                        "receipt": {key: value for key, value in receipt.items() if key != "receipt_ref"},
-                        "action_resolution": data.get("action_resolution")}
-            fingerprint = entry.digest(identity)
-            previous = host["seen"].get(response_key)
-            conflict = ((previous is not None and previous != fingerprint) or
-                        (call_key in host["calls"] and host["calls"][call_key] != provenance["action_id"]))
-            duplicate = previous == fingerprint and not conflict
-            if not conflict and not duplicate:
-                host["seen"][response_key] = fingerprint
-                host["calls"][call_key] = provenance["action_id"]
+        # The fast poll path uses these same bounded attribution checks.
+        facts = self.host_observation_facts(data)
+        conflict, duplicate = facts['conflict'], facts['duplicate']
+        if facts['valid'] and not conflict and not duplicate:
+            host['seen'][facts['response_key']] = facts['fingerprint']
+            host['calls'][facts['call_key']] = provenance['action_id']
         if duplicate:
             event["host_applied"] = True
             self.save()
             return
         action = host.get("query") or s.get("host_action")
-        causal = (valid and not conflict and action is not None and
-                  data.get("action_id") == provenance["action_id"] == action["action_id"] and
-                  action["generation"] == host["generation"] and not action.get("resolved"))
+        causal = facts['causal']
         if causal and action["operation"] == "inspect-host-state" and action["payload"].get("unresolved_action"):
             outstanding = action["payload"]["unresolved_action"]
             retained = next((item for item in self.unresolved_host_actions()
@@ -3549,12 +3560,33 @@ class Progress:
         receipt_error = None
         try:
             dispatch.receipt_for(s['dispatch'], receipt, {'create', 'lookup', 'result'})
+            known = self.bound_ref()
+            if receipt['event'] == 'result':
+                require(known is not None and receipt['ref'] == known, 'identity_mismatch',
+                        'observation must name the bound role')
+                require(receipt['status'] in {'running', 'idle', 'turn-completed', 'stopped', 'unknown'},
+                        'invalid_result', 'invalid host execution state')
+            else:
+                require(receipt['status'] in {'ready', 'pending', 'unknown', 'not-created'},
+                        'invalid_request', 'unknown launch outcome')
+                require((receipt['status'] == 'ready') == (receipt['ref'] is not None) and
+                        (receipt['status'] != 'ready' or receipt['pending_id'] is None) and
+                        (known is None or receipt['ref'] == known),
+                        'identity_mismatch', 'receipt cannot replace the original bound identity')
         except entry.PreparationError as error:
             # Reject authority, but retain the original raw observation below.
             # Invalid evidence never consumes a legitimate call's reservation.
             receipt_error = error
+        digest = entry.digest(data)
+        previous = s['events'].get(data['event_id'])
+        if previous is not None:
+            require(previous['digest'] == digest, 'event_conflict', 'event ID reused with different content')
+            if previous['applied']:
+                return _view(s, acknowledged=True)
+        facts = self.host_observation_facts(data) if receipt_error is None else None
         action = s['host'].get('query') or s.get('host_action')
-        if receipt_error is None and action is not None and data.get('action_id') == action['action_id']:
+        if (facts is not None and facts['causal'] and
+                (receipt['event'] == 'result' or action['operation'] in {'invoke-host', 'inspect-host-state'})):
             self._receipt_action = action['action_id']
         # Only a resolved, read-only running observation is coalescible. Stops,
         # unknown calls, results and identity changes still take the full path.
@@ -3569,17 +3601,12 @@ class Progress:
             poll_identity = entry.digest({'receipt': {key: value for key, value in receipt.items()
                 if key != 'receipt_ref'}, 'action_id': data.get('action_id')})
             previous_poll = s.get('current_poll')
-            if (previous_poll == {'identity': poll_identity, 'generation': s['host']['generation']} and
+            if (facts['duplicate'] and data.get('action_id') == data['provenance']['action_id'] and
+                    previous_poll == {'identity': poll_identity, 'generation': s['host']['generation']} and
                     s['host']['status'] == 'running'):
                 state_store.open_store(self.path).record_poll(revision=s['revision'], identity=poll_identity)
                 return _view(s, {'operation': 'wait-host', 'ref': self.bound_ref(),
                     'request': s['dispatch']['request']}, acknowledged=True)
-        digest = entry.digest(data)
-        previous = s["events"].get(data["event_id"])
-        if previous is not None:
-            require(previous["digest"] == digest, "event_conflict", "event ID reused with different content")
-            if previous["applied"]:
-                return _view(s, acknowledged=True)
         # Keep even invalid/late raw receipts for exact recovery, not as authority.
         if previous is None:
             s["events"][data["event_id"]] = {"digest": digest, "applied": False}

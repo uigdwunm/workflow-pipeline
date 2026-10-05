@@ -1,5 +1,6 @@
 """Bounded progression through the real Controller, dispatch and Git boundary."""
 import hashlib
+import copy
 import json
 import os
 import unittest
@@ -10,6 +11,61 @@ from test_workflow_progress import ProgressTests, progress, transfer
 
 
 class BoundedProgressTests(ProgressTests):
+    def test_review_poll_cannot_hide_event_id_conflict(self):
+        self.begin_dispatcher()
+        poll = self.observation('running', 'result', ref='native:dispatcher')
+        self.invoke('observe', poll)
+        conflicting = copy.deepcopy(poll)
+        conflicting['receipt']['receipt_ref'] = 'changed-original-receipt'
+        result = self.invoke('observe', conflicting)
+        self.assertEqual((result.get('error') or {}).get('code'), 'event_conflict')
+
+    def test_review_poll_cannot_hide_provenance_conflict(self):
+        self.begin_dispatcher()
+        poll = self.observation('running', 'result', ref='native:dispatcher')
+        self.invoke('observe', poll)
+        conflicting = copy.deepcopy(poll)
+        conflicting['event_id'] = 'conflicting-poll'
+        conflicting['provenance']['action_id'] = 'different-original-action'
+        result = self.invoke('observe', conflicting)
+        self.assertEqual((result.get('error') or {}).get('code'), 'host_provenance_conflict')
+        self.assertEqual(self.state()['host']['status'], 'unknown')
+        self.assertIsNone(self.state()['host']['proof'])
+
+    def test_review_wrong_identity_cannot_consume_original_reserve(self):
+        self.begin_dispatcher()
+        stopped = self.invoke('pause')
+        action_id = stopped['next_action']['action_id']
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(action_id.encode()).hexdigest()
+        before = reserve.stat().st_size
+        wrong = self.observation('stopped', 'result', ref='native:intruder')
+        result = self.invoke('observe', wrong)
+        self.assertEqual(result['error']['code'], 'identity_mismatch')
+        self.assertEqual(self.state()['observations'][-1], wrong, 'rejected raw evidence remains auditable')
+        self.assertEqual(reserve.stat().st_size, before)
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        base = self.observation('stopped', 'result', ref='native:dispatcher')
+        for invalid in ('identity', 'status', 'cause'):
+            with self.subTest(invalid=invalid):
+                wrong = copy.deepcopy(base)
+                wrong['event_id'] = 'invalid-' + invalid
+                if invalid == 'identity':
+                    wrong['receipt']['ref'] = 'native:intruder'
+                elif invalid == 'status':
+                    wrong['receipt']['status'] = 'invalid-state'
+                else:
+                    wrong['provenance']['action_id'] = 'different-original-action'
+                try:
+                    result = self.invoke('observe', wrong)
+                except transfer.entry.PreparationError:
+                    pass  # Audit admission may fail when ordinary capacity is full.
+                else:
+                    self.assertFalse(result.get('acknowledged'))
+                self.assertEqual(reserve.stat().st_size, before,
+                    'invalid evidence must not charge the legitimate stop receipt reserve')
+        self.assertNotEqual(self.state()['host']['status'], 'stopped')
+
     def test_store_boundary_missing_pointer_never_replaces_prior_authority(self):
         self.begin_dispatcher()
         directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
