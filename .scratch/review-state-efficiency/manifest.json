@@ -1384,12 +1384,13 @@
     },
     {
       "path": "tests/runtime/test_attached_flow_progress.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
+        "T01",
         "T06"
       ],
       "kind": "test",
-      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "reason": "真实supported attached生命周期在Progress.lifecycle旧atomic_save报state_owner_required；补真Stage2 lifecycle ledger/C提交前后故障、原envelope重放/C subjects保持/两revision区分及实际读取预算，不改延期attached初始化或既有业务语义。",
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": []
