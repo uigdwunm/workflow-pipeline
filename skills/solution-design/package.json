@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "61619c67207c26809d21a5eb3ea4a39112898c7cf5deadf45555953a91c27532",
+  "bundle_digest": "7fda813d1fb8694934ea461ae6655bfb5bde39d1635270fd7ce28adaa337d07e",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 11,
@@ -204,11 +204,11 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "845356a43539eb593d186197bac93ceac0c9ee9a5771209167661d313076370e"
+      "sha256": "6a58d403041213850d998eb46d403a5ea4803b23ec866626fd30124868343456"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "bcbf7915051c20e3421efdeed3edb66c4fb9a4ff28720947bf7ad986cd4ec3fa"
+      "sha256": "41838442cd839d65e74d3c5086b8bf81b8741f523fc32a35275a584c2e970300"
     },
     "scripts/stage_scope.py": {
       "mode": "0644",
@@ -236,11 +236,11 @@
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "c26af64530d190c3ce438f8a3a97360c281b6dc80ed3f75e5ccff190857a7a52"
+      "sha256": "9256a42487d0d859672707fe6f59425c9dcee7a29da42fcd3f675517e3feac13"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "754acfc593cbcb009dee0e226e971228e1715b434b9d77afb5aff47a4197db0c"
+      "sha256": "0bd90b35dd822b67befddc2bb35defa876e6865d175b851b860acc0ceac59af5"
     },
     "scripts/workflow_state_store.py": {
       "mode": "0644",

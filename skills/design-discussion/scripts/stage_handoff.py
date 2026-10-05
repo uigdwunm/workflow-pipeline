@@ -224,16 +224,16 @@ def phase_evidence(saved, *, role_ref=None, receiving=False, control_context=Non
     if recovery is not None:
         entry.fields(recovery, {'closure', 'retained_commit', 'retained_paths'})
         closure = unseal(recovery['closure'])
-        original = unseal(closure['predecessor'])
+        original = (None if closure.get('kind') == 'recovery-closure-facts' else predecessor_facts(closure['predecessor']))
         require(saved['stage'] == 3 and closure['stage'] == 4 and
-                original['handoff']['stage'] == 3 and closure['controller_ref'] == saved['controller_ref'] and
+                (original is None or original['handoff']['stage'] == 3) and closure['controller_ref'] == saved['controller_ref'] and
                 closure['binding'] == saved['binding'] and
                 closure['scope']['implementation_paths'] == saved['scope']['implementation_paths'] and
                 closure['requirement_identity'] == saved['requirement_identity'],
                 'authority_changed', 'final recovery must retain its exact closure authority')
         require(set(recovery['retained_paths']) <= set(closure['scope']['closure_paths']),
                 'scope_changed', 'retained documents escape original closure scope')
-        ancestor(saved['binding']['repository'], original['payload']['candidate_commit'], recovery['retained_commit'])
+        ancestor(saved['binding']['repository'], closure['candidate'] if original is None else original['payload']['candidate_commit'], recovery['retained_commit'])
         return phase_evidence(closure, receiving=receiving)
     source_request = saved["entry"]["source"]
     if source_request["kind"] != "discussion":
@@ -506,49 +506,34 @@ def verify_inline_recovery_pin(request, controller_ref, identity, checkpoint_pat
     checkpoint = Path(checkpoint_path)
     require(checkpoint.is_absolute() and str(checkpoint.resolve()) == checkpoint_path,
             'invalid_checkpoint', 'canonical original Controller checkpoint required')
-    state = progress.read_record(checkpoint).get(progress.KEY)
-    require(isinstance(state, dict), 'authority_missing',
-            'original Controller recovery checkpoint is unavailable')
-    progress.validate_state(state)
+    state = progress.read_projection(checkpoint, projection='scope').record[progress.KEY]
+    progress.validate_stage3_scope(state)
     recovery = request['authorization']['integration_recovery']
-    closure = unseal(recovery['closure'])
-    original = closure['predecessor']
-    current = state['control']['context']
-    current_progress = current.get('handoff_progress') or {}
-    dispatcher = state.get('dispatch') or {}
-    launch = dispatcher.get('request') or {}
-    carrier = current.get('carrier') or {}
-    source = current_progress.get('integration_source') or {}
-    retained = current_progress.get('integration_retained') or {}
-    matches = [prior for prior in state.get('history', [])
-               if prior.get('stage') == 3 and prior.get('accepted') == original]
-    require(len(matches) == 1 and state.get('stage') == 3 and
-            state.get('checkpoint_path') == checkpoint_path and
-            state.get('final_integration_recovery') == {
-                'reference': source.get('reference'), 'closure_handoff': recovery['closure']} and
-            state.get('handoff', {}).get('authorization', {}).get('integration_recovery') == recovery and
-            state.get('handoff', {}).get('role') == 'implementation-dispatcher' and
-            state['handoff']['controller_ref'] == controller_ref == current['controller_ref'] and
+    current = state.get('integration_recovery')
+    require(isinstance(current, dict), 'authority_missing', 'current recovery authority is missing')
+    facts, _, _ = progress.read_implementation_delivery(checkpoint, current['predecessor'])
+    carrier = current['carrier']
+    require(state.get('checkpoint_path') == checkpoint_path and
+            current['decision']['closure_handoff'] == recovery['closure'] and
+            state['handoff']['authorization'].get('integration_recovery') == recovery and
+            state['handoff']['controller_ref'] == controller_ref == facts['controller_ref'] and
             state['handoff']['requirement_identity'] == identity and
-            state['handoff']['binding'] == request['binding'] == current_progress.get('binding') and
+            state['handoff']['binding'] == request['binding'] == facts['handoff']['binding'] and
             state['handoff']['target'] == request['target'] and
             state['handoff']['requirement'] == request['requirement'] and
-            state.get('scope_authority') == request.get('inline_authority') ==
-                current_progress.get('execution_authority') and
+            state['scope_authority'] == request.get('inline_authority') ==
+                state['execution_authority'] == facts['execution_authority'] and
             state['scope_authority'].get('kind') == 'inline' and
-            request['scope']['implementation_paths'] == current_progress.get('allowed_paths') and
+            request['scope']['implementation_paths'] == state['scope_authority']['scope']['implementation_paths'] and
             set(state['handoff']['scope']['protected_paths']) <= set(request['scope']['protected_paths']) and
-            dispatcher.get('handoff') == state['handoff'] and
-            launch.get('attempt') == carrier.get('attempt') ==
-                matches[0].get('dispatch', {}).get('request', {}).get('attempt') and
-            launch.get('input_digest') == state['handoff']['digest'] and
-            carrier.get('ref') == matches[0].get('control', {}).get('context', {}).get('carrier', {}).get('ref') and
+            current['dispatch_attempt'] == carrier['attempt'] == facts['dispatch_attempt'] and
+            carrier['ref'] == facts['dispatcher']['ref'] and
             request['expected_entry']['actor']['role'] == 'implementation-dispatcher' and
-            carrier.get('ref') in {request['expected_entry']['actor'].get('thread_id'),
-                                   request['expected_entry']['actor'].get('actor_ref'),
-                                   'codex-thread:' + request['expected_entry']['actor'].get('thread_id', '')} and
-            source.get('snapshot_digest') == entry.digest(source.get('snapshot')) and
-            retained == {'commit': recovery['retained_commit'], 'paths': recovery['retained_paths']},
+            carrier['ref'] in {request['expected_entry']['actor'].get('thread_id'),
+                              request['expected_entry']['actor'].get('actor_ref'),
+                              'codex-thread:' + request['expected_entry']['actor'].get('thread_id', '')} and
+            current['source_digest'] is not None and
+            current['retained'] == {'commit': recovery['retained_commit'], 'paths': recovery['retained_paths']},
             'authority_missing', 'inline allocation must retain the original captured C recovery')
     return state
 
@@ -1051,9 +1036,8 @@ def _prepare(request, *, checkpoint_path=None, allocation_store=None):
                     "scope_changed", "closure must retain accepted candidate and documentation scope")
     require(stage != 4 or predecessor is not None, "predecessor_incomplete", "inherited closure requires an accepted implementation result")
     if allocation_store is not None:
-        require(stage == 3 and role == 'execution-agent' and
-                'integration_recovery' not in request['authorization'],
-                'invalid_request', 'shared allocation requires an ordinary Execution Agent')
+        require(stage == 3 and role == 'execution-agent',
+                'invalid_request', 'shared allocation requires an Execution Agent')
         store, current_root, allocation_id = allocation_store
         entry.nonempty(allocation_id)
         tickets = {ref['ticket_id'] for ref in semantic['plan_refs']}
@@ -1108,6 +1092,8 @@ def verify(saved, *, checkpoint_path=None):
         current = store.open_current()
         actual = _prepare({**{key: body[key] for key in FIELDS},
             **{key: body[key] for key in OPTIONAL_FIELDS if key in body}, 'operation': 'verify'},
+            checkpoint_path=(saved['checkpoint'] if 'integration_recovery' in body['authorization'] and
+                             body.get('readiness') is None else None),
             allocation_store=(store, current, saved['allocation_id']))[0]
         require(actual == saved, 'handoff_changed', 'allocation facts changed; retain its shared contract')
         return saved

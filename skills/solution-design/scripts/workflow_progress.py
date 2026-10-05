@@ -477,10 +477,17 @@ def stage3_scope(state):
     current = context.get('handoff_progress') or {}
     return {**{key: copy.deepcopy(state.get(key)) for key in (
         'protocol', 'revision', 'stage', 'stage_subject', 'checkpoint_path', 'handoff',
-        'scope_authority', 'consumed_readiness', 'design_predecessor', 'decision_provenance')},
+        'scope_authority', 'consumed_readiness', 'design_predecessor', 'recovery_predecessor', 'decision_provenance')},
         'scope_kind': 'stage3-scope-v1', 'control_digest': entry.digest(context),
         'control_revision': context.get('revision'),
         'execution_authority': copy.deepcopy(current.get('execution_authority')),
+        'integration_recovery': ({'decision': copy.deepcopy(state['final_integration_recovery']),
+            'predecessor': copy.deepcopy(state['recovery_predecessor']),
+            'carrier': copy.deepcopy(context['carrier']),
+            'dispatch_attempt': state['dispatch']['request']['attempt'],
+            'retained': copy.deepcopy(current.get('integration_retained')),
+            'source_digest': (current.get('integration_source') or {}).get('snapshot_digest')}
+            if state.get('final_integration_recovery') else None),
         'plan_results': [{key: copy.deepcopy(value) for key, value in item.items() if key in {
             'state', 'stopped', 'plan_authority', 'paths', 'plan_refs', 'git_result_snapshot',
             'source_result_digest', 'source_owned_start_fingerprints', 'owned_final_fingerprints',
@@ -494,8 +501,8 @@ def stage3_scope(state):
 
 def validate_stage3_scope(state):
     fields = {'protocol', 'revision', 'stage', 'stage_subject', 'checkpoint_path', 'handoff',
-        'scope_authority', 'consumed_readiness', 'design_predecessor', 'decision_provenance',
-        'scope_kind', 'control_digest', 'control_revision', 'execution_authority', 'plan_results', 'plan_revision_transaction'}
+        'scope_authority', 'consumed_readiness', 'design_predecessor', 'recovery_predecessor', 'decision_provenance',
+        'scope_kind', 'control_digest', 'control_revision', 'execution_authority', 'integration_recovery', 'plan_results', 'plan_revision_transaction'}
     require(isinstance(state, dict) and set(state) == fields and state['stage'] == 3 and
             state['protocol'] == PROTOCOL and state['scope_kind'] == 'stage3-scope-v1' and
             type(state['revision']) is int and (state['control_revision'] is None or type(state['control_revision']) is int) and
@@ -532,14 +539,16 @@ def implementation_delivery(state, path, store, current):
     verify_phase_completed(state)
     checkpoint = state['control']['context']['handoff_progress']
     initial = (saved.get('readiness') or {}).get('scope_authority') or saved.get('inline_authority')
-    lineage = initial
+    recovery_prior = (read_implementation_delivery(path, state['recovery_predecessor'])[0]
+                      if state.get('recovery_predecessor') else None)
+    lineage = recovery_prior['execution_authority'] if recovery_prior else initial
     revisions = list(state.get('plan_revision_history', {}).values())
     transaction = state.get('plan_revision_transaction')
     if transaction is not None:
         require(all(item['old_authority']['revision'] <= transaction['old_authority']['revision']
                     for item in revisions), 'handoff_not_ready', 'revision history follows current transaction')
         revisions.append(transaction)
-    chain = []
+    chain = copy.deepcopy(recovery_prior['authority_lineage']) if recovery_prior else []
     for item in sorted(revisions, key=lambda item: (item['old_authority']['revision'], item['state'] == 'activated')):
         require(item['old_authority'] == lineage and item['state'] in {'activated', 'rejected'},
                 'handoff_not_ready', 'implementation lost its original authority lineage')
@@ -577,12 +586,21 @@ def implementation_delivery(state, path, store, current):
         native_sources.append(query['input']['binding'])
         if query.get('result') is not None:
             native_sources.append(query['result'])
-    source_index = {}
+    source_index = (copy.deepcopy(store.read_evidence(recovery_prior['native_source_index_ref'],
+        run_id=current.run_id, kind='native-source-index')['value']) if recovery_prior else {})
     for source in {entry.digest(source): source for source in native_sources}.values():
         source_ref = evidence({'native_source': source})
         for key in ('query_id', 'call_ref', 'response_ref'):
             if key in source:
                 source_index[entry.digest([key, source[key]])] = source_ref
+    for observation in state.get('observations', []):
+        provenance = observation.get('provenance')
+        if not isinstance(provenance, dict):
+            continue
+        source_ref = evidence({'native_source': observation})
+        for key in ('call_ref', 'response_ref'):
+            if isinstance(provenance.get(key), str):
+                source_index[entry.digest([key, provenance[key]])] = source_ref
     git_proof = {'candidate_evidence': {'plan_authority': copy.deepcopy(checkpoint['candidate_evidence']['plan_authority'])},
         'plan_revisions': [], 'plan_revision_sources': []}
     for record in checkpoint.get('plan_revisions', []):
@@ -597,10 +615,12 @@ def implementation_delivery(state, path, store, current):
              if 'git_snapshot' in item else {}) for item in source['executions']]})
     # The Git reader needs only the final retained-candidate boundary, never its old reports.
     if checkpoint.get('integration_retained') is not None:
-        git_proof.update({key: copy.deepcopy(checkpoint[key]) for key in ('integration_retained', 'integration_candidate')})
-        prior_validation = checkpoint.get('validation_history', [])
-        git_proof['validation_history'] = ([{'candidate': prior_validation[-1].get('candidate')}]
-                                           if prior_validation else [])
+        retained_paths = copy.deepcopy(checkpoint['integration_retained']['paths'])
+        # This accepted commit is the new finite proof boundary; no ancestor delivery chain.
+        git_proof.update(integration_retained={'commit': accepted['payload']['candidate_commit'],
+            'paths': retained_paths}, integration_candidate=accepted['payload']['candidate_commit'],
+            validation_history=[{'candidate': accepted['payload']['candidate_commit'],
+                                 'accepted_paths': retained_paths}])
     original = {key: copy.deepcopy(saved[key]) for key in ('protocol', 'stage', 'role', 'controller_ref',
         'requirement_identity', 'requirement', 'binding', 'scope', 'authorization', 'source_commit', 'digest')}
     original.update(planning_paths=handoff.inherited_planning_paths(saved.get('predecessor')),
@@ -630,7 +650,18 @@ def implementation_delivery(state, path, store, current):
             'native_event_sequence': state['lifecycle_snapshot'].get('sequence')},
         'native_refs': sorted(owner.native_refs()),
         'native_source_index_ref': store.write_object(current.run_id, 'native-source-index', source_index),
-        'git_evidence_ref': evidence(git_proof), 'stopped': True, 'phase_complete': True}
+        'git_evidence_ref': evidence(git_proof),
+        # Recovery consumes contracts and scalar authority facts, never an old stage/control.
+        'recovery_ref': evidence({'launch': {key: copy.deepcopy(item) for key, item in saved.items()
+            if key != 'digest'}, 'control_identity': {key: copy.deepcopy(state['control']['context'][key])
+            for key in control.CONTEXT_FIELDS - {'stage', 'carrier', 'handoff_progress'}},
+            'dispatch_configuration': copy.deepcopy(checkpoint['configuration']),
+            'authority_digest': checkpoint['authority_digest'],
+            'implementation_policy': copy.deepcopy(checkpoint.get('implementation_policy', {'mode': 'full'})),
+            'runner': ({'session': current.root['outer']['sessions']['stage3'],
+                        'turn': current.root['outer']['launch']['turn']}
+                       if current.root['outer'].get('confirmed', {}).get('stages') else None)}),
+        'stopped': True, 'phase_complete': True}
     return value
 
 
@@ -653,7 +684,8 @@ def read_implementation_delivery(path, reference=None, *, store=None, current=No
                 'handoff_not_ready', 'implementation predecessor checkpoint changed')
         raw_ref = body['reference']
         require((metadata['stage'] == 3 and raw_ref == current.root.get('delivery')) or
-                (metadata['stage'] == 4 and metadata.get('implementation_predecessor') == reference),
+                (metadata['stage'] == 4 and metadata.get('implementation_predecessor') == reference) or
+                (metadata['stage'] == 3 and metadata.get('recovery_predecessor') == reference),
                 'handoff_not_ready', 'implementation predecessor is not pinned by this Controller')
     require(raw_ref is not None, 'handoff_not_ready', 'accepted implementation delivery is unavailable')
     value = store.read_predecessor(current, raw_ref)
@@ -661,7 +693,7 @@ def read_implementation_delivery(path, reference=None, *, store=None, current=No
         'controller_ref', 'packages', 'handoff', 'accepted', 'payload', 'review_ref', 'verification_ref',
         'execution_authority', 'initial_authority_digest', 'authority_lineage', 'dispatcher',
         'dispatch_attempt', 'control_revision', 'design_predecessor', 'phase_ref', 'stop_ref',
-        'git_evidence_ref', 'stopped', 'phase_complete', 'native_refs', 'native_source_index_ref', 'stop_transport'})
+        'git_evidence_ref', 'recovery_ref', 'stopped', 'phase_complete', 'native_refs', 'native_source_index_ref', 'stop_transport'})
     require(type(value['source_revision']) is int and value['source_revision'] >= 0 and
             isinstance(value['authority_lineage'], list) and len(value['authority_lineage']) <= 33,
             'handoff_not_ready', 'implementation delivery schema changed')
@@ -678,7 +710,7 @@ def read_implementation_delivery(path, reference=None, *, store=None, current=No
             (stop_transport['adapter'] == 'collaboration' or
              type(stop_transport['native_event_sequence']) is int and stop_transport['native_event_sequence'] >= 0),
             'handoff_not_ready', 'invalid delivery stop transport fingerprint')
-    if metadata['stage'] == 3:
+    if metadata['stage'] == 3 and raw_ref == current.root.get('delivery'):
         require(implementation_outer_ready(current.root['outer'], stop_transport),
                 'handoff_not_ready', 'current runner or transport revoked implementation delivery readiness')
         require(metadata['status'] == 'accepted' and metadata['stopped'] and metadata['phase_complete'] and
@@ -760,6 +792,16 @@ def implementation_acceptance(reference, path=None, *, store=None):
         axis: store.read_evidence(ref, run_id=current.run_id)['value'] for axis, ref in proof['review_sources'].items()}}
     verification['attempts'] = [latest]
     git_facts = store.read_evidence(value['git_evidence_ref'], run_id=current.run_id)['value']
+    if git_facts.get('integration_retained') is not None:
+        pinned_ref = handoff.seal({'kind': 'implementation-predecessor-ref', 'protocol': handoff.PROTOCOL,
+            'checkpoint_path': str(Path(path).resolve()),
+            'reference': (current.root['delivery'] if current.root['metadata']['stage'] == 3 and
+                          value['accepted']['digest'] == (body.get('accepted_digest')) and
+                          current.root['delivery'] is not None and reference.get('kind') == 'implementation-acceptance-ref'
+                          else (pinned['reference'] if reference.get('kind') == 'implementation-acceptance-ref'
+                                else reference['reference'])),
+            'accepted_digest': value['accepted']['digest']})
+        git_facts['validation_history'][-1]['proof_ref'] = pinned_ref
     checkpoint = {**verification, **git_facts, 'state': 'deliverable',
         'binding': value['handoff']['binding'], 'git_baseline_commit': value['handoff']['scope']['baseline'],
         'execution_authority': value['execution_authority'],
@@ -1011,8 +1053,9 @@ def save_current_record(path, outer, expected_revision, *, expected_authority_re
     metadata['stage_subject'] = stage_id
     if state.get('design_predecessor') is not None:
         metadata['design_predecessor'] = copy.deepcopy(state['design_predecessor'])
-    if state.get('implementation_predecessor') is not None:
-        metadata['implementation_predecessor'] = copy.deepcopy(state['implementation_predecessor'])
+    for key in ('implementation_predecessor', 'recovery_predecessor'):
+        if state.get(key) is not None:
+            metadata[key] = copy.deepcopy(state[key])
     metadata.update(controller_ref=state['control']['context']['controller_ref'],
         checkpoint_path=state['checkpoint_path'], packages=state['packages'],
         binding=state['handoff'].get('binding'))
@@ -1338,6 +1381,17 @@ def validate_state(state):
                 requirement_identity=state["handoff"]["requirement_identity"],
                 binding=state["handoff"]["binding"],
                 decision_records=change_decision_journal(state))
+    if state.get('final_integration_recovery') is not None:
+        closure = state['final_integration_recovery']['closure_handoff']
+        handoff.unseal(closure)
+        store = state_store.open_store(state['checkpoint_path'])
+        current = store.open_current()
+        proof = store.read_evidence(closure['stop_ref'], run_id=current.run_id)['value']
+        require(proof['host']['receipt']['status'] == 'stopped' and
+                proof['host']['receipt']['ref'] == closure['role_ref'],
+                'host_evidence_missing', 'retain the original stopped closure writer proof')
+        if state['native_host']['adapter'] == 'app-server':
+            validate_rpc_lifecycle(proof['lifecycle'], closure['expected_entry']['actor']['thread_id'])
     if state.get('implementation_predecessor') is not None:
         require(state['stage'] == 4 and state['handoff']['predecessor'] == state['implementation_predecessor'],
                 'handoff_not_ready', 'closure lost its exact accepted implementation')
@@ -1624,6 +1678,12 @@ def consumed_scope_readiness(state, checkpoint_path):
         current = state.get('scope_authority')
         if current == old['scope_authority']:
             return copy.deepcopy(readiness)
+        if state.get('recovery_predecessor') is not None:
+            accepted, _, _ = read_implementation_delivery(path, state['recovery_predecessor'])
+            if current == accepted['execution_authority'] and accepted['design_predecessor'] == state['design_predecessor']:
+                return {**copy.deepcopy(readiness), 'scope_revision': current['revision'],
+                    'scope_seal': current['seal_ref'], 'scope_authority': copy.deepcopy(current),
+                    'execution_plan': copy.deepcopy(current['execution_plan'])}
         transaction = state.get('plan_revision_transaction') or {}
         if (transaction.get('state') != 'activated' or transaction.get('proposed_authority') != current or
                 current.get('execution_plan', {}).get('contract_digest') != readiness['execution_plan']['contract_digest'] or
@@ -2087,8 +2147,9 @@ class Progress:
         """Registered writers, including replaced roles and historical reviewers."""
         s = self.state if state is None else state
         refs = set()
-        if s.get('implementation_predecessor') is not None and s.get('native_host', {}).get('adapter') == 'collaboration':
-            prior, _, _ = read_implementation_delivery(self.path, s['implementation_predecessor'])
+        recovery_prior = s.get('implementation_predecessor') or s.get('recovery_predecessor')
+        if recovery_prior is not None and s.get('native_host', {}).get('adapter') == 'collaboration':
+            prior, _, _ = read_implementation_delivery(self.path, recovery_prior)
             refs.update(prior['native_refs'])
         if s.get('design_predecessor') is not None and s.get('native_host', {}).get('adapter') == 'collaboration':
             prior = read_design_predecessor(s['design_predecessor'], self.path)
@@ -2141,8 +2202,9 @@ class Progress:
     def reject_design_native_replay(self, data):
         references = []
         design = self.state.get('design_predecessor')
-        if self.state.get('implementation_predecessor') is not None:
-            prior, _, _ = read_implementation_delivery(self.path, self.state['implementation_predecessor'])
+        recovery_prior = self.state.get('implementation_predecessor') or self.state.get('recovery_predecessor')
+        if recovery_prior is not None:
+            prior, _, _ = read_implementation_delivery(self.path, recovery_prior)
             references.append(prior['native_source_index_ref'])
             design = prior['design_predecessor']
         if design is not None:
@@ -3844,6 +3906,8 @@ class Progress:
         facts = {'valid': valid, 'conflict': False, 'duplicate': False, 'attributed': False, 'causal': False}
         if not valid:
             return facts
+        if self.state.get('recovery_predecessor') is not None:
+            self.reject_design_native_replay(provenance)
         response_key = entry.digest([receipt['adapter'], provenance['response_ref']])
         call_key = entry.digest([receipt['adapter'], provenance['call_ref']])
         fingerprint = entry.digest({'provenance': provenance,
@@ -4049,7 +4113,7 @@ class Progress:
         s = self.state
         prior_recovery = s.get('final_integration_recovery')
         if s['stage'] == 3 and prior_recovery is not None:
-            require(prior_recovery['reference'] == data['reference'] and prior_recovery['closure_handoff']['digest'] == data['closure_digest'], 'recovery_conflict', 'retain the original recovery decision')
+            require(prior_recovery['reference'] == data['reference'] and prior_recovery['closure_handoff']['source_digest'] == data['closure_digest'], 'recovery_conflict', 'retain the original recovery decision')
             return _view(s, acknowledged=True)
         self.require_not_stopping()
         require(s['stage'] == 4 and s['handoff']['digest'] == data['closure_digest'] and (s.get('recovery_action') or {}).get('operation') == 'implementation-recovery' and
@@ -4072,72 +4136,113 @@ class Progress:
             require(publication['state'] in {'not-published', 'prepared'}, 'already_published',
                     'published or uncertain effects permit publication reconciliation only')
         predecessor = s['handoff']['predecessor']
-        candidates = [item for item in s['history'] if item['stage'] == 3 and item.get('accepted') == predecessor]
-        require(bool(candidates), 'recovery_missing', 'retain the original accepted Stage-3 checkpoint')
-        old = copy.deepcopy(candidates[-1])
-        require(not any(record['ref'] == old['accepted']['role_ref'] for record in s.get('native_finalizations', [])),
+        facts, current, store = read_implementation_delivery(self.path, predecessor)
+        _, accepted_progress = implementation_acceptance(predecessor)
+        recovery = store.read_evidence(facts['recovery_ref'], run_id=current.run_id)['value']
+        entry.fields(recovery, {'launch', 'control_identity', 'dispatch_configuration',
+                                'authority_digest', 'implementation_policy', 'runner'})
+        require(s['control']['discussion'] is None, 'authority_missing',
+                'ledger recovery requires its original authority adapter')
+        require(not any(record['ref'] == facts['dispatcher']['ref'] for record in s.get('native_finalizations', [])),
                 'identity_retired', 'implementation recovery requires the original reusable native identity')
-        require(old['handoff']['binding'] == s['handoff']['binding'] and old['stopped'] and
-                old['accepted']['role_ref'] == s['recovery_action']['ref'],
-                'binding_changed', 'recovery must retain original stopped implementation and worktree')
-        worktree = Path(old['handoff']['binding']['worktree'])
-        control_git.verify_binding(worktree, old['handoff']['binding'])
-        accepted = predecessor['payload']['candidate_commit']
+        require(facts['handoff']['binding'] == s['handoff']['binding'] and facts['stopped'] and
+                facts['dispatcher']['ref'] == s['recovery_action']['ref'] and
+                facts['execution_authority'] == s['scope_authority'],
+                'binding_changed', 'recovery must retain original stopped implementation and authority')
+        worktree = Path(facts['handoff']['binding']['worktree'])
+        control_git.verify_binding(worktree, facts['handoff']['binding'])
+        accepted = facts['payload']['candidate_commit']
         retained_commit = control_git.snapshot(worktree)['head']
         handoff.ancestor(worktree, accepted, retained_commit)
-        retained_paths = supervision._changed_paths(worktree, accepted, retained_commit)
+        previous_paths = (accepted_progress.get('integration_retained') or {}).get('paths', [])
+        retained_paths = sorted(set(previous_paths) |
+            set(supervision._changed_paths(worktree, accepted, retained_commit)))
         require(not supervision._full_status(worktree) and
                 (set(retained_paths) | control_git.incoming_changed_paths(worktree, accepted, retained_commit)) <= set(s['handoff']['scope']['closure_paths']),
                 'candidate_changed', 'recovery requires the clean accepted candidate plus committed closure documents')
         target = supervision._branch_oid(Path(s['handoff']['binding']['repository']), s['handoff']['binding']['target_branch'])
-        handoff.ancestor(worktree, old['handoff']['scope']['baseline'], target)
-        for relative in old['handoff']['scope']['protected_paths']:
+        baseline = facts['handoff']['scope']['baseline']
+        handoff.ancestor(worktree, baseline, target)
+        for relative in facts['handoff']['scope']['protected_paths']:
             require(control_git.committed_fingerprint(worktree, target, relative) ==
-                    control_git.committed_fingerprint(worktree, old['handoff']['scope']['baseline'], relative),
+                    control_git.committed_fingerprint(worktree, baseline, relative),
                     'source_changed', 'final target changed protected source: ' + relative)
-        restored = old
-        restored['history'] = copy.deepcopy(s['history']) + [{k:copy.deepcopy(v) for k,v in s.items() if k != 'history'}]
-        restored['revision'] = s['revision']
-        restored['final_integration_recovery'] = {'reference':data['reference'], 'closure_handoff':copy.deepcopy(s['handoff'])}
-        body = handoff.unseal(restored['handoff'])
-        body['authorization']['integration_recovery'] = {'closure':copy.deepcopy(s['handoff']),
-            'retained_commit':retained_commit, 'retained_paths':retained_paths}
-        restored['handoff'] = handoff.seal(body)
-        record = handoff.unseal(restored['dispatch'])
-        launch = handoff.unseal(record['request'])
-        launch.update(input_digest=restored['handoff']['digest'], payload=handoff.render(restored['handoff'])['payload'])
-        record.update(handoff=restored['handoff'], request=handoff.seal(launch), status='bound', delivery=None, acceptance=None, receipts=[])
-        restored['dispatch'] = handoff.seal(record)
-        restored['native_host'] = copy.deepcopy(s['native_host'])
-        restored['native_finalizations'] = copy.deepcopy(s.get('native_finalizations', []))
-        restored['control']['context']['retired_handoffs'] = copy.deepcopy(s['control']['context'].get('retired_handoffs', {}))
-        checkpoint = restored['control']['context']['handoff_progress']
-        checkpoint.setdefault('validation_history', []).append({k:copy.deepcopy(checkpoint[k]) for k in
-            ('candidate', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'accepted_delivery') if k in checkpoint})
-        for key in ('candidate_evidence', 'expected_target_head', 'review_decision', 'review_digest', 'attempts', 'accepted_delivery', 'integration_source'):
-            checkpoint.pop(key, None)
-        checkpoint.update(state='implementing', candidate=None, tests=[], integration_target_head=target, integration_candidate=retained_commit,
-                          integration_retained={'commit':retained_commit, 'paths':retained_paths})
-        restored.update(accepted=None, pending=None, status='active', step='continue', transaction=None,
-                        transaction_source=None, transaction_result=None, events={}, observations=[], control_transactions={},
-                        continuation_intent={'kind':'final-integration', 'reference':data['reference']},
-                        review_activity={}, action=None)
-        restored.pop('publication', None)
-        restored.pop('business_block', None)
-        restored['host']['generation'] += 1
-        restored['host'].update(status='unknown', proof=None, query=None, last_stop=None)
-        restored['host_action'] = None
+        # Phase/closure authority is a bounded fact set, not a recursive Stage-4 input.
+        closure = handoff.seal({key: copy.deepcopy(s['handoff'][key]) for key in
+            ('stage', 'entry', 'expected_entry', 'controller_ref', 'binding', 'scope',
+             'requirement_identity', 'authorization')} | {
+                'kind': 'recovery-closure-facts', 'candidate': accepted,
+                'source_digest': s['handoff']['digest'], 'role_ref': self.bound_ref(),
+                'stop_ref': store.write_object(current.run_id, 'evidence', {
+                    'host': s['host']['last_stop'], 'lifecycle': s['lifecycle_snapshot']})})
+        body = copy.deepcopy(recovery['launch'])
+        body['authorization']['integration_recovery'] = {'closure': closure,
+            'retained_commit': retained_commit, 'retained_paths': retained_paths}
+        saved = handoff.seal(body)
+        require(all(saved[key] == facts['handoff'][key] for key in
+                    ('controller_ref', 'requirement_identity', 'binding', 'scope', 'source_commit')),
+                'authority_changed', 'recovery launch differs from accepted implementation')
+        checkpoint = {key: copy.deepcopy(accepted_progress[key]) for key in
+            ('binding', 'git_baseline_commit', 'execution_authority', 'allowed_paths',
+             'protected_paths', 'validation_plan', 'plan_digest', 'plan_authority')}
+        checkpoint.update(state='implementing', candidate=None, tests=[], executions=[],
+            configuration=recovery['dispatch_configuration'], authority_digest=recovery['authority_digest'],
+            implementation_policy=recovery['implementation_policy'],
+            integration_target_head=target, integration_candidate=retained_commit,
+            integration_retained={'commit': retained_commit, 'paths': retained_paths},
+            validation_history=[{'candidate': accepted, 'accepted_paths': previous_paths,
+                                 'proof_ref': predecessor}],
+            plan_revisions=accepted_progress.get('plan_revisions', []),
+            plan_revision_sources=accepted_progress.get('plan_revision_sources', []))
+        context = {**recovery['control_identity'], 'stage': 3,
+            'carrier': {'kind': 'implementation-dispatcher', **facts['dispatcher']},
+            'handoff_progress': checkpoint,
+            'retired_handoffs': copy.deepcopy(s['control']['context'].get('retired_handoffs', {}))}
+        launch = handoff.seal({'kind': 'native', 'role': saved['role'],
+            'controller_ref': saved['controller_ref'], 'attempt': facts['dispatch_attempt'],
+            'input_digest': saved['digest'], 'configuration': saved['selection']})
+        record = handoff.seal({'protocol': handoff.PROTOCOL, 'kind': 'dispatch',
+            'stage_input': {'checkpoint': str(self.path), 'run_id': current.run_id,
+                'reference': store.write_object(current.run_id, 'evidence', {'stage_input': saved})},
+            'scope_checkpoint_path': str(self.path), 'request': launch,
+            'status': 'bound', 'delivery': None, 'acceptance': None, 'receipts': []})
+        same_tree = (s['native_host']['adapter'] == 'collaboration' or
+            saved['expected_entry']['actor']['thread_id'] == s['handoff']['expected_entry']['actor']['thread_id'])
+        recovered_refs = sorted(set(facts['native_refs']) | (self.native_refs(s) if same_tree else set()))
+        require(len(recovered_refs) <= 32, 'state_capacity',
+                'recovery writer inventory exceeds its fixed active identity window')
+        restored = {key: copy.deepcopy(s[key]) for key in
+            ('protocol', 'revision', 'mode', 'packages', 'checkpoint_path', 'native_host',
+             'workspace_evidence', 'native_finalizations')}
+        restored.update(stage=3, stage_subject='stage:3:' + str(uuid.uuid4()), next_stage=4,
+            handoff=saved, dispatch=record, control={'context': context, 'discussion': None},
+            scope_authority=facts['execution_authority'], consumed_readiness=saved.get('readiness'),
+            design_predecessor=facts['design_predecessor'], implementation_predecessor=None,
+            recovery_predecessor=predecessor,
+            final_integration_recovery={'reference': data['reference'], 'closure_handoff': closure},
+            history=[], allocations={}, accepted=None, pending=None, status='active', step='continue',
+            transaction=None, transaction_source=None, transaction_result=None, events={}, observations=[],
+            control_transactions={}, retained_host_actions=[], phase_complete=facts['phase_complete'],
+            stopped=False, continuation_intent={'kind': 'final-integration', 'reference': data['reference']},
+            review_activity={}, action=None, host_action=None,
+            recovered_native_refs=recovered_refs,
+            host={'generation': s['host']['generation'] + 1, 'status': 'unknown', 'proof': None,
+                  'query': None, 'seen': {}, 'calls': {}, 'last_stop': None})
         self.state = restored
         if self.outer.get('confirmed', {}).get('stages'):
-            previous_results = {key:self.outer.get('stage_results', {}).pop(key) for key in ('stage3','stage4')
-                                if key in self.outer.get('stage_results', {})}
-            self.outer['history'].append({'event':'implementation-recovery', 'reference':data['reference'], 'stage_results':previous_results})
-            turns = [event.get('turn', 0) for event in self.outer['history'] if event.get('stage') == 'stage3']
+            runner_pin = recovery['runner']
+            require(isinstance(runner_pin, dict) and
+                    self.outer['sessions'].get('stage3') == runner_pin['session'],
+                    'carrier_active', 'retain the original implementation carrier session')
+            for key in ('stage3', 'stage4'):
+                self.outer.get('stage_results', {}).pop(key, None)
             self.outer.update(current_stage='stage3', status='active', pending_input=None,
-                              launch={'stage':'stage3', 'state':'prelaunch', 'turn':max(turns, default=0)})
+                launch={'stage': 'stage3', 'state': 'prelaunch', 'turn': runner_pin['turn']})
             self.outer.pop('turn_result', None)
         self.save()
-        return self.advance()
+        # The caller may still be the Stage-4 carrier. Only a read-only query is
+        # issued here; continuation rechecks the original Stage-3 entry in its carrier.
+        return self.query_host()
 
     def continuation_gate(self):
         self.require_business_ready()
@@ -4574,7 +4679,7 @@ class Progress:
                 self.save()
                 if result.get("return_stage") == 3:
                     s["recovery_action"] = {"operation": "implementation-recovery", "stage": 3,
-                        "ref": s["handoff"]["predecessor"]["role_ref"], "binding": s["handoff"]["binding"],
+                        "ref": handoff.predecessor_facts(s["handoff"]["predecessor"])["role_ref"], "binding": s["handoff"]["binding"],
                         "problem": data["closure"]["implementation_problem"]}
                     return self.block(entry.PreparationError("implementation_required", "return the retained flow to its original controller's implementation recovery; do not wait on closure"))
             if s.get("stop_requested") in {"pausing", "cancelling"}:
@@ -5497,7 +5602,7 @@ class Progress:
                         self.require_allocation_active()
                         checkpoint_path = (str(self.path.resolve())
                             if 'integration_recovery' in slot['handoff']['authorization'] and
-                               'readiness' not in slot['handoff'] else None)
+                               handoff.resolve_allocation(slot['handoff']).get('readiness') is None else None)
                         handoff.verify(slot["handoff"], checkpoint_path=checkpoint_path)
                         return self.issue_allocation(identity, slot)
                     if slot["record"]["status"] in {"received", "accepted", "not-created"}:
@@ -5563,10 +5668,10 @@ class Progress:
                         "identity_mismatch", "only the bound native dispatcher allocates execution agents")
                 inline_recovery = ('integration_recovery' in request['authorization'] and
                                    request.get('readiness') is None)
-                saved = (handoff.prepare(request, checkpoint_path=str(self.path.resolve()))
-                         if inline_recovery else handoff.prepare(request,
-                             allocation_store=(state_store.open_store(self.path),
-                                 state_store.open_store(self.path).open_current(), identity)))
+                saved = handoff.prepare(request,
+                    checkpoint_path=str(self.path.resolve()) if inline_recovery else None,
+                    allocation_store=(state_store.open_store(self.path),
+                        state_store.open_store(self.path).open_current(), identity))
                 resolved = handoff.resolve_allocation(saved)
                 parent_scope, scope = s["handoff"]["scope"], resolved["scope"]
                 require(scope["implementation_paths"] == current_scope["implementation_paths"] and
@@ -5622,7 +5727,7 @@ class Progress:
         if operation == "prepare":
             self.require_allocation_active()
         request = {"protocol": handoff.PROTOCOL, "operation": operation}
-        if 'integration_recovery' in slot['handoff']['authorization'] and 'readiness' not in slot['handoff']:
+        if 'integration_recovery' in slot['handoff']['authorization'] and handoff.resolve_allocation(slot['handoff']).get('readiness') is None:
             request['scope_checkpoint_path'] = str(self.path.resolve())
         if operation == "prepare":
             request["handoff"] = slot["handoff"]

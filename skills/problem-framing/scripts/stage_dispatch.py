@@ -96,10 +96,10 @@ their exact idempotency key and revisions must be retained on an unknown result.
                         'source_changed', 'captured integration lacks its retained closure authority')
                 if request.get('readiness') is not None:
                     import workflow_progress
-                    checkpoint_state = workflow_progress.read_record(
-                        Path(request['readiness']['checkpoint_path'])).get(workflow_progress.KEY)
+                    checkpoint_state = workflow_progress.read_projection(
+                        Path(request['readiness']['checkpoint_path']), projection='scope').record.get(workflow_progress.KEY)
                     require(checkpoint_state is not None and
-                            checkpoint_state['control']['context'] == context,
+                            checkpoint_state['control_digest'] == entry.digest(context),
                             'authority_changed', 'captured integration differs from the current Controller checkpoint')
                 control_git.git(repository_path, 'merge-base', '--is-ancestor',
                                 integration['snapshot']['head'], baseline)
@@ -168,27 +168,23 @@ def inline_recovery_allocation(request, saved):
     state = handoff.verify_inline_recovery_pin(
         saved, saved['controller_ref'], saved['requirement_identity'],
         checkpoint_path)
-    require(state['control'] == request['control'], 'authority_changed',
+    require(state['control_digest'] == entry.digest(request['control']['context']), 'authority_changed',
             'allocation must use the original current Controller control port')
-    slots = [slot for slot in state.get('allocations', {}).values()
-             if slot.get('handoff') == saved and
-             slot.get('owner_ref') == state['control']['context']['carrier']['ref']]
-    require(len(slots) == 1, 'authority_missing',
-            'inline recovery requires its exact C-owned allocation')
-    slot = slots[0]
-    if request.get('operation') == 'prepare':
-        authorized = slot.get('record') is None and slot.get('transaction') == request
-    elif slot.get('transaction') is not None:
-        authorized = slot['transaction'] == request and slot.get('record') == request.get('record')
+    compact = (request.get('handoff') if request.get('operation') == 'prepare' else
+               allocation_descriptor(request['record']))
+    require(compact.get('kind') == 'allocation-input', 'authority_missing',
+            'inline recovery requires a referenced C-owned allocation')
+    if request.get('operation') is not None:
+        verify_allocation_intent(request)
     else:
-        # C clears a completed transaction after saving B's returned record.
-        # That immutable record supports readback; C serves completed replays.
-        authorized = (request.get('operation') is None and
-                      slot.get('record') == request.get('record') and
-                      (slot.get('result') or {}).get('record') == request.get('record') and
-                      slot['record']['status'] in {'received', 'accepted', 'not-created'})
-    require(authorized,
-            'authority_missing', 'inline recovery requires its exact C-owned allocation transaction')
+        import workflow_state_store
+        store = workflow_state_store.open_store(checkpoint_path)
+        current = store.open_current()
+        slot = store.read_subject(current, compact['subject_id']).value['allocations'].get(compact['allocation_id'])
+        require(slot is not None and slot['handoff'] == compact and
+                slot['owner_ref'] == state['integration_recovery']['carrier']['ref'] and
+                slot['record'] == request['record'],
+                'authority_missing', 'inline readback requires its exact C-owned record')
 
 
 def prepared(request):

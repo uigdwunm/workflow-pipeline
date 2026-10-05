@@ -247,6 +247,10 @@ class ProgressTests(transfer.StageTransferTests):
             for slot in saved.get('review_activity', {}).values():
                 if slot and slot.get('ref'):
                     threads.append({'id':slot['ref'], 'status':{'type':'idle' if slot['stopped'] else 'active'}})
+            # The external host still lists stopped writers from the previous delivery.
+            listed = {thread['id'] for thread in threads}
+            threads.extend({'id': prior, 'status': {'type': 'idle'}}
+                           for prior in saved.get('recovered_native_refs', []) if prior not in listed)
             carrier = progress.read_record(self.checkpoint).get('sessions', {}).get('stage' + str(saved['stage'])) or saved['handoff']['expected_entry']['actor']['thread_id']
             transport = progress.read_record(self.checkpoint).get('transport') or {}
             value['lifecycle'] = {'instance':transport.get('instance','fixture-host'),'carrier_thread':carrier,
@@ -1081,7 +1085,7 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.invoke("pause")["status"], "paused")
         self.assertEqual(self.invoke("resume")["pending"], pending)
 
-    def mark_reviewable(self, candidate, *, fixture_execution=True):
+    def mark_reviewable(self, candidate, *, fixture_execution=True, evidence_suffix=""):
         current = self.state()['control']['context']
         dispatcher = current['carrier']['ref']
         if current['handoff_progress'].get('candidate') is not None:
@@ -1100,15 +1104,15 @@ class ProgressTests(transfer.StageTransferTests):
             'dispatcher_ref':dispatcher,'attempt':current['carrier']['attempt'],'commit':candidate,
             'expected_target_head':self.git('rev-parse','main'),'binding':self.binding,
             'plan_digest':transfer.control.digest(plan),'checks':checks},
-            'receipt':{'adapter':'fixture','call_ref':'focused','response_ref':'focused-result','raw':{'checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':dispatcher}}})
+            'receipt':{'adapter':'fixture','call_ref':('focused' + evidence_suffix),'response_ref':('focused-result' + evidence_suffix),'raw':{'checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':dispatcher}}})
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'reviewable',result)
         return {'candidate':candidate,'plan_digest':transfer.control.digest(plan),
                 'checks':checks,'plan_authority':copy.deepcopy(
                     self.state()['control']['context']['handoff_progress']['plan_authority'])}
 
-    def accept_current(self, payload, role, *, fixture_execution=True):
+    def accept_current(self, payload, role, *, fixture_execution=True, evidence_suffix=""):
         if self.state()['stage'] == 3:
-            verification = self.mark_reviewable(payload['candidate_commit'], fixture_execution=fixture_execution)
+            verification = self.mark_reviewable(payload['candidate_commit'], fixture_execution=fixture_execution, evidence_suffix=evidence_suffix)
             actor = self.state()['handoff']['expected_entry']['actor']['thread_id']
             for axis in ('standards','spec'):
                 prepared = self.invoke('review-activity', {'operation':'prepare','axis':axis,'candidate':payload['candidate_commit'],
@@ -1117,7 +1121,7 @@ class ProgressTests(transfer.StageTransferTests):
                 ref = payload['review'][axis]['reviewer_ref']
                 self.invoke('review-activity',{'operation':'observe','axis':axis,'candidate':payload['candidate_commit'],
                     'actor_ref':actor,'action_id':prepared['next_action']['action_id'],
-                    'receipt':{'adapter':'fixture','call_ref':'review-'+axis,'response_ref':'terminal-'+axis,
+                    'receipt':{'adapter':'fixture','call_ref':('review-' + evidence_suffix)+axis,'response_ref':('terminal-' + evidence_suffix)+axis,
                                'ref':ref,'status':'stopped','raw':{'task_name':ref,'status':'completed'}}})
             candidate = payload['candidate_commit']
             checkpoint = self.state()['control']['context']['handoff_progress']
@@ -1125,26 +1129,26 @@ class ProgressTests(transfer.StageTransferTests):
                       'plan_digest':checkpoint['plan_digest'],
                       'plan_authority':checkpoint['plan_authority'],
                       'reviewer_ref':payload['review'][axis]['reviewer_ref'],
-                      'status':'accepted','result_ref':'terminal-'+axis} for axis in ('standards','spec')}
+                      'status':'accepted','result_ref':('terminal-' + evidence_suffix)+axis} for axis in ('standards','spec')}
             response = self.invoke('control', {'action':'review-converged',
                 'evidence':{'candidate':candidate,'review':review,'reference':'fixture:converged'},
-                'receipt':{'adapter':'fixture','call_ref':'review','response_ref':'review-converged','raw':{'review':review}}})
+                'receipt':{'adapter':'fixture','call_ref':('review' + evidence_suffix),'response_ref':('review-converged' + evidence_suffix),'raw':{'review':review}}})
             checkpoint = self.state()['control']['context']['handoff_progress']
             self.assertEqual(checkpoint['state'],'final-validation-pending',response)
             context = self.state()['control']['context']
-            start = {'attempt_id':'fixture-final','dispatcher_ref':role,'carrier_attempt':context['carrier']['attempt'],
+            start = {'attempt_id':('fixture-final' + evidence_suffix),'dispatcher_ref':role,'carrier_attempt':context['carrier']['attempt'],
                      **{key:checkpoint[key] for key in ('candidate','expected_target_head',
                          'plan_digest','plan_authority','review_digest')}}
             response = self.invoke('control', {'action':'validation-start','evidence':start,
-                'receipt':{'adapter':'fixture','call_ref':'final','response_ref':'final-start','raw':{'decision':'run'}}})
+                'receipt':{'adapter':'fixture','call_ref':('final' + evidence_suffix),'response_ref':('final-start' + evidence_suffix),'raw':{'decision':'run'}}})
             self.assertIsNotNone(response['next_action'], response)
             if response['next_action']['operation'] == 'inspect-host-state':
                 response = self.invoke('observe', self.observation('idle', 'result', ref=role))
             self.assertEqual(response['next_action']['operation'],'continue-host', response.get('error'))
             checks = transfer.checks_for(checkpoint['validation_plan']['final_required'], candidate)
-            response = self.invoke('control', {'action':'validation-result','evidence':{'attempt_id':'fixture-final','checks':checks},
-                'receipt':{'adapter':'fixture','call_ref':'command','response_ref':'command-result',
-                           'raw':{'attempt_id':'fixture-final','checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':role}}})
+            response = self.invoke('control', {'action':'validation-result','evidence':{'attempt_id':('fixture-final' + evidence_suffix),'checks':checks},
+                'receipt':{'adapter':'fixture','call_ref':('command' + evidence_suffix),'response_ref':('command-result' + evidence_suffix),
+                           'raw':{'attempt_id':('fixture-final' + evidence_suffix),'checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':role}}})
             checkpoint = self.state()['control']['context']['handoff_progress']
             self.assertEqual(checkpoint['state'],'deliverable',response)
             payload.update(review=review, verification=transfer.control.delivery_verification(checkpoint,role))

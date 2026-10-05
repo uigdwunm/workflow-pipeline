@@ -13,6 +13,183 @@ from test_workflow_progress import ProgressTests, progress, transfer, runner
 
 
 class BoundedProgressTests(ProgressTests):
+    def recover_implementation_with_closure(self, *, standalone=False, rejected=None):
+        implementation = self.accepted_implementation_for_closure(standalone=standalone)
+        self.old_implementation_footer = json.loads(implementation['completion']['stage_result']['handoff_json'])['accepted_transfer']
+        original = self.state()
+        self.original_stop = copy.deepcopy(original['host']['last_stop'])
+        original_subjects = {ref['sha256'] for ref in progress.state_store.StateStore(self.checkpoint).open_current().root['subjects'].values()}
+        accepted = original['accepted']
+        closure = self.input_for(4, accepted)
+        closure['predecessor'] = json.loads(implementation['completion']['stage_result']['handoff_json'])['accepted_transfer']
+        self.context = self.context_for(4)
+        self.begin('continuous', closure)
+        self.invoke('observe', self.observation(ref='native:closure'))
+        (self.flow / 'CHANGELOG.md').write_text('retained closure documentation\n')
+        self.flow_git('add', 'CHANGELOG.md')
+        self.flow_git('commit', '-qm', 'retained closure documentation')
+        (self.root / 'other-task.md').write_text('parallel delivery\n')
+        self.git('add', 'other-task.md')
+        self.git('commit', '-qm', 'parallel delivery')
+        target = self.git('rev-parse', 'HEAD')
+        observed = self.observation('stopped', 'result', ref='native:closure')
+        observed['closure'] = {'ref': 'native:closure', 'candidate': accepted['payload']['candidate_commit'],
+            'merge': None, 'ancestor_verified': False, 'changed_paths': [], 'binding': self.binding,
+            'checks': [], 'worktree_removed': False, 'branch_removed': False,
+            'disposition': 'deleted', 'disposition_verified': False,
+            'implementation_problem': 'target advanced before publication'}
+        if rejected == 'unknown':
+            observed['receipt']['status'] = 'unknown'
+            observed.pop('lifecycle')
+        problem = self.invoke('observe', observed)
+        self.assertEqual((problem.get('next_action') or {}).get('operation'), 'implementation-recovery', problem)
+        if rejected == 'dirty':
+            (self.flow / 'CHANGELOG.md').write_text('uncommitted closure mutation\n')
+        if rejected == 'protected':
+            (self.root / self.requirement_path).write_text('changed protected source\n')
+            self.git('add', self.requirement_path)
+            self.git('commit', '-qm', 'changed protected source')
+        opened = []
+        original_open = Path.open
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        def tracked_open(path, *args, **kwargs):
+            if path == self.checkpoint or path.is_relative_to(directory):
+                opened.append(path)
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', tracked_open):
+            recovered = self.invoke('implementation-recovery', {'reference': 'controller:recovery',
+                'closure_digest': self.state()['handoff']['digest']})
+        if rejected is not None:
+            self.assertEqual(self.state()['stage'], 4, recovered)
+            return recovered
+        self.assertFalse(original_subjects & {path.name for path in opened})
+        self.assertLessEqual(sum(path.stat().st_size for path in opened), progress.state_store.READ_LIMIT)
+        self.assertLessEqual(self.checkpoint.stat().st_size, progress.state_store.ROOT_LIMIT)
+        self.assertEqual(self.state()['stage'], 3, recovered)
+        self.assertEqual((recovered.get('next_action') or {}).get('operation'), 'inspect-host-state', recovered)
+        self.assertEqual(self.state()['control']['context']['carrier'], original['control']['context']['carrier'])
+        self.assertEqual(self.state()['scope_authority'], original['scope_authority'])
+        self.assertEqual(self.state()['history'], [])
+        self.assertEqual((self.flow / 'CHANGELOG.md').read_text(), 'retained closure documentation\n')
+        self.assertEqual(self.git('rev-parse', 'HEAD'), target)
+        continued = self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        self.assertEqual(continued['next_action']['operation'], 'continue-host', continued)
+        self.assertEqual(continued['next_action']['payload']['ref'], 'native:dispatcher')
+        return accepted
+
+    def test_inline_recovery_rejects_dirty_closure_documents(self):
+        result = self.recover_implementation_with_closure(rejected='dirty')
+        self.assertEqual(result['error']['code'], 'candidate_changed', result)
+
+    def test_inline_recovery_rejects_changed_protected_target(self):
+        result = self.recover_implementation_with_closure(rejected='protected')
+        self.assertEqual(result['error']['code'], 'source_changed', result)
+
+    def test_inline_recovery_rejects_unknown_closure_writer(self):
+        result = self.recover_implementation_with_closure(rejected='unknown')
+        self.assertEqual(result['error']['code'], 'host_action_pending', result)
+
+    def test_inline_recovery_rejects_old_response_and_corrupted_stop_proof(self):
+        self.recover_implementation_with_closure()
+        old = self.observation('idle', 'result', ref='native:dispatcher')
+        old['provenance']['response_ref'] = self.original_stop['provenance']['response_ref']
+        result = self.invoke('observe', old)
+        self.assertEqual(result['error']['code'], 'host_provenance_conflict', result)
+        reference = self.state()['final_integration_recovery']['closure_handoff']['stop_ref']
+        digest = reference['sha256']
+        path = self.checkpoint.with_name(self.checkpoint.name + '.state') / 'objects' / digest[:2] / digest[2:4] / digest
+        path.write_bytes(b'corrupted closure stop proof')
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('inspect')
+
+    def test_inline_recovery_keeps_dispatcher_and_committed_closure(self):
+        self.recover_implementation_with_closure()
+
+    def test_inline_recovery_revalidates_real_allocation_and_replaces_delivery(self):
+        self.repair_recovered_implementation(self.recover_implementation_with_closure())
+
+    def test_inline_recovery_without_readiness_revalidates_original_authority(self):
+        self.repair_recovered_implementation(self.recover_implementation_with_closure(standalone=True))
+
+    def test_inline_recovery_second_round_retains_previously_accepted_closure_paths(self):
+        self.repair_recovered_implementation(self.recover_implementation_with_closure())
+        prior = transfer.handoff.predecessor_facts(self.state()['handoff']['predecessor'])
+        self.invoke('observe', self.observation(ref='native:closure'))
+        observed = self.observation('stopped', 'result', ref='native:closure')
+        observed['closure'] = {'ref': 'native:closure', 'candidate': prior['payload']['candidate_commit'],
+            'merge': None, 'ancestor_verified': False, 'changed_paths': [], 'binding': self.binding,
+            'checks': [], 'worktree_removed': False, 'branch_removed': False,
+            'disposition': 'deleted', 'disposition_verified': False,
+            'implementation_problem': 'second prepublication repair'}
+        problem = self.invoke('observe', observed)
+        self.assertEqual(problem['next_action']['operation'], 'implementation-recovery', problem)
+        recovered = self.invoke('implementation-recovery', {'reference': 'controller:second-recovery',
+            'closure_digest': self.state()['handoff']['digest']})
+        self.assertEqual(self.state()['stage'], 3, recovered)
+        self.assertEqual(self.state()['history'], [])
+        self.assertEqual(len(progress.state_store.StateStore(self.checkpoint).open_current().root['subjects']), 1)
+        self.assertEqual(self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+            ['next_action']['operation'], 'continue-host')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        captured = self.invoke('control', {'action': 'capture-integration',
+            'evidence': {'reference': 'controller:second-integration'},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:second-integration'}})
+        self.assertNotEqual(captured['status'], 'blocked', captured)
+        self.old_implementation_footer = self.latest_implementation_footer
+        self.repair_recovered_implementation(prior, suffix='-second', captured_already=True)
+        self.assertEqual(self.state()['history'], [])
+        self.assertEqual(len(progress.state_store.StateStore(self.checkpoint).open_current().root['subjects']), 1)
+
+    def repair_recovered_implementation(self, original, suffix='-repair', *, captured_already=False):
+        self.flow_git('merge', '--no-edit', 'main')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        if not captured_already:
+            captured = self.invoke('control', {'action': 'capture-integration',
+                'evidence': {'reference': 'controller:merged' + suffix},
+                'receipt': {'controller_ref': 'task', 'reference': 'controller:merged' + suffix}})
+            self.assertNotEqual(captured['status'], 'blocked', captured)
+        with patch.dict(self.settings, thread_id='dispatcher-runtime'):
+            execution = self.inherited_execution_input()
+            prepared = self.invoke('allocation', {'allocation_id': 'repair',
+                'operation': 'prepare', 'handoff': execution})
+            self.assertEqual((prepared.get('next_action') or {}).get('operation'), 'invoke-host', prepared)
+            slot = self.allocation_slot('repair')
+            bound = self.invoke('allocation', {'allocation_id': 'repair', 'operation': 'bind',
+                'receipt': {**self.receipt(slot['record'], ref='native:repair'), 'receipt_ref': 'host:repair-bind' + suffix}})
+            self.assertIsNotNone(bound['next_action'], bound)
+            content = ("print('repaired accepted implementation" + suffix + "')\n").encode()
+            (self.flow / 'impl.py').write_bytes(content)
+            slot = self.allocation_slot('repair')
+            received = self.invoke('allocation', {'allocation_id': 'repair', 'operation': 'receive',
+                'receipt': {**self.receipt(slot['record'], 'stopped', 'result', ref='native:repair'),
+                    'receipt_ref': 'host:repair-result' + suffix},
+                'result': {'delivery_id': 'repair-result', 'status': 'completed', 'payload': {
+                    'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(content).hexdigest()},
+                    'tests': ['repaired behavior passed'], 'write_release': bound['next_action']['result']['write_release'],
+                    'plan_refs': execution['semantic']['plan_refs'],
+                    'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
+            self.assertEqual(received['next_action']['result']['status'], 'received', received)
+            self.assertEqual(self.invoke('allocation', {'allocation_id': 'repair', 'operation': 'accept',
+                'decision': {'reference': 'dispatcher:repair' + suffix}})['next_action']['result']['status'], 'accepted')
+        self.flow_git('add', 'impl.py')
+        self.flow_git('commit', '-qm', 'repair accepted implementation')
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        accepted = self.accept_current({'artifacts': ['impl.py'], 'checks': ['repaired behavior passed'],
+            'candidate_commit': candidate, 'review': {axis: {'reviewer_ref': axis}
+                for axis in ('standards', 'spec')}}, 'native:dispatcher', fixture_execution=False, evidence_suffix=suffix)
+        self.assertEqual(accepted['status'], 'accepted', accepted)
+        self.assertNotEqual(self.state()['accepted']['digest'], original['digest'])
+        self.latest_implementation_footer = json.loads(accepted['completion']['stage_result']['handoff_json'])['accepted_transfer']
+        self.assertEqual(progress.read_projection(self.checkpoint, projection='delivery').record[progress.KEY]
+            ['accepted']['payload']['candidate_commit'], candidate)
+        with self.assertRaises(transfer.entry.PreparationError):
+            progress.implementation_acceptance(self.old_implementation_footer)
+        self.context = self.context_for(4)
+        closure = self.input_for(4, self.state()['accepted'])
+        started = self.begin('continuous', closure)
+        self.assertEqual(started['next_action']['operation'], 'invoke-host', started)
+        self.assertEqual((self.flow / 'CHANGELOG.md').read_text(), 'retained closure documentation\n')
+
     def prepare_design_result(self, mode):
         if not getattr(self, 'two_tickets', False):
             return super().prepare_design_result(mode)
@@ -65,10 +242,10 @@ class BoundedProgressTests(ProgressTests):
         successor['authorization']['scope_digest'] = transfer.entry.digest(successor['scope'])
         return successor
 
-    def accepted_implementation_for_closure(self, design=None):
-        design = design or self.finish_design('continuous')
+    def accepted_implementation_for_closure(self, design=None, *, standalone=False):
+        design = None if standalone else design or self.finish_design('continuous')
         self.context = self.context_for(3)
-        self.begin('continuous', self.staged_successor(design))
+        self.begin('continuous', self.input_for(3) if standalone else self.staged_successor(design))
         self.invoke('observe', self.observation(ref='native:dispatcher'))
         actor_settings = self.settings['thread_id']
         actor_host = copy.deepcopy(self.request['host'])
@@ -1332,14 +1509,14 @@ class BoundedProgressTests(ProgressTests):
         self.input = self.input_for(2)
         return package_root, confirmed_path
 
-    def runner_transition(self, mode, *, closure_entry=False, closure_completion=False, outer_gate=None):
+    def runner_transition(self, mode, *, closure_entry=False, closure_completion=False, outer_gate=None, recovery_entry=False):
         package_root, confirmed_path = self.runner_stage2_fixture()
         configuration = json.loads(confirmed_path.read_text())
         configuration['flow_mode'] = mode
         configuration['authority_scope']['allowed_paths'] = ['CHANGELOG.md', 'docs', 'impl.py']
         confirmed_path.write_text(json.dumps(configuration))
         fixture = self
-        calls, queued = [], []
+        calls, queued, turns = [], [], []
         class Host:
             instance = 'fixture-host'
             process = None
@@ -1352,10 +1529,28 @@ class BoundedProgressTests(ProgressTests):
                 self.process = object()
                 self.journal({'kind': 'host-started', 'instance': self.instance, 'pid': os.getpid()})
             def start_carrier(self, stage, settings):
+                if stage in self.threads:
+                    return self.threads[stage]
                 calls.append(stage)
                 self.threads[stage] = {'stage2': 'carrier', 'stage3': 'carrier-three', 'stage4': 'carrier-four'}[stage]
                 return self.threads[stage]
             def poll(self, timeout):
+                if recovery_entry and fixture.state()['stage'] == 4:
+                    prior = transfer.handoff.predecessor_facts(fixture.state()['handoff']['predecessor'])
+                    observed = fixture.observation('stopped', 'result', ref='native:closure')
+                    observed['closure'] = {'ref': 'native:closure', 'candidate': prior['payload']['candidate_commit'],
+                        'merge': None, 'ancestor_verified': False, 'changed_paths': [], 'binding': fixture.binding,
+                        'checks': [], 'worktree_removed': False, 'branch_removed': False,
+                        'disposition': 'deleted', 'disposition_verified': False,
+                        'implementation_problem': 'resume original foreground implementation carrier'}
+                    fixture.assertEqual(fixture.invoke('observe', observed)['next_action']['operation'], 'implementation-recovery')
+                    recovered = fixture.invoke('implementation-recovery', {'reference': 'controller:runner-recovery',
+                        'closure_digest': fixture.state()['handoff']['digest']})
+                    fixture.assertEqual((recovered.get('next_action') or {}).get('operation'), 'inspect-host-state', recovered)
+                    fixture.assertNotIn('native:closure', fixture.state()['recovered_native_refs'])
+                    fixture.assertEqual(runner.resume(fixture.checkpoint), 0)
+                    fixture.assertEqual(runner.resume(fixture.checkpoint), 0)
+                    return
                 outer = progress.read_projection(fixture.checkpoint, projection='identity').record
                 pending = outer.get('pending_input')
                 fixture.assertEqual(pending['kind'], 'stage-entry')
@@ -1364,6 +1559,7 @@ class BoundedProgressTests(ProgressTests):
                 fixture.assertEqual(runner.resume(fixture.checkpoint, answer='confirm',
                                                   decision_id=pending['decision_id']), 0)
             def run_turn(self, session, prompt, settings, schema, on_progress):
+                turns.append((session, progress.read_projection(fixture.checkpoint, projection='identity').record['launch']['turn']))
                 if session == 'carrier':
                     fixture.accepted_stage2 = fixture.finish_design(mode)
                     return json.dumps(fixture.accepted_stage2['completion']['stage_result']), 'stage2-turn'
@@ -1378,10 +1574,13 @@ class BoundedProgressTests(ProgressTests):
                     if closure_completion:
                         result = fixture.complete_closure_publication()
                         return json.dumps(result['completion']['stage_result']), 'stage4-turn'
-                    pending = fixture.invoke('observe', fixture.observation('idle', 'result', {
+                    terminal = fixture.observation('stopped' if recovery_entry else 'idle', 'result', {
                         'delivery_id': 'closure-entry-pending', 'status': 'needs_input',
-                        'payload': {'question': 'bounded transition reached Stage 4'}}, ref='native:closure'))['pending']
-                    self.process = None
+                        'payload': {'question': 'bounded transition reached Stage 4'}}, ref='native:closure')
+                    self.snapshot = terminal.get('lifecycle')
+                    pending = fixture.invoke('observe', terminal)['pending']
+                    if not recovery_entry:
+                        self.process = None
                     return json.dumps({'result': 'needs_input', 'needs_input_kind': 'user_decision',
                         'question': pending['question'], 'artifacts': [], 'evidence': [],
                         'handoff_json': '{}', 'message': ''}), 'stage4-turn'
@@ -1391,6 +1590,16 @@ class BoundedProgressTests(ProgressTests):
                     fixture.invoke('decide', outer['controller_decision'])
                 fixture.settings['thread_id'] = session
                 fixture.request['host'].update(thread_id=session, role='scripted-carrier', source_ref='task')
+                if recovery_entry and fixture.state().get('final_integration_recovery'):
+                    continued = fixture.invoke('observe', fixture.observation('idle', 'result', ref='native:dispatcher'))
+                    fixture.assertEqual(continued['next_action']['operation'], 'continue-host', continued)
+                    pending = fixture.invoke('observe', fixture.observation('idle', 'result', {
+                        'delivery_id': 'recovered-original-dispatcher', 'status': 'needs_input',
+                        'payload': {'question': 'original Dispatcher recovery resumed'}}, ref='native:dispatcher'))['pending']
+                    self.process = None
+                    return json.dumps({'result': 'needs_input', 'needs_input_kind': 'user_decision',
+                        'question': pending['question'], 'artifacts': [], 'evidence': [],
+                        'handoff_json': '{}', 'message': ''}), 'recovery-turn'
                 if closure_entry:
                     fixture.accepted_stage3 = fixture.accepted_implementation_for_closure(fixture.accepted_stage2)
                     if outer_gate is not None:
@@ -1409,6 +1618,8 @@ class BoundedProgressTests(ProgressTests):
                 return json.dumps({'result': 'needs_input', 'needs_input_kind': 'user_decision',
                     'question': pending['question'], 'artifacts': [], 'evidence': [], 'handoff_json': '{}',
                     'message': ''}), 'stage3-turn'
+            def snapshot_lifecycle(self, stage):
+                return copy.deepcopy(self.snapshot)
             def close(self):
                 self.process = None
         with patch.object(runner, '__file__', str(package_root / 'guided-implementation/scripts/workflow.py')), \
@@ -1420,6 +1631,14 @@ class BoundedProgressTests(ProgressTests):
                 return
             self.assertEqual(runner.start(confirmed_path), 0)
         outer = progress.read_projection(self.checkpoint, projection='identity').record
+        if recovery_entry:
+            self.assertEqual(calls, ['stage2', 'stage3', 'stage4'])
+            self.assertEqual([turn for session, turn in turns if session == 'carrier-three'], [1, 2])
+            self.assertEqual(outer['sessions']['stage3'], 'carrier-three')
+            self.assertEqual(outer['current_stage'], 'stage3')
+            self.assertEqual(outer['status'], 'needs_input')
+            self.assertEqual(self.state()['control']['context']['carrier']['ref'], 'native:dispatcher')
+            return
         if closure_entry:
             self.assertEqual(calls, ['stage2', 'stage3', 'stage4'])
             self.assertEqual(outer['current_stage'], 'stage4')
@@ -1451,6 +1670,9 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(previous['run_id'], outer[progress.KEY]['design_predecessor']['reference']['run_id'])
         self.assertEqual(previous['stage'], 2)
         self.assertEqual(transfer.handoff.predecessor_digest(previous), self.accepted_stage2['readiness']['accepted_digest'])
+
+    def test_inline_recovery_public_runner_resumes_original_turn_and_session(self):
+        self.runner_transition('continuous', closure_entry=True, recovery_entry=True)
 
     def test_completion_runner_public_continuous(self):
         self.runner_transition('continuous', closure_entry=True, closure_completion=True)

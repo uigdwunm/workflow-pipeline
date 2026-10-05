@@ -184,11 +184,27 @@ def verified_planning_paths(repository, progress):
                 'retained closure commit differs from integration candidate')
         history = progress.get('validation_history', [])
         accepted = commit(history[-1]['candidate']) if history and history[-1].get('candidate') else retained_commit
+        accepted_paths = set(history[-1].get('accepted_paths', [])) if history else set()
+        if accepted_paths:
+            # Only an exact committed acceptance can exempt documents inherited from an earlier repair.
+            import workflow_progress
+            proof = history[-1].get('proof_ref')
+            require(isinstance(proof, dict), 'retained closure needs its exact accepted proof')
+            facts, current, store = workflow_progress.read_implementation_delivery(proof['checkpoint_path'], proof)
+            previous = store.read_evidence(facts['git_evidence_ref'], run_id=current.run_id)['value']
+            previous_retained = previous.get('integration_retained') or {}
+            require(facts['payload']['candidate_commit'] == accepted and
+                    facts['execution_authority'] == progress['execution_authority'] and
+                    set(previous_retained.get('paths', [])) == accepted_paths and
+                    accepted_paths <= set(progress['execution_authority']['scope']['closure_paths']) and
+                    all(committed_fingerprint(repository, accepted, path) ==
+                        committed_fingerprint(repository, previous_retained['commit'], path)
+                        for path in accepted_paths), 'retained closure proof differs from accepted bytes or scope')
         git(repository, 'merge-base', '--is-ancestor', accepted, retained_commit)
         git(repository, 'merge-base', '--is-ancestor', retained_commit, 'HEAD')
         actual = set(filter(None, git(repository, 'diff', '--no-renames', '--name-only', '-z',
                                       accepted, retained_commit).decode().split('\0')))
-        require(actual == retained_paths and
+        require(actual | accepted_paths == retained_paths and
                 incoming_changed_paths(repository, accepted, retained_commit) <= retained_paths and
                 retained_paths <= set(progress['execution_authority']['scope']['closure_paths']),
                 'retained closure history escapes its exact document paths')

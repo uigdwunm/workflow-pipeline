@@ -501,6 +501,24 @@ def _live_commands(state, record_path):
             if work:
                 saved.setdefault('delivered_control_requests', []).append(request['request_id'])
                 saved['stop_delivery_pending'] = True
+            if (state['current_stage'] == 'stage4' and saved['current_stage'] == 'stage3' and
+                    saved['launch']['state'] == 'prelaunch' and current.get('stage') == 3 and
+                    current.get('status') == 'active' and current.get('recovery_predecessor') and
+                    (current.get('continuation_intent') or {}).get('kind') == 'final-integration' and
+                    saved['sessions'].get('stage3') == state['sessions'].get('stage3')):
+                scope = progression.read_projection(record_path, projection='scope').record[progression.KEY]
+                recovery = scope.get('integration_recovery') or {}
+                prior, _, _ = progression.read_implementation_delivery(record_path, current['recovery_predecessor'])
+                entry_prepare.require(recovery.get('predecessor') == current['recovery_predecessor'] and
+                    recovery.get('decision', {}).get('reference') == current['continuation_intent']['reference'] and
+                    recovery.get('carrier', {}).get('ref') == prior['dispatcher']['ref'] and
+                    recovery.get('dispatch_attempt') == recovery.get('carrier', {}).get('attempt') ==
+                        current['dispatch']['request']['attempt'] == prior['dispatch_attempt'] and
+                    scope['handoff']['expected_entry']['actor']['thread_id'] == saved['sessions']['stage3'],
+                    'identity_mismatch', 'recovery wakeup must retain the original Controller, carrier and Dispatcher attempt')
+                # C has consumed the unpublished recovery decision. Wake the same
+                # foreground owner; its original Stage-3 session executes the query.
+                work = True
             if (saved['status'] == 'failed' and current.get('status') == 'active' and
                     not current.get('business_block') and current.get('continuation_intent') and
                     current.get('recovery_decisions')):
