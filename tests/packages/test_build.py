@@ -17,7 +17,7 @@ class PackageBuildTests(unittest.TestCase):
         key = config['compatibility_key']
         self.assertEqual((key['control'], key['runner'], key['stage_transfer'], key['workflow_progress'],
                           key['execution_plan']),
-                         (11, 10, 'workflow-stage-transfer-v14', 'workflow-progress-v18',
+                         (11, 10, 'workflow-stage-transfer-v14', 'workflow-progress-v19',
                           'execution-plan-v1'))
         self.assertEqual((config['release'], config['source_revision']),
                          ('1.3.0', 'workflow-pipeline-v1.3.0'))
@@ -36,6 +36,8 @@ class PackageBuildTests(unittest.TestCase):
                 self.assertIn('scripts/execution_plan.py', package['files'])
             scripts = output / 'guided-implementation/scripts'
             requests = [('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v12', 'operation': 'prepare'}),
+                        ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
+                         {'protocol': 'workflow-progress-v18', 'operation': 'inspect', 'expected_revision': 0, 'data': {}}),
                         ('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v9', 'operation': 'prepare'}),
                         ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
                          {'protocol': 'workflow-progress-v16', 'operation': 'inspect', 'expected_revision': 0, 'data': {}}),

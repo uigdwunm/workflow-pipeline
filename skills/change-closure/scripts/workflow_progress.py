@@ -34,7 +34,7 @@ import workflow_control_git as control_git
 import skill_preflight
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-progress-v18"
+PROTOCOL = "workflow-progress-v19"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -149,17 +149,66 @@ def collaboration_inventory(value):
     return agents
 
 
-def collaboration_inventory_pending(inventory, expected, closed=()):
+def collaboration_inventory_pending(inventory, expected, closed=(), stopped_missing=()):
     agents = collaboration_inventory(inventory)
     actual = set(agents) - {inventory['controller_ref']}
     pending = []
-    if actual != expected - set(closed):
-        pending.append({'kind': 'unreconciled-descendants', 'expected': sorted(expected - set(closed)), 'actual': sorted(actual)})
+    remaining = expected - set(closed)
+    if actual - remaining or remaining - actual - set(stopped_missing):
+        pending.append({'kind': 'unreconciled-descendants', 'expected': sorted(remaining), 'actual': sorted(actual)})
     for ref in sorted(actual):
         status = agents[ref]
         if not (isinstance(status, dict) and set(status) == {'completed'} and isinstance(status['completed'], str)):
             pending.append({'kind': 'native-turn-not-stopped', 'ref': ref, 'status': status})
     return pending
+
+
+def baseline_thread_identity(state, data):
+    """Bind an admitted direct baseline child without giving it a workflow role."""
+    entry.fields(data, {'ref', 'binding'})
+    host = state['native_host']
+    require(host['adapter'] == 'collaboration' and data['ref'] in host['baseline_refs'] and
+            data['ref'].rsplit('/', 1)[0] == host['controller_ref'] and
+            not any(ref.startswith(data['ref'] + '/') for ref in host['baseline_refs']),
+            'identity_mismatch', 'exact-thread baseline lookup requires an admitted direct leaf identity')
+    binding = data['binding']
+    entry.fields(binding, {'call_ref', 'response_ref', 'raw'})
+    entry.nonempty(binding['call_ref']); entry.nonempty(binding['response_ref'])
+    raw = native_raw_object(binding['raw'])
+    require(isinstance(raw.get('thread'), dict) and raw['thread'].get('id') == host['instance'] and
+            isinstance(raw['thread'].get('hostId'), str) and raw['thread']['hostId'] and
+            isinstance(raw.get('turns'), list) and all(isinstance(turn, dict) and
+                isinstance(turn.get('items'), list) and all(isinstance(item, dict) for item in turn['items'])
+                for turn in raw['turns']),
+            'identity_mismatch', 'retain the original Controller thread readback binding the baseline identity')
+    events = [item for turn in raw['turns'] for item in turn['items']
+              if item.get('type') == 'subAgentActivity' and item.get('agentPath') == data['ref']]
+    require(all(isinstance(item.get('agentThreadId'), str) and item['agentThreadId'] for item in events),
+            'identity_mismatch', 'baseline native event thread identities must be nonempty strings')
+    identities = {item['agentThreadId'] for item in events}
+    require(len(identities) == 1 and all(isinstance(identity, str) and identity for identity in identities),
+            'identity_mismatch', 'the parent must bind one exact native thread to the missing baseline ref')
+    return next(iter(identities)), raw['thread']['hostId']
+
+
+def validate_baseline_thread_read(query, data):
+    entry.fields(data, {'query_id', 'call_ref', 'response_ref', 'raw'})
+    for key in ('query_id', 'call_ref', 'response_ref'): entry.nonempty(data[key])
+    require(data['query_id'] == query['query_id'], 'host_provenance_conflict', 'retain the issued baseline lookup')
+    raw = native_raw_object(data['raw'])
+    turns, thread = raw.get('turns'), raw.get('thread')
+    require(isinstance(thread, dict) and thread.get('id') == query['arguments']['threadId'] and
+            thread.get('hostId') == query['arguments']['hostId'] and
+            thread.get('status') in ({'type': 'idle'}, {'type': 'notLoaded'}) and
+            isinstance(raw.get('page'), dict) and raw['page'].get('order') == 'newest_first' and
+            isinstance(turns, list) and len(turns) == 1 and isinstance(turns[0], dict) and
+            isinstance(turns[0].get('id'), str) and turns[0]['id'] and turns[0].get('status') == 'completed' and
+            isinstance(turns[0].get('items'), list) and all(isinstance(item, dict) for item in turns[0]['items']) and
+            any(item.get('type') == 'agentMessage' and item.get('phase') == 'final_answer' and
+                isinstance(item.get('text'), str) and item['text'].strip() for item in turns[0]['items']) and
+            all(item.get('status') == 'completed' for item in turns[0]['items']
+                if item.get('type') in {'commandExecution', 'collabAgentToolCall'}),
+            'host_evidence_missing', 'current exact-thread readback must show its latest completed final turn and inactive host')
 
 
 def native_host_preflight(value):
@@ -457,6 +506,27 @@ def validate_state(state):
             inventory = collaboration_inventory(record['verified']['inventory'])
             require(not any(ref == record['ref'] or ref.startswith(record['ref'] + '/') for ref in inventory),
                     'invalid_checkpoint', 'verified native closure must retain the exact inactive subtree inventory')
+    baseline_queries = state.get('baseline_thread_queries', [])
+    require(isinstance(baseline_queries, list), 'invalid_checkpoint', 'baseline lookups must be an ordered journal')
+    query_ids, call_refs, response_refs = set(), set(), set()
+    for query in baseline_queries:
+        require(isinstance(query, dict) and set(query) == {'operation', 'query_id', 'tool', 'arguments',
+                'ref', 'input', 'guard', 'inventory_query_id', 'result'} and
+                query['operation'] == 'invoke-baseline-thread-query' and query['tool'] == 'mcp__codex_app__read_thread' and
+                isinstance(query['query_id'], str) and query['query_id'] and query['query_id'] not in query_ids and
+                isinstance(query['guard'], str) and re.fullmatch(r'[0-9a-f]{64}', query['guard']) and
+                isinstance(query['inventory_query_id'], str) and query['inventory_query_id'],
+                'invalid_checkpoint', 'retain the original baseline query, inventory and liveness guard')
+        thread, host_id = baseline_thread_identity(state, query['input'])
+        require(query['ref'] == query['input']['ref'] and
+                query['arguments'] == {'threadId': thread, 'hostId': host_id, 'turnLimit': 1},
+                'invalid_checkpoint', 'baseline lookup must retain its parent-bound exact native thread')
+        query_ids.add(query['query_id'])
+        if query['result'] is not None:
+            validate_baseline_thread_read(query, query['result'])
+            require(query['result']['call_ref'] not in call_refs and query['result']['response_ref'] not in response_refs,
+                    'invalid_checkpoint', 'a baseline response cannot belong to multiple queries')
+            call_refs.add(query['result']['call_ref']); response_refs.add(query['result']['response_ref'])
     control.validate_context(state["control"]["context"])
     for identity, transaction in state.get('control_transactions', {}).items():
         require(entry.digest(transaction['request']) == identity, 'invalid_checkpoint', 'control transaction identity changed')
@@ -1212,7 +1282,60 @@ class Progress:
             return [{'kind': 'current-descendants-stale'}]
         expected = set(s['native_host']['baseline_refs']) | self.native_refs()
         expected.update(ref for old in s.get('history', []) for ref in self.native_refs(old))
-        return collaboration_inventory_pending(snapshot['inventory'], expected, self.closed_native_refs())
+        stopped_missing = {query['ref'] for query in s.get('baseline_thread_queries', [])
+            if query.get('result') is not None and query['inventory_query_id'] == snapshot['query_id'] and
+            query['guard'] == snapshot['guard']}
+        return collaboration_inventory_pending(snapshot['inventory'], expected, self.closed_native_refs(), stopped_missing)
+
+    def baseline_thread_query(self, data):
+        s = self.state
+        thread, host = baseline_thread_identity(s, data)
+        require(data['ref'] not in self.native_refs() and
+                not any(data['ref'] in self.native_refs(old) for old in s.get('history', [])),
+                'identity_mismatch', 'workflow roles must retain their original observation and finalization contracts')
+        agents = self.finalization_snapshot()
+        require(data['ref'] not in agents and not any(ref.startswith(data['ref'] + '/') for ref in agents),
+                'host_evidence_missing', 'baseline lookup supplements only a missing admitted leaf in the current inventory')
+        snapshot = s['lifecycle_snapshot']
+        for query in s.get('baseline_thread_queries', []):
+            if query['input'] == data and query['inventory_query_id'] == snapshot['query_id'] and query.get('result') is None:
+                return _view(s, {key: copy.deepcopy(query[key]) for key in ('operation', 'query_id', 'tool', 'arguments')},
+                             acknowledged=True)
+        query = {'operation': 'invoke-baseline-thread-query', 'query_id': str(uuid.uuid4()),
+            'tool': 'mcp__codex_app__read_thread', 'arguments': {'threadId': thread, 'hostId': host, 'turnLimit': 1},
+            'ref': data['ref'], 'input': copy.deepcopy(data), 'guard': snapshot['guard'],
+            'inventory_query_id': snapshot['query_id'], 'result': None}
+        s.setdefault('baseline_thread_queries', []).append(query)
+        self.save()
+        return _view(s, {key: copy.deepcopy(query[key]) for key in ('operation', 'query_id', 'tool', 'arguments')})
+
+    def baseline_thread_state(self, data):
+        entry.fields(data, {'query_id', 'call_ref', 'response_ref', 'raw'})
+        for key in ('query_id', 'call_ref', 'response_ref'): entry.nonempty(data[key])
+        s = self.state
+        query = next((query for query in s.get('baseline_thread_queries', []) if query['query_id'] == data['query_id']), None)
+        require(query is not None, 'host_provenance_conflict', 'baseline readback requires its original issued query')
+        snapshot = s.get('lifecycle_snapshot')
+        require(snapshot is not None and snapshot['guard'] == self.collaboration_guard() == query['guard'] and
+                snapshot['query_id'] == query['inventory_query_id'],
+                'host_evidence_missing', 'a new inventory or native activity requires a new exact-thread baseline lookup')
+        for state in [s, *s.get('history', [])]:
+            sources = list(state.get('collaboration_lookups', {}).values())
+            sources.extend(item['input']['binding'] for item in state.get('baseline_thread_queries', []))
+            require(all(source['call_ref'] != data['call_ref'] and source['response_ref'] != data['response_ref']
+                        for source in sources), 'host_provenance_conflict',
+                    'inventory and parent-binding responses cannot be relabelled as a current child-thread read')
+        if query['result'] is not None:
+            require(query['result'] == data, 'host_provenance_conflict', 'baseline response cannot be changed or rebound')
+            return _view(s, acknowledged=True)
+        for previous in s.get('baseline_thread_queries', []):
+            result = previous.get('result')
+            require(result is None or result['call_ref'] != data['call_ref'] and result['response_ref'] != data['response_ref'],
+                    'host_provenance_conflict', 'cached baseline evidence cannot satisfy a new inventory or query')
+        validate_baseline_thread_read(query, data)
+        query['result'] = copy.deepcopy(data)
+        self.save()
+        return self.finish_lifecycle(True)
 
     def closed_native_refs(self):
         return {record['ref'] for record in self.state.get('native_finalizations', [])
@@ -5023,6 +5146,8 @@ def handle(path, request):
             if operation == 'review-activity': return owner.review_activity(data)
             if operation == 'lifecycle-state': return owner.lifecycle_state(data)
             if operation == 'lifecycle-query': return owner.lifecycle_query(data)
+            if operation == 'baseline-thread-query': return owner.baseline_thread_query(data)
+            if operation == 'baseline-thread-state': return owner.baseline_thread_state(data)
             if operation == 'native-finalize': return owner.native_finalize(data)
             if operation == 'host-event': return owner.host_event(data)
             if operation == 'transport-lost': return owner.transport_lost(data)

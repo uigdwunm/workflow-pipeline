@@ -97,7 +97,7 @@ permits cleanup-only; this recovery never rolls back or republishes it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v18","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v19","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -315,18 +315,19 @@ the same envelope as preflight, containing this new unmodified response.
 Keep actual invocation/response references. A cached list with fresh labels is
 not evidence. Use this separate operation, not `observe.lifecycle` RPC snapshots.
 
-Only the raw `{completed:<final text>}` status establishes terminal native turns
-for this adapter. `running`, `idle`, errors, unknown statuses, missing registered
+In the inventory, only raw `{completed:<final text>}` establishes terminal native
+turns. `running`, `idle`, errors, unknown statuses, missing registered
 writers or extra unregistered agents keep publication/acceptance blocked. The
 Controller itself may be running. Current execution allocations, both review
-axes and previous review attempts remain part of the writer set. Every admitted
-baseline identity and every prior stage's native identity must still appear and
-be completed unless the native finalization below has verified its closure.
+axes and previous review attempts remain part of the writer set. Every prior
+stage's native identity must appear and be completed unless native finalization
+has verified its closure. Admitted baseline identities also require current
+terminal evidence; the exact-thread lookup below can supplement their absence.
 An unexplained missing identity remains unavailable evidence.
 All unresolved control/native
 calls must still be reconciled through their original parents.
 
-Every query revokes the previous snapshot immediately. New host activity,
+Every inventory query revokes the previous snapshot immediately. New host activity,
 changed allocations/review bindings or outstanding calls invalidate its saved
 guard. After failure or changed activity, use a new query and real response;
 each response consumes its query, and a rejected or late response also revokes
@@ -336,6 +337,27 @@ unchanged. After revocation, querying again is required; replaying
 any earlier completed response cannot refresh proof. A completed inventory is point-in-time
 turn evidence, not a claim that detached shell processes have stopped: native
 writers must finish their allocated commands before returning their result.
+
+When an admitted direct, leaf `baseline_ref` is absent, use
+`baseline-thread-query` with `{ref,binding:{call_ref,response_ref,raw}}`.
+The binding is an authenticated original Controller `read_thread` response;
+its native `subAgentActivity` items must bind that ref to exactly one thread ID
+on the original host. C saves and returns the exact `read_thread` request with
+`turnLimit:1` and a `query_id`. Execute that read-only tool action and submit
+`baseline-thread-state` with `{query_id,call_ref,response_ref,raw}` from the new
+invocation. The raw response must have the bound thread/host, `newest_first`
+order, one latest completed turn with a final answer, completed command/tool
+items, and current `idle` or `notLoaded` thread status. Tool errors, active or
+unknown state, mismatched identity and cached/relabelled provenance cannot
+satisfy the barrier.
+
+This evidence supplements only that missing baseline leaf in that inventory
+generation and liveness guard. A new inventory, native activity or changed
+writer bindings requires a new exact-thread read. Listed active identities,
+unknown agents, missing workflow roles and baseline subtrees remain blocked.
+It neither edits the inventory nor marks a thread closed, archives it, grants a
+workflow role or replaces the original result/finalization contracts. Old v18
+runs retain their original pins and checkpoints; v19 does not migrate them.
 Controllers keep the original ownership of dispatch and continuation.
 
 For current execution proof, `observe.provenance` is
@@ -832,7 +854,7 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 10 and pin workflow-progress-v18 /
+New runner records use outer version 10 and pin workflow-progress-v19 /
 workflow-stage-transfer-v14 / flow-worktree-v3 packages with control compatibility
 key 11 and control JSON schema 6. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate

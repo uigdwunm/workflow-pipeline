@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "7a53650aac86d1e4fa58828b76f4152cbbeabbc93c3a1113fb52952c1ad836b3",
+  "bundle_digest": "dd52fadf47a9826babf0ffad44f10d50d38d563e3792278b6e1923ecae5c1156",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 11,
@@ -20,7 +20,7 @@
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "topic_gate": "phase-0-1-discussion-v2",
-    "workflow_progress": "workflow-progress-v18"
+    "workflow_progress": "workflow-progress-v19"
   },
   "external_actions": {
     "route": [
@@ -66,15 +66,15 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "98c11280a7e27b7dfbae7557f3165f25cc6cd042a713da7c6f764364dfea8624"
+      "sha256": "f60c83546fb0e38eb4ca6fe0e453e15936c8dbd437d3d9f2f89d86d81bde82ed"
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "2b17ed31bf378983775755d96f56d5e8733875e4c143a19f386f75d74969bb5b"
+      "sha256": "d159029ec9485f0d0cd473ccc11cacc0ee120727825500f5a3becb35a50b2014"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "3b5ec9a01b102a5beef60e4813149b6d15a27f972fa7d63e680da0f4093ffc5d"
+      "sha256": "d6aa5dace112c9c4cb067a0ed843875e5b25b4da305bd16901eeee00ec587741"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -90,7 +90,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "1562cc82a42c8049e38ae9e8ba1cdeb9f09efccce2d59b23421888ce671bbd01"
+      "sha256": "f6f3ab4c601ab6a14c984bd6a567f9c4d5491345fa5dedbc7fb000b3d84c57a7"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -226,7 +226,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "f79ed358ea884ad7db7bb3fa814d07f472628caa68308e7d4ba002cafc107b28"
+      "sha256": "bd03af591682e69cb680113506721d16d4290be76486226e50a44b5545010811"
     }
   },
   "format_version": 1,

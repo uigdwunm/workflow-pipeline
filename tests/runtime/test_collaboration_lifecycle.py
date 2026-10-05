@@ -55,6 +55,166 @@ class CollaborationLifecycleTests(unittest.TestCase):
         return {'query_id': action['query_id'], 'call_ref': 'call:' + action['query_id'],
                 'response_ref': 'response:' + action['query_id'], 'inventory': inventory or self.inventory()}
 
+    def missing_baseline(self):
+        f = self.f
+        baseline = {'agent_name': '/root/old_review', 'agent_status': {'completed': 'old review completed'}}
+        f.invoke('start', {'handoff': f.input, 'control': {'context': f.context, 'discussion': None},
+            'native_host': self.inventory([{'agent_name': '/root', 'agent_status': 'running'}, baseline])})
+        f.invoke('observe', f.observation(ref='/root/designer'))
+        self.candidate()
+        f.invoke('lifecycle-state', self.snapshot())
+        self.assertFalse(f.state()['stopped'])
+        return {'ref': '/root/old_review', 'binding': {
+            'call_ref': 'actual-parent-read', 'response_ref': 'actual-parent-response',
+            'raw': {'thread': {'id': 'task', 'hostId': 'local'}, 'turns': [{'items': [
+                {'type': 'subAgentActivity', 'agentPath': '/root/old_review',
+                 'agentThreadId': 'old-review-thread'}]}]}}}
+
+    def baseline_readback(self, query):
+        return {'query_id': query['query_id'], 'call_ref': 'read:' + query['query_id'],
+            'response_ref': 'read-response:' + query['query_id'], 'raw': {
+                'thread': {'id': 'old-review-thread', 'hostId': 'local', 'status': {'type': 'notLoaded'}},
+                'page': {'order': 'newest_first'}, 'turns': [{'id': 'latest-old-review-turn',
+                    'status': 'completed', 'items': [{'type': 'agentMessage', 'phase': 'final_answer',
+                        'text': 'old review completed; commands=stopped'}]}]}}
+
+    def test_missing_baseline_exact_current_read_allows_publication_without_archiving(self):
+        f = self.f
+        request = self.missing_baseline()
+        before = copy.deepcopy({key: f.state()[key] for key in ('dispatch', 'control', 'native_host')})
+        query = f.invoke('baseline-thread-query', request)['next_action']
+        self.assertEqual(query['tool'], 'mcp__codex_app__read_thread')
+        self.assertEqual(query['arguments'], {'threadId': 'old-review-thread', 'hostId': 'local', 'turnLimit': 1})
+        f.invoke('baseline-thread-state', self.baseline_readback(query))
+        result = f.invoke('publication', {'candidate_commit': f.flow_git('rev-parse', 'HEAD'),
+            'reference': 'controller:ready'})
+        self.assertTrue(result['next_action']['publication']['result']['ok'], result)
+        self.assertEqual({key: f.state()[key] for key in before}, before)
+        self.assertFalse(f.state()['native_finalizations'])
+
+    def test_missing_baseline_inventory_or_parent_call_cannot_be_relabelled_as_thread_read(self):
+        f = self.f
+        request = self.missing_baseline()
+        query = f.invoke('baseline-thread-query', request)['next_action']
+        for source in (f.state()['lifecycle_snapshot'], request['binding']):
+            data = self.baseline_readback(query)
+            data['call_ref'], data['response_ref'] = source['call_ref'], source['response_ref']
+            with self.subTest(source=source['call_ref']):
+                result = f.invoke('baseline-thread-state', data)
+                self.assertEqual(result['error']['code'], 'host_provenance_conflict', result)
+                self.assertFalse(f.state()['stopped'])
+        f.invoke('baseline-thread-state', self.baseline_readback(query))
+        result = f.invoke('publication', {'candidate_commit': f.flow_git('rev-parse', 'HEAD'),
+            'reference': 'controller:ready'})
+        self.assertTrue(result['next_action']['publication']['result']['ok'], result)
+
+    def test_missing_baseline_saved_readback_is_validated_before_use(self):
+        f = self.f
+        query = f.invoke('baseline-thread-query', self.missing_baseline())['next_action']
+        f.invoke('baseline-thread-state', self.baseline_readback(query))
+        saved = progress.read_record(f.checkpoint)
+        saved[progress.KEY]['baseline_thread_queries'][0]['result']['raw']['thread']['id'] = 'different-native-thread'
+        f.checkpoint.write_text(json.dumps(saved))
+        with self.assertRaises(progress.entry.PreparationError):
+            f.invoke('inspect')
+
+    def test_missing_baseline_wrong_or_active_readback_keeps_publication_blocked(self):
+        f = self.f
+        query = f.invoke('baseline-thread-query', self.missing_baseline())['next_action']
+        head = f.git('rev-parse', 'HEAD')
+        for mutation in ('wrong-thread', 'wrong-host', 'running', 'incomplete-turn', 'old-page',
+                         'missing-final', 'running-command', 'error-response'):
+            data = self.baseline_readback(query)
+            raw = data['raw']
+            if mutation == 'wrong-thread': raw['thread']['id'] = 'other-thread'
+            elif mutation == 'wrong-host': raw['thread']['hostId'] = 'other-host'
+            elif mutation == 'running': raw['thread']['status'] = {'type': 'active'}
+            elif mutation == 'incomplete-turn': raw['turns'][0]['status'] = 'inProgress'
+            elif mutation == 'old-page': raw['page']['order'] = 'oldest_first'
+            elif mutation == 'missing-final': raw['turns'][0]['items'] = []
+            elif mutation == 'running-command':
+                raw['turns'][0]['items'].append({'type': 'commandExecution', 'status': 'inProgress'})
+            else: raw['isError'] = True
+            with self.subTest(mutation=mutation):
+                result = f.invoke('baseline-thread-state', data)
+                self.assertEqual(result['error']['code'], 'host_evidence_missing', result)
+                self.assertFalse(f.state()['stopped'])
+                self.assertEqual(f.git('rev-parse', 'HEAD'), head)
+                self.assertIsNone(f.state()['baseline_thread_queries'][0]['result'])
+
+    def test_missing_baseline_new_inventory_and_activity_require_new_thread_read(self):
+        f = self.f
+        request = self.missing_baseline()
+        first = f.invoke('baseline-thread-query', request)['next_action']
+        self.assertEqual(f.invoke('baseline-thread-query', request)['next_action'], first)
+        first_read = self.baseline_readback(first)
+        f.invoke('baseline-thread-state', first_read)
+        f.invoke('lifecycle-state', self.snapshot())
+        self.assertFalse(f.state()['stopped'])
+        rejected = f.invoke('baseline-thread-state', first_read)
+        self.assertEqual(rejected['error']['code'], 'host_evidence_missing')
+        second = f.invoke('baseline-thread-query', request)['next_action']
+        relabelled = {**first_read, 'query_id': second['query_id']}
+        rejected = f.invoke('baseline-thread-state', relabelled)
+        self.assertEqual(rejected['error']['code'], 'host_provenance_conflict')
+        second_read = self.baseline_readback(second)
+        f.invoke('baseline-thread-state', second_read)
+        f.invoke('host-event', {'instance': f.state()['native_host']['instance'], 'event': {
+            'type': 'subAgentActivity', 'id': 'new-baseline-turn', 'kind': 'interacted',
+            'agentPath': request['ref'], 'agentThreadId': 'old-review-thread'}})
+        self.assertFalse(f.state()['stopped'])
+        rejected = f.invoke('baseline-thread-state', second_read)
+        self.assertEqual(rejected['error']['code'], 'host_evidence_missing')
+
+    def test_missing_baseline_does_not_hide_unknown_agents_or_missing_workflow_writer(self):
+        f = self.f
+        request = self.missing_baseline()
+        agents = self.inventory()['response']['agents'] + [
+            {'agent_name': '/root/unregistered', 'agent_status': {'completed': 'unknown completed'}}]
+        f.invoke('lifecycle-state', self.snapshot(self.inventory(agents)))
+        query = f.invoke('baseline-thread-query', request)['next_action']
+        f.invoke('baseline-thread-state', self.baseline_readback(query))
+        self.assertFalse(f.state()['stopped'])
+        result = f.invoke('publication', {'candidate_commit': f.flow_git('rev-parse', 'HEAD'),
+            'reference': 'controller:ready'})
+        self.assertEqual(result['error']['code'], 'host_evidence_missing')
+        wrong = copy.deepcopy(request)
+        wrong['ref'] = '/root/designer'
+        result = f.invoke('baseline-thread-query', wrong)
+        self.assertEqual(result['error']['code'], 'identity_mismatch')
+
+    def test_missing_baseline_binding_cannot_change_parent_or_native_identity(self):
+        f = self.f
+        request = self.missing_baseline()
+        for mutation in ('different-parent', 'missing-event', 'ambiguous-identity', 'not-baseline'):
+            wrong = copy.deepcopy(request)
+            raw = wrong['binding']['raw']
+            if mutation == 'different-parent': raw['thread']['id'] = 'other-controller'
+            elif mutation == 'missing-event': raw['turns'][0]['items'] = []
+            elif mutation == 'ambiguous-identity':
+                raw['turns'][0]['items'].append({'type': 'subAgentActivity', 'agentPath': wrong['ref'],
+                    'agentThreadId': 'other-child'})
+            else: wrong['ref'] = '/root/unknown'
+            with self.subTest(mutation=mutation):
+                result = f.invoke('baseline-thread-query', wrong)
+                self.assertEqual(result['error']['code'], 'identity_mismatch')
+                self.assertFalse(f.state().get('baseline_thread_queries'))
+
+    def test_missing_baseline_subtree_requires_the_original_whole_tree_barrier(self):
+        f = self.f
+        f.invoke('start', {'handoff': f.input, 'control': {'context': f.context, 'discussion': None},
+            'native_host': self.inventory([{'agent_name': '/root', 'agent_status': 'running'},
+                {'agent_name': '/root/old_review', 'agent_status': {'completed': 'stopped'}},
+                {'agent_name': '/root/old_review/child', 'agent_status': {'completed': 'stopped'}}])})
+        f.invoke('observe', f.observation(ref='/root/designer'))
+        self.candidate()
+        f.invoke('lifecycle-state', self.snapshot())
+        request = {'ref': '/root/old_review',
+            'binding': self.finalization('/root/old_review', 'old-review-thread')['binding']}
+        result = f.invoke('baseline-thread-query', request)
+        self.assertEqual(result['error']['code'], 'identity_mismatch')
+        self.assertFalse(f.state()['stopped'])
+
     def finalization(self, ref='/root/designer', thread='designer-thread'):
         parent_thread = 'dispatcher-runtime' if ref.startswith('/root/dispatcher/') else 'task'
         return {'operation': 'prepare', 'ref': ref, 'actor_ref': 'task',

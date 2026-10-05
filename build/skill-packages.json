@@ -20,7 +20,7 @@
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v5",
     "stage_transfer": "workflow-stage-transfer-v14",
-    "workflow_progress": "workflow-progress-v18",
+    "workflow_progress": "workflow-progress-v19",
     "requirement_delivery": "requirement-delivery-v2",
     "execution_plan": "execution-plan-v1"
   },

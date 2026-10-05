@@ -398,7 +398,7 @@ No implementation contract, tests, generated package or protected source belongs
 to closure scope. After a recorded merge, reconcile publication/cleanup instead
 of demanding a new validation or merge.
 
-New records use runner 10, C workflow-progress-v18, B
+New records use runner 10, C workflow-progress-v19, B
 workflow-stage-transfer-v14 and control compatibility key 11 (JSON schema 6).
 Old executable records fail with `legacy_run_requires_original_runtime` before
 writes or host calls. Embedded old control keeps the ledger outer version and
