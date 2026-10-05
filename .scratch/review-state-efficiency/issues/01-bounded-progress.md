@@ -64,6 +64,14 @@ V04：真实 finish_design→原 C start Stage3→bind→inspect 首先复现 hi
 
 命令：逐文件 `python3 scripts/run_tests.py --test-file <上述路径>`；若已有runner占锁，报告owner并结束该次验证。源模块及新增store资源必须同次生成到五包闭包，package identity采用新key，不手改generated副本。
 
+## 组合验收边界
+
+各行为片局部通过后仍需累计组合验收，不能据单片报告勾选整张 Ticket。先适配已证实的 baseline 旧夹具：`test_missing_baseline_saved_readback_is_validated_before_use` 通过有限 stage subject 定位原 raw，构造引用链有效但线程身份错误的证据，保留原业务拒绝断言。
+
+固定源码与 HEAD 后，统一 runner 逐文件运行完整 bounded 与 workflow_progress，保留新结果并重新分类最初 106 项检查的失败；旧失败日志不改写。只对实际失败作对应 focused 修复，必要 verify 文件晋升逐项记录。随后核验 workflow、stage_transfer、unified_recovery、discussion_protocol 和实际支持的 attached/协作路径累计行为；已通过检查仅在新变更或未解决疑点影响时重跑。测试占锁按 owner 报告并结束尝试，不绕锁。最终全六 Ticket 候选再运行 validate.sh。
+
+组合覆盖现已支持调用方与 ledger dedicated 路线，不修通延期的 attached 初始化桥。纯模块／模拟权限夹具不能当作真实新运行支持证据。其余原文来源以实际入口和既有输入合同核验，不因静态出现 raw 字段就新增功能片；真实缺陷仍需修复。T05 负责通用长期整理和物理规模验证，不承担 T01 最小前驱／生产读取未闭合的欠账。
+
 ## 实施约束与演示
 
 不迁移旧状态；新接口可在实现分支内部逐步接入，但本Ticket完成时所有列明生产读者均能读新格式。演示输出包括原/新文件字节、对象读取数、同一调用工具执行计数、暂停后next_action和原native identity。不要用单独store单测通过冒充生产闭环。

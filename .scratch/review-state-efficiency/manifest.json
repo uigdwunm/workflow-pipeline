@@ -1416,7 +1416,7 @@
         "T06"
       ],
       "kind": "test",
-      "reason": "T01特殊native close回查：原样verify在accepted_execution旧slot.record.handoff处KeyError，允许该helper改用既有resolve_allocation；保原协作权限/停止/来源断言。后续query身份适配须实际失败证明，不批量改测试。 已实证test_close_readback_failures_and_new_activity_preserve_original_close_and_revoke在unknown后更换call_ref被原调用保留门禁拒绝：仅该测试加入错call拒绝，用同pending call的新response终结，再explicit lookup创建后续query；保close/actions/revoked/raw反例，不全局改helper身份。",
+      "reason": "T01特殊native close回查：原样verify在accepted_execution旧slot.record.handoff处KeyError，允许该helper改用既有resolve_allocation；保原协作权限/停止/来源断言。后续query身份适配须实际失败证明，不批量改测试。 已实证test_close_readback_failures_and_new_activity_preserve_original_close_and_revoke在unknown后更换call_ref被原调用保留门禁拒绝：仅该测试加入错call拒绝，用同pending call的新response终结，再explicit lookup创建后续query；保close/actions/revoked/raw反例，不全局改helper身份。 T01组合另限test_missing_baseline_saved_readback_is_validated_before_use：已实证旧root索引在业务断言前失败，改为精确stage subject原baseline raw.thread.id故障注入，保持有效subject/scope/root引用链以验证真实身份拒绝；不删skip、不新增baseline外置模型。",
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": []
