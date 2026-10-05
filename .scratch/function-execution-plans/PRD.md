@@ -2794,7 +2794,7 @@ Lifecycle 表示该最新授权范围的工作已完成，原 Spec、User Storie
 
 证据位于本机运行目录，不随生成 Skill 包分发：
 
-- `/Users/zhaolaiyuan/.codex/workflow-runs/01a0fa75-e2b2-72a0-9ad7-ece250b691da/function-execution-plans.baseline-lifecycle-full-root-verification.json`：生产候选及原完整验证读回。
+- `$CODEX_HOME/workflow-runs/01a0fa75-e2b2-72a0-9ad7-ece250b691da/function-execution-plans.baseline-lifecycle-full-root-verification.json`：生产候选及原完整验证读回。
 - 同目录 `evidence/t3-gpt61-high/acceptance-evidence-index.json`：非权威证据索引；权威样例状态在 `evidence/t3-gpt61-high/workflow.json`（C417）。
 - 同目录 `evidence/t3-attached-ingress/actual-attached-start-conflict-diagnostic.json`：真实 attached 初始化拒绝。
 - 同目录 `evidence/production-ticket-delivery/confirmed-delivery-scope.json`：用户最新范围选择、本地交付授权与排除的副作用。
