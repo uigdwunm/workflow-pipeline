@@ -2243,6 +2243,53 @@ class BoundedProgressTests(ProgressTests):
         self.assertNotEqual(retried['action_id'], previous['action_id'])
         self.assertEqual(retried['payload']['unresolved_action']['action_id'], stop['action_id'])
 
+    def test_active_unknown_query_retry_reserves_before_saving_at_full_budget(self):
+        self.begin()
+        self.invoke('observe', self.observation())
+        self.invoke('pause')
+        self.invoke('observe', self.observation('stopped', 'result'))
+        query = self.invoke('resume')['next_action']
+        self.assertEqual(query['operation'], 'inspect-host-state')
+        waiting = self.invoke('observe', self.observation('unknown', 'result'))
+        self.assertEqual(waiting['next_action']['operation'], 'await-host-recovery')
+        before = self.state()
+        self.assertEqual(before['status'], 'active')
+        self.assertIsNone(before.get('stop_requested'))
+        self.assertEqual(before['host']['status'], 'unknown')
+        self.assertTrue(before['host']['query']['resolved'])
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        retried = self.invoke('resume')['next_action']
+        self.assertEqual(retried['operation'], 'inspect-host-state')
+        self.assertNotEqual(retried['action_id'], query['action_id'])
+        self.assertEqual(retried['payload']['request'], query['payload']['request'])
+        self.assertEqual(self.state()['host_action'], before['host_action'])
+        self.assertEqual(self.state()['host']['query_history'], [before['host']['query']])
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(retried['action_id'].encode()).hexdigest()
+        self.assertTrue(reserve.exists())
+        self.assertEqual(self.state()['status'], 'active')
+
+    def test_known_query_resume_keeps_the_original_pending_decision(self):
+        self.begin()
+        self.invoke('observe', self.observation())
+        self.invoke('pause')
+        self.invoke('observe', self.observation('stopped', 'result'))
+        self.invoke('resume')
+        waiting = self.invoke('observe', self.observation('idle', 'result', {
+            'delivery_id': 'query-question', 'status': 'needs_input', 'payload': {'question': 'Continue this work?'}}))
+        pending = waiting['pending']
+        before = self.state()
+        self.assertEqual(before['status'], 'needs_input')
+        self.assertEqual(before['host']['status'], 'idle')
+        self.assertTrue(before['host']['query']['resolved'])
+        resumed = self.invoke('resume')
+        self.assertTrue(resumed['acknowledged'])
+        self.assertEqual(resumed['pending'], pending)
+        self.assertNotEqual((resumed.get('next_action') or {}).get('operation'), 'inspect-host-state')
+        self.assertIsNone(self.state()['host']['query'])
+        self.assertEqual(self.state()['host']['query_history'], [before['host']['query']])
+        self.assertEqual(self.state()['host_action'], before['host_action'])
+
     def test_stop_reservation_failure_does_not_publish_an_unreserved_action(self):
         self.begin_dispatcher()
         original = copy.deepcopy(self.state()['host_action'])

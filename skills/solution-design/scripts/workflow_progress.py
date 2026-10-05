@@ -6216,6 +6216,8 @@ class Progress:
         query = s["host"].get("query")
         if ((query or {}).get("resolved") and not s.get("business_block") and
                 (s["status"] != "accepted" or self.unresolved_host_actions() or not s['stopped'])):
+            if self.unresolved_host_actions() or s['host']['status'] == 'unknown':
+                return self.query_host(retry=True)
             s["host"].setdefault("query_history", []).append(copy.deepcopy(query))
             s["host"]["query"] = None
             self.save()
