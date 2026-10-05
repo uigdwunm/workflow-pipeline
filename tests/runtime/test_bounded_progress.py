@@ -265,58 +265,7 @@ class BoundedProgressTests(ProgressTests):
             'planning_commit': candidate, 'planning_merge_commit': self.flow_git('rev-parse', 'HEAD'),
             'planning_paths': planning_paths}
 
-    def staged_successor(self, accepted):
-        successor = self.input_for(3, self.state()['accepted'])
-        scope = accepted['readiness']['scope_authority']['scope']
-        for key in ('downstream', 'implementation_paths', 'closure_paths'):
-            successor['scope'][key] = copy.deepcopy(scope[key])
-        successor['scope']['owned_paths'] = copy.deepcopy(scope['implementation_paths'])
-        successor['scope']['protected_paths'] = sorted(set(scope['protected_paths'] +
-            self.state()['accepted']['payload']['planning_paths']))
-        successor['authorization']['scope_digest'] = transfer.entry.digest(successor['scope'])
-        return successor
 
-    def accepted_implementation_for_closure(self, design=None, *, standalone=False):
-        design = None if standalone else design or self.finish_design('continuous')
-        self.context = self.context_for(3)
-        self.begin('continuous', self.input_for(3) if standalone else self.staged_successor(design))
-        self.invoke('observe', self.observation(ref='native:dispatcher'))
-        actor_settings = self.settings['thread_id']
-        actor_host = copy.deepcopy(self.request['host'])
-        execution = self.execution_input()
-        prepared = self.invoke('allocation', {'allocation_id': 'closure-slice',
-            'operation': 'prepare', 'handoff': execution})
-        self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
-        slot = self.allocation_slot('closure-slice')
-        receipt = self.receipt(slot['record'], ref='native:executor')
-        receipt['raw']['output'] = 'original allocation report ' * 4000
-        bound = self.invoke('allocation', {'allocation_id': 'closure-slice', 'operation': 'bind',
-            'receipt': receipt})
-        content = b"print('accepted implementation')\n"
-        (self.flow / 'impl.py').write_bytes(content)
-        slot = self.allocation_slot('closure-slice')
-        received = self.invoke('allocation', {'allocation_id': 'closure-slice', 'operation': 'receive',
-            'receipt': self.receipt(slot['record'], 'stopped', 'result', ref='native:executor'),
-            'result': {'delivery_id': 'closure-slice-result', 'status': 'completed', 'payload': {
-                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(content).hexdigest()},
-                'tests': ['implementation behavior passed'],
-                'write_release': bound['next_action']['result']['write_release'],
-                'plan_refs': execution['semantic']['plan_refs'],
-                'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
-        self.assertEqual(received['next_action']['result']['status'], 'received', received)
-        accepted = self.invoke('allocation', {'allocation_id': 'closure-slice', 'operation': 'accept',
-            'decision': {'reference': 'dispatcher:closure-slice'}})
-        self.assertEqual(accepted['next_action']['result']['status'], 'accepted', accepted)
-        self.flow_git('add', 'impl.py')
-        self.flow_git('commit', '-qm', 'accepted implementation')
-        candidate = self.flow_git('rev-parse', 'HEAD')
-        self.settings['thread_id'] = actor_settings
-        self.request['host'] = actor_host
-        result = self.accept_current({'artifacts': ['impl.py'], 'checks': ['implementation behavior passed'],
-            'candidate_commit': candidate, 'review': {axis: {'reviewer_ref': axis}
-                for axis in ('standards', 'spec')}}, 'native:dispatcher', fixture_execution=False)
-        self.assertEqual(result['status'], 'accepted', result)
-        return result
 
     def complete_closure_publication(self):
         implementation = self.state()['handoff']['predecessor']['accepted_digest']
@@ -1514,34 +1463,6 @@ class BoundedProgressTests(ProgressTests):
             'workflow_requirements'], original)
         self.assertEqual(self.invoke('inspect')['status'], 'active')
 
-    def runner_stage2_fixture(self):
-        package_root = Path(__file__).resolve().parents[2] / 'skills'
-        registry = {'source': 'host-current-skills', 'entries': [
-            {'name': name, 'entry': str(package_root / name / 'SKILL.md'),
-             'source': 'fixture-host', 'enabled': True}
-            for name in ('solution-design', 'guided-implementation', 'change-closure')]}
-        roots = [self.binding[key] for key in ('repository', 'worktree', 'git_common_dir')]
-        permissions = {'approvalPolicy': 'never', 'sandbox': 'danger-full-access',
-                       'runtimeWorkspaceRoots': roots}
-        confirmed = {**{key: self.binding[key] for key in ('repository', 'worktree', 'git_common_dir', 'target_branch')},
-            'controller_ref': 'task', 'flow_mode': 'stepwise', 'run_record': str(self.checkpoint),
-            'frozen_requirement': {key: self.frozen[key] for key in ('commit', 'sha256')},
-            'requirement': self.frozen, 'authority_scope': {'allowed_paths': ['docs']},
-            'registry': registry, 'registry_context': {'project_path': str(self.root),
-                'project_id': 'project', 'controller_ref': 'task', 'receipt': 'host:registry',
-                'registry_digest': transfer.entry.digest(registry)},
-            'stages': {stage: {'model': 'fixture-model', 'reasoning_effort': 'high',
-                'selection_input': transfer.configuration('scripted-carrier')} for stage in runner.STAGES},
-            'host': {'transport': 'app-server-stdio', 'cli_version': 'fixture',
-                'source': {'kind': 'controller-current-config', 'controller_ref': 'task', 'receipt': 'host:config'},
-                'thread': {**permissions, 'config': {}}, 'effective': permissions}}
-        confirmed['frozen_requirement']['path'] = self.frozen['absolute_path']
-        confirmed_path = self.checkpoint.with_name('confirmed.json')
-        confirmed_path.write_text(json.dumps(confirmed))
-        self.settings['thread_id'] = 'carrier'
-        self.request['host'].update(thread_id='carrier', role='scripted-carrier', source_ref='task')
-        self.input = self.input_for(2)
-        return package_root, confirmed_path
 
     def runner_transition(self, mode, *, closure_entry=False, closure_completion=False, outer_gate=None, recovery_entry=False):
         package_root, confirmed_path = self.runner_stage2_fixture()

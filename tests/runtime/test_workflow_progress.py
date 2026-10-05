@@ -5,6 +5,7 @@ import tempfile
 import sys
 import unittest
 import io
+import os
 import subprocess
 import hashlib
 from contextlib import redirect_stdout
@@ -1677,7 +1678,7 @@ class ProgressTests(transfer.StageTransferTests):
                                    for path in source['pending_paths']},
                     'tests': ['unchanged integrated implementation bytes verified'],
                     'write_release': transfer.dispatch.execution_release_token(slot['record']),
-                    'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                    'plan_refs': transfer.dispatch.dispatch_input(slot['record'])['semantic']['plan_refs'],
                     'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
             accepted = self.invoke('allocation', {'allocation_id': 'integrated-execution', 'operation': 'accept',
                 'decision': {'reference': 'dispatcher:accept-integrated-execution'}})
@@ -1699,11 +1700,106 @@ class ProgressTests(transfer.StageTransferTests):
                 self.assertEqual(error.exception.code, 'authority_missing')
         self.assertEqual(progress.control_git.snapshot(self.flow), before)
 
+    def staged_successor(self, accepted):
+        successor = self.input_for(3, self.state()['accepted'])
+        scope = accepted['readiness']['scope_authority']['scope']
+        for key in ('downstream', 'implementation_paths', 'closure_paths'):
+            successor['scope'][key] = copy.deepcopy(scope[key])
+        successor['scope']['owned_paths'] = copy.deepcopy(scope['implementation_paths'])
+        successor['scope']['protected_paths'] = sorted(set(scope['protected_paths'] +
+            self.state()['accepted']['payload']['planning_paths']))
+        successor['authorization']['scope_digest'] = transfer.entry.digest(successor['scope'])
+        return successor
+
+
+    def accepted_implementation_for_closure(self, design=None, *, standalone=False):
+        design = None if standalone else design or self.finish_design('continuous')
+        self.context = self.context_for(3)
+        self.begin('continuous', self.input_for(3) if standalone else self.staged_successor(design))
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        actor_settings = self.settings['thread_id']
+        actor_host = copy.deepcopy(self.request['host'])
+        execution = self.execution_input()
+        prepared = self.invoke('allocation', {'allocation_id': 'closure-slice',
+            'operation': 'prepare', 'handoff': execution})
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+        slot = self.allocation_slot('closure-slice')
+        receipt = self.receipt(slot['record'], ref='native:executor')
+        receipt['raw']['output'] = 'original allocation report ' * 4000
+        bound = self.invoke('allocation', {'allocation_id': 'closure-slice', 'operation': 'bind',
+            'receipt': receipt})
+        content = b"print('accepted implementation')\n"
+        (self.flow / 'impl.py').write_bytes(content)
+        slot = self.allocation_slot('closure-slice')
+        received = self.invoke('allocation', {'allocation_id': 'closure-slice', 'operation': 'receive',
+            'receipt': self.receipt(slot['record'], 'stopped', 'result', ref='native:executor'),
+            'result': {'delivery_id': 'closure-slice-result', 'status': 'completed', 'payload': {
+                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(content).hexdigest()},
+                'tests': ['implementation behavior passed'],
+                'write_release': bound['next_action']['result']['write_release'],
+                'plan_refs': execution['semantic']['plan_refs'],
+                'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
+        self.assertEqual(received['next_action']['result']['status'], 'received', received)
+        accepted = self.invoke('allocation', {'allocation_id': 'closure-slice', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:closure-slice'}})
+        self.assertEqual(accepted['next_action']['result']['status'], 'accepted', accepted)
+        self.flow_git('add', 'impl.py')
+        self.flow_git('commit', '-qm', 'accepted implementation')
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        self.settings['thread_id'] = actor_settings
+        self.request['host'] = actor_host
+        result = self.accept_current({'artifacts': ['impl.py'], 'checks': ['implementation behavior passed'],
+            'candidate_commit': candidate, 'review': {axis: {'reviewer_ref': axis}
+                for axis in ('standards', 'spec')}}, 'native:dispatcher', fixture_execution=False)
+        self.assertEqual(result['status'], 'accepted', result)
+        return result
+
+
+    def runner_stage2_fixture(self):
+        package_root = Path(__file__).resolve().parents[2] / 'skills'
+        registry = {'source': 'host-current-skills', 'entries': [
+            {'name': name, 'entry': str(package_root / name / 'SKILL.md'),
+             'source': 'fixture-host', 'enabled': True}
+            for name in ('solution-design', 'guided-implementation', 'change-closure')]}
+        roots = [self.binding[key] for key in ('repository', 'worktree', 'git_common_dir')]
+        permissions = {'approvalPolicy': 'never', 'sandbox': 'danger-full-access',
+                       'runtimeWorkspaceRoots': roots}
+        confirmed = {**{key: self.binding[key] for key in ('repository', 'worktree', 'git_common_dir', 'target_branch')},
+            'controller_ref': 'task', 'flow_mode': 'stepwise', 'run_record': str(self.checkpoint),
+            'frozen_requirement': {key: self.frozen[key] for key in ('commit', 'sha256')},
+            'requirement': self.frozen, 'authority_scope': {'allowed_paths': ['docs']},
+            'registry': registry, 'registry_context': {'project_path': str(self.root),
+                'project_id': 'project', 'controller_ref': 'task', 'receipt': 'host:registry',
+                'registry_digest': transfer.entry.digest(registry)},
+            'stages': {stage: {'model': 'fixture-model', 'reasoning_effort': 'high',
+                'selection_input': transfer.configuration('scripted-carrier')} for stage in runner.STAGES},
+            'host': {'transport': 'app-server-stdio', 'cli_version': 'fixture',
+                'source': {'kind': 'controller-current-config', 'controller_ref': 'task', 'receipt': 'host:config'},
+                'thread': {**permissions, 'config': {}}, 'effective': permissions}}
+        confirmed['frozen_requirement']['path'] = self.frozen['absolute_path']
+        confirmed_path = self.checkpoint.with_name('confirmed.json')
+        confirmed_path.write_text(json.dumps(confirmed))
+        self.settings['thread_id'] = 'carrier'
+        self.request['host'].update(thread_id='carrier', role='scripted-carrier', source_ref='task')
+        self.input = self.input_for(2)
+        return package_root, confirmed_path
+
+
     def final_recovery_chain(self, retain_docs=False, replay_host=False, publication_race=False):
-        self.finish_design('continuous')
-        self.finish_next(3, 'continuous')
+        if retain_docs:
+            return self.final_recovery_runner()
+        self.accepted_implementation_for_closure()
         original = copy.deepcopy(self.state())
+        recovery_input, failed_publication = self.prepare_final_recovery(original, publication_race=publication_race)
+        self.recover_final_integration(original, recovery_input, failed_publication, replay_host=replay_host)
+        if replay_host:
+            return
+        self.revalidate_final_recovery(original)
+        self.assert_final_recovery_completed(self.finish_next(4, 'continuous'))
+
+    def prepare_final_recovery(self, original, *, retain_docs=False, publication_race=False):
         predecessor = original['accepted']
+        failed_publication = None
         before = self.checkpoint.read_bytes()
         with self.assertRaises(transfer.entry.PreparationError):
             self.invoke('implementation-recovery', {'reference':'unauthorized', 'closure_digest':'a'*64})
@@ -1742,40 +1838,65 @@ class ProgressTests(transfer.StageTransferTests):
             'disposition_verified':False, 'implementation_problem':'target advanced at final publication'}
         self.assertEqual(self.invoke('observe', observed)['next_action']['operation'], 'implementation-recovery')
         recovery_input = {'reference':'controller:final-recovery', 'closure_digest':self.state()['handoff']['digest']}
-        if retain_docs:
-            outer = progress.read_record(self.checkpoint)
-            outer.update(confirmed={'stages':{'stage3':{},'stage4':{}}}, current_stage='stage4',
-                         launch={'stage':'stage4','state':'launched','turn':2},
-                         stage_results={'stage3':copy.deepcopy(predecessor)}, sessions={'stage3':'task','stage4':'task'},
-                         history=[{'event':'turn.completed','stage':'stage3','turn':7}])
-            progress.atomic_save(self.checkpoint, outer)
-            denied = self.invoke('implementation-recovery', recovery_input)
-            self.assertEqual(denied['error']['code'], 'carrier_active')
-            self.assertEqual(self.state()['stage'], 4)
-            outer = progress.read_record(self.checkpoint)
-            outer['launch']['state'] = 'completed_turn'
-            progress.atomic_save(self.checkpoint, outer)
+        return recovery_input, failed_publication
+
+    def recover_final_integration(self, original, recovery_input, failed_publication=None, *, replay_host=False):
+        predecessor = original['accepted']
         recovered = self.invoke('implementation-recovery', recovery_input)
         self.assertEqual(self.state()['stage'], 3, recovered)
         self.assertIsNone(self.state()['accepted'])
-        if retain_docs:
-            outer = progress.read_record(self.checkpoint)
-            self.assertEqual(outer['current_stage'], 'stage3')
-            self.assertEqual(outer['launch']['turn'], 7)
-            self.assertEqual(outer['sessions']['stage3'], 'task')
-            self.assertNotIn('stage3', outer['stage_results'])
-            self.assertEqual(outer['history'][-1]['stage_results']['stage3'], predecessor)
-            for field in ('confirmed','current_stage','launch','stage_results','sessions','history'):
-                outer.pop(field, None)
-            progress.atomic_save(self.checkpoint, outer)
-        retained = [s for s in self.state()['history'] if s.get('accepted') == predecessor]
-        self.assertTrue(retained)
-        self.assertEqual(retained[-1]['control'], original['control'])
-        if publication_race:
-            closure = [s for s in self.state()['history'] if s.get('stage') == 4][-1]
-            self.assertEqual(closure['publication'], failed_publication)
+        retained, current, store = progress.read_implementation_delivery(
+            self.checkpoint, self.state()['recovery_predecessor'])
+        self.assertEqual(retained['accepted']['digest'], predecessor['digest'])
+        self.assertEqual(retained['payload']['candidate_commit'], predecessor['payload']['candidate_commit'])
+        self.assertEqual(retained['dispatcher'], {key: original['control']['context']['carrier'][key]
+            for key in ('ref', 'attempt')})
+        self.assertEqual(retained['execution_authority'], original['scope_authority'])
+        self.assertEqual(self.state()['history'], [])
+        if failed_publication is not None:
+            closure = self.state()['final_integration_recovery']['closure_handoff']
+            self.assertIn('publication_ref', closure)
+            audit = progress.read_recovery_publication(self.checkpoint, closure, include_outcome=True)
+            self.assertEqual(audit['transaction'], {key: failed_publication[key]
+                for key in ('operation', 'request', 'facts')})
+            self.assertEqual(audit['result'], failed_publication['result'])
+            self.assertEqual(audit['error'], failed_publication['error'])
+            self.assertEqual(audit['observation']['state'], 'not-published')
+            self.assertNotIn('publication', self.state())
+            before = self.checkpoint.read_bytes()
+            observation = self.invoke('reconcile-publication')
+            self.assertEqual(observation['next_action']['result']['state'], 'not-published')
+            self.assertEqual(self.checkpoint.read_bytes(), before)
             with self.assertRaises(transfer.supervision.ProtocolError):
-                transfer.supervision.reconcile_publication({key:failed_publication[key] for key in ('operation','request','facts')}, resume=True)
+                transfer.supervision.reconcile_publication(audit['transaction'], resume=True)
+            self.assertEqual(self.checkpoint.read_bytes(), before)
+            proof = store.read_evidence(closure['publication_ref'], run_id=current.run_id)['value']
+            error_ref = proof['error_ref']
+            directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+            def object_path(reference):
+                digest = reference['sha256']
+                return directory / 'objects' / digest[:2] / digest[2:4] / digest
+            excluded = {object_path(closure['publication_ref']), object_path(proof['transaction_ref']),
+                        object_path(error_ref)}
+            opened = []
+            original_open = Path.open
+            def tracked_open(path, *args, **kwargs):
+                opened.append(path)
+                return original_open(path, *args, **kwargs)
+            with patch.object(Path, 'open', tracked_open):
+                self.assertEqual(self.invoke('inspect')['status'], 'active')
+            self.assertFalse(excluded & set(opened))
+            raw_error = object_path(error_ref).read_bytes()
+            try:
+                object_path(error_ref).write_bytes(b'corrupted original publication error')
+                # Ordinary recovery and transaction inspection do not hydrate an old error.
+                self.assertEqual(self.invoke('inspect')['status'], 'active')
+                self.assertEqual(self.invoke('reconcile-publication')['next_action']['result']['state'], 'not-published')
+                with self.assertRaises(transfer.entry.PreparationError) as corrupted:
+                    progress.read_recovery_publication(self.checkpoint, closure, include_outcome=True)
+                self.assertEqual(corrupted.exception.code, 'state_object_corrupt')
+            finally:
+                object_path(error_ref).write_bytes(raw_error)
         replay = self.invoke('implementation-recovery', recovery_input)
         self.assertTrue(replay['acknowledged'], replay)
         if replay_host:
@@ -1785,6 +1906,9 @@ class ProgressTests(transfer.StageTransferTests):
             self.assertEqual(rejected['error']['code'], 'host_provenance_conflict')
             self.assertIsNone(self.state()['accepted'])
             return
+
+    def revalidate_final_recovery(self, original):
+        predecessor = original['accepted']
         continuation = self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
         self.assertEqual(continuation['next_action']['operation'], 'continue-host', continuation)
         self.flow_git('merge', '--no-edit', 'main')
@@ -1798,15 +1922,99 @@ class ProgressTests(transfer.StageTransferTests):
         payload = {'artifacts':['impl.py'], 'checks':['verified'], 'candidate_commit':replacement,
             'review':{axis:{'candidate':replacement, 'reviewer_ref':axis, 'status':'accepted'} for axis in ('standards','spec')},
             'verification':{'candidate':replacement}}
-        accepted = self.accept_current(payload, 'native:dispatcher', fixture_execution=False)
+        accepted = self.accept_current(payload, 'native:dispatcher', fixture_execution=False, evidence_suffix='-replacement')
         self.assertEqual(accepted['status'], 'accepted', accepted)
         self.assertNotEqual(self.state()['accepted']['digest'], predecessor['digest'])
-        completed = self.finish_next(4, 'continuous')
+        return accepted
+
+    def assert_final_recovery_completed(self, completed, *, retain_docs=False):
         self.assertEqual(completed['status'], 'accepted', completed.get('error'))
         self.assertEqual((self.root / 'other-task.md').read_text(), 'parallel planning\n')
         self.assertTrue((self.root / 'impl.py').exists())
         if retain_docs:
             self.assertEqual((self.root / 'CHANGELOG.md').read_text(), 'closure notes\n')
+
+    def final_recovery_runner(self):
+        package_root, confirmed_path = self.runner_stage2_fixture()
+        configuration = json.loads(confirmed_path.read_text())
+        configuration['flow_mode'] = 'continuous'
+        configuration['authority_scope']['allowed_paths'] = ['CHANGELOG.md', 'docs', 'impl.py']
+        confirmed_path.write_text(json.dumps(configuration))
+        fixture = self
+        calls, turns = [], []
+        class Host:
+            instance = 'fixture-host'
+            process = None
+            active = None
+            server_requests = {}
+            threads = {}
+            def __init__(self, configuration, cwd, journal):
+                self.journal = journal
+            def start(self, stderr):
+                self.process = object()
+                self.journal({'kind': 'host-started', 'instance': self.instance, 'pid': os.getpid()})
+            def start_carrier(self, stage, settings):
+                if stage not in self.threads:
+                    calls.append(stage)
+                    self.threads[stage] = {'stage2': 'carrier', 'stage3': 'carrier-three',
+                                           'stage4': 'carrier-four'}[stage]
+                return self.threads[stage]
+            def run_turn(self, session, prompt, settings, schema, on_progress):
+                outer = progress.read_projection(fixture.checkpoint, projection='identity').record
+                turns.append((session, outer['launch']['turn']))
+                fixture.settings['thread_id'] = session
+                fixture.request['host'].update(thread_id=session, role='scripted-carrier', source_ref='task')
+                if session == 'carrier':
+                    self.design = fixture.finish_design('continuous')
+                    return json.dumps(self.design['completion']['stage_result']), 'design-turn'
+                if session == 'carrier-three':
+                    if not fixture.state().get('final_integration_recovery'):
+                        result = fixture.accepted_implementation_for_closure(self.design)
+                        self.original = copy.deepcopy(fixture.state())
+                        self.original_footer = json.loads(result['completion']['stage_result']['handoff_json'])['accepted_transfer']
+                        self.original_turn = outer['launch']['turn']
+                    else:
+                        fixture.assertEqual(outer['sessions']['stage3'], 'carrier-three')
+                        fixture.assertEqual(outer['launch']['turn'], self.original_turn + 1)
+                        result = fixture.revalidate_final_recovery(self.original)
+                    return json.dumps(result['completion']['stage_result']), 'implementation-turn-' + str(outer['launch']['turn'])
+                fixture.assertEqual(session, 'carrier-four')
+                if not hasattr(self, 'recovery_input'):
+                    self.recovery_input, _ = fixture.prepare_final_recovery(self.original, retain_docs=True)
+                    self.snapshot = copy.deepcopy(fixture.state()['lifecycle_snapshot'])
+                    denied = fixture.invoke('implementation-recovery', self.recovery_input)
+                    fixture.assertEqual(denied['error']['code'], 'carrier_active')
+                    fixture.assertEqual(fixture.state()['stage'], 4)
+                    return json.dumps({'result': 'needs_input', 'needs_input_kind': 'user_decision',
+                        'question': 'Final integration requires original implementation recovery',
+                        'artifacts': [], 'evidence': [], 'handoff_json': '{}', 'message': ''}), 'closure-recovery-turn'
+                result = fixture.finish_next(4, 'continuous')
+                fixture.assert_final_recovery_completed(result, retain_docs=True)
+                return json.dumps(result['completion']['stage_result']), 'closure-completed-turn'
+            def poll(self, timeout):
+                fixture.recover_final_integration(self.original, self.recovery_input)
+                outer = progress.read_projection(fixture.checkpoint, projection='identity').record
+                fixture.assertEqual(outer['current_stage'], 'stage3')
+                fixture.assertEqual(outer['launch']['turn'], self.original_turn)
+                fixture.assertEqual(outer['sessions']['stage3'], 'carrier-three')
+                fixture.assertNotIn('stage3', outer['stage_results'])
+                # Recovery retains the exact acceptance as evidence, not as current deliverability.
+                accepted, _ = progress.implementation_acceptance(fixture.state()['recovery_predecessor'])
+                fixture.assertEqual(accepted['digest'], self.original_footer['accepted_digest'])
+                fixture.assertEqual(accepted['digest'], self.original['accepted']['digest'])
+                fixture.assertEqual(runner.resume(fixture.checkpoint), 0)
+            def snapshot_lifecycle(self, stage):
+                return copy.deepcopy(self.snapshot)
+            def close(self):
+                self.process = None
+        with patch.object(runner, '__file__', str(package_root / 'guided-implementation/scripts/workflow.py')), \
+             patch.object(runner.foreground_host, 'ForegroundHost', Host), redirect_stdout(io.StringIO()):
+            self.assertEqual(runner.start(confirmed_path), 0)
+        outer = progress.read_projection(self.checkpoint, projection='identity').record
+        self.assertEqual(calls, ['stage2', 'stage3', 'stage4'])
+        self.assertEqual([turn for session, turn in turns if session == 'carrier-three'], [1, 2])
+        self.assertEqual(outer['sessions']['stage3'], 'carrier-three')
+        self.assertEqual(outer['status'], 'completed')
 
     def test_cancel_unknown_then_not_created_cannot_accept_late_ready(self):
         self.begin()

@@ -684,6 +684,78 @@ def implementation_delivery(state, path, store, current):
     return value
 
 
+def validate_recovery_publication_ref(reference, run_id):
+    """Check the finite audit pointer without opening its historical evidence."""
+    require(isinstance(reference, dict) and set(reference) == {'run_id', 'kind', 'sha256', 'size'} and
+            reference['run_id'] == run_id and reference['kind'] == 'evidence' and
+            isinstance(reference['sha256'], str) and re.fullmatch(r'[0-9a-f]{64}', reference['sha256']) and
+            type(reference['size']) is int and 0 < reference['size'] <= state_store.EVIDENCE_LIMIT,
+            'state_object_corrupt', 'invalid recovery publication reference')
+
+
+def freeze_recovery_publication(state, accepted, observation, store, current):
+    publication = state.get('publication')
+    if publication is None:
+        return None
+    # Keep the exact original transaction and outcomes separately. The current
+    # closure receives only a reference, never a second publication authority.
+    transaction = {key: publication[key] for key in ('operation', 'request', 'facts')}
+    proof = {'kind': 'recovery-publication-v1', 'closure_digest': state['handoff']['digest'],
+        'accepted_candidate': accepted, 'binding_digest': entry.digest(state['handoff']['binding']),
+        'request_digest': entry.digest(publication['request']),
+        'candidate': publication['request']['candidate_commit'],
+        'transaction_ref': store.write_object(current.run_id, 'evidence', transaction),
+        'observation': {'ok': observation['ok'], 'state': observation['state']}}
+    for key in ('result', 'error'):
+        original = publication.get(key)
+        proof[key + '_ref'] = (store.write_object(current.run_id, 'evidence', original)
+                              if original is not None else None)
+    return store.write_object(current.run_id, 'evidence', proof)
+
+
+def read_recovery_publication(path, closure, *, include_outcome=False):
+    """Resolve one pinned historical transaction for audit, without write authority."""
+    store = state_store.open_store(path)
+    current = store.open_current()
+    require(current is not None and current.root['metadata']['stage'] == 3,
+            'publication_missing', 'historical publication requires the current recovery')
+    scope = store.read_scope(current, current.root['metadata']['stage_subject'])
+    recovery = scope.get('integration_recovery') or {}
+    require(recovery.get('decision', {}).get('closure_handoff') == closure,
+            'publication_missing', 'publication does not belong to the pinned recovery')
+    handoff.unseal(closure)
+    require(closure.get('publication_ref') is not None, 'publication_missing',
+            'no original publication preceded this recovery')
+    validate_recovery_publication_ref(closure['publication_ref'], current.run_id)
+    proof = store.read_evidence(closure['publication_ref'], run_id=current.run_id)['value']
+    entry.fields(proof, {'kind', 'closure_digest', 'accepted_candidate', 'binding_digest',
+        'request_digest', 'candidate', 'transaction_ref', 'result_ref', 'error_ref', 'observation'})
+    require(proof['kind'] == 'recovery-publication-v1' and
+            proof['closure_digest'] == closure['source_digest'] and
+            proof['accepted_candidate'] == closure['candidate'] and
+            proof['binding_digest'] == entry.digest(closure['binding']) and
+            proof['observation'] in ({'ok': True, 'state': 'not-published'}, {'ok': True, 'state': 'prepared'}),
+            'state_object_corrupt', 'recovery publication binding changed')
+    validate_recovery_publication_ref(proof['transaction_ref'], current.run_id)
+    transaction = store.read_evidence(proof['transaction_ref'], run_id=current.run_id)['value']
+    entry.fields(transaction, {'operation', 'request', 'facts'})
+    require(transaction['operation'] == 'complete-worktree' and
+            isinstance(transaction['request'], dict) and isinstance(transaction['facts'], list) and
+            transaction['request'].get('binding') == closure['binding'] and
+            transaction['request'].get('candidate_commit') == proof['candidate'] and
+            entry.digest(transaction['request']) == proof['request_digest'],
+            'state_object_corrupt', 'original publication request changed')
+    result = {'transaction': transaction, 'observation': proof['observation']}
+    for key in ('result', 'error'):
+        reference = proof[key + '_ref']
+        if reference is not None:
+            validate_recovery_publication_ref(reference, current.run_id)
+        if include_outcome:
+            result[key] = (store.read_evidence(reference, run_id=current.run_id)['value']
+                           if reference is not None else None)
+    return result
+
+
 def read_implementation_delivery(path, reference=None, *, store=None, current=None):
     """Read the one current or pinned accepted delivery, without a writer lease."""
     store = store or state_store.open_store(path)
@@ -1405,6 +1477,8 @@ def validate_state(state):
         handoff.unseal(closure)
         store = state_store.open_store(state['checkpoint_path'])
         current = store.open_current()
+        if closure.get('publication_ref') is not None:
+            validate_recovery_publication_ref(closure['publication_ref'], current.run_id)
         index = store.read_evidence(closure['native_source_index_ref'], run_id=current.run_id,
                                     kind='native-source-index')['value']
         require(isinstance(index, dict), 'state_object_corrupt', 'invalid closure native source index')
@@ -4156,6 +4230,7 @@ class Progress:
         handoff.phase_evidence(s['handoff'])
         for pin in s['packages'].values():
             skill_preflight.verify_identity(pin)
+        publication = None
         if s.get('publication'):
             publication = supervision.reconcile_publication(self.publication_transaction(), for_implementation_recovery=True)
             require(publication['state'] in {'not-published', 'prepared'}, 'already_published',
@@ -4198,6 +4273,7 @@ class Progress:
              'requirement_identity', 'authorization')} | {
                 'kind': 'recovery-closure-facts', 'candidate': accepted,
                 'source_digest': s['handoff']['digest'], 'role_ref': self.bound_ref(),
+                'publication_ref': freeze_recovery_publication(s, accepted, publication, store, current),
                 'native_source_index_ref': freeze_native_source_index(s, store, current),
                 'stop_ref': store.write_object(current.run_id, 'evidence', {
                     'host': s['host']['last_stop'], 'lifecycle': s['lifecycle_snapshot']})})
@@ -4992,6 +5068,15 @@ class Progress:
 
     def reconcile_publication(self, *, resume=False):
         s = self.state
+        if not resume and s.get('publication') is None and s.get('final_integration_recovery'):
+            closure = s['final_integration_recovery']['closure_handoff']
+            audit = read_recovery_publication(self.path, closure)
+            try:
+                result = supervision.reconcile_publication(audit['transaction'], for_implementation_recovery=True)
+            except supervision.ProtocolError as error:
+                result = supervision._error_response(error, 'reconcile-publication')
+            return _view(s, {'operation': 'publication-observation', 'result': result,
+                             'publication_ref': closure['publication_ref']})
         require(s.get("publication") is not None, "publication_missing", "no original publication to reconcile")
         if resume:
             self.require_business_ready()

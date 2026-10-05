@@ -1645,6 +1645,7 @@ def _accepted_stage(record_path, stage, result, confirmed):
             "source_changed", "accepted stage differs from confirmed source/controller")
         stage_handoff.verify_result(int(stage[-1]), accepted["payload"], saved["binding"], saved["scope"],
                                    saved["binding"]["worktree"], accepted["role_ref"],
+                                   integration_recovery=saved['authorization'].get('integration_recovery'),
                                    current_progress=current.get("delivery_progress"))
         return accepted
     except entry_prepare.ERROR_TYPES as error:
