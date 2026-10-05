@@ -528,6 +528,41 @@ def implementation_outer_ready(outer, stop_transport):
         transport.get('native_event_sequence', 0) == stop_transport['native_event_sequence'])
 
 
+def freeze_native_source_index(state, store, current, inherited=()):
+    """Freeze source identities, not applied-operation authority or old stage state."""
+    index = {}
+    for reference in inherited:
+        prior = store.read_evidence(reference, run_id=current.run_id, kind='native-source-index')['value']
+        require(isinstance(prior, dict), 'state_object_corrupt', 'invalid native source index')
+        for key, value in prior.items():
+            index.setdefault(key, copy.deepcopy(value))
+
+    def source(value, identities=None):
+        identities = value if identities is None else identities
+        keys = [key for key in ('query_id', 'call_ref', 'response_ref')
+                if isinstance(identities.get(key), str)]
+        if not keys:
+            return
+        reference = store.write_object(current.run_id, 'evidence', {'native_source': value})
+        for key in keys:
+            index.setdefault(entry.digest([key, identities[key]]), reference)
+
+    for value in state.get('collaboration_lookups', {}).values():
+        source(value)
+    for query in state.get('baseline_thread_queries', []):
+        source({key: value for key, value in query.items() if key not in {'input', 'result'}})
+        source(query['input']['binding'])
+        if query.get('result') is not None:
+            source(query['result'])
+    for observation in state.get('observations', []):
+        provenance = observation.get('provenance')
+        if isinstance(provenance, dict):
+            source(observation, provenance)
+    # Coalesced polls already retain their exact run/kind/key conflict fingerprints.
+    # This index covers the original observations from which seen/calls were derived.
+    return store.write_object(current.run_id, 'native-source-index', index)
+
+
 def implementation_delivery(state, path, store, current):
     """Freeze only accepted implementation facts; original reports remain exact refs."""
     saved, accepted = state['handoff'], state['accepted']
@@ -581,26 +616,10 @@ def implementation_delivery(state, path, store, current):
         review_sources=native_refs, final_attempt_ref=evidence(final),
         attempt_count=len(verification['attempts']),
         attempt_ids_digest=entry.digest([item['attempt_id'] for item in verification['attempts']]))
-    native_sources = list(state.get('collaboration_lookups', {}).values())
-    for query in state.get('baseline_thread_queries', []):
-        native_sources.append(query['input']['binding'])
-        if query.get('result') is not None:
-            native_sources.append(query['result'])
-    source_index = (copy.deepcopy(store.read_evidence(recovery_prior['native_source_index_ref'],
-        run_id=current.run_id, kind='native-source-index')['value']) if recovery_prior else {})
-    for source in {entry.digest(source): source for source in native_sources}.values():
-        source_ref = evidence({'native_source': source})
-        for key in ('query_id', 'call_ref', 'response_ref'):
-            if key in source:
-                source_index[entry.digest([key, source[key]])] = source_ref
-    for observation in state.get('observations', []):
-        provenance = observation.get('provenance')
-        if not isinstance(provenance, dict):
-            continue
-        source_ref = evidence({'native_source': observation})
-        for key in ('call_ref', 'response_ref'):
-            if isinstance(provenance.get(key), str):
-                source_index[entry.digest([key, provenance[key]])] = source_ref
+    inherited_sources = [recovery_prior['native_source_index_ref']] if recovery_prior else []
+    if state.get('final_integration_recovery') is not None:
+        inherited_sources.append(state['final_integration_recovery']['closure_handoff']['native_source_index_ref'])
+    source_index_ref = freeze_native_source_index(state, store, current, inherited_sources)
     git_proof = {'candidate_evidence': {'plan_authority': copy.deepcopy(checkpoint['candidate_evidence']['plan_authority'])},
         'plan_revisions': [], 'plan_revision_sources': []}
     for record in checkpoint.get('plan_revisions', []):
@@ -649,7 +668,7 @@ def implementation_delivery(state, path, store, current):
             'instance': state['lifecycle_snapshot']['instance'],
             'native_event_sequence': state['lifecycle_snapshot'].get('sequence')},
         'native_refs': sorted(owner.native_refs()),
-        'native_source_index_ref': store.write_object(current.run_id, 'native-source-index', source_index),
+        'native_source_index_ref': source_index_ref,
         'git_evidence_ref': evidence(git_proof),
         # Recovery consumes contracts and scalar authority facts, never an old stage/control.
         'recovery_ref': evidence({'launch': {key: copy.deepcopy(item) for key, item in saved.items()
@@ -1386,6 +1405,9 @@ def validate_state(state):
         handoff.unseal(closure)
         store = state_store.open_store(state['checkpoint_path'])
         current = store.open_current()
+        index = store.read_evidence(closure['native_source_index_ref'], run_id=current.run_id,
+                                    kind='native-source-index')['value']
+        require(isinstance(index, dict), 'state_object_corrupt', 'invalid closure native source index')
         proof = store.read_evidence(closure['stop_ref'], run_id=current.run_id)['value']
         require(proof['host']['receipt']['status'] == 'stopped' and
                 proof['host']['receipt']['ref'] == closure['role_ref'],
@@ -2207,6 +2229,9 @@ class Progress:
             prior, _, _ = read_implementation_delivery(self.path, recovery_prior)
             references.append(prior['native_source_index_ref'])
             design = prior['design_predecessor']
+        closure = (self.state.get('final_integration_recovery') or {}).get('closure_handoff')
+        if closure is not None:
+            references.append(closure['native_source_index_ref'])
         if design is not None:
             references.append(read_design_predecessor(design, self.path)['native_source_index_ref'])
         store = state_store.open_store(self.path)
@@ -4173,6 +4198,7 @@ class Progress:
              'requirement_identity', 'authorization')} | {
                 'kind': 'recovery-closure-facts', 'candidate': accepted,
                 'source_digest': s['handoff']['digest'], 'role_ref': self.bound_ref(),
+                'native_source_index_ref': freeze_native_source_index(s, store, current),
                 'stop_ref': store.write_object(current.run_id, 'evidence', {
                     'host': s['host']['last_stop'], 'lifecycle': s['lifecycle_snapshot']})})
         body = copy.deepcopy(recovery['launch'])

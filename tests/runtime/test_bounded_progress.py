@@ -13,7 +13,7 @@ from test_workflow_progress import ProgressTests, progress, transfer, runner
 
 
 class BoundedProgressTests(ProgressTests):
-    def recover_implementation_with_closure(self, *, standalone=False, rejected=None):
+    def recover_implementation_with_closure(self, *, standalone=False, rejected=None, continue_dispatcher=True):
         implementation = self.accepted_implementation_for_closure(standalone=standalone)
         self.old_implementation_footer = json.loads(implementation['completion']['stage_result']['handoff_json'])['accepted_transfer']
         original = self.state()
@@ -24,7 +24,9 @@ class BoundedProgressTests(ProgressTests):
         closure['predecessor'] = json.loads(implementation['completion']['stage_result']['handoff_json'])['accepted_transfer']
         self.context = self.context_for(4)
         self.begin('continuous', closure)
-        self.invoke('observe', self.observation(ref='native:closure'))
+        created = self.observation(ref='native:closure')
+        self.invoke('observe', created)
+        self.closure_create_source = copy.deepcopy(created['provenance'])
         (self.flow / 'CHANGELOG.md').write_text('retained closure documentation\n')
         self.flow_git('add', 'CHANGELOG.md')
         self.flow_git('commit', '-qm', 'retained closure documentation')
@@ -41,6 +43,7 @@ class BoundedProgressTests(ProgressTests):
         if rejected == 'unknown':
             observed['receipt']['status'] = 'unknown'
             observed.pop('lifecycle')
+        self.closure_stop_source = copy.deepcopy(observed['provenance'])
         problem = self.invoke('observe', observed)
         self.assertEqual((problem.get('next_action') or {}).get('operation'), 'implementation-recovery', problem)
         if rejected == 'dirty':
@@ -72,10 +75,39 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(self.state()['history'], [])
         self.assertEqual((self.flow / 'CHANGELOG.md').read_text(), 'retained closure documentation\n')
         self.assertEqual(self.git('rev-parse', 'HEAD'), target)
+        if not continue_dispatcher:
+            return accepted
         continued = self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
         self.assertEqual(continued['next_action']['operation'], 'continue-host', continued)
         self.assertEqual(continued['next_action']['payload']['ref'], 'native:dispatcher')
         return accepted
+
+    def assert_closure_source_cannot_authorize_dispatcher(self, source):
+        query = self.state()['host']['query']['action_id']
+        for key in ('call_ref', 'response_ref'):
+            with self.subTest(key=key):
+                forged = self.observation('idle', 'result', ref='native:dispatcher')
+                forged['provenance'][key] = source[key]
+                result = self.invoke('observe', forged)
+                self.assertEqual((result.get('error') or {}).get('code'), 'host_provenance_conflict', result)
+                self.assertIsNone(self.state()['host_action'])
+                self.assertEqual(self.state()['host']['query']['action_id'], query)
+                self.assertFalse(self.state()['host']['query'].get('resolved', False))
+        resumed = self.invoke('resume')
+        self.assertEqual(resumed['next_action']['operation'], 'inspect-host-state', resumed)
+        self.assertEqual(resumed['next_action']['action_id'], query)
+
+    def test_closure_provenance_stop_cannot_authorize_recovered_dispatcher(self):
+        self.recover_implementation_with_closure(continue_dispatcher=False)
+        self.assert_closure_source_cannot_authorize_dispatcher(self.closure_stop_source)
+        fresh = self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        self.assertEqual(fresh['next_action']['operation'], 'continue-host', fresh)
+
+    def test_closure_provenance_create_cannot_authorize_recovered_dispatcher(self):
+        self.recover_implementation_with_closure(continue_dispatcher=False)
+        self.assert_closure_source_cannot_authorize_dispatcher(self.closure_create_source)
+        fresh = self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        self.assertEqual(fresh['next_action']['operation'], 'continue-host', fresh)
 
     def test_inline_recovery_rejects_dirty_closure_documents(self):
         result = self.recover_implementation_with_closure(rejected='dirty')
@@ -128,6 +160,8 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(self.state()['stage'], 3, recovered)
         self.assertEqual(self.state()['history'], [])
         self.assertEqual(len(progress.state_store.StateStore(self.checkpoint).open_current().root['subjects']), 1)
+        self.assert_closure_source_cannot_authorize_dispatcher(self.closure_create_source)
+        self.assert_closure_source_cannot_authorize_dispatcher(self.closure_stop_source)
         self.assertEqual(self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
             ['next_action']['operation'], 'continue-host')
         self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
