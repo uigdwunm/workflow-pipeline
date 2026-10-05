@@ -2024,6 +2024,325 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(repeated['next_action']['action']['action_id'],
                          recovered['next_action']['action_id'])
 
+    def test_generic_raw_ingress_preserves_large_stop_receipt(self):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        observed = self.observation('stopped', 'result', ref='native:dispatcher')
+        observed['receipt']['raw']['output'] = '原文\"\n' * (300 * 1024 // 5)
+        original = copy.deepcopy(observed['receipt']['raw'])
+        result = self.invoke('observe', observed)
+        self.assertNotIn('error', result)
+        state = self.state()
+        self.assertEqual(state['host']['status'], 'stopped')
+        self.assertEqual(state['host_action']['action_id'], stop['action_id'])
+        self.assertTrue(state['host_action']['resolved'])
+        reference = state['host']['last_stop']['receipt']['raw']['evidence_ref']
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        self.assertEqual(store.read_raw_evidence(reference, run_id=current.run_id), original)
+        self.assertTrue(all(ref['size'] <= 256 * 1024 for ref in current.root['subjects'].values()))
+        replay = self.invoke('observe', observed)
+        self.assertTrue(replay['acknowledged'])
+        self.assertEqual(replay['revision'], result['revision'])
+        self.assertEqual(self.state()['events'][observed['event_id']]['digest'], transfer.entry.digest(observed))
+        opened = []
+        original_open = Path.open
+        def tracked_open(path, *args, **kwargs):
+            if path == self.checkpoint or path.is_relative_to(store.directory):
+                opened.append(path)
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', tracked_open):
+            self.invoke('inspect')
+        self.assertLessEqual(sum(path.stat().st_size for path in opened), 9 * 256 * 1024)
+        before = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in [self.checkpoint, *store.directory.rglob('*')] if path.is_file()}
+        with progress.state_store.operation_store(self.checkpoint):
+            measured = progress.state_store.open_store(self.checkpoint)
+            original_current = measured.open_current()
+            with measured.measure_writes(sequence=True) as writes:
+                first = measured.commit_outer(expected_revision=original_current.revision,
+                    outer={**original_current.root['outer'], 'measurement_probe': 1})
+                second = measured.commit_outer(expected_revision=first.revision,
+                    outer={**first.root['outer'], 'measurement_probe': 2})
+                self.assertEqual(second.revision, first.revision + 1)
+                self.assertGreater(sum(writes.values()), 0)
+            self.assertEqual(measured.open_current().reference, original_current.reference)
+        after = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+                 for path in [self.checkpoint, *store.directory.rglob('*')] if path.is_file()}
+        self.assertEqual(after, before, 'sequential finite measurement cannot persist hypothetical state')
+
+    def test_generic_raw_ingress_rejects_forged_facts_and_event_conflicts(self):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        observed = self.observation('stopped', 'result', ref='native:dispatcher')
+        forged = copy.deepcopy(observed)
+        forged['receipt']['raw'] = {'format': 'host-raw-reference-v1', 'facts': {'resumable': True},
+                                    'evidence_ref': {'sha256': '0' * 64}}
+        result = self.invoke('observe', forged)
+        self.assertEqual(result['error']['code'], 'host_evidence_missing')
+        self.assertFalse(self.state()['host_action'].get('resolved', False))
+        observed['receipt']['raw']['output'] = 'raw' * (100 * 1024)
+        self.invoke('observe', observed)
+        conflicting = copy.deepcopy(observed)
+        conflicting['receipt']['raw']['output'] += 'changed'
+        result = self.invoke('observe', conflicting)
+        self.assertEqual(result['error']['code'], 'event_conflict')
+        self.assertEqual(self.state()['host_action']['action_id'], stop['action_id'])
+
+    def test_generic_raw_ingress_unattributed_response_cannot_spend_stop_reserve(self):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        observed = self.observation('stopped', 'result', ref='native:dispatcher')
+        observed['provenance']['action_id'] = 'different-original-call'
+        observed['receipt']['raw']['output'] = 'raw' * (100 * 1024)
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(stop['action_id'].encode()).hexdigest()
+        before = reserve.stat().st_size
+        self.invoke('observe', observed)
+        self.assertEqual(reserve.stat().st_size, before)
+        self.assertFalse(self.state()['host_action'].get('resolved', False))
+        self.assertEqual(self.state()['host']['status'], 'unknown')
+
+    def test_generic_raw_ingress_missing_manifest_blocks_saved_stop(self):
+        self.begin_dispatcher()
+        self.invoke('pause')
+        observed = self.observation('stopped', 'result', ref='native:dispatcher')
+        observed['receipt']['raw'].update(resumable=True, output='raw' * (100 * 1024))
+        self.invoke('observe', observed)
+        reference = self.state()['host']['proof']['receipt']['raw']['evidence_ref']
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        path = directory / 'objects' / reference['sha256'][:2] / reference['sha256'][2:4] / reference['sha256']
+        path.unlink()
+        for operation in ('inspect', 'resume'):
+            with self.subTest(operation=operation), self.assertRaises(transfer.entry.PreparationError):
+                self.invoke(operation)
+
+    def test_generic_raw_ingress_large_running_polls_coalesce_without_new_objects(self):
+        self.begin_dispatcher()
+        poll = self.observation('running', 'result', ref='native:dispatcher')
+        poll['receipt']['raw']['output'] = 'poll' * (80 * 1024)
+        first = self.invoke('observe', poll)
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        objects = {path for path in (directory / 'objects').rglob('*') if path.is_file()}
+        events = self.state()['events']
+        for number in range(10):
+            fresh = copy.deepcopy(poll)
+            fresh['event_id'] = 'large-poll-' + str(number)
+            fresh['receipt']['receipt_ref'] = 'large-poll-receipt-' + str(number)
+            fresh['provenance'].update(call_ref='large-poll-call-' + str(number), response_ref='large-poll-response-' + str(number))
+            result = self.invoke('observe', fresh)
+            self.assertEqual(result['revision'], first['revision'])
+        self.assertEqual({path for path in (directory / 'objects').rglob('*') if path.is_file()}, objects)
+        self.assertEqual(self.state()['events'], events)
+
+    def test_generic_raw_ingress_saved_facts_remain_bound_to_original_manifest(self):
+        self.begin_dispatcher()
+        self.invoke('pause')
+        observed = self.observation('stopped', 'result', ref='native:dispatcher')
+        observed['receipt']['raw'].update(resumable=True, dispatch_available=False, output='raw' * (100 * 1024))
+        self.invoke('observe', observed)
+        envelope = json.loads(self.checkpoint.read_text())
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        subject_id = current.root['metadata']['stage_subject']
+        original_subject = store.read_subject(current, subject_id).value
+        for fault in ('facts', 'binding', 'foreign-manifest'):
+            with self.subTest(fault=fault):
+                subject = copy.deepcopy(original_subject)
+                raw = subject['host']['proof']['receipt']['raw']
+                if fault == 'facts':
+                    raw['facts']['dispatch_available'] = True
+                else:
+                    manifest = store.read_raw_manifest(raw['evidence_ref'], run_id=current.run_id)
+                    if fault == 'binding':
+                        manifest['native_receipt'] = None
+                    else:
+                        manifest['native_receipt']['provenance']['response_ref'] = 'other-original-response'
+                    raw['evidence_ref'] = store.write_object(current.run_id, 'evidence', manifest)
+                subject_ref = store.write_object(current.run_id, 'subject', subject, subject_id=subject_id)
+                scope = store.read_evidence(current.root['scope'], run_id=current.run_id, kind='scope')['value']
+                scope['subject_ref'] = subject_ref
+                scope['value']['state_digest'] = transfer.entry.digest(subject)
+                root = {**current.root, 'subjects': {**current.root['subjects'], subject_id: subject_ref},
+                        'scope': store.write_object(current.run_id, 'scope', scope)}
+                root_ref = store.write_object(current.run_id, 'root', root)
+                self.checkpoint.write_bytes(progress.state_store.encode({**envelope, 'current': root_ref}))
+                try:
+                    with self.assertRaises(transfer.entry.PreparationError) as rejected:
+                        self.invoke('inspect')
+                    self.assertEqual(rejected.exception.code, 'invalid_checkpoint')
+                finally:
+                    self.checkpoint.write_bytes(progress.state_store.encode(envelope))
+
+    def test_generic_raw_ingress_full_ordinary_budget_preserves_complete_stop(self):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        observed = self.observation('stopped', 'result', ref='native:dispatcher')
+        observed['receipt']['raw'].update(resumable=True, dispatch_available=False,
+            output=''.join(chr(65 + index) * (1024 * 1024) for index in range(15)))
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        result = self.invoke('observe', observed)
+        self.assertNotIn('error', result)
+        state = self.state()
+        self.assertTrue(state['host_action']['resolved'])
+        self.assertEqual(state['host_action']['action_id'], stop['action_id'])
+        raw = state['host']['proof']['receipt']['raw']
+        self.assertFalse(raw['truncated'])
+        self.assertEqual(raw['facts'], {'resumable': True, 'dispatch_available': False})
+        store = progress.state_store.StateStore(self.checkpoint)
+        self.assertEqual(store.read_raw_evidence(raw['evidence_ref'], run_id=store.open_current().run_id),
+                         observed['receipt']['raw'])
+
+    def test_generic_raw_ingress_atomic_limit_keeps_original_stop_unknown(self):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        observed = self.observation('stopped', 'result', ref='native:dispatcher')
+        observed['receipt']['raw']['output'] = ''.join(chr(65 + index) * (1024 * 1024) for index in range(17))
+        result = self.invoke('observe', observed)
+        self.assertEqual(result['next_action']['operation'], 'inspect-host-state')
+        state = self.state()
+        self.assertFalse(state['host_action'].get('resolved', False))
+        self.assertEqual(state['host_action']['action_id'], stop['action_id'])
+        self.assertEqual(state['host']['status'], 'unknown')
+        self.assertIsNone(state['host']['proof'])
+        raw = state['host']['observation']['receipt']['raw']
+        self.assertTrue(raw['truncated'])
+        store = progress.state_store.StateStore(self.checkpoint)
+        manifest = store.read_raw_manifest(raw['evidence_ref'], run_id=store.open_current().run_id)
+        self.assertTrue(manifest['complete'], 'complete chunks do not establish atomic business completeness')
+        self.assertEqual(manifest['retained_size'], manifest['size'])
+        self.assertEqual(self.invoke('advance')['next_action']['action_id'], result['next_action']['action_id'])
+
+    def test_generic_raw_ingress_capacity_preserves_partial_original_query(self):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        query = self.invoke('observe', self.observation('unknown', 'result', ref='native:dispatcher'))['next_action']
+        observed = self.observation('idle', 'result', ref='native:dispatcher')
+        observed['receipt']['raw']['output'] = ''.join(chr(65 + index) * (1024 * 1024) for index in range(4))
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        stop_reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(stop['action_id'].encode()).hexdigest()
+        query_reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(query['action_id'].encode()).hexdigest()
+        before = stop_reserve.stat().st_size
+        with query_reserve.open('r+b') as stream:
+            stream.truncate(2 * 1024 * 1024)
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        result = self.invoke('observe', observed)
+        state = self.state()
+        self.assertEqual(result['next_action']['action_id'], query['action_id'])
+        self.assertFalse(state['host']['query'].get('resolved', False))
+        self.assertFalse(state['host_action'].get('resolved', False))
+        self.assertEqual(stop_reserve.stat().st_size, before)
+        raw = state['host']['observation']['receipt']['raw']
+        store = progress.state_store.StateStore(self.checkpoint)
+        manifest = store.read_raw_manifest(raw['evidence_ref'], run_id=store.open_current().run_id)
+        self.assertFalse(manifest['complete'])
+        self.assertGreater(manifest['retained_size'], 0)
+        self.assertLess(manifest['retained_size'], manifest['size'])
+        self.assertEqual(self.invoke('advance')['next_action']['action_id'], query['action_id'])
+
+    def test_generic_raw_ingress_query_without_resolution_retains_business_call(self):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        query = self.invoke('observe', self.observation('unknown', 'result', ref='native:dispatcher'))['next_action']
+        observed = self.observation('idle', 'result', ref='native:dispatcher')
+        observed.pop('action_resolution')
+        observed['receipt']['raw']['output'] = 'x' * (300 * 1024)
+        result = self.invoke('observe', observed)
+        self.assertEqual(result['next_action']['operation'], 'await-host-recovery')
+        state = self.state()
+        self.assertTrue(state['host']['query']['resolved'])
+        self.assertEqual(state['host']['query']['action_id'], query['action_id'])
+        self.assertFalse(state['host_action'].get('resolved', False))
+        self.assertEqual(state['host_action']['action_id'], stop['action_id'])
+
+    def test_generic_raw_ingress_interruption_retains_source_and_exact_retry(self):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        observed = self.observation('stopped', 'result', ref='native:dispatcher')
+        observed['receipt']['raw']['output'] = ''.join(chr(65 + index) * (1024 * 1024) for index in range(3))
+        replace = os.replace
+        chunks = []
+        def interrupt(source, target):
+            if Path(source).stat().st_size == 1024 * 1024:
+                chunks.append(target)
+                if len(chunks) == 2:
+                    raise KeyboardInterrupt('raw chunk interruption')
+            return replace(source, target)
+        with patch.object(os, 'replace', interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('observe', observed)
+        state = self.state()
+        event = state['events'][observed['event_id']]
+        self.assertFalse(event['applied'])
+        self.assertEqual(event['raw_ingress']['provenance'], observed['provenance'])
+        self.assertFalse(state['host_action'].get('resolved', False))
+        self.assertEqual(state['host_action']['action_id'], stop['action_id'])
+        self.assertNotIn('error', self.invoke('observe', observed))
+        self.assertTrue(self.state()['host_action']['resolved'])
+
+    def test_generic_raw_ingress_interrupted_query_revokes_old_stopped_barrier(self):
+        self.begin_dispatcher()
+        self.invoke('pause')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        self.assertEqual(self.invoke('inspect')['status'], 'paused')
+        self.assertTrue(self.state()['stopped'])
+        query = self.invoke('resume')['next_action']
+        self.assertEqual(query['operation'], 'inspect-host-state')
+        observed = self.observation('running', 'result', ref='native:dispatcher')
+        self.assertEqual(observed['action_id'], query['action_id'])
+        self.assertEqual(observed['provenance']['action_id'], query['action_id'])
+        observed['receipt']['raw']['output'] = ''.join(chr(65 + index) * (1024 * 1024) for index in range(3))
+        replace = os.replace
+        chunks = []
+        def interrupt(source, target):
+            if Path(source).stat().st_size == 1024 * 1024:
+                chunks.append(target)
+                if len(chunks) == 2:
+                    raise KeyboardInterrupt('authenticated pending query raw')
+            return replace(source, target)
+        with patch.object(os, 'replace', interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('observe', observed)
+        self.invoke('inspect')
+        paused = self.invoke('pause')
+        self.assertNotEqual(paused['status'], 'paused', 'an admitted incomplete raw response cannot reuse the previous stopped barrier')
+        state = self.state()
+        partial = state['events'][observed['event_id']]['raw_ingress']['evidence_ref']
+        self.assertFalse(state['events'][observed['event_id']]['applied'])
+        self.invoke('observe', observed)
+        state = self.state()
+        self.assertTrue(state['events'][observed['event_id']]['applied'])
+        self.assertNotIn('raw_ingress', state['events'][observed['event_id']])
+        self.assertTrue(any(item.get('receipt', {}).get('raw', {}).get('evidence_ref') == partial
+                            for item in state['observations']), 'retain the interrupted partial evidence')
+        self.invoke('pause')
+        completed = self.observation('stopped', 'result', ref='native:dispatcher')
+        completed['receipt']['raw']['output'] = 'complete' * (50 * 1024)
+        self.invoke('observe', completed)
+        self.assertEqual(self.invoke('inspect')['status'], 'paused')
+        self.assertTrue(self.state()['stopped'])
+
+    def test_generic_raw_ingress_unattributed_interruption_cannot_revoke_old_stop(self):
+        self.begin_dispatcher()
+        self.invoke('pause')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        query = self.invoke('resume')['next_action']
+        observed = self.observation('running', 'result', ref='native:dispatcher')
+        observed['provenance']['action_id'] = 'not-the-original-query'
+        observed['receipt']['raw']['output'] = 'x' * (2 * 1024 * 1024)
+        replace = os.replace
+        def interrupt(source, target):
+            if Path(source).stat().st_size == 1024 * 1024:
+                raise KeyboardInterrupt('unattributed raw cannot gain authority')
+            return replace(source, target)
+        with patch.object(os, 'replace', interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('observe', observed)
+        self.assertEqual(self.state()['host']['query']['action_id'], query['action_id'])
+        self.assertEqual(self.invoke('pause')['status'], 'paused')
+        self.assertTrue(self.state()['stopped'])
+
     def test_native_raw_ingress_preserves_large_complete_receipt(self):
         from test_collaboration_lifecycle import CollaborationLifecycleTests
         helper = CollaborationLifecycleTests(methodName='runTest')

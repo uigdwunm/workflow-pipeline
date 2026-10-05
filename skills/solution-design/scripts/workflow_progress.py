@@ -118,6 +118,47 @@ def native_receipt_matches(saved, incoming):
             raw['size'] == size and raw['sha256'] == digest)
 
 
+def host_raw_facts(receipt):
+    raw = receipt.get('raw', {})
+    return raw.get('facts', {}) if raw.get('format') == 'host-raw-reference-v1' else raw
+
+
+def host_raw_binding(data, facts, digest):
+    return {'kind': 'host-result', 'event_id': data['event_id'], 'event_digest': digest,
+            'receipt': {key: value for key, value in data['receipt'].items() if key != 'raw'},
+            'action_id': data.get('action_id'), 'provenance': data.get('provenance'),
+            'action_resolution': data.get('action_resolution'), 'facts': facts}
+
+
+def validate_saved_host_raw(state):
+    # These are the live permission-bearing copies, not a scan of raw history.
+    for observation in (state['host'].get(key) for key in ('observation', 'last_stop', 'proof')):
+        if not observation:
+            continue
+        receipt = observation['receipt']
+        raw = receipt.get('raw', {})
+        if raw.get('format') != 'host-raw-reference-v1':
+            continue
+        store = state_store.open_store(state['checkpoint_path'])
+        current = store.open_current()
+        manifest = store.read_raw_manifest(raw.get('evidence_ref'), run_id=current.run_id)
+        binding = manifest.get('native_receipt', {})
+        require(isinstance(binding, dict) and isinstance(binding.get('facts'), dict) and
+                set(binding['facts']) <= {'resumable', 'dispatch_available'} and
+                all(type(value) is bool for value in binding['facts'].values()) and
+                isinstance(raw.get('event_digest'), str) and re.fullmatch(r'[0-9a-f]{64}', raw['event_digest']),
+                'invalid_checkpoint', 'host raw manifest binding is invalid')
+        original = {**observation, 'receipt': {**receipt, 'status': raw.get('reported_status')}}
+        complete = manifest['complete'] and manifest['size'] <= state_store.EVIDENCE_LIMIT
+        require(raw.get('sha256') == manifest['sha256'] and raw.get('size') == manifest['size'] and
+                raw.get('truncated') is (not complete) and
+                raw.get('facts') == (binding.get('facts') if complete else {}) and
+                binding == host_raw_binding(original, binding.get('facts'), raw.get('event_digest')) and
+                receipt['status'] == (raw['reported_status'] if complete else 'unknown'),
+                'invalid_checkpoint', 'host raw facts differ from the original receipt manifest')
+        require(store.bytes_read <= state_store.READ_LIMIT, 'state_capacity', 'host manifests exceed the current read budget')
+
+
 def native_result_facts(record, action, *, query=False):
     facts = {'thread_id': record['thread_id'], 'operation': action['operation']}
     if action['operation'] == 'finish-native' or query:
@@ -1425,6 +1466,7 @@ def validate_state(state):
     require(isinstance(state.get("retained_host_actions", []), list),
             "invalid_checkpoint", "retained host actions must be an ordered list")
     records = state.get('native_finalizations', [])
+    validate_saved_host_raw(state)
     require(isinstance(records, list), 'invalid_checkpoint', 'native lifecycle receipts must be an ordered list')
     refs, actions = set(), set()
     for record in records:
@@ -2222,14 +2264,17 @@ class Progress:
         self._commit_receipts = []
         self._authority_revision = getattr(outer, 'authority_revision', 0)
 
-    def save(self):
-        self._verified_readiness = None
+    def host_stopped(self):
         # Compatibility projection, never a business-replay liveness input.
         # Before any issue, or after exact non-creation, there is no writer.
         root_stopped = (self.state["host"]["status"] == "stopped" or
                                  self.state.get("host_action") is None or
                                  (self.state.get("dispatch") or {}).get("status") == "not-created")
-        self.state['stopped'] = root_stopped and not self.stop_barrier_pending()
+        return root_stopped and not self.stop_barrier_pending()
+
+    def save(self):
+        self._verified_readiness = None
+        self.state['stopped'] = self.host_stopped()
         if not self.state['stopped'] and self.state['status'] in {'paused','cancelled'}:
             self.state['status'] = 'cancelling' if self.stop_intent() == 'cancelling' else 'pausing'
         if self.state.get("business_block") and self.state["status"] not in {"pausing", "paused", "cancelling", "cancelled"}:
@@ -2275,6 +2320,10 @@ class Progress:
         """Derive writer closure from the existing roles and invocation journal."""
         s = self.state
         pending = []
+        pending.extend({'kind': 'host-raw-ingress', 'event_id': event_id,
+                        'action_id': event['raw_ingress']['action_id']}
+                       for event_id, event in s.get('events', {}).items()
+                       if not event.get('applied') and (event.get('raw_ingress') or {}).get('admitted') is True)
         for record in s.get('native_finalizations', []):
             for action in record['actions']:
                 if not action.get('resolved'):
@@ -4283,9 +4332,9 @@ class Progress:
             self.reject_design_native_replay(provenance)
         response_key = entry.digest([receipt['adapter'], provenance['response_ref']])
         call_key = entry.digest([receipt['adapter'], provenance['call_ref']])
-        fingerprint = entry.digest({'provenance': provenance,
+        fingerprint = state_store.raw_measure({'provenance': provenance,
             'receipt': {key: value for key, value in receipt.items() if key != 'receipt_ref'},
-            'action_resolution': data.get('action_resolution')})
+            'action_resolution': data.get('action_resolution')})[1]
         store = state_store.open_store(self.path)
         previous = host['seen'].get(response_key)
         if previous is None:
@@ -4303,7 +4352,7 @@ class Progress:
             attributed=attributed, causal=attributed and not action.get('resolved'))
         return facts
 
-    def record_host(self, data):
+    def record_host(self, data, *, facts=None):
         """Only trusted adapter ingress writes host facts, never B replay.
 
         Provenance names an actual invocation/response authenticated by the
@@ -4317,9 +4366,11 @@ class Progress:
                     "tool provenance was reused with different evidence or cause")
             return
         status = receipt["status"]
+        truncated = (receipt['raw'].get('format') == 'host-raw-reference-v1' and
+                     receipt['raw'].get('truncated') is True)
         provenance = data.get("provenance")
         # The fast poll path uses these same bounded attribution checks.
-        facts = self.host_observation_facts(data)
+        facts = self.host_observation_facts(data) if facts is None else facts
         conflict, duplicate = facts['conflict'], facts['duplicate']
         if facts['valid'] and not conflict and not duplicate:
             host['seen'][facts['response_key']] = facts['fingerprint']
@@ -4335,7 +4386,7 @@ class Progress:
             retained = next((item for item in self.unresolved_host_actions()
                              if item["action_id"] == outstanding["action_id"]), None)
             resolution = data.get("action_resolution")
-            settled = (isinstance(resolution, dict) and set(resolution) == {"action_id", "outcome"} and
+            settled = (not truncated and isinstance(resolution, dict) and set(resolution) == {"action_id", "outcome"} and
                        resolution["action_id"] == outstanding["action_id"] and
                        isinstance(resolution["outcome"], str) and
                        resolution["outcome"] in {"completed", "not-issued", "cancelled"} and
@@ -4378,11 +4429,12 @@ class Progress:
         # Unordered stops retain an existing barrier, never replace causal proof.
         if causal or status != "stopped":
             host["observation"] = observation
-        resumable = status == 'stopped' and receipt['raw'].get('resumable') is True
+        resumable = status == 'stopped' and host_raw_facts(receipt).get('resumable') is True
         host["proof"] = copy.deepcopy(observation) if causal and (status in {"idle", "turn-completed"} or resumable) else None
         if action is not None and action["operation"] == "inspect-host-state" and (causal or status == "unknown"):
             # Retain a negative query result so advance waits rather than loops.
-            action["resolved"] = True
+            if not truncated:
+                action["resolved"] = True
             host["query"] = action
         event["host_applied"] = True
         event["host_conflict"] = conflict
@@ -4654,7 +4706,7 @@ class Progress:
         if proof is not None and proof["generation"] == host["generation"] and proof["receipt"]["ref"] == self.bound_ref():
             if (s.get("continuation_intent") or {}).get("kind") == "scope-revision":
                 require(entry.digest(host["last_stop"]) == s["consumed_readiness"]["stop_evidence_ref"] and
-                        proof["receipt"].get("raw", {}).get("resumable") is True,
+                        host_raw_facts(proof['receipt']).get("resumable") is True,
                         "host_recovery_required", "new revision requires the original resumable stop proof")
             else:
                 dispatch.receipt_for(s["dispatch"], proof["receipt"], {"result"})
@@ -4875,10 +4927,135 @@ class Progress:
             return ref
         return carrier["ref"]
 
+    def host_receipt_projection(self, data, reference, manifest, measurement, digest):
+        size, raw_digest = measurement
+        truncated = size > state_store.EVIDENCE_LIMIT or not manifest['complete']
+        return {**data, 'receipt': {**data['receipt'],
+            'status': 'unknown' if truncated else data['receipt']['status'], 'raw': {
+                'format': 'host-raw-reference-v1', 'evidence_ref': reference,
+                'sha256': raw_digest, 'size': size, 'event_digest': digest,
+                'reported_status': data['receipt']['status'], 'truncated': truncated,
+                'facts': {} if truncated else manifest['native_receipt']['facts']}}}
+
+    def apply_host_receipt(self, data, facts, receipt_error=None, *, interrupted=False):
+        """Persist only local host facts; no control/ledger transition or new call."""
+        s, receipt = self.state, data['receipt']
+        event = s['events'][data['event_id']]
+        if interrupted:
+            event['raw_ingress'].update(evidence_ref=receipt['raw']['evidence_ref'], reason='interrupted')
+        prior = next((index for index, value in enumerate(s['observations'])
+                      if value.get('event_id') == data['event_id']), None)
+        if (prior is None or
+                (s['observations'][prior].get('receipt', {}).get('raw', {}).get('truncated') is True and
+                 s['observations'][prior]['receipt']['raw'].get('evidence_ref') != receipt['raw']['evidence_ref'])):
+            s['observations'].append(data)
+        else:
+            s['observations'][prior] = data
+        self.save()
+        if interrupted:
+            return
+        if receipt_error is not None:
+            raise receipt_error
+        self.record_host(data, facts=facts)
+        if s['host']['status'] == 'stopped':
+            s.get('native_adverse', {}).pop(receipt['ref'], None)
+        if 'lifecycle' in data:
+            self.lifecycle_state(data['lifecycle'], advance=False)
+        # The pending ingress remains a stop barrier through every preceding
+        # durable save. Only this final local application commits its release.
+        event.pop('raw_ingress', None)
+        s['stopped'] = self.host_stopped()
+        if not s.get('business_block'):
+            require(s['status'] != 'cancelled', 'attempt_ended', 'cancelled attempt cannot accept late results')
+            if self.stop_intent() is not None:
+                if s['stopped'] and self.stop_intent() == 'pausing':
+                    s['status'] = 'paused'
+                s['step'] = 'bound'
+            elif (receipt['status'] == 'stopped' and s.get('final_integration_recovery') is not None and
+                  (s.get('host_action') or {}).get('operation') == 'continue-host' and
+                  ((s.get('host_action') or {}).get('payload', {}).get('intent') or {}).get('kind') == 'final-integration'):
+                s['step'] = 'bound'
+                s.pop('continuation_intent', None)
+            elif (s['step'] in {'technical-error', 'continue', 'accepted'} or s.get('pending') is not None or
+                  s.get('publication') or s.get('publication_candidate')):
+                pass
+            elif receipt['status'] in {'idle', 'turn-completed', 'stopped', 'unknown'}:
+                s['status'] = 'blocked'
+                s['error'] = {'code': 'business_result_missing', 'downstream_ready': False,
+                    'message': 'Host state alone does not establish business completion or permission to resume'}
+            else:
+                s['step'] = 'bound'
+        event['applied'] = True
+        if (receipt['status'] == 'running' and s['host']['status'] == 'running' and
+                receipt['raw']['poll_identity'] is not None):
+            s['current_poll'] = {'identity': data['receipt']['raw']['poll_identity'],
+                                 'generation': s['host']['generation']}
+        self.save()
+
+    def host_receipt_commit_bytes(self, data, store, current, measurement, binding, digest, facts, receipt_error, poll_identity):
+        """Measure the actual finite local save sequence, never execute downstream work."""
+        size, raw_digest = measurement
+        chunks = [{'run_id': current.run_id, 'kind': 'raw-chunk', 'sha256': '0' * 64,
+                   'size': min(1024 * 1024, size - offset)}
+                  for offset in range(0, size, 1024 * 1024)]
+        measured = []
+        for reason in (None, 'state_capacity', 'interrupted'):
+            manifest = {'format': 'raw-evidence-v1', 'complete': reason is None, 'size': size,
+                        'retained_size': size, 'sha256': raw_digest, 'chunks': chunks,
+                        'reason': reason, 'native_receipt': binding}
+            with store.measure_writes(sequence=True) as writes:
+                reference = store.write_object(current.run_id, 'evidence', manifest)
+                retained = self.host_receipt_projection(data, reference, manifest, measurement, digest)
+                retained['receipt']['raw']['poll_identity'] = poll_identity
+                candidate = Progress(self.path, copy.deepcopy(self.outer))
+                candidate._authority_revision = self._authority_revision
+                candidate._receipt_action = self._receipt_action
+                try:
+                    candidate.apply_host_receipt(retained, facts, receipt_error, interrupted=reason == 'interrupted')
+                except entry.ERROR_TYPES + (control.ControlError,) as error:
+                    candidate.block(error)
+                measured.append(sum(writes.values()))
+        return max(measured)
+
+    def retain_host_receipt(self, data, digest, facts, receipt_error, poll_identity):
+        raw = data['receipt']['raw']
+        measurement = state_store.raw_measure(raw)
+        if measurement[0] <= 64 * 1024:
+            return data
+        event = self.state['events'].setdefault(data['event_id'], {'digest': digest, 'applied': False})
+        if self._receipt_action is not None:
+            event['receipt_action'] = self._receipt_action
+        admitted = (receipt_error is None and facts is not None and facts['causal'] or
+                    (event.get('raw_ingress') or {}).get('admitted') is True)
+        event['raw_ingress'] = {'action_id': data.get('action_id'), 'provenance': data.get('provenance'),
+                                'sha256': measurement[1], 'size': measurement[0], 'admitted': admitted}
+        self.save()
+        store = state_store.open_store(self.path, receipt_action=self._receipt_action)
+        current = store.open_current()
+        raw_facts = {key: raw[key] for key in ('resumable', 'dispatch_available') if type(raw.get(key)) is bool}
+        binding = host_raw_binding(data, raw_facts, digest)
+        commit_bytes = self.host_receipt_commit_bytes(data, store, current, measurement, binding, digest, facts, receipt_error, poll_identity)
+        try:
+            reference, manifest = store.write_raw_evidence(current.run_id, raw, measurement=measurement,
+                commit_bytes=commit_bytes, native_receipt=binding)
+        except state_store.RawEvidenceInterrupted as error:
+            reference = error.reference
+            manifest = store.read_raw_manifest(reference, run_id=current.run_id)
+            retained = self.host_receipt_projection(data, reference, manifest, measurement, digest)
+            retained['receipt']['raw']['poll_identity'] = poll_identity
+            self.apply_host_receipt(retained, facts, receipt_error, interrupted=True)
+            raise
+        retained = self.host_receipt_projection(data, reference, manifest, measurement, digest)
+        retained['receipt']['raw']['poll_identity'] = poll_identity
+        return retained
+
     def observe(self, data):
         entry.fields(data, {"event_id", "receipt"}, {"result", "action_id", "provenance", "action_resolution", "closure", "publication_candidate", "lifecycle"})
         s, receipt = self.state, data["receipt"]
         entry.nonempty(data["event_id"])
+        require(not isinstance(receipt, dict) or not isinstance(receipt.get('raw'), dict) or
+                receipt['raw'].get('format') not in {'host-raw-reference-v1', 'native-raw-reference-v1'},
+                'host_evidence_missing', 'retain the external raw response, not internal raw facts or references')
         receipt_error = None
         try:
             dispatch.receipt_for(s['dispatch'], receipt, {'create', 'lookup', 'result'})
@@ -4899,7 +5076,7 @@ class Progress:
             # Reject authority, but retain the original raw observation below.
             # Invalid evidence never consumes a legitimate call's reservation.
             receipt_error = error
-        digest = entry.digest(data)
+        digest = state_store.raw_measure(data)[1]
         event_index_key = entry.digest([s['stage_subject'], data['event_id']])
         previous = s['events'].get(data['event_id'])
         if previous is None:
@@ -4932,8 +5109,8 @@ class Progress:
             dispatch.receipt_for(s['dispatch'], receipt, {'result'})
             require(receipt['ref'] == self.bound_ref(), 'identity_mismatch',
                     'poll must retain the original native identity')
-            poll_identity = entry.digest({'receipt': {key: value for key, value in receipt.items()
-                if key != 'receipt_ref'}, 'action_id': data.get('action_id')})
+            poll_identity = state_store.raw_measure({'receipt': {key: value for key, value in receipt.items()
+                if key != 'receipt_ref'}, 'action_id': data.get('action_id')})[1]
             previous_poll = s.get('current_poll')
             if (facts['valid'] and not facts['conflict'] and
                     (facts['attributed'] or facts['duplicate'] and
@@ -4953,12 +5130,29 @@ class Progress:
                         ('call', facts['call_key'], entry.digest(data['provenance']['action_id']))])
                 return _view(s, {'operation': 'wait-host', 'ref': self.bound_ref(),
                     'request': s['dispatch']['request']}, acknowledged=True)
+        # Only host result raw is admitted here; business reports and launch
+        # receipts retain their separate existing contracts.
+        if (receipt.get('event') == 'result' and isinstance(receipt.get('raw'), dict) and
+                not any(key in data for key in ('result', 'closure', 'publication_candidate'))):
+            data = self.retain_host_receipt(data, digest, facts, receipt_error, poll_identity)
+            receipt = data['receipt']
+            if receipt['raw'].get('format') == 'host-raw-reference-v1':
+                self.apply_host_receipt(data, facts, receipt_error)
+                # The raw receipt is durable. New control work and new queries
+                # must not spend the settled original invocation's reservation.
+                self._receipt_action = None
+                state_store.open_store(self.path).receipt_action = None
+                if s['transaction'] is not None:
+                    intent = self.stop_intent()
+                    return self.advance_stop(intent) if intent is not None else _view(s)
+                return (_view(s) if s.get('business_block') and self.stop_intent() is None else self.advance())
         # Keep even invalid/late raw receipts for exact recovery, not as authority.
         if previous is None:
-            s["events"][data["event_id"]] = {"digest": digest, "applied": False}
+            s["events"].setdefault(data["event_id"], {"digest": digest, "applied": False})
             if self._receipt_action is not None:
                 s['events'][data['event_id']]['receipt_action'] = self._receipt_action
-            s["observations"].append(copy.deepcopy(data))
+            if not any(value.get('event_id') == data['event_id'] for value in s['observations']):
+                s["observations"].append(copy.deepcopy(data))
             self.save()
         if receipt_error is not None:
             raise receipt_error
@@ -4966,7 +5160,7 @@ class Progress:
             require(receipt["ref"] == self.bound_ref(), "identity_mismatch", "observation must name the bound role")
             require(receipt["status"] in {"running", "idle", "turn-completed", "stopped", "unknown"},
                     "invalid_result", "invalid host execution state")
-            self.record_host(data)
+            self.record_host(data, facts=facts)
             if s['host']['status'] == 'stopped':
                 s.get('native_adverse', {}).pop(receipt['ref'], None)
             if 'lifecycle' in data:
@@ -5644,7 +5838,7 @@ class Progress:
             stop = s['host'].get('last_stop')
             require(s['host']['status'] == 'stopped' and stop is not None and stop.get('provenance') is not None,
                     'host_evidence_missing', 'current causal stop observation required')
-            raw = stop['receipt']['raw']
+            raw = host_raw_facts(stop['receipt'])
             require(raw.get('resumable') is False and raw.get('dispatch_available') is True,
                     'host_recovery_required', 'original host must prove nonresumability and current dispatch capability')
             stop_refs = [stop['receipt']['receipt_ref']]

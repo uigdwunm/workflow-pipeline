@@ -206,9 +206,11 @@ class StateStore:
         self._run_id = None
         self._pending_reserves = None
         self._measured_writes = None
+        self._measured_current = None
+        self._measure_sequence = False
 
     @contextmanager
-    def measure_writes(self):
+    def measure_writes(self, *, sequence=False):
         """Encode a bounded candidate through the normal commit path without publishing it."""
         require(_operation_store.get() is self and self._measured_writes is None,
                 'native commit measurement requires its locked owner operation')
@@ -216,12 +218,15 @@ class StateStore:
         original_action, original_run = self.receipt_action, self._run_id
         measured = {}
         self._measured_writes = measured
+        self._measure_sequence = sequence
         try:
             yield measured
         finally:
             self._verified_objects = cached
             self._pending_reserves = pending
             self._measured_writes = None
+            self._measured_current = None
+            self._measure_sequence = False
             self.receipt_action, self._run_id = original_action, original_run
 
     def _charge(self, size, *, allow_reserve=True):
@@ -535,6 +540,8 @@ class StateStore:
         return body
 
     def open_current(self):
+        if self._measured_current is not None:
+            return self._measured_current
         if not self.checkpoint.exists():
             return None
         envelope = json.loads(self._read(self.checkpoint, ROOT_LIMIT))
@@ -871,7 +878,10 @@ class StateStore:
             self._measured_writes[str(self.checkpoint)] = len(encode(envelope))
             marker = {'revision': revision, 'root': reference['sha256'], 'receipts': []}
             self._measured_writes[str(self._safe(Path('commits') / str(revision)))] = len(encode(marker))
-            return CurrentProjection(run_id, revision, root, reference)
+            measured_current = CurrentProjection(run_id, revision, root, reference)
+            if self._measure_sequence:
+                self._measured_current = measured_current
+            return measured_current
         for receipt in receipts:
             index = {**receipt, 'revision': revision, 'run_id': run_id, 'root': reference['sha256']}
             require(len(encode(index)) <= 16 * 1024, 'receipt index exceeds its fixed budget', 'state_capacity')
