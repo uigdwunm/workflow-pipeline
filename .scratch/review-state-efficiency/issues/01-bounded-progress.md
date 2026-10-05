@@ -50,6 +50,8 @@ Stage3→4 与恢复按三个独立行为片收敛，逐片停稳、审查，不
 
 V01：扩展 `tests/runtime/test_workflow_progress.py`、新 `test_bounded_progress.py`，首红灯即PRD的真实start/allocation/恢复与重复poll场景；不直接测文件字典拼装函数。
 
+ledger 公开读者补充：`discussion_protocol._read_topic` 的 Phase Results `workflow-control.data_json` 在 store_ref 路线必须有限解析当前权威，与 `discussion_core.workflow_control` 及 `_check_completion_evidence` 同步；不扩展其余 discussion protocol。构建映射按五包实际 roots 纳入 manifest，禁止只改生成副本。
+
 V02：扩展 `test_workflow.py`、`test_stage_transfer.py`、`test_unified_recovery.py`、`test_discussion_protocol.py`，覆盖外层runner及ledger提交后镜像丢失。现有其它直连fixture按manifest的verify条目核验，仅确实依赖旧内联结构时修改。
 
 V03：公开runner start/pause/resume验证同carrier、已有workflow_requirements初始化及真实Controller decision消费；补充真实handle分配→生产save_outer_record→handle精确回执重放，验证存储CAS前进但C业务revision、subjects和原回执证明不变，并拒绝过期owner写。此补充仅为覆盖Stage 2动作集无法自然产生的receipt交错，不替代V01/V02、不mock内部控制。

@@ -1921,6 +1921,29 @@
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": []
+    },
+    {
+      "path": "src/shared/scripts/discussion_protocol.py",
+      "operation": "modify",
+      "tickets": [
+        "T01"
+      ],
+      "kind": "source",
+      "reason": "T01 ledger store_ref成为唯一权威后，公开read-topic必须通过_read_topic有限解析当前control，真实attached port不能返回旧内嵌或裸store_ref冒充context；仅此生产读者闭合",
+      "exists_at_design": true,
+      "symbols": [
+        {
+          "name": "_read_topic",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [
+        "skills/change-closure/scripts/discussion_protocol.py",
+        "skills/design-discussion/scripts/discussion_protocol.py",
+        "skills/guided-implementation/scripts/discussion_protocol.py",
+        "skills/problem-framing/scripts/discussion_protocol.py",
+        "skills/solution-design/scripts/discussion_protocol.py"
+      ]
     }
   ],
   "generated_outputs": [
@@ -2761,6 +2784,46 @@
       "tickets": [
         "T01",
         "T06"
+      ]
+    },
+    {
+      "path": "skills/change-closure/scripts/discussion_protocol.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_protocol.py",
+      "tickets": [
+        "T01"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/scripts/discussion_protocol.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_protocol.py",
+      "tickets": [
+        "T01"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/discussion_protocol.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_protocol.py",
+      "tickets": [
+        "T01"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/scripts/discussion_protocol.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_protocol.py",
+      "tickets": [
+        "T01"
+      ]
+    },
+    {
+      "path": "skills/solution-design/scripts/discussion_protocol.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_protocol.py",
+      "tickets": [
+        "T01"
       ]
     }
   ],
