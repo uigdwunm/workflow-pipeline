@@ -533,6 +533,70 @@ def receipt_for(record, receipt, event):
             entry.nonempty(receipt[field])
 
 
+def matching_receipt(record, retained, receipt):
+    if 'raw_ref' not in retained:
+        return retained == receipt
+    import workflow_state_store
+    pin = record['allocation']
+    store = workflow_state_store.open_store(pin['checkpoint'])
+    value = store.read_evidence(retained['raw_ref'], run_id=pin['run_id'])['value']
+    require(isinstance(value, dict) and set(value) == {'allocation_receipt'},
+            'invalid_evidence', 'original native receipt required')
+    return value['allocation_receipt'] == receipt
+
+
+def validate_allocation_receipt(record, operation, receipt, context, result=None):
+    """Validate original-call causality before a receipt may spend its reserve.
+
+    This performs no writes. Both C admission and B binding use the same native
+    identity, event, status and previous-response rules.
+    """
+    require(operation in {'bind', 'reconcile', 'receive'}, 'invalid_operation', 'native receipt operation required')
+    require(operation == 'receive' or not any(item.get('event') == 'existing-dispatcher' for item in record['receipts']),
+            'invalid_operation', 'an inherited Dispatcher has no creation receipt to bind')
+    receipt_for(record, receipt, {{'bind': 'create', 'reconcile': 'lookup', 'receive': 'result'}[operation]})
+    previous = [item for item in record['receipts'] if item['receipt_ref'] == receipt['receipt_ref']]
+    require(all(matching_receipt(record, item, receipt) for item in previous),
+            'identity_mismatch', 'original receipt identity cannot name another response')
+    if operation == 'receive':
+        known, state, item = matching(record, context)
+        require(known is not None and receipt['ref'] == known, 'identity_mismatch', 'result must come from the bound identity')
+        require(receipt['status'] in {'ready', 'running', 'idle', 'turn-completed', 'stopped', 'unknown', 'pending'},
+                'invalid_request', 'unknown native result status')
+        entry.fields(result, {'delivery_id', 'status', 'payload'})
+        entry.nonempty(result['delivery_id'])
+        require(result['status'] in {'completed', 'continue', 'needs_input', 'technical_error'},
+                'invalid_result', 'unknown business result')
+        require(result['status'] != 'completed' or receipt['status'] == 'stopped',
+                'host_evidence_missing', 'completed work requires authenticated stopped evidence')
+        require(state not in {'cancelled', 'creation-failed'}, 'attempt_mismatch', 'result attempt ended')
+        return known, state, item
+    require(receipt['status'] in {'ready', 'pending', 'unknown', 'not-created'},
+            'invalid_request', 'unknown launch outcome')
+    require((receipt['status'] == 'ready') == (receipt['ref'] is not None),
+            'identity_mismatch', 'only ready results carry usable identities')
+    require(receipt['status'] != 'ready' or receipt['pending_id'] is None,
+            'identity_mismatch', 'pending identity cannot be bound')
+    reconcile_unbound = (operation == 'reconcile' and record['request']['role'] == 'execution-agent' and
+                         receipt['status'] in {'unknown', 'pending', 'not-created'})
+    known, state, item = matching(record, context, reconcile_unbound=reconcile_unbound)
+    if previous:
+        require(known is None or known == receipt['ref'], 'identity_mismatch', 'replayed receipt conflicts with checkpoint')
+        return known, state, item
+    if reconcile_unbound and receipt['status'] == 'not-created' and known is None and state == 'cancelled' and item['stopped']:
+        return known, state, item
+    require(state not in {'cancelled', 'creation-failed', 'accepted'}, 'attempt_mismatch', 'late receipt cannot revive an ended attempt')
+    if known is not None:
+        require(receipt['status'] == 'ready' and receipt['ref'] == known,
+                'identity_mismatch', 'bound identity cannot be replaced')
+    elif record['receipts']:
+        require(operation == 'reconcile', 'outcome_unknown', 'read back the original launch before retrying')
+        pending = {item['pending_id'] for item in record['receipts'] if item['pending_id'] is not None}
+        require(receipt['pending_id'] is None or not pending or receipt['pending_id'] in pending,
+                'identity_mismatch', 'pending identity changed')
+    return known, state, item
+
+
 def bind_discussion(port, record, receipt):
     """Bind the exact already-authorized 0/1 carrier; never activate a phase."""
     saved = dispatch_input(record)
@@ -593,7 +657,9 @@ def bound(request):
     entry.fields(request, {"protocol", "operation", "record", "control", "receipt"},
                  {"scope_checkpoint_path", "allocation_intent"})
     record = record_for(request)
-    require(not any(isinstance(receipt, dict) and receipt.get("event") == "existing-dispatcher"
+    if record['request']['role'] == 'execution-agent':
+        validate_allocation_receipt(record, request['operation'], request['receipt'], request['control']['context'])
+    require(not any(isinstance(retained_receipt, dict) and retained_receipt.get("event") == "existing-dispatcher"
                     for retained_receipt in record["receipts"]),
             "invalid_operation", "an inherited Dispatcher has no creation receipt to bind")
     launch = record['request']

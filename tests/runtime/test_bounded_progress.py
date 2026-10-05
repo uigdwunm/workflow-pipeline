@@ -13,6 +13,112 @@ from test_workflow_progress import ProgressTests, progress, transfer, runner
 
 
 class BoundedProgressTests(ProgressTests):
+    def test_allocation_review_bound_identity_rejection_keeps_original_audit(self):
+        self.prepare_execution()
+        slot = self.allocation_slot('slice-one')
+        self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'bind',
+            'receipt': self.receipt(slot['record'], ref='native:original')})
+        slot = self.allocation_slot('slice-one')
+        bad = {'allocation_id': 'slice-one', 'operation': 'reconcile',
+            'receipt': self.receipt(slot['record'], 'ready', 'lookup', ref='native:other')}
+        rejected = self.invoke('allocation', bad)
+        self.assertEqual(rejected['error']['code'], 'identity_mismatch')
+        after = self.allocation_slot('slice-one')
+        self.assertEqual(after['record'], slot['record'])
+        self.assertIsNone(after['transaction'])
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        audit = store.read_evidence(after['observations'][-1], run_id=current.run_id)['value']
+        self.assertEqual(audit, {'allocation_observation': bad})
+        known = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'reconcile',
+            'receipt': self.receipt(slot['record'], 'ready', 'lookup', ref='native:original')})
+        self.assertEqual(known['next_action']['result']['status'], 'bound')
+
+    def test_allocation_review_large_receipt_recovers_from_original_observation_ref(self):
+        self.prepare_execution()
+        slot = self.allocation_slot('slice-one')
+        receipt = self.receipt(slot['record'], ref='native:executor')
+        receipt['raw']['output'] = 'x' * (300 * 1024)
+        data = {'allocation_id': 'slice-one', 'operation': 'bind', 'receipt': receipt}
+        original_replace = os.replace
+        def crash_after_intent(source, target):
+            if Path(target).parent.name == 'commits':
+                current = self.allocation_slot('slice-one')
+                if (current.get('transaction') or {}).get('operation') == 'bind':
+                    raise KeyboardInterrupt('large receipt intent is durable before B dispatch')
+            return original_replace(source, target)
+        with patch.object(os, 'replace', crash_after_intent):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('allocation', data)
+        pending = self.allocation_slot('slice-one')['transaction']
+        self.assertNotIn('receipt', pending)
+        self.assertNotIn('result', pending)
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        original = store.read_evidence(pending['observation_ref'], run_id=current.run_id)['value']
+        self.assertEqual(original, {'allocation_observation': data})
+        self.assertLess(current.root['subjects']['ticket:INLINE-TRANSFER:0']['size'], 256 * 1024)
+        recovered = self.invoke('resume')['next_action']
+        self.assertEqual(recovered['operation'], 'allocation-recovery')
+        self.assertEqual(recovered['data'], data)
+        bound = self.invoke('allocation', recovered['data'])
+        self.assertEqual((bound.get('next_action') or {}).get('result', {}).get('status'), 'bound', bound)
+        replay = self.invoke('allocation', data)
+        self.assertTrue(replay['acknowledged'])
+        self.assertEqual(self.allocation_slot('slice-one')['action']['action_id'], slot['action']['action_id'])
+
+    def test_allocation_review_invalid_receipts_cannot_spend_original_reserve(self):
+        for invalid in ('event', 'status', 'ref', 'source'):
+            with self.subTest(invalid=invalid):
+                self.checkpoint = self.checkpoint.with_name('reserve-' + invalid + '.json')
+                self.settings['thread_id'] = 'task'
+                self.request['host'].update(thread_id='task', role='controller', source_ref=None)
+                self.request['host'].pop('actor_ref', None)
+                self.prepare_execution()
+                slot = self.allocation_slot('slice-one')
+                self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'bind',
+                    'receipt': self.receipt(slot['record'], 'unknown', 'create', ref=None)})
+                slot = self.allocation_slot('slice-one')
+                directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+                reserve = directory / 'reserves' / 'business' / hashlib.sha256(slot['action']['action_id'].encode()).hexdigest()
+                available = reserve.stat().st_size
+                (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+                bad = self.receipt(slot['record'], 'ready', 'lookup', ref='native:executor')
+                operation = 'reconcile'
+                if invalid == 'event':
+                    bad['event'] = 'result'
+                elif invalid == 'status':
+                    bad['status'] = 'stopped'
+                elif invalid == 'ref':
+                    bad['status'] = 'unknown'
+                else:
+                    operation, bad['event'] = 'bind', 'create'
+                try:
+                    rejected = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': operation, 'receipt': bad})
+                    self.assertEqual(rejected['status'], 'blocked')
+                except transfer.entry.PreparationError:
+                    pass
+                self.assertEqual(reserve.stat().st_size, available, invalid)
+                self.assertIsNone(self.allocation_slot('slice-one')['transaction'])
+                ready = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'reconcile',
+                    'receipt': self.receipt(slot['record'], 'ready', 'lookup', ref='native:executor')})
+                self.assertEqual((ready.get('next_action') or {}).get('result', {}).get('status'), 'bound', ready)
+
+    def test_allocation_review_unknown_lookup_binds_the_original_call(self):
+        self.prepare_execution()
+        original = self.allocation_slot('slice-one')
+        unknown = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'bind',
+            'receipt': self.receipt(original['record'], 'unknown', 'create', ref=None)})
+        self.assertEqual((unknown.get('next_action') or {}).get('result', {}).get('status'), 'unknown', unknown)
+        slot = self.allocation_slot('slice-one')
+        ready = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'reconcile',
+            'receipt': self.receipt(slot['record'], 'ready', 'lookup', ref='native:executor')})
+        self.assertEqual((ready.get('next_action') or {}).get('result', {}).get('status'), 'bound', ready)
+        recovered = self.allocation_slot('slice-one')
+        self.assertEqual(recovered['record']['request'], original['record']['request'])
+        self.assertEqual(recovered['action']['action_id'], original['action']['action_id'])
+        self.assertEqual(len(recovered['record']['receipts']), 2)
+
     def test_allocation_contract_two_active_slices_keep_peer_in_stop_barrier(self):
         self.context = self.context_for(3)
         initial = self.input_for(3)

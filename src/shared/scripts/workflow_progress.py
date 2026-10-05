@@ -4848,6 +4848,7 @@ class Progress:
         self.require_controls_reconciled()
         slots = s.setdefault("allocations", {})
         slot = slots.get(identity)
+        observation_ref = None
         if operation == "prepare":
             entry.fields(data, {"allocation_id", "operation", "handoff"})
             if slot is not None:
@@ -4944,20 +4945,43 @@ class Progress:
                 self.save()
         else:
             require(slot is not None and slot["record"] is not None, "allocation_missing", "exact saved allocation required")
-            if isinstance(data.get('receipt'), dict):
-                dispatch.receipt_for(slot['record'], data['receipt'], {'create', 'lookup', 'result'})
-                if slot.get('action'):
-                    self._receipt_action = slot['action']['action_id']
-            require(not (slot['record']['status'] == 'not-created' and (data.get('receipt') or {}).get('ref') is not None),
-                    'attempt_ended', 'a late ref cannot bind a proven non-created allocation')
             required = {"allocation_id", "operation", "decision"} if operation == "accept" else {"allocation_id", "operation", "receipt"}
             if operation == "receive": required.add("result")
             entry.fields(data, required)
+            if operation != 'accept':
+                try:
+                    require(not (slot['record']['status'] == 'not-created' and data['receipt'].get('ref') is not None),
+                            'attempt_ended', 'a late ref cannot bind a proven non-created allocation')
+                    dispatch.validate_allocation_receipt(slot['record'], operation, data['receipt'],
+                        s['control']['context'], data.get('result'))
+                    if slot['transaction'] is not None:
+                        require(slot['transaction']['intent_id'] == entry.digest([identity, operation, data]),
+                                'allocation_conflict', 'receipt must retain the original pending allocation request')
+                    action = slot.get('action')
+                    if action is not None:
+                        require(action['operation'] == 'invoke-host' and action['allocation_id'] == identity and
+                                action['request_digest'] == data['receipt']['request_digest'],
+                                'identity_mismatch', 'receipt must name the original persisted host action')
+                except entry.ERROR_TYPES:
+                    # Invalid evidence may use ordinary audit space only. Never
+                    # let its claimed attempt borrow a legitimate call reserve.
+                    self._receipt_action = None
+                    audit_store = state_store.open_store(self.path)
+                    audit_store.receipt_action = None
+                    audit_root = audit_store.open_current()
+                    slot['observations'].append(audit_store.write_object(audit_root.run_id,
+                        'evidence', {'allocation_observation': data}))
+                    self.save()
+                    raise
+                if action is not None:
+                    self._receipt_action = action['action_id']
             observation_store = state_store.open_store(self.path, receipt_action=self._receipt_action)
             observation_root = observation_store.open_current()
-            slot["observations"].append(observation_store.write_object(
-                observation_root.run_id, 'evidence', {'allocation_observation': data}))
-            self.save()
+            observation_ref = observation_store.write_object(
+                observation_root.run_id, 'evidence', {'allocation_observation': data})
+            if observation_ref not in slot['observations']:
+                slot["observations"].append(observation_ref)
+                self.save()
         if operation == "prepare":
             self.require_allocation_active()
         request = {"protocol": handoff.PROTOCOL, "operation": operation}
@@ -4976,7 +5000,7 @@ class Progress:
         if slot['transaction'] is None:
             slot["transaction"] = {"operation": operation, "intent_id": entry.digest([identity, operation, data]),
                 'request_digest': entry.digest(request),
-                **{key: copy.deepcopy(data[key]) for key in ('receipt', 'result', 'decision') if key in data},
+                'observation_ref': observation_ref,
                 'base_control_digest': entry.digest(s['control']), 'base_revision': s['revision']}
             self.save()
         else:
@@ -5002,7 +5026,9 @@ class Progress:
         # Context is a single current authority update, never an audit copy in
         # each allocation result. The sealed record already has its own slot.
         slot["transaction"], slot["result"] = None, {
-            key: value for key, value in result.items() if key not in {'checkpoint', 'record'}}
+            key: value for key, value in result.items() if key not in {'checkpoint', 'record', 'observation', 'result'}}
+        if 'observation' in result or 'result' in result:
+            slot['result']['observation_ref'] = observation_ref
         if (data.get('receipt') or {}).get('status') == 'stopped':
             s.get('native_adverse', {}).pop(data['receipt']['ref'], None)
         if s.get("stop_requested") == "cancelling" and s["stopped"]:
@@ -5213,8 +5239,23 @@ class Progress:
                 request = slot["transaction"]
                 operation = request["operation"]
                 data = {"allocation_id": identity, "operation": operation}
-                data.update({"handoff": slot["handoff"]} if operation == "prepare" else
-                            {key: request[key] for key in ("receipt", "result", "decision") if key in request})
+                if operation == 'prepare':
+                    data['handoff'] = slot['handoff']
+                else:
+                    store = state_store.open_store(self.path)
+                    current = store.open_current()
+                    reference = request.get('observation_ref')
+                    require(reference in slot['observations'], 'invalid_checkpoint',
+                            'allocation intent must pin its committed observation')
+                    value = store.read_evidence(reference, run_id=current.run_id)['value']
+                    require(isinstance(value, dict) and set(value) == {'allocation_observation'},
+                            'invalid_evidence', 'original allocation observation required')
+                    observed = value['allocation_observation']
+                    require(isinstance(observed, dict) and observed.get('allocation_id') == identity and
+                            observed.get('operation') == operation and
+                            request['intent_id'] == entry.digest([identity, operation, observed]),
+                            'identity_mismatch', 'allocation observation differs from its original intent')
+                    data = observed
                 return _view(s, {"operation": "allocation-recovery", "ref": slot["owner_ref"], "data": data,
                                  "checkpoint": str(self.path)})
         pending_control = list(self.unresolved_control_transactions().values())
