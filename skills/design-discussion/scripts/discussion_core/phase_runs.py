@@ -1068,7 +1068,7 @@ def _freeze_requirement_output(
 
 def _check_completion_evidence(
     data: dict[str, Any], attempt: dict[str, Any], supplied: dict[str, str], topic_path: Path,
-    records: dict[str, list[dict[str, Any]]], topic: dict[str, Any],
+    records: dict[str, list[dict[str, Any]]], topic: dict[str, Any], ledger_path: Path,
 ) -> None:
     frozen = data
     if _mutable_requirement_run(data):
@@ -1079,7 +1079,9 @@ def _check_completion_evidence(
         for record in records["Phase Results"]:
             if record.get("result_kind") != "workflow-control" or record.get("topic_id") != topic["topic_id"]:
                 continue
-            context = _json_field(record, "data_json", "workflow control")
+            from .workflow_control import read_control_projection
+            context, _ = read_control_projection(ledger_path, record,
+                selector={'run_id': data['run_id'], 'attempt_id': attempt['attempt_id']})
             retired = [{'handoff_progress': {**record, 'state': 'handoff-complete'}}
                        for record in context.get('retired_handoffs', {}).values()]
             matched = False
@@ -1662,7 +1664,7 @@ def _complete_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         attempt = _phase_attempt(data, request["attempt_id"])
         if data["state"] != "completion-claimed" or attempt["state"] != "completion-claimed":
             raise ProtocolError("phase_completion_not_claimed", "completion must be claimed before acceptance")
-        _check_completion_evidence(data, attempt, supplied_evidence, topic_path, records, topic)
+        _check_completion_evidence(data, attempt, supplied_evidence, topic_path, records, topic, ledger_path)
         attempt["state"] = "completion-pending"
         data["state"] = "completion-pending"
         data["record_revision"] += 1
@@ -1718,7 +1720,7 @@ def _finalize_phase_run(request: dict[str, Any]) -> dict[str, Any]:
         attempt = _phase_attempt(data, request["attempt_id"])
         if data["state"] != "completion-pending" or attempt["state"] != "completion-pending":
             raise ProtocolError("phase_run_state_conflict", "only completion-pending Phase Runs can be finalized")
-        _check_completion_evidence(data, attempt, supplied_evidence, topic_path, records, topic)
+        _check_completion_evidence(data, attempt, supplied_evidence, topic_path, records, topic, ledger_path)
         attempt["state"] = "completed"
         data["state"] = "completed"
         data["record_revision"] += 1

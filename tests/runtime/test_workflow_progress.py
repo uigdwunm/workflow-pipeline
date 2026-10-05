@@ -2069,34 +2069,182 @@ class AttachedProgressTests(transfer.AttachedTransferTests):
         return progress.handle(self.checkpoint, {"protocol": progress.PROTOCOL, "operation": operation,
             "expected_revision": current.get("revision", 0), "data": data or {}})
 
-    def test_real_ledger_prepare_bind_new_envelopes_and_lost_bind(self):
-        started = self.invoke_progress("start", {"handoff": self.input, "control": self.port()})
-        self.assertEqual(started["next_action"]["operation"], "invoke-host")
-        saved = progress.read_record(self.checkpoint)[progress.KEY]
-        record = saved["dispatch"]
-        receipt = {"adapter": "fixture-task-host", "receipt_ref": "tool:create", "request_digest": record["request"]["digest"],
-            "attempt": record["request"]["attempt"], "role": "dedicated-discussion", "event": "create", "status": "ready",
-            "ref": "task:dedicated", "pending_id": None, "configuration": {"model": "fixture-model", "effort": "high"},
-            "raw": {"threadId": "task:dedicated"}}
-        observation = {"event_id": "created", "receipt": receipt}
-        with patch.object(progress.Progress, "apply", side_effect=KeyboardInterrupt):
+    def test_ledger_pointer_recovers_original_bind_after_runner_replace_failure(self):
+        started = self.invoke_progress('start', {'handoff': self.input, 'control': self.port()})
+        self.assertEqual(started['next_action']['operation'], 'invoke-host')
+        public = self.read()
+        self.assertIn('workflow_control_ref', public)
+        state = progress.read_active_owner(self.checkpoint)[progress.KEY]
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        persisted = store.read_subject(current, current.root['metadata']['stage_subject']).value
+        self.assertNotIn('context', persisted['control'])
+        self.assertEqual(persisted['control']['store_ref'], public['workflow_control_ref'])
+        record = state['dispatch']
+        receipt = {'adapter': 'fixture-task-host', 'receipt_ref': 'tool:create',
+            'request_digest': record['request']['digest'], 'attempt': record['request']['attempt'],
+            'role': 'dedicated-discussion', 'event': 'create', 'status': 'ready',
+            'ref': 'task:dedicated', 'pending_id': None,
+            'configuration': {'model': 'fixture-model', 'effort': 'high'},
+            'raw': {'threadId': 'task:dedicated'}}
+        original_replace = os.replace
+        interrupted = []
+        def replace(source, target):
+            if Path(target) == self.checkpoint and self.read()['workflow_control']['carrier']['ref'] == 'task:dedicated':
+                interrupted.append(str(target))
+                raise KeyboardInterrupt('ledger committed before runner mirror replace')
+            return original_replace(source, target)
+        with patch.object(os, 'replace', replace):
             with self.assertRaises(KeyboardInterrupt):
-                self.invoke_progress("observe", observation)
-        self.assertEqual(self.read()["workflow_control"]["carrier"]["ref"], "task:dedicated")
+                self.invoke_progress('observe', {'event_id': 'created', 'receipt': receipt})
+        self.assertEqual(interrupted, [str(self.checkpoint)])
+        committed = self.read()
+        self.assertEqual(committed['workflow_control']['carrier']['ref'], 'task:dedicated')
         before = self.ledger.read_bytes()
-        resumed = self.invoke_progress("resume")
-        self.assertEqual(resumed["next_action"]["operation"], "wait-host", resumed)
+        reads = []
+        original_open = Path.open
+        directories = [self.checkpoint.with_name(self.checkpoint.name + '.state'),
+                       self.ledger.with_name(self.ledger.name + '.state')]
+        def opened(path, mode='r', *args, **kwargs):
+            if 'r' in mode and (path in {self.checkpoint, self.ledger} or
+                    any(path.is_relative_to(directory) for directory in directories)):
+                reads.append(path.stat().st_size)
+            return original_open(path, mode, *args, **kwargs)
+        with patch.object(Path, 'open', opened):
+            resumed = self.invoke_progress('resume')
+        self.assertEqual(resumed['next_action']['operation'], 'wait-host', resumed)
+        self.assertLessEqual(sum(reads), progress.state_store.READ_LIMIT)
+        self.assertLessEqual(self.checkpoint.stat().st_size, progress.state_store.ROOT_LIMIT)
+        self.assertLessEqual(committed['workflow_control_ref']['reference']['size'], progress.state_store.SUBJECT_LIMIT)
         self.assertEqual(self.ledger.read_bytes(), before)
-        self.assertTrue(self.invoke_progress("observe", observation)["acknowledged"])
+        self.assertEqual(self.read()['workflow_control_ref'], committed['workflow_control_ref'])
+        self.assertTrue(self.invoke_progress('observe', {'event_id': 'created', 'receipt': receipt})['acknowledged'])
         if self.NON_GIT:
-            self.assertIsNone(saved["handoff"]["source_commit"])
+            self.assertIsNone(state['handoff']['source_commit'])
 
+    def test_uncommitted_ledger_objects_do_not_acknowledge_a_control_call(self):
+        self.invoke_progress('start', {'handoff': self.input, 'control': self.port()})
+        request = {**self.envelope(), 'operation': 'workflow-control', 'action': 'cancel', 'evidence': {}}
+        before = self.read()
+        original_replace = os.replace
+        def replace(source, target):
+            if Path(target) == self.ledger:
+                raise KeyboardInterrupt('before ledger authority replace')
+            return original_replace(source, target)
+        with patch.object(os, 'replace', replace):
+            with self.assertRaises(KeyboardInterrupt):
+                transfer.discussion_protocol.handle(request)
+        self.assertEqual(self.read()['workflow_control_ref'], before['workflow_control_ref'])
+        result = transfer.discussion_protocol.handle(request)
+        self.assertFalse(result.get('idempotent_replay', False))
+        self.assertEqual(result['ledger_revision'], before['ledger_revision'] + 1)
+
+    def test_ledger_commit_without_receipt_certificate_recovers_exact_projection(self):
+        self.invoke_progress('start', {'handoff': self.input, 'control': self.port()})
+        request = {**self.envelope(), 'operation': 'workflow-control', 'action': 'cancel', 'evidence': {}}
+        previous = self.read()['ledger_revision']
+        original_replace = os.replace
+        def replace(source, target):
+            result = original_replace(source, target)
+            if Path(target) == self.ledger:
+                raise KeyboardInterrupt('after ledger commit before receipt certificate')
+            return result
+        with patch.object(os, 'replace', replace):
+            with self.assertRaises(KeyboardInterrupt):
+                transfer.discussion_protocol.handle(request)
+        committed = self.read()
+        self.assertEqual(committed['ledger_revision'], previous + 1)
+        before = self.ledger.read_bytes()
+        replay = transfer.discussion_protocol.handle(request)
+        self.assertTrue(replay['idempotent_replay'])
+        self.assertEqual(replay['control']['store_ref'], committed['workflow_control_ref'])
+        self.assertEqual(replay['control']['context'], committed['workflow_control'])
+        self.assertEqual(self.ledger.read_bytes(), before)
+
+    def test_original_ledger_receipt_survives_recent_event_eviction(self):
+        self.invoke_progress('start', {'handoff': self.input, 'control': self.port()})
+        request = {**self.envelope(), 'operation': 'workflow-control', 'action': 'cancel', 'evidence': {}}
+        original = transfer.discussion_protocol.handle(request)
+        for _ in range(201):
+            self.mutate('workflow-control', action='choose-dedicated', evidence={'intent': 'explicit-dedicated'})
+        before = self.ledger.read_bytes()
+        replay = transfer.discussion_protocol.handle(request)
+        self.assertTrue(replay.pop('idempotent_replay'))
+        self.assertEqual(replay, original)
+        self.assertEqual(self.ledger.read_bytes(), before)
+        self.assertNotEqual(self.read()['workflow_control_ref'], replay['control']['store_ref'])
+        with self.assertRaises(transfer.discussion_protocol.ProtocolError) as conflict:
+            transfer.discussion_protocol.handle({**request, 'evidence': {'unexpected': True}})
+        self.assertEqual(conflict.exception.code, 'idempotency_conflict')
+        self.assertEqual(self.ledger.read_bytes(), before)
+
+    def test_stale_or_modified_runner_control_cannot_overwrite_ledger(self):
+        self.invoke_progress('start', {'handoff': self.input, 'control': self.port()})
+        state = progress.read_active_owner(self.checkpoint)[progress.KEY]
+        port = copy.deepcopy(state['control'])
+        self.mutate('workflow-control', action='cancel', evidence={})
+        before = self.ledger.read_bytes()
+        port['discussion'] = self.envelope()
+        with self.assertRaises(transfer.discussion_protocol.ProtocolError) as raised:
+            transfer.dispatch.checkpoint(port, state['handoff'], 'cancel', {})
+        self.assertEqual(raised.exception.code, 'control_revision_conflict')
+        self.assertEqual(self.ledger.read_bytes(), before)
+        outer = progress.read_active_owner(self.checkpoint)
+        outer[progress.KEY]['control']['context']['carrier']['ref'] = 'forged-runner'
+        with self.assertRaises(transfer.entry.PreparationError) as rejected:
+            progress.Progress(self.checkpoint, outer).save()
+        self.assertEqual(rejected.exception.code, 'control_context_changed')
+        self.assertEqual(self.ledger.read_bytes(), before)
 
 class NonGitProgressTests(AttachedProgressTests):
     NON_GIT = True
 
 
 class PhaseProgressTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTestSupport):
+    def test_ledger_phase_completion_requires_exact_accepted_projection(self):
+        project = self.make_project('ledger-phase-acceptance', git=True)
+        topic = transfer.discussion_protocol.handle(self.request(project, conversation_ref='discussion-task'))
+        path = Path(topic['topic_document_path']).relative_to(project).as_posix()
+        subprocess.run(['git', '-C', str(project), 'add', '-f', path], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(project), 'commit', '-qm', 'frozen topic'], check=True, capture_output=True)
+        commit = subprocess.check_output(['git', '-C', str(project), 'rev-parse', 'HEAD'], text=True).strip()
+        base = {'protocol_version': 1, 'project_path': str(project), 'project_id': topic['project_id'],
+            'tree_id': topic['tree_id'], 'actor_topic_id': topic['topic_id'], 'actor_conversation_ref': 'discussion-task'}
+        def mutate(operation, *, actor='discussion-task', **values):
+            current = transfer.discussion_protocol.handle({**base, 'operation': 'read-topic'})
+            return transfer.discussion_protocol.handle({**base, 'operation': operation,
+                'actor_conversation_ref': actor, 'expected_ledger_revision': current['ledger_revision'],
+                'expected_topic_revision': current['record_revision'], 'idempotency_key': str(progress.uuid.uuid4()), **values})
+        checkpoint = mutate('prepare-checkpoint', purpose='stage-entry', base_ref='HEAD')
+        published = mutate('publish-git-checkpoint', checkpoint_id=checkpoint['checkpoint_id'],
+                           expected_checkpoint_revision=checkpoint['checkpoint_record_revision'])
+        phase = mutate('prepare-wrapper-phase-run', from_phase=0, to_phase=1, route='0->1',
+            carrier_kind='dedicated-grilling', source_checkpoint_id=checkpoint['checkpoint_id'],
+            flow_mode='stepwise', flow_mode_source='explicit-stage-confirmation', scope=['requirements'])
+        planned = mutate('workflow-control', action='prepare', evidence={'target': 'local', 'project': topic['project_id'],
+            'title': 'Frame', 'missing_context': [], 'configuration': transfer.configuration('dedicated-problem-framing'),
+            'next_step': 'stage2', 'archive_ref': None, 'gate_open': True})['control']
+        plan = planned['plan']['plan_id']
+        mutate('workflow-control', action='decide', evidence={'plan_id': plan, 'intent': 'confirm'})
+        binding = {'phase_run_id': phase['phase_run_id'], 'attempt_id': phase['attempt_id']}
+        mutate('authorize-phase-carrier', **binding, carrier_ref='task:framing')
+        mutate('workflow-control', action='creation-result', evidence={'status': 'ready', 'ref': 'task:framing', 'attempt': plan})
+        mutate('claim-phase-carrier', actor='task:framing', **binding, carrier_ref='task:framing',
+            source_checkpoint_id=checkpoint['checkpoint_id'], source_checkpoint_identity=published['commit_id'])
+        mutate('phase-ready', actor='task:framing', **binding, carrier_ref='task:framing', evidence=phase['evidence'])
+        mutate('phase-activate', **binding, evidence=phase['evidence'])
+        mutate('claim-phase-completion', actor='task:framing', **binding, carrier_ref='task:framing', evidence=phase['evidence'])
+        received = mutate('workflow-control', action='receive', evidence={'delivery_id': 'framing-output',
+            'source_ref': 'task:framing', 'attempt': plan, 'commit': commit,
+            'requirement_identity': planned['context']['requirement_identity'],
+            'verified_commit_hash': planned['context']['requirement_identity']['sha256']})['control']
+        with self.assertRaises(transfer.discussion_protocol.ProtocolError) as rejected:
+            mutate('complete-phase-run', **binding, evidence=phase['evidence'])
+        self.assertEqual(rejected.exception.code, 'phase_completion_not_claimed')
+        mutate('workflow-control', action='accept', evidence={'delivery_digest': received['delivery_digest']})
+        self.assertEqual(mutate('complete-phase-run', **binding, evidence=phase['evidence'])['state'], 'completion-pending')
+        self.assertEqual(mutate('finalize-phase-run', **binding, evidence=phase['evidence'])['state'], 'completed')
+
     def test_source_activation_uses_exact_real_phase_and_idempotent_envelope(self):
         project = self.make_project("source-activation", git=False)
         topic = self.bootstrap_topic(project)

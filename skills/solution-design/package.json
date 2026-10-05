@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "7ec79233b57f6af6cebf55cd7b3789bc5918fb4a162c499e8011abd57d6f4789",
+  "bundle_digest": "25578466972cc0a42a1885b90bea611ea72746db497cb56ef052c9055b33fcc5",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 11,
@@ -128,7 +128,7 @@
     },
     "scripts/discussion_core/phase_runs.py": {
       "mode": "0644",
-      "sha256": "5aa09b48377e2c7672f303509e259b498c7150de8b5a3599be1b29bd4ca63f42"
+      "sha256": "179737eb2c54ee759c022e27e8dce779a8583583187d7ffd7029f55779d6d83e"
     },
     "scripts/discussion_core/question_resolution.py": {
       "mode": "0644",
@@ -168,11 +168,11 @@
     },
     "scripts/discussion_core/workflow_control.py": {
       "mode": "0644",
-      "sha256": "7688e6043275483a61550e815b131e3636cbb9f62759748dec267e2245206a86"
+      "sha256": "6f707edc3476d460cf59eaf82689bdaebd1aa9eee9b47b16f1f99a65190c7ba3"
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
-      "sha256": "143355054fea939c352cd95280c3918730a7cab78440445dcb40709fc5fc4be7"
+      "sha256": "c5d3cfff71e19df94ec2a3c7f6d8d6535f3788fc4be00a229e9f6d950c663be4"
     },
     "scripts/entry_prepare.py": {
       "mode": "0644",
@@ -204,7 +204,7 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "6a58d403041213850d998eb46d403a5ea4803b23ec866626fd30124868343456"
+      "sha256": "35e09375724366a32a2b86cfc033b1a34835635fb4e52e69b3118e30fabb4acf"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
@@ -240,11 +240,11 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "a76f1af3c90aadc628c9c13022deeffc37c1aa3ba1c04bc6cbad78f3f425c6e5"
+      "sha256": "54c28bb2ee0a288504ec6ccd6b07d99a653a25d615477042742bbd6ecf7ecaf5"
     },
     "scripts/workflow_state_store.py": {
       "mode": "0644",
-      "sha256": "1bfdc55d6f06ed7f514f8b09a4a39689aff7142051dc9fc54687e5cd1bec0e0e"
+      "sha256": "75ab11d0c41cc9193716dd931737580eba0f8aff6f1325573a073fa48e67965b"
     }
   },
   "format_version": 1,

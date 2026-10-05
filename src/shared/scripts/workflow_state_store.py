@@ -225,7 +225,8 @@ class StateStore:
         return self._safe(Path('objects') / digest[:2] / digest[2:4] / digest)
 
     def write_object(self, run_id, kind, value, *, subject_id=None):
-        require(kind in {'root', 'subject', 'scope', 'predecessor', 'native-source-index', 'evidence', 'receipt'}, 'invalid object type')
+        require(kind in {'root', 'subject', 'scope', 'predecessor', 'native-source-index', 'evidence', 'receipt',
+                         'ledger-control', 'ledger-handoff'}, 'invalid object type')
         body = {'format': FORMAT, 'run_id': run_id, 'kind': kind, 'value': value}
         if subject_id is not None:
             body['subject_id'] = subject_id
@@ -278,6 +279,98 @@ class StateStore:
                 'invalid current root')
         self._run_id = envelope['run_id']
         return CurrentProjection(envelope['run_id'], envelope['revision'], root, envelope['current'])
+
+    def read_ledger_control(self, pointer, *, selector=None):
+        """Read a named ledger generation; never use the runner's current pointer."""
+        require(isinstance(pointer, dict) and set(pointer) == {
+            'format', 'ledger_path', 'topic_id', 'controller_ref', 'ledger_revision',
+            'control_revision', 'reference'}, 'invalid ledger control pointer')
+        require(pointer['format'] == 'ledger-control-v1' and
+                pointer['ledger_path'] == str(self.checkpoint.resolve()) and
+                type(pointer['ledger_revision']) is int and pointer['ledger_revision'] > 0 and
+                type(pointer['control_revision']) is int and pointer['control_revision'] > 0,
+                'ledger control authority changed')
+        ref = pointer['reference']
+        body = self.read_evidence(ref, run_id=ref['run_id'], kind='ledger-control')['value']
+        require(isinstance(body, dict) and set(body) == {'identity', 'context', 'retired', 'receipt'} and
+                body['identity'] == {k: v for k, v in pointer.items() if k != 'reference'},
+                'ledger generation identity changed')
+        context = body['context']
+        require(context.get('controller_ref') == pointer['controller_ref'] and
+                context.get('topic_ref') == pointer['topic_id'] and
+                'retired_handoffs' not in context and isinstance(body['retired'], dict) and
+                len(body['retired']) <= 32, 'invalid current ledger projection')
+        if selector is not None:
+            matches = [(key, value) for key, value in body['retired'].items()
+                       if all((key if field == 'handoff_id' else value.get(field)) == expected
+                              for field, expected in selector.items())]
+            require(len(matches) <= 1, 'ambiguous retired ledger projection')
+            for key, value in matches:
+                retired = self.read_evidence(value['reference'], run_id=ref['run_id'], kind='ledger-handoff')['value']
+                require(retired.get('handoff_id') == key, 'retired ledger identity changed')
+                context['retired_handoffs'] = {key: retired['value']}
+        require(self.bytes_read <= READ_LIMIT, 'ledger projection exceeded its read budget', 'state_capacity')
+        return context, body
+
+    def prepare_ledger_control(self, context, *, topic_id, ledger_revision, control_revision,
+                               previous, receipt):
+        """Prepare immutable objects only. The existing ledger transaction publishes them."""
+        run_id = previous['reference']['run_id'] if previous else str(uuid.uuid4())
+        retired = self.read_ledger_control(previous)[1]['retired'] if previous else {}
+        # Construct current fields directly; no full context/history copy is externalized.
+        current = {key: value for key, value in context.items() if key != 'retired_handoffs'}
+        for key, value in context.get('retired_handoffs', {}).items():
+            authority = value['plan'].get('entry_authority') or {}
+            retired[key] = {'run_id': authority.get('run_id'), 'attempt_id': authority.get('attempt_id'),
+                'delivery_digest': value['delivery_digest'],
+                'reference': self.write_object(run_id, 'ledger-handoff', {'handoff_id': key, 'value': value})}
+        require(len(retired) <= 32, 'current ledger handoff reference window is full', 'state_capacity')
+        identity = {'format': 'ledger-control-v1', 'ledger_path': str(self.checkpoint.resolve()),
+            'topic_id': topic_id, 'controller_ref': context['controller_ref'],
+            'ledger_revision': ledger_revision, 'control_revision': control_revision}
+        body = {'identity': identity, 'context': current, 'retired': retired, 'receipt': receipt}
+        reference = self.write_object(run_id, 'ledger-control', body)
+        pointer = {**identity, 'reference': reference}
+        # Account for the original receipt before the ledger may commit. A crash
+        # can overcount this reservation, but recovery never needs fresh budget.
+        if receipt is not None:
+            certificate = encode({'pointer': pointer, 'fingerprint': receipt['fingerprint'], 'result': receipt['result']})
+            require(len(certificate) <= SUBJECT_LIMIT, 'ledger receipt exceeds its fixed budget', 'state_capacity')
+            self._charge(len(certificate))
+        return pointer
+
+    def ledger_receipt_path(self, topic_id, key):
+        digest = hashlib.sha256(encode([topic_id, key])).hexdigest()
+        return self._safe(Path('ledger-receipts') / digest[:2] / digest)
+
+    def certify_ledger_control(self, pointer):
+        """Caller holds the ledger lock and has read this exact committed pointer."""
+        _, body = self.read_ledger_control(pointer)
+        receipt = body['receipt']
+        if receipt is None:
+            return
+        path = self.ledger_receipt_path(pointer['topic_id'], receipt['key'])
+        value = {'pointer': pointer, 'fingerprint': receipt['fingerprint'], 'result': receipt['result']}
+        data = encode(value)
+        require(len(data) <= SUBJECT_LIMIT, 'ledger receipt exceeds its fixed budget', 'state_capacity')
+        if path.exists():
+            require(self._read(path, SUBJECT_LIMIT) == data, 'original ledger receipt changed', 'state_object_corrupt')
+        else:
+            atomic_write(path, data)
+
+    def read_ledger_receipt(self, topic_id, key, fingerprint):
+        path = self.ledger_receipt_path(topic_id, key)
+        if not path.exists():
+            return None
+        value = json.loads(self._read(path, SUBJECT_LIMIT))
+        require(value.get('fingerprint') == fingerprint, 'idempotency key was reused for another update', 'idempotency_conflict')
+        pointer = value['pointer']
+        require(pointer['topic_id'] == topic_id, 'ledger receipt topic changed')
+        _, body = self.read_ledger_control(pointer)
+        require(body['receipt'] == {'key': key, 'fingerprint': fingerprint, 'result': value['result']},
+                'ledger receipt does not bind its original projection', 'state_object_corrupt')
+        return {**value['result'], 'control': {**value['result']['control'], 'store_ref': pointer},
+                'idempotent_replay': True}
 
     def read_subject(self, current, subject_id):
         require(isinstance(subject_id, str) and subject_id and subject_id != 'all', 'exact subject ID required')

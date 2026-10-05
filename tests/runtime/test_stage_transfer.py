@@ -898,7 +898,9 @@ class AttachedTransferTests(test_entry_prepare.EntrySupport):
         return discussion_protocol.handle({**self.envelope(), "operation": operation, **values})
 
     def port(self):
-        return {"context": self.read()["workflow_control"], "discussion": self.envelope()}
+        current = self.read()
+        return {"context": current["workflow_control"], 'store_ref': current['workflow_control_ref'],
+                "discussion": self.envelope()}
 
     def test_real_ledger_binds_exact_carrier_and_recovers_lost_response(self):
         saved = handoff.handle(self.input)

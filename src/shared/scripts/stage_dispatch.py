@@ -50,7 +50,7 @@ def checkpoint(port, request, action, evidence, *, checkpoint_path=None):
 Discussion mutation envelopes are supplied from the controller's saved intent;
 their exact idempotency key and revisions must be retained on an unknown result.
 """
-    entry.fields(port, {"context", "discussion"})
+    entry.fields(port, {"context", "discussion"}, {'store_ref'})
     context = port["context"]
     control.validate_current_context(context)
     require(context["controller_ref"] == request["controller_ref"], "identity_mismatch", "wrong checkpoint controller")
@@ -59,10 +59,19 @@ their exact idempotency key and revisions must be retained on an unknown result.
         verify_discussion_port(envelope, request)
         require(envelope["actor_conversation_ref"] == context["controller_ref"] and
                 envelope["actor_topic_id"] == context["topic_ref"], "identity_mismatch", "discussion checkpoint owner differs")
+        if port.get('store_ref') is None:
+            base = {key: value for key, value in envelope.items()
+                    if key not in {'expected_ledger_revision', 'expected_topic_revision', 'idempotency_key'}}
+            current = discussion_protocol.handle({**base, 'operation': 'read-topic'})
+            require(context == current['workflow_control'], 'control_context_changed',
+                    'new control mutation requires the current ledger projection')
+            port = {**port, 'store_ref': current['workflow_control_ref']}
         actual = discussion_protocol.handle({**envelope, "operation": "workflow-control", "action": action,
             "evidence": evidence,
+            **({'expected_control_ref': port['store_ref']} if port.get('store_ref') is not None else {}),
             **({'scope_checkpoint_path': checkpoint_path} if checkpoint_path is not None else {})})
-        return actual["control"], actual
+        control_result = actual['control']
+        return control_result, {**actual, 'control': {key: value for key, value in control_result.items() if key != 'context'}}
     # Downstream Phase Runs own lifecycle, while execution control stays in the
     # caller checkpoint. Attached dedicated-stage mutations must use the ledger.
     require(context["topic_ref"] is None or context["stage"] >= 2, "authority_missing", "attached dedicated control requires its ledger adapter")
@@ -132,7 +141,8 @@ their exact idempotency key and revisions must be retained on an unknown result.
 
 
 def port_result(result, applied):
-    return {"context": result["context"], "discussion_receipt": applied}
+    return {"context": result["context"], "discussion_receipt": applied,
+            **({'store_ref': result['store_ref']} if 'store_ref' in result else {})}
 
 
 def design_scope(request, saved, payload):
@@ -511,7 +521,16 @@ def record_for(request):
         require(current["workflow_control"] is not None, "authority_missing", "discussion has no workflow control checkpoint")
         control.validate_context(current["workflow_control"])
         require(current["workflow_control"]["controller_ref"] == launch["controller_ref"], "identity_mismatch", "ledger controller changed")
-        request["control"] = {**request["control"], "context": current["workflow_control"]}
+        if current['workflow_control_ref'] != request['control'].get('store_ref'):
+            _, current_state, _ = matching(record, current['workflow_control'])
+            require(current_state not in {'cancelled', 'creation-failed'}, 'attempt_mismatch',
+                    'a stale mirror cannot revive an ended ledger attempt')
+        if request['control'].get('store_ref') is None:
+            # Direct callers must name the current public projection. A saved
+            # intent with a pointer keeps its original generation for replay.
+            require(request['control']['context'] == current['workflow_control'],
+                    'control_context_changed', 'unbound mirror is not current ledger control')
+            request['control'] = {**request['control'], 'store_ref': current['workflow_control_ref']}
     if dispatch_input(record)["stage"] == 3 and dispatch_input(record)["role"] == "implementation-dispatcher" and \
             ("readiness" in dispatch_input(record) or "scope_checkpoint_path" in record):
         state = handoff.current_stage3_state(dispatch_input(record), request["control"]["context"],
@@ -687,7 +706,7 @@ def bind_discussion(port, record, receipt):
     known = attempt.get(field)
     require(known is None or known == receipt["ref"], "identity_mismatch", "discussion already binds another identity")
     applied = None
-    if known is None:
+    if known is None or (port['context'].get('carrier') or {}).get('ref') is None:
         if authority["kind"] == "dedicated-stage":
             operation = "bind-handoff"
             values = {"handoff_id": authority["run_id"], "attempt_id": authority["attempt_id"], "conversation_ref": receipt["ref"],
@@ -701,7 +720,8 @@ def bind_discussion(port, record, receipt):
     current = discussion_protocol.handle({**base, "operation": "read-topic"})
     # This is the second operation of one saved bind intent. Its key is distinct
     # from the lifecycle binding key; exact carrier readback handles lost output.
-    updated = {**envelope, "expected_ledger_revision": current["ledger_revision"], "expected_topic_revision": current["record_revision"],
+    revision_source = applied if applied is not None else current
+    updated = {**envelope, "expected_ledger_revision": revision_source["ledger_revision"], "expected_topic_revision": envelope["expected_topic_revision"],
                "idempotency_key": str(uuid.UUID(hex=entry.digest([envelope["idempotency_key"], "creation-result", record["request"]["digest"]])[:32], version=4))}
     return {**port, "discussion": updated}, applied
 
@@ -782,6 +802,7 @@ def bound(request):
     record["receipts"].append(retained_receipt)
     record["status"] = "bound" if ready else receipt["status"]
     bound_result = {"status": record["status"], "record": handoff.seal(record), "checkpoint": port_result(result, applied), "binding_receipt": binding_receipt,
+                    'acknowledged': bool(result.get('acknowledged') or (applied or {}).get('idempotent_replay')),
                     "downstream_ready": False, "next_action": "receive" if ready else "stop" if receipt["status"] == "not-created" else "lookup-exact-request",
                     "lookup": None if ready else {"request_digest": launch["digest"], "attempt": launch["attempt"], "pending_id": receipt["pending_id"]}}
     if ready and launch['role'] == 'execution-agent':

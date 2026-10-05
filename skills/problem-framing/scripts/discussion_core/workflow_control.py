@@ -3,13 +3,41 @@
 from .state import (ProtocolError, _active_pending_write, _canonical_json, _flock_with_timeout,
                     _idempotent_result, _json_field, _load_records, _record_by_id,
                     _sha256, _require_regular_nosymlink, _validate_revisions,
-                    _verify_topic_owner, _write_ledger_transaction)
+                    _verify_topic_owner, _write_ledger_transaction, _mutation_fingerprint)
 from .handoffs import _handoff_mutation_context, _handoff_data, _store_handoff
 from .topic_dependencies import apply_gate_policy
 
 from pathlib import Path
 import workflow_control as _control
 import workflow_control_git as _git
+
+
+def read_control_projection(ledger_path, record, *, selector=None):
+    import workflow_state_store as _store
+    pointer = _json_field(record, 'data_json', 'workflow control')
+    if pointer.get('format') != 'ledger-control-v1':
+        raise ProtocolError('legacy_run_requires_original_runtime', 'retain original embedded ledger control runtime')
+    if pointer.get('topic_id') != record['topic_id'] or pointer.get('control_revision') != record['record_revision']:
+        raise ProtocolError('state_corrupt', 'ledger control pointer differs from its record')
+    try:
+        context, _ = _store.StateStore(ledger_path).read_ledger_control(pointer, selector=selector)
+        _control.validate_current_context(context)
+    except (_store.entry.PreparationError, _control.ControlError) as error:
+        raise ProtocolError('state_corrupt', str(error)) from error
+    return context, pointer
+
+
+def public_control_result(result, ledger_path):
+    """Expand only the original bounded current projection, after ledger persistence."""
+    import workflow_state_store as _store
+    value = result['control']
+    if 'store_ref' not in value:
+        return result
+    try:
+        context, _ = _store.StateStore(ledger_path).read_ledger_control(value['store_ref'])
+    except _store.entry.PreparationError as error:
+        raise ProtocolError('state_corrupt', str(error)) from error
+    return {**result, 'control': {**value, 'context': context}}
 
 
 GIT_BACKED_ACTIONS = {
@@ -117,10 +145,12 @@ def _store_entry(record, data):
     record.update(state=data['state'], record_revision=data['record_revision'], data_json=_canonical_json(data))
 
 
-def workflow_control(request):
-    schema_request = {**request, 'scope_checkpoint_path': request.get('scope_checkpoint_path')}
+def _bounded_workflow_control(request):
+    import workflow_state_store as _store
+    schema_request = {**request, 'scope_checkpoint_path': request.get('scope_checkpoint_path'),
+                      'expected_control_ref': request.get('expected_control_ref')}
     ledger_path, lock_path, project, owner_ref = _handoff_mutation_context(
-        schema_request, {'action', 'evidence', 'scope_checkpoint_path'})
+        schema_request, {'action', 'evidence', 'scope_checkpoint_path', 'expected_control_ref'})
     with lock_path.open('a+b') as stream:
         _flock_with_timeout(stream)
         frontmatter, records = _load_records(ledger_path)
@@ -128,16 +158,28 @@ def workflow_control(request):
                    and r.get('topic_id') == request['actor_topic_id']]
         if len(matches) > 1:
             raise ProtocolError('state_corrupt', 'multiple workflow control checkpoints')
-        context = _json_field(matches[0], 'data_json', 'workflow control') if matches else None
-        if context is not None and context.get('schema_version') != 6:
-            raise ProtocolError('legacy_run_requires_original_runtime',
-                                'retain original package for embedded control schema ' + str(context.get('schema_version')))
+        selector = None
+        evidence = request.get('evidence') or {}
+        if request['action'] in {'archive', 'archive-result'} and evidence.get('handoff_id'):
+            selector = {'handoff_id': evidence['handoff_id']}
+        elif request['action'] == 'successor-ready' and evidence.get('input_digest'):
+            selector = {'delivery_digest': evidence['input_digest']}
+        context, pointer = read_control_projection(ledger_path, matches[0], selector=selector) if matches else (None, None)
+        store = _store.StateStore(ledger_path)
+        if pointer is not None:
+            # The lock and actual ledger record establish this commit, not object existence.
+            store.certify_ledger_control(pointer)
         replay = _idempotent_result(records, request)
+        if replay is None:
+            replay = store.read_ledger_receipt(request['actor_topic_id'], request['idempotency_key'],
+                                               _mutation_fingerprint(request))
         if replay is not None:
-            return replay
+            return public_control_result(replay, ledger_path)
         topic = _record_by_id(records['Current Topics'], 'topic_id', request['actor_topic_id'], 'topic_id')
         revision, topic_revision = _validate_revisions(request, frontmatter, topic)
         _verify_topic_owner(records, request['actor_topic_id'], owner_ref)
+        if request.get('expected_control_ref') is not None and request['expected_control_ref'] != pointer:
+            raise ProtocolError('control_revision_conflict', 'runner projection is not the current ledger authority')
         action = request['action']
         if not isinstance(request['evidence'], dict):
             raise ProtocolError('invalid_request', 'control evidence must be an object')
@@ -189,9 +231,9 @@ def workflow_control(request):
             if action == 'receive' and progress.get('delivery'):
                 receipt['verified_commit_hash'] = progress['delivery']['verified_commit_hash']
             if action == 'receive' and progress.get('delivery') == receipt:
-                return {'ok': True, 'state': 'acknowledged', 'ledger_revision': revision,
-                    'record_revision': topic_revision, 'control': {'ok': True, 'context': context,
-                    'effects': [], 'acknowledged': True, 'delivery_digest': progress['delivery_digest']}}
+                return public_control_result({'ok': True, 'state': 'acknowledged', 'ledger_revision': revision,
+                    'record_revision': topic_revision, 'control': {'ok': True, 'store_ref': pointer,
+                    'effects': [], 'acknowledged': True, 'delivery_digest': progress['delivery_digest']}}, ledger_path)
             if action == 'decide' and entry:
                 _, data, attempt = entry
                 eligible = attempt.get('binding_eligible') if authority['kind'] == 'dedicated-stage' else attempt['state'] in {'setup-pending', 'ready', 'active'}
@@ -293,10 +335,24 @@ def workflow_control(request):
                 if action == 'accept':
                     attempt['delivery_accepted'] = True
             _store_entry(item, data)
-        record['data_json'] = _canonical_json(control['context'])
         record['record_revision'] += 1
+        compact = {key: value for key, value in control.items() if key != 'context'}
         result = {'ok': True, 'state': 'recorded', 'ledger_revision': revision + 1,
-                  'record_revision': topic_revision, 'control': control}
+                  'record_revision': topic_revision, 'control': compact}
+        pointer = store.prepare_ledger_control(control['context'], topic_id=topic['topic_id'],
+            ledger_revision=revision + 1, control_revision=record['record_revision'], previous=pointer,
+            receipt={'key': request['idempotency_key'], 'fingerprint': _mutation_fingerprint(request), 'result': result})
+        record['data_json'] = _canonical_json(pointer)
+        result = {**result, 'control': {**compact, 'store_ref': pointer}}
         _write_ledger_transaction(ledger_path, frontmatter, records, request,
             ledger_revision=revision + 1, event_type='workflow-control', result=result)
-        return result
+        store.certify_ledger_control(pointer)
+        return public_control_result(result, ledger_path)
+
+
+def workflow_control(request):
+    import workflow_state_store as _store
+    try:
+        return _bounded_workflow_control(request)
+    except _store.entry.PreparationError as error:
+        raise ProtocolError(error.code, str(error)) from error

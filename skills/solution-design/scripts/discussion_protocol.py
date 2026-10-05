@@ -1953,11 +1953,14 @@ def _read_topic(request: dict[str, Any]) -> dict[str, Any]:
                            if record.get('result_kind') == 'workflow-control' and record.get('topic_id') == request['actor_topic_id']]
         if len(control_records) > 1:
             raise ProtocolError('state_corrupt', 'multiple workflow control checkpoints')
-        control_checkpoint = _json_field(control_records[0], 'data_json', 'workflow control') if control_records else None
+        from discussion_core.workflow_control import read_control_projection
+        control_checkpoint, control_ref = (read_control_projection(ledger_path, control_records[0])
+                                           if control_records else (None, None))
         return {
             "ok": True, "state": "read", "ledger_revision": int(frontmatter["ledger_revision"]),
             "record_revision": topic_record["record_revision"], "topic_document_sha256": current_digest,
             "topic_document_path": str(topic_path), "workflow_control": control_checkpoint,
+            "workflow_control_ref": control_ref,
             "current_phase": topic_record["current_phase"],
             "phase_state": topic_record["phase_state"],
             "review_state": topic_record["review_state"],

@@ -401,6 +401,7 @@ def read_projection(path, *, projection, stage=None, subject_id=None, allocation
             'acceptance_digest': (record.get('acceptance') or {}).get('digest')}
         return classes[projection]({KEY: state}, store.files_read, store.bytes_read, current.revision)
     state = store.read_subject(current, stage_id).value
+    restore_ledger_mirror(state)
     return classes[projection](state_store.ProjectedRecord({**current.root['outer'], KEY: state}, current.revision), store.files_read, store.bytes_read, current.revision)
 
 
@@ -429,6 +430,7 @@ def read_active_owner(path):
         allocations.update(subject['allocations'])
         require(len(allocations) <= 32, 'state_capacity', 'current allocation window is full')
     outer[KEY]['allocations'] = allocations
+    restore_ledger_mirror(outer[KEY])
     return outer
 
 
@@ -439,7 +441,30 @@ def scope_transport(outer):
 
 def stage_subject_value(state):
     """Canonical persisted stage fields; allocations belong to Ticket subjects."""
-    return {key: value for key, value in state.items() if key != 'allocations'}
+    value = {key: value for key, value in state.items() if key != 'allocations'}
+    port = state.get('control') or {}
+    if port.get('discussion') is not None:
+        reference = port.get('store_ref')
+        require(reference is not None, 'authority_missing', 'attached control requires its original ledger pointer')
+        context, _ = state_store.StateStore(reference['ledger_path']).read_ledger_control(reference)
+        require(context == port['context'], 'control_context_changed', 'runner cannot publish a modified ledger projection')
+        value['control'] = {key: item for key, item in port.items() if key != 'context'}
+    return value
+
+
+def restore_ledger_mirror(state):
+    port = state.get('control') or {}
+    if port.get('discussion') is None:
+        return
+    reference = port.get('store_ref')
+    require(reference is not None, 'authority_missing', 'attached mirror lost its ledger reference')
+    context, _ = state_store.StateStore(reference['ledger_path']).read_ledger_control(reference)
+    require(reference['topic_id'] == port['discussion']['actor_topic_id'] and
+            reference['controller_ref'] == port['discussion']['actor_conversation_ref'],
+            'identity_mismatch', 'mirror references a different ledger owner')
+    require('context' not in port or port['context'] == context,
+            'control_context_changed', 'runner control mirror differs from its ledger projection')
+    port['context'] = context
 
 
 def stage2_scope(state, path, outer):
@@ -3059,6 +3084,14 @@ class Progress:
             context.update(stage=request["stage"], carrier=None, handoff_progress=None,
                            requirement_identity=old["handoff"]["requirement_identity"] if retry else old["accepted"]["requirement_identity"])
             port = {"context": context, "discussion": None}
+        if port.get('discussion') is not None:
+            query = {key: value for key, value in port['discussion'].items()
+                     if key not in {'expected_ledger_revision', 'expected_topic_revision', 'idempotency_key'}}
+            authoritative = dispatch.discussion_protocol.handle({**query, 'operation': 'read-topic'})
+            require(port['context'] == authoritative['workflow_control'] and
+                    port.get('store_ref', authoritative['workflow_control_ref']) == authoritative['workflow_control_ref'],
+                    'control_context_changed', 'new attached entry requires the current ledger projection')
+            port = {**port, 'store_ref': authoritative['workflow_control_ref']}
         if old is not None:
             previous_history = old['control']['context'].get('retired_handoffs', {})
             if old['control']['discussion'] is not None:
@@ -4421,6 +4454,9 @@ class Progress:
             self.state["control"]["discussion"] = {**self.state["control"]["discussion"],
                 "expected_ledger_revision": receipt["ledger_revision"],
                 "expected_topic_revision": receipt["record_revision"], "idempotency_key": str(uuid.uuid4())}
+            reference = receipt.get('control', {}).get('store_ref')
+            require(reference is not None, 'authority_missing', 'ledger result must name its original current projection')
+            self.state['control']['store_ref'] = reference
 
     def advance(self):
         s = self.state
