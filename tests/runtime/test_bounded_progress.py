@@ -2153,6 +2153,10 @@ class BoundedProgressTests(ProgressTests):
 
     def test_root_commit_faults_preserve_authority_and_repair_proof(self):
         self.begin_dispatcher()
+        original = self.state()
+        request = copy.deepcopy(original['dispatch']['request'])
+        subject = {'stage': original['stage'], 'attempt': request['attempt'],
+                   'handoff': original['handoff']['digest']}
         previous = self.checkpoint.read_bytes()
         replace = os.replace
         def before_root(source, target):
@@ -2172,15 +2176,60 @@ class BoundedProgressTests(ProgressTests):
             with self.assertRaises(KeyboardInterrupt):
                 self.invoke('pause')
         revision = self.invoke('inspect')['revision']
-        marker = self.checkpoint.with_name(self.checkpoint.name + '.state') / 'commits' / str(revision)
+        committed = self.state()
+        stop = copy.deepcopy(committed['action'])
+        self.assertEqual(committed['status'], 'pausing')
+        self.assertEqual(committed['stop_requested'], 'pausing')
+        self.assertEqual(committed['step'], 'host-response')
+        self.assertEqual(stop['operation'], 'stop-host')
+        self.assertEqual(stop['payload'], {'subject': subject, 'ref': 'native:dispatcher'})
+        self.assertEqual(stop['checkpoint'], str(self.checkpoint))
+        self.assertNotEqual(stop['action_id'], original['action']['action_id'])
+        self.assertEqual(committed['host_action'], stop)
+        self.assertEqual(committed['dispatch']['request'], request)
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        marker = store.directory / 'commits' / str(current.revision)
         self.assertFalse(marker.exists())
+        authority = self.checkpoint.read_bytes()
+        reserves = {path.name: path.read_bytes()
+                    for path in (store.directory / 'reserves' / 'recovery').iterdir()}
+        self.assertIn(hashlib.sha256(stop['action_id'].encode()).hexdigest(), reserves)
         recovered = self.invoke('advance')
-        self.assertEqual((recovered.get('next_action') or {}).get('operation'), 'stop-host')
-        self.assertTrue(marker.exists(), 'current authority must repair its proof before the next mutation')
         repeated = self.invoke('advance')
-        self.assertEqual((repeated.get('next_action') or {}).get('operation'), 'lookup-exact-action')
-        self.assertEqual(repeated['next_action']['action']['action_id'],
-                         recovered['next_action']['action_id'])
+        for result in (recovered, repeated):
+            self.assertEqual(result['revision'], revision)
+            self.assertEqual(result['next_action']['operation'], 'lookup-exact-action')
+            self.assertEqual(result['next_action']['action'], stop)
+            self.assertEqual(result['next_action']['request'], request)
+            self.assertEqual(result['next_action']['receipts'], committed['observations'])
+        self.assertEqual(self.state(), committed,
+            'recovery and replay must not issue a new action or advance the original stop')
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+        self.assertEqual({path.name: path.read_bytes()
+                          for path in (store.directory / 'reserves' / 'recovery').iterdir()}, reserves,
+            'exact lookup must not allocate another stop invocation reserve')
+        self.assertFalse(marker.exists(), 'read-only exact lookup does not require a new commit proof')
+        observed = self.observation('stopped', 'result', ref='native:dispatcher')
+        self.assertEqual(observed['action_id'], stop['action_id'])
+        reconciled = self.invoke('observe', observed)
+        self.assertEqual(reconciled['status'], 'paused', reconciled)
+        self.assertGreater(reconciled['revision'], revision)
+        self.assertTrue(marker.exists(), 'the next mutation must first repair the old authority proof')
+        self.assertEqual(json.loads(marker.read_bytes()), {
+            'revision': current.revision, 'root': current.reference['sha256'],
+            'receipts': current.root.get('receipts', [])})
+        settled = self.state()
+        self.assertEqual(settled['host_action']['action_id'], stop['action_id'])
+        self.assertEqual(settled['host_action']['operation'], stop['operation'])
+        self.assertEqual(settled['host_action']['payload'], stop['payload'])
+        self.assertTrue(settled['host_action']['resolved'])
+        settled_authority = self.checkpoint.read_bytes()
+        acknowledged = self.invoke('observe', observed)
+        self.assertTrue(acknowledged['acknowledged'])
+        self.assertEqual(acknowledged['revision'], reconciled['revision'])
+        self.assertEqual(self.state(), settled)
+        self.assertEqual(self.checkpoint.read_bytes(), settled_authority)
 
     def test_generic_raw_ingress_preserves_large_stop_receipt(self):
         self.begin_dispatcher()

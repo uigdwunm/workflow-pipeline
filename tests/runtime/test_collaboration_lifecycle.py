@@ -112,11 +112,23 @@ class CollaborationLifecycleTests(unittest.TestCase):
         f = self.f
         query = f.invoke('baseline-thread-query', self.missing_baseline())['next_action']
         f.invoke('baseline-thread-state', self.baseline_readback(query))
-        saved = progress.read_record(f.checkpoint)
-        saved[progress.KEY]['baseline_thread_queries'][0]['result']['raw']['thread']['id'] = 'different-native-thread'
-        f.checkpoint.write_text(json.dumps(saved))
-        with self.assertRaises(progress.entry.PreparationError):
+        envelope = json.loads(f.checkpoint.read_text())
+        store = progress.state_store.StateStore(f.checkpoint)
+        current = store.open_current()
+        subject_id = current.root['metadata']['stage_subject']
+        subject = store.read_subject(current, subject_id).value
+        subject['baseline_thread_queries'][0]['result']['raw']['thread']['id'] = 'different-native-thread'
+        subject_ref = store.write_object(current.run_id, 'subject', subject, subject_id=subject_id)
+        scope = store.read_evidence(current.root['scope'], run_id=current.run_id, kind='scope')['value']
+        scope['subject_ref'] = subject_ref
+        scope['value']['state_digest'] = progress.entry.digest(subject)
+        root = {**current.root, 'subjects': {**current.root['subjects'], subject_id: subject_ref},
+                'scope': store.write_object(current.run_id, 'scope', scope)}
+        root_ref = store.write_object(current.run_id, 'root', root)
+        f.checkpoint.write_bytes(progress.state_store.encode({**envelope, 'current': root_ref}))
+        with self.assertRaises(progress.entry.PreparationError) as rejected:
             f.invoke('inspect')
+        self.assertEqual(rejected.exception.code, 'host_evidence_missing')
 
     def test_missing_baseline_wrong_or_active_readback_keeps_publication_blocked(self):
         f = self.f
