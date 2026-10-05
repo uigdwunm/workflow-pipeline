@@ -2088,6 +2088,144 @@ class BoundedProgressTests(ProgressTests):
         self.assertFalse(reserve.exists())
         self.assertFalse(self.state()['stopped'], 'a close receipt does not replace the original lifecycle barrier')
 
+    def revoked_native_close(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        request = helper.finalization()
+        finish = self.invoke('native-finalize', request)['next_action']
+        self.invoke('native-finalize', helper.finalize_observation(finish))
+        self.invoke('lifecycle-state', helper.snapshot())
+        close = self.invoke('native-finalize', request)['next_action']
+        self.invoke('native-finalize', helper.finalize_observation(close))
+        self.invoke('lifecycle-state', helper.snapshot(helper.inventory([
+            {'agent_name': '/root', 'agent_status': 'running'}])))
+        self.assertTrue(self.state()['native_finalizations'][0]['verified'])
+        self.invoke('lifecycle-state', helper.snapshot())
+        self.assertTrue(self.state()['native_finalizations'][0]['revoked'])
+        return helper, request, finish, close
+
+    def test_revoked_native_close_query_has_independent_durable_reserve(self):
+        helper, request, finish, close = self.revoked_native_close()
+        original = copy.deepcopy(self.state()['native_finalizations'][0]['actions'])
+        for operation in ('inspect', 'advance'):
+            self.assertNotIn('tool', self.invoke(operation)['next_action'],
+                             'a projection cannot issue an unprepared read_thread call')
+        lookup = self.invoke('native-finalize', request)['next_action']
+        self.assertEqual(lookup['tool'], 'mcp__codex_app__read_thread')
+        query = self.state()['native_finalizations'][0]['queries'][-1]
+        self.assertEqual(query['close_action_id'], close['action_id'])
+        self.assertEqual(query['query_for'], lookup['query_for'])
+        self.assertNotEqual(query['action_id'], close['action_id'])
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(query['action_id'].encode()).hexdigest()
+        self.assertTrue(reserve.exists())
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        unknown = helper.unloaded_query(finish, close, 'original-readback')
+        unknown['receipt']['status'] = 'unknown'
+        self.invoke('native-finalize', unknown)
+        self.assertTrue(reserve.exists())
+        replay = self.invoke('native-finalize', request)['next_action']
+        self.assertEqual(replay.pop('query_call_ref'), unknown['receipt']['call_ref'])
+        self.assertEqual(replay, lookup)
+        completed = copy.deepcopy(unknown)
+        completed['receipt'].update(status='completed', response_ref='response:completed-readback')
+        changed_call = copy.deepcopy(completed)
+        changed_call['receipt']['call_ref'] = 'different-query-call'
+        before = reserve.stat().st_size
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('native-finalize', changed_call)
+        self.assertEqual(reserve.stat().st_size, before)
+        self.invoke('native-finalize', completed)
+        self.assertFalse(reserve.exists())
+        record = self.state()['native_finalizations'][0]
+        self.assertEqual(record['actions'], original)
+        self.assertFalse(record.get('verified'))
+        self.assertFalse(record.get('revoked'))
+        self.assertFalse(self.state()['stopped'], 'readback is not a fresh stop barrier')
+
+    def test_native_requery_rejects_unbound_receipts_and_preserves_newer_revocation(self):
+        helper, request, finish, close = self.revoked_native_close()
+        query = helper.unloaded_query(finish, close, 'original-query')
+        saved = self.state()['native_finalizations'][0]['queries'][-1]
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(saved['action_id'].encode()).hexdigest()
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        before = reserve.stat().st_size
+        for field in ('action_id', 'ref', 'query_for', 'status', 'raw'):
+            bad = copy.deepcopy(query)
+            if field == 'action_id':
+                bad[field] = finish['action_id']
+            elif field == 'query_for':
+                bad['receipt'][field] = '0' * 64
+            elif field == 'raw':
+                bad['receipt'][field] = {'threadId': 'different-thread'}
+            else:
+                bad['receipt'][field] = 'invalid'
+            with self.subTest(field=field), self.assertRaises(transfer.entry.PreparationError):
+                self.invoke('native-finalize', bad)
+            self.assertEqual(reserve.stat().st_size, before)
+        # Activity ingress needs ordinary capacity; query receipts alone use this reserve.
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 0}))
+        self.invoke('host-event', {'instance': self.state()['native_host']['instance'], 'event': {
+            'type': 'subAgentActivity', 'id': 'newer-than-query', 'kind': 'interacted',
+            'agentPath': request['ref'], 'agentThreadId': 'designer-thread'}})
+        revoked = copy.deepcopy(self.state()['native_finalizations'][0]['revoked'])
+        self.invoke('native-finalize', query)
+        self.assertEqual(self.state()['native_finalizations'][0]['revoked'], revoked)
+        self.assertFalse(reserve.exists())
+        self.assertNotIn('tool', self.invoke('advance')['next_action'])
+        retry = self.invoke('native-finalize', {'operation': 'lookup', 'ref': request['ref']})['next_action']
+        self.assertNotEqual(retry['query_action_id'], saved['action_id'])
+        self.assertNotEqual(retry['query_for'], query['receipt']['query_for'])
+        self.assertEqual(retry['action']['action_id'], close['action_id'])
+
+    def native_requery_crash(self, after_root):
+        helper, request, finish, close = self.revoked_native_close()
+        lookup = self.invoke('native-finalize', request)['next_action']
+        observed = helper.unloaded_query(finish, close, 'crashed-original-query')
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(lookup['query_action_id'].encode()).hexdigest()
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        replace = os.replace
+        def interrupted(source, target):
+            if (Path(target).parent.name == 'commits') if after_root else (Path(target) == self.checkpoint):
+                raise KeyboardInterrupt('native query receipt commit interrupted')
+            return replace(source, target)
+        with patch.object(os, 'replace', interrupted), self.assertRaises(KeyboardInterrupt):
+            self.invoke('native-finalize', observed)
+        self.assertTrue(reserve.exists())
+        if not after_root:
+            self.assertEqual(self.invoke('native-finalize', request)['next_action'], lookup)
+        result = self.invoke('native-finalize', observed)
+        if after_root:
+            self.assertTrue(result['acknowledged'])
+        self.assertEqual(self.state()['native_finalizations'][0]['actions'][-1]['action_id'], close['action_id'])
+        self.assertTrue(self.state()['native_finalizations'][0]['queries'][-1]['resolved'])
+        self.assertFalse(reserve.exists(), 'exact committed ACK must release the settled query reservation')
+        self.assertNotIn('tool', result['next_action'])
+        self.assertFalse(self.state()['stopped'])
+
+    def test_native_requery_receipt_before_root_crash_replays_only_original_query(self):
+        self.native_requery_crash(False)
+
+    def test_native_requery_receipt_after_root_crash_acknowledges_original_query(self):
+        self.native_requery_crash(True)
+
+    def test_native_requery_reserve_failure_never_publishes_an_intent(self):
+        helper, request, finish, close = self.revoked_native_close()
+        store = progress.state_store.StateStore(self.checkpoint)
+        for number in range(4):
+            store.reserve('occupied-native-query-' + str(number), recovery=True)
+        with self.assertRaises(transfer.entry.PreparationError) as error:
+            self.invoke('native-finalize', request)
+        self.assertEqual(error.exception.code, 'state_capacity')
+        self.assertFalse(self.state()['native_finalizations'][0].get('queries'))
+        self.assertNotIn('tool', self.invoke('inspect')['next_action'])
+        self.assertEqual(self.state()['native_finalizations'][0]['actions'][-1]['action_id'], close['action_id'])
+
     def test_host_recovery_query_keeps_original_stop_unknown_at_capacity(self):
         self.begin_dispatcher()
         stop = self.invoke('pause')['next_action']

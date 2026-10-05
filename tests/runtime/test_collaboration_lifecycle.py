@@ -329,7 +329,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
                 'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
                 'tests': ['real first-slice bytes verified'],
                 'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record']),
-                'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_refs': progress.handoff.resolve_allocation(slot['handoff'])['semantic']['plan_refs'],
                 'plan_authority': f.state()['control']['context']['handoff_progress']['plan_authority']}}})
         f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'accept',
             'decision': {'reference': 'dispatcher:accept-first-slice'}})
@@ -1000,10 +1000,19 @@ class CollaborationLifecycleTests(unittest.TestCase):
         for status in ('unknown', 'failed'):
             query = self.unloaded_query(finish, close, status)
             query['receipt']['status'] = status
+            if status == 'failed':
+                before = f.checkpoint.read_bytes()
+                with self.assertRaises(progress.entry.PreparationError) as error:
+                    f.invoke('native-finalize', query)
+                self.assertEqual(error.exception.code, 'host_provenance_conflict')
+                self.assertEqual(f.checkpoint.read_bytes(), before)
+                query['receipt']['call_ref'] = 'call:unknown'
             f.invoke('native-finalize', query)
             self.assertEqual(f.state()['native_finalizations'][0]['actions'], original)
             self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
         valid = self.unloaded_query(finish, close, 'complete')
+        self.assertNotEqual(f.state()['native_finalizations'][0]['queries'][-1]['action_id'],
+                            lookup['query_action_id'])
         for change in ('wrong-thread', 'old-turn', 'active', 'old-archive'):
             wrong = copy.deepcopy(valid)
             raw = json.loads(wrong['receipt']['raw']['content'][0]['text'])

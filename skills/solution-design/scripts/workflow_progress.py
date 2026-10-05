@@ -1403,6 +1403,23 @@ def validate_state(state):
                 require(action['payload'] == {'ref': record['ref'], 'thread_id': record['thread_id'],
                         **record['prepare']['close']}, 'invalid_checkpoint', 'native close request changed')
             actions.add(action['action_id'])
+        queries = record.get('queries', [])
+        require(isinstance(queries, list) and sum(not query.get('resolved') for query in queries
+                if isinstance(query, dict)) <= 1, 'invalid_checkpoint', 'retain one pending native readback')
+        close = record['actions'][-1]
+        for query in queries:
+            require(isinstance(query, dict) and isinstance(query.get('action_id'), str) and
+                    query['action_id'] not in actions and query.get('close_action_id') == close['action_id'] and
+                    close['operation'] == 'close-native' and close.get('resolution') == 'completed' and
+                    isinstance(query.get('query_for'), str) and re.fullmatch(r'[0-9a-f]{64}', query['query_for']) and
+                    query.get('request') == {'tool': 'mcp__codex_app__read_thread', 'arguments': {
+                        'threadId': record['thread_id'],
+                        'hostId': record['prepare']['close']['request']['arguments']['hostId'],
+                        'turnLimit': 1, 'includeOutputs': False}} and
+                    ('call_ref' not in query or isinstance(query['call_ref'], str) and query['call_ref']) and
+                    (not query.get('resolved') or query.get('resolution') in {'completed', 'failed'}),
+                    'invalid_checkpoint', 'native query must retain its original close, target and revocation guard')
+            actions.add(query['action_id'])
         record_actions = {action['action_id'] for action in record['actions']}
         for data in record['receipts']:
             require(isinstance(data, dict) and isinstance(data.get('action_id'), str) and
@@ -1421,6 +1438,10 @@ def validate_state(state):
                         'invalid_checkpoint', 'readback must retain its original revocation guard')
                 require(action['operation'] == 'close-native' and action.get('resolved') and
                         action.get('resolution') == 'completed', 'invalid_checkpoint', 'readback cannot replace close completion')
+                require(len([query for query in queries if query['close_action_id'] == data['action_id'] and
+                             query['query_for'] == receipt['query_for'] and
+                             query.get('call_ref') == receipt['call_ref']]) == 1,
+                        'invalid_checkpoint', 'readback receipt must name its persisted query invocation')
                 if receipt['status'] == 'completed':
                     validate_native_readback(native_raw_object(receipt['raw']), record, 'notLoaded')
             elif action['operation'] == 'close-native' and receipt['status'] == 'completed':
@@ -1978,9 +1999,15 @@ def native_finalization_lookup(record):
                 'reason': 'The original ' + action['operation'] + ' failed; its business owner must handle host recovery.'}
     result = {'operation': 'lookup-exact-native-action', 'action': copy.deepcopy(action)}
     if record.get('revoked') and action['operation'] == 'close-native' and action.get('resolution') == 'completed':
-        result.update(query=True, query_for=entry.digest(record['revoked']), tool='mcp__codex_app__read_thread', arguments={
-            'threadId': record['thread_id'], 'hostId': record['prepare']['close']['request']['arguments']['hostId'],
-            'turnLimit': 1, 'includeOutputs': False})
+        query = next((item for item in record.get('queries', []) if not item.get('resolved')), None)
+        if query is None:
+            result['requires_query_prepare'] = True
+        else:
+            state_store.open_store(action['checkpoint']).require_reserve(query['action_id'], recovery=True)
+            result.update(query=True, query_for=query['query_for'], query_action_id=query['action_id'],
+                          **copy.deepcopy(query['request']))
+            if query.get('call_ref'):
+                result['query_call_ref'] = query['call_ref']
     return result
 
 
@@ -2164,11 +2191,16 @@ class Progress:
             receipts=self._commit_receipts)
         self._authority_revision = committed.revision
         self._commit_receipts = []
+        self.release_settled_reserves()
+
+    def release_settled_reserves(self):
         pending = {action['action_id'] for action in self.unresolved_host_actions()}
         pending.update(slot['action']['action_id'] for slot in self.state.get('allocations', {}).values()
             if slot.get('action') and (slot.get('record') or {}).get('status') in {'prepared', 'unknown'})
         pending.update(action['action_id'] for record in self.state.get('native_finalizations', [])
             for action in record['actions'] if not action.get('resolved'))
+        pending.update(query['action_id'] for record in self.state.get('native_finalizations', [])
+            for query in record.get('queries', []) if not query.get('resolved'))
         pending.update(event['receipt_action'] for event in self.state.get('events', {}).values()
             if not event.get('applied') and event.get('receipt_action'))
         query = self.state['host'].get('query')
@@ -2195,6 +2227,9 @@ class Progress:
             for action in record['actions']:
                 if not action.get('resolved'):
                     pending.append({'kind': 'native-finalization-action', 'ref': record['ref'], 'action_id': action['action_id']})
+            for query in record.get('queries', []):
+                if not query.get('resolved'):
+                    pending.append({'kind': 'native-finalization-query', 'ref': record['ref'], 'action_id': query['action_id']})
         recovery = (s.get('control', {}).get('context', {}).get('handoff_progress') or {}).get('recovery')
         if recovery and recovery['state'] in {'dispatch-pending', 'dispatch-unknown'}:
             pending.append({'kind':'replacement-call', 'intent_id':recovery['intent']['intent_id']})
@@ -2495,6 +2530,28 @@ class Progress:
             if inactive and not record.get('revoked'):
                 record['verified'] = copy.deepcopy(evidence)
 
+    def prepare_native_query(self, record):
+        close = record['actions'][-1]
+        if not (record.get('revoked') and close['operation'] == 'close-native' and
+                close.get('resolved') and close.get('resolution') == 'completed'):
+            return
+        pending = next((query for query in record.get('queries', []) if not query.get('resolved')), None)
+        store = state_store.open_store(self.path)
+        if pending is not None:
+            store.require_reserve(pending['action_id'], recovery=True)
+            return
+        query = {'action_id': str(uuid.uuid4()), 'close_action_id': close['action_id'],
+                 'query_for': entry.digest(record['revoked']), 'request': {
+                     'tool': 'mcp__codex_app__read_thread', 'arguments': {
+                         'threadId': record['thread_id'],
+                         'hostId': record['prepare']['close']['request']['arguments']['hostId'],
+                         'turnLimit': 1, 'includeOutputs': False}}}
+        # No executable request enters the journal until its own reserve exists.
+        store.reserve(query['action_id'], recovery=True)
+        record.setdefault('queries', []).append(query)
+        self._receipt_action = query['action_id']
+        self.save()
+
     def native_finalize(self, data):
         entry.fields(data, {'operation', 'ref'}, {'actor_ref', 'reference', 'reuse', 'binding', 'close', 'action_id', 'receipt'})
         entry.nonempty(data['ref'])
@@ -2524,6 +2581,7 @@ class Progress:
                     return _view(s, acknowledged=True)
                 action = record['actions'][-1]
                 if not action.get('resolved') or action.get('resolution') != 'completed' or record.get('revoked'):
+                    self.prepare_native_query(record)
                     return _view(s, native_finalization_lookup(record), acknowledged=True)
                 if action['operation'] == 'close-native':
                     return _view(s, {'operation': 'reconcile-stop-barrier', 'ref': record['ref']}, acknowledged=True)
@@ -2574,6 +2632,7 @@ class Progress:
         require(record is not None, 'identity_mismatch', 'look up only the exact saved native finalization')
         if data['operation'] == 'lookup':
             entry.fields(data, {'operation', 'ref'})
+            self.prepare_native_query(record)
             return _view(s, native_finalization_lookup(record))
         entry.fields(data, {'operation', 'ref', 'action_id', 'receipt'})
         require(data['operation'] == 'observe', 'invalid_operation', 'unknown native finalization operation')
@@ -2598,24 +2657,41 @@ class Progress:
                             'host_provenance_conflict', 'native invocation cannot be rebound to another action')
                 if previous['receipt']['response_ref'] == receipt['response_ref']:
                     require(previous == data, 'host_provenance_conflict', 'native response cannot be rebound or changed')
+                    if receipt.get('query'):
+                        # A committed receipt may have lost its return before the
+                        # operation released its reserve. ACK performs no new call.
+                        self.release_settled_reserves()
                     return _view(s, acknowledged=True)
         if receipt.get('query'):
             require(isinstance(receipt.get('query_for'), str) and re.fullmatch(r'[0-9a-f]{64}', receipt['query_for']),
                     'host_evidence_missing', 'readback requires the guard issued with its original lookup')
             require(record.get('revoked') and action['operation'] == 'close-native' and action.get('resolved') and
                     action.get('resolution') == 'completed', 'finalization_conflict', 'readback reconciles only a revoked successful close')
-            require(all(previous['receipt']['call_ref'] != receipt['call_ref'] for item in records for previous in item['receipts']),
-                    'host_provenance_conflict', 'readback requires a new authenticated read_thread invocation')
+            query = next((item for item in record.get('queries', []) if not item.get('resolved')), None)
+            require(query is not None and query['close_action_id'] == data['action_id'] and
+                    query['query_for'] == receipt['query_for'],
+                    'host_provenance_conflict', 'readback must bind the original persisted query and revocation guard')
+            require(query.get('call_ref', receipt['call_ref']) == receipt['call_ref'],
+                    'host_provenance_conflict', 'an unknown readback retains its original invocation')
+            if 'call_ref' not in query:
+                require(all(previous['receipt']['call_ref'] != receipt['call_ref'] for item in records for previous in item['receipts']),
+                        'host_provenance_conflict', 'readback requires a new authenticated read_thread invocation')
+            state_store.open_store(self.path).require_reserve(query['action_id'], recovery=True)
             if receipt['status'] == 'completed':
                 validate_native_readback(native_raw_object(receipt['raw']), record, 'notLoaded')
                 if receipt['query_for'] == entry.digest(record['revoked']):
                     record.pop('verified', None)
                     record.pop('revoked', None)
+            query['call_ref'] = receipt['call_ref']
+            if receipt['status'] != 'unknown':
+                query.update(resolved=True, resolution=receipt['status'])
+            self._receipt_action = query['action_id']
             record['receipts'].append(copy.deepcopy(data))
             s['lifecycle_snapshot'] = None
             s.pop('lifecycle_query', None)
             self.save()
-            return _view(s, {'operation': 'reconcile-stop-barrier', 'ref': record['ref']})
+            return _view(s, native_finalization_lookup(record) if receipt['status'] == 'unknown' else
+                         {'operation': 'reconcile-stop-barrier', 'ref': record['ref']})
         require(not action.get('resolved'), 'finalization_conflict', 'a resolved native action cannot acquire another outcome')
         if receipt['status'] == 'completed':
             raw = native_raw_object(receipt['raw'])
