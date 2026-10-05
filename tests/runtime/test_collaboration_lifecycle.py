@@ -215,6 +215,60 @@ class CollaborationLifecycleTests(unittest.TestCase):
         self.assertEqual(result['error']['code'], 'identity_mismatch')
         self.assertFalse(f.state()['stopped'])
 
+    def test_missing_baseline_current_proof_allows_stage3_successor(self):
+        f = self.f
+        f.input['authorization']['flow_mode'] = 'continuous'
+        self.test_missing_baseline_exact_current_read_allows_publication_without_archiving()
+        pending = f.invoke('receive-publication')['pending']
+        f.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
+            'answer': 'accept', 'reference': 'controller:accept'})
+        successor = f.input_for(3, f.state()['accepted'])
+        successor['authorization']['flow_mode'] = 'continuous'
+        result = f.invoke('start', {'handoff': successor, 'native_host': self.inventory()})
+        self.assertEqual((result['next_action'] or {}).get('operation'), 'invoke-host', result)
+
+    def test_missing_baseline_stage1_query_returns_structured_capability_error(self):
+        f = self.f
+        request = f.input_for(1)
+        request['scope'].pop('downstream')
+        request['scope'].update(implementation_paths=[], closure_paths=[])
+        request['binding'] = None
+        request['authorization']['scope_digest'] = progress.entry.digest(request['scope'])
+        # Stage 1 saves a valid checkpoint before its dedicated launch plan;
+        # native-only read operations must reject that pre-launch state cleanly.
+        with self.assertRaises(progress.entry.PreparationError):
+            f.invoke('start', {'handoff': request, 'control': {'context': f.context_for(1), 'discussion': None}})
+        self.assertEqual(f.state()['stage'], 1)
+        self.assertEqual(f.state()['native_host'], {})
+        result = f.invoke('baseline-thread-query', {'ref': '/root/old_review', 'binding': {}})
+        self.assertEqual(result['error']['code'], 'host_capability_missing')
+
+    def test_missing_baseline_app_server_query_returns_structured_capability_error(self):
+        f = self.f
+        f.begin()
+        result = f.invoke('baseline-thread-query', {'ref': '/root/old_review', 'binding': {}})
+        self.assertEqual(result['error']['code'], 'host_capability_missing')
+
+    def test_missing_baseline_historical_read_cannot_be_relabelled_after_stage_entry(self):
+        f = self.f
+        self.test_missing_baseline_current_proof_allows_stage3_successor()
+        old_read = copy.deepcopy(f.state()['history'][-1]['baseline_thread_queries'][0]['result'])
+        request = copy.deepcopy(f.state()['history'][-1]['baseline_thread_queries'][0]['input'])
+        f.invoke('observe', f.observation(ref='/root/dispatcher'))
+        stopped = f.observation('stopped', 'result', ref='/root/dispatcher')
+        stopped.pop('lifecycle')
+        f.invoke('observe', stopped)
+        agents = self.inventory()['response']['agents'] + [
+            {'agent_name': '/root/dispatcher', 'agent_status': {'completed': 'dispatcher stopped'}}]
+        f.invoke('lifecycle-state', self.snapshot(self.inventory(agents)))
+        query = f.invoke('baseline-thread-query', request)['next_action']
+        relabelled = {**old_read, 'query_id': query['query_id']}
+        result = f.invoke('baseline-thread-state', relabelled)
+        self.assertEqual(result['error']['code'], 'host_provenance_conflict', result)
+        self.assertFalse(f.state()['stopped'])
+        f.invoke('baseline-thread-state', self.baseline_readback(query))
+        self.assertTrue(f.state()['stopped'])
+
     def finalization(self, ref='/root/designer', thread='designer-thread'):
         parent_thread = 'dispatcher-runtime' if ref.startswith('/root/dispatcher/') else 'task'
         return {'operation': 'prepare', 'ref': ref, 'actor_ref': 'task',

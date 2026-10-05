@@ -166,8 +166,10 @@ def collaboration_inventory_pending(inventory, expected, closed=(), stopped_miss
 def baseline_thread_identity(state, data):
     """Bind an admitted direct baseline child without giving it a workflow role."""
     entry.fields(data, {'ref', 'binding'})
-    host = state['native_host']
-    require(host['adapter'] == 'collaboration' and data['ref'] in host['baseline_refs'] and
+    host = state.get('native_host')
+    require(isinstance(host, dict) and host.get('adapter') == 'collaboration',
+            'host_capability_missing', 'baseline lookup requires the original admitted collaboration host')
+    require(data['ref'] in host['baseline_refs'] and
             data['ref'].rsplit('/', 1)[0] == host['controller_ref'] and
             not any(ref.startswith(data['ref'] + '/') for ref in host['baseline_refs']),
             'identity_mismatch', 'exact-thread baseline lookup requires an admitted direct leaf identity')
@@ -1282,10 +1284,17 @@ class Progress:
             return [{'kind': 'current-descendants-stale'}]
         expected = set(s['native_host']['baseline_refs']) | self.native_refs()
         expected.update(ref for old in s.get('history', []) for ref in self.native_refs(old))
-        stopped_missing = {query['ref'] for query in s.get('baseline_thread_queries', [])
+        return collaboration_inventory_pending(snapshot['inventory'], expected, self.closed_native_refs(),
+                                               self.baseline_stopped_refs())
+
+    def baseline_stopped_refs(self):
+        s = self.state
+        snapshot = s.get('lifecycle_snapshot')
+        if snapshot is None or snapshot.get('guard') != self.collaboration_guard():
+            return set()
+        return {query['ref'] for query in s.get('baseline_thread_queries', [])
             if query.get('result') is not None and query['inventory_query_id'] == snapshot['query_id'] and
             query['guard'] == snapshot['guard']}
-        return collaboration_inventory_pending(snapshot['inventory'], expected, self.closed_native_refs(), stopped_missing)
 
     def baseline_thread_query(self, data):
         s = self.state
@@ -1328,10 +1337,11 @@ class Progress:
         if query['result'] is not None:
             require(query['result'] == data, 'host_provenance_conflict', 'baseline response cannot be changed or rebound')
             return _view(s, acknowledged=True)
-        for previous in s.get('baseline_thread_queries', []):
-            result = previous.get('result')
-            require(result is None or result['call_ref'] != data['call_ref'] and result['response_ref'] != data['response_ref'],
-                    'host_provenance_conflict', 'cached baseline evidence cannot satisfy a new inventory or query')
+        for state in [s, *s.get('history', [])]:
+            for previous in state.get('baseline_thread_queries', []):
+                result = previous.get('result')
+                require(result is None or result['call_ref'] != data['call_ref'] and result['response_ref'] != data['response_ref'],
+                        'host_provenance_conflict', 'cached baseline evidence cannot satisfy a new inventory or query')
         validate_baseline_thread_read(query, data)
         query['result'] = copy.deepcopy(data)
         self.save()
@@ -1919,8 +1929,11 @@ class Progress:
                     actual = set(agents) - {native_host['controller_ref']}
                     native_host['baseline_refs'] = (old['native_host']['baseline_refs'] if old and
                         old.get('native_host', {}).get('adapter') == 'collaboration' else sorted(actual))
+                    supplement = (self.baseline_stopped_refs() if old and
+                        (old.get('lifecycle_snapshot') or {}).get('inventory') == data['native_host'] else set())
                     require(not collaboration_inventory_pending(data['native_host'],
-                            expected | historical | set(native_host['baseline_refs']), self.closed_native_refs() if old else ()),
+                            expected | historical | set(native_host['baseline_refs']),
+                            self.closed_native_refs() if old else (), supplement),
                             'host_evidence_missing', 'reconcile existing native agents before starting this stage')
             elif transport.get('state') == 'live' and transport.get('instance'):
                 native_host = {'adapter': 'app-server', 'instance': transport['instance']}

@@ -355,6 +355,10 @@ This evidence supplements only that missing baseline leaf in that inventory
 generation and liveness guard. A new inventory, native activity or changed
 writer bindings requires a new exact-thread read. Listed active identities,
 unknown agents, missing workflow roles and baseline subtrees remain blocked.
+Successor entry can use that proof only when its preflight inventory exactly
+matches the saved current inventory and guard. The next stage requires fresh
+reads for its own inventory; original call/response references remain protected
+against relabelling across the complete stage history.
 It neither edits the inventory nor marks a thread closed, archives it, grants a
 workflow role or replaces the original result/finalization contracts. Old v18
 runs retain their original pins and checkpoints; v19 does not migrate them.
