@@ -32,6 +32,14 @@ Scope inventory: ../manifest.json（T01）
 
 这些step是行为实现计划，不意味着一函数一Agent；S01–S03作为首行为片，S04–S06作为生产读者闭合片。首片把有限active校验及启动必经的stage_handoff pin/current-stage读取提前接入；既有全范围语义校验保留，只限制其输入为当前有界窗口。共享handoff/record构造去重、runner及ledger读者在第二片闭合，整张Ticket验收前必须完成，不能推迟到T06。权威适配不能等T06才补：否则测试首片绕开真实路线。read_subject必须由调用操作给定ID，不接受“all”；只读投影不携带写lease。
 
+## 同一 Controller 的阶段衔接边界
+
+T01 必须完成新存储下最小同 C 阶段衔接，不能等待依赖 T01 的 T05。先独立完成 Stage2→3，再处理 Stage3→4/inline recovery，最后闭合 ledger 读者；每片保留既有身份、停止与接收门禁。
+
+Stage2→3 具体入口：`Progress.start`、`save_current_record`、`read_scope_readiness`、`consumed_scope_readiness`、`read_projection`、`change_decision_journal`；handoff 的 `accepted_design_state`、`inherited_planning_paths/planning_paths_for`、`verify_stage_checkpoint_pin/current_stage3_state`；store 新增精确前驱引用构造与读取。前驱只保留已接受的 run/checkpoint/stage/C revision/controller/requirement/package/worktree 绑定、handoff/acceptance/stop/phase 引用及 readiness/seal/scope/planning/publication 必要摘要，不 pin 整个旧 stage，不递归引用全部祖先。保持同一 checkpoint 与原 C，禁止复制 authority 或放宽 pin 来制造测试通过。
+
+Stage3→4/恢复片随后闭合 `accepted_stage3_progress`、`verify_inline_recovery_pin`、`implementation_recovery`、`verify_completion` 和 runner `_stage_projection`。T05 仍负责通用分页交付目录、批次归档、GC 与规模/物理容量，不作为上述生产路径的隐式前置。
+
 ## Verification references
 
 V01：扩展 `tests/runtime/test_workflow_progress.py`、新 `test_bounded_progress.py`，首红灯即PRD的真实start/allocation/恢复与重复poll场景；不直接测文件字典拼装函数。
@@ -39,6 +47,8 @@ V01：扩展 `tests/runtime/test_workflow_progress.py`、新 `test_bounded_progr
 V02：扩展 `test_workflow.py`、`test_stage_transfer.py`、`test_unified_recovery.py`、`test_discussion_protocol.py`，覆盖外层runner及ledger提交后镜像丢失。现有其它直连fixture按manifest的verify条目核验，仅确实依赖旧内联结构时修改。
 
 V03：公开runner start/pause/resume验证同carrier、已有workflow_requirements初始化及真实Controller decision消费；补充真实handle分配→生产save_outer_record→handle精确回执重放，验证存储CAS前进但C业务revision、subjects和原回执证明不变，并拒绝过期owner写。此补充仅为覆盖Stage 2动作集无法自然产生的receipt交错，不替代V01/V02、不mock内部控制。
+
+V04：真实 finish_design→原 C start Stage3→bind→inspect 首先复现 history 容量门禁；修复后验证真实双 Ticket 各分配一片、peer 未停不能通过停止门禁、目标读取量不随另一 subject 原文增长。覆盖前驱引用错误、root CAS 前后故障和公开 continuous/stepwise 阶段衔接。既有单 Ticket 双 allocation 证据不代替双 subject 组合验收。
 
 命令：逐文件 `python3 scripts/run_tests.py --test-file <上述路径>`；若已有runner占锁，报告owner并结束该次验证。源模块及新增store资源必须同次生成到五包闭包，package identity采用新key，不手改generated副本。
 

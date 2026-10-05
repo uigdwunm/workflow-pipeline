@@ -29,6 +29,8 @@ Ticket/工作批次完成后历史退出活跃读取，同一事实和原证据�
 | S03 | `workflow_progress.handle`、`Progress.control_action/allocation/observe/decide` | 用store exact-key lookup替换遍历历史的duplicate判断；旧subject陌生请求拒绝；ACK需要已提交revision证明 | S01 |
 | S04 | `workflow.py._atomic_save/_stage_projection/_advance_in_host`、`workflow_progress.verify_completion` | runner history/predecessor只存引用；交付核验分页读取证据链，不把全链塞回状态；容量失败保留已提交结果 | S01、S02 |
 
+S04 的前提是 T01 已完成同一 C 的最小阶段前驱引用与生产读取；此处只扩展通用分页交付目录、批次归档和规模验证，不把 T01 生产衔接留待本 Ticket，也不重新内嵌完整历史。
+
 实施符号以manifest核验列表为准。S01–S04共同完成归档到恢复的纵向行为，不新建独立“垃圾回收服务”。
 
 ## Verification references

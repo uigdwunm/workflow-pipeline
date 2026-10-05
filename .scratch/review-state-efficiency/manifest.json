@@ -139,6 +139,30 @@
         {
           "name": "Progress.lifecycle_state",
           "status": "existing-verified"
+        },
+        {
+          "name": "Progress.start",
+          "status": "existing-verified"
+        },
+        {
+          "name": "save_current_record",
+          "status": "existing-verified"
+        },
+        {
+          "name": "read_scope_readiness",
+          "status": "existing-verified"
+        },
+        {
+          "name": "consumed_scope_readiness",
+          "status": "existing-verified"
+        },
+        {
+          "name": "read_projection",
+          "status": "existing-verified"
+        },
+        {
+          "name": "change_decision_journal",
+          "status": "existing-verified"
         }
       ],
       "generated_outputs": [
@@ -147,7 +171,8 @@
         "skills/guided-implementation/scripts/workflow_progress.py",
         "skills/problem-framing/scripts/workflow_progress.py",
         "skills/solution-design/scripts/workflow_progress.py"
-      ]
+      ],
+      "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。"
     },
     {
       "path": "src/shared/scripts/workflow_control.py",
@@ -421,6 +446,18 @@
         {
           "name": "require_current_protocol",
           "status": "existing-verified"
+        },
+        {
+          "name": "accepted_design_state",
+          "status": "existing-verified"
+        },
+        {
+          "name": "inherited_planning_paths",
+          "status": "existing-verified"
+        },
+        {
+          "name": "planning_paths_for",
+          "status": "existing-verified"
         }
       ],
       "generated_outputs": [
@@ -429,7 +466,8 @@
         "skills/guided-implementation/scripts/stage_handoff.py",
         "skills/problem-framing/scripts/stage_handoff.py",
         "skills/solution-design/scripts/stage_handoff.py"
-      ]
+      ],
+      "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。"
     },
     {
       "path": "src/shared/scripts/discussion_core/workflow_control.py",
@@ -551,6 +589,10 @@
         {
           "name": "compact",
           "status": "proposed-new"
+        },
+        {
+          "name": "read_predecessor",
+          "status": "proposed"
         }
       ],
       "generated_outputs": [
@@ -559,7 +601,8 @@
         "skills/guided-implementation/scripts/workflow_state_store.py",
         "skills/problem-framing/scripts/workflow_state_store.py",
         "skills/solution-design/scripts/workflow_state_store.py"
-      ]
+      ],
+      "implementation_note": "T01 精确前驱构造/读取，不 pin 整个旧 stage 或递归祖先；通用 compact/GC 属 T05。"
     },
     {
       "path": "src/shared/scripts/review_evidence.py",
