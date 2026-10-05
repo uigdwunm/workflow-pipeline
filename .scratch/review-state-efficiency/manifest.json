@@ -163,6 +163,34 @@
         {
           "name": "change_decision_journal",
           "status": "existing-verified"
+        },
+        {
+          "name": "implementation_delivery",
+          "status": "existing-verified"
+        },
+        {
+          "name": "read_implementation_delivery",
+          "status": "existing-verified"
+        },
+        {
+          "name": "implementation_predecessor",
+          "status": "existing-verified"
+        },
+        {
+          "name": "implementation_acceptance",
+          "status": "existing-verified"
+        },
+        {
+          "name": "closure_delivery_view",
+          "status": "existing-verified"
+        },
+        {
+          "name": "prepare_requirement",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.continuation_gate",
+          "status": "existing-verified"
         }
       ],
       "generated_outputs": [
@@ -235,6 +263,10 @@
         {
           "name": "validate_current_context",
           "status": "proposed-add"
+        },
+        {
+          "name": "validate_closure_delivery",
+          "status": "existing-verified"
         }
       ],
       "generated_outputs": [
@@ -249,6 +281,7 @@
       "path": "src/shared/scripts/workflow_control_git.py",
       "operation": "modify",
       "tickets": [
+        "T01",
         "T02",
         "T04"
       ],
@@ -279,6 +312,10 @@
         {
           "name": "verified_transition",
           "status": "existing-verified"
+        },
+        {
+          "name": "verify_closure_delivery",
+          "status": "existing-verified"
         }
       ],
       "generated_outputs": [
@@ -287,7 +324,8 @@
         "skills/guided-implementation/scripts/workflow_control_git.py",
         "skills/problem-framing/scripts/workflow_control_git.py",
         "skills/solution-design/scripts/workflow_control_git.py"
-      ]
+      ],
+      "implementation_note": "T01 Stage4 typed delivery 精确引用在现有 Git adapter 验证；pure control仅有限事实机械校验，不引入FS或progress依赖。"
     },
     {
       "path": "src/shared/scripts/execution_plan.py",
@@ -2011,6 +2049,7 @@
       "operation": "generate",
       "source": "src/shared/scripts/workflow_control_git.py",
       "tickets": [
+        "T01",
         "T02",
         "T04"
       ]
@@ -2020,6 +2059,7 @@
       "operation": "generate",
       "source": "src/shared/scripts/workflow_control_git.py",
       "tickets": [
+        "T01",
         "T02",
         "T04"
       ]
@@ -2029,6 +2069,7 @@
       "operation": "generate",
       "source": "src/shared/scripts/workflow_control_git.py",
       "tickets": [
+        "T01",
         "T02",
         "T04"
       ]
@@ -2038,6 +2079,7 @@
       "operation": "generate",
       "source": "src/shared/scripts/workflow_control_git.py",
       "tickets": [
+        "T01",
         "T02",
         "T04"
       ]
@@ -2047,6 +2089,7 @@
       "operation": "generate",
       "source": "src/shared/scripts/workflow_control_git.py",
       "tickets": [
+        "T01",
         "T02",
         "T04"
       ]

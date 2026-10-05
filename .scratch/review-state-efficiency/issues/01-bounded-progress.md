@@ -38,7 +38,13 @@ T01 必须完成新存储下最小同 C 阶段衔接，不能等待依赖 T01 �
 
 Stage2→3 具体入口：`Progress.start`、`save_current_record`、`read_scope_readiness`、`consumed_scope_readiness`、`read_projection`、`change_decision_journal`；handoff 的 `accepted_design_state`、`inherited_planning_paths/planning_paths_for`、`verify_stage_checkpoint_pin/current_stage3_state`；store 新增精确前驱引用构造与读取。前驱只保留已接受的 run/checkpoint/stage/C revision/controller/requirement/package/worktree 绑定、handoff/acceptance/stop/phase 引用及 readiness/seal/scope/planning/publication 必要摘要，不 pin 整个旧 stage，不递归引用全部祖先。保持同一 checkpoint 与原 C，禁止复制 authority 或放宽 pin 来制造测试通过。
 
-Stage3→4/恢复片随后闭合 `accepted_stage3_progress`、`verify_inline_recovery_pin`、`implementation_recovery`、`verify_completion` 和 runner `_stage_projection`。T05 仍负责通用分页交付目录、批次归档、GC 与规模/物理容量，不作为上述生产路径的隐式前置。
+Stage3→4 与恢复按三个独立行为片收敛，逐片停稳、审查，不将整个恢复系统放进同一执行上下文：
+
+1. 正常 Stage3 接受→同 C Stage4 prepare/bind/inspect。真实分配、原两轴停止审查与最终验证后接收；`accepted_stage3_progress`、runner `_stage_projection/_accepted_stage/_validate_handoff` 消费有限 accepted-implementation 事实与 review/final-attempt 引用。普通 Stage4 调度复用紧凑 input/launch 解析。`workflow_control_git.verify_closure_delivery` 与现有调度适配入口解析精确已提交引用；纯 `workflow_control.validate_closure_delivery/_transition_single` 只机械校验有限事实绑定，不读取文件、不依赖 progress、不接受自报 pass。保留 Stage3 原有审查规则至 T02/T03。历史尝试冻结前做完整唯一性验证，当前只保存 count/digest/current-attempt-ref；原证据不删除。
+2. 正常 Stage4 `verify_completion`：单独闭合 phase、规划前驱、publication/cleanup 的必要精确引用及 runner 完成投影。第一片不据此宣称归档完成。
+3. inline `implementation_recovery/verify_inline_recovery_pin`：独立保持原 Dispatcher、attempt、authority lineage、未发布与停止条件、既有 closure 文档及 protected-source 约束。
+
+三个片均只保存必要事实与明确证据引用，不嵌入整 control/history/allocations/dispatch 或递归祖先。ledger 与 S06 仍另片闭合。T05 负责通用分页交付目录、批次归档、GC 与规模/物理容量，不作为上述生产路径的隐式前置。
 
 ## Verification references
 
