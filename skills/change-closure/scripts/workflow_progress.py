@@ -2506,6 +2506,7 @@ class Progress:
         if data['operation'] == 'prepare':
             entry.fields(data, {'operation', 'ref', 'actor_ref', 'reference', 'reuse', 'binding', 'close'})
             self.require_not_stopping()
+            new_record = record is None
             owner, delivery, parent_thread = self.finalization_owner(data['ref'])
             require(data['actor_ref'] == owner and data['reuse'] is False, 'authority_missing',
                     'the original business owner must retire this identity from all future reuse')
@@ -2561,11 +2562,12 @@ class Progress:
                                'Stop commands and descendants. Return one terminal final answer: NATIVE_FINISHED action_id=' + identity +
                                ' mailbox=consumed business_result=unchanged commands=stopped. Do not send an acknowledgement back or resume business work.'},
                           'checkpoint': str(self.path)}
+            state_store.open_store(self.path).reserve(action['action_id'], recovery=True)
+            if new_record:
                 records.append(record)
             record['actions'].append(action)
             s['lifecycle_snapshot'] = None
             s.pop('lifecycle_query', None)
-            state_store.open_store(self.path).reserve(action['action_id'], recovery=True)
             self._receipt_action = action['action_id']
             self.save()
             return _view(s, action)
@@ -2892,6 +2894,8 @@ class Progress:
                        "publication_receipt": self.state["closure_receipt"]}
         action = {"action_id": str(uuid.uuid4()), "operation": operation, "payload": copy.deepcopy(payload),
                   "checkpoint": str(self.path)}
+        store = state_store.open_store(self.path)
+        store.reserve(action['action_id'], recovery=operation == 'stop-host')
         if operation in {"invoke-host", "continue-host", "stop-host"}:
             previous = self.state.get("host_action")
             if previous is not None and not previous.get("resolved"):
@@ -2906,8 +2910,6 @@ class Progress:
             self.state.pop("resume_intent", None)
         self.state["action"] = action
         self.state["step"] = "host-response"
-        store = state_store.open_store(self.path)
-        store.reserve(action['action_id'], recovery=operation == 'stop-host')
         if operation == 'stop-host':
             self._receipt_action = action['action_id']
         else:
@@ -4442,23 +4444,28 @@ class Progress:
             actions.append(current)
         return actions
 
-    def query_host(self):
+    def query_host(self, *, retry=False):
         s, host = self.state, self.state["host"]
         outstanding = self.unresolved_host_actions()
-        if (host.get("query") or {}).get("settled_action_id") and outstanding:
-            # One authenticated response settles one action, not the entire
-            # chain. Continue read-only reconciliation of the next original.
-            host["query"] = None
-        if host["query"] is None:
-            host["query"] = {"action_id": str(uuid.uuid4()), "operation": "inspect-host-state",
+        previous = host['query']
+        # One authenticated response settles one action, not the entire chain.
+        # Construct a replacement locally: failed admission must leave the
+        # last durable query intact, never publish an unreserved invocation.
+        if previous is None or retry or previous.get('settled_action_id') and outstanding:
+            query = {"action_id": str(uuid.uuid4()), "operation": "inspect-host-state",
                 "generation": host["generation"], "payload": {"ref": self.bound_ref(), "subject": self.subject(),
                     "request": copy.deepcopy(s["dispatch"]["request"])}, "checkpoint": str(self.path)}
             if outstanding:
-                host["query"]["payload"]["unresolved_action"] = copy.deepcopy(outstanding[0])
-            state_store.open_store(self.path).reserve(host['query']['action_id'], recovery=True)
-            self._receipt_action = host['query']['action_id']
+                query['payload']['unresolved_action'] = copy.deepcopy(outstanding[0])
+            state_store.open_store(self.path).reserve(query['action_id'], recovery=True)
+            if retry and previous is not None:
+                host.setdefault('query_history', []).append(copy.deepcopy(previous))
+            host['query'] = query
+            self._receipt_action = query['action_id']
             self.save()
         query = host["query"]
+        if not query.get('resolved'):
+            state_store.open_store(self.path).require_reserve(query['action_id'], recovery=True)
         return _view(s, {"operation": "await-host-recovery", **self.recovery_requirements(), "query": query}
                      if query.get("resolved") else query)
 
@@ -5972,8 +5979,8 @@ class Progress:
             slot['record'] = handoff.seal(body)
         action = {"action_id": str(uuid.uuid4()), "operation": "invoke-host", "allocation_id": identity,
                   "request_digest": launch['digest'], "checkpoint": str(self.path)}
-        slot["action"] = action
         state_store.open_store(self.path).reserve(action['action_id'])
+        slot["action"] = action
         self.save()
         return _view(self.state, {**action, 'payload': launch})
 
@@ -6192,12 +6199,12 @@ class Progress:
         if self.stop_intent() == "pausing" and s["status"] != "paused":
             query = s['host'].get('query')
             if query and query.get('resolved'):
-                s['host'].setdefault('query_history', []).append(copy.deepcopy(query))
-                s['host']['query'] = None
                 if self.unresolved_host_actions() or s['host']['status'] == 'unknown':
                     # Refreshing an ended lookup is recovery, not business
                     # admission. Its own reserve also persists the retry intent.
-                    return self.query_host()
+                    return self.query_host(retry=True)
+                s['host'].setdefault('query_history', []).append(copy.deepcopy(query))
+                s['host']['query'] = None
                 self.save()
             return self.advance_stop("pausing")
         if s["status"] == "paused":

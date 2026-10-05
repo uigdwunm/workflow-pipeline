@@ -2171,6 +2171,118 @@ class BoundedProgressTests(ProgressTests):
     def test_host_recovery_query_replays_after_receipt_commit_io_failure(self):
         self.interrupted_query_receipt(OSError)
 
+    def failed_host_query_reservation(self, failure):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        store = progress.state_store.StateStore(self.checkpoint)
+        if failure == 'full':
+            # Model occupied recovery capacity at the filesystem boundary;
+            # the query still enters through the real public handle.
+            for number in range(3):
+                store.reserve('occupied-recovery-' + str(number), recovery=True)
+        replace = os.replace
+        attempts = []
+        def no_space_for_query(source, target):
+            if Path(target).parent == store.directory / 'reserves' / 'recovery':
+                import errno
+                attempts.append(Path(target))
+                raise OSError(errno.ENOSPC, 'no space for the next native query reserve')
+            return replace(source, target)
+        observed = self.observation('unknown', 'result', ref='native:dispatcher')
+        if failure == 'enospc':
+            with patch.object(os, 'replace', no_space_for_query):
+                rejected = self.invoke('observe', observed)
+            self.assertEqual(len(attempts), 1)
+        else:
+            rejected = self.invoke('observe', observed)
+        self.assertNotEqual((rejected.get('next_action') or {}).get('operation'), 'inspect-host-state')
+        self.assertIsNone(self.state()['host']['query'], 'reserve failure must not publish a callable query intent')
+        self.assertEqual(self.state()['host_action']['action_id'], stop['action_id'])
+        retried = self.invoke('resume')['next_action']
+        self.assertEqual(retried['operation'], 'inspect-host-state')
+        reserve = store.directory / 'reserves' / 'recovery' / hashlib.sha256(retried['action_id'].encode()).hexdigest()
+        self.assertTrue(reserve.exists(), 'the public retry must reserve before returning its host action')
+        self.assertEqual(retried['payload']['unresolved_action']['action_id'], stop['action_id'])
+
+    def test_host_query_reservation_failure_at_full_recovery_window(self):
+        self.failed_host_query_reservation('full')
+
+    def test_host_query_reservation_failure_on_enospc(self):
+        self.failed_host_query_reservation('enospc')
+
+    def test_host_query_recovery_refuses_a_missing_original_reserve(self):
+        self.begin_dispatcher()
+        self.invoke('pause')
+        query = self.invoke('observe', self.observation('unknown', 'result', ref='native:dispatcher'))['next_action']
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(query['action_id'].encode()).hexdigest()
+        reserve.unlink()  # Corrupt the actual reservation boundary, not the query owner.
+        for operation in ('advance', 'resume'):
+            recovered = self.invoke(operation)
+            self.assertNotEqual((recovered.get('next_action') or {}).get('operation'), 'inspect-host-state', recovered)
+            self.assertEqual((recovered.get('error') or {}).get('code'), 'state_capacity', recovered)
+            self.assertEqual(self.state()['host']['query']['action_id'], query['action_id'])
+
+    def test_host_query_retry_reservation_failure_keeps_previous_query(self):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        self.invoke('observe', self.observation('unknown', 'result', ref='native:dispatcher'))
+        incomplete = self.observation('idle', 'result', ref='native:dispatcher')
+        incomplete.pop('action_resolution')
+        self.invoke('observe', incomplete)
+        previous = copy.deepcopy(self.state()['host']['query'])
+        store = progress.state_store.StateStore(self.checkpoint)
+        for number in range(3):
+            store.reserve('occupied-retry-' + str(number), recovery=True)
+        rejected = self.invoke('resume')
+        self.assertNotEqual((rejected.get('next_action') or {}).get('operation'), 'inspect-host-state')
+        self.assertEqual(self.state()['host']['query'], previous)
+        self.assertEqual(self.state()['host'].get('query_history', []), [])
+        retried = self.invoke('resume')['next_action']
+        self.assertEqual(retried['operation'], 'inspect-host-state')
+        self.assertNotEqual(retried['action_id'], previous['action_id'])
+        self.assertEqual(retried['payload']['unresolved_action']['action_id'], stop['action_id'])
+
+    def test_stop_reservation_failure_does_not_publish_an_unreserved_action(self):
+        self.begin_dispatcher()
+        original = copy.deepcopy(self.state()['host_action'])
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        replace = os.replace
+        def no_space_for_stop(source, target):
+            if Path(target).parent == directory / 'reserves' / 'recovery':
+                import errno
+                raise OSError(errno.ENOSPC, 'no space for the native stop reserve')
+            return replace(source, target)
+        with patch.object(os, 'replace', no_space_for_stop):
+            rejected = self.invoke('pause')
+        self.assertNotEqual((rejected.get('next_action') or {}).get('operation'), 'stop-host')
+        self.assertEqual(self.state()['host_action'], original)
+        self.assertEqual(self.state()['retained_host_actions'], [])
+        stop = self.invoke('resume')['next_action']
+        self.assertEqual(stop['operation'], 'stop-host')
+        self.assertTrue((directory / 'reserves' / 'recovery' / hashlib.sha256(stop['action_id'].encode()).hexdigest()).exists())
+
+    def test_allocation_reservation_failure_keeps_the_unissued_original_record(self):
+        self.begin_dispatcher()
+        execution = self.execution_input()
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        replace = os.replace
+        def no_space_for_allocation(source, target):
+            if Path(target).parent == directory / 'reserves' / 'business':
+                import errno
+                raise OSError(errno.ENOSPC, 'no space for the original allocation reserve')
+            return replace(source, target)
+        request = {'allocation_id': 'unissued', 'operation': 'prepare', 'handoff': execution}
+        with patch.object(os, 'replace', no_space_for_allocation):
+            rejected = self.invoke('allocation', request)
+        self.assertNotEqual((rejected.get('next_action') or {}).get('operation'), 'invoke-host')
+        original = self.allocation_slot('unissued')
+        self.assertNotIn('action', original, 'a prepared record does not authorize an unreserved host action')
+        issued = self.invoke('allocation', request)['next_action']
+        self.assertEqual(issued['operation'], 'invoke-host')
+        self.assertEqual(self.allocation_slot('unissued')['record'], original['record'])
+        self.assertTrue((directory / 'reserves' / 'business' / hashlib.sha256(issued['action_id'].encode()).hexdigest()).exists())
+
     def test_host_recovery_query_cannot_fund_new_business_continuation(self):
         self.begin()
         self.invoke('observe', self.observation())

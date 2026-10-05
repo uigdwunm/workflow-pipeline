@@ -205,6 +205,12 @@ class StateStore:
             finally:
                 os.close(descriptor)
 
+    def require_reserve(self, action_id, *, recovery=False):
+        digest = hashlib.sha256(action_id.encode()).hexdigest()
+        path = self._safe(Path('reserves') / ('recovery' if recovery else 'business') / digest)
+        require(path.is_file() and 0 < path.stat().st_size <= EVIDENCE_LIMIT,
+                'original invocation has no usable receipt reserve; retain its identity', 'state_capacity')
+
     def _safe(self, relative):
         path = self.directory / relative
         require(path.is_relative_to(self.directory), 'state path escapes its run')
