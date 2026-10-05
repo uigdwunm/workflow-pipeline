@@ -987,7 +987,7 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(self.allocation_slot('slice-one')['raw_ingress']['evidence_ref'], raw['evidence_ref'])
 
     def test_allocation_raw_interruption_retains_original_lookup(self):
-        self.prepare_execution()
+        execution = self.prepare_execution()
         original = self.allocation_slot('slice-one')
         receipt = self.receipt(original['record'], ref='native:executor')
         receipt['raw']['output'] = ''.join(chr(65 + index) * (1024 * 1024) for index in range(17))
@@ -1015,9 +1015,42 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(manifest['retained_size'], 1024 * 1024)
         resumed = self.invoke('resume')
         self.assertEqual(resumed['next_action']['operation'], 'lookup-exact-allocation')
-        retried = self.invoke('allocation', data)
-        self.assertEqual(retried['next_action']['operation'], 'lookup-exact-allocation')
-        self.assertEqual(self.allocation_slot('slice-one')['raw_ingress']['reason'], 'atomic_limit_exceeded')
+        # Do not resubmit the interrupted raw response before resolving its call.
+        bound = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'reconcile',
+            'receipt': self.receipt(original['record'], 'ready', 'lookup', ref='native:executor')})
+        self.assertEqual(bound['next_action']['result']['status'], 'bound')
+        before = self.checkpoint.read_bytes()
+        replay = self.invoke('allocation', data)
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertEqual(replay['next_action']['operation'], 'allocation-result')
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        original_result = store.read_evidence(saved['raw_ingress']['result_ref'], run_id=current.run_id)['value']['allocation_result']
+        self.assertEqual(replay['next_action']['result'], original_result)
+        self.assertEqual(replay['next_action']['result_ref'], saved['raw_ingress']['result_ref'])
+        self.assertEqual(original_result['authority_revision'], saved['raw_ingress']['authority_revision'])
+        self.assertEqual(original_result['evidence_ref'], saved['raw_ingress']['evidence_ref'])
+        self.assertEqual(original_result['status'], 'unknown')
+        self.assertNotIn('write_release', original_result)
+        contents = b"print('interrupted allocation')\n"
+        (self.flow / 'impl.py').write_bytes(contents)
+        received = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'receive',
+            'receipt': self.receipt(self.allocation_slot('slice-one')['record'], 'stopped', 'result', ref='native:executor'),
+            'result': {'delivery_id': 'slice-result', 'status': 'completed', 'payload': {
+                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(contents).hexdigest()},
+                'tests': ['fixture boundary passed'], 'write_release': bound['next_action']['result']['write_release'],
+                'plan_refs': execution['semantic']['plan_refs'],
+                'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
+        self.assertEqual(received['next_action']['result']['status'], 'received')
+        accepted = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:interrupted-accept'}})
+        self.assertEqual(accepted['next_action']['result']['status'], 'accepted')
+        before = self.checkpoint.read_bytes()
+        replay = self.invoke('allocation', data)
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertEqual(replay['next_action']['result'], original_result)
+        self.assertEqual(replay['next_action']['result_ref'], saved['raw_ingress']['result_ref'])
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertTrue(self.allocation_slot('slice-one')['raw_ingress']['resolved'])
 
     def test_allocation_raw_capacity_keeps_unknown_and_other_reserves(self):
         self.prepare_execution()

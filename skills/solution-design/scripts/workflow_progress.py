@@ -6202,14 +6202,14 @@ class Progress:
         self.save()
         store = state_store.open_store(self.path, receipt_action=self._receipt_action)
         current = store.open_current()
+        interruption = None
         try:
             reference, manifest = store.write_raw_evidence(current.run_id, data['receipt']['raw'],
                 measurement=measurement, commit_bytes=0, native_receipt=binding)
         except state_store.RawEvidenceInterrupted as error:
-            source.update(evidence_ref=error.reference, reason='interrupted')
-            slot['observations'].append(error.reference)
-            self.save()
-            raise
+            reference = error.reference
+            manifest = store.read_raw_manifest(reference, run_id=current.run_id)
+            interruption = error
         source['evidence_ref'] = reference
         if not manifest['complete']:
             source['reason'] = manifest['reason']
@@ -6223,6 +6223,8 @@ class Progress:
             'observation_digest': binding['observation_digest'], 'evidence_ref': reference,
             'authority_revision': source['authority_revision']}})
         self.save()
+        if interruption is not None:
+            raise interruption
         return self.allocation_raw_lookup(identity, slot)
 
     def allocation(self, data):
