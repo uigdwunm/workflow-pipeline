@@ -2750,3 +2750,53 @@ Allocation 用 `plan_refs:[{ticket_id,step_id,plan_version,source_commit,source_
 
 
 Internal revision 可同步与受影响函数相同 seam 的 focused/affected check 文件/命令，但必须保留原验收行为、full/environment要求、runner入口与允许skip条件；proposed_validation_plan 和当前 validation_plan digest在同一 activation 更新，原计划/尝试保留历史。改变测试层级/seam的material选择或削弱验收不得归入此分支。carry-forward映射将未变step的旧Ticket版本ref对应到当前版本ref，保存原result/ref和新对应关系，不改写旧回执；新source byte身份必须先整体核验，不能用step相等豁免文档漂移。
+
+
+## 交付记录（2026-10-05）
+
+Lifecycle: completed
+
+### 本次确认的范围与完成含义
+
+用户最新明确选择“先交付原需求吧”：本次交付 Ticket → 函数执行计划 → Dispatcher 调度/整合 → 真实 Execution Agent 实现/TDD → 原 Controller 合同内修订主流程，并授权解释性文档收尾和最终本地集成。无 A / 无 Ticket 的独立入口、foreground Controller ingress、attached ledger 初始化的补充路线延期，不纳本次交付；没有安装、部署、全局配置或远程发布授权。
+
+Lifecycle 表示该最新授权范围的工作已完成，原 Spec、User Stories、AC、函数计划、计划版本与合同正文完整保留。上方“此次仅规划”等文字是当时规划记录；本节追加后续实施事实，不把原全路线承诺或未勾选的扩展 AC 改写为通过。补充路线需后续单独授权、实现和现场验收，本次不自动开启。
+
+这次生产收尾按用户最新授权作为普通本地交付进行，不是保留中的旧 production C 的正式 Stage 4，不创建新的 C，不补造 handoff 或 acceptance。旧 production C v17 仍为 pausing（序号 1520）；原记录、固定包和失败试验保留，不迁移、不标成功。下述 C417 只属于真实宿主样例。
+
+### 生产候选与验证
+
+生产实施候选为 `6d5bbb23129beae6ed071a49501df0b7c026b321`。完整 `scripts/validate.sh` 验证覆盖 57 个测试文件、1,166 项测试，零失败、零错误、1 项既有跳过，进程自然退出码 0；五包生成一致性及 81 个资源闭包通过。I340 主体及 f52/6d5 增量的独立 Standards / Spec 两轴审查均保留零接受问题的原证据。本次文档收尾不重新跑全仓，也不把先前验证冒充文档提交后的新测试。
+
+当前五包 metadata 为 `1.3.0`，control key 11 / JSON schema 6、runner outer 10、progress-v19、transfer-v14、execution-plan-v1。D7 的 progress-v18 是冻结规划时的声明；实际生产候选已在后续增量更新为 v19，此处记录差异，不改写原合同或版本正文。旧可执行记录使用其原固定运行时，本次没有升级旧记录或本机安装。
+
+### 真实 Ticket 主流程验收
+
+真实宿主样例由原 Controller 使用与生产候选相同的包字节运行；269 个包文件的 Git blob 与 modes 匹配。Stage 2 实际产出并封存/发布 Spec、Ticket 和函数计划；原 Dispatcher 成组调度真实嵌套 Execution Agents，按当前 refs 完成实际 TDD 和验收，Dispatcher 没有实现写入来源。
+
+原 Controller 在完整停止屏障后独占精确规划 release，实际仅提交 Ticket 计划修订 `c9bb167bc654e685eac504840c40f5cf1f796307` 并激活 authority revision 2；实现、index 与 protected 字节保持不变。未受影响已验收结果有 carry-forward 依据；受影响 CLI 及只读依赖改变的 Facade 经独立真实分配复核/采用后重新验收。旧 v1 入口因 `entry_changed`、旧 refs 因 `execution_plan_stale` 被拒绝，记录与源码不变；这不额外声称独立 token 算法验收。
+
+公共及不明影响实际进入 `user_decision_required`，C/B/Git 保持不写入。暂停后通过 fresh query 和原 Dispatcher 身份恢复；实际中断的原 native continuation 先保留 await-host-recovery，再核对原调用/响应和 parent event，使用同 refs 恢复完成交付。这证明已知原调用的不确定业务完成恢复，不是未知创建验收，也不声称宿主丢失后启动第二宿主通过。
+
+当前实施候选 `25827238ef05ae6fd13891fbd0c0b8c883922bd1` 完成新的独立 Standards / Spec 两轴审查（零接受问题）与原 Dispatcher 的 31 项完整测试（零跳过），Stage 3 在当前 revision 接收。实际 Closure Agent 形成候选 `bfd4975c3aff7d1da5e88a4b4f755754908543bd`，合并 `5d05367be07c415638d45874fd3c708985d1c02d`，核对 worktree/branch 删除及主检出保留，原 Controller 于 C417 接收当前计划 Stage-4 结果。该样例完整结果不替代生产旧 C 的状态。
+
+### 延期与未验收路线
+
+| 路线 | 实际证据与当前边界 | 本次结论 |
+| --- | --- | --- |
+| 无 A / 无 Ticket 的 standalone inline | 只读审计确认纯 control 初始入口存在，但缺合法 C 计划修订初始化桥；没有完整现场 ingress 验收 | 用户延期，不宣称支持该修订路线 |
+| foreground | 固定 runner 明确记录 `controller_revision_ingress` unavailable，拒绝 prepared revision；没有实际 foreground host 通过证据 | 用户延期，不由 carrier 冒充原 Controller |
+| attached ledger | 真实隔离 bootstrap 和 0→2 Phase Run 已准备，C 初始 Stage 2 与 ledger 初始 Phase 0 不一致，start 返回 `invalid_request`；没有创建 native role，原 transaction/Flow 保留 | 用户延期，初始化拒绝记录原样保留 |
+
+原 T3 对上述三路线的计划承诺与 Ticket FEP-03 AC-4 保留，未标通过；自动化 fixture、只读入口检查、worksheet 生成或主线 C417 均不能替代其现场验收。取消、未知创建、宿主丢失及目标竞态下的 publication recovery 也不因本样例的暂停/已知调用恢复与正常归档而获得额外现场通过声明。
+
+### 可追溯证据
+
+证据位于本机运行目录，不随生成 Skill 包分发：
+
+- `/Users/zhaolaiyuan/.codex/workflow-runs/01a0fa75-e2b2-72a0-9ad7-ece250b691da/function-execution-plans.baseline-lifecycle-full-root-verification.json`：生产候选及原完整验证读回。
+- 同目录 `evidence/t3-gpt61-high/acceptance-evidence-index.json`：非权威证据索引；权威样例状态在 `evidence/t3-gpt61-high/workflow.json`（C417）。
+- 同目录 `evidence/t3-attached-ingress/actual-attached-start-conflict-diagnostic.json`：真实 attached 初始化拒绝。
+- 同目录 `evidence/production-ticket-delivery/confirmed-delivery-scope.json`：用户最新范围选择、本地交付授权与排除的副作用。
+
+本节是完成事实与范围决定的追加记录，不是运行时权威、旧 C 状态迁移或新的阶段交接凭据。

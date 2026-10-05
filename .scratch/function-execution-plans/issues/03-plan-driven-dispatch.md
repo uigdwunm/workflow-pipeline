@@ -509,3 +509,14 @@ Spec: `../PRD.md`；冻结需求 AC 与映射见 PRD N3。本 Ticket 只拥有�
 Stage 2: 基于冻结需求和真实调用链设计；当前为待 combined review 的草稿，尚未 native publication 或实施。
 
 Stage 2 publication: 用户已以“确认，连续模式”接受本 Ticket 的粒度、blocking edges 与测试 seam；ready-for-agent 和原 Blocked by 已发布至本地 tracker，实施尚未开始。授权引用：user-current-conversation:confirm-continuous:fep-solution-review-20261001-01。
+
+
+### 本次交付完成记录 — 2026-10-05
+
+Lifecycle: completed
+
+用户最新选择“先交付原需求吧”，本 Ticket 在本次 Ticket 主流程交付范围内完成；原函数计划、版本、合同与 AC checkbox 保持原样。补充 standalone-no-A / foreground / attached ingress 延期，不纳本次交付、未标通过。
+
+Ticket 主线已由真实嵌套 Execution Agents 按当前 refs 成组执行与 TDD，Dispatcher 仅调度、验收、验证和 Git 集成。旧入口与旧 refs 在当前门禁被拒绝。AC-4 的无 A / 无 Ticket inline 与 foreground ingress 未完成现场验收：前者缺合法 C 修订初始化桥，后者 controller_revision_ingress unavailable；用户明确延期，原 AC-4 仍未勾选，不能据主线通过宣称全路线支持。
+
+完整事实、限制及证据路径见 [PRD 交付记录](../PRD.md#交付记录2026-10-05)。本次由用户最新授权作普通本地交付，不补造旧 production C 的 Stage-4 验收或迁移，不创建新的 C；原记录与失败试验保留。
