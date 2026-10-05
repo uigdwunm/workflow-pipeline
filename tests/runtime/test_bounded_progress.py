@@ -2024,6 +2024,288 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(repeated['next_action']['action']['action_id'],
                          recovered['next_action']['action_id'])
 
+    def test_native_raw_ingress_preserves_large_complete_receipt(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        request = helper.finalization()
+        finish = self.invoke('native-finalize', request)['next_action']
+        observed = helper.finalize_observation(finish)
+        observed['receipt']['raw']['log'] = '原文\"\n' * (300 * 1024 // 5)
+        raw = observed['receipt']['raw']
+        forged = {**observed, 'receipt': {**observed['receipt'], 'raw': {
+            'format': 'native-raw-reference-v1', 'evidence_ref': {'sha256': '0' * 64},
+            'facts': {'operation': 'finish-native', 'thread_id': finish['payload']['thread_id'],
+                      'status': 'idle', 'finish_action_id': finish['action_id']}}}}
+        revision = self.invoke('inspect')['revision']
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('native-finalize', forged)
+        self.assertEqual(self.invoke('inspect')['revision'], revision)
+        result = self.invoke('native-finalize', observed)
+        self.assertNotIn('error', result)
+        record = self.state()['native_finalizations'][0]
+        self.assertTrue(record['actions'][0]['resolved'])
+        reference = record['receipts'][0]['receipt']['raw']['evidence_ref']
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        self.assertTrue(all(ref['size'] <= 256 * 1024 for ref in current.root['subjects'].values()))
+        recovered = store.read_raw_evidence(reference, run_id=current.run_id)
+        self.assertEqual(recovered, raw, 'complete raw evidence must retain exact original values')
+        opened = []
+        original_open = Path.open
+        directory = store.directory
+        def tracked_open(path, *args, **kwargs):
+            if path == self.checkpoint or path.is_relative_to(directory):
+                opened.append(path)
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', tracked_open):
+            inspected = self.invoke('inspect')
+        self.assertEqual(inspected['revision'], result['revision'])
+        self.assertLessEqual(sum(path.stat().st_size for path in opened), 9 * 256 * 1024)
+        replay = self.invoke('native-finalize', observed)
+        self.assertTrue(replay['acknowledged'])
+        self.assertEqual(replay['revision'], result['revision'])
+        # Public storage measurement must leave both disk and authority unchanged.
+        def snapshot():
+            paths = [self.checkpoint, *sorted(path for path in directory.rglob('*') if path.is_file())]
+            return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+        before = snapshot()
+        with progress.state_store.operation_store(self.checkpoint):
+            measured_store = progress.state_store.open_store(self.checkpoint)
+            current = measured_store.open_current()
+            with measured_store.measure_writes() as writes:
+                hypothetical = measured_store.commit_outer(expected_revision=current.revision,
+                    outer={**current.root['outer'], 'measurement_probe': True})
+                self.assertGreater(sum(writes.values()), 0)
+            self.assertEqual(measured_store.open_current().reference, current.reference)
+            with self.assertRaises(transfer.entry.PreparationError):
+                measured_store.read_evidence(hypothetical.reference, run_id=current.run_id, kind='root')
+        self.assertEqual(snapshot(), before)
+
+    def test_native_raw_ingress_oversized_atomic_response_keeps_original_call_unknown(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        request = helper.finalization()
+        finish = self.invoke('native-finalize', request)['next_action']
+        observed = helper.finalize_observation(finish)
+        observed['receipt']['raw']['log'] = 'x' * (17 * 1024 * 1024) + 'retained-tail'
+        result = self.invoke('native-finalize', observed)
+        self.assertNotIn('error', result)
+        record = self.state()['native_finalizations'][0]
+        self.assertFalse(record['actions'][0].get('resolved', False))
+        saved = record['receipts'][0]['receipt']
+        self.assertEqual(saved['status'], 'unknown')
+        self.assertTrue(saved['raw']['truncated'])
+        self.assertEqual(saved['raw']['reason'], 'atomic_limit_exceeded')
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        manifest = store.read_evidence(saved['raw']['evidence_ref'], run_id=current.run_id)['value']
+        self.assertTrue(manifest['complete'], 'ample storage retains even the atomic response tail')
+        self.assertGreater(manifest['size'], 16 * 1024 * 1024)
+        self.assertLessEqual(saved['raw']['evidence_ref']['size'], 256 * 1024)
+        self.assertTrue(all(chunk['size'] <= 1024 * 1024 for chunk in manifest['chunks']))
+        self.assertIn(b'retained-tail', store.read_raw_chunk(saved['raw']['evidence_ref'], run_id=current.run_id, index=len(manifest['chunks']) - 1))
+        recovered = self.invoke('advance')['next_action']
+        self.assertEqual(recovered['operation'], 'lookup-exact-native-action')
+        self.assertEqual(recovered['action']['action_id'], finish['action_id'])
+        self.assertEqual(recovered['action']['call_ref'], observed['receipt']['call_ref'])
+        reserve = store.directory / 'reserves' / 'recovery' / hashlib.sha256(finish['action_id'].encode()).hexdigest()
+        self.assertTrue(reserve.exists())
+        self.assertFalse(self.state()['stopped'])
+        replay = self.invoke('native-finalize', observed)
+        self.assertTrue(replay['acknowledged'])
+        changed = helper.finalize_observation(finish)
+        changed['receipt']['call_ref'] = 'different-call'
+        changed['receipt']['response_ref'] = 'different-response'
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('native-finalize', changed)
+        complete = helper.finalize_observation(finish)
+        complete['receipt']['response_ref'] = 'queried-original-response'
+        self.invoke('native-finalize', complete)
+        self.assertTrue(self.state()['native_finalizations'][0]['actions'][0]['resolved'])
+
+    def test_native_raw_ingress_full_ordinary_budget_uses_original_reserve(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        finish = self.invoke('native-finalize', helper.finalization())['next_action']
+        observed = helper.finalize_observation(finish)
+        observed['receipt']['raw']['log'] = 'x' * (300 * 1024)
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(finish['action_id'].encode()).hexdigest()
+        with reserve.open('r+b') as stream:
+            stream.truncate(1024 * 1024)
+        revision = self.invoke('inspect')['revision']
+        result = self.invoke('native-finalize', observed)
+        self.assertNotIn('error', result)
+        record = self.state()['native_finalizations'][0]
+        self.assertTrue(record['actions'][0].get('resolved', False))
+        self.assertEqual(result['revision'], revision + 2, 'measurement cannot commit an owner revision')
+        saved = record['receipts'][0]['receipt']
+        self.assertEqual(saved['status'], 'completed')
+        self.assertFalse(saved['raw']['truncated'])
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        self.assertEqual(store.read_raw_evidence(saved['raw']['evidence_ref'], run_id=current.run_id), observed['receipt']['raw'])
+
+    def test_native_raw_ingress_combines_ordinary_remainder_with_original_reserve(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        finish = self.invoke('native-finalize', helper.finalization())['next_action']
+        observed = helper.finalize_observation(finish)
+        observed['receipt']['raw']['log'] = 'x' * (1280 * 1024)
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2 - 512 * 1024}))
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(finish['action_id'].encode()).hexdigest()
+        with reserve.open('r+b') as stream:
+            stream.truncate(1280 * 1024)
+        revision = self.invoke('inspect')['revision']
+        result = self.invoke('native-finalize', observed)
+        self.assertNotIn('error', result)
+        record = self.state()['native_finalizations'][0]
+        self.assertTrue(record['actions'][0].get('resolved', False))
+        self.assertEqual(result['revision'], revision + 2, 'measurement cannot commit an owner revision')
+        saved = record['receipts'][0]['receipt']
+        self.assertEqual(saved['status'], 'completed')
+        self.assertFalse(saved['raw']['truncated'])
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        self.assertEqual(store.read_raw_evidence(saved['raw']['evidence_ref'], run_id=current.run_id), observed['receipt']['raw'])
+
+    def test_native_raw_ingress_capacity_retains_partial_evidence_without_resolving(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        finish = self.invoke('native-finalize', helper.finalization())['next_action']
+        observed = helper.finalize_observation(finish)
+        observed['receipt']['raw']['log'] = 'a' * (1024 * 1024) + 'b' * (1024 * 1024) + 'tail'
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2 - 1536 * 1024}))
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(finish['action_id'].encode()).hexdigest()
+        with reserve.open('r+b') as stream:
+            stream.truncate(512 * 1024)  # Earlier receipts already consumed this call's other space.
+        result = self.invoke('native-finalize', observed)
+        self.assertNotIn('error', result)
+        record = self.state()['native_finalizations'][0]
+        saved = record['receipts'][0]['receipt']
+        self.assertEqual(saved['status'], 'unknown')
+        self.assertFalse(record['actions'][0].get('resolved', False))
+        self.assertEqual(saved['raw']['reason'], 'state_capacity')
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        manifest = store.read_evidence(saved['raw']['evidence_ref'], run_id=current.run_id)['value']
+        self.assertFalse(manifest['complete'])
+        self.assertEqual(manifest['retained_size'], 1024 * 1024)
+        self.assertEqual(len(manifest['chunks']), 1)
+        with self.assertRaises(transfer.entry.PreparationError):
+            store.read_raw_evidence(saved['raw']['evidence_ref'], run_id=current.run_id)
+        self.assertEqual(self.invoke('advance')['next_action']['action']['call_ref'], observed['receipt']['call_ref'])
+        self.assertTrue((directory / 'reserves' / 'recovery' / hashlib.sha256(finish['action_id'].encode()).hexdigest()).exists())
+
+    def test_native_raw_ingress_interruption_retains_source_and_partial_manifest(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        finish = self.invoke('native-finalize', helper.finalization())['next_action']
+        observed = helper.finalize_observation(finish)
+        observed['receipt']['raw']['log'] = 'a' * (1024 * 1024) + 'b' * (1024 * 1024) + 'tail'
+        replace, chunks = os.replace, []
+        def interrupted(source, target):
+            if Path(source).stat().st_size == 1024 * 1024:
+                chunks.append(target)
+                if len(chunks) == 2:
+                    raise KeyboardInterrupt('interrupted raw chunk installation')
+            return replace(source, target)
+        with patch.object(os, 'replace', interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('native-finalize', observed)
+        record = self.state()['native_finalizations'][0]
+        self.assertFalse(record['actions'][0].get('resolved', False))
+        source = record['raw_ingress']
+        self.assertEqual(source['call_ref'], observed['receipt']['call_ref'])
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        manifest = store.read_evidence(source['evidence_ref'], run_id=current.run_id)['value']
+        self.assertFalse(manifest['complete'])
+        self.assertEqual(manifest['retained_size'], 1024 * 1024)
+        self.assertEqual(manifest['reason'], 'interrupted')
+        self.assertEqual(self.invoke('advance')['next_action']['action']['call_ref'], observed['receipt']['call_ref'])
+        completed = helper.finalize_observation(finish)
+        completed['receipt']['response_ref'] = 'same-call-after-interruption'
+        self.invoke('native-finalize', completed)
+        self.assertTrue(self.state()['native_finalizations'][0]['actions'][0]['resolved'])
+        self.assertNotIn('raw_ingress', self.state()['native_finalizations'][0])
+        self.assertEqual(self.state()['native_finalizations'][0]['receipts'][0]['receipt']['raw']['evidence_ref'], source['evidence_ref'])
+
+    def test_native_raw_ingress_preserves_valid_complex_json_without_extra_shape_limits(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        finish = self.invoke('native-finalize', helper.finalization())['next_action']
+        observed = helper.finalize_observation(finish)
+        observed['receipt']['raw']['details'] = {str(number): number for number in range(66000)}
+        nested = '原文\"\n'
+        for _ in range(80):
+            nested = [nested]
+        observed['receipt']['raw']['nested'] = nested
+        cyclic = []
+        cyclic.append(cyclic)
+        malformed = {**observed, 'receipt': {**observed['receipt'], 'raw': {'cycle': cyclic}}}
+        revision = self.invoke('inspect')['revision']
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('native-finalize', malformed)
+        self.assertEqual(self.invoke('inspect')['revision'], revision)
+        self.invoke('native-finalize', observed)
+        saved = self.state()['native_finalizations'][0]['receipts'][0]['receipt']
+        self.assertEqual(saved['status'], 'completed')
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        self.assertEqual(store.read_raw_evidence(saved['raw']['evidence_ref'], run_id=current.run_id), observed['receipt']['raw'])
+
+    def test_native_raw_ingress_close_and_readback_recover_from_finite_facts(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        request = helper.finalization()
+        finish = self.invoke('native-finalize', request)['next_action']
+        self.invoke('native-finalize', helper.finalize_observation(finish))
+        self.invoke('lifecycle-state', helper.snapshot())
+        close = self.invoke('native-finalize', request)['next_action']
+        observed = helper.finalize_observation(close)
+        observed['receipt']['raw']['log'] = 'close-log' * 40000
+        self.invoke('native-finalize', observed)
+        self.invoke('inspect')
+        self.invoke('lifecycle-state', helper.snapshot(helper.inventory([
+            {'agent_name': '/root', 'agent_status': 'running'}])))
+        self.invoke('lifecycle-state', helper.snapshot())
+        query = helper.unloaded_query(finish, close, 'large-query')
+        query['receipt']['raw']['log'] = 'query-log' * 40000
+        self.invoke('native-finalize', query)
+        self.invoke('inspect')
+        record = self.state()['native_finalizations'][0]
+        self.assertNotIn('revoked', record)
+        self.assertTrue(record['queries'][-1]['resolved'])
+        self.assertEqual(record['receipts'][-1]['receipt']['raw']['facts']['status'], 'notLoaded')
+
     def test_native_finalization_unknown_retains_its_recovery_reserve(self):
         from test_collaboration_lifecycle import CollaborationLifecycleTests
         helper = CollaborationLifecycleTests(methodName='runTest')

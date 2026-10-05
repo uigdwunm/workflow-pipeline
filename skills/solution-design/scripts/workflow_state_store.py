@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import copy
+import errno
 from contextlib import contextmanager
 from contextvars import ContextVar
 import hashlib
@@ -55,6 +56,59 @@ def open_store(checkpoint, *, receipt_action=None):
 def encode(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True,
                       separators=(',', ':'), allow_nan=False).encode('utf-8')
+
+
+def raw_json_parts(value, ancestors=None):
+    """Canonical JSON without whole-string encoding; input objects already exist.
+
+    Sorting an object retains a list of its key references. This bounds string
+    encoding buffers, not the host's object construction or key-list memory.
+    """
+    if isinstance(value, str):
+        yield b'"'
+        for start in range(0, len(value), 4096):
+            yield json.dumps(value[start:start + 4096], ensure_ascii=False)[1:-1].encode('utf-8')
+        yield b'"'
+    elif isinstance(value, (dict, list)):
+        if ancestors is None:
+            ancestors = set()
+        identity = id(value)
+        require(identity not in ancestors, 'raw evidence contains a circular reference')
+        ancestors.add(identity)
+        try:
+            if isinstance(value, dict):
+                require(all(isinstance(key, str) for key in value), 'raw evidence requires string-keyed JSON objects')
+                yield b'{'
+                for number, key in enumerate(sorted(value)):
+                    if number:
+                        yield b','
+                    yield from raw_json_parts(key, ancestors)
+                    yield b':'
+                    yield from raw_json_parts(value[key], ancestors)
+                yield b'}'
+            else:
+                yield b'['
+                for number, item in enumerate(value):
+                    if number:
+                        yield b','
+                    yield from raw_json_parts(item, ancestors)
+                yield b']'
+        finally:
+            ancestors.remove(identity)
+    else:
+        require(value is None or type(value) in {bool, int, float}, 'raw evidence must be JSON data')
+        yield encode(value)
+
+
+def raw_measure(value):
+    size, digest = 0, hashlib.sha256()
+    try:
+        for part in raw_json_parts(value):
+            size += len(part)
+            digest.update(part)
+    except (RecursionError, ValueError, UnicodeError) as error:
+        raise entry.PreparationError('invalid_state_store', 'raw evidence cannot be encoded as JSON') from error
+    return size, digest.hexdigest()
 
 
 def require(condition, message, code='invalid_state_store'):
@@ -133,6 +187,13 @@ class DeliveryProjection(IdentityProjection):
     """Current delivery facts; archived claims require explicit separate reads."""
 
 
+class RawEvidenceInterrupted(KeyboardInterrupt):
+    """A retained partial manifest; callers must save its reference before stopping."""
+    def __init__(self, reference):
+        super().__init__('raw evidence reception interrupted')
+        self.reference = reference
+
+
 class StateStore:
     def __init__(self, checkpoint, *, receipt_action=None):
         self.checkpoint = Path(checkpoint)
@@ -141,16 +202,36 @@ class StateStore:
         self.bytes_read = 0
         self.receipt_action = receipt_action
         self._verified_objects = {}
+        self._verified_raw_chunks = {}
         self._run_id = None
         self._pending_reserves = None
+        self._measured_writes = None
 
-    def _charge(self, size):
+    @contextmanager
+    def measure_writes(self):
+        """Encode a bounded candidate through the normal commit path without publishing it."""
+        require(_operation_store.get() is self and self._measured_writes is None,
+                'native commit measurement requires its locked owner operation')
+        cached, pending = self._verified_objects.copy(), self._pending_reserves
+        original_action, original_run = self.receipt_action, self._run_id
+        measured = {}
+        self._measured_writes = measured
+        try:
+            yield measured
+        finally:
+            self._verified_objects = cached
+            self._pending_reserves = pending
+            self._measured_writes = None
+            self.receipt_action, self._run_id = original_action, original_run
+
+    def _charge(self, size, *, allow_reserve=True):
+        require(self._measured_writes is None, 'commit measurement cannot charge capacity')
         path = self._safe('usage.json')
         usage = json.loads(self._read(path, 16 * 1024)) if path.exists() else {'allocated': 0}
         require(type(usage.get('allocated')) is int and usage['allocated'] >= 0,
                 'invalid capacity account')
         if usage['allocated'] + size > RUN_LIMIT - BUSINESS_RESERVE - RECOVERY_RESERVE:
-            require(self.receipt_action is not None,
+            require(allow_reserve and self.receipt_action is not None,
                     'run budget exhausted; retain the original pending call', 'state_capacity')
             digest = hashlib.sha256(self.receipt_action.encode()).hexdigest()
             reserves = [self._safe(Path('reserves') / kind / digest)
@@ -169,6 +250,7 @@ class StateStore:
         atomic_write(path, encode(usage))
 
     def reserve(self, action_id, *, recovery=False):
+        require(self._measured_writes is None, 'commit measurement cannot reserve capacity')
         digest = hashlib.sha256(action_id.encode()).hexdigest()
         directory = self._safe(Path('reserves') / ('recovery' if recovery else 'business'))
         directory.mkdir(parents=True, exist_ok=True)
@@ -185,6 +267,8 @@ class StateStore:
         return digest
 
     def release_settled_reserves(self, pending):
+        if self._measured_writes is not None:
+            return
         if _operation_store.get() is self:
             # One receipt may require several authority commits. Keep its
             # reservation until the entire locked operation has completed.
@@ -250,7 +334,10 @@ class StateStore:
         require(len(data) <= maximum, kind + ' exceeds its fixed budget', 'state_capacity')
         digest = hashlib.sha256(data).hexdigest()
         path = self._path(digest)
-        if path.exists():
+        if self._measured_writes is not None:
+            if not path.exists():
+                self._measured_writes[str(path)] = len(data)
+        elif path.exists():
             if digest not in self._verified_objects:
                 require(path.stat().st_size == len(data) and self._read(path, maximum) == data,
                         'immutable object was changed', 'state_object_corrupt')
@@ -259,6 +346,139 @@ class StateStore:
             atomic_write(path, data)
         self._verified_objects[digest] = copy.deepcopy(body)
         return {'run_id': run_id, 'kind': kind, 'sha256': digest, 'size': len(data)}
+
+    def write_raw_evidence(self, run_id, value, *, measurement, commit_bytes):
+        """Spool chunks, retaining bounded commit space in this invocation's reserve."""
+        chunks, pending, digest, size, retained = [], bytearray(), hashlib.sha256(), 0, 0
+        complete, reason, interruption = True, None, None
+        expected_size, expected_digest = measurement
+        def flush():
+            nonlocal retained
+            data = bytes(pending)
+            chunk_digest = hashlib.sha256(data).hexdigest()
+            reference = {'run_id': run_id, 'kind': 'raw-chunk', 'sha256': chunk_digest, 'size': len(data)}
+            require(len(encode(chunks + [reference])) <= SUBJECT_LIMIT - 4096,
+                    'raw evidence manifest exceeds its fixed budget', 'state_capacity')
+            path = self._path(chunk_digest)
+            if path.exists():
+                if chunk_digest not in self._verified_raw_chunks:
+                    require(path.stat().st_size == len(data) and self._read(path, 1024 * 1024) == data,
+                            'immutable raw chunk changed', 'state_object_corrupt')
+            else:
+                usage_path = self._safe('usage.json')
+                usage = json.loads(self._read(usage_path, 16 * 1024)) if usage_path.exists() else {'allocated': 0}
+                require(type(usage.get('allocated')) is int and usage['allocated'] >= 0, 'invalid capacity account')
+                ordinary = max(0, RUN_LIMIT - BUSINESS_RESERVE - RECOVERY_RESERVE - usage['allocated'])
+                from_reserve = max(0, len(data) - ordinary)
+                if from_reserve:
+                    require(expected_size <= EVIDENCE_LIMIT and self.receipt_action is not None,
+                            'raw evidence exhausted ordinary capacity', 'state_capacity')
+                    identity = hashlib.sha256(self.receipt_action.encode()).hexdigest()
+                    reservations = [self._safe(Path('reserves') / kind / identity)
+                                    for kind in ('business', 'recovery')]
+                    reservations = [item for item in reservations if item.exists()]
+                    require(len(reservations) == 1 and reservations[0].stat().st_size >= from_reserve + commit_bytes,
+                            'original receipt must retain its measured commit space', 'state_capacity')
+                # Consume the actual remaining ordinary bytes before transferring
+                # this call's reserve. No other invocation can pay for this raw.
+                ordinary_charge = min(len(data), ordinary)
+                if ordinary_charge:
+                    self._charge(ordinary_charge, allow_reserve=False)
+                if from_reserve:
+                    self._charge(from_reserve)
+                atomic_write(path, data)
+            self._verified_raw_chunks[chunk_digest] = len(data)
+            chunks.append(reference)
+            retained += len(data)
+            pending.clear()
+        for part in raw_json_parts(value):
+            digest.update(part)
+            size += len(part)
+            if not complete:
+                continue
+            while part:
+                take = min(1024 * 1024 - len(pending), len(part))
+                pending.extend(part[:take])
+                part = part[take:]
+                if len(pending) == 1024 * 1024:
+                    try:
+                        flush()
+                    except entry.PreparationError as error:
+                        if error.code != 'state_capacity':
+                            raise
+                        complete, reason = False, 'state_capacity'
+                        pending.clear()
+                        break
+                    except OSError as error:
+                        if error.errno not in {errno.ENOSPC, errno.EDQUOT}:
+                            raise
+                        complete, reason = False, 'storage_full'
+                        pending.clear()
+                        break
+                    except KeyboardInterrupt as error:
+                        complete, reason, interruption = False, 'interrupted', error
+                        pending.clear()
+                        break
+            if interruption is not None:
+                break
+        if complete and pending:
+            try:
+                flush()
+            except entry.PreparationError as error:
+                if error.code != 'state_capacity':
+                    raise
+                complete, reason = False, 'state_capacity'
+            except OSError as error:
+                if error.errno not in {errno.ENOSPC, errno.EDQUOT}:
+                    raise
+                complete, reason = False, 'storage_full'
+            except KeyboardInterrupt as error:
+                complete, reason, interruption = False, 'interrupted', error
+        if interruption is None:
+            require((size, digest.hexdigest()) == measurement, 'raw evidence changed during reception')
+        manifest = {'format': 'raw-evidence-v1', 'complete': complete, 'size': expected_size,
+                    'retained_size': retained, 'sha256': expected_digest, 'chunks': chunks,
+                    'reason': reason}
+        require(len(encode(manifest)) <= SUBJECT_LIMIT - 1024,
+                'raw evidence manifest exceeds its fixed budget', 'state_capacity')
+        reference = self.write_object(run_id, 'evidence', manifest)
+        if interruption is not None:
+            raise RawEvidenceInterrupted(reference) from interruption
+        return reference, manifest
+
+    def read_raw_chunk(self, reference, *, run_id, index):
+        """Read one explicitly selected raw chunk without expanding the whole response."""
+        manifest = self.read_evidence(reference, run_id=run_id)['value']
+        require(manifest.get('format') == 'raw-evidence-v1' and isinstance(manifest.get('chunks'), list) and
+                type(index) is int and 0 <= index < len(manifest['chunks']), 'invalid raw evidence cursor')
+        chunk = manifest['chunks'][index]
+        require(set(chunk) == {'run_id', 'kind', 'sha256', 'size'} and chunk['run_id'] == run_id and
+                chunk['kind'] == 'raw-chunk' and type(chunk['size']) is int and
+                0 < chunk['size'] <= 1024 * 1024, 'invalid raw chunk reference')
+        part = self._read(self._path(chunk['sha256']), 1024 * 1024)
+        require(len(part) == chunk['size'] and hashlib.sha256(part).hexdigest() == chunk['sha256'],
+                'raw chunk changed', 'state_object_corrupt')
+        return part
+
+    def read_raw_evidence(self, reference, *, run_id):
+        """Explicitly expand one complete raw result, within the evidence read budget."""
+        manifest = self.read_evidence(reference, run_id=run_id)['value']
+        require(manifest.get('format') == 'raw-evidence-v1' and manifest.get('complete') is True and
+                type(manifest.get('size')) is int and 0 <= manifest['size'] <= EVIDENCE_LIMIT and
+                isinstance(manifest.get('chunks'), list), 'raw evidence is incomplete or exceeds one expansion')
+        data = bytearray()
+        for chunk in manifest['chunks']:
+            require(set(chunk) == {'run_id', 'kind', 'sha256', 'size'} and chunk['run_id'] == run_id and
+                    chunk['kind'] == 'raw-chunk' and type(chunk['size']) is int and
+                    0 < chunk['size'] <= 1024 * 1024, 'invalid raw chunk reference')
+            part = self._read(self._path(chunk['sha256']), 1024 * 1024)
+            require(len(part) == chunk['size'] and hashlib.sha256(part).hexdigest() == chunk['sha256'],
+                    'raw chunk changed', 'state_object_corrupt')
+            require(len(data) + len(part) <= manifest['size'], 'raw evidence length changed')
+            data.extend(part)
+        require(len(data) == manifest['size'] and hashlib.sha256(data).hexdigest() == manifest['sha256'],
+                'raw evidence digest changed', 'state_object_corrupt')
+        return json.loads(data)
 
     def read_evidence(self, reference, *, run_id, kind='evidence'):
         require(isinstance(reference, dict) and set(reference) == {'run_id', 'kind', 'sha256', 'size'} and
@@ -492,6 +712,8 @@ class StateStore:
         atomic_write(self.checkpoint, data)
 
     def _ensure_marker(self, current):
+        if self._measured_writes is not None:
+            return
         marker = self._safe(Path('commits') / str(current.revision))
         proof = encode({'revision': current.revision, 'root': current.reference['sha256'],
                         'receipts': current.root.get('receipts', [])})
@@ -608,6 +830,16 @@ class StateStore:
     def _commit_root(self, current, run_id, root):
         revision, receipts, metadata = root['revision'], root['receipts'], root['metadata']
         reference = self.write_object(run_id, 'root', root)
+        if self._measured_writes is not None:
+            require(not receipts, 'raw receipt measurement cannot publish control receipts')
+            envelope = {'store_format': FORMAT, 'run_id': run_id, 'revision': revision,
+                        'current': reference, 'previous': current.reference if current else None,
+                        'workflow_progress': metadata}
+            require(len(encode(envelope)) <= ROOT_LIMIT, 'current root exceeds its fixed budget', 'state_capacity')
+            self._measured_writes[str(self.checkpoint)] = len(encode(envelope))
+            marker = {'revision': revision, 'root': reference['sha256'], 'receipts': []}
+            self._measured_writes[str(self._safe(Path('commits') / str(revision)))] = len(encode(marker))
+            return CurrentProjection(run_id, revision, root, reference)
         for receipt in receipts:
             index = {**receipt, 'revision': revision, 'run_id': run_id, 'root': reference['sha256']}
             require(len(encode(index)) <= 16 * 1024, 'receipt index exceeds its fixed budget', 'state_capacity')

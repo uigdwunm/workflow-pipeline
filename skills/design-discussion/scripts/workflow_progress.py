@@ -104,6 +104,34 @@ def validate_native_close(close, ref, thread):
         raise entry.PreparationError('host_capability_missing', 'no supported native close capability is available')
 
 
+def native_receipt_matches(saved, incoming):
+    raw = saved.get('receipt', {}).get('raw', {})
+    if raw.get('format') != 'native-raw-reference-v1':
+        return saved == incoming
+    receipt = incoming.get('receipt', {})
+    size, digest = state_store.raw_measure(receipt.get('raw'))
+    return ({key: value for key, value in saved.items() if key != 'receipt'} ==
+            {key: value for key, value in incoming.items() if key != 'receipt'} and
+            {key: (raw.get('reported_status', value) if key == 'status' else value)
+             for key, value in saved['receipt'].items() if key != 'raw'} ==
+            {key: value for key, value in receipt.items() if key != 'raw'} and
+            raw['size'] == size and raw['sha256'] == digest)
+
+
+def validate_saved_native_result(receipt, record, action, status=None):
+    raw = receipt['raw']
+    if raw.get('format') == 'native-raw-reference-v1':
+        expected = {'thread_id': record['thread_id'], 'operation': action['operation']}
+        if status is not None:
+            expected.update(status=status, finish_action_id=record['actions'][0]['action_id'])
+        require(raw.get('facts') == expected and isinstance(raw.get('evidence_ref'), dict),
+                'invalid_checkpoint', 'native result projection changed')
+    elif status is not None:
+        validate_native_readback(native_raw_object(raw), record, status)
+    else:
+        validate_native_close_result(action['payload'], native_raw_object(raw))
+
+
 def validate_native_close_result(payload, raw):
     if payload['adapter'] == 'codex-desktop':
         require(raw.get('threadId') == payload['thread_id'] and raw.get('archived') is True,
@@ -1443,9 +1471,9 @@ def validate_state(state):
                              query.get('call_ref') == receipt['call_ref']]) == 1,
                         'invalid_checkpoint', 'readback receipt must name its persisted query invocation')
                 if receipt['status'] == 'completed':
-                    validate_native_readback(native_raw_object(receipt['raw']), record, 'notLoaded')
+                    validate_saved_native_result(receipt, record, action, 'notLoaded')
             elif action['operation'] == 'close-native' and receipt['status'] == 'completed':
-                validate_native_close_result(action['payload'], native_raw_object(receipt['raw']))
+                validate_saved_native_result(receipt, record, action)
         close = record['actions'][-1]
         if close['operation'] == 'close-native' and close.get('resolution') == 'completed':
             completed = [data['receipt'] for data in record['receipts'] if data['action_id'] == close['action_id'] and
@@ -1453,7 +1481,7 @@ def validate_state(state):
                          data['receipt']['ref'] == record['ref']]
             require(close['operation'] == 'close-native' and close.get('resolved') and close.get('resolution') == 'completed' and
                     len(completed) == 1, 'invalid_checkpoint', 'verified absence requires the original successful close receipt')
-            validate_native_close_result(close['payload'], native_raw_object(completed[0]['raw']))
+            validate_saved_native_result(completed[0], record, close)
         if record.get('verified'):
             require(isinstance(record['verified'], dict) and isinstance(record['verified'].get('inventory'), dict) and
                     close['operation'] == 'close-native' and close.get('resolved') and close.get('resolution') == 'completed',
@@ -2552,6 +2580,97 @@ class Progress:
         self._receipt_action = query['action_id']
         self.save()
 
+    def native_receipt_projection(self, data, record, action, reference, manifest, measurement):
+        size, digest = measurement
+        truncated = size > state_store.EVIDENCE_LIMIT or not manifest['complete']
+        facts = {}
+        if not truncated and data['receipt']['status'] == 'completed':
+            facts = {'thread_id': record['thread_id'], 'operation': action['operation']}
+            if action['operation'] == 'finish-native' or data['receipt'].get('query'):
+                facts.update(status='notLoaded' if data['receipt'].get('query') else 'idle',
+                             finish_action_id=record['actions'][0]['action_id'])
+        return {**data, 'receipt': {**data['receipt'],
+            'status': 'unknown' if truncated else data['receipt']['status'], 'raw': {
+                'format': 'native-raw-reference-v1', 'evidence_ref': reference,
+                'sha256': digest, 'size': size, 'facts': facts, 'truncated': truncated,
+                'reported_status': data['receipt']['status'],
+                'reason': ('atomic_limit_exceeded' if size > state_store.EVIDENCE_LIMIT else
+                           manifest['reason'])}}}
+
+    def native_receipt_commit_bytes(self, data, record, action, store, current, measurement):
+        """Measure finite success/unknown/interrupted candidates, never the external raw body."""
+        size, digest = measurement
+        chunks = [{'run_id': current.run_id, 'kind': 'raw-chunk', 'sha256': '0' * 64,
+                   'size': min(1024 * 1024, size - offset)}
+                  for offset in range(0, size, 1024 * 1024)]
+        measured = []
+        for reason in (None, 'state_capacity', 'interrupted'):
+            manifest = {'format': 'raw-evidence-v1', 'complete': reason is None, 'size': size,
+                        'retained_size': size, 'sha256': digest, 'chunks': chunks, 'reason': reason}
+            with store.measure_writes() as writes:
+                reference = store.write_object(current.run_id, 'evidence', manifest)
+                outer = copy.deepcopy(self.outer)
+                candidate = Progress(self.path, outer)
+                candidate._authority_revision = self._authority_revision
+                candidate._receipt_action = self._receipt_action
+                saved = next(item for item in candidate.state['native_finalizations'] if item['ref'] == record['ref'])
+                target = next(item for item in saved['actions'] if item['action_id'] == action['action_id'])
+                receipt = self.native_receipt_projection(data, saved, target, reference, manifest, measurement)
+                saved['receipts'].append(receipt)
+                if reason == 'interrupted':
+                    saved['raw_ingress'].update(evidence_ref=reference, reason=reason)
+                else:
+                    saved.pop('raw_ingress', None)
+                if receipt['receipt']['status'] != 'unknown':
+                    if data['receipt'].get('query'):
+                        query = next(item for item in saved['queries'] if item['action_id'] == self._receipt_action)
+                        query.update(resolved=True, resolution=receipt['receipt']['status'])
+                        if receipt['receipt']['status'] == 'completed':
+                            saved.pop('verified', None)
+                            saved.pop('revoked', None)
+                    else:
+                        target.update(resolved=True, resolution=receipt['receipt']['status'])
+                candidate.state['lifecycle_snapshot'] = None
+                candidate.state.pop('lifecycle_query', None)
+                candidate.save()
+                measured.append(sum(writes.values()))
+        return max(measured)
+
+    def retain_native_receipt(self, data, record, action):
+        raw = data['receipt']['raw']
+        size, digest = state_store.raw_measure(raw)
+        if size <= 64 * 1024:
+            record.pop('raw_ingress', None)
+            return copy.deepcopy(data)
+        # Pin the authenticated source before any large evidence write. A crash
+        # retains the original call even when no complete manifest was committed.
+        source = {'action_id': data['action_id'], 'call_ref': data['receipt']['call_ref'],
+                  'response_ref': data['receipt']['response_ref'], 'size': size, 'sha256': digest}
+        record['raw_ingress'] = source
+        if not data['receipt'].get('query'):
+            action['call_ref'] = data['receipt']['call_ref']
+        self.save()
+        store = state_store.open_store(self.path, receipt_action=self._receipt_action)
+        current = store.open_current()
+        measurement = (size, digest)
+        commit_bytes = (self.native_receipt_commit_bytes(data, record, action, store, current, measurement)
+                        if size <= state_store.EVIDENCE_LIMIT else 0)
+        try:
+            reference, manifest = store.write_raw_evidence(current.run_id, raw, measurement=measurement,
+                                                         commit_bytes=commit_bytes)
+        except state_store.RawEvidenceInterrupted as error:
+            source['evidence_ref'] = error.reference
+            source['reason'] = 'interrupted'
+            manifest = store.read_evidence(error.reference, run_id=current.run_id)['value']
+            record['receipts'].append(self.native_receipt_projection(
+                data, record, action, error.reference, manifest, measurement))
+            self.state['lifecycle_snapshot'] = None
+            self.state.pop('lifecycle_query', None)
+            self.save()
+            raise
+        record.pop('raw_ingress', None)
+        return self.native_receipt_projection(data, record, action, reference, manifest, measurement)
+
     def native_finalize(self, data):
         entry.fields(data, {'operation', 'ref'}, {'actor_ref', 'reference', 'reuse', 'binding', 'close', 'action_id', 'receipt'})
         entry.nonempty(data['ref'])
@@ -2644,19 +2763,21 @@ class Progress:
         require('query_for' not in receipt or receipt.get('query') is True,
                 'invalid_result', 'revocation guard belongs only to a readback query')
         for key in ('adapter', 'call_ref', 'response_ref'): entry.nonempty(receipt[key])
-        require(isinstance(receipt['raw'], dict) and receipt['raw'], 'host_evidence_missing', 'retain the raw authenticated native response')
+        require(isinstance(receipt['raw'], dict) and receipt['raw'] and
+                receipt['raw'].get('format') != 'native-raw-reference-v1', 'host_evidence_missing', 'retain the raw authenticated native response')
         require(receipt['ref'] == record['ref'], 'identity_mismatch', 'retain the exact native target')
         require(isinstance(receipt['status'], str) and receipt['status'] in {'completed', 'unknown', 'failed'},
                 'invalid_result', 'native outcome status must be completed, unknown or failed')
         require(receipt['adapter'] == record['prepare']['close']['adapter'],
                 'identity_mismatch', 'finish and close evidence must retain the original desktop adapter')
+        raw_size, _ = state_store.raw_measure(receipt['raw'])
         for previous_record in records:
             for previous in previous_record['receipts']:
                 if previous['receipt']['call_ref'] == receipt['call_ref']:
                     require(previous['action_id'] == data['action_id'] and previous['ref'] == data['ref'],
                             'host_provenance_conflict', 'native invocation cannot be rebound to another action')
                 if previous['receipt']['response_ref'] == receipt['response_ref']:
-                    require(previous == data, 'host_provenance_conflict', 'native response cannot be rebound or changed')
+                    require(native_receipt_matches(previous, data), 'host_provenance_conflict', 'native response cannot be rebound or changed')
                     if receipt.get('query'):
                         # A committed receipt may have lost its return before the
                         # operation released its reserve. ACK performs no new call.
@@ -2677,38 +2798,43 @@ class Progress:
                 require(all(previous['receipt']['call_ref'] != receipt['call_ref'] for item in records for previous in item['receipts']),
                         'host_provenance_conflict', 'readback requires a new authenticated read_thread invocation')
             state_store.open_store(self.path).require_reserve(query['action_id'], recovery=True)
-            if receipt['status'] == 'completed':
+            if receipt['status'] == 'completed' and raw_size <= state_store.EVIDENCE_LIMIT:
                 validate_native_readback(native_raw_object(receipt['raw']), record, 'notLoaded')
-                if receipt['query_for'] == entry.digest(record['revoked']):
-                    record.pop('verified', None)
-                    record.pop('revoked', None)
             query['call_ref'] = receipt['call_ref']
+            self._receipt_action = query['action_id']
+            retained = self.retain_native_receipt(data, record, action)
+            receipt = retained['receipt']
+            if receipt['status'] == 'completed' and receipt['query_for'] == entry.digest(record['revoked']):
+                record.pop('verified', None)
+                record.pop('revoked', None)
             if receipt['status'] != 'unknown':
                 query.update(resolved=True, resolution=receipt['status'])
-            self._receipt_action = query['action_id']
-            record['receipts'].append(copy.deepcopy(data))
+            record['receipts'].append(retained)
             s['lifecycle_snapshot'] = None
             s.pop('lifecycle_query', None)
             self.save()
             return _view(s, native_finalization_lookup(record) if receipt['status'] == 'unknown' else
                          {'operation': 'reconcile-stop-barrier', 'ref': record['ref']})
         require(not action.get('resolved'), 'finalization_conflict', 'a resolved native action cannot acquire another outcome')
-        if receipt['status'] == 'completed':
+        require(action.get('call_ref', receipt['call_ref']) == receipt['call_ref'],
+                'host_provenance_conflict', 'an incomplete native result retains its original invocation')
+        if receipt['status'] == 'completed' and raw_size <= state_store.EVIDENCE_LIMIT:
             raw = native_raw_object(receipt['raw'])
             if action['operation'] == 'finish-native':
                 validate_native_readback(raw, record, 'idle')
             else:
                 require(receipt['adapter'] == action['payload']['adapter'], 'identity_mismatch', 'retain the original close adapter')
                 validate_native_close_result(action['payload'], raw)
-            action['resolved'], action['resolution'] = True, 'completed'
-        elif receipt['status'] == 'failed':
-            action['resolved'], action['resolution'] = True, 'failed'
         self._receipt_action = action['action_id']
-        record['receipts'].append(copy.deepcopy(data))
+        retained = self.retain_native_receipt(data, record, action)
+        receipt = retained['receipt']
+        if receipt['status'] in {'completed', 'failed'}:
+            action['resolved'], action['resolution'] = True, receipt['status']
+        record['receipts'].append(retained)
         s['lifecycle_snapshot'] = None
         s.pop('lifecycle_query', None)
         self.save()
-        return _view(s, native_finalization_lookup(record) if receipt['status'] == 'failed' else
+        return _view(s, native_finalization_lookup(record) if receipt['status'] in {'failed', 'unknown'} else
                      {'operation': 'reconcile-stop-barrier', 'ref': record['ref']})
 
     def lifecycle_query(self, data):
@@ -6634,7 +6760,7 @@ def handle(path, request):
                     bool(data["revision_id"].strip()), "invalid_request",
                     "revision_id requires a nonempty string")
         duplicate = owner.state is not None and ((operation == 'native-finalize' and any(
-            record.get('prepare') == data or data in record['receipts'] for record in owner.state.get('native_finalizations', []))) or (operation == "observe" and
+            record.get('prepare') == data or any(native_receipt_matches(saved, data) for saved in record['receipts']) for record in owner.state.get('native_finalizations', []))) or (operation == "observe" and
             owner.state["events"].get(data.get("event_id"), {}).get("applied")) or
             (operation == "scope-propose" and data.get("proposal_id") in owner.state.get("scope_proposals", {})) or
             (operation == "scope-seal" and data.get("proposal_id") in owner.state.get("scope_seals", {})) or
