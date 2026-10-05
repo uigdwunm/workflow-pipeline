@@ -119,6 +119,8 @@ def _string_list(value: object, name: str) -> list[str]:
 
 
 def _read_json(path: Path, label: str) -> dict[str, Any]:
+    if label == "run record":
+        return _read_checkpoint(path)
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -319,6 +321,18 @@ class CheckpointState(dict):
         self.original = copy.deepcopy(value)
 
 
+def _read_checkpoint(path, *, projection='identity'):
+    """Select current routing facts; never load Ticket allocation subjects."""
+    return progression.read_projection(path, projection=projection).record
+
+
+def _save_checkpoint(path, current):
+    """Called under the original record lock by the outer owner only."""
+    progression.save_outer_record(path, {key: value for key, value in current.items()
+                                        if key != progression.KEY},
+        expected_revision=getattr(current, 'authority_revision', 0))
+
+
 def _apply_runner_change(latest: Any, before: Any, after: Any, path: tuple[str, ...]) -> Any:
     if isinstance(after, dict) and (isinstance(before, dict) or before is _MISSING):
         if latest is _MISSING:
@@ -417,7 +431,7 @@ def _atomic_save(path: Path, state: dict[str, Any], *, require_launch_admission:
     if not isinstance(state, CheckpointState):
         raise WorkflowError('checkpoint_state_required: runner needs its observed checkpoint before saving')
     with progression.record_lock(path):
-        current = progression.read_record(path)
+        current = _read_checkpoint(path)
         original = state.original
         if original and not current:
             raise WorkflowError('checkpoint_missing: retain the original run record')
@@ -426,6 +440,10 @@ def _atomic_save(path: Path, state: dict[str, Any], *, require_launch_admission:
         for key in sorted(original.keys() | state.keys()):
             before = original.get(key, _MISSING)
             after = state.get(key, _MISSING)
+            if key == progression.KEY:
+                if before != after:
+                    raise WorkflowError("state_owner_required: runner cannot change Controller state")
+                continue
             if before == after:
                 continue
             latest = current.get(key, _MISSING)
@@ -455,16 +473,16 @@ def _atomic_save(path: Path, state: dict[str, Any], *, require_launch_admission:
         decision = current.get("controller_decision")
         progress_state = current.get(progression.KEY)
         if decision and progress_state and any(item.get("decisions", {}).get(decision["decision_id"]) == decision
-                                               for item in [progress_state, *progress_state["history"]]):
+                                               for item in [progress_state]):
             current.pop("controller_decision")
-        progression.atomic_save(path, current)
+        _save_checkpoint(path, current)
     state.refresh(current)
 
 
 def _live_commands(state, record_path):
     """Owner-only delivery preparation; C consumes decisions in its carrier."""
     with progression.record_lock(record_path):
-        saved = progression.read_record(record_path)
+        saved = _read_checkpoint(record_path)
         current = saved.get(progression.KEY) or {}
         request = saved.get('runner_request')
         if (request or {}).get('operation') == 'cancel' or current.get('stop_requested') == 'cancelling':
@@ -473,7 +491,7 @@ def _live_commands(state, record_path):
             if work:
                 saved.setdefault('delivered_control_requests', []).append(request['request_id'])
                 saved['stop_delivery_pending'] = True
-                progression.atomic_save(record_path, saved)
+                _save_checkpoint(record_path, saved)
         else:
             work = ((request or {}).get('operation') == 'pause' and current.get('stop_requested') != 'pausing' and
                     request['request_id'] not in saved.get('delivered_control_requests', []))
@@ -505,7 +523,7 @@ def _live_commands(state, record_path):
                     saved['status'] = 'active'
                     work = True
             if work:
-                progression.atomic_save(record_path, saved)
+                _save_checkpoint(record_path, saved)
     state.refresh(saved)
     return work
 
@@ -520,7 +538,7 @@ def _stop_command(saved):
 
 
 def _live_progress(state, record_path, host, steered):
-    saved = progression.read_record(record_path)
+    saved = _read_checkpoint(record_path)
     current = saved.get(progression.KEY) or {}
     transport = saved.get('transport') or {}
     snapshot_key = [saved.get('current_stage'), current.get('host', {}).get('generation'), transport.get('native_event_sequence', 0)]
@@ -532,25 +550,25 @@ def _live_progress(state, record_path, host, steered):
             return  # No thread/list RPC was sent; the next poll retries the original snapshot need.
         except foreground_host.HostError as error:
             with progression.record_lock(record_path):
-                saved = progression.read_record(record_path)
+                saved = _read_checkpoint(record_path)
                 saved['transport']['lookup_blocked'] = str(error)
-                progression.atomic_save(record_path, saved)
+                _save_checkpoint(record_path, saved)
             progression.handle(record_path, {'protocol':progression.PROTOCOL,'operation':'advance',
                 'expected_revision':saved[progression.KEY]['revision'],'data':{}})
             return
         try:
-            current = progression.read_record(record_path)[progression.KEY]
+            current = _read_checkpoint(record_path)[progression.KEY]
             progression.handle(record_path, {'protocol':progression.PROTOCOL,'operation':'lifecycle-state',
                 'expected_revision':current['revision'],'data':snapshot})
             with progression.record_lock(record_path):
-                saved = progression.read_record(record_path)
+                saved = _read_checkpoint(record_path)
                 saved['transport']['snapshot_key'] = snapshot_key
-                progression.atomic_save(record_path, saved)
+                _save_checkpoint(record_path, saved)
         except entry_prepare.PreparationError as error:
             if error.code != 'checkpoint_busy':
                 raise
             return  # The read-only snapshot can be re-read; no marker was committed.
-    saved = progression.read_record(record_path)
+    saved = _read_checkpoint(record_path)
     command = _stop_command(saved)
     decision = saved.get('transport', {}).get('server_decision') or saved.get('controller_decision')
     if command is None and decision is not None and decision['subject'].get('host_instance') is not None:
@@ -568,17 +586,17 @@ def _live_progress(state, record_path, host, steered):
             # Serialize the stop check with the first positive nonblocking
             # write only. Suffix writes, journaling and readiness waits are outside.
             with progression.record_lock(record_path):
-                latest = progression.read_record(record_path)
+                latest = _read_checkpoint(record_path)
                 yield _stop_command(latest) is None
 
         if host.answer_request(request, response, send_guard=send_guard):
             with progression.record_lock(record_path):
-                current = progression.read_record(record_path)
+                current = _read_checkpoint(record_path)
                 if current.get('transport', {}).get('server_decision') == decision:
                     current['transport'].pop('server_decision')
-                    progression.atomic_save(record_path, current)
+                    _save_checkpoint(record_path, current)
             return
-        saved = progression.read_record(record_path)
+        saved = _read_checkpoint(record_path)
         command = _stop_command(saved)
     pending_decision = decision if decision is not None and entry_prepare.digest(decision) not in saved.get('delivered_commands', []) else None
     command = command or pending_decision
@@ -597,7 +615,7 @@ def _host_pending(instance, request):
 
 def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
     return CheckpointState({
-        "version": 10,
+        "version": 11,
         "confirmed": confirmed,
         "status": "active",
         "current_stage": "stage2",
@@ -609,9 +627,9 @@ def _new_state(confirmed: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_record(state: dict[str, Any]) -> dict[str, Any]:
-    if state.get("version") in {1, 2, 3, 4, 5, 6, 7, 8, 9}:
+    if state.get("version") in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}:
         raise WorkflowError('legacy_run_requires_original_runtime: record version ' + str(state.get('version')) + '; retain original package digests ' + str({k:v.get('bundle_digest') for k,v in state.get('confirmed',{}).get('packages',{}).items()}))
-    if state.get("version") != 10:
+    if state.get("version") != 11:
         raise WorkflowError("unsupported run record version")
     if "recovery_source" in state:
         raise WorkflowError("unsupported run record recovery_source")
@@ -645,7 +663,7 @@ def _validate_record(state: dict[str, Any]) -> dict[str, Any]:
 
 def _stage_prompt(state: dict[str, Any], stage: str, answer: str | None, continuing: bool) -> str:
     confirmed = state["confirmed"]
-    current_progress = progression.read_record(Path(confirmed["run_record"])).get(progression.KEY)
+    current_progress = _read_checkpoint(Path(confirmed["run_record"]), projection="scope").get(progression.KEY)
     readiness = None
     if stage == "stage3":
         if current_progress is None:
@@ -1001,13 +1019,13 @@ def _recover_carrier_receipt(state, record_path):
 
 def _record_transport_loss(record_path, reason):
     with progression.record_lock(record_path):
-        saved = progression.read_record(record_path)
+        saved = _read_checkpoint(record_path)
         transport = saved.get('transport')
         if transport is None:
             return
         transport['state'] = 'lost'
         transport.setdefault('loss_reason', reason)
-        progression.atomic_save(record_path, saved)
+        _save_checkpoint(record_path, saved)
     current = saved.get(progression.KEY)
     if current is not None:
         progression.handle(record_path, {'protocol':progression.PROTOCOL,'operation':'transport-lost',
@@ -1015,7 +1033,7 @@ def _record_transport_loss(record_path, reason):
 
 
 def _record_carrier_failure(state, record_path, code, evidence):
-    saved = progression.read_record(record_path)
+    saved = _read_checkpoint(record_path)
     current = saved.get(progression.KEY)
     if current is not None:
         progression.handle(record_path, {'protocol':progression.PROTOCOL,'operation':'carrier-failure',
@@ -1112,7 +1130,7 @@ def _mark_failure(
 def _invoke(state, record_path, answer, continuing, host, *, control_turn=False):
     stage, confirmed = state["current_stage"], state["confirmed"]
     if stage == "stage3":
-        current = progression.read_record(record_path).get(progression.KEY) or {}
+        current = _read_checkpoint(record_path, projection='scope').get(progression.KEY) or {}
         revision = current.get("plan_revision_transaction") or {}
         if revision.get("state") in {"prepared", "planning-committed"}:
             return {"result": "needs_input", "needs_input_kind": "technical_error",
@@ -1172,7 +1190,7 @@ def _invoke(state, record_path, answer, continuing, host, *, control_turn=False)
             raise CheckpointPendingError('checkpoint_write_pending: recover the exact finished turn from original host receipts; no executor retry') from error
         # The host may have answered RPC requests while this turn ran. Start
         # intake from that current checkpoint, then record the local result.
-        state.refresh(progression.read_record(record_path))
+        state.refresh(_read_checkpoint(record_path))
         _finish_carrier_turn(state, result)
         try:
             _atomic_save(record_path, state)
@@ -1190,7 +1208,7 @@ def _invoke(state, record_path, answer, continuing, host, *, control_turn=False)
         _atomic_save(record_path,state)
         raise WorkflowError(str(error)) from error
     except (foreground_host.HostError, WorkflowError) as error:
-        state.refresh(progression.read_record(record_path))
+        state.refresh(_read_checkpoint(record_path))
         _mark_failure(state, record_path, 'transport_lost', str(error), True)
         raise WorkflowError(str(error)) from error
 
@@ -1237,12 +1255,12 @@ def _advance(state, record_path, answer=None):
                 # Persist before _request writes any RPC bytes. A busy lock
                 # leaves neither a pending checkpoint call nor a raw intent.
                 with progression.record_lock(record_path):
-                    saved = progression.read_record(record_path)
+                    saved = _read_checkpoint(record_path)
                     append_host_event(receipt, event)
                     transport = saved.setdefault('transport', {})
                     transport.update(instance=event['instance'], protocol=foreground_host.PROTOCOL,
                                      receipt=str(receipt), request=event['request'], request_state='intent')
-                    progression.atomic_save(record_path, saved)
+                    _save_checkpoint(record_path, saved)
             except entry_prepare.PreparationError as error:
                 if error.code != 'checkpoint_busy':
                     raise
@@ -1254,7 +1272,7 @@ def _advance(state, record_path, answer=None):
         if event['kind'] == 'message' and not native_event:
             return  # Raw progress/RPC bytes are durable without rewriting C's checkpoint.
         with progression.record_lock(record_path):
-            saved = progression.read_record(record_path)
+            saved = _read_checkpoint(record_path)
             transport = saved.setdefault('transport', {})
             transport.update(instance=event['instance'], protocol=foreground_host.PROTOCOL, receipt=str(receipt))
             if event['kind'] == 'request-intent':
@@ -1291,12 +1309,12 @@ def _advance(state, record_path, answer=None):
                         saved['pending_input'] = pending
             if event['kind'] == 'local-process-closed':
                 transport.update(state='closed' if transport.get('state') == 'closing' else 'lost', cleanup=event)
-            progression.atomic_save(record_path, saved)
+            _save_checkpoint(record_path, saved)
         if native_event and saved.get(progression.KEY) is not None:
             owners = [stage for stage in host.threads if event['message'] in host.scoped_events(stage, event['message'])]
             if len(owners) != 1:
                 return  # Retain unassigned raw evidence; snapshot closure must reconcile it.
-            current = progression.read_record(record_path)[progression.KEY]
+            current = _read_checkpoint(record_path)[progression.KEY]
             progression.handle(record_path, {'protocol':progression.PROTOCOL, 'operation':'host-event',
                 'expected_revision':current['revision'], 'data':{'instance':event['instance'],'event':event['message'],
                     'carrier_thread':host.threads[owners[0]]}})
@@ -1309,9 +1327,9 @@ def _advance(state, record_path, answer=None):
             if host is None or host.process is None or state['status'] in {'completed','planning_only','cancelled'}:
                 if host is not None and host.process is not None:
                     with progression.record_lock(record_path):
-                        closing = progression.read_record(record_path)
+                        closing = _read_checkpoint(record_path)
                         closing['transport']['state'] = 'closing'
-                        progression.atomic_save(record_path, closing)
+                        _save_checkpoint(record_path, closing)
                 return result
             print(json.dumps({'status':state['status'], 'run_record':str(record_path),
                               'host_retained':True}), flush=True)
@@ -1338,9 +1356,9 @@ def _advance(state, record_path, answer=None):
                     break
                 if state['status'] == 'cancelled':
                     with progression.record_lock(record_path):
-                        closing = progression.read_record(record_path)
+                        closing = _read_checkpoint(record_path)
                         closing['transport']['state'] = 'closing'
-                        progression.atomic_save(record_path, closing)
+                        _save_checkpoint(record_path, closing)
                     return result
                 host.poll(1)
                 _live_progress(state, record_path, host, set())
@@ -1362,7 +1380,7 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
     deferred_launch_marker = None
     while True:
         stage = state["current_stage"]
-        saved = progression.read_record(record_path)
+        saved = _read_checkpoint(record_path)
         request = saved.get("runner_request")
         current_progress = saved.get(progression.KEY)
         if current_progress and "mode" in current_progress:
@@ -1373,7 +1391,7 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
             answer_delivery = state.pop('control_delivery_pending', False) and (request or {}).get('operation') != 'cancel'
             if stop_delivery or answer_delivery:
                 _invoke(state, record_path, state.get('answer_pending_delivery'), True, host, control_turn=True)
-                saved = progression.read_record(record_path)
+                saved = _read_checkpoint(record_path)
                 current_progress, request = saved.get(progression.KEY), saved.get('runner_request')
             state["status"] = _stop_status(state, current_progress, request)
             _atomic_save(record_path, state)
@@ -1399,6 +1417,7 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
                 print(json.dumps({"status": "needs_input", "pending": state["pending_input"]}))
                 return 0
             if route == 'result_ready':
+                current_progress = _read_checkpoint(record_path, projection='delivery')[progression.KEY]
                 projected = _stage_projection(record_path, stage, current_progress)
                 state["turn_result"] = {**projected, "handoff": json.loads(projected["handoff_json"])}
         # A recorded turn is received before any later transport instruction.
@@ -1408,7 +1427,7 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
             try:
                 result = _invoke(state, record_path, resume_answer, stage in state["sessions"], host)
             except LaunchDeferred:
-                latest = progression.read_record(record_path)
+                latest = _read_checkpoint(record_path)
                 latest_progress = latest.get(progression.KEY) or {}
                 latest_request = latest.get('runner_request') or {}
                 marker = (latest.get('current_stage'), latest_request.get('request_id'),
@@ -1428,7 +1447,7 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
         resume_answer = None
         if result["result"] == "continue":
             state.pop("turn_result", None)
-            actual_progress = progression.read_record(record_path).get(progression.KEY, {})
+            actual_progress = _read_checkpoint(record_path).get(progression.KEY, {})
             fingerprint = entry_prepare.digest({"message": result["message"], "artifacts": result["artifacts"],
                 "evidence": result["evidence"], "progress_revision": actual_progress.get("revision")})
             waiting = actual_progress.get("host", {}).get("status") == "running"
@@ -1452,7 +1471,7 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
                 print(json.dumps({'status':'blocked','error':state['error'],'run_record':str(record_path)}),flush=True)
                 return 1
             state["status"] = "needs_input"
-            current = progression.read_record(record_path).get(progression.KEY)
+            current = _read_checkpoint(record_path).get(progression.KEY)
             pending = current.get("pending") if current else None
             if pending is None:
                 pending = progression.pending_decision("user-decision", {"stage": stage, "session": state["sessions"][stage],
@@ -1481,7 +1500,7 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
         state.pop("turn_result", None)
         print(json.dumps({"event": "stage.completed", "stage": stage}), flush=True)
         if stage == "stage2":
-            current = progression.read_record(record_path)[progression.KEY]
+            current = _read_checkpoint(record_path, projection="delivery")[progression.KEY]
             latest_projection = _stage_projection(record_path, stage, current)
             if any(result[key] != value for key, value in latest_projection.items()):
                 raise WorkflowError("scope_changed: Stage-2 projection changed before runner handoff")
@@ -1505,7 +1524,7 @@ def _advance_in_host(state: dict[str, Any], record_path: Path, answer, host) -> 
         state["status"] = "active"
         state.pop("pending_input", None)
         state["launch"] = {"stage": state["current_stage"], "state": "prelaunch", "turn": 0}
-        current = progression.read_record(record_path)[progression.KEY]
+        current = _read_checkpoint(record_path, projection='delivery')[progression.KEY]
         state["confirmed"]["flow_mode"] = current["mode"]
         pending = _pending_stage_entry(state["confirmed"]["flow_mode"], int(stage[-1]), accepted, current)
         if pending is not None:
@@ -1547,7 +1566,7 @@ def _pending_stage_entry(mode, stage, accepted, current):
 
 def _verify_run_completion(record_path, state):
     try:
-        outer = progression.read_record(record_path)
+        outer = _read_checkpoint(record_path, projection="delivery")
         entry_prepare.require(all(stage in state["stage_results"] for stage in STAGES),
                               "result_incomplete", "every required stage must be accepted")
         current = outer.get(progression.KEY)
@@ -1564,7 +1583,7 @@ def _verify_run_completion(record_path, state):
 
 
 def _accepted_stage(record_path, stage, result, confirmed):
-    outer = progression.read_record(record_path)
+    outer = _read_checkpoint(record_path, projection="delivery")
     current = outer.get(progression.KEY)
     try:
         progression.validate_state(current)
@@ -1621,7 +1640,7 @@ def _queue_resume(record_path, answer, registry_input, decision_id, flow_intent=
         observed['confirmed']['registry_input'] = str(registry_input.resolve())
     _check_current_registry(observed['confirmed'], [int(s[-1]) for s in STAGES[STAGES.index(observed['current_stage']):]])
     with progression.record_lock(record_path):
-        state = _validate_record(progression.read_record(record_path))
+        state = _validate_record(_read_checkpoint(record_path))
         if state['status'] == 'completed':
             _verify_run_completion(record_path, state)
             print(json.dumps({'status':'completed','acknowledged':True,'run_record':str(record_path)}))
@@ -1671,7 +1690,7 @@ def _queue_resume(record_path, answer, registry_input, decision_id, flow_intent=
             print(json.dumps({'status':state['status'], 'pending':pending, 'acknowledged':True}))
             return 0
         state['confirmed']['registry_input'] = observed['confirmed']['registry_input']
-        progression.atomic_save(record_path, state)
+        _save_checkpoint(record_path, state)
     print(json.dumps({'status':'queued', 'run_record':str(record_path), 'acknowledged':acknowledged}))
     return 0
 
@@ -1699,7 +1718,7 @@ def _resume_owned(record_path: Path, answer: str | None = None, registry_input: 
         print(json.dumps({"status": "completed", "run_record": str(record_path), "acknowledged": True}))
         return 0
     if status == "planning_only":
-        current = progression.read_record(record_path).get(progression.KEY)
+        current = _read_checkpoint(record_path, projection="delivery").get(progression.KEY)
         if not isinstance(current, dict) or current.get("stage") != 2 or current.get("status") != "accepted":
             raise WorkflowError("planning_only checkpoint differs from accepted Stage-2 state")
         projection = _stage_projection(record_path, "stage2", current)
@@ -1710,9 +1729,11 @@ def _resume_owned(record_path: Path, answer: str | None = None, registry_input: 
     if status == 'cancelled' and state.get('transport', {}).get('state') in {None,'closed'}:
         current = state.get(progression.KEY)
         if current is not None:
+            stage_record = _read_checkpoint(record_path, projection='delivery')
+            current = stage_record[progression.KEY]
             historical_boundary = (current['status'] == 'accepted' and state['launch']['state'] == 'prelaunch' and current['stage'] != int(state['current_stage'][-1]))
             entry_prepare.require((current['status'] == 'cancelled' or historical_boundary) and current['stopped'] and
-                not progression.Progress(record_path,state).stop_barrier_pending(), 'host_evidence_missing', 'cancelled acknowledgement requires the retained complete stop barrier')
+                not progression.Progress(record_path,stage_record).stop_barrier_pending(), 'host_evidence_missing', 'cancelled acknowledgement requires the retained complete stop barrier')
         print(json.dumps({'status':'cancelled','acknowledged':True,'run_record':str(record_path)}))
         return 0
     if state.get('transport') is not None or state['sessions']:
@@ -1720,7 +1741,7 @@ def _resume_owned(record_path: Path, answer: str | None = None, registry_input: 
         # A durable carrier receipt permits intake, never a new host/ref.
         if state.get('transport') is not None and state['transport'].get('state') != 'lost':
             _record_transport_loss(record_path, 'foreground owner is absent')
-        retained = progression.read_record(record_path)
+        retained = _read_checkpoint(record_path)
         details = (retained.get(progression.KEY) or {}).get('recovery_action') or {
             'host_instance': (retained.get('transport') or {}).get('instance'), 'carrier_threads':retained.get('sessions', {}),
             'missing':['original-host-identity-and-native-stop-or-resume-evidence']}
@@ -1745,11 +1766,11 @@ def _resume_owned(record_path: Path, answer: str | None = None, registry_input: 
     if request and (request["operation"] == "pause" or recovered_cancel):
         state.pop("runner_request")
         with progression.record_lock(record_path):
-            current_record = progression.read_record(record_path)
+            current_record = _read_checkpoint(record_path)
             if current_record.get("runner_request") != request:
                 raise WorkflowError("control request changed; inspect current cancellation before resuming")
             current_record.pop("runner_request")
-            progression.atomic_save(record_path, current_record)
+            _save_checkpoint(record_path, current_record)
         current = state.get(progression.KEY)
         if current and current["status"] == "paused":
             state["resume_progression"] = True
@@ -1785,7 +1806,7 @@ def _resume_owned(record_path: Path, answer: str | None = None, registry_input: 
         if not answer or decision_id != pending["decision_id"]:
             raise WorkflowError("stale_decision: provide --decision-id for the current pending matter")
         decision = _answer_decision(pending, answer, decision_id, flow_intent)
-        current = progression.read_record(record_path).get(progression.KEY)
+        current = _read_checkpoint(record_path).get(progression.KEY)
         if current and current.get("pending") == pending:
             if pending["kind"] == "stage-entry":
                 # This only records the controller's route decision; no A/B
@@ -1849,7 +1870,7 @@ def _recover_business(record_path: Path, decision_path: Path, *, live=False) -> 
         raise WorkflowError("missing_checkpoint: business recovery requires the retained C checkpoint")
     result = progression.handle(record_path, {"protocol": progression.PROTOCOL,
         "operation": "recover-business", "expected_revision": current["revision"], "data": decision})
-    state = CheckpointState(progression.read_record(record_path))
+    state = CheckpointState(_read_checkpoint(record_path))
     current = state[progression.KEY]
     consumed = current.get("recovery_decisions", {}).get(decision.get("decision_id")) == decision
     if consumed and not live and not current.get("business_block"):
@@ -1877,8 +1898,8 @@ def request_control(record_path, operation):
 def _request_control(record_path, operation, *, live):
     record_path = _absolute_path(str(record_path), "run_record")
     with progression.record_lock(record_path):
-        state = progression.read_record(record_path)
-        if state.get("version") != 10:
+        state = _read_checkpoint(record_path)
+        if state.get("version") != 11:
             raise WorkflowError("legacy_run_requires_original_runtime: control requires the original pinned record")
         member = state.get(progression.KEY)
         pin = state.get("confirmed", {}).get("packages", {}).get("runner")
@@ -1903,7 +1924,7 @@ def _request_control(record_path, operation, *, live):
         if (not live and not state.get('sessions') and not state.get('transport') and
                 state.get('launch', {}).get('state') == 'prelaunch' and not current):
             state['status'] = 'paused' if operation == 'pause' else 'cancelled'
-        progression.atomic_save(record_path, state)
+        _save_checkpoint(record_path, state)
     current = state.get(progression.KEY)
     if live:
         print(json.dumps({'status':'queued','operation':operation,'run_record':str(record_path)}))

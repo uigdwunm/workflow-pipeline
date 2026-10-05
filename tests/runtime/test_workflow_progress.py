@@ -1976,7 +1976,7 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
         self.assertEqual(progress.read_record(self.checkpoint)['confirmed'],
                          {'flow_mode': 'continuous', 'registry_input': 'second'})
 
-    def test_runner_patch_retains_queued_decision_until_exact_consumption(self):
+    def test_runner_patch_rejects_unowned_inline_decision_proof(self):
         decision = {'decision_id': 'choice', 'answer': 'yes'}
         newer = progress.read_record(self.checkpoint)
         newer['controller_decision'] = decision
@@ -1988,8 +1988,12 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
         newer[progress.KEY] = {'decisions': {'choice': decision}, 'history': []}
         progress.atomic_save(self.checkpoint, newer)
         self.state['status'] = 'active'
-        runner._atomic_save(self.checkpoint, self.state)
-        self.assertNotIn('controller_decision', progress.read_record(self.checkpoint))
+        before = self.checkpoint.read_bytes()
+        with self.assertRaisesRegex(progress.entry.PreparationError, 'outer initialization requires a new runner'):
+            runner._atomic_save(self.checkpoint, self.state)
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        # Real Controller consumption is covered through public start/resume in
+        # test_bounded_progress; an inline fixture cannot assert that authority.
 
     def test_runner_patch_rejects_conflicting_status_change(self):
         newer = progress.read_record(self.checkpoint)

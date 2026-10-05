@@ -313,8 +313,8 @@ def read_projection(path, *, projection):
     store = state_store.open_store(path)
     current = store.open_current()
     if projection == 'identity':
-        return classes[projection]({**current.root['outer'], KEY: current.root['metadata']},
-                                   store.files_read, store.bytes_read)
+        return classes[projection](state_store.ProjectedRecord({**current.root['outer'], KEY: current.root['metadata']}, current.revision),
+                                   store.files_read, store.bytes_read, current.revision)
     subjects = current.root['subjects']
     stage_id = current.root['metadata']['stage_subject']
     require(stage_id in subjects and stage_id.startswith('stage:'),
@@ -332,10 +332,10 @@ def read_projection(path, *, projection):
             require(not set(state['allocations']) & set(subject['allocations']),
                     'invalid_checkpoint', 'duplicate allocation identity')
             state['allocations'].update(subject['allocations'])
-    return classes[projection]({**current.root['outer'], KEY: state}, store.files_read, store.bytes_read)
+    return classes[projection](state_store.ProjectedRecord({**current.root['outer'], KEY: state}, current.revision), store.files_read, store.bytes_read, current.revision)
 
 
-def save_current_record(path, outer, expected_revision, *, receipt_action=None, receipts=()):
+def save_current_record(path, outer, expected_revision, *, expected_authority_revision, receipt_action=None, receipts=()):
     state = outer[KEY]
     require(not state.get('history'), 'state_capacity',
             'stage history must be archived before opening another current stage')
@@ -357,9 +357,49 @@ def save_current_record(path, outer, expected_revision, *, receipt_action=None, 
     metadata.update(controller_ref=state['control']['context']['controller_ref'],
         checkpoint_path=state['checkpoint_path'], packages=state['packages'],
         binding=state['handoff'].get('binding'))
-    state_store.open_store(path, receipt_action=receipt_action).commit_current(expected_revision=expected_revision,
-        revision=state['revision'], subjects=subjects, metadata=metadata,
-        outer={key: value for key, value in outer.items() if key != KEY}, receipts=receipts)
+    # Runner routing facts carry no execution leases or native raw evidence.
+    for key in ('mode', 'pending', 'stop_requested', 'stopped', 'phase_complete',
+                'business_block', 'deferred_business_recovery', 'continuation_intent',
+                'recovery_decisions', 'recovered_request', 'recovery_action', 'error', 'decisions'):
+        if key in state:
+            metadata[key] = copy.deepcopy(state[key])
+    metadata['host'] = {key: state.get('host', {}).get(key) for key in ('status', 'generation')}
+    if state.get('host', {}).get('query') is not None:
+        metadata['host']['query'] = {'resolved': state['host']['query'].get('resolved', False)}
+    if state.get('cancellation') is not None:
+        metadata['cancellation'] = {'result': None if state['cancellation'].get('result') is None else True}
+    metadata['handoff'] = {'digest': state['handoff']['digest']}
+    metadata['dispatch'] = {'request': {key: (state.get('dispatch') or {}).get('request', {}).get(key)
+                                      for key in ('attempt', 'digest')}}
+    store = state_store.open_store(path, receipt_action=receipt_action)
+    envelope = read_record(path)
+    current = store.open_current() if envelope.get('store_format') == state_store.FORMAT else None
+    require((current.root['metadata']['revision'] if current else 0) == expected_revision,
+            'stale_checkpoint', 'Controller revision changed')
+    require((current.revision if current else 0) == expected_authority_revision,
+            'stale_checkpoint', 'checkpoint authority changed; reload before saving')
+    initial = envelope if envelope else None
+    if current is None:
+        require(KEY not in envelope and envelope.get('version') in (None, 11),
+                'legacy_run_requires_original_runtime', 'retain original checkpoint runtime')
+    else:
+        initial = None
+    return store.commit_current(expected_revision=current.revision if current else 0,
+        revision=current.revision + 1 if current else 1, subjects=subjects, metadata=metadata,
+        outer={key: value for key, value in outer.items() if key != KEY}, receipts=receipts,
+        initial_outer=initial)
+
+
+def save_outer_record(path, outer, *, expected_revision):
+    """CAS the runner envelope without deriving or replacing Controller subjects."""
+    require(KEY not in outer and 'store_format' not in outer, 'state_owner_required',
+            'outer owner cannot write Controller state')
+    envelope = read_record(path)
+    if envelope.get('store_format') == state_store.FORMAT:
+        return state_store.open_store(path).commit_outer(expected_revision=expected_revision, outer=outer)
+    require(expected_revision == 0 and KEY not in envelope and outer.get('version') == 11,
+            'legacy_run_requires_original_runtime', 'outer initialization requires a new runner')
+    atomic_save(path, outer)
 
 
 def atomic_save(path, value):
@@ -1196,6 +1236,7 @@ class Progress:
         self._verified_readiness = None
         self._receipt_action = None
         self._commit_receipts = []
+        self._authority_revision = getattr(outer, 'authority_revision', 0)
 
     def save(self):
         self._verified_readiness = None
@@ -1213,8 +1254,10 @@ class Progress:
         previous_revision = self.state["revision"]
         self.state["revision"] += 1
         self.outer[KEY] = self.state
-        save_current_record(self.path, self.outer, previous_revision, receipt_action=self._receipt_action,
-                            receipts=self._commit_receipts)
+        committed = save_current_record(self.path, self.outer, previous_revision,
+            expected_authority_revision=self._authority_revision, receipt_action=self._receipt_action,
+            receipts=self._commit_receipts)
+        self._authority_revision = committed.revision
         self._commit_receipts = []
         pending = {action['action_id'] for action in self.unresolved_host_actions()}
         pending.update(slot['action']['action_id'] for slot in self.state.get('allocations', {}).values()
@@ -5299,7 +5342,7 @@ def handle(path, request):
         outer = read_projection(path, projection='scope' if request['operation'] == 'inspect' else 'transaction').record
         if request["operation"] == "scope-revise":
             require_scope_correction_available(outer)
-        require(outer.get("version") in (None, 10), "legacy_run_requires_original_runtime", "progression requires a standalone record or runner version 10")
+        require(outer.get("version") in (None, 11), "legacy_run_requires_original_runtime", "progression requires a standalone record or runner version 11")
         member = outer.get(KEY)
         pinned_protocol = outer.get("confirmed", {}).get("packages", {}).get("runner", {}).get("compatibility_key", {}).get("workflow_progress")
         require((member is None or isinstance(member, dict) and member.get("protocol") == PROTOCOL) and

@@ -3,14 +3,174 @@ import hashlib
 import copy
 import json
 import os
+import io
+from contextlib import redirect_stdout
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_workflow_progress import ProgressTests, progress, transfer
+from test_workflow_progress import ProgressTests, progress, transfer, runner
 
 
 class BoundedProgressTests(ProgressTests):
+    def test_runner_outer_cas_preserves_controller_receipt_and_stale_owner_is_rejected(self):
+        self.prepare_execution()
+        slot = self.state()['allocations']['slice-one']
+        request = {'allocation_id': 'slice-one', 'operation': 'bind',
+                   'receipt': self.receipt(slot['record'], ref='native:executor')}
+        bound = self.invoke('allocation', request)
+        self.assertEqual(bound['next_action']['result']['status'], 'bound')
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        markers = {path.name: path.read_bytes() for path in (directory / 'commits').iterdir()}
+        before = progress.state_store.StateStore(self.checkpoint).open_current()
+        outer = progress.read_projection(self.checkpoint, projection='identity').record
+        outer.pop(progress.KEY)
+        stop = {'operation': 'pause', 'request_id': 'original-runner-stop'}
+        outer['runner_request'] = stop
+        # The same production CAS adapter used by the public runner. This adds
+        # an outer stop without inventing a runner or an accepted-stage history.
+        with progress.record_lock(self.checkpoint):
+            progress.save_outer_record(self.checkpoint, outer, expected_revision=before.revision)
+        after = progress.state_store.StateStore(self.checkpoint).open_current()
+        self.assertGreater(after.revision, before.revision)
+        self.assertEqual(after.root['subjects'], before.root['subjects'])
+        self.assertEqual(self.invoke('inspect')['revision'], bound['revision'])
+        self.assertEqual({name: (directory / 'commits' / name).read_bytes() for name in markers}, markers)
+        with progress.record_lock(self.checkpoint):
+            with self.assertRaises(transfer.entry.PreparationError) as stale:
+                progress.save_outer_record(self.checkpoint, {**outer, 'runner_request': None},
+                                           expected_revision=before.revision)
+        self.assertEqual(stale.exception.code, 'stale_checkpoint')
+        replayed = self.invoke('allocation', request, revision=bound['revision'])
+        self.assertTrue(replayed['acknowledged'])
+        self.assertEqual(replayed['next_action']['result']['status'], 'bound')
+        self.assertEqual(replayed['revision'], bound['revision'])
+        self.assertFalse(replayed['next_action'].get('write_authority', False))
+        retained = progress.read_projection(self.checkpoint, projection='identity').record
+        self.assertEqual(retained['runner_request'], stop)
+        self.assertEqual(progress.state_store.StateStore(self.checkpoint).open_current().revision, after.revision)
+
+    def test_prepared_requirement_survives_first_progress_initialization(self):
+        request = {'protocol': transfer.requirement.PROTOCOL, 'operation': 'verify',
+                   'entry': self.request, 'evidence': self.frozen}
+        prepared = self.invoke('prepare-requirement', {'request': request})
+        self.assertEqual(prepared['status'], 'requirement-ready')
+        original = progress.read_record(self.checkpoint)['workflow_requirements']
+        self.begin()
+        self.assertEqual(progress.read_projection(self.checkpoint, projection='identity').record[
+            'workflow_requirements'], original)
+        self.assertEqual(self.invoke('inspect')['status'], 'active')
+
+    def test_runner_public_start_pause_resume_preserves_original_carrier(self):
+        package_root = Path(__file__).resolve().parents[2] / 'skills'
+        registry = {'source': 'host-current-skills', 'entries': [
+            {'name': name, 'entry': str(package_root / name / 'SKILL.md'),
+             'source': 'fixture-host', 'enabled': True}
+            for name in ('solution-design', 'guided-implementation', 'change-closure')]}
+        roots = [self.binding[key] for key in ('repository', 'worktree', 'git_common_dir')]
+        permissions = {'approvalPolicy': 'never', 'sandbox': 'danger-full-access',
+                       'runtimeWorkspaceRoots': roots}
+        confirmed = {**{key: self.binding[key] for key in ('repository', 'worktree', 'git_common_dir', 'target_branch')},
+            'controller_ref': 'task', 'flow_mode': 'stepwise', 'run_record': str(self.checkpoint),
+            'frozen_requirement': {key: self.frozen[key] for key in ('commit', 'sha256')},
+            'requirement': self.frozen, 'authority_scope': {'allowed_paths': ['docs']},
+            'registry': registry, 'registry_context': {'project_path': str(self.root),
+                'project_id': 'project', 'controller_ref': 'task', 'receipt': 'host:registry',
+                'registry_digest': transfer.entry.digest(registry)},
+            'stages': {stage: {'model': 'fixture-model', 'reasoning_effort': 'high',
+                'selection_input': transfer.configuration('scripted-carrier')} for stage in runner.STAGES},
+            'host': {'transport': 'app-server-stdio', 'cli_version': 'fixture',
+                'source': {'kind': 'controller-current-config', 'controller_ref': 'task', 'receipt': 'host:config'},
+                'thread': {**permissions, 'config': {}}, 'effective': permissions}}
+        confirmed['frozen_requirement']['path'] = self.frozen['absolute_path']
+        confirmed_path = self.checkpoint.with_name('confirmed.json')
+        confirmed_path.write_text(json.dumps(confirmed))
+        self.settings['thread_id'] = 'carrier'
+        self.request['host'].update(thread_id='carrier', role='scripted-carrier', source_ref='task')
+        self.input = self.input_for(2)
+        fixture = self
+        calls = []
+        class Host:
+            instance = 'fixture-host'
+            process = None
+            active = None
+            server_requests = {}
+            threads = {'stage2': 'carrier'}
+            def __init__(self, configuration, cwd, journal):
+                self.journal = journal
+            def start(self, stderr):
+                self.process = object()
+                self.journal({'kind': 'host-started', 'instance': self.instance, 'pid': os.getpid()})
+            def start_carrier(self, stage, settings):
+                calls.append(('carrier', 'carrier'))
+                return 'carrier'
+            def run_turn(self, session, prompt, settings, schema, on_progress):
+                calls.append(('turn', session))
+                if len([call for call in calls if call[0] == 'turn']) == 1:
+                    fixture.begin()
+                    fixture.invoke('observe', fixture.observation())
+                    before = progress.state_store.StateStore(fixture.checkpoint).open_current()
+                    revision = fixture.invoke('inspect')['revision']
+                    opened = []
+                    original_open = Path.open
+                    def tracked_open(path, *args, **kwargs):
+                        opened.append(path)
+                        return original_open(path, *args, **kwargs)
+                    with patch.object(Path, 'open', tracked_open):
+                        self.journal({'kind': 'turn-bound', 'instance': self.instance,
+                                      'thread': session, 'turn': 'original-turn'})
+                    after = progress.state_store.StateStore(fixture.checkpoint).open_current()
+                    fixture.assertEqual(before.root['subjects'], after.root['subjects'])
+                    fixture.assertGreater(after.revision, before.revision)
+                    fixture.assertEqual(fixture.invoke('inspect')['revision'], revision)
+                    subject_hashes = {ref['sha256'] for ref in before.root['subjects'].values()}
+                    fixture.assertFalse(subject_hashes & {path.name for path in opened},
+                        'runner journal must not read any Controller/Ticket subject')
+                    fixture.assertEqual(runner.request_control(fixture.checkpoint, 'pause'), 0)
+                    fixture.invoke('pause')
+                    stopped = fixture.observation('stopped', 'result')
+                    stopped['receipt']['raw']['resumable'] = True
+                    fixture.assertEqual(fixture.invoke('observe', stopped)['status'], 'paused')
+                    self.snapshot = stopped['lifecycle']
+                    fixture.assertEqual(runner.resume(fixture.checkpoint), 0)
+                else:
+                    resumed = fixture.invoke('resume')
+                    fixture.assertEqual(resumed['next_action']['operation'], 'continue-host')
+                    fixture.assertEqual(fixture.state()['control']['context']['carrier']['ref'], 'native:designer')
+                    asked = fixture.invoke('observe', fixture.observation('idle', 'result', {
+                        'delivery_id': 'original-question', 'status': 'needs_input',
+                        'payload': {'question': 'Continue the original work?'}}))
+                    pending = asked['pending']
+                    fixture.assertEqual(runner.resume(fixture.checkpoint, 'yes',
+                        decision_id=pending['decision_id']), 0)
+                    queued = progress.read_projection(fixture.checkpoint, projection='identity').record[
+                        'controller_decision']
+                    fixture.invoke('decide', queued)
+                    self.process = None
+                return json.dumps({'result': 'needs_input', 'needs_input_kind': 'user_decision',
+                    'question': 'Retained carrier is waiting', 'message': '', 'artifacts': [],
+                    'evidence': [], 'handoff_json': '{}'}), 'turn-' + str(len(calls))
+            def snapshot_lifecycle(self, stage):
+                return self.snapshot
+            def poll(self, timeout):
+                raise AssertionError('the queued resume must be consumed without another host call')
+            def close(self):
+                self.process = None
+        # Execute the source runner against the installed-layout package identity;
+        # only the external host transport and inherited host settings are doubles.
+        with patch.object(runner, '__file__', str(package_root / 'guided-implementation/scripts/workflow.py')), \
+             patch.object(runner.foreground_host, 'ForegroundHost', Host), redirect_stdout(io.StringIO()):
+            self.assertEqual(runner.start(confirmed_path), 0)
+            self.assertEqual(self.state()['status'], 'active')
+            self.assertNotIn('controller_decision', progress.read_projection(
+                self.checkpoint, projection='identity').record)
+            with self.assertRaisesRegex(runner.WorkflowError, 'await-host-recovery'):
+                runner.resume(self.checkpoint)
+        self.assertEqual([call for call in calls if call[0] == 'turn'], [('turn', 'carrier'), ('turn', 'carrier')])
+        self.assertEqual(progress.read_projection(self.checkpoint, projection='identity').record['sessions'],
+                         {'stage2': 'carrier'})
+        self.assertLessEqual(self.checkpoint.stat().st_size, 256 * 1024)
+
     def test_fresh_poll_provenance_is_bounded_and_old_conflicts_remain_detectable(self):
         self.begin_dispatcher()
         poll = self.observation('running', 'result', ref='native:dispatcher')

@@ -15,7 +15,7 @@
     "topic_gate": "phase-0-1-discussion-v2",
     "control": 11,
     "entry": "workflow-entry-v4",
-    "runner": 10,
+    "runner": 11,
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v5",

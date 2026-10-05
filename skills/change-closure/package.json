@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "f13259c3b53ad0a7c26fb975bbd69c6b3fdfbc6eb49f09d1c7ca714ad797349b",
+  "bundle_digest": "ee427dd21262b01e5754f14e6234bd3a2a841253430bd43e18691341b365e652",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 11,
@@ -15,7 +15,7 @@
     "ledger_write": 3,
     "preparation": "workflow-preparation-v5",
     "requirement_delivery": "requirement-delivery-v2",
-    "runner": 10,
+    "runner": 11,
     "stage_transfer": "workflow-stage-transfer-v14",
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
@@ -227,11 +227,11 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "d05bc17446bd7ab8de26ebad3066d0250088888c417fa1475034123b5e227944"
+      "sha256": "8364dcd40c9311c24ead7b9b58a92316a41031d229fa09c24677fa6ac20381d3"
     },
     "scripts/workflow_state_store.py": {
       "mode": "0644",
-      "sha256": "c705bc451d559d6ae29811a5f9909453456c82198a5613b0e85ac3475ba65c42"
+      "sha256": "a5b95a7f3195a4e29b168f100a7934aa23fc4e268a968e878c69d2f5fd0c61e2"
     }
   },
   "format_version": 1,

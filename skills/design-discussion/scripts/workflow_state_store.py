@@ -101,6 +101,14 @@ class IdentityProjection:
     record: dict
     files_read: int
     bytes_read: int
+    authority_revision: int = 0
+
+
+class ProjectedRecord(dict):
+    """In-memory read stamp; never serialized into a command or write lease."""
+    def __init__(self, value, authority_revision=0):
+        super().__init__(value)
+        self.authority_revision = authority_revision
 
 
 @dataclass(frozen=True)
@@ -378,8 +386,16 @@ class StateStore:
                 'receipt lacks an authority commit proof', 'state_object_corrupt')
         return self.read_evidence(receipt['result'], run_id=current.run_id)['value']
 
-    def commit_current(self, *, expected_revision, revision, subjects, metadata, outer, receipts=()):
-        current = self.open_current() if self.checkpoint.exists() else None
+    def commit_current(self, *, expected_revision, revision, subjects, metadata, outer, receipts=(), initial_outer=None):
+        if initial_outer is not None:
+            require(self.checkpoint.exists() and not self.directory.exists() and
+                    json.loads(self._read(self.checkpoint, ROOT_LIMIT)) == initial_outer and
+                    'store_format' not in initial_outer and 'workflow_progress' not in initial_outer and
+                    initial_outer == outer,
+                    'initial preparation envelope changed', 'stale_checkpoint')
+            current = None
+        else:
+            current = self.open_current() if self.checkpoint.exists() else None
         require(current is not None or not self.directory.exists(),
                 'original checkpoint pointer is missing; retain its state directory and recover the original owner',
                 'state_authority_missing')
@@ -401,6 +417,22 @@ class StateStore:
         require(len(receipts) <= 16, 'receipt commit batch exceeds its fixed proof budget', 'state_capacity')
         root = {'revision': revision, 'subjects': references, 'metadata': metadata, 'outer': outer,
                 'receipts': list(receipts)}
+        return self._commit_root(current, run_id, root)
+
+    def commit_outer(self, *, expected_revision, outer):
+        """Runner owns only outer fields; retain exact Controller subject refs."""
+        current = self.open_current()
+        require(current is not None and current.revision == expected_revision,
+                'checkpoint revision changed', 'stale_checkpoint')
+        self._ensure_marker(current)
+        if outer == current.root['outer']:
+            return current
+        root = {**current.root, 'revision': current.revision + 1,
+                'outer': outer, 'receipts': []}
+        return self._commit_root(current, current.run_id, root)
+
+    def _commit_root(self, current, run_id, root):
+        revision, receipts, metadata = root['revision'], root['receipts'], root['metadata']
         reference = self.write_object(run_id, 'root', root)
         for receipt in receipts:
             index = {**receipt, 'revision': revision, 'run_id': run_id, 'root': reference['sha256']}
