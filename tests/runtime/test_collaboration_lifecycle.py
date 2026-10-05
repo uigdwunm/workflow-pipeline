@@ -34,7 +34,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
 
     def candidate(self):
         f = self.f
-        (f.flow / 'docs/spec.md').write_text('approved design\n')
+        (f.flow / 'docs/spec.md').write_text(f.planning_spec())
         f.flow_git('add', 'docs/spec.md')
         f.flow_git('commit', '-qm', 'plan')
         candidate = f.flow_git('rev-parse', 'HEAD')
@@ -106,7 +106,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
         slot = f.state()['allocations']['first-slice']
         f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'bind',
             'receipt': f.receipt(slot['record'], ref='/root/dispatcher/executor')})
-        data = b"print('accepted first slice')\n"
+        data = b"def run():\n    return 'accepted first slice'\n"
         (f.flow / 'impl.py').write_bytes(data)
         slot = f.state()['allocations']['first-slice']
         f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'receive',
@@ -114,7 +114,9 @@ class CollaborationLifecycleTests(unittest.TestCase):
             'result': {'delivery_id': 'first-slice', 'status': 'completed', 'payload': {
                 'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
                 'tests': ['real first-slice bytes verified'],
-                'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record'])}}})
+                'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record']),
+                'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_authority': f.state()['control']['context']['handoff_progress']['plan_authority']}}})
         f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'accept',
             'decision': {'reference': 'dispatcher:accept-first-slice'}})
         f.invoke('observe', f.observation('running', 'result', ref='/root/dispatcher'))
@@ -177,7 +179,8 @@ class CollaborationLifecycleTests(unittest.TestCase):
                 status = 'running' if receipt.get('status') in {'ready', 'running'} else {'completed': 'host turn completed'}
                 agents[receipt['ref']] = status
                 invoke('lifecycle-state', self.snapshot(inventory()))
-                result = invoke('inspect')
+                if operation != 'allocation':
+                    result = invoke('inspect')
             elif operation == 'native-finalize' and data.get('operation') == 'observe':
                 record = next(record for record in f.state()['native_finalizations'] if record['ref'] == data['ref'])
                 action = next(action for action in record['actions'] if action['action_id'] == data['action_id'])
@@ -209,7 +212,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
                 slot = f.state()['allocations']['first-slice']
                 f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'bind',
                     'receipt': f.receipt(slot['record'], ref='/root/dispatcher/executor')})
-                data = b"print('accepted implementation')\n"
+                data = b"def run():\n    return 'accepted implementation'\n"
                 (f.flow / 'impl.py').write_bytes(data)
                 slot = f.state()['allocations']['first-slice']
                 f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'receive',
@@ -217,7 +220,9 @@ class CollaborationLifecycleTests(unittest.TestCase):
                     'result': {'delivery_id': 'first-slice', 'status': 'completed', 'payload': {
                         'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
                         'tests': ['implementation bytes verified'],
-                        'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record'])}}})
+                        'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record']),
+                        'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                        'plan_authority': f.state()['control']['context']['handoff_progress']['plan_authority']}}})
                 f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'accept',
                     'decision': {'reference': 'dispatcher:accept-first-slice'}})
             execution_close = self.finalization('/root/dispatcher/executor', 'executor-thread')
@@ -437,7 +442,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
         slot = f.state()['allocations']['descendant-slice']
         f.invoke('allocation', {'allocation_id': 'descendant-slice', 'operation': 'bind',
             'receipt': f.receipt(slot['record'], ref=child_ref)})
-        data = b"print('accepted descendant slice')\n"
+        data = b"def run():\n    return 'accepted descendant slice'\n"
         (f.flow / 'impl.py').write_bytes(data)
         slot = f.state()['allocations']['descendant-slice']
         f.invoke('allocation', {'allocation_id': 'descendant-slice', 'operation': 'receive',
@@ -445,7 +450,9 @@ class CollaborationLifecycleTests(unittest.TestCase):
             'result': {'delivery_id': 'descendant-slice', 'status': 'completed', 'payload': {
                 'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
                 'tests': ['real descendant bytes verified'],
-                'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record'])}}})
+                'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record']),
+                'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_authority': f.state()['control']['context']['handoff_progress']['plan_authority']}}})
         f.invoke('allocation', {'allocation_id': 'descendant-slice', 'operation': 'accept',
             'decision': {'reference': 'dispatcher:accept-descendant'}})
         f.invoke('lifecycle-state', self.snapshot(self.execution_inventory()))
@@ -946,7 +953,8 @@ class CollaborationLifecycleTests(unittest.TestCase):
                         'dispatcher_ref': '/root/dispatcher'}}})
         self.assertEqual(f.state()['control']['context']['handoff_progress']['state'], 'reviewable', result)
         prepare = {'operation': 'prepare', 'axis': 'standards', 'candidate': candidate, 'actor_ref': 'task',
-            'verification': {'candidate': candidate, 'plan_digest': fixtures.transfer.control.digest(plan), 'checks': checks}}
+            'verification': {'candidate': candidate, 'plan_digest': fixtures.transfer.control.digest(plan),
+                'checks': checks, 'plan_authority': f.state()['control']['context']['handoff_progress']['plan_authority']}}
         issued = f.invoke('review-activity', prepare)['next_action']
         saved = copy.deepcopy(f.state()['review_activity']['standards'])
         f.invoke('host-event', {'instance': f.state()['native_host']['instance'], 'event': {
@@ -989,7 +997,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
         slot = f.state()['allocations']['sibling']
         f.invoke('allocation', {'allocation_id': 'sibling', 'operation': 'bind',
             'receipt': f.receipt(slot['record'], ref=sibling)})
-        data = b"print('accepted sibling slice')\n"
+        data = b"def run():\n    return 'accepted sibling slice'\n"
         (f.flow / 'impl.py').write_bytes(data)
         slot = f.state()['allocations']['sibling']
         f.invoke('allocation', {'allocation_id': 'sibling', 'operation': 'receive',
@@ -997,7 +1005,9 @@ class CollaborationLifecycleTests(unittest.TestCase):
             'result': {'delivery_id': 'sibling', 'status': 'completed', 'payload': {
                 'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
                 'tests': ['real sibling bytes verified'],
-                'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record'])}}})
+                'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record']),
+                'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_authority': f.state()['control']['context']['handoff_progress']['plan_authority']}}})
         f.invoke('allocation', {'allocation_id': 'sibling', 'operation': 'accept',
             'decision': {'reference': 'dispatcher:accept-sibling'}})
         agents = self.execution_inventory()['response']['agents'] + [
@@ -1059,7 +1069,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
         self.f.invoke('lifecycle-state', self.snapshot())
         result = self.f.invoke('publication', {'candidate_commit': candidate, 'reference': 'controller:ready'})
         self.assertTrue(result['next_action']['publication']['result']['ok'], result)
-        self.assertEqual((self.f.root / 'docs/spec.md').read_text(), 'approved design\n')
+        self.assertEqual((self.f.root / 'docs/spec.md').read_text(), self.f.planning_spec())
         pending = self.f.invoke('receive-publication')['pending']
         accepted = self.f.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
                                           'answer': 'accept', 'reference': 'controller:accept'})

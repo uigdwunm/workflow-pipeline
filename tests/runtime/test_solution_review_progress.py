@@ -25,7 +25,10 @@ class CombinedSolutionReviewTests(unittest.TestCase):
         identity = copy.deepcopy(f.state()["dispatch"]["request"])
         reference = "user:accept-complete-solution-and-enter-stage3"
         for number, answer in enumerate(("split the second Ticket", "accept and enter Stage 3")):
-            (f.flow / "docs/spec.md").write_text(f"complete design with Tickets revision {number}\n")
+            design = f.planning_spec().replace("approved design", f"complete design with Tickets revision {number}")
+            design = design.replace("Plan Version: 1", f"Plan Version: {number + 1}")
+            design = design.replace('"plan_version": 1', f'"plan_version": {number + 1}')
+            (f.flow / "docs/spec.md").write_text(design)
             review = f.invoke("observe", f.observation("idle", "result", {
                 "delivery_id": f"combined-review-{number}", "status": "needs_input",
                 "payload": {"question": "Accept complete Spec and Tickets, publish and enter Stage 3?"}}))["pending"]
@@ -80,7 +83,7 @@ class CombinedSolutionReviewTests(unittest.TestCase):
         f.invoke("decide", decision)
         self.assertEqual(f.state()["mode"], "continuous" if intent == "continuous" else "stepwise")
         self.assertTrue(f.invoke("decide", decision, revision=0)["acknowledged"])
-        (f.flow / "docs/spec.md").write_text("complete reviewed design\n")
+        (f.flow / "docs/spec.md").write_text(f.planning_spec().replace("approved design", "complete reviewed design"))
         f.flow_git("add", "docs/spec.md")
         f.flow_git("commit", "-qm", "complete design")
         candidate = f.flow_git("rev-parse", "HEAD")

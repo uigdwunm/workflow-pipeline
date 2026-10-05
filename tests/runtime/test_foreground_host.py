@@ -516,7 +516,8 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
                     response = self.finish_next(number,'continuous')
                     self.assertEqual(response['status'],'accepted',response)
                     publish_host_fixture(Path(str(log)+'.snapshot-'+thread), self.state()['lifecycle_snapshot'])
-                    publish_host_fixture(Path(str(log)+'.turn-'+str(number-1)), response['completion']['stage_result'])
+                    publish_host_fixture(Path(str(log)+'.turn-'+str(number-1)),
+                                         runner._stage_projection(self.checkpoint, stage, self.state()))
             except BaseException as error:
                 errors.append(error)
                 for number in (2,3,4):
@@ -756,7 +757,7 @@ class HostProtocolTests(unittest.TestCase):
         result = {'answers':{'question':{'answers':['x' * (128 * 1024)]}}}
         decision = {'decision_id':pending['decision_id'],'subject':pending['subject'],
                     'answer':json.dumps(result),'reference':'controller-answer:'+pending['decision_id']}
-        state = {'version':9,'status':'needs_input','current_stage':'stage2',
+        state = {'version':10,'status':'needs_input','current_stage':'stage2',
                  'transport':{'instance':self.host.instance,'server_decision':decision}}
         progress.atomic_save(checkpoint,state)
         return checkpoint, state, request, result
