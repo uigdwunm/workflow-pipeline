@@ -162,8 +162,9 @@ class ProgressTests(transfer.StageTransferTests):
 
     def test_scope_readiness_requires_original_runtime_for_previous_progress(self):
         self.begin()
-        old = progress.read_record(self.checkpoint)
+        old = progress.read_projection(self.checkpoint, projection='transaction').record
         old[progress.KEY]['protocol'] = 'workflow-progress-v17'
+        self.checkpoint = self.checkpoint.with_name('legacy.json')
         progress.atomic_save(self.checkpoint, old)
         before = self.checkpoint.read_bytes()
         with self.assertRaises(transfer.entry.PreparationError) as error:

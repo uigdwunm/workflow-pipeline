@@ -144,13 +144,12 @@ def design_scope(request, saved, payload):
     require(checkpoint.is_absolute() and str(checkpoint.resolve()) == str(checkpoint),
             "invalid_checkpoint", "canonical absolute progression checkpoint required")
     import workflow_progress as progress
-    state = progress.read_record(checkpoint).get(progress.KEY)
+    state = progress.read_projection(checkpoint, projection='scope', stage=2).record[progress.KEY]
     authority = request.get("scope_authority")
     require(isinstance(state, dict) and state.get("protocol") == progress.PROTOCOL and
             state.get("checkpoint_path") == str(checkpoint) and
             state.get("handoff") == saved and state.get("scope_authority") == authority,
             "scope_changed", "design result must use the current persisted scope authority")
-    progress.validate_state(state)
     effective = handoff.effective_scope(saved, authority)
     require(authority["candidate_commit"] == payload["planning_commit"],
             "scope_changed", "published planning candidate differs from the sealed manifest basis")

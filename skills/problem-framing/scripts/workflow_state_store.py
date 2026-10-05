@@ -221,7 +221,7 @@ class StateStore:
         return self._safe(Path('objects') / digest[:2] / digest[2:4] / digest)
 
     def write_object(self, run_id, kind, value, *, subject_id=None):
-        require(kind in {'root', 'subject', 'evidence', 'receipt'}, 'invalid object type')
+        require(kind in {'root', 'subject', 'scope', 'evidence', 'receipt'}, 'invalid object type')
         body = {'format': FORMAT, 'run_id': run_id, 'kind': kind, 'value': value}
         if subject_id is not None:
             body['subject_id'] = subject_id
@@ -270,7 +270,7 @@ class StateStore:
                 'legacy_run_requires_original_runtime')
         root = self.read_evidence(envelope['current'], run_id=envelope['run_id'], kind='root')['value']
         require(root.get('revision') == envelope['revision'] and
-                isinstance(root.get('subjects'), dict) and len(root['subjects']) <= MAX_SUBJECTS,
+                isinstance(root.get('subjects'), dict) and len(root['subjects']) + ('scope' in root) <= MAX_SUBJECTS,
                 'invalid current root')
         self._run_id = envelope['run_id']
         return CurrentProjection(envelope['run_id'], envelope['revision'], root, envelope['current'])
@@ -283,6 +283,19 @@ class StateStore:
         require(body.get('subject_id') == subject_id and isinstance(body['value'], dict), 'subject identity changed')
         require(self.bytes_read <= READ_LIMIT, 'current subjects exceed the operation budget', 'state_capacity')
         return SubjectProjection(subject_id, body['value'], reference)
+
+    def read_scope(self, current, subject_id):
+        """Read the one current Stage-2 scope, in place of its full subject."""
+        require(subject_id == current.root['metadata'].get('stage_subject'), 'scope subject changed')
+        reference = current.root.get('scope')
+        require(reference is not None, 'current scope projection is missing', 'state_object_missing')
+        body = self.read_evidence(reference, run_id=current.run_id, kind='scope')['value']
+        require(isinstance(body, dict) and set(body) == {'subject_id', 'subject_ref', 'value'} and
+                body['subject_id'] == subject_id and
+                body['subject_ref'] == current.root['subjects'].get(subject_id) and
+                isinstance(body['value'], dict), 'scope does not name the current stage subject')
+        require(self.bytes_read <= READ_LIMIT, 'scope exceeds the current read budget', 'state_capacity')
+        return body['value']
 
     def _poll_index_path(self, kind, key):
         require(kind in {'event', 'response', 'call'}, 'invalid poll fingerprint kind')
@@ -386,7 +399,8 @@ class StateStore:
                 'receipt lacks an authority commit proof', 'state_object_corrupt')
         return self.read_evidence(receipt['result'], run_id=current.run_id)['value']
 
-    def commit_current(self, *, expected_revision, revision, subjects, metadata, outer, receipts=(), initial_outer=None):
+    def commit_current(self, *, expected_revision, revision, subjects, metadata, outer, receipts=(), initial_outer=None,
+                       scope=None):
         if initial_outer is not None:
             require(self.checkpoint.exists() and not self.directory.exists() and
                     json.loads(self._read(self.checkpoint, ROOT_LIMIT)) == initial_outer and
@@ -403,7 +417,7 @@ class StateStore:
         require(actual == expected_revision, 'checkpoint revision changed', 'stale_checkpoint')
         if current is not None:
             self._ensure_marker(current)
-        require(type(revision) is int and revision > actual and len(subjects) <= MAX_SUBJECTS,
+        require(type(revision) is int and revision > actual and len(subjects) + (scope is not None) <= MAX_SUBJECTS,
                 'invalid revision or active subject count', 'state_capacity')
         run_id = current.run_id if current else str(uuid.uuid4())
         # Validate the complete bounded candidate before writing any object.
@@ -412,11 +426,24 @@ class StateStore:
                     len(encode({'format': FORMAT, 'run_id': run_id, 'kind': 'subject',
                                 'subject_id': name, 'value': value})) <= SUBJECT_LIMIT,
                     'subject exceeds its fixed budget', 'state_capacity')
+        if scope is not None:
+            subject_id = metadata['stage_subject']
+            require(subject_id in subjects and isinstance(scope, dict), 'scope requires its current subject')
+            subject_bytes = encode({'format': FORMAT, 'run_id': run_id, 'kind': 'subject',
+                                    'subject_id': subject_id, 'value': subjects[subject_id]})
+            scope_body = {'subject_id': subject_id, 'subject_ref': {
+                'run_id': run_id, 'kind': 'subject', 'sha256': hashlib.sha256(subject_bytes).hexdigest(),
+                'size': len(subject_bytes)}, 'value': scope}
+            require(len(encode({'format': FORMAT, 'run_id': run_id, 'kind': 'scope',
+                                'value': scope_body})) <= SUBJECT_LIMIT,
+                    'scope exceeds its fixed budget', 'state_capacity')
         references = {name: self.write_object(run_id, 'subject', value, subject_id=name)
                       for name, value in subjects.items()}
         require(len(receipts) <= 16, 'receipt commit batch exceeds its fixed proof budget', 'state_capacity')
         root = {'revision': revision, 'subjects': references, 'metadata': metadata, 'outer': outer,
                 'receipts': list(receipts)}
+        if scope is not None:
+            root['scope'] = self.write_object(run_id, 'scope', scope_body)
         return self._commit_root(current, run_id, root)
 
     def commit_outer(self, *, expected_revision, outer):

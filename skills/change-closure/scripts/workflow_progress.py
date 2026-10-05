@@ -300,18 +300,21 @@ def read_record(path):
     return value
 
 
-def read_projection(path, *, projection):
+def read_projection(path, *, projection, stage=None):
     """Explicit current-operation projection; never loads archived subjects."""
     require(projection in {'identity', 'scope', 'transaction', 'delivery'},
             'invalid_projection', 'choose identity, scope, transaction or delivery')
-    envelope = read_record(path)
+    if stage is not None:
+        require(projection == 'scope' and stage == 2, 'invalid_projection', 'select the current Stage-2 scope')
+    envelope = read_record(path) if stage is None else None
     classes = {'identity': state_store.IdentityProjection, 'scope': state_store.ScopeProjection,
                'transaction': state_store.TransactionProjection, 'delivery': state_store.DeliveryProjection}
-    if envelope.get('store_format') != state_store.FORMAT:
+    if envelope is not None and envelope.get('store_format') != state_store.FORMAT:
         return classes[projection](envelope, int(Path(path).exists()),
                                    Path(path).stat().st_size if Path(path).exists() else 0)
     store = state_store.open_store(path)
     current = store.open_current()
+    require(current is not None, 'missing_checkpoint', 'current scope checkpoint is unavailable')
     if projection == 'identity':
         return classes[projection](state_store.ProjectedRecord({**current.root['outer'], KEY: current.root['metadata']}, current.revision),
                                    store.files_read, store.bytes_read, current.revision)
@@ -319,6 +322,22 @@ def read_projection(path, *, projection):
     stage_id = current.root['metadata']['stage_subject']
     require(stage_id in subjects and stage_id.startswith('stage:'),
             'invalid_checkpoint', 'current stage subject is missing')
+    if stage is not None:
+        require(projection == 'scope' and stage == 2 and current.root['metadata']['stage'] == stage,
+                'invalid_projection', 'select the current Stage-2 scope')
+        state = store.read_scope(current, stage_id)
+        validate_stage2_scope(state)
+        for pin in current.root['metadata']['packages'].values():
+            skill_preflight.verify_identity(pin)
+        require(state['stage_subject'] == stage_id and state['revision'] == current.root['metadata']['revision'] and
+                state['handoff']['digest'] == current.root['metadata']['handoff']['digest'] and
+                state['handoff']['controller_ref'] == current.root['metadata']['controller_ref'] and
+                state['handoff']['binding'] == current.root['metadata']['binding'] and
+                state['checkpoint_path'] == str(Path(path).resolve()),
+                'invalid_checkpoint', 'scope identity differs from its current root')
+        state['current_transport'] = (state['transport'] == scope_transport(current.root['outer']) and
+                                      not current.root['outer'].get('runner_request'))
+        return state_store.ScopeProjection({KEY: state}, store.files_read, store.bytes_read, current.revision)
     state = store.read_subject(current, stage_id).value
     if projection == 'transaction':
         state['allocations'] = {}
@@ -333,6 +352,78 @@ def read_projection(path, *, projection):
                     'invalid_checkpoint', 'duplicate allocation identity')
             state['allocations'].update(subject['allocations'])
     return classes[projection](state_store.ProjectedRecord({**current.root['outer'], KEY: state}, current.revision), store.files_read, store.bytes_read, current.revision)
+
+
+def scope_transport(outer):
+    transport = outer.get('transport') or {}
+    return {key: transport.get(key) for key in ('instance', 'native_event_sequence', 'state', 'lookup_blocked')}
+
+
+def stage2_scope(state, path, outer):
+    """Derive a read-only contract from the Controller's current validated facts."""
+    owner = Progress(path, outer)
+    context = state['control']['context']
+    current = context.get('handoff_progress') or {}
+    publication = state.get('publication')
+    projected = {key: copy.deepcopy(state.get(key)) for key in (
+        'protocol', 'revision', 'stage', 'stage_subject', 'checkpoint_path', 'status',
+        'stopped', 'phase_complete', 'stop_requested', 'handoff', 'scope_authority', 'accepted')}
+    projected.update(scope_kind='stage2-scope-v1', state_digest=entry.digest(state),
+        transport=scope_transport(outer), control_revision=context.get('revision'),
+        scope_seal=copy.deepcopy(current.get('scope_seal')),
+        scope_revisions=copy.deepcopy(current.get('scope_revisions', [])),
+        decision_provenance=change_decision_journal(state),
+        pending_kind=(state.get('pending') or {}).get('kind'),
+        transaction_pending=state.get('transaction') is not None,
+        scope_revision_pending=state.get('scope_revision_transaction') is not None,
+        transport_loss=bool(state.get('transport_loss')), business_block=bool(state.get('business_block')),
+        stop_barrier_pending=bool(owner.stop_barrier_pending()),
+        control_pending=bool(owner.unresolved_control_transactions()),
+        host_pending=any(not action.get('resolved') and not action.get('creation_resolved') for action in
+            [*state.get('retained_host_actions', []), state.get('host_action') or {}] if action),
+        host_status=state['host']['status'], stop_evidence_ref=entry.digest(state['host']['last_stop']),
+        publication=({key: copy.deepcopy(publication.get(key)) for key in ('operation', 'request', 'facts', 'result')}
+                     if publication else None))
+    validate_stage2_scope(projected)
+    return projected
+
+
+def validate_stage2_scope(state):
+    fields = {'protocol', 'revision', 'stage', 'stage_subject', 'checkpoint_path', 'status', 'stopped',
+        'phase_complete', 'stop_requested', 'handoff', 'scope_authority', 'accepted', 'scope_kind', 'state_digest',
+        'transport', 'control_revision', 'scope_seal', 'scope_revisions', 'decision_provenance', 'pending_kind',
+        'transaction_pending', 'scope_revision_pending', 'transport_loss', 'business_block', 'stop_barrier_pending',
+        'control_pending', 'host_pending', 'host_status', 'stop_evidence_ref', 'publication'}
+    require(isinstance(state, dict) and set(state) == fields and state['scope_kind'] == 'stage2-scope-v1' and
+            state['stage'] == 2 and state['protocol'] == PROTOCOL and type(state['revision']) is int and
+            state['revision'] >= 0 and isinstance(state['stage_subject'], str) and
+            isinstance(state['checkpoint_path'], str) and isinstance(state['transport'], dict) and
+            all(isinstance(state[key], str) and re.fullmatch(r'[0-9a-f]{64}', state[key])
+                for key in ('state_digest', 'stop_evidence_ref')) and
+            isinstance(state['scope_revisions'], list) and isinstance(state['decision_provenance'], dict) and
+            all(type(state[key]) is bool for key in ('stopped', 'phase_complete', 'transaction_pending',
+                'scope_revision_pending', 'transport_loss', 'business_block', 'stop_barrier_pending',
+                'control_pending', 'host_pending')),
+            'invalid_checkpoint', 'invalid Stage-2 scope projection')
+    saved = state['handoff']
+    handoff.unseal(saved)
+    handoff.require_current_protocol(saved)
+    require(saved.get('stage') == 2, 'invalid_checkpoint', 'scope handoff is not Stage 2')
+    stage_scope.validate_scope(saved['scope'], saved['binding']['repository'], stage=2,
+        requirement_path=saved['requirement_identity']['path'])
+    authority = state['scope_authority']
+    if authority is not None:
+        require(state['scope_seal'] is not None, 'scope_changed', 'scope needs its Controller seal')
+        verify_scope_authority(authority, initial_seal=state['scope_seal'], revision_records=state['scope_revisions'],
+            requirement_identity=saved['requirement_identity'], binding=saved['binding'],
+            decision_records=state['decision_provenance'])
+        stage_scope.validate_scope(authority['scope'], saved['binding']['repository'], stage=2,
+            requirement_path=saved['requirement_identity']['path'], candidate_commit=authority['candidate_commit'],
+            generated_outputs=generated_outputs_for(authority['proposal']))
+    if state['accepted'] is not None:
+        handoff.unseal(state['accepted'])
+        require(state['accepted'].get('handoff') == saved and isinstance(state['accepted'].get('payload'), dict),
+                'invalid_checkpoint', 'scope acceptance changed handoff')
 
 
 def save_current_record(path, outer, expected_revision, *, expected_authority_revision, receipt_action=None, receipts=()):
@@ -387,7 +478,7 @@ def save_current_record(path, outer, expected_revision, *, expected_authority_re
     return store.commit_current(expected_revision=current.revision if current else 0,
         revision=current.revision + 1 if current else 1, subjects=subjects, metadata=metadata,
         outer={key: value for key, value in outer.items() if key != KEY}, receipts=receipts,
-        initial_outer=initial)
+        initial_outer=initial, scope=stage2_scope(state, path, outer) if state['stage'] == 2 else None)
 
 
 def save_outer_record(path, outer, *, expected_revision):
@@ -821,8 +912,13 @@ def read_scope_readiness(readiness):
     require(path.is_absolute() and str(path.resolve()) == str(path),
             "invalid_checkpoint", "canonical absolute progression checkpoint required")
     outer = read_record(path)
-    require(outer.get("version") in (None, 10), "legacy_run_requires_original_runtime",
-            "scope readiness requires a standalone record or runner version 10")
+    if outer.get('store_format') == state_store.FORMAT and outer.get(KEY, {}).get('stage') == 2:
+        state = read_projection(path, projection='scope', stage=2).record[KEY]
+        actual = scope_readiness(state, path)
+        require(actual is not None and actual == readiness, 'handoff_not_ready', 'Controller readiness is stale or changed')
+        return state
+    require(outer.get("version") in (None, 11), "legacy_run_requires_original_runtime",
+            "scope readiness requires a standalone record or runner version 11")
     state = outer.get(KEY)
     require(isinstance(state, dict), "handoff_not_ready",
             "current progression checkpoint is unavailable")
@@ -843,28 +939,36 @@ def scope_readiness(state, checkpoint_path, *, persisted=None):
     This is also used by B's read-only checkpoint verification. The immutable B
     acceptance records the planning result; it cannot itself grant a later lease.
     """
-    if (state.get("stage") != 2 or state.get("status") != "accepted" or
+    if state.get('stage') != 2 or state.get('status') != 'accepted' or checkpoint_path is None:
+        return None
+    path = Path(checkpoint_path).resolve()
+    current = read_projection(path, projection='scope', stage=2).record[KEY]
+    if state.get('scope_kind') == 'stage2-scope-v1':
+        if state != current:
+            return None
+    elif current['state_digest'] != entry.digest(state):
+        return None
+    state = current
+    if (not state['current_transport'] or state.get("status") != "accepted" or
             state.get("accepted") is None or not state.get("stopped") or
             not state.get("phase_complete") or state.get("stop_requested") or
             state.get("transport_loss") or state.get("business_block")):
         return None
-    if (state.get("scope_revision_transaction") or {}).get("state") not in (None,):
+    if state['scope_revision_pending']:
         return None
     authority = state.get("scope_authority")
     publication = state.get("publication")
     if (not isinstance(authority, dict) or authority.get("state") != "sealed" or
             not isinstance(publication, dict) or publication.get("result") is None or
-            state.get("transaction") is not None or state.get("pending") is not None and
-            state["pending"].get("kind") != "stage-entry"):
+            state['transaction_pending'] or state['pending_kind'] not in (None, 'stage-entry')):
         return None
     scope = authority.get("scope")
     if not isinstance(scope, dict) or scope.get("downstream", {}).get("state") != "sealed":
         return None
     if not scope["downstream"]["implementation_required"] or not scope["implementation_paths"]:
         return None
-    current_progress = state["control"]["context"].get("handoff_progress") or {}
-    verify_scope_authority(authority, initial_seal=current_progress.get("scope_seal"),
-        revision_records=current_progress.get("scope_revisions", []),
+    verify_scope_authority(authority, initial_seal=state['scope_seal'],
+        revision_records=state['scope_revisions'],
         requirement_identity=state["handoff"]["requirement_identity"],
         binding=state["handoff"]["binding"],
         decision_records=change_decision_journal(state))
@@ -873,18 +977,9 @@ def scope_readiness(state, checkpoint_path, *, persisted=None):
     if (accepted.get("handoff") != state["handoff"] or
             payload.get("planning_commit") != authority.get("candidate_commit") or
             payload.get("planning_merge_commit") != publication["result"].get("merge_commit") or
-            state.get("host", {}).get("status") != "stopped" or
-            any(not action.get("resolved") and not action.get("creation_resolved") for action in
-                [*state.get("retained_host_actions", []), state.get("host_action") or {}] if action)):
+            state['host_status'] != 'stopped' or state['host_pending']):
         return None
-    if checkpoint_path is None:
-        return None
-    path = Path(checkpoint_path).resolve()
-    persisted = read_record(path) if persisted is None else persisted
-    if not path.is_absolute() or persisted.get(KEY) != state:
-        return None
-    owner = Progress(path, persisted)
-    if owner.stop_barrier_pending() or owner.unresolved_control_transactions():
+    if state['stop_barrier_pending'] or state['control_pending']:
         return None
     stage_scope.validate_scope(scope, state["handoff"]["binding"]["repository"], stage=3,
         requirement_path=state["handoff"]["requirement_identity"]["path"],
@@ -897,11 +992,16 @@ def scope_readiness(state, checkpoint_path, *, persisted=None):
     phase = state["handoff"]["authorization"].get("phase")
     phase_finalization_ref = None
     if phase is not None:
-        verify_phase_completed(state)
         saved = state["handoff"]
+        require(saved['entry']['source']['kind'] == 'discussion', 'authority_missing',
+                'phase requires its original discussion attachment')
         result = entry.discussion_protocol.handle({"protocol_version": 1, "operation": "read-phase-run",
             "project_path": entry.discussion_root(saved["expected_entry"]),
             **saved["entry"]["source"]["attachment"], "phase_run_id": phase["run_id"]})
+        run = result['phase_run']
+        require(run['state'] == 'completed' and any(a['attempt_id'] == phase['attempt_id'] and
+                a['state'] == 'completed' for a in run['attempts']),
+                'phase_pending', 'complete and finalize the original phase before advancing')
         phase_finalization_ref = entry.digest(result["phase_run"])
     return {"accepted_digest": accepted["digest"], "scope_revision": authority["revision"],
             "scope_seal": authority["seal_ref"], "scope_authority": copy.deepcopy(authority),
@@ -909,10 +1009,10 @@ def scope_readiness(state, checkpoint_path, *, persisted=None):
             "publication": {"planning_commit": payload["planning_commit"],
                             "planning_merge_commit": payload["planning_merge_commit"],
                             "publication_request_digest": entry.digest(publication["request"])},
-            "stop_evidence_ref": entry.digest(state["host"]["last_stop"]),
+            "stop_evidence_ref": state['stop_evidence_ref'],
             "phase_finalization_ref": phase_finalization_ref,
             "controller_ref": state["handoff"]["controller_ref"],
-            "control_revision": state["control"]["context"].get("revision"),
+            "control_revision": state['control_revision'],
             "checkpoint_path": str(path), "checkpoint_revision": state["revision"]}
 
 

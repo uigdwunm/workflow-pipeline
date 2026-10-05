@@ -13,6 +13,162 @@ from test_workflow_progress import ProgressTests, progress, transfer, runner
 
 
 class BoundedProgressTests(ProgressTests):
+    def test_stage2_scope_missing_corrupt_or_mismatched_objects_fail_closed(self):
+        accepted = self.finish_design('stepwise')
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        envelope = json.loads(self.checkpoint.read_bytes())
+        def object_path(reference):
+            digest = reference['sha256']
+            return directory / 'objects' / digest[:2] / digest[2:4] / digest
+        root_document = json.loads(object_path(envelope['current']).read_bytes())
+        scope_reference = root_document['value']['scope']
+        scope_path = object_path(scope_reference)
+        original_scope = scope_path.read_bytes()
+        for corruption in ('missing', 'bytes', 'run', 'subject', 'schema'):
+            with self.subTest(corruption=corruption):
+                root = copy.deepcopy(root_document)
+                pointer = copy.deepcopy(envelope)
+                def write_document(document):
+                    raw = progress.state_store.encode(document)
+                    reference = {'run_id': document['run_id'], 'kind': document['kind'],
+                                 'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw)}
+                    destination = object_path(reference)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(raw)
+                    return reference
+                if corruption == 'missing':
+                    scope_path.unlink()
+                elif corruption == 'bytes':
+                    scope_path.write_bytes(original_scope + b' ')
+                elif corruption == 'run':
+                    root['value']['scope']['run_id'] = 'another-run'
+                else:
+                    scope = json.loads(original_scope)
+                    if corruption == 'subject':
+                        scope['value']['subject_ref']['sha256'] = '0' * 64
+                    else:
+                        scope['value']['value'].pop('stopped')
+                    root['value']['scope'] = write_document(scope)
+                pointer['current'] = write_document(root)
+                self.checkpoint.write_bytes(progress.state_store.encode(pointer))
+                with self.assertRaises(transfer.entry.PreparationError):
+                    progress.read_scope_readiness(accepted['readiness'])
+                scope_path.write_bytes(original_scope)
+                self.checkpoint.write_bytes(progress.state_store.encode(envelope))
+
+    def test_stage2_scope_rejects_changed_readiness_identity(self):
+        accepted = self.finish_design('stepwise')
+        for field, value in (('scope_seal', 'wrong-seal'), ('checkpoint_revision', 0),
+                             ('accepted_digest', 'wrong-acceptance')):
+            with self.subTest(field=field):
+                with self.assertRaises(transfer.entry.PreparationError) as rejected:
+                    progress.read_scope_readiness({**accepted['readiness'], field: value})
+                self.assertEqual(rejected.exception.code, 'handoff_not_ready')
+        changed = copy.deepcopy(accepted['readiness'])
+        changed['scope_authority']['candidate_commit'] = self.frozen['commit']
+        with self.assertRaises(transfer.entry.PreparationError) as rejected:
+            progress.read_scope_readiness(changed)
+        self.assertEqual(rejected.exception.code, 'handoff_not_ready')
+
+    def test_stage2_scope_receiving_wrong_candidate_is_blocked(self):
+        payload = self.prepare_design_result('stepwise')
+        payload['planning_commit'] = self.frozen['commit']
+        rejected = self.invoke('observe', self.observation('stopped', 'result', {
+            'delivery_id': 'wrong-design', 'status': 'completed', 'payload': payload}))
+        self.assertEqual(rejected['error']['code'], 'scope_changed')
+        self.assertFalse(rejected['handoff_ready'])
+
+    def test_stage2_scope_pause_before_acceptance_replaces_stop_facts(self):
+        self.prepare_design_result('stepwise')
+        before = progress.state_store.StateStore(self.checkpoint).open_current()
+        stopped = self.invoke('pause')
+        self.assertFalse(stopped['handoff_ready'])
+        after = progress.state_store.StateStore(self.checkpoint).open_current()
+        self.assertNotEqual(after.root['scope'], before.root['scope'])
+        scoped = progress.read_projection(self.checkpoint, projection='scope', stage=2).record[progress.KEY]
+        self.assertEqual(scoped['stop_requested'], 'pausing')
+        with self.assertRaises(transfer.entry.PreparationError) as rejected:
+            progress.read_scope_readiness({'checkpoint_path': str(self.checkpoint)})
+        self.assertEqual(rejected.exception.code, 'handoff_not_ready')
+
+    def test_stage2_scope_reads_no_stage_subject_or_unrelated_evidence(self):
+        accepted = self.finish_design('stepwise')
+        current = progress.state_store.StateStore(self.checkpoint).open_current()
+        before = progress.read_projection(self.checkpoint, projection='scope', stage=2)
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        unrelated = directory / 'objects' / 'unused'
+        unrelated.mkdir()
+        for number in range(32):
+            (unrelated / str(number)).write_bytes(b'x' * 65536)
+        opened = []
+        original_open = Path.open
+        def tracked_open(path, *args, **kwargs):
+            opened.append(path)
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', tracked_open):
+            after = progress.read_projection(self.checkpoint, projection='scope', stage=2)
+            scope_reads = [path for path in opened if path == self.checkpoint or path.is_relative_to(directory)]
+            progress.read_scope_readiness(accepted['readiness'])
+        self.assertEqual((before.files_read, before.bytes_read), (after.files_read, after.bytes_read))
+        self.assertEqual(after.files_read, 3)
+        self.assertEqual(len(scope_reads), after.files_read)
+        self.assertEqual(sum(path.stat().st_size for path in scope_reads), after.bytes_read)
+        self.assertLessEqual(after.bytes_read, 3 * 256 * 1024)
+        self.assertFalse({ref['sha256'] for ref in current.root['subjects'].values()} &
+                         {path.name for path in opened})
+        self.assertFalse(any(path.is_relative_to(unrelated) for path in opened))
+        view = after.record[progress.KEY]
+        self.assertFalse({'allocations', 'host', 'control', 'transaction', 'lifecycle_snapshot'} & view.keys())
+        self.assertNotIn('write_release', json.dumps(view))
+        if os.environ.get('T01_SCOPE_METRICS_PATH'):
+            Path(os.environ['T01_SCOPE_METRICS_PATH']).write_text(json.dumps({
+                'scope_files_read': after.files_read, 'scope_bytes_read': after.bytes_read,
+                'scope_object_bytes': current.root['scope']['size'], 'stage_subjects_read': 0,
+                'unrelated_evidence_bytes': 32 * 65536}, indent=2) + '\n')
+
+    def test_stage2_scope_outer_stop_or_unknown_blocks_saved_readiness(self):
+        accepted = self.finish_design('stepwise')
+        readiness = accepted['readiness']
+        successor = self.input_for(3, self.state()['accepted'])
+        scope = readiness['scope_authority']['scope']
+        for key in ('implementation_paths', 'closure_paths', 'downstream'):
+            successor['scope'][key] = copy.deepcopy(scope[key])
+        successor['scope']['owned_paths'] = copy.deepcopy(scope['implementation_paths'])
+        successor['authorization']['scope_digest'] = transfer.entry.digest(successor['scope'])
+        successor['readiness'] = readiness
+        transfer.handoff.prepare(successor)
+        original = progress.read_projection(self.checkpoint, projection='identity').record
+        original.pop(progress.KEY)
+        before = progress.state_store.StateStore(self.checkpoint).open_current()
+        for change in ({'runner_request': {'operation': 'pause', 'request_id': 'pause-before-handoff'}},
+                       {'runner_request': {'operation': 'cancel', 'request_id': 'cancel-before-handoff'}},
+                       {'transport': {'lookup_blocked': 'lookup outcome unknown'}}):
+            with self.subTest(change=change):
+                current = progress.state_store.StateStore(self.checkpoint).open_current()
+                with progress.record_lock(self.checkpoint):
+                    progress.save_outer_record(self.checkpoint, {**original, **change}, expected_revision=current.revision)
+                after = progress.state_store.StateStore(self.checkpoint).open_current()
+                self.assertEqual(after.root['scope'], before.root['scope'])
+                with self.assertRaises(transfer.entry.PreparationError) as rejected:
+                    progress.read_scope_readiness(readiness)
+                self.assertEqual(rejected.exception.code, 'handoff_not_ready')
+                with self.assertRaises(transfer.entry.PreparationError) as rejected:
+                    transfer.handoff.prepare(successor)
+                self.assertEqual(rejected.exception.code, 'handoff_not_ready')
+
+    def test_stage2_scope_published_result_reaches_current_readiness(self):
+        self.prepare_design_result('stepwise')
+        received = self.invoke('receive-publication')
+        self.assertEqual(received['status'], 'needs_input', received)
+        self.assertEqual(received['pending']['kind'], 'acceptance')
+        pending = received['pending']
+        accepted = self.invoke('decide', {'decision_id': pending['decision_id'],
+            'subject': pending['subject'], 'answer': 'accept', 'reference': 'controller:readiness'})
+        self.assertTrue(accepted['handoff_ready'], accepted)
+        current = progress.read_scope_readiness(accepted['readiness'])
+        self.assertEqual(current['scope_authority']['candidate_commit'],
+                         accepted['readiness']['publication']['planning_commit'])
+
     def test_running_polls_after_outer_cas_keep_controller_revision_and_ack(self):
         self.begin_dispatcher()
         poll = self.observation('running', 'result', ref='native:dispatcher')
