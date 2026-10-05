@@ -347,7 +347,7 @@ class StateStore:
         self._verified_objects[digest] = copy.deepcopy(body)
         return {'run_id': run_id, 'kind': kind, 'sha256': digest, 'size': len(data)}
 
-    def write_raw_evidence(self, run_id, value, *, measurement, commit_bytes):
+    def write_raw_evidence(self, run_id, value, *, measurement, commit_bytes, native_receipt):
         """Spool chunks, retaining bounded commit space in this invocation's reserve."""
         chunks, pending, digest, size, retained = [], bytearray(), hashlib.sha256(), 0, 0
         complete, reason, interruption = True, None, None
@@ -438,7 +438,7 @@ class StateStore:
             require((size, digest.hexdigest()) == measurement, 'raw evidence changed during reception')
         manifest = {'format': 'raw-evidence-v1', 'complete': complete, 'size': expected_size,
                     'retained_size': retained, 'sha256': expected_digest, 'chunks': chunks,
-                    'reason': reason}
+                    'reason': reason, 'native_receipt': native_receipt}
         require(len(encode(manifest)) <= SUBJECT_LIMIT - 1024,
                 'raw evidence manifest exceeds its fixed budget', 'state_capacity')
         reference = self.write_object(run_id, 'evidence', manifest)
@@ -446,9 +446,38 @@ class StateStore:
             raise RawEvidenceInterrupted(reference) from interruption
         return reference, manifest
 
+    def read_raw_manifest(self, reference, *, run_id):
+        """Verify the finite manifest without reading any referenced raw chunks."""
+        require(isinstance(reference, dict) and type(reference.get('size')) is int and
+                0 < reference['size'] <= SUBJECT_LIMIT and isinstance(reference.get('sha256'), str) and
+                len(reference['sha256']) == 64 and all(char in '0123456789abcdef' for char in reference['sha256']),
+                'invalid raw manifest reference')
+        manifest = self.read_evidence(reference, run_id=run_id, maximum=SUBJECT_LIMIT)['value']
+        require(isinstance(manifest, dict) and manifest.get('format') == 'raw-evidence-v1' and
+                type(manifest.get('complete')) is bool and type(manifest.get('size')) is int and
+                manifest['size'] > 0 and type(manifest.get('retained_size')) is int and
+                0 <= manifest['retained_size'] <= manifest['size'] and
+                isinstance(manifest.get('sha256'), str) and len(manifest['sha256']) == 64 and
+                all(char in '0123456789abcdef' for char in manifest['sha256']) and
+                isinstance(manifest.get('chunks'), list), 'invalid raw manifest')
+        retained = 0
+        for chunk in manifest['chunks']:
+            require(isinstance(chunk, dict) and set(chunk) == {'run_id', 'kind', 'sha256', 'size'} and
+                    chunk['run_id'] == run_id and chunk['kind'] == 'raw-chunk' and
+                    type(chunk['size']) is int and 0 < chunk['size'] <= 1024 * 1024 and
+                    isinstance(chunk['sha256'], str) and len(chunk['sha256']) == 64 and
+                    all(char in '0123456789abcdef' for char in chunk['sha256']),
+                    'invalid raw manifest chunk reference')
+            retained += chunk['size']
+        require(retained == manifest['retained_size'] and
+                (manifest['complete'] and retained == manifest['size'] and manifest.get('reason') is None or
+                 not manifest['complete'] and manifest.get('reason') in {'state_capacity', 'storage_full', 'interrupted'}),
+                'raw manifest completeness or retained length changed')
+        return manifest
+
     def read_raw_chunk(self, reference, *, run_id, index):
         """Read one explicitly selected raw chunk without expanding the whole response."""
-        manifest = self.read_evidence(reference, run_id=run_id)['value']
+        manifest = self.read_raw_manifest(reference, run_id=run_id)
         require(manifest.get('format') == 'raw-evidence-v1' and isinstance(manifest.get('chunks'), list) and
                 type(index) is int and 0 <= index < len(manifest['chunks']), 'invalid raw evidence cursor')
         chunk = manifest['chunks'][index]
@@ -462,7 +491,7 @@ class StateStore:
 
     def read_raw_evidence(self, reference, *, run_id):
         """Explicitly expand one complete raw result, within the evidence read budget."""
-        manifest = self.read_evidence(reference, run_id=run_id)['value']
+        manifest = self.read_raw_manifest(reference, run_id=run_id)
         require(manifest.get('format') == 'raw-evidence-v1' and manifest.get('complete') is True and
                 type(manifest.get('size')) is int and 0 <= manifest['size'] <= EVIDENCE_LIMIT and
                 isinstance(manifest.get('chunks'), list), 'raw evidence is incomplete or exceeds one expansion')
@@ -480,11 +509,14 @@ class StateStore:
                 'raw evidence digest changed', 'state_object_corrupt')
         return json.loads(data)
 
-    def read_evidence(self, reference, *, run_id, kind='evidence'):
+    def read_evidence(self, reference, *, run_id, kind='evidence', maximum=None):
         require(isinstance(reference, dict) and set(reference) == {'run_id', 'kind', 'sha256', 'size'} and
                 reference['run_id'] == run_id and reference['kind'] == kind and
                 type(reference['size']) is int, 'cross-run or malformed object reference')
         limit = EVIDENCE_LIMIT if kind == 'evidence' else SUBJECT_LIMIT
+        if maximum is not None:
+            limit = min(limit, maximum)
+        require(0 < reference['size'] <= limit, 'object reference exceeds its read limit', 'state_capacity')
         cached = self._verified_objects.get(reference['sha256'])
         if cached is not None:
             require(cached.get('run_id') == run_id and cached.get('kind') == kind and
@@ -497,7 +529,7 @@ class StateStore:
             body = json.loads(data)
         except (ValueError, UnicodeError) as error:
             raise entry.PreparationError('state_object_corrupt', 'state object is not valid JSON') from error
-        require(body.get('format') == FORMAT and body.get('run_id') == run_id and body.get('kind') == kind,
+        require(isinstance(body, dict) and body.get('format') == FORMAT and body.get('run_id') == run_id and body.get('kind') == kind,
                 'object identity changed', 'state_object_corrupt')
         self._verified_objects[reference['sha256']] = copy.deepcopy(body)
         return body

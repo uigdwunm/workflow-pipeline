@@ -2306,6 +2306,96 @@ class BoundedProgressTests(ProgressTests):
         self.assertTrue(record['queries'][-1]['resolved'])
         self.assertEqual(record['receipts'][-1]['receipt']['raw']['facts']['status'], 'notLoaded')
 
+    def test_native_raw_manifest_damage_blocks_completed_close_and_readback_recovery(self):
+        self.test_native_raw_ingress_close_and_readback_recover_from_finite_facts()
+        original_envelope = json.loads(self.checkpoint.read_text())
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        subject_id = current.root['metadata']['stage_subject']
+        original_subject = store.read_subject(current, subject_id).value
+        receipts = original_subject['native_finalizations'][0]['receipts']
+        for receipt_index in (1, 2):
+            reference = receipts[receipt_index]['receipt']['raw']['evidence_ref']
+            manifest_path = store.directory / 'objects' / reference['sha256'][:2] / reference['sha256'][2:4] / reference['sha256']
+            original_bytes = manifest_path.read_bytes()
+            for fault in ('missing', 'bytes', 'run', 'kind', 'ref-size', 'ref-hash', 'wrong-ref',
+                          'incomplete', 'size', 'digest', 'retained-size', 'chunk-size', 'binding', 'truncated'):
+                with self.subTest(receipt=receipt_index, fault=fault):
+                    subject = copy.deepcopy(original_subject)
+                    raw = subject['native_finalizations'][0]['receipts'][receipt_index]['receipt']['raw']
+                    changed_ref = raw['evidence_ref']
+                    try:
+                        if fault == 'missing':
+                            manifest_path.unlink()
+                        elif fault == 'bytes':
+                            manifest_path.write_bytes(b'broken native manifest')
+                        elif fault in {'run', 'kind', 'ref-size', 'ref-hash'}:
+                            key, value = {'run': ('run_id', 'foreign-run'), 'kind': ('kind', 'receipt'),
+                                          'ref-size': ('size', reference['size'] + 1), 'ref-hash': ('sha256', '0' * 64)}[fault]
+                            changed_ref[key] = value
+                        elif fault == 'wrong-ref':
+                            raw['evidence_ref'] = copy.deepcopy(receipts[3 - receipt_index]['receipt']['raw']['evidence_ref'])
+                        elif fault == 'truncated':
+                            raw['truncated'] = True
+                        else:
+                            manifest = json.loads(original_bytes)['value']
+                            if fault == 'incomplete':
+                                manifest['complete'] = False
+                            elif fault == 'size':
+                                manifest['size'] += 1
+                            elif fault == 'digest':
+                                manifest['sha256'] = '0' * 64
+                            elif fault == 'retained-size':
+                                manifest['retained_size'] -= 1
+                            elif fault == 'chunk-size':
+                                manifest['chunks'][0]['size'] -= 1
+                            else:
+                                manifest['native_receipt'] = {'action_id': 'different-original-action'}
+                            raw['evidence_ref'] = store.write_object(current.run_id, 'evidence', manifest)
+                        if fault not in {'missing', 'bytes'}:
+                            subject_ref = store.write_object(current.run_id, 'subject', subject, subject_id=subject_id)
+                            scope = store.read_evidence(current.root['scope'], run_id=current.run_id, kind='scope')['value']
+                            scope['subject_ref'] = subject_ref
+                            scope['value']['state_digest'] = transfer.entry.digest(subject)
+                            root = {**current.root, 'subjects': {**current.root['subjects'], subject_id: subject_ref},
+                                    'scope': store.write_object(current.run_id, 'scope', scope)}
+                            root_ref = store.write_object(current.run_id, 'root', root)
+                            self.checkpoint.write_bytes(progress.state_store.encode({**original_envelope, 'current': root_ref}))
+                        with self.assertRaises(transfer.entry.PreparationError):
+                            self.invoke('inspect')
+                    finally:
+                        manifest_path.write_bytes(original_bytes)
+                        self.checkpoint.write_bytes(progress.state_store.encode(original_envelope))
+        # Healthy restoration verifies finite manifests, never all raw chunks.
+        manifests = [receipts[index]['receipt']['raw']['evidence_ref'] for index in (1, 2)]
+        raw_paths = set()
+        for reference in manifests:
+            manifest = progress.state_store.StateStore(self.checkpoint).read_evidence(reference, run_id=current.run_id)['value']
+            raw_paths.update(store.directory / 'objects' / chunk['sha256'][:2] / chunk['sha256'][2:4] / chunk['sha256']
+                             for chunk in manifest['chunks'])
+        opened, original_open = [], Path.open
+        def tracked_open(path, *args, **kwargs):
+            if path == self.checkpoint or path.is_relative_to(store.directory):
+                opened.append(path)
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', tracked_open):
+            self.invoke('inspect')
+        self.assertFalse(raw_paths.intersection(opened))
+        self.assertTrue(all(reference['sha256'] in {path.name for path in opened} for reference in manifests))
+        self.assertLessEqual(sum(path.stat().st_size for path in opened), 9 * 256 * 1024)
+        # Explicit expansion still verifies the raw bytes, beyond the finite recovery proof.
+        damaged_chunk = next(iter(raw_paths))
+        original_chunk = damaged_chunk.read_bytes()
+        try:
+            damaged_chunk.write_bytes(b'corrupted raw chunk')
+            for reference in manifests:
+                manifest = progress.state_store.StateStore(self.checkpoint).read_raw_manifest(reference, run_id=current.run_id)
+                if damaged_chunk.name in {chunk['sha256'] for chunk in manifest['chunks']}:
+                    with self.assertRaises(transfer.entry.PreparationError):
+                        progress.state_store.StateStore(self.checkpoint).read_raw_evidence(reference, run_id=current.run_id)
+        finally:
+            damaged_chunk.write_bytes(original_chunk)
+
     def test_native_finalization_unknown_retains_its_recovery_reserve(self):
         from test_collaboration_lifecycle import CollaborationLifecycleTests
         helper = CollaborationLifecycleTests(methodName='runTest')

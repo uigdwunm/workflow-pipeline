@@ -118,14 +118,36 @@ def native_receipt_matches(saved, incoming):
             raw['size'] == size and raw['sha256'] == digest)
 
 
-def validate_saved_native_result(receipt, record, action, status=None):
+def native_result_facts(record, action, *, query=False):
+    facts = {'thread_id': record['thread_id'], 'operation': action['operation']}
+    if action['operation'] == 'finish-native' or query:
+        facts.update(status='notLoaded' if query else 'idle', finish_action_id=record['actions'][0]['action_id'])
+    return facts
+
+
+def native_receipt_binding(receipt, record, action, facts):
+    return {'action_id': action['action_id'], 'ref': record['ref'], 'facts': facts,
+            **{key: receipt[key] for key in ('adapter', 'call_ref', 'response_ref')},
+            'reported_status': receipt['status'], 'query': receipt.get('query', False),
+            'query_for': receipt.get('query_for')}
+
+
+def validate_saved_native_result(receipt, record, action, status=None, *, checkpoint):
     raw = receipt['raw']
     if raw.get('format') == 'native-raw-reference-v1':
-        expected = {'thread_id': record['thread_id'], 'operation': action['operation']}
-        if status is not None:
-            expected.update(status=status, finish_action_id=record['actions'][0]['action_id'])
-        require(raw.get('facts') == expected and isinstance(raw.get('evidence_ref'), dict),
+        expected = native_result_facts(record, action, query=receipt.get('query', False))
+        require(raw.get('facts') == expected and raw.get('truncated') is False and
+                raw.get('reported_status') == 'completed' and raw.get('reason') is None and
+                type(raw.get('size')) is int and 0 < raw['size'] <= state_store.EVIDENCE_LIMIT,
                 'invalid_checkpoint', 'native result projection changed')
+        store = state_store.open_store(checkpoint)
+        current = store.open_current()
+        require(current is not None, 'invalid_checkpoint', 'native result lost its original owner')
+        manifest = store.read_raw_manifest(raw.get('evidence_ref'), run_id=current.run_id)
+        require(manifest['complete'] and manifest['size'] == raw['size'] and manifest['sha256'] == raw.get('sha256') and
+                manifest.get('native_receipt') == native_receipt_binding(receipt, record, action, expected),
+                'invalid_checkpoint', 'native result manifest differs from its original validated receipt')
+        require(store.bytes_read <= state_store.READ_LIMIT, 'state_capacity', 'native manifests exceed the current read budget')
     elif status is not None:
         validate_native_readback(native_raw_object(raw), record, status)
     else:
@@ -1471,9 +1493,11 @@ def validate_state(state):
                              query.get('call_ref') == receipt['call_ref']]) == 1,
                         'invalid_checkpoint', 'readback receipt must name its persisted query invocation')
                 if receipt['status'] == 'completed':
-                    validate_saved_native_result(receipt, record, action, 'notLoaded')
+                    validate_saved_native_result(receipt, record, action, 'notLoaded', checkpoint=state['checkpoint_path'])
             elif action['operation'] == 'close-native' and receipt['status'] == 'completed':
-                validate_saved_native_result(receipt, record, action)
+                validate_saved_native_result(receipt, record, action, checkpoint=state['checkpoint_path'])
+            elif receipt['status'] == 'completed' and receipt['raw'].get('format') == 'native-raw-reference-v1':
+                validate_saved_native_result(receipt, record, action, 'idle', checkpoint=state['checkpoint_path'])
         close = record['actions'][-1]
         if close['operation'] == 'close-native' and close.get('resolution') == 'completed':
             completed = [data['receipt'] for data in record['receipts'] if data['action_id'] == close['action_id'] and
@@ -1481,7 +1505,7 @@ def validate_state(state):
                          data['receipt']['ref'] == record['ref']]
             require(close['operation'] == 'close-native' and close.get('resolved') and close.get('resolution') == 'completed' and
                     len(completed) == 1, 'invalid_checkpoint', 'verified absence requires the original successful close receipt')
-            validate_saved_native_result(completed[0], record, close)
+            validate_saved_native_result(completed[0], record, close, checkpoint=state['checkpoint_path'])
         if record.get('verified'):
             require(isinstance(record['verified'], dict) and isinstance(record['verified'].get('inventory'), dict) and
                     close['operation'] == 'close-native' and close.get('resolved') and close.get('resolution') == 'completed',
@@ -2585,10 +2609,7 @@ class Progress:
         truncated = size > state_store.EVIDENCE_LIMIT or not manifest['complete']
         facts = {}
         if not truncated and data['receipt']['status'] == 'completed':
-            facts = {'thread_id': record['thread_id'], 'operation': action['operation']}
-            if action['operation'] == 'finish-native' or data['receipt'].get('query'):
-                facts.update(status='notLoaded' if data['receipt'].get('query') else 'idle',
-                             finish_action_id=record['actions'][0]['action_id'])
+            facts = native_result_facts(record, action, query=data['receipt'].get('query', False))
         return {**data, 'receipt': {**data['receipt'],
             'status': 'unknown' if truncated else data['receipt']['status'], 'raw': {
                 'format': 'native-raw-reference-v1', 'evidence_ref': reference,
@@ -2597,7 +2618,7 @@ class Progress:
                 'reason': ('atomic_limit_exceeded' if size > state_store.EVIDENCE_LIMIT else
                            manifest['reason'])}}}
 
-    def native_receipt_commit_bytes(self, data, record, action, store, current, measurement):
+    def native_receipt_commit_bytes(self, data, record, action, store, current, measurement, binding):
         """Measure finite success/unknown/interrupted candidates, never the external raw body."""
         size, digest = measurement
         chunks = [{'run_id': current.run_id, 'kind': 'raw-chunk', 'sha256': '0' * 64,
@@ -2606,7 +2627,7 @@ class Progress:
         measured = []
         for reason in (None, 'state_capacity', 'interrupted'):
             manifest = {'format': 'raw-evidence-v1', 'complete': reason is None, 'size': size,
-                        'retained_size': size, 'sha256': digest, 'chunks': chunks, 'reason': reason}
+                        'retained_size': size, 'sha256': digest, 'chunks': chunks, 'reason': reason, 'native_receipt': binding}
             with store.measure_writes() as writes:
                 reference = store.write_object(current.run_id, 'evidence', manifest)
                 outer = copy.deepcopy(self.outer)
@@ -2653,11 +2674,14 @@ class Progress:
         store = state_store.open_store(self.path, receipt_action=self._receipt_action)
         current = store.open_current()
         measurement = (size, digest)
-        commit_bytes = (self.native_receipt_commit_bytes(data, record, action, store, current, measurement)
+        facts = (native_result_facts(record, action, query=data['receipt'].get('query', False))
+                 if size <= state_store.EVIDENCE_LIMIT and data['receipt']['status'] == 'completed' else {})
+        binding = native_receipt_binding(data['receipt'], record, action, facts)
+        commit_bytes = (self.native_receipt_commit_bytes(data, record, action, store, current, measurement, binding)
                         if size <= state_store.EVIDENCE_LIMIT else 0)
         try:
             reference, manifest = store.write_raw_evidence(current.run_id, raw, measurement=measurement,
-                                                         commit_bytes=commit_bytes)
+                                                         commit_bytes=commit_bytes, native_receipt=binding)
         except state_store.RawEvidenceInterrupted as error:
             source['evidence_ref'] = error.reference
             source['reason'] = 'interrupted'
