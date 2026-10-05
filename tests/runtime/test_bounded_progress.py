@@ -13,6 +13,34 @@ from test_workflow_progress import ProgressTests, progress, transfer, runner
 
 
 class BoundedProgressTests(ProgressTests):
+    def test_running_polls_after_outer_cas_keep_controller_revision_and_ack(self):
+        self.begin_dispatcher()
+        poll = self.observation('running', 'result', ref='native:dispatcher')
+        initial = self.invoke('observe', poll)
+        fresh = copy.deepcopy(poll)
+        fresh['event_id'] = 'fresh-after-outer'
+        fresh['receipt']['receipt_ref'] = 'fresh-after-outer-receipt'
+        fresh['provenance'].update(call_ref='fresh-after-outer-call', response_ref='fresh-after-outer-response')
+        duplicate_response = {**copy.deepcopy(fresh), 'event_id': 'duplicate-response-after-outer'}
+        for number, observation in enumerate((fresh, duplicate_response, fresh), 1):
+            before = progress.read_projection(self.checkpoint, projection='identity')
+            outer = {key: value for key, value in before.record.items() if key != progress.KEY}
+            outer['transport'] = {'instance': 'fixture-host', 'native_event_sequence': 0,
+                                  'request_state': 'completed', 'last_poll': number}
+            with progress.record_lock(self.checkpoint):
+                progress.save_outer_record(self.checkpoint, outer, expected_revision=before.authority_revision)
+            committed = progress.state_store.StateStore(self.checkpoint).open_current()
+            self.assertGreater(committed.revision, before.authority_revision)
+            observed = self.invoke('observe', observation, revision=initial['revision'])
+            self.assertEqual(observed['status'], 'active', observed.get('error'))
+            self.assertTrue(observed['acknowledged'])
+            self.assertEqual(observed['next_action']['operation'], 'wait-host')
+            self.assertEqual(observed['revision'], initial['revision'])
+            after = progress.state_store.StateStore(self.checkpoint).open_current()
+            self.assertEqual(after.revision, committed.revision)
+            self.assertEqual(after.root['subjects'], committed.root['subjects'])
+        self.assertEqual(self.invoke('inspect')['status'], 'active')
+
     def test_runner_outer_cas_preserves_controller_receipt_and_stale_owner_is_rejected(self):
         self.prepare_execution()
         slot = self.state()['allocations']['slice-one']

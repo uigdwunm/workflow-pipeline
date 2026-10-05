@@ -3664,7 +3664,9 @@ class Progress:
                     return {'event_id': observation['event_id'],
                         'receipt_ref': observation['receipt']['receipt_ref'],
                         'provenance': observation['provenance']}
-                state_store.open_store(self.path).record_poll(revision=s['revision'], identity=poll_identity,
+                # Poll telemetry CAS follows the original storage owner. Runner
+                # outer commits advance this revision without changing C's revision.
+                state_store.open_store(self.path).record_poll(revision=self._authority_revision, identity=poll_identity,
                     first=attribution(s['host']['observation']), latest=attribution(data),
                     fingerprints=[('event', event_index_key, digest),
                         ('response', facts['response_key'], facts['fingerprint']),
