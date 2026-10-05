@@ -1,7 +1,7 @@
 {
   "format_version": 1,
-  "release": "1.2.3",
-  "source_revision": "workflow-pipeline-v1.2.3",
+  "release": "1.3.0",
+  "source_revision": "workflow-pipeline-v1.3.0",
   "compatibility_key": {
     "handoff": "workflow-controller-v1",
     "confirmation": "goal-scoped-confirmation-v3",
@@ -13,15 +13,16 @@
     ],
     "ledger_write": 3,
     "topic_gate": "phase-0-1-discussion-v2",
-    "control": 10,
+    "control": 11,
     "entry": "workflow-entry-v4",
-    "runner": 9,
+    "runner": 10,
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v5",
-    "stage_transfer": "workflow-stage-transfer-v13",
-    "workflow_progress": "workflow-progress-v17",
-    "requirement_delivery": "requirement-delivery-v2"
+    "stage_transfer": "workflow-stage-transfer-v14",
+    "workflow_progress": "workflow-progress-v19",
+    "requirement_delivery": "requirement-delivery-v2",
+    "execution_plan": "execution-plan-v1"
   },
   "resources": {
     "design-discussion/SKILL.md": {
@@ -296,6 +297,10 @@
       "source": "src/shared/scripts/stage_scope.py",
       "output": "scripts/stage_scope.py"
     },
+    "shared/scripts/execution_plan.py": {
+      "source": "src/shared/scripts/execution_plan.py",
+      "output": "scripts/execution_plan.py"
+    },
     "shared/scripts/stage_dispatch.py": {
       "source": "src/shared/scripts/stage_dispatch.py",
       "output": "scripts/stage_dispatch.py"
@@ -372,6 +377,7 @@
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
         "shared/scripts/stage_scope.py",
+        "shared/scripts/execution_plan.py",
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
@@ -423,6 +429,7 @@
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
         "shared/scripts/stage_scope.py",
+        "shared/scripts/execution_plan.py",
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
@@ -482,6 +489,7 @@
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
         "shared/scripts/stage_scope.py",
+        "shared/scripts/execution_plan.py",
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
@@ -548,6 +556,7 @@
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
         "shared/scripts/stage_scope.py",
+        "shared/scripts/execution_plan.py",
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
@@ -606,6 +615,7 @@
         "shared/references/requirement-preparation.md",
         "shared/scripts/stage_handoff.py",
         "shared/scripts/stage_scope.py",
+        "shared/scripts/execution_plan.py",
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",

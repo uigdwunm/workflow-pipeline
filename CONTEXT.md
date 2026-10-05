@@ -83,6 +83,21 @@ Stage-2 launch and preserves earlier revisions as history. A proposed manifest
 does not grant write permission.
 _Avoid_: Rewritten launch scope
 
+**Implementation Ticket**:
+A delivery slice owning behavior, acceptance criteria and prerequisite dependencies.
+Its function execution plan refines internal execution without replacing that contract.
+_Avoid_: Function task, function plan as acceptance contract
+
+**Function Execution Plan**:
+The versioned internal plan for a Ticket's concrete functions, their capabilities,
+approach, input/output and failure behavior, dependencies and shared verifications.
+_Avoid_: Independent workflow, per-function acceptance contract
+
+**Internal Plan Revision**:
+A change owned by the original Workflow Controller to a function execution plan
+within the accepted behavior contract and business responsibility boundary.
+_Avoid_: Dispatcher plan edit, requirement change, old-run migration
+
 **Pre-Stage-3 Scope Correction**:
 The original Controller may correct an accepted Stage-2 manifest only before
 any saved Stage-3 preparation, launch intent or session. Later omissions block
@@ -118,6 +133,11 @@ _Avoid_: Background monitor, implementation blocker
 
 ## Workflow roles
 
+**Workflow Controller**:
+The original authority retaining user decisions, routing, acceptance and internal
+function-plan revision for one workflow.
+_Avoid_: Implementation Dispatcher, foreground carrier
+
 **Phase Source Task**:
 The Codex task that holds source-side authority for a Phase Run: it authorizes
 activation and accepts and finalizes the result.
@@ -136,15 +156,15 @@ implement the change or perform final publication.
 _Avoid_: Implementation Dispatcher
 
 **Implementation Dispatcher**:
-The unique native Stage 3 child that implements, delegates exact nonoverlapping
-file assignments, integrates Git and produces a verified candidate in the one Flow
-Worktree. It does not own user decisions, independent review or publication.
+The unique native Stage 3 child that schedules and accepts real Execution Agent
+deliveries, validates and integrates a candidate in the one Flow Worktree. In new
+protocol runs it owns neither implementation edits nor function-plan revision.
 _Avoid_: Workflow Controller, Execution Agent
 
 **Execution Agent**:
-A native implementation child with an exact file allocation, behavioral target,
-testing requirement and no Git mutation authority. It stops and returns bytes for
-dispatcher acceptance.
+A native implementation child with current function-plan references, an exact file
+allocation, behavioral target and testing requirement. It owns implementation and
+repair bytes, with no planning or Git mutation authority.
 _Avoid_: Implementation Dispatcher
 
 **Closure Agent**:

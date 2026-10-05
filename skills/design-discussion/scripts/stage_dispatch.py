@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import entry_prepare as entry
 import discussion_protocol
 import stage_handoff as handoff
+import execution_plan
 import workflow_control as control
 import workflow_control_git as control_git
 
@@ -25,13 +26,25 @@ require = handoff.require
 def verify_discussion_port(envelope, saved):
     entry.fields(envelope, {"protocol_version", "project_path", "project_id", "tree_id", "actor_topic_id",
                            "actor_conversation_ref", "expected_ledger_revision", "expected_topic_revision", "idempotency_key"})
-    require(envelope["project_path"] == entry.discussion_root(saved["expected_entry"]) and
-            all(envelope[key] == saved["entry"]["source"]["attachment"][key]
+    controller_entry = handoff.attached_source_entry(saved) or saved['expected_entry']
+    require(envelope["project_path"] == entry.discussion_root(controller_entry) and
+            all(envelope[key] == controller_entry['requirement']['attachment'][key]
                 for key in ("project_id", "tree_id", "actor_topic_id")),
             "discussion_identity_conflict", "control envelope differs from pinned discussion project")
 
 
-def checkpoint(port, request, action, evidence):
+def protected_index_matches_head(repository, relative):
+    tree = control_git.git(repository, 'ls-tree', '-z', 'HEAD', '--', relative)
+    index = control_git.git(repository, 'ls-files', '--stage', '-v', '-z', '--', relative)
+    if not tree:
+        return not index
+    header, separator, name = tree.partition(b'\t')
+    fields = header.split(b' ')
+    return (separator and name == relative.encode() + b'\0' and len(fields) == 3 and
+            index == b'H ' + fields[0] + b' ' + fields[2] + b' 0\t' + name)
+
+
+def checkpoint(port, request, action, evidence, *, checkpoint_path=None):
     """Apply the existing authority, never a transport-record shadow ledger.
 
 Discussion mutation envelopes are supplied from the controller's saved intent;
@@ -46,12 +59,14 @@ their exact idempotency key and revisions must be retained on an unknown result.
         verify_discussion_port(envelope, request)
         require(envelope["actor_conversation_ref"] == context["controller_ref"] and
                 envelope["actor_topic_id"] == context["topic_ref"], "identity_mismatch", "discussion checkpoint owner differs")
-        actual = discussion_protocol.handle({**envelope, "operation": "workflow-control", "action": action, "evidence": evidence})
+        actual = discussion_protocol.handle({**envelope, "operation": "workflow-control", "action": action,
+            "evidence": evidence,
+            **({'scope_checkpoint_path': checkpoint_path} if checkpoint_path is not None else {})})
         return actual["control"], actual
     # Downstream Phase Runs own lifecycle, while execution control stays in the
     # caller checkpoint. Attached dedicated-stage mutations must use the ledger.
     require(context["topic_ref"] is None or context["stage"] >= 2, "authority_missing", "attached dedicated control requires its ledger adapter")
-    payload = {"schema_version": 5, "actor_ref": context["controller_ref"], "context": context,
+    payload = {"schema_version": context["schema_version"], "actor_ref": context["controller_ref"], "context": context,
                "action": action, "evidence": evidence}
     if action in {'archive', 'archive-result'}:
         # Retired task cleanup has no Git authority. Historical stage baselines
@@ -71,11 +86,41 @@ their exact idempotency key and revisions must be retained on an unknown result.
                     'scope_changed', 'allocation must retain original implementation scope and protections')
             authority_base = progress['git_baseline_commit']
             handoff.ancestor(repository, authority_base, baseline)
+            authority = request.get('readiness', {}).get('scope_authority')
+            protected_commit = authority['candidate_commit'] if authority is not None else authority_base
+            repository_path = Path(repository)
+            integration = progress.get('integration_source')
+            approved = set()
+            if integration is not None:
+                require(progress.get('integration_retained') is not None,
+                        'source_changed', 'captured integration lacks its retained closure authority')
+                if request.get('readiness') is not None:
+                    import workflow_progress
+                    checkpoint_state = workflow_progress.read_record(
+                        Path(request['readiness']['checkpoint_path'])).get(workflow_progress.KEY)
+                    require(checkpoint_state is not None and
+                            checkpoint_state['control']['context'] == context,
+                            'authority_changed', 'captured integration differs from the current Controller checkpoint')
+                control_git.git(repository_path, 'merge-base', '--is-ancestor',
+                                integration['snapshot']['head'], baseline)
+                verified = (control_git.verified_planning_paths(repository_path, progress) |
+                            control_git.retained_closure_paths(repository_path, progress))
+                # Only the original C readiness pin can authorize a changed
+                # protected document. Inline runs keep their original byte lock.
+                if request.get('readiness') is not None:
+                    approved = verified
             for relative in progress['protected_paths']:
-                original = control_git.committed_fingerprint(Path(repository), authority_base, relative)
-                require(control_git.committed_fingerprint(Path(repository), baseline, relative) == original and
-                        control_git.file_fingerprint(Path(repository), relative) == original,
-                        'source_changed', 'allocation cannot move or change an original protected source')
+                original = control_git.committed_fingerprint(repository_path, protected_commit, relative)
+                expected = (integration['snapshot']['files'][relative]
+                            if integration is not None and relative in approved else original)
+                require((integration is None or
+                         integration['snapshot']['files'][relative] == expected and
+                         control_git.committed_fingerprint(repository_path,
+                             integration['snapshot']['head'], relative) == expected) and
+                        control_git.committed_fingerprint(repository_path, baseline, relative) == expected and
+                        control_git.file_fingerprint(repository_path, relative) == expected and
+                        (integration is None or protected_index_matches_head(repository_path, relative)),
+                        'source_changed', 'allocation cannot move or change a protected source')
             # scope.baseline is this execution's current-HEAD snapshot. The
             # controller's frozen scope base remains the Git authority boundary.
             baseline = authority_base
@@ -112,9 +157,45 @@ def design_scope(request, saved, payload):
     return effective
 
 
+def inline_recovery_allocation(request, saved):
+    """Require the exact C-owned allocation transaction for inline recovery."""
+    if ('integration_recovery' not in saved['authorization'] or
+            saved.get('readiness') is not None or saved['role'] != 'execution-agent'):
+        return
+    recorded_path = (request.get('record') or {}).get('scope_checkpoint_path')
+    checkpoint_path = request.get('scope_checkpoint_path', recorded_path)
+    require(recorded_path is None or checkpoint_path == recorded_path,
+            'authority_changed', 'inline recovery checkpoint pin changed')
+    state = handoff.verify_inline_recovery_pin(
+        saved, saved['controller_ref'], saved['requirement_identity'],
+        checkpoint_path)
+    require(state['control'] == request['control'], 'authority_changed',
+            'allocation must use the original current Controller control port')
+    slots = [slot for slot in state.get('allocations', {}).values()
+             if slot.get('handoff') == saved and
+             slot.get('owner_ref') == state['control']['context']['carrier']['ref']]
+    require(len(slots) == 1, 'authority_missing',
+            'inline recovery requires its exact C-owned allocation')
+    slot = slots[0]
+    if request.get('operation') == 'prepare':
+        authorized = slot.get('record') is None and slot.get('transaction') == request
+    elif slot.get('transaction') is not None:
+        authorized = slot['transaction'] == request and slot.get('record') == request.get('record')
+    else:
+        # C clears a completed transaction after saving B's returned record.
+        # That immutable record supports readback; C serves completed replays.
+        authorized = (request.get('operation') is None and
+                      slot.get('record') == request.get('record') and
+                      (slot.get('result') or {}).get('record') == request.get('record') and
+                      slot['record']['status'] in {'received', 'accepted', 'not-created'})
+    require(authorized,
+            'authority_missing', 'inline recovery requires its exact C-owned allocation transaction')
+
+
 def prepared(request):
-    entry.fields(request, {"protocol", "operation", "handoff", "control"})
-    saved = handoff.verify(request["handoff"])
+    entry.fields(request, {"protocol", "operation", "handoff", "control"}, {"scope_checkpoint_path"})
+    saved = handoff.verify(request["handoff"],
+                           checkpoint_path=request.get("scope_checkpoint_path"))
     actor = saved["expected_entry"]["actor"]
     require(actor["role"] in {"controller", "scripted-carrier", "implementation-dispatcher"},
             "role_mismatch", "only the authorized controller/carrier may prepare dispatch")
@@ -132,6 +213,19 @@ def prepared(request):
     require(selected["stage"] == saved["stage"] and selected["requirement_identity"] == saved["requirement_identity"],
             "source_changed", "control stage or requirement differs from the prepared input")
     require(context["controller_ref"] == saved["controller_ref"], "identity_mismatch", "control owner differs")
+    checkpoint_path = request.get('scope_checkpoint_path')
+    if checkpoint_path is not None:
+        if saved['role'] == 'execution-agent':
+            require(saved.get('readiness') is None and
+                    'integration_recovery' in saved['authorization'],
+                    'invalid_checkpoint', 'Execution Agent checkpoint pin belongs to inline final recovery')
+            inline_recovery_allocation(request, saved)
+        else:
+            require(saved['stage'] >= 2, 'invalid_request',
+                    'Controller checkpoint pin belongs to its stage carrier')
+            handoff.verify_stage_checkpoint_pin(saved, context, checkpoint_path)
+    elif saved['role'] == 'execution-agent' and 'integration_recovery' in saved['authorization']:
+        inline_recovery_allocation(request, saved)
     role, scope = saved["role"], saved["scope"]
     if saved["stage"] < 2:
         # User choice and attached entry authority are prepared/decided by the
@@ -159,6 +253,14 @@ def prepared(request):
                             protected_paths=scope["protected_paths"], authority_digest=saved["authorization"]["scope_digest"],
                             testing_basis=saved["semantic"]["testing_basis"], validation_plan=saved["semantic"]["validation_plan"],
                             implementation_policy=control.implementation_policy(saved["semantic"].get("implementation_policy")))
+            if saved.get('readiness') is not None or saved.get('inline_authority') is not None:
+                authority = (saved['readiness']['scope_authority'] if saved.get('readiness') is not None
+                             else saved['inline_authority'])
+                evidence['execution_authority'] = authority
+                evidence['plan_authority'] = {'revision': authority['revision'],
+                    'authority_digest': entry.digest(authority),
+                    'plan_digest': authority['execution_plan']['plan_digest'],
+                    'contract_digest': authority['execution_plan']['contract_digest']}
         elif role == "execution-agent":
             action = "plan-execution"
             progress = selected["handoff_progress"] or {}
@@ -169,6 +271,17 @@ def prepared(request):
                     "scope_changed", "allocation manifest must retain the original sealed baseline")
             evidence.update(task_id=str(uuid.uuid4()), paths=scope["owned_paths"], read_only=scope["protected_paths"],
                             behavior=saved["semantic"]["objective"], tests=saved["semantic"]["completion_criteria"], git_operations=[])
+            if saved.get('readiness') is not None or saved.get('inline_authority') is not None:
+                authority = (saved['readiness']['scope_authority'] if saved.get('readiness') is not None
+                             else saved['inline_authority'])
+                catalog = execution_plan.current_catalog(authority)
+                group = execution_plan.validate_plan_refs(catalog, saved['semantic'].get('plan_refs'),
+                    scope['owned_paths'], scope['protected_paths'],
+                    progress.get('carried_results', []) + progress.get('executions', []), authority)
+                require(progress.get('plan_authority') == group['plan_authority'],
+                        'execution_plan_stale', 'current control authority differs from allocation')
+                evidence.update(plan_refs=group['plan_refs'], plan_authority=group['plan_authority'],
+                    group_digest=group['group_digest'], tests=group['verification_commands'])
             if saved['semantic'].get('adopt_paths'):
                 evidence.update(adopt_paths=saved['semantic']['adopt_paths'],
                     adoption_snapshot_digest=saved['semantic']['adoption_snapshot_digest'])
@@ -178,7 +291,8 @@ def prepared(request):
             evidence.update(candidate=prior["payload"]["candidate_commit"], dispatcher_ref=prior["role_ref"],
                             review=prior["payload"]["review"], verification=prior["payload"]["verification"], binding=saved["binding"],
                             implementation_paths=scope["implementation_paths"], closure_paths=scope["closure_paths"], protected_paths=scope["protected_paths"])
-        result, applied = checkpoint(request["control"], saved, action, evidence)
+        result, applied = checkpoint(request["control"], saved, action, evidence,
+                                     checkpoint_path=checkpoint_path)
         attempt = result.get("allocation_digest", result["context"]["carrier"]["attempt"])
     payload = handoff.render(saved)["payload"]
     if role == 'execution-agent' and saved['semantic'].get('adopt_paths'):
@@ -195,6 +309,8 @@ def prepared(request):
         launch = handoff.seal({**handoff.unseal(launch), "dedicated_plan": plan})
     record = handoff.seal({"protocol": PROTOCOL, "kind": "dispatch", "handoff": saved, "request": launch,
                           "receipts": [], "delivery": None, "acceptance": None, "status": "prepared"})
+    if checkpoint_path is not None:
+        record = handoff.seal({**handoff.unseal(record), 'scope_checkpoint_path': checkpoint_path})
     return {"status": "prepared", "record": record, "checkpoint": port_result(result, applied),
             "host_call": launch, "downstream_ready": False,
             "required_order": ["persist-record-and-checkpoint", "verify-input-and-target-configuration", "invoke-host-once", "save-receipt", "bind"]}
@@ -202,16 +318,19 @@ def prepared(request):
 
 def record_for(request):
     record = handoff.unseal(request["record"])
-    entry.fields(record, {"protocol", "kind", "handoff", "request", "receipts", "delivery", "acceptance", "status"})
+    entry.fields(record, {"protocol", "kind", "handoff", "request", "receipts", "delivery", "acceptance", "status"},
+                 {"scope_checkpoint_path"})
     handoff.require_current_protocol(record)
     require(record["kind"] == "dispatch", "invalid_evidence", "dispatch record required")
     launch = handoff.unseal(record["request"])
     handoff.require_current_protocol(handoff.unseal(record["handoff"]))
-    if record["handoff"]["stage"] == 3 and "readiness" in record["handoff"]:
+    if record["handoff"]["stage"] == 3 and "readiness" in record["handoff"] and \
+            record["handoff"]["role"] == "execution-agent":
         handoff.current_readiness(record["handoff"]["readiness"])
     require(launch["input_digest"] == record["handoff"]["digest"], "identity_mismatch", "request belongs to another input")
     control.validate_context(request["control"]["context"])
     require(request["control"]["context"]["controller_ref"] == launch["controller_ref"], "identity_mismatch", "checkpoint owner changed")
+    inline_recovery_allocation(request, record['handoff'])
     if request["control"]["discussion"] is not None:
         envelope = request["control"]["discussion"]
         verify_discussion_port(envelope, record["handoff"])
@@ -221,6 +340,18 @@ def record_for(request):
         control.validate_context(current["workflow_control"])
         require(current["workflow_control"]["controller_ref"] == launch["controller_ref"], "identity_mismatch", "ledger controller changed")
         request["control"] = {**request["control"], "context": current["workflow_control"]}
+    if record["handoff"]["stage"] == 3 and record["handoff"]["role"] == "implementation-dispatcher" and \
+            ("readiness" in record["handoff"] or "scope_checkpoint_path" in record):
+        state = handoff.current_stage3_state(record["handoff"], request["control"]["context"],
+                                             record.get('scope_checkpoint_path'))
+        if state is not None:
+            request["_current_stage3_progress"] = state["control"]["context"]["handoff_progress"]
+    elif record["handoff"]["stage"] == 3 and record["handoff"]["role"] == "implementation-dispatcher":
+        require(not (request['control']['context'].get('handoff_progress') or {}).get('plan_revisions'),
+                'handoff_not_ready', 'revised standalone delivery needs its original Controller checkpoint pin')
+    if record["handoff"]["stage"] == 4 and "scope_checkpoint_path" in record:
+        handoff.verify_stage_checkpoint_pin(record["handoff"], request["control"]["context"],
+                                            record["scope_checkpoint_path"])
     return record
 
 
@@ -232,6 +363,18 @@ def matching(record, context, *, reconcile_unbound=False):
         matches = [item for item in progress.get("executions", []) if item["allocation_digest"] == launch["attempt"]]
         require(len(matches) == 1, "attempt_mismatch", "allocation is no longer eligible")
         item = matches[0]
+        semantic = record['handoff']['semantic']
+        if semantic.get('plan_refs') is not None:
+            authority = (record['handoff']['readiness']['scope_authority']
+                         if record['handoff'].get('readiness') is not None else
+                         record['handoff']['inline_authority'])
+            expected = {'revision': semantic['authority_revision'],
+                'authority_digest': semantic['authority_digest'],
+                'plan_digest': semantic['plan_digest'],
+                'contract_digest': authority['execution_plan']['contract_digest']}
+            require(progress.get('plan_authority') == expected and item.get('plan_authority') == expected and
+                    item.get('plan_refs') == semantic['plan_refs'],
+                    'execution_plan_stale', 'allocation no longer belongs to current plan authority')
         cancelled_lookup = (reconcile_unbound and progress["state"] == "cancelled" and item["agent_ref"] is None
                             and (item["state"] == "dispatch-pending" or item["state"] == "cancelled" and item["stopped"] is True))
         require(progress["state"] == "implementing" or cancelled_lookup, "attempt_mismatch", "allocation is no longer eligible")
@@ -246,7 +389,10 @@ def execution_release_token(record):
     require(launch['role'] == 'execution-agent', 'role_mismatch', 'write release belongs to an Execution Agent')
     ready = next((receipt for receipt in record['receipts'] if receipt['status'] == 'ready'), None)
     require(ready is not None, 'authorization_missing', 'bound Execution Agent receipt required')
-    return entry.digest([launch['attempt'], ready['receipt_ref'], ready['ref']])
+    semantic = record['handoff']['semantic']
+    return entry.digest([launch['attempt'], ready['receipt_ref'], ready['ref'],
+                         semantic.get('authority_revision'), semantic.get('authority_digest'),
+                         semantic.get('plan_digest'), semantic.get('plan_refs')])
 
 
 def receipt_for(record, receipt, event):
@@ -325,7 +471,8 @@ def bind_discussion(port, record, receipt):
 
 
 def bound(request):
-    entry.fields(request, {"protocol", "operation", "record", "control", "receipt"})
+    entry.fields(request, {"protocol", "operation", "record", "control", "receipt"},
+                 {"scope_checkpoint_path"})
     record = record_for(request)
     require(not any(isinstance(receipt, dict) and receipt.get("event") == "existing-dispatcher"
                     for receipt in record["receipts"]),
@@ -375,6 +522,8 @@ def bound(request):
         action = "assign" if ready else "execution-dispatch-result"
         evidence = {"task_id": item["task_id"], "allocation_digest": launch["attempt"]}
         evidence.update({"agent_ref": receipt["ref"]} if ready else {"status": "not-created" if receipt["status"] == "not-created" else "unknown"})
+        if ready:
+            evidence['write_release'] = execution_release_token({**record, 'receipts': [*record['receipts'], receipt]})
     elif ready:
         action = {"solution-designer": "designer-bound", "implementation-dispatcher": "dispatcher-bound", "closure-agent": "closure-bound"}[launch["role"]]
         evidence = {"ref": receipt["ref"], "attempt": launch["attempt"]}
@@ -428,20 +577,30 @@ def received(request):
     if stage != 4:
         current = handoff.refresh(saved["entry"], saved["expected_entry"], after_work=True)
         if stage >= 2:
-            handoff.source(current, saved["requirement"], stage)
+            handoff.source(current, saved["requirement"], stage,
+                           attached_controller_entry=handoff.attached_source_entry(saved))
     if saved["role"] == "execution-agent":
-        entry.fields(payload, {"changed_paths", "file_hashes", "tests", "write_release"}, {"adopted_paths"})
+        entry.fields(payload, {"changed_paths", "file_hashes", "tests", "write_release"},
+                     {"adopted_paths", "plan_refs", "plan_authority"})
         require(payload['write_release'] == execution_release_token(record),
                 'authorization_changed', 'Execution Agent did not receive its bound write release')
         evidence = {key: payload[key] for key in ("changed_paths", "file_hashes", "tests")}
         if 'adopted_paths' in payload:
             evidence['adopted_paths'] = payload['adopted_paths']
         evidence.update(agent_ref=ref, stopped=True, git_unchanged=True)
+        if saved['semantic'].get('plan_refs') is not None:
+            require(payload.get('plan_refs') == saved['semantic']['plan_refs'] and
+                    payload.get('plan_authority') == item['plan_authority'],
+                    'execution_plan_stale', 'Execution Agent result names an older plan')
+            evidence.update(plan_refs=payload['plan_refs'], plan_authority=payload['plan_authority'],
+                            write_release=payload['write_release'])
         action = "execution-result"
     else:
         if stage == 2:
             design_scope(request, saved, payload)
-        handoff.verify_result(stage, payload, saved["binding"], saved["scope"], root, ref, saved['authorization'].get('integration_recovery'))
+        handoff.verify_result(stage, payload, saved["binding"], saved["scope"], root, ref,
+                              saved['authorization'].get('integration_recovery'),
+                              request.get('_current_stage3_progress'))
         if stage < 2:
             identity, revision = handoff.source(current, payload["requirement"], stage)
             require(identity["path"] == saved["requirement_identity"]["path"] and identity["version"] >= saved["requirement_identity"]["version"],
@@ -497,13 +656,20 @@ def accepted(request):
             handoff.phase_evidence(saved, role_ref=ref, receiving=True, control_context=request["control"]["context"])
             if stage != 4:
                 current = handoff.refresh(saved["entry"], saved["expected_entry"], after_work=True)
-                handoff.source(current, saved["requirement"], stage)
+                handoff.source(current, saved["requirement"], stage,
+                               attached_controller_entry=handoff.attached_source_entry(saved))
         if saved["role"] == "execution-agent":
-            result, applied = checkpoint(request["control"], saved, "accept-execution", {"agent_ref": ref, "file_hashes": payload["file_hashes"]})
+            evidence = {"agent_ref": ref, "file_hashes": payload["file_hashes"]}
+            if saved['semantic'].get('plan_refs') is not None:
+                evidence.update(plan_refs=payload['plan_refs'], plan_authority=payload['plan_authority'],
+                                write_release=payload['write_release'])
+            result, applied = checkpoint(request["control"], saved, "accept-execution", evidence)
         else:
             if stage == 2:
                 design_scope(request, saved, payload)
-            handoff.verify_result(stage, payload, saved["binding"], saved["scope"], root, ref, saved['authorization'].get('integration_recovery'))
+            handoff.verify_result(stage, payload, saved["binding"], saved["scope"], root, ref,
+                                  saved['authorization'].get('integration_recovery'),
+                                  request.get('_current_stage3_progress'))
             if stage < 2:
                 current = handoff.refresh(saved["entry"], saved["expected_entry"], after_work=True)
                 identity, revision = handoff.source(current, payload["requirement"], stage)

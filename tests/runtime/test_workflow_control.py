@@ -5,9 +5,14 @@ import hashlib
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 CLI = Path(__file__).resolve().parents[2] / "src/shared/scripts/workflow_control.py"
+sys.path.insert(0, str(CLI.parent))
+import workflow_control_git as control_git
+import workflow_control as control
+import execution_plan
 
 def takeover_proof(ref, attempt, stage=0, model='supported', effort='high'):
     """Controlled host adapter evidence, never a claim of real tool authentication."""
@@ -48,8 +53,11 @@ def verification_fixture(candidate, dispatcher, cwd, target):
     def digest(value):
         return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
     plan = plan_for(cwd)
+    current_plan = {'revision': 1, 'authority_digest': '1' * 64,
+                    'plan_digest': '2' * 64, 'contract_digest': '3' * 64}
     review = {axis:{'candidate':candidate,'expected_target_head':target,'plan_digest':digest(plan),
-              'reviewer_ref':axis,'status':'accepted','result_ref':'terminal-'+axis} for axis in ('standards','spec')}
+              'plan_authority': current_plan, 'reviewer_ref':axis,'status':'accepted',
+              'result_ref':'terminal-'+axis} for axis in ('standards','spec')}
     native = {axis:{'adapter':'fixture','call_ref':'review-'+axis,'response_ref':'terminal-'+axis,
                     'status':'stopped','ref':axis,'raw':{'result':'accepted'}} for axis in review}
     decision = {'controller_ref':'controller','reference':'fixture:convergence','review':review,'native_evidence':native}
@@ -57,8 +65,10 @@ def verification_fixture(candidate, dispatcher, cwd, target):
     source = {'adapter':'fixture','call_ref':'command','response_ref':'command-result',
               'raw':{'attempt_id':'fixture-final','checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':dispatcher}}
     verification = {'candidate':candidate,'expected_target_head':target,'validation_plan':plan,'plan_digest':digest(plan),
-                    'review_digest':digest(decision),'review_decision':decision,'dispatcher_ref':dispatcher}
-    verification['attempts'] = [{k:verification[k] for k in ('candidate','expected_target_head','plan_digest','review_digest','dispatcher_ref')} |
+                    'review_digest':digest(decision),'review_decision':decision,'dispatcher_ref':dispatcher,
+                    'plan_authority':current_plan}
+    verification['attempts'] = [{k:verification[k] for k in ('candidate','expected_target_head','plan_digest',
+        'plan_authority','review_digest','dispatcher_ref')} |
         {'attempt_id':'fixture-final','carrier_attempt':'fixture-carrier','required':plan['final_required'],
          'state':'passed','checks':checks,'source':source,'source_snapshot':{}}]
     latest = verification['attempts'][-1]
@@ -67,8 +77,176 @@ def verification_fixture(candidate, dispatcher, cwd, target):
 
 
 class WorkflowControlTests(unittest.TestCase):
-    def call(self, action, evidence=None, context=None):
-        request = {'schema_version': 5, 'action': action,
+    def test_revision_carries_unchanged_step_with_current_flat_ref(self):
+        authority, old_plan, refs = self.execution_plan_fixture(['src/a.py'])
+        revised = copy.deepcopy(authority)
+        revised['revision'] = 2
+        catalog = revised['execution_plan']['catalog']
+        ticket = catalog['tickets'][0]
+        ticket['plan_version'] = 2
+        ticket['source'].update(plan_version=2, sha256='5' * 64)
+        catalog['plan_digest'] = control.authority_digest({
+            key: value for key, value in catalog.items() if key != 'plan_digest'})
+        revised['execution_plan'] = execution_plan.authority_envelope(catalog, 1,
+            input_digest=authority['execution_plan']['sources'][0]['input_digest'])
+        original = {'state': 'accepted', 'stopped': True, 'plan_authority': old_plan,
+            'plan_refs': refs, 'paths': ['src/a.py'], 'agent_ref': 'native:agent',
+            'task_id': 'original', 'allocation_digest': 'allocation',
+            'file_hashes': {'src/a.py': 'f' * 64},
+            'git_snapshot': {'files': {'src/a.py': None}},
+            'git_result_snapshot': {'src/a.py': 'f' * 64}}
+        retained = execution_plan.classify_retained_results(authority, revised,
+            [original], [], None, {'files': {'src/a.py': 'f' * 64}},
+            {'src/a.py': None}, [])
+        self.assertEqual(len(retained['carried_results']), 1)
+        carried = retained['carried_results'][0]
+        self.assertEqual(carried['plan_refs'], [execution_plan.step_ref(
+            ticket, ticket['plan']['steps'][0])])
+        self.assertEqual(carried['plan_authority']['revision'], 2)
+        self.assertEqual(carried['source_owned_start_fingerprints'], {'src/a.py': None})
+        self.assertEqual(carried['owned_final_fingerprints'], {'src/a.py': 'f' * 64})
+        self.assertEqual(original['plan_refs'], refs)
+        missing_start = copy.deepcopy(original)
+        del missing_start['git_snapshot']
+        with self.assertRaises(execution_plan.entry.PreparationError):
+            execution_plan.classify_retained_results(authority, revised,
+                [missing_start], [], None, {'files': {'src/a.py': 'f' * 64}},
+                {'src/a.py': None}, [])
+        forged = copy.deepcopy(original)
+        forged['plan_refs'][0]['source_sha256'] = '0' * 64
+        with self.assertRaises(execution_plan.entry.PreparationError):
+            execution_plan.classify_retained_results(authority, revised,
+                [forged], [], None, {'files': {'src/a.py': 'f' * 64}},
+                {'src/a.py': None}, [])
+
+    def test_newer_accepted_result_without_git_witness_cannot_use_older_receipt(self):
+        authority, summary, refs = self.execution_plan_fixture(['src/a.py'])
+        original = {'state': 'accepted', 'stopped': True, 'plan_authority': summary,
+            'plan_refs': refs, 'paths': ['src/a.py'],
+            'git_result_snapshot': {'src/a.py': 'f' * 64}}
+        missing = {**original, 'git_result_snapshot': None}
+        catalog = execution_plan.current_catalog(authority)
+        self.assertEqual(execution_plan.current_accepted_steps(
+            catalog, [original, missing], authority), set())
+
+    def test_zero_delta_result_does_not_carry_after_owned_fingerprint_changes(self):
+        authority, old_plan, refs = self.execution_plan_fixture(['src/a.py'])
+        revised = copy.deepcopy(authority)
+        revised['revision'] = 2
+        ticket = revised['execution_plan']['catalog']['tickets'][0]
+        ticket['plan_version'] = 2
+        ticket['source'].update(plan_version=2, sha256='5' * 64)
+        catalog = revised['execution_plan']['catalog']
+        catalog['plan_digest'] = control.authority_digest({
+            key: value for key, value in catalog.items() if key != 'plan_digest'})
+        revised['execution_plan'] = execution_plan.authority_envelope(catalog, 1,
+            input_digest=authority['execution_plan']['sources'][0]['input_digest'])
+        original = {'state': 'accepted', 'stopped': True, 'plan_authority': old_plan,
+            'plan_refs': refs, 'paths': ['src/a.py'], 'agent_ref': 'native:agent',
+            'task_id': 'original', 'allocation_digest': 'allocation', 'file_hashes': {},
+            'git_snapshot': {'files': {'src/a.py': 'f' * 64}},
+            'git_result_snapshot': {}}
+        for label, current in (('content', 'e' * 64), ('mode', 'd' * 64),
+                               ('presence', None)):
+            with self.subTest(label=label):
+                retention = execution_plan.classify_retained_results(authority, revised,
+                    [original], [], None, {'files': {'src/a.py': current}},
+                    {'src/a.py': None}, [])
+                self.assertEqual(retention['carried_results'], [])
+
+    def execution_plan_fixture(self, allowed_paths, verification_command='CLI test'):
+        step = {'id': 'step-a', 'target': {'path': 'src/a.py', 'symbol': 'run', 'operation': 'add'},
+                'capability': 'implement behavior a', 'approach': ['implement run'],
+                'inputs': ['approved brief'], 'outputs': ['observable result'],
+                'failures': ['invalid input is reported'], 'depends_on': [],
+                'verification_refs': ['V-a'], 'read_only': []}
+        ticket_source = {'kind': 'inline', 'commit': None, 'sha256': '4' * 64,
+                         'plan_version': 1}
+        ticket = {'ticket_id': 'INLINE-TEST', 'plan_version': 1, 'source': ticket_source,
+                  'plan': {'blocked_by': [], 'steps': [step], 'artifact_steps': [],
+                           'verifications': [{'id': 'V-a', 'behavior': 'behavior a',
+                                              'seam': 'pure control JSON boundary',
+                                              'commands': [verification_command]}]},
+                  'covered_paths': ['src/a.py']}
+        catalog = {'schema_version': 1, 'commit': None, 'tickets': [ticket],
+                   'ordered_step_ids': ['step-a'], 'contract_digest': '3' * 64}
+        catalog['plan_digest'] = control.authority_digest(catalog)
+        authority = {'state': 'sealed', 'revision': 1,
+                     'execution_plan': execution_plan.authority_envelope(catalog, 1,
+                         input_digest='9' * 64),
+                     'scope': {'implementation_paths': list(allowed_paths),
+                               'protected_paths': ['docs/draft.md'],
+                               'downstream': {'manifest': []}}}
+        summary = {'revision': 1, 'authority_digest': control.authority_digest(authority),
+                   'plan_digest': catalog['plan_digest'], 'contract_digest': catalog['contract_digest']}
+        refs = [execution_plan.step_ref(ticket, step)]
+        return authority, summary, refs
+
+    def test_planning_commit_preserves_nonplanning_index_flags(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            def git(*arguments):
+                return subprocess.run(['git', '-C', str(root), *arguments],
+                    check=True, capture_output=True).stdout.decode().strip()
+            git('init', '-q')
+            git('config', 'user.email', 'fixture@example.test')
+            git('config', 'user.name', 'Fixture')
+            (root / 'impl.py').write_text('print("fixed")\n')
+            (root / 'planning.md').write_text('old plan\n')
+            git('add', 'impl.py', 'planning.md')
+            git('commit', '-qm', 'baseline')
+            baseline = git('rev-parse', 'HEAD')
+            authority = {'kind': 'staged', 'candidate_commit': baseline,
+                'scope': {'implementation_paths': ['impl.py'],
+                          'closure_paths': ['planning.md']}}
+            stopped = control_git.plan_revision_snapshot(root, authority,
+                ['planning.md'], ['planning.md'])
+            (root / 'planning.md').write_text('revised plan\n')
+            git('add', 'planning.md')
+            git('commit', '-qm', 'controller planning only')
+            planning_commit = git('rev-parse', 'HEAD')
+            for flag, inverse in (('--assume-unchanged', '--no-assume-unchanged'),
+                                  ('--skip-worktree', '--no-skip-worktree')):
+                with self.subTest(flag=flag):
+                    git('update-index', flag, 'impl.py')
+                    with self.assertRaises(control_git.ControlError):
+                        control_git.verify_plan_revision(root, stopped, planning_commit)
+                    git('update-index', inverse, 'impl.py')
+            verified = control_git.verify_plan_revision(root, stopped, planning_commit)
+            self.assertEqual(verified['changed_paths'], ['planning.md'])
+
+    def test_planning_snapshot_rejects_unmerged_index_stages(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            def git(*arguments, check=True):
+                return subprocess.run(['git', '-C', str(root), *arguments],
+                    check=check, capture_output=True).stdout.decode().strip()
+            git('init', '-q')
+            git('config', 'user.email', 'fixture@example.test')
+            git('config', 'user.name', 'Fixture')
+            (root / 'impl.py').write_text('base\n')
+            (root / 'planning.md').write_text('plan\n')
+            git('add', 'impl.py', 'planning.md')
+            git('commit', '-qm', 'baseline')
+            git('branch', 'other')
+            (root / 'impl.py').write_text('main\n')
+            git('commit', '-qam', 'main edit')
+            baseline = git('rev-parse', 'HEAD')
+            git('checkout', '-q', 'other')
+            (root / 'impl.py').write_text('other\n')
+            git('commit', '-qam', 'other edit')
+            git('checkout', '-q', '-')
+            git('merge', 'other', check=False)
+            self.assertTrue(git('ls-files', '-u', '-z'))
+            authority = {'kind': 'staged', 'candidate_commit': baseline,
+                'scope': {'implementation_paths': ['impl.py'],
+                          'closure_paths': ['planning.md']}}
+            with self.assertRaises(control_git.ControlError):
+                control_git.plan_revision_snapshot(root, authority,
+                    ['planning.md'], ['planning.md'])
+
+    def call(self, action, evidence=None, context=None, schema_version=6):
+        request = {'schema_version': schema_version, 'action': action,
                    'actor_ref': 'controller', 'context': context or self.context(),
                    'evidence': evidence or {}}
         result = subprocess.run([sys.executable, str(CLI)], input=json.dumps(request),
@@ -93,11 +271,21 @@ class WorkflowControlTests(unittest.TestCase):
                 'inherited': None, 'upgrade_attempted': False}
 
     def context(self):
-        return {'schema_version': 5, 'controller_ref': 'controller', 'topic_ref': None,
+        return {'schema_version': 6, 'controller_ref': 'controller', 'topic_ref': None,
                 'stage': 0, 'carrier': None,
                 'preference': {'topic_current': False, 'stage_current': False},
                 'flow_authority': None, 'requirement_identity': {'path': 'docs/draft.md',
-                    'sha256': 'a' * 64, 'version': 1}, 'handoff_progress': None}
+                'sha256': 'a' * 64, 'version': 1}, 'handoff_progress': None}
+
+    def test_previous_control_schema_requires_its_original_runtime(self):
+        current = self.context()
+        previous = copy.deepcopy(current)
+        previous['schema_version'] = 5
+        rejected_context = self.call('select-configuration', {}, previous)
+        rejected_request = self.call('select-configuration', {}, current, schema_version=5)
+        self.assertIn('legacy_run_requires_original_runtime', rejected_context['error'])
+        self.assertIn('legacy_run_requires_original_runtime', rejected_request['error'])
+        self.assertEqual(previous['schema_version'], 5)
 
     def test_preparation_freezes_one_plan_without_creating_a_task(self):
         result = self.call('prepare', {'target': 'local', 'project': 'project',
@@ -265,15 +453,21 @@ class WorkflowControlTests(unittest.TestCase):
     def test_single_dispatcher_exact_files_and_stopped_writer_recovery(self):
         ctx = self.context()
         ctx['stage'] = 3
+        authority, current_plan, refs = self.execution_plan_fixture(['src/a.py', 'src/b.py'])
         started = self.call('start-dispatch', {'binding': self.binding(),
             'binding_verified': True, 'allowed_paths': ['src/a.py', 'src/b.py'], 'protected_paths': ['docs/draft.md'],
-            'authority_digest': 'c' * 64, 'testing_basis': 'real CLI', 'validation_plan': plan_for(self.binding()['worktree']), 'configuration': self.configuration('implementation-dispatcher')}, ctx)
+            'authority_digest': 'c' * 64, 'testing_basis': 'real CLI',
+            'validation_plan': plan_for(self.binding()['worktree']),
+            'execution_authority': authority, 'plan_authority': current_plan,
+            'configuration': self.configuration('implementation-dispatcher')}, ctx)
         self.assertTrue(started['ok'])
         self.assertFalse(self.call('start-dispatch', {}, started['context'])['ok'])
         bound = self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']}, started['context'])
         envelope = {'task_id': 'a', 'paths': ['src/a.py'],
                     'read_only': ['src/b.py'], 'behavior': 'behavior a', 'tests': ['CLI test'], 'git_operations': [],
-                    'configuration': self.configuration('execution-agent')}
+                    'configuration': self.configuration('execution-agent'),
+                    'plan_refs': refs, 'plan_authority': current_plan,
+                    'group_digest': control.digest([current_plan, refs])}
         planned = self.call('plan-execution', envelope, bound['context'])
         self.assertTrue(planned['ok'])
         premature = self.call('execution-result', {'agent_ref': None, 'stopped': True,
@@ -286,7 +480,9 @@ class WorkflowControlTests(unittest.TestCase):
         self.assertTrue(cancelled['ok'])
         self.assertTrue(cancelled['context']['handoff_progress']['executions'][0]['stopped'])
         self.assertFalse(self.call('assign', {'agent_ref': 'late', 'task_id': 'a', 'allocation_digest': planned['allocation_digest']}, cancelled['context'])['ok'])
-        assigned = self.call('assign', {'agent_ref': 'executor-a', 'task_id': 'a', 'allocation_digest': planned['allocation_digest']}, planned['context'])
+        assigned = self.call('assign', {'agent_ref': 'executor-a', 'task_id': 'a',
+            'allocation_digest': planned['allocation_digest'], 'write_release': 'release-a'},
+            planned['context'])
         self.assertTrue(assigned['ok'])
         envelope['task_id'] = 'b'
         self.assertFalse(self.call('plan-execution', envelope, assigned['context'])['ok'])
@@ -294,9 +490,12 @@ class WorkflowControlTests(unittest.TestCase):
             'replacement_ref': 'replacement'}, assigned['context'])['ok'])
         stopped = self.call('execution-result', {'agent_ref': 'executor-a', 'stopped': True,
             'changed_paths': ['src/a.py'], 'file_hashes': {'src/a.py': 'd' * 64}, 'tests': ['CLI passed'],
-            'git_unchanged': True}, assigned['context'])
+            'git_unchanged': True, 'plan_refs': refs, 'plan_authority': current_plan,
+            'write_release': 'release-a'}, assigned['context'])
         self.assertTrue(stopped['ok'])
-        accepted = self.call('accept-execution', {'agent_ref': 'executor-a', 'file_hashes': {'src/a.py': 'd' * 64}}, stopped['context'])
+        accepted = self.call('accept-execution', {'agent_ref': 'executor-a',
+            'file_hashes': {'src/a.py': 'd' * 64}, 'plan_refs': refs,
+            'plan_authority': current_plan, 'write_release': 'release-a'}, stopped['context'])
         recovered = self.call('recover-dispatch', {'stopped_refs': ['dispatcher', 'executor-a'],
             'file_hashes': {'src/a.py': 'd' * 64}, 'replacement_ref': 'replacement'}, accepted['context'])
         # Bare stopped_refs no longer authorize a replacement; C must prepare
@@ -306,17 +505,21 @@ class WorkflowControlTests(unittest.TestCase):
     def test_candidate_requires_accepted_execution_bytes_for_every_changed_path(self):
         ctx = self.context(); ctx['stage'] = 3
         plan = plan_for(self.binding()['worktree'])
+        authority, current_plan, refs = self.execution_plan_fixture(
+            ['src/a.py', 'src/b.py'], 'focused test')
         started = self.call('start-dispatch', {'binding': self.binding(),
             'binding_verified': True, 'allowed_paths': ['src/a.py', 'src/b.py'],
             'protected_paths': ['docs/draft.md'], 'authority_digest': 'c' * 64,
             'testing_basis': 'real CLI', 'validation_plan': plan,
+            'execution_authority': authority, 'plan_authority': current_plan,
             'configuration': self.configuration('implementation-dispatcher')}, ctx)
         bound = self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']}, started['context'])
         candidate = 'b' * 40
         checks = checks_for(plan['review_required'], candidate)
         evidence = {'dispatcher_ref': 'dispatcher', 'attempt': started['attempt'],
             'commit': candidate, 'expected_target_head': 'a' * 40,
-            'binding': self.binding(), 'plan_digest': __import__('hashlib').sha256(
+            'binding': self.binding(), 'plan_authority': current_plan,
+            'plan_digest': __import__('hashlib').sha256(
                 json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
             'checks': checks, 'source': {'adapter': 'fixture', 'call_ref': 'focused',
                 'response_ref': 'focused-result', 'raw': {'checks': checks,
@@ -326,15 +529,29 @@ class WorkflowControlTests(unittest.TestCase):
         allocation = self.call('plan-execution', {'task_id': 'slice', 'paths': ['src/a.py'],
             'read_only': ['docs/draft.md'], 'behavior': 'real caller behavior',
             'tests': ['focused test'], 'git_operations': [],
-            'configuration': self.configuration('execution-agent')}, bound['context'])
+            'configuration': self.configuration('execution-agent'),
+            'plan_refs': refs, 'plan_authority': current_plan,
+            'group_digest': control.digest([current_plan, refs])}, bound['context'])
         assigned = self.call('assign', {'agent_ref': 'executor', 'task_id': 'slice',
-            'allocation_digest': allocation['allocation_digest']}, allocation['context'])
+            'allocation_digest': allocation['allocation_digest'], 'write_release': 'release-slice'},
+            allocation['context'])
         received = self.call('execution-result', {'agent_ref': 'executor', 'stopped': True,
             'changed_paths': ['src/a.py'], 'file_hashes': {'src/a.py': 'd' * 64},
-            'tests': ['focused test passed'], 'git_unchanged': True}, assigned['context'])
+            'tests': ['focused test passed'], 'git_unchanged': True,
+            'plan_refs': refs, 'plan_authority': current_plan,
+            'write_release': 'release-slice'}, assigned['context'])
         accepted = self.call('accept-execution', {'agent_ref': 'executor',
-            'file_hashes': {'src/a.py': 'd' * 64}}, received['context'])
-        self.assertTrue(self.call('candidate-ready', evidence, accepted['context'])['ok'])
+            'file_hashes': {'src/a.py': 'd' * 64}, 'plan_refs': refs,
+            'plan_authority': current_plan, 'write_release': 'release-slice'}, received['context'])
+        accepted['context']['handoff_progress']['executions'][-1]['git_snapshot'] = {
+            'head': 'a' * 40, 'branch': self.binding()['branch'],
+            'index_hash': '0' * 64, 'files': {'src/a.py': None, 'src/b.py': None}}
+        accepted['context']['handoff_progress']['executions'][-1]['git_result_snapshot'] = {
+            'src/a.py': 'd' * 64}
+        ready = self.call('candidate-ready', evidence, accepted['context'])
+        self.assertTrue(ready['ok'], ready)
+        stale_plan = {**evidence, 'plan_authority': {**current_plan, 'revision': 0}}
+        self.assertFalse(self.call('candidate-ready', stale_plan, accepted['context'])['ok'])
         extra = {**evidence, 'changed_paths': ['src/a.py', 'src/b.py'],
                  'file_hashes': {'src/a.py': 'd' * 64, 'src/b.py': 'e' * 64}}
         self.assertFalse(self.call('candidate-ready', extra, accepted['context'])['ok'])
@@ -545,6 +762,57 @@ class WorkflowControlTests(unittest.TestCase):
         changed = copy.deepcopy(result['context'])
         changed['successor_control']['handoff_progress']['plan']['entry_authority']['stage'] = True
         self.assertFalse(self.call('decide', {'plan_id': result['plan']['plan_id'], 'intent': 'confirm'}, changed)['ok'])
+
+    def test_schema_six_plan_activation_advances_one_current_authority(self):
+        context = self.context(); context['stage'] = 3
+        authority, old, _ = self.execution_plan_fixture(['src/a.py'])
+        started = self.call('start-dispatch', {'binding': self.binding(),
+            'binding_verified': True, 'allowed_paths': ['src/a.py'],
+            'protected_paths': ['docs/draft.md'], 'authority_digest': 'c' * 64,
+            'testing_basis': 'real CLI', 'validation_plan': plan_for(self.binding()['worktree']),
+            'execution_authority': authority, 'plan_authority': old,
+            'configuration': self.configuration('implementation-dispatcher')}, context)
+        self.assertTrue(started['ok'], started)
+        bound = self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']},
+                          started['context'])
+        context = bound['context']
+        revised = copy.deepcopy(authority)
+        revised['revision'] = 2
+        catalog = revised['execution_plan']['catalog']
+        ticket = catalog['tickets'][0]
+        ticket['plan_version'] = 2
+        ticket['source'] = {'kind': 'inline', 'commit': None, 'sha256': '5' * 64,
+                            'plan_version': 2}
+        catalog['plan_digest'] = control.authority_digest({
+            key: value for key, value in catalog.items()
+            if key != 'plan_digest'})
+        revised['execution_plan'] = execution_plan.authority_envelope(catalog, 1,
+            input_digest=authority['execution_plan']['sources'][0]['input_digest'])
+        new = {'revision': 2, 'authority_digest': control.authority_digest(revised),
+               'plan_digest': revised['execution_plan']['plan_digest'],
+               'contract_digest': revised['execution_plan']['contract_digest']}
+        snapshot = {'head': 'b' * 40, 'planning_paths': ['docs/draft.md'],
+                    'files': {'src/a.py': None, 'docs/draft.md': '6' * 64}}
+        retention = execution_plan.classify_retained_results(authority, revised, [], [],
+            None, snapshot, {'src/a.py': None}, ['docs/draft.md'])
+        evidence = {'revision_id': 'private-1', 'old_authority': old, 'new_authority': new,
+            'new_scope': {'implementation_paths': ['src/a.py'],
+                          'protected_paths': ['docs/draft.md']},
+            'planning_commit': 'a' * 40, 'planning_paths': ['docs/draft.md'],
+            'snapshot': snapshot, 'baseline_fingerprints': {'src/a.py': None},
+            'retention': retention, 'new_execution_authority': revised,
+            'classification': {'kind': 'internal', 'reference': 'controller:private'},
+            'git_facts': {'commit': 'a' * 40, 'changed_paths': ['docs/draft.md']}}
+        activated = self.call('plan-revision-activate', evidence, context, schema_version=6)
+        self.assertTrue(activated['ok'], activated)
+        self.assertEqual(activated['context']['schema_version'], 6)
+        self.assertEqual(activated['context']['handoff_progress']['plan_authority'], new)
+        self.assertEqual(len(activated['context']['handoff_progress']['plan_revisions']), 1)
+        replay = self.call('plan-revision-activate', evidence, activated['context'], schema_version=6)
+        self.assertTrue(replay['acknowledged'], replay)
+        changed = copy.deepcopy(evidence)
+        changed['new_authority']['contract_digest'] = '6' * 64
+        self.assertFalse(self.call('plan-revision-activate', changed, activated['context'], schema_version=6)['ok'])
 
 if __name__ == '__main__':
     unittest.main()

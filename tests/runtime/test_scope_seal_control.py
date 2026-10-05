@@ -43,6 +43,9 @@ class ScopeSealControlTests(unittest.TestCase):
         changed = copy.deepcopy(evidence)
         changed['manifest_digest'] = '0' * 64
         self.assertFalse(self.fixture.call('scope-seal', changed, sealed['context'])['ok'])
+        changed_plan = copy.deepcopy(evidence)
+        changed_plan['proposal_digest'] = '0' * 64
+        self.assertFalse(self.fixture.call('scope-seal', changed_plan, sealed['context'])['ok'])
         revision = {
             'revision_id': 'revision-2', 'expected_scope_revision': 1,
             'previous_scope_digest': '1' * 64, 'new_scope_digest': '2' * 64,

@@ -15,8 +15,12 @@ class PackageBuildTests(unittest.TestCase):
     def test_release_rejects_prior_transfer_and_progress(self):
         config = json.loads((ROOT / 'build/skill-packages.json').read_text())
         key = config['compatibility_key']
-        self.assertEqual((key['control'], key['stage_transfer'], key['workflow_progress']),
-                         (10, 'workflow-stage-transfer-v13', 'workflow-progress-v17'))
+        self.assertEqual((key['control'], key['runner'], key['stage_transfer'], key['workflow_progress'],
+                          key['execution_plan']),
+                         (11, 10, 'workflow-stage-transfer-v14', 'workflow-progress-v19',
+                          'execution-plan-v1'))
+        self.assertEqual((config['release'], config['source_revision']),
+                         ('1.3.0', 'workflow-pipeline-v1.3.0'))
         self.assertEqual(key['topic_gate'], 'phase-0-1-discussion-v2')
         self.assertEqual(key['confirmation'], 'goal-scoped-confirmation-v3')
         with tempfile.TemporaryDirectory() as temporary:
@@ -24,11 +28,16 @@ class PackageBuildTests(unittest.TestCase):
             output = root / 'packages'
             subprocess.run([sys.executable, str(ROOT / 'scripts/build_skills.py'), '--output', str(output)],
                            capture_output=True, check=True)
-            for name in ('solution-design', 'guided-implementation', 'change-closure'):
+            for name in ('design-discussion', 'problem-framing', 'solution-design',
+                         'guided-implementation', 'change-closure'):
                 package = json.loads((output / name / 'package.json').read_text())
                 self.assertEqual(package['compatibility_key'], key)
+                self.assertEqual(package['release'], '1.3.0')
+                self.assertIn('scripts/execution_plan.py', package['files'])
             scripts = output / 'guided-implementation/scripts'
             requests = [('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v12', 'operation': 'prepare'}),
+                        ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
+                         {'protocol': 'workflow-progress-v18', 'operation': 'inspect', 'expected_revision': 0, 'data': {}}),
                         ('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v9', 'operation': 'prepare'}),
                         ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
                          {'protocol': 'workflow-progress-v16', 'operation': 'inspect', 'expected_revision': 0, 'data': {}}),
@@ -88,6 +97,15 @@ class PackageBuildTests(unittest.TestCase):
             config['compatibility_key']['control'] = 1
             config['compatibility_key']['stage_transfer'] = 'workflow-stage-transfer-v2'
             config['compatibility_key']['workflow_progress'] = 'workflow-progress-v6'
+            (fixture / 'build/skill-packages.json').write_text(json.dumps(config))
+            subprocess.run([sys.executable, str(fixture / 'scripts/build_skills.py'), '--output', str(root / 'legacy')], check=True)
+            result = subprocess.run([sys.executable, str(ROOT / 'skills/design-discussion/scripts/skill_preflight.py')],
+                input=json.dumps(request), text=True, capture_output=True)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['error']['code'], 'incompatible_package')
+
+            config['compatibility_key'] = dict(json.loads((ROOT / 'build/skill-packages.json').read_text())['compatibility_key'])
+            config['compatibility_key'].pop('execution_plan')
             (fixture / 'build/skill-packages.json').write_text(json.dumps(config))
             subprocess.run([sys.executable, str(fixture / 'scripts/build_skills.py'), '--output', str(root / 'legacy')], check=True)
             result = subprocess.run([sys.executable, str(ROOT / 'skills/design-discussion/scripts/skill_preflight.py')],

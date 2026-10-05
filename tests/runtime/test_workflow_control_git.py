@@ -1,5 +1,6 @@
 """Control decisions consume actual Git evidence through the production adapter."""
 import hashlib
+import copy
 import json
 from pathlib import Path
 import subprocess
@@ -11,6 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/shared/scripts"))
 import test_workflow_control
+import execution_plan
 import workflow_control as control
 import workflow_control_git as control_git
 import supervision_protocol as supervision
@@ -37,11 +39,82 @@ class WorkflowGitTests(unittest.TestCase):
         return subprocess.run(['git', '-C', str(self.repo), *args], text=True, capture_output=True, check=True).stdout.strip()
 
     def call(self, action, evidence, context):
+        evidence = dict(evidence)
+        if action in {'assign', 'execution-result', 'accept-execution'} and context is not None:
+            executions = (context.get('handoff_progress') or {}).get('executions', [])
+            identity = 'task_id' if action == 'assign' else 'agent_ref'
+            execution = next((item for item in executions
+                if item.get(identity) == evidence.get(identity)), None)
+            if execution is not None and 'plan_refs' in execution:
+                if action == 'assign':
+                    evidence['write_release'] = control.digest(['fixture:release', execution['allocation_digest']])
+                else:
+                    evidence.update(plan_refs=execution['plan_refs'],
+                        plan_authority=execution['plan_authority'],
+                        write_release=execution['write_release'])
         result = subprocess.run([sys.executable, str(CLI)], text=True, capture_output=True,
             input=json.dumps({'repository': str(self.repo), 'baseline': self.base,
-                'request': {'schema_version': 5, 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
+                'request': {'schema_version': context['schema_version'], 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
         self.assertTrue(result.stdout, result.stderr)
         return json.loads(result.stdout)
+
+    def plan_evidence(self, context, paths, *, accepted_read_only=False, declared_dependency=True):
+        scope = {'baseline': self.base, 'owned_paths': paths,
+                 'implementation_paths': paths, 'closure_paths': [],
+                 'protected_paths': ['docs/draft.md'],
+                 'downstream': {'state': 'sealed', 'revision': 1,
+                     'implementation_required': True, 'proposal_ref': 'fixture:scope',
+                     'seal_ref': 'fixture:seal', 'manifest': [
+                         {'path': path, 'owner': 'implementation', 'kind': 'source',
+                          'operation': 'modify' if (self.repo / path).exists() else 'add',
+                          'basis': {'commit': self.base, 'path': 'docs/draft.md',
+                                    'section': 'initial requirement'}} for path in paths]}}
+        plan = {'schema_version': 1, 'ticket_id': 'INLINE-GIT', 'plan_version': 1,
+                'spec_ref': {'path': 'inline', 'section': 'brief'},
+                'contract_refs': ['standalone:objective'], 'blocked_by': [],
+                'verifications': [{'id': 'V-cli', 'behavior': 'CLI behavior',
+                                   'seam': 'real control and Git adapter', 'commands': ['CLI']}],
+                'steps': [
+                    {'id': 'step-' + str(index),
+                     'target': {'path': path, 'symbol': 'run_' + str(index),
+                                'operation': item['operation']},
+                     'capability': 'implement ' + path, 'approach': ['implement the planned function'],
+                     'inputs': ['frozen requirement'], 'outputs': ['observable result'],
+                     'failures': ['invalid input is reported'], 'depends_on': [],
+                     'verification_refs': ['V-cli'], 'read_only': []}
+                    for index, (path, item) in enumerate(zip(paths, scope['downstream']['manifest']))],
+                'artifact_steps': []}
+        if accepted_read_only:
+            if declared_dependency:
+                plan['steps'][1]['depends_on'] = [plan['steps'][0]['id']]
+            plan['steps'][1]['read_only'] = [paths[0]]
+        semantic = {'objective': 'implement the frozen requirement', 'testing_basis': 'CLI',
+                    'completion_criteria': ['CLI'], 'constraints': ['stay in scope']}
+        authority = execution_plan.inline_authority(plan, scope, semantic,
+            context['requirement_identity'], repository=str(self.repo), input_digest='9' * 64)
+        catalog = authority['execution_plan']
+        return {'execution_authority': authority,
+                'plan_authority': {'revision': authority['revision'],
+                    'authority_digest': control.digest(authority),
+                    'plan_digest': catalog['plan_digest'],
+                    'contract_digest': catalog['contract_digest']}}
+
+    def execution_envelope(self, context, task_id, paths, read_only=(), **extra):
+        progress = context['handoff_progress']
+        catalog = progress['execution_authority']['execution_plan']['catalog']
+        ticket = catalog['tickets'][0]
+        steps = {step['id']: step for step in ticket['plan']['steps']}
+        refs = [execution_plan.step_ref(ticket, steps[step_id])
+                for step_id in catalog['ordered_step_ids']
+                if steps[step_id]['target']['path'] in paths]
+        envelope = {'task_id': task_id, 'paths': list(paths), 'read_only': list(read_only),
+                    'behavior': extra.pop('behavior', task_id),
+                    'tests': list(dict.fromkeys([*extra.pop('tests', []), 'CLI'])),
+                    'git_operations': [],
+                    'configuration': test_workflow_control.WorkflowControlTests().configuration('execution-agent'),
+                    'plan_refs': refs, 'plan_authority': progress['plan_authority'],
+                    'group_digest': control.digest([progress['plan_authority'], refs])}
+        return {**envelope, **extra}
 
     def test_binding_verifier_returns_facts_from_the_package_cli(self):
         binding = supervision.start_worktree({'repository': str(self.repo),
@@ -79,6 +152,29 @@ class WorkflowGitTests(unittest.TestCase):
             control_git.scope_revision_snapshot(
                 self.repo, self.base, ['docs/draft.md'], ['later.py'])
 
+    def test_plan_revision_verifier_preserves_staged_implementation_partition(self):
+        (self.repo / 'docs/plan.md').write_text('private plan v1\n')
+        self.git('add', 'docs/plan.md')
+        self.git('commit', '-qm', 'sealed planning source')
+        sealed = self.git('rev-parse', 'HEAD')
+        authority = {'candidate_commit': sealed, 'scope': {
+            'implementation_paths': ['impl.py'], 'closure_paths': ['docs/plan.md']}}
+        (self.repo / 'impl.py').write_text('staged implementation\n')
+        self.git('add', 'impl.py')
+        stopped = control_git.plan_revision_snapshot(self.repo, authority,
+            ['docs/draft.md', 'docs/plan.md'], ['docs/plan.md'])
+        (self.repo / 'docs/plan.md').write_text('private plan v2\n')
+        self.git('add', 'docs/plan.md')
+        self.git('commit', '--only', '-qm', 'private plan revision', '--', 'docs/plan.md')
+        candidate = self.git('rev-parse', 'HEAD')
+        facts = control_git.verify_plan_revision(self.repo, stopped, candidate)
+        self.assertEqual(facts['changed_paths'], ['docs/plan.md'])
+        self.assertEqual(facts['parent'], sealed)
+        (self.repo / 'impl.py').write_text('changed during revision\n')
+        self.git('add', 'impl.py')
+        with self.assertRaisesRegex(control.ControlError, 'index stages or flags changed'):
+            control_git.verify_plan_revision(self.repo, stopped, candidate)
+
     def test_changed_requirement_is_received_and_archived_after_takeover(self):
         helper = test_workflow_control.WorkflowControlTests()
         ctx = helper.bound()
@@ -112,13 +208,14 @@ class WorkflowGitTests(unittest.TestCase):
             text=True, capture_output=True, check=True)
         binding = json.loads(started_flow.stdout)['binding']
         self.repo = self.root / 'flow'
+        plan = self.plan_evidence(ctx, ['src/a.py'])
         started = self.call('start-dispatch', {'binding': binding, 'binding_verified': True,
             'allowed_paths': ['src/a.py'], 'protected_paths': ['docs/draft.md'], 'authority_digest': 'c' * 64,
-            'testing_basis': 'CLI', 'validation_plan': __import__('test_workflow_control').plan_for(binding['worktree']), 'configuration': helper.configuration('implementation-dispatcher')}, ctx)
+            'testing_basis': 'CLI', 'validation_plan': __import__('test_workflow_control').plan_for(binding['worktree']),
+            'configuration': helper.configuration('implementation-dispatcher'), **plan}, ctx)
         self.assertTrue(started['ok'], started)
         bound = self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']}, started['context'])
-        envelope = {'task_id': 'a', 'paths': ['src/a.py'], 'read_only': ['docs/draft.md'],
-            'behavior': 'a', 'tests': ['CLI'], 'git_operations': [], 'configuration': helper.configuration('execution-agent')}
+        envelope = self.execution_envelope(bound['context'], 'a', ['src/a.py'], ['docs/draft.md'])
         planned = self.call('plan-execution', envelope, bound['context'])
         assigned = self.call('assign', {'task_id': 'a', 'agent_ref': 'executor',
             'allocation_digest': planned['allocation_digest']}, planned['context'])
@@ -144,7 +241,7 @@ class WorkflowGitTests(unittest.TestCase):
         self.git('add', '.'); self.git('commit', '-qm', 'unauthorized executor commit')
         self.assertFalse(self.call('execution-result', result, assigned['context'])['ok'])
 
-    def start_dispatcher(self):
+    def start_dispatcher(self, *, accepted_read_only=False, declared_dependency=True):
         helper = test_workflow_control.WorkflowControlTests()
         target = self.git('branch', '--show-current')
         receipt = subprocess.run([sys.executable, str(CLI.with_name('supervision_protocol.py')), 'start-worktree'],
@@ -152,27 +249,42 @@ class WorkflowGitTests(unittest.TestCase):
             text=True, capture_output=True, check=True)
         binding = json.loads(receipt.stdout)['binding']; self.repo = self.root / 'flow'
         context = helper.context(); context['stage'] = 3
+        plan = self.plan_evidence(context, ['a.py', 'b.py'], accepted_read_only=accepted_read_only,
+                                  declared_dependency=declared_dependency)
         started = self.call('start-dispatch', {'binding': binding, 'binding_verified': True,
             'allowed_paths': ['a.py', 'b.py'], 'protected_paths': ['docs/draft.md'], 'authority_digest': 'c' * 64,
-            'testing_basis': 'CLI', 'validation_plan': __import__('test_workflow_control').plan_for(binding['worktree']), 'configuration': helper.configuration('implementation-dispatcher')}, context)
+            'testing_basis': 'CLI', 'validation_plan': __import__('test_workflow_control').plan_for(binding['worktree']),
+            'configuration': helper.configuration('implementation-dispatcher'), **plan}, context)
+        self.assertTrue(started['ok'], started)
         return self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']}, started['context'])['context']
 
     def start_allocations(self, peers=False):
         helper = test_workflow_control.WorkflowControlTests()
         context = self.start_dispatcher()
         for name in ('a', 'b') if peers else ('a',):
-            planned = self.call('plan-execution', {'task_id': name, 'paths': [name+'.py'], 'read_only': [],
-                'behavior': name, 'tests': ['CLI'], 'git_operations': [], 'configuration': helper.configuration('execution-agent')}, context)
+            planned = self.call('plan-execution', self.execution_envelope(context, name, [name+'.py']), context)
             context = self.call('assign', {'task_id': name, 'agent_ref': name, 'allocation_digest': planned['allocation_digest']}, planned['context'])['context']
         return context
+
+    def accept_second_plan_step(self, context):
+        planned = self.call('plan-execution', self.execution_envelope(context, 'b', ['b.py']), context)
+        self.assertTrue(planned['ok'], planned)
+        assigned = self.call('assign', {'task_id': 'b', 'agent_ref': 'b',
+            'allocation_digest': planned['allocation_digest']}, planned['context'])
+        self.assertTrue(assigned['ok'], assigned)
+        (self.repo / 'b.py').write_text('verified second step\n')
+        received = self.call('execution-result', self.result_evidence('b', ['b.py']), assigned['context'])
+        self.assertTrue(received['ok'], received)
+        accepted = self.call('accept-execution', {'agent_ref': 'b', 'file_hashes': {}}, received['context'])
+        self.assertTrue(accepted['ok'], accepted)
+        return accepted['context']
 
     def test_allocation_rejects_implementation_written_before_first_executor(self):
         context = self.start_dispatcher()
         (self.repo/'a.py').write_text('dispatcher wrote first\n')
         helper = test_workflow_control.WorkflowControlTests()
-        envelope = {'task_id': 'first', 'paths': ['a.py'], 'read_only': [],
-            'behavior': 'first production slice', 'tests': ['red and green'],
-            'git_operations': [], 'configuration': helper.configuration('execution-agent')}
+        envelope = self.execution_envelope(context, 'first', ['a.py'],
+            behavior='first production slice', tests=['red and green'])
         self.assertFalse(self.call('plan-execution', envelope, context)['ok'])
         (self.repo/'a.py').unlink()
         self.assertTrue(self.call('plan-execution', envelope, context)['ok'])
@@ -180,9 +292,8 @@ class WorkflowGitTests(unittest.TestCase):
     def test_binding_rejects_changes_after_allocation_preparation(self):
         context = self.start_dispatcher()
         helper = test_workflow_control.WorkflowControlTests()
-        planned = self.call('plan-execution', {'task_id': 'first', 'paths': ['a.py'],
-            'read_only': [], 'behavior': 'real caller slice', 'tests': ['focused'],
-            'git_operations': [], 'configuration': helper.configuration('execution-agent')}, context)
+        planned = self.call('plan-execution', self.execution_envelope(context, 'first', ['a.py'],
+            behavior='real caller slice', tests=['focused']), context)
         self.assertTrue(planned['ok'], planned)
         binding = {'task_id': 'first', 'agent_ref': 'executor',
                    'allocation_digest': planned['allocation_digest']}
@@ -190,6 +301,79 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertFalse(self.call('assign', binding, planned['context'])['ok'])
         (self.repo/'a.py').unlink()
         self.assertTrue(self.call('assign', binding, planned['context'])['ok'])
+
+    def test_git_enrichment_rejects_a_checkpoint_over_capacity_before_release(self):
+        context = self.start_dispatcher()
+        envelope = self.execution_envelope(context, 'capacity', ['a.py'])
+        request = {'schema_version': context['schema_version'], 'action': 'plan-execution',
+                   'actor_ref': 'controller', 'context': context, 'evidence': envelope}
+        payload = {'repository': str(self.repo), 'baseline': self.base, 'request': request}
+        pure = control.transition(request)
+        enriched = control_git.verified_transition(payload)
+        pure_size = len(json.dumps(pure['context']).encode())
+        enriched_size = len(json.dumps(enriched['context']).encode())
+        self.assertGreater(enriched_size, pure_size)
+        capacity = pure_size + (enriched_size - pure_size) // 2
+        original = copy.deepcopy(context)
+
+        with patch.object(control, 'MAX_BYTES', capacity), patch.object(control_git, 'MAX_BYTES', capacity):
+            self.assertTrue(control.transition(request)['ok'])
+            with self.assertRaisesRegex(control.ControlError, 'control history exceeds byte limit'):
+                control_git.verified_transition(payload)
+
+        self.assertEqual(context, original)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        self.assertNotIn('write_release', context['handoff_progress']['executions'][-1]
+                         if context['handoff_progress']['executions'] else {})
+
+    def test_dispatch_baseline_enrichment_obeys_checkpoint_capacity(self):
+        helper = test_workflow_control.WorkflowControlTests()
+        target = self.git('branch', '--show-current')
+        binding = supervision.start_worktree({'repository': str(self.repo),
+            'worktree': str(self.root / 'flow'), 'branch': 'codex/flow',
+            'target_branch': target})['binding']
+        self.repo = self.root / 'flow'
+        context = helper.context()
+        context['stage'] = 3
+        evidence = {'binding': binding, 'binding_verified': True,
+            'allowed_paths': ['a.py', 'b.py'], 'protected_paths': ['docs/draft.md'],
+            'authority_digest': 'c' * 64, 'testing_basis': 'CLI',
+            'validation_plan': test_workflow_control.plan_for(binding['worktree']),
+            'configuration': helper.configuration('implementation-dispatcher'),
+            **self.plan_evidence(context, ['a.py', 'b.py'])}
+        request = {'schema_version': context['schema_version'], 'action': 'start-dispatch',
+                   'actor_ref': 'controller', 'context': context, 'evidence': evidence}
+        payload = {'repository': str(self.repo), 'baseline': self.base, 'request': request}
+        pure = control.transition(request)
+        enriched = control_git.verified_transition(payload)
+        self.assertEqual(enriched['context']['handoff_progress']['git_baseline_commit'], self.base)
+        capacity = (len(json.dumps(pure['context']).encode()) +
+                    len(json.dumps(enriched['context']).encode())) // 2
+        with patch.object(control, 'MAX_BYTES', capacity), patch.object(control_git, 'MAX_BYTES', capacity):
+            self.assertTrue(control.transition(request)['ok'])
+            with self.assertRaisesRegex(control.ControlError, 'control history exceeds byte limit'):
+                control_git.verified_transition(payload)
+
+    def test_execution_result_snapshot_enrichment_obeys_checkpoint_capacity(self):
+        context = self.start_allocations()
+        (self.repo / 'a.py').write_text('accepted behavior\n')
+        execution = context['handoff_progress']['executions'][0]
+        evidence = {**self.result_evidence('a', ['a.py']),
+                    'plan_refs': execution['plan_refs'],
+                    'plan_authority': execution['plan_authority'],
+                    'write_release': execution['write_release']}
+        request = {'schema_version': context['schema_version'], 'action': 'execution-result',
+                   'actor_ref': 'controller', 'context': context, 'evidence': evidence}
+        payload = {'repository': str(self.repo), 'baseline': self.base, 'request': request}
+        pure = control.transition(request)
+        enriched = control_git.verified_transition(payload)
+        self.assertIn('git_result_snapshot', enriched['context']['handoff_progress']['executions'][0])
+        capacity = (len(json.dumps(pure['context']).encode()) +
+                    len(json.dumps(enriched['context']).encode())) // 2
+        with patch.object(control, 'MAX_BYTES', capacity), patch.object(control_git, 'MAX_BYTES', capacity):
+            self.assertTrue(control.transition(request)['ok'])
+            with self.assertRaisesRegex(control.ControlError, 'control history exceeds byte limit'):
+                control_git.verified_transition(payload)
 
     def test_later_allocation_rejects_unaccepted_dispatcher_changes(self):
         context = self.start_allocations()
@@ -199,10 +383,62 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertTrue(accepted['ok'], accepted)
         (self.repo/'b.py').write_text('dispatcher repair\n')
         helper = test_workflow_control.WorkflowControlTests()
-        envelope = {'task_id': 'next', 'paths': ['b.py'], 'read_only': [],
-            'behavior': 'later slice', 'tests': ['focused'],
-            'git_operations': [], 'configuration': helper.configuration('execution-agent')}
+        envelope = self.execution_envelope(accepted['context'], 'next', ['b.py'],
+            behavior='later slice', tests=['focused'])
         self.assertFalse(self.call('plan-execution', envelope, accepted['context'])['ok'])
+
+    def test_later_group_reads_exact_accepted_implementation(self):
+        context = self.start_dispatcher(accepted_read_only=True)
+        first = self.call('plan-execution', self.execution_envelope(context, 'a', ['a.py']), context)
+        self.assertTrue(first['ok'], first)
+        assigned = self.call('assign', {'task_id': 'a', 'agent_ref': 'a',
+            'allocation_digest': first['allocation_digest']}, first['context'])
+        self.assertTrue(assigned['ok'], assigned)
+        (self.repo / 'a.py').write_text('accepted first group\n')
+        received = self.call('execution-result', self.result_evidence('a', ['a.py']), assigned['context'])
+        self.assertTrue(received['ok'], received)
+        accepted = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
+        self.assertTrue(accepted['ok'], accepted)
+        context = accepted['context']
+        second = self.execution_envelope(context, 'b', ['b.py'], ['a.py'])
+        planned = self.call('plan-execution', second, context)
+        self.assertTrue(planned['ok'], planned)
+        self.assertFalse(self.call('plan-execution', self.execution_envelope(context, 'both',
+            ['a.py', 'b.py'], ['a.py']), context)['ok'])
+        reading = self.call('assign', {'task_id': 'b', 'agent_ref': 'b',
+            'allocation_digest': planned['allocation_digest']}, planned['context'])
+        self.assertTrue(reading['ok'], reading)
+        self.assertFalse(self.call('plan-execution', self.execution_envelope(reading['context'],
+            'rewrite-a', ['a.py']), reading['context'])['ok'])
+        rewriting = self.call('plan-execution', self.execution_envelope(context,
+            'rewrite-a', ['a.py']), context)
+        self.assertTrue(rewriting['ok'], rewriting)
+        active_writer = self.call('assign', {'task_id': 'rewrite-a', 'agent_ref': 'rewrite-a',
+            'allocation_digest': rewriting['allocation_digest']}, rewriting['context'])
+        self.assertTrue(active_writer['ok'], active_writer)
+        self.assertFalse(self.call('plan-execution', second, active_writer['context'])['ok'])
+        (self.repo / 'a.py').write_text('changed after acceptance\n')
+        self.assertFalse(self.call('plan-execution', second, context)['ok'])
+
+    def test_implementation_read_requires_acceptance_even_without_explicit_step_dependency(self):
+        context = self.start_dispatcher(accepted_read_only=True, declared_dependency=False)
+        envelope = self.execution_envelope(context, 'b', ['b.py'], ['a.py'])
+        self.assertFalse(self.call('plan-execution', envelope, context)['ok'])
+
+    def test_implementation_read_rechecks_bytes_before_native_binding(self):
+        context = self.start_dispatcher(accepted_read_only=True)
+        first = self.call('plan-execution', self.execution_envelope(context, 'a', ['a.py']), context)
+        assigned = self.call('assign', {'task_id': 'a', 'agent_ref': 'a',
+            'allocation_digest': first['allocation_digest']}, first['context'])
+        (self.repo / 'a.py').write_text('accepted input\n')
+        received = self.call('execution-result', self.result_evidence('a', ['a.py']), assigned['context'])
+        accepted = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
+        context = accepted['context']
+        planned = self.call('plan-execution', self.execution_envelope(context, 'b', ['b.py'], ['a.py']), context)
+        self.assertTrue(planned['ok'], planned)
+        (self.repo / 'a.py').write_text('changed before bind\n')
+        self.assertFalse(self.call('assign', {'task_id': 'b', 'agent_ref': 'b',
+            'allocation_digest': planned['allocation_digest']}, planned['context'])['ok'])
 
     def test_recovery_snapshot_outweighs_historical_acceptance_until_replacement_accepts(self):
         progress = {'git_baseline_commit': 'a' * 40, 'allowed_paths': ['impl.py'],
@@ -256,9 +492,8 @@ class WorkflowGitTests(unittest.TestCase):
         accepted = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
         self.assertTrue(accepted['ok'], accepted)
         helper = test_workflow_control.WorkflowControlTests()
-        envelope = {'task_id': 'next', 'paths': ['b.py'], 'read_only': [],
-            'behavior': 'next slice', 'tests': ['focused'], 'git_operations': [],
-            'configuration': helper.configuration('execution-agent')}
+        envelope = self.execution_envelope(accepted['context'], 'next', ['b.py'],
+            behavior='next slice', tests=['focused'])
         self.assertTrue(self.call('plan-execution', envelope, accepted['context'])['ok'])
         self.assertFalse((self.repo / 'other-task.md').exists())
         (self.repo / 'outside.txt').write_text('actual unassigned work\n')
@@ -269,7 +504,8 @@ class WorkflowGitTests(unittest.TestCase):
         (self.repo / 'a.py').write_text('task version\n')
         received = self.call('execution-result', self.result_evidence('a', ['a.py']), context)
         context = self.call('accept-execution', {'agent_ref':'a', 'file_hashes':{}}, received['context'])['context']
-        self.git('add', 'a.py'); self.git('commit', '-qm', 'accepted implementation')
+        context = self.accept_second_plan_step(context)
+        self.git('add', 'a.py', 'b.py'); self.git('commit', '-qm', 'accepted implementation')
         accepted = self.git('rev-parse', 'HEAD')
         primary = self.root / 'repository'
         (primary / 'a.py').write_text('parallel version\n')
@@ -283,10 +519,10 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertTrue(captured['ok'], captured)
         source = captured['context']['handoff_progress']['integration_source']
         helper = test_workflow_control.WorkflowControlTests()
-        planned = self.call('plan-execution', {'task_id':'resolve', 'paths':['a.py'], 'read_only':['docs/draft.md'],
-            'behavior':'resolve final conflict', 'tests':['resolved behavior'], 'git_operations':[],
-            'configuration':helper.configuration('execution-agent'), 'adopt_paths':['a.py'],
-            'adoption_snapshot_digest':source['snapshot_digest']}, captured['context'])
+        planned = self.call('plan-execution', self.execution_envelope(captured['context'],
+            'resolve', ['a.py'], ['docs/draft.md'], behavior='resolve final conflict',
+            tests=['resolved behavior'], adopt_paths=['a.py'],
+            adoption_snapshot_digest=source['snapshot_digest']), captured['context'])
         self.assertTrue(planned['ok'], planned)
         assigned = self.call('assign', {'task_id':'resolve', 'agent_ref':'resolver',
             'allocation_digest':planned['allocation_digest']}, planned['context'])
@@ -296,15 +532,32 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertTrue(received['ok'], received)
         accepted_result = self.call('accept-execution', {'agent_ref':'resolver', 'file_hashes':{}}, received['context'])
         self.assertTrue(accepted_result['ok'], accepted_result)
+        planned_b = self.call('plan-execution', self.execution_envelope(accepted_result['context'],
+            'revalidate-b', ['b.py'], ['docs/draft.md'], behavior='revalidate retained b behavior',
+            tests=['retained behavior'], adopt_paths=['b.py'],
+            adoption_snapshot_digest=source['snapshot_digest']), accepted_result['context'])
+        self.assertTrue(planned_b['ok'], planned_b)
+        assigned_b = self.call('assign', {'task_id': 'revalidate-b', 'agent_ref': 'b-resolver',
+            'allocation_digest': planned_b['allocation_digest']}, planned_b['context'])
+        self.assertTrue(assigned_b['ok'], assigned_b)
+        adopted_b = {**self.result_evidence('b-resolver', []),
+            'adopted_paths': ['b.py'],
+            'file_hashes': {'b.py': hashlib.sha256((self.repo / 'b.py').read_bytes()).hexdigest()}}
+        received_b = self.call('execution-result', adopted_b, assigned_b['context'])
+        self.assertTrue(received_b['ok'], received_b)
+        accepted_b = self.call('accept-execution', {'agent_ref': 'b-resolver', 'file_hashes': {}},
+                               received_b['context'])
+        self.assertTrue(accepted_b['ok'], accepted_b)
         self.git('add', 'a.py'); self.git('commit', '-qm', 'verified final integration')
         candidate = self.git('rev-parse', 'HEAD')
-        checkpoint = accepted_result['context']['handoff_progress']
+        checkpoint = accepted_b['context']['handoff_progress']
         checks = test_workflow_control.checks_for(checkpoint['validation_plan']['review_required'], candidate)
         ready = self.call('candidate-ready', {'dispatcher_ref':'dispatcher',
-            'attempt':accepted_result['context']['carrier']['attempt'], 'commit':candidate,
+            'attempt':accepted_b['context']['carrier']['attempt'], 'commit':candidate,
             'expected_target_head':target, 'binding':checkpoint['binding'], 'plan_digest':checkpoint['plan_digest'],
+            'plan_authority': checkpoint['plan_authority'],
             'checks':checks, 'source':{'adapter':'fixture', 'call_ref':'focused', 'response_ref':'focused-result',
-                'raw':{'checks':checks, 'source_unchanged':True, 'stopped':True, 'dispatcher_ref':'dispatcher'}}}, accepted_result['context'])
+                'raw':{'checks':checks, 'source_unchanged':True, 'stopped':True, 'dispatcher_ref':'dispatcher'}}}, accepted_b['context'])
         self.assertTrue(ready['ok'], ready)
 
     def test_parallel_results_wait_for_peer_evidence_before_acceptance(self):
@@ -328,9 +581,8 @@ class WorkflowGitTests(unittest.TestCase):
         accepted_a = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, accepted_b['context'])
         self.assertTrue(accepted_a['ok'], accepted_a)
         helper = test_workflow_control.WorkflowControlTests()
-        planned = self.call('plan-execution', {'task_id': 'a2', 'paths': ['a.py'], 'read_only': [],
-            'behavior': 'serial follow-up', 'tests': ['CLI'], 'git_operations': [],
-            'configuration': helper.configuration('execution-agent')}, accepted_a['context'])
+        planned = self.call('plan-execution', self.execution_envelope(accepted_a['context'],
+            'a2', ['a.py'], behavior='serial follow-up'), accepted_a['context'])
         assigned = self.call('assign', {'task_id': 'a2', 'agent_ref': 'a2', 'allocation_digest': planned['allocation_digest']}, planned['context'])
         (self.repo/'a.py').write_text('serial improvement')
         received = self.call('execution-result', self.result_evidence('a2', ['a.py']), assigned['context'])
@@ -347,25 +599,92 @@ class WorkflowGitTests(unittest.TestCase):
         received = self.call('execution-result', self.result_evidence('a', ['a.py']), context)
         accepted = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
         self.assertTrue(accepted['ok'], accepted)
-        self.git('add', 'a.py'); self.git('commit', '-qm', 'accepted implementation')
-        progress = accepted['context']['handoff_progress']
+        current = self.accept_second_plan_step(accepted['context'])
+        self.git('add', 'a.py', 'b.py'); self.git('commit', '-qm', 'accepted implementation')
+        progress = current['handoff_progress']
         plan = progress['validation_plan']
         target = self.git('rev-parse', progress['binding']['target_branch'])
         def evidence(candidate):
             checks = test_workflow_control.checks_for(plan['review_required'], candidate)
             return {'dispatcher_ref': 'dispatcher', 'attempt': accepted['context']['carrier']['attempt'],
                     'commit': candidate, 'expected_target_head': target, 'binding': progress['binding'],
-                    'plan_digest': control.digest(plan), 'checks': checks,
+                    'plan_digest': control.digest(plan), 'plan_authority': progress['plan_authority'],
+                    'checks': checks,
                     'source': {'adapter': 'fixture', 'call_ref': 'focused', 'response_ref': 'focused-result',
                                'raw': {'checks': checks, 'source_unchanged': True,
                                        'stopped': True, 'dispatcher_ref': 'dispatcher'}}}
         self.assertTrue(self.call('candidate-ready', evidence(self.git('rev-parse', 'HEAD')),
-                                  accepted['context'])['ok'])
+                                  current)['ok'])
         target_file = self.repo/'a.py'
         target_file.chmod((target_file.stat().st_mode & 0o777) | 0o111)
         self.git('add', 'a.py'); self.git('commit', '-qm', 'dispatcher mode change')
         self.assertFalse(self.call('candidate-ready', evidence(self.git('rev-parse', 'HEAD')),
-                                   accepted['context'])['ok'])
+                                   current)['ok'])
+
+    def candidate_reader_after_input_change(self, input_change):
+        context = self.start_dispatcher(accepted_read_only=True)
+        def accept(current, task, relative, body, read_only=(), executable=False):
+            planned = self.call('plan-execution', self.execution_envelope(
+                current, task, [relative], read_only), current)
+            self.assertTrue(planned['ok'], planned)
+            assigned = self.call('assign', {'task_id': task, 'agent_ref': task,
+                'allocation_digest': planned['allocation_digest']}, planned['context'])
+            self.assertTrue(assigned['ok'], assigned)
+            target = self.repo / relative
+            if body is None:
+                target.unlink()
+            else:
+                target.write_text(body)
+                if executable:
+                    target.chmod(0o755)
+            result = {'agent_ref': task, 'stopped': True, 'changed_paths': [relative],
+                'file_hashes': {relative: None if body is None else
+                    hashlib.sha256(target.read_bytes()).hexdigest()},
+                'tests': ['CLI passed'], 'git_unchanged': True}
+            received = self.call('execution-result', result,
+                                 assigned['context'])
+            self.assertTrue(received['ok'], received)
+            accepted = self.call('accept-execution', {'agent_ref': task, 'file_hashes': {}},
+                                 received['context'])
+            self.assertTrue(accepted['ok'], accepted)
+            return accepted['context']
+
+        context = accept(context, 'first-b', 'a.py', 'first accepted input\n')
+        context = accept(context, 'old-a', 'b.py', 'reader using first input\n', ['a.py'])
+        replacement = {'content': 'second accepted input\n',
+                       'mode': 'first accepted input\n', 'absence': None}[input_change]
+        context = accept(context, 'new-b', 'a.py', replacement,
+                         executable=input_change == 'mode')
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'accepted implementation')
+        progress = context['handoff_progress']
+        target = self.git('rev-parse', progress['binding']['target_branch'])
+        def candidate_evidence():
+            candidate = self.git('rev-parse', 'HEAD')
+            checks = test_workflow_control.checks_for(
+                progress['validation_plan']['review_required'], candidate)
+            return {'dispatcher_ref': 'dispatcher', 'attempt': context['carrier']['attempt'],
+                'commit': candidate, 'expected_target_head': target, 'binding': progress['binding'],
+                'plan_digest': control.digest(progress['validation_plan']),
+                'plan_authority': progress['plan_authority'], 'checks': checks,
+                'source': {'adapter': 'fixture', 'call_ref': 'focused',
+                    'response_ref': 'focused-result', 'raw': {'checks': checks,
+                        'source_unchanged': True, 'stopped': True, 'dispatcher_ref': 'dispatcher'}}}
+        self.assertFalse(self.call('candidate-ready', candidate_evidence(), context)['ok'])
+        context = accept(context, 'new-a', 'b.py', 'reader revalidated with second input\n', ['a.py'])
+        self.git('add', 'b.py')
+        self.git('commit', '-qm', 'fresh accepted reader')
+        progress = context['handoff_progress']
+        self.assertTrue(self.call('candidate-ready', candidate_evidence(), context)['ok'])
+
+    def test_candidate_requires_fresh_reader_after_accepted_input_changes(self):
+        self.candidate_reader_after_input_change('content')
+
+    def test_candidate_requires_fresh_reader_after_accepted_input_mode_changes(self):
+        self.candidate_reader_after_input_change('mode')
+
+    def test_candidate_requires_fresh_reader_after_accepted_input_disappears(self):
+        self.candidate_reader_after_input_change('absence')
 
     def test_candidate_rejects_reverted_out_of_scope_history(self):
         context = self.start_allocations()
@@ -390,7 +709,8 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertFalse(self.call('candidate-ready', evidence, accepted['context'])['ok'])
 
     def test_full_delta_includes_deletion_and_mode_changes(self):
-        (self.repo/'b.py').write_text('existing')
+        existing = 'def run_1():\n    return "existing"\n'
+        (self.repo/'b.py').write_text(existing)
         self.git('add', '.'); self.git('commit', '-qm', 'existing allowed file')
         self.base = self.git('rev-parse', 'HEAD')
         context = self.start_allocations()
@@ -401,7 +721,7 @@ class WorkflowGitTests(unittest.TestCase):
         (self.repo/'b.py').chmod(original_mode)
         (self.repo/'b.py').unlink()
         self.assertFalse(self.call('execution-result', self.result_evidence('a', ['a.py']), context)['ok'])
-        (self.repo/'b.py').write_text('existing'); (self.repo/'b.py').chmod(original_mode)
+        (self.repo/'b.py').write_text(existing); (self.repo/'b.py').chmod(original_mode)
         received = self.call('execution-result', self.result_evidence('a', ['a.py']), context)
         self.assertTrue(received['ok'], received)
         (self.repo/'a.py').chmod((self.repo/'a.py').stat().st_mode ^ 0o100)

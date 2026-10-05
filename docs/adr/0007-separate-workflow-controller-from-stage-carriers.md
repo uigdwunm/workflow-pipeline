@@ -17,3 +17,19 @@ unpublished recovery reuses the original Dispatcher and Flow Worktree, retains
 accepted results as history, and requires full adoption plus fresh review and
 validation for the integrated candidate. Git publication and cleanup guards
 remain in the existing publisher.
+
+## New-protocol amendment and delivery boundary — 2026-10-05
+
+ADR-0013 replaces the bounded direct exception for new protocol runs: the
+Implementation Dispatcher schedules, accepts, validates and integrates real
+Execution Agent deliveries; it does not edit implementation or function plans.
+The original Controller owns contract-preserving internal plan revision. Old
+runs retain this ADR's original behavior under their pinned runtime.
+
+The user chose to deliver the Ticket-based route first. Its authentic native
+sample completed nested execution, Controller revision and current-revision
+closure. Standalone without A/Tickets, foreground Controller ingress and the
+attached ledger initialization remain outside this delivery's accepted scope;
+the sample does not establish those routes. See the PRD delivery record. This
+ordinary local delivery does not complete or migrate the retained old production
+workflow record.

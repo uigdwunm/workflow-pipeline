@@ -100,11 +100,12 @@ native solution-designer identity. A scripted carrier must name its authenticate
 launch source and external controller; neither may identify the current carrier.
 It retains the runner's authority and does not gain controller permissions.
 
-A Stage-3 scripted carrier uses the full implementation path. Its foreground
-runner does not retain an original Controller decision for direct implementation;
-`host.implementation_decision` is therefore rejected rather than treated as
-proof. Only an authenticated Controller entry may select the bounded direct
-exception described in [Workflow Control](guided-implementation/workflow-control-protocol.md#bounded-direct-implementation).
+A Stage-3 scripted carrier uses full Execution Agent implementation and reads
+the current C plan authority. Explicit direct and direct escalation are rejected
+for new runs. A foreground plan revision requires the original Controller's
+decision and exact planning bytes through authenticated ingress. If the host
+cannot provide that ingress, return `technical_error` while retaining C's
+revision transaction; the carrier does not decide or write those bytes.
 
 Source kinds:
 

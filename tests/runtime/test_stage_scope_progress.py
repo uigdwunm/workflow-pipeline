@@ -1,5 +1,6 @@
 """Stage-2 scope finalization through the durable C/B/controller boundary."""
 import copy
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -24,10 +25,32 @@ class ScopeProgressTests(unittest.TestCase):
             "proposal_ref": None, "seal_ref": None}
         self.flow.input["authorization"]["scope_digest"] = fixture.transfer.entry.digest(scope)
 
-    def planning_candidate(self, mode="continuous"):
+    def inline_plan(self):
+        def step(id, symbol, depends_on):
+            return {"id": id, "target": {"path": "impl.py", "symbol": symbol, "operation": "add"},
+                "capability": "provide the approved behavior", "approach": ["implement and connect the function"],
+                "inputs": ["approved input"], "outputs": ["approved result"],
+                "failures": ["invalid input is rejected"], "depends_on": depends_on,
+                "verification_refs": ["V1"], "read_only": []}
+        return {"schema_version": 1, "ticket_id": "FEP-01", "plan_version": 1,
+            "spec_ref": {"path": "docs/spec.md", "section": "Implementation Decisions"},
+            "contract_refs": ["FEP-01:What to build", "FEP-01:AC-1", "PRD:D1:Plan"],
+            "blocked_by": [], "verifications": [{"id": "V1", "behavior": "approved behavior",
+                "seam": "C scope-propose and Git fixture", "commands":
+                ["python3 scripts/run_tests.py --test-file tests/runtime/test_stage_scope_progress.py"]}],
+            "steps": [step("FP1-01", "prepare", []), step("FP1-02", "execute", ["FP1-01"])],
+            "artifact_steps": []}
+
+    def planning_candidate(self, mode="continuous", *, with_plan=True):
         self.flow.begin(mode)
         self.flow.invoke("observe", self.flow.observation())
-        (self.flow.flow / "docs/spec.md").write_text("approved design\nImplementation: impl.py\nClosure: CHANGELOG.md\n")
+        content = "approved design\nImplementation: impl.py\nClosure: CHANGELOG.md\n"
+        if with_plan:
+            content += ("Ticket ID: FEP-01\nPlan Version: 1\n**What to build:** approved behavior\n"
+                        "**Blocked by:** None\nAC-1: approved behavior\n## Implementation Decisions\n"
+                        "### D1 — Plan\n```execution-plan-v1\n" +
+                        json.dumps(self.inline_plan(), ensure_ascii=False) + "\n```\n")
+        (self.flow.flow / "docs/spec.md").write_text(content)
         self.flow.flow_git("add", "docs/spec.md")
         self.flow.flow_git("commit", "-qm", "plan")
         return self.flow.flow_git("rev-parse", "HEAD")
@@ -62,6 +85,32 @@ class ScopeProgressTests(unittest.TestCase):
         response = self.flow.invoke("scope-seal", data)
         self.assertEqual(response["next_action"]["operation"], "scope-sealed", response)
         return data
+
+    def finish_planned_design(self):
+        candidate = self.planning_candidate()
+        _, digest = self.propose(candidate)
+        self.flow.ready_publication(candidate, "controller:planning-readiness")
+        self.seal(digest)
+        self.flow.invoke("publication", {"candidate_commit": candidate,
+            "reference": "controller:planning-readiness"})
+        pending = self.flow.invoke("receive-publication")["pending"]
+        self.flow.invoke("decide", {"decision_id": pending["decision_id"],
+            "subject": pending["subject"], "answer": "accept", "reference": "controller:accept-plan"})
+
+    def test_missing_function_plan_rejects_scope_proposal_without_checkpoint_change(self):
+        candidate = self.planning_candidate(with_plan=False)
+        state = self.flow.state()
+        proposal = {"proposal_id": "missing-plan", "expected_revision": 0,
+            "candidate_commit": candidate, "manifest": self.manifest(candidate),
+            "implementation_required": True,
+            "requirement_identity": copy.deepcopy(state["handoff"]["requirement_identity"]),
+            "binding": copy.deepcopy(state["handoff"]["binding"]),
+            "previous_scope_revision": 0}
+        before = self.flow.checkpoint.read_bytes()
+        with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
+            self.flow.invoke("scope-propose", proposal)
+        self.assertEqual(error.exception.code, "execution_plan_incomplete")
+        self.assertEqual(self.flow.checkpoint.read_bytes(), before)
 
     def test_proposal_and_seal_are_durable_and_idempotent(self):
         candidate = self.planning_candidate()
@@ -186,6 +235,11 @@ class ScopeProgressTests(unittest.TestCase):
         self.assertTrue(accepted["planning_complete"], accepted)
         self.assertTrue(accepted["handoff_ready"], accepted)
         self.assertEqual(accepted["readiness"]["scope_revision"], 1)
+        catalog = accepted["readiness"]["execution_plan"]["catalog"]
+        self.assertEqual(catalog["ordered_step_ids"], ["FP1-01", "FP1-02"])
+        self.assertEqual([step["verification_refs"] for step in catalog["tickets"][0]["plan"]["steps"]],
+                         [["V1"], ["V1"]])
+        self.assertEqual(catalog["plan_digest"], self.flow.state()["scope_authority"]["execution_plan"]["plan_digest"])
 
     def test_accept_reuses_verified_readiness_then_public_render_rechecks(self):
         candidate = self.planning_candidate()
@@ -271,7 +325,7 @@ class ScopeProgressTests(unittest.TestCase):
         self.assertEqual(progress.consumed_scope_readiness(state, self.flow.checkpoint), accepted["readiness"])
         fixture.transfer.handoff.verify(state["handoff"])
 
-    def test_prelaunch_revision_adds_missing_test_without_rewriting_acceptance(self):
+    def test_prelaunch_revision_adds_closure_document_without_rewriting_acceptance(self):
         candidate = self.planning_candidate()
         _, digest = self.propose(candidate)
         self.flow.ready_publication(candidate, "controller:planning-readiness")
@@ -284,8 +338,9 @@ class ScopeProgressTests(unittest.TestCase):
         before = self.flow.state()
         authority = before["scope_authority"]
         manifest = copy.deepcopy(authority["scope"]["downstream"]["manifest"])
-        manifest.append({"path": "tests/test_impl.py", "owner": "implementation", "kind": "test",
+        manifest.append({"path": "docs/extra.md", "owner": "closure", "kind": "document",
             "operation": "add", "basis": {"commit": candidate, "path": "docs/spec.md", "section": "approved design"}})
+        manifest.sort(key=lambda item: item["path"])
         data = {"revision_id": "revision-1", "expected_scope_revision": 1,
             "previous_scope_digest": fixture.transfer.entry.digest(authority["scope"]),
             "requirement_identity": copy.deepcopy(before["handoff"]["requirement_identity"]),
@@ -295,7 +350,7 @@ class ScopeProgressTests(unittest.TestCase):
             "candidate_commit": candidate, "old_manifest": copy.deepcopy(authority["scope"]["downstream"]["manifest"]),
             "manifest": manifest, "implementation_required": True,
             "diff": stage_scope.manifest_diff(authority["scope"]["downstream"]["manifest"], manifest),
-            "reason": "The implementation needs its approved regression test file.",
+            "reason": "The closure needs its approved documentation file.",
             "controller_ref": "task", "decision": {"kind": "in-requirement-refinement",
                 "reference": "controller:add-test"}}
         original_control = progress.Progress.control_action
@@ -311,14 +366,14 @@ class ScopeProgressTests(unittest.TestCase):
         self.assertEqual(after["accepted"], before["accepted"])
         self.assertEqual(after["scope_authority"]["revision"], 2)
         self.assertEqual(after["scope_authority"]["scope"]["implementation_paths"],
-                         ["impl.py", "tests/test_impl.py"])
+                         ["impl.py"])
         self.assertTrue(self.flow.invoke("scope-revise", data, revision=0)["acknowledged"])
         second = copy.deepcopy(data)
         current = after["scope_authority"]
         second.update(revision_id="revision-2", expected_scope_revision=2,
                       previous_scope_digest=fixture.transfer.entry.digest(current["scope"]),
                       old_manifest=copy.deepcopy(current["scope"]["downstream"]["manifest"]))
-        second["manifest"].append({**copy.deepcopy(second["manifest"][-1]), "path": "tests/test_extra.py"})
+        second["manifest"].append({**copy.deepcopy(second["manifest"][1]), "path": "docs/other.md"})
         second["manifest"].sort(key=lambda item: item["path"])
         second["diff"] = stage_scope.manifest_diff(second["old_manifest"], second["manifest"])
         with patch.object(progress.Progress, "control_action", interrupted):
@@ -337,7 +392,7 @@ class ScopeProgressTests(unittest.TestCase):
         started = self.flow.state()
         self.assertEqual(started["stage"], 3)
         self.assertEqual(started["consumed_readiness"]["scope_revision"], 3)
-        self.assertIn("tests/test_extra.py", started["handoff"]["scope"]["implementation_paths"])
+        self.assertIn("docs/other.md", started["handoff"]["scope"]["closure_paths"])
         fixture.transfer.handoff.verify(started["handoff"])
 
     def test_active_stage_three_revision_rejected_before_checkpoint_write(self):
@@ -405,12 +460,12 @@ class ScopeProgressTests(unittest.TestCase):
                     "current_stage": "stage2", "history": [record]})
 
     def test_raw_control_cannot_replace_a_prepared_correction_receipt(self):
-        self.flow.finish_design("continuous")
+        self.finish_planned_design()
         before = self.flow.state()
         authority = before["scope_authority"]
         old_manifest = authority["scope"]["downstream"]["manifest"]
         manifest = sorted([*copy.deepcopy(old_manifest),
-            {**copy.deepcopy(old_manifest[-1]), "path": "tests/test_missing.py", "kind": "test"}],
+            {**copy.deepcopy(old_manifest[0]), "path": "docs/extra.md"}],
             key=lambda item: item["path"])
         data = {"revision_id": "guarded-correction", "expected_scope_revision": 1,
             "previous_scope_digest": fixture.transfer.entry.digest(authority["scope"]),
@@ -420,7 +475,7 @@ class ScopeProgressTests(unittest.TestCase):
             "planning_merge_commit": before["accepted"]["payload"]["planning_merge_commit"],
             "candidate_commit": authority["candidate_commit"], "old_manifest": old_manifest,
             "manifest": manifest, "implementation_required": True,
-            "diff": stage_scope.manifest_diff(old_manifest, manifest), "reason": "Include required test",
+            "diff": stage_scope.manifest_diff(old_manifest, manifest), "reason": "Include closure document",
             "controller_ref": "task", "decision": {"kind": "in-requirement-refinement",
                 "reference": "controller:include-test"}}
         calls = []
@@ -453,7 +508,7 @@ class ScopeProgressTests(unittest.TestCase):
                 self.assertEqual(self.flow.checkpoint.read_bytes(), checkpoint)
 
     def test_progression_rejects_old_runner_envelope_without_writes(self):
-        self.flow.finish_design("continuous")
+        self.finish_planned_design()
         original = progress.read_record(self.flow.checkpoint)
         readiness = progress.scope_readiness(original[progress.KEY], self.flow.checkpoint)
         for version in (7, 8):
@@ -482,14 +537,15 @@ class ScopeProgressTests(unittest.TestCase):
             "answer": "accept", "reference": "controller:accept-plan"})
         self.assertIsNone(self.flow.state()["pending"])
 
-        def correct(implementation, *, extra_test=False, closure_only=False):
+        def correct(implementation, *, extra_closure=False, closure_only=False):
             state = self.flow.state()
             authority = state["scope_authority"]
             manifest = self.manifest(candidate, implementation=implementation)
             if closure_only:
                 manifest = self.manifest(candidate)[:1]
-            if extra_test:
-                manifest.append({**copy.deepcopy(manifest[-1]), "kind": "test", "path": "tests/test_missing.py"})
+            if extra_closure:
+                manifest.append({**copy.deepcopy(manifest[0]), "path": "docs/extra.md"})
+                manifest.sort(key=lambda item: item["path"])
             previous = authority["scope"]["downstream"]["manifest"]
             return self.flow.invoke("scope-revise", {
                 "revision_id": "revision-" + str(authority["revision"]),
@@ -505,7 +561,7 @@ class ScopeProgressTests(unittest.TestCase):
         ready = correct(True)
         self.assertIsNotNone(ready["pending"])
         self.assertEqual(ready["pending"]["kind"], "stage-entry")
-        still_pending = correct(True, extra_test=True)
+        still_pending = correct(True, extra_closure=True)
         self.assertEqual(still_pending["pending"], ready["pending"])
         checkpoint = self.flow.checkpoint.read_bytes()
         with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
@@ -519,7 +575,7 @@ class ScopeProgressTests(unittest.TestCase):
         pending = ready["pending"]
         self.flow.invoke("decide", {"decision_id": pending["decision_id"], "subject": pending["subject"],
             "answer": "confirm", "reference": "user:enter-implementation"})
-        refined = correct(True, extra_test=True)
+        refined = correct(True, extra_closure=True)
         self.assertTrue(refined["handoff_ready"])
         self.assertIsNone(refined["pending"])
 

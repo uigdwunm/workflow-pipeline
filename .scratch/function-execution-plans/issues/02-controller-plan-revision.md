@@ -469,3 +469,14 @@ Spec: `../PRD.md`；冻结需求 AC 与映射见 PRD N3。本 Ticket 只拥有�
 Stage 2: 基于冻结需求和真实调用链设计；当前为待 combined review 的草稿，尚未 native publication 或实施。
 
 Stage 2 publication: 用户已以“确认，连续模式”接受本 Ticket 的粒度、blocking edges 与测试 seam；ready-for-agent 和原 Blocked by 已发布至本地 tracker，实施尚未开始。授权引用：user-current-conversation:confirm-continuous:fep-solution-review-20261001-01。
+
+
+### 本次交付完成记录 — 2026-10-05
+
+Lifecycle: completed
+
+用户最新选择“先交付原需求吧”，本 Ticket 在本次 Ticket 主流程交付范围内完成；原函数计划、版本、合同与 AC checkbox 保持原样。补充 standalone-no-A / foreground / attached ingress 延期，不纳本次交付、未标通过。
+
+Ticket 主线已实际完成原 Controller 独占 release、Ticket-only 规划提交 c9bb167 与 revision 2 activation；实现/index/protected 字节保留，公共及不明影响用户门禁实际拒绝内部写入。暂停及已知原 continuation 的未知业务完成恢复有原身份读回证据；不扩称未知创建、取消或宿主丢失的现场验收。补充入口延期。
+
+完整事实、限制及证据路径见 [PRD 交付记录](../PRD.md#交付记录2026-10-05)。本次由用户最新授权作普通本地交付，不补造旧 production C 的 Stage-4 验收或迁移，不创建新的 C；原记录与失败试验保留。

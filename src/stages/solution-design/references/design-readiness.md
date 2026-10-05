@@ -105,6 +105,21 @@ the combined review before planning publication, or direct publication in contin
   silently redesign it. Repair the Spec first, then regenerate the affected
   Ticket content.
 
+Before the Stage-2 scope seal, put one versioned `execution-plan-v1` JSON block
+in each implementation Ticket. Retain its delivery behavior, ACs and Blocked by
+outside the block. Give each function step a stable ID, exact path/symbol and
+operation, capability, ordered approach, key inputs/outputs/failures, declared
+dependencies and behavior verification references. Several related functions
+may share one verification. Cover non-function sources, tests and generated
+source-to-output relationships with artifact steps and the manifest. Check
+existing Python symbols and their real production callers; mark new functions
+`add` and name the caller they will join. Resolve missing references, duplicate
+IDs, dependency cycles and uncovered implementation paths before publication.
+If native Tickets are unnecessary, place the same block for one logical slice
+in the Spec. The committed plan source and its document hash are part of the
+sealed readiness evidence; a later private plan change needs the Controller's
+versioned revision transaction.
+
 ## Downstream file manifest
 
 While drafting the Spec/Tickets, plan every downstream file required to execute

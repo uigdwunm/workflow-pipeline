@@ -20,6 +20,22 @@ import validate_repository as REPOSITORY_VALIDATION
 
 
 class RepositoryValidationTests(unittest.TestCase):
+    def test_function_plan_field_acceptance_requires_actual_host_evidence(self) -> None:
+        result = subprocess.run([sys.executable, str(REPOSITORY / "scripts/field_acceptance.py")],
+                                check=True, capture_output=True, text=True)
+        worksheet = json.loads(result.stdout)
+        checks = [row for row in worksheet['checks'] if row['test'] == 'T3']
+        self.assertEqual(len(checks), 1)
+        row = checks[0]
+        self.assertEqual(row['status'], 'not_run')
+        self.assertFalse(worksheet['automated_agent_claim'])
+        steps = ' '.join(row['steps'])
+        for activity in ('function-plan', 'revision', 'stale release', 'carry-forward',
+                         'adoption', 'standalone', 'foreground', 'attached'):
+            self.assertIn(activity, steps)
+        self.assertTrue(row['evidence'])
+        self.assertTrue(all(value is None for value in row['evidence'].values()))
+
     def test_published_control_reference_requires_all_five_role_consumers(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)
@@ -46,6 +62,22 @@ class RepositoryValidationTests(unittest.TestCase):
             issues = REPOSITORY_VALIDATION.validate_workflow_control_docs(repository)
             self.assertTrue(any(i['path'] == REPOSITORY_VALIDATION.WORKFLOW_CONTROL_REFERENCE
                                 and i['marker'] == 'cleanup-only' for i in issues))
+            reference.write_text(" ".join(REPOSITORY_VALIDATION.WORKFLOW_CONTROL_REFERENCE_MARKERS)
+                                 + "\n## Bounded direct implementation\n")
+            issues = REPOSITORY_VALIDATION.validate_workflow_control_docs(repository)
+            self.assertTrue(any(i['code'] == 'obsolete-workflow-role'
+                                and i['marker'] == '## Bounded direct implementation' for i in issues))
+
+    def test_new_package_requires_published_control_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            manifest = repository / 'skills/guided-implementation/package.json'
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({'compatibility_key': {'execution_plan': 'execution-plan-v1'}}))
+            self.assertEqual(REPOSITORY_VALIDATION.validate_workflow_control_docs(repository), [
+                {'code': 'workflow-control-contract',
+                 'path': REPOSITORY_VALIDATION.WORKFLOW_CONTROL_REFERENCE,
+                 'marker': 'workflow-control-protocol.md'}])
 
     def test_dedicated_grilling_split_proposal_contract_is_fixed(self) -> None:
         protocol = (REPOSITORY / "skills/problem-framing/references/problem-framing/dedicated-grilling-protocol.md").read_text(encoding="utf-8")

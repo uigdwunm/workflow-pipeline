@@ -47,6 +47,20 @@ delivered `resume_progression`, `answer_pending_delivery` and
 another carrier. A queued `controller_decision` is removed only when C records
 that exact decision as consumed; transport completion alone cannot discard it.
 
+## Internal function-plan revision
+
+During active Stage 3, the original Controller can revise a private function
+plan within the current functional contract through the existing C checkpoint.
+`prepare-plan-revision` records a full-stop intent and returns an exact
+Controller-only planning release after original native writers/calls settle.
+`commit-plan-revision` verifies one planning-only Git commit and atomically
+switches current Scope Authority and the control plan revision.
+`reconcile-plan-revision` reads the saved transaction and original Git/control
+facts; it never repeats a commit or restores a cancelled release. Planning
+sources stay protected from Dispatcher and Execution Agent writes. A new
+revision makes earlier allocations, candidate, review and validation evidence
+historical until current-revision revalidation.
+
 ## Final implementation recovery
 
 Stage 3's `expected_target_head` is its sealed review baseline, not a freshness
@@ -83,7 +97,7 @@ permits cleanup-only; this recovery never rolls back or republishes it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v17","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v19","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
@@ -301,18 +315,19 @@ the same envelope as preflight, containing this new unmodified response.
 Keep actual invocation/response references. A cached list with fresh labels is
 not evidence. Use this separate operation, not `observe.lifecycle` RPC snapshots.
 
-Only the raw `{completed:<final text>}` status establishes terminal native turns
-for this adapter. `running`, `idle`, errors, unknown statuses, missing registered
+In the inventory, only raw `{completed:<final text>}` establishes terminal native
+turns. `running`, `idle`, errors, unknown statuses, missing registered
 writers or extra unregistered agents keep publication/acceptance blocked. The
 Controller itself may be running. Current execution allocations, both review
-axes and previous review attempts remain part of the writer set. Every admitted
-baseline identity and every prior stage's native identity must still appear and
-be completed unless the native finalization below has verified its closure.
+axes and previous review attempts remain part of the writer set. Every prior
+stage's native identity must appear and be completed unless native finalization
+has verified its closure. Admitted baseline identities also require current
+terminal evidence; the exact-thread lookup below can supplement their absence.
 An unexplained missing identity remains unavailable evidence.
 All unresolved control/native
 calls must still be reconciled through their original parents.
 
-Every query revokes the previous snapshot immediately. New host activity,
+Every inventory query revokes the previous snapshot immediately. New host activity,
 changed allocations/review bindings or outstanding calls invalidate its saved
 guard. After failure or changed activity, use a new query and real response;
 each response consumes its query, and a rejected or late response also revokes
@@ -322,6 +337,31 @@ unchanged. After revocation, querying again is required; replaying
 any earlier completed response cannot refresh proof. A completed inventory is point-in-time
 turn evidence, not a claim that detached shell processes have stopped: native
 writers must finish their allocated commands before returning their result.
+
+When an admitted direct, leaf `baseline_ref` is absent, use
+`baseline-thread-query` with `{ref,binding:{call_ref,response_ref,raw}}`.
+The binding is an authenticated original Controller `read_thread` response;
+its native `subAgentActivity` items must bind that ref to exactly one thread ID
+on the original host. C saves and returns the exact `read_thread` request with
+`turnLimit:1` and a `query_id`. Execute that read-only tool action and submit
+`baseline-thread-state` with `{query_id,call_ref,response_ref,raw}` from the new
+invocation. The raw response must have the bound thread/host, `newest_first`
+order, one latest completed turn with a final answer, completed command/tool
+items, and current `idle` or `notLoaded` thread status. Tool errors, active or
+unknown state, mismatched identity and cached/relabelled provenance cannot
+satisfy the barrier.
+
+This evidence supplements only that missing baseline leaf in that inventory
+generation and liveness guard. A new inventory, native activity or changed
+writer bindings requires a new exact-thread read. Listed active identities,
+unknown agents, missing workflow roles and baseline subtrees remain blocked.
+Successor entry can use that proof only when its preflight inventory exactly
+matches the saved current inventory and guard. The next stage requires fresh
+reads for its own inventory; original call/response references remain protected
+against relabelling across the complete stage history.
+It neither edits the inventory nor marks a thread closed, archives it, grants a
+workflow role or replaces the original result/finalization contracts. Old v18
+runs retain their original pins and checkpoints; v19 does not migrate them.
 Controllers keep the original ownership of dispatch and continuation.
 
 For current execution proof, `observe.provenance` is
@@ -407,13 +447,11 @@ Every `continue-host` issuance checks consumed business intent, original
 authority/identity/source, stop intent and current unused proof. The same save
 consumes proof and records issuance; repeating advance returns exact lookup.
 
-Stage-3 `start` preserves the implementation policy from the sealed handoff;
-omission means full. The foreground scripted carrier has no frozen Controller
-direct decision in its confirmed runner input and therefore uses full. Read
-[Bounded direct implementation](guided-implementation/workflow-control-protocol.md#bounded-direct-implementation)
-for admission and candidate-source rules. C retains the original native
-Dispatcher result/stop and Git snapshot for direct candidate provenance; zero
-allocations never close the stop barrier on their own.
+Stage-3 `start` preserves the full implementation policy from the sealed handoff;
+omission means full. Every new route uses real Execution Agent allocations and
+requires accepted current-plan delivery for changed implementation bytes. The
+original Controller owns private function-plan revisions. Historical direct
+runs continue under their original pinned runtime and records.
 
 ### Retiring accepted native agents
 
@@ -515,14 +553,13 @@ receipt reconciliation. A finished turn can satisfy the stop barrier while its
 unarchived identity remains retained for resume; new native creation, including
 Dispatcher replacement, still waits for verified resource release. Saved creation
 intents remain queryable while that gate is closed. Historical runs retain their original pinned runtime;
-v17 does not migrate them.
+v18 does not migrate them.
 
 ## Dispatcher allocations
 
-Allocations require full mode. Direct converts through the original control
-transaction before any allocation; explicit inherited-byte adoption then uses
-the same B allocation path, result and acceptance, with separate changed/adopted
-paths and the frozen adoption snapshot.
+Allocations use full mode. Eligible inherited bytes from plan revision or final
+integration recovery pass through the same B allocation, result and acceptance
+path, with separate changed/adopted paths and the frozen adoption snapshot.
 
 Pass the returned `checkpoint` to the native dispatcher alongside B's unchanged
 bootstrap payload. Its `allocation` operation uses
@@ -821,9 +858,9 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 9 and pin workflow-progress-v17 /
-workflow-stage-transfer-v13 / flow-worktree-v3 packages with control compatibility
-key 10. Earlier progress protocols and runner records require their original
+New runner records use outer version 10 and pin workflow-progress-v19 /
+workflow-stage-transfer-v14 / flow-worktree-v3 packages with control compatibility
+key 11 and control JSON schema 6. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete
 registration is required for live actions. No installation is implied.

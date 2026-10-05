@@ -59,9 +59,15 @@ cancellation cancels the active Phase Run and leaves the topic at phase 3.
 The Closure Agent writes only the supplied documentation scope. The Workflow Controller uses workflow_control_git.py to verify candidate ancestry, changed paths and actual worktree/branch disposition according to the original binding. Code defects return to stage 3. Partial cleanup retains the verified merge and uses cleanup-only, never another publication.
 
 Inherited Stage-3 delivery requires the strict schema-2 final verification on
-implementation commit I and the unchanged expected target. Closure commit D is
+implementation commit I and the unchanged expected target. Confirm that the
+candidate, both stopped review axes, latest passed final attempt and B acceptance
+name the same current `plan_authority` (revision, authority, execution-plan and
+contract digests). A formal plan revision retires the earlier candidate, reviews
+and final attempt even when I's code bytes are unchanged; wait for the original
+Dispatcher's newly accepted delivery before publication. Closure commit D is
 I or its descendant, with the complete I→D path/byte/mode delta limited to exact
 closure_paths. Check documentation at D without claiming I's test result validates
 D. An implementation or target change returns to the original dispatcher for
-focused/affected checks, both review axes and a new final validation attempt.
+focused/affected checks, both review axes and a new final validation attempt
+under the current plan authority.
 Already-published facts retain cleanup-only and original Phase Run completion.

@@ -34,17 +34,17 @@ class StageScopeRunnerTests(unittest.TestCase):
             }}},
         }
 
-    def test_runner_nine_rejects_original_runner_eight_record(self):
+    def test_runner_ten_rejects_original_runner_nine_record(self):
         with self.assertRaisesRegex(runner.WorkflowError, "legacy_run_requires_original_runtime"):
-            runner._validate_record({"version": 8, "confirmed": {"packages": {}}})
-        self.assertEqual(runner._new_state({})["version"], 9)
-        self.record.write_text(json.dumps({"version": 8}))
+            runner._validate_record({"version": 9, "confirmed": {"packages": {}}})
+        self.assertEqual(runner._new_state({})["version"], 10)
+        self.record.write_text(json.dumps({"version": 9}))
         with self.assertRaisesRegex(runner.WorkflowError, "legacy_run_requires_original_runtime"):
             runner._request_control(self.record, "pause", live=False)
 
     def test_runner_rejects_removed_recovery_source(self):
         with self.assertRaisesRegex(runner.WorkflowError, "unsupported run record recovery_source"):
-            runner._validate_record({"version": 9, "recovery_source": {}})
+            runner._validate_record({"version": 10, "recovery_source": {}})
 
     def test_stage_two_projection_uses_current_readiness(self):
         readiness = {"accepted_digest": "accepted-planning", "scope_revision": 2}
