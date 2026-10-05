@@ -30,7 +30,7 @@ class ProgressTests(transfer.StageTransferTests):
         self.host_response_sequence = 0
 
     def state(self):
-        return progress.read_record(self.checkpoint)[progress.KEY]
+        return progress.read_projection(self.checkpoint, projection='transaction').record[progress.KEY]
 
     def retired_fixture(self):
         import test_workflow_control
@@ -641,22 +641,23 @@ class ProgressTests(transfer.StageTransferTests):
     def test_stop_intent_guards_continue_and_effect_even_if_status_is_active(self):
         self.begin()
         self.invoke("observe", self.observation())
-        outer = progress.read_record(self.checkpoint)
+        outer = progress.read_projection(self.checkpoint, projection='transaction').record
         state = outer[progress.KEY]
         state.update(status="active", step="continue", stop_requested="cancelling")
-        progress.atomic_save(self.checkpoint, outer)
+        progress.Progress(self.checkpoint, outer).save()
         result = self.invoke("advance")
         self.assertEqual(result["status"], "cancelling")
         self.assertEqual(result["next_action"]["operation"], "stop-host")
-        owner = progress.Progress(self.checkpoint, progress.read_record(self.checkpoint))
+        owner = progress.Progress(self.checkpoint,
+            progress.read_projection(self.checkpoint, projection='transaction').record)
         for operation in ("invoke-host", "continue-host", "source-lifecycle", "carrier-lifecycle"):
             with self.assertRaises(transfer.entry.PreparationError): owner.effect(operation, {})
 
     def test_runner_stop_request_defers_reply_before_shared_suspend(self):
         answer = self.pending_business_answer()
-        outer = progress.read_record(self.checkpoint)
+        outer = progress.read_projection(self.checkpoint, projection='transaction').record
         outer["runner_request"] = {"operation": "pause", "request_id": "saved-request"}
-        progress.atomic_save(self.checkpoint, outer)
+        progress.Progress(self.checkpoint, outer).save()
         response = self.invoke("decide", answer)
         self.assertEqual(response["status"], "pausing")
         self.assertTrue(response["decision_deferred"])
@@ -1337,7 +1338,7 @@ class ProgressTests(transfer.StageTransferTests):
     def test_suspend_blocks_new_allocations_in_all_stop_states(self):
         for operation, stopped in (("pause", False), ("pause", True), ("cancel", False), ("cancel", True)):
             with self.subTest(operation=operation, stopped=stopped):
-                if self.checkpoint.exists(): self.checkpoint.unlink()
+                self.checkpoint = self.checkpoint.with_name('checkpoint-' + operation + '-' + str(stopped) + '.json')
                 self.settings["thread_id"] = "task"
                 self.request["host"].update(thread_id="task", role="controller", source_ref=None)
                 self.request["host"].pop("actor_ref", None)
@@ -1356,7 +1357,7 @@ class ProgressTests(transfer.StageTransferTests):
     def test_suspend_blocks_prepared_but_unissued_allocation_and_allows_lookup(self):
         for operation in ("pause", "cancel"):
             with self.subTest(operation=operation):
-                if self.checkpoint.exists(): self.checkpoint.unlink()
+                self.checkpoint = self.checkpoint.with_name('checkpoint-' + operation + '.json')
                 self.settings["thread_id"] = "task"
                 self.request["host"].update(thread_id="task", role="controller", source_ref=None)
                 self.request["host"].pop("actor_ref", None)
@@ -1369,7 +1370,8 @@ class ProgressTests(transfer.StageTransferTests):
                 before = self.state()
                 with self.assertRaises(transfer.entry.PreparationError): self.invoke("allocation", request)
                 self.assertEqual(self.state(), before)
-                owner = progress.Progress(self.checkpoint, progress.read_record(self.checkpoint))
+                owner = progress.Progress(self.checkpoint,
+                    progress.read_projection(self.checkpoint, projection='transaction').record)
                 with self.assertRaises(transfer.entry.PreparationError):
                     owner.issue_allocation("prepared", owner.state["allocations"]["prepared"])
                 self.assertEqual(self.state(), before)
@@ -1382,9 +1384,9 @@ class ProgressTests(transfer.StageTransferTests):
         self.begin_dispatcher()
         execution = self.execution_input()
         for operation in ("pause", "cancel"):
-            outer = progress.read_record(self.checkpoint)
+            outer = progress.read_projection(self.checkpoint, projection='transaction').record
             outer["runner_request"] = {"operation": operation, "request_id": operation}
-            progress.atomic_save(self.checkpoint, outer)
+            progress.Progress(self.checkpoint, outer).save()
             before = self.checkpoint.read_bytes()
             with self.assertRaises(transfer.entry.PreparationError) as error:
                 self.invoke("allocation", {"allocation_id": operation, "operation": "prepare", "handoff": execution})

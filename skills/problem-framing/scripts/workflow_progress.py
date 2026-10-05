@@ -33,8 +33,9 @@ import workflow_control as control
 import workflow_control_git as control_git
 import skill_preflight
 import supervision_protocol as supervision
+import workflow_state_store as state_store
 
-PROTOCOL = "workflow-progress-v19"
+PROTOCOL = "workflow-progress-v20"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
@@ -290,15 +291,83 @@ def record_lock(path, *, timeout=None):
 def read_record(path):
     if not Path(path).exists():
         return {}
-    # Checkpoints contain accumulated raw evidence, unlike bounded single inputs.
-    with Path(path).open(encoding="utf-8") as stream:
-        value = json.load(stream)
+    with Path(path).open('rb') as stream:
+        data = stream.read(state_store.ROOT_LIMIT + 1)
+    require(len(data) <= state_store.ROOT_LIMIT, 'legacy_run_requires_original_runtime',
+            'oversized legacy checkpoint requires its originally pinned runtime')
+    value = json.loads(data)
     require(isinstance(value, dict), "invalid_checkpoint", "checkpoint must be an object")
     return value
 
 
+def read_projection(path, *, projection):
+    """Explicit current-operation projection; never loads archived subjects."""
+    require(projection in {'identity', 'scope', 'transaction', 'delivery'},
+            'invalid_projection', 'choose identity, scope, transaction or delivery')
+    envelope = read_record(path)
+    classes = {'identity': state_store.IdentityProjection, 'scope': state_store.ScopeProjection,
+               'transaction': state_store.TransactionProjection, 'delivery': state_store.DeliveryProjection}
+    if envelope.get('store_format') != state_store.FORMAT:
+        return classes[projection](envelope, int(Path(path).exists()),
+                                   Path(path).stat().st_size if Path(path).exists() else 0)
+    store = state_store.open_store(path)
+    current = store.open_current()
+    if projection == 'identity':
+        return classes[projection]({**current.root['outer'], KEY: current.root['metadata']},
+                                   store.files_read, store.bytes_read)
+    subjects = current.root['subjects']
+    stage_id = current.root['metadata']['stage_subject']
+    require(stage_id in subjects and stage_id.startswith('stage:'),
+            'invalid_checkpoint', 'current stage subject is missing')
+    state = store.read_subject(current, stage_id).value
+    if projection == 'transaction':
+        state['allocations'] = {}
+        for subject_id in subjects:
+            if subject_id == stage_id:
+                continue
+            require(subject_id.startswith('ticket:'), 'invalid_checkpoint', 'unknown active subject')
+            subject = store.read_subject(current, subject_id).value
+            require(subject.get('batch') == 0 and isinstance(subject.get('allocations'), dict),
+                    'invalid_checkpoint', 'invalid current Ticket batch')
+            require(not set(state['allocations']) & set(subject['allocations']),
+                    'invalid_checkpoint', 'duplicate allocation identity')
+            state['allocations'].update(subject['allocations'])
+    return classes[projection]({**current.root['outer'], KEY: state}, store.files_read, store.bytes_read)
+
+
+def save_current_record(path, outer, expected_revision, *, receipt_action=None, receipts=()):
+    state = outer[KEY]
+    require(not state.get('history'), 'state_capacity',
+            'stage history must be archived before opening another current stage')
+    require(len(state.get('allocations', {})) <= 32 and
+            len(state.get('control_transactions', {})) <= 64,
+            'state_capacity', 'current allocation or pending receipt window is full')
+    stage_id = state['stage_subject']
+    subjects = {stage_id: {key: value for key, value in state.items() if key != 'allocations'}}
+    for identity, slot in state.get('allocations', {}).items():
+        refs = slot['handoff']['semantic']['plan_refs']
+        tickets = {ref['ticket_id'] for ref in refs}
+        require(len(tickets) == 1, 'invalid_allocation', 'one active batch belongs to exactly one Ticket')
+        ticket = next(iter(tickets))
+        subject_id = 'ticket:' + ticket + ':0'
+        subject = subjects.setdefault(subject_id, {'ticket_id': ticket, 'batch': 0, 'allocations': {}})
+        subject['allocations'][identity] = slot
+    metadata = {key: state[key] for key in ('protocol', 'revision', 'stage', 'status')}
+    metadata['stage_subject'] = stage_id
+    metadata.update(controller_ref=state['control']['context']['controller_ref'],
+        checkpoint_path=state['checkpoint_path'], packages=state['packages'],
+        binding=state['handoff'].get('binding'))
+    state_store.open_store(path, receipt_action=receipt_action).commit_current(expected_revision=expected_revision,
+        revision=state['revision'], subjects=subjects, metadata=metadata,
+        outer={key: value for key, value in outer.items() if key != KEY}, receipts=receipts)
+
+
 def atomic_save(path, value):
     path = Path(path)
+    require(not (isinstance(value, dict) and value.get('store_format') == state_store.FORMAT) and
+            (not path.exists() or read_record(path).get('store_format') != state_store.FORMAT),
+            'state_owner_required',
+            'bounded checkpoint writes require the original owner CAS; legacy runner/header writes are unsupported')
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -529,7 +598,7 @@ def validate_state(state):
             require(query['result']['call_ref'] not in call_refs and query['result']['response_ref'] not in response_refs,
                     'invalid_checkpoint', 'a baseline response cannot belong to multiple queries')
             call_refs.add(query['result']['call_ref']); response_refs.add(query['result']['response_ref'])
-    control.validate_context(state["control"]["context"])
+    control.validate_current_context(state["control"]["context"])
     for identity, transaction in state.get('control_transactions', {}).items():
         require(entry.digest(transaction['request']) == identity, 'invalid_checkpoint', 'control transaction identity changed')
         if transaction.get('scope') == 'archive':
@@ -1125,6 +1194,8 @@ class Progress:
         self.path, self.outer = Path(path), outer
         self.state = outer.get(KEY)
         self._verified_readiness = None
+        self._receipt_action = None
+        self._commit_receipts = []
 
     def save(self):
         self._verified_readiness = None
@@ -1139,13 +1210,30 @@ class Progress:
         if self.state.get("business_block") and self.state["status"] not in {"pausing", "paused", "cancelling", "cancelled"}:
             self.state["status"] = "blocked"
             self.state["error"] = copy.deepcopy(self.state["business_block"]["error"])
+        previous_revision = self.state["revision"]
         self.state["revision"] += 1
         self.outer[KEY] = self.state
-        atomic_save(self.path, self.outer)
+        save_current_record(self.path, self.outer, previous_revision, receipt_action=self._receipt_action,
+                            receipts=self._commit_receipts)
+        self._commit_receipts = []
+        pending = {action['action_id'] for action in self.unresolved_host_actions()}
+        pending.update(slot['action']['action_id'] for slot in self.state.get('allocations', {}).values()
+            if slot.get('action') and (slot.get('record') or {}).get('status') in {'prepared', 'unknown'})
+        query = self.state['host'].get('query')
+        if query and not query.get('resolved'):
+            pending.add(query['action_id'])
+        state_store.open_store(self.path).release_settled_reserves(pending)
 
     def current_verified_readiness(self):
         saved = self._verified_readiness
         return copy.deepcopy(saved[1]) if saved is not None and saved[0] == self.state["revision"] else None
+
+    def receipt_store(self, kind, subject, invocation):
+        store = state_store.open_store(self.path, receipt_action=self._receipt_action)
+        current = store.open_current()
+        key = store.receipt_key(current, actor=self.state['control']['context']['controller_ref'],
+                                kind=kind, subject=subject, invocation=invocation)
+        return store, current, key
 
     def stop_barrier_pending(self):
         """Derive writer closure from the existing roles and invocation journal."""
@@ -1189,6 +1277,7 @@ class Progress:
                 pending.append({'kind':'current-descendants-stale'})
             else:
                 refs = {self.bound_ref()} | self.native_refs()
+                refs.update(s.get('recovered_native_refs', []))
                 for transaction in s.get('control_transactions', {}).values():
                     if transaction.get('result') is not None and transaction['request']['action'] == 'recover-dispatch':
                         refs.update(transaction['result']['recovery']['host_evidence']['stopped_refs'])
@@ -1231,6 +1320,7 @@ class Progress:
         """Registered writers, including replaced roles and historical reviewers."""
         s = self.state if state is None else state
         refs = set()
+        refs.update(s.get('recovered_native_refs', []))
         if s.get('stage', 0) < 2:
             return refs
         if s.get('dispatch') and s['dispatch'].get('request'):
@@ -1825,6 +1915,9 @@ class Progress:
             self.state.pop("resume_intent", None)
         self.state["action"] = action
         self.state["step"] = "host-response"
+        state_store.open_store(self.path).reserve(action['action_id'], recovery=operation == 'stop-host')
+        if operation == 'stop-host':
+            self._receipt_action = action['action_id']
         self.save()
         return _view(self.state, action)
 
@@ -2020,6 +2113,7 @@ class Progress:
             selected = control.selected_control(port["context"], {"control_plan_id": selector} if selector else {})
             phase_required = (selected.get("handoff_progress") or {}).get("plan", {}).get("entry_authority", {}).get("kind") == "wrapper-phase-run"
         self.state = {"protocol": PROTOCOL, "revision": old["revision"] if old else 0,
+            "stage_subject": 'stage:' + str(request['stage']) + ':' + str(uuid.uuid4()),
             "mode": mode, "stage": request["stage"], "status": "active", "step": "prepare-dispatch",
             "next_stage": next_stage, "phase_complete": not phase_required,
             "packages": {**retained, **resolved["packages"]}, "handoff": saved, "control": copy.deepcopy(port),
@@ -2066,7 +2160,8 @@ class Progress:
             extra.update(scope_authority=copy.deepcopy(authority), scope_checkpoint_path=str(self.path.resolve()))
         if s['stage'] >= 2 and operation == 'prepare':
             extra['scope_checkpoint_path'] = str(self.path.resolve())
-        request = {"protocol": handoff.PROTOCOL, "operation": operation, "control": copy.deepcopy(s["control"]), **extra}
+        request = {"protocol": handoff.PROTOCOL, "operation": operation,
+            "base_control_digest": entry.digest(s['control']), "base_revision": s['revision'], **extra}
         request["handoff" if operation == "prepare" else "record"] = copy.deepcopy(s["handoff"] if operation == "prepare" else s["dispatch"])
         s["transaction"], s["transaction_source"], s["transaction_result"] = request, copy.deepcopy(_source), None
         self.save()
@@ -2075,10 +2170,12 @@ class Progress:
     def replay_transaction(self):
         s = self.state
         require(s["transaction"] is not None, "transaction_missing", "no original B transaction")
-        require(s["control"]["context"] == s["transaction"]["control"]["context"],
-                "authority_changed", "original B replay cannot overwrite subsequent controller recovery")
         if s["transaction_result"] is None:
-            self.apply(dispatch.handle(copy.deepcopy(s["transaction"])))
+            require(entry.digest(s['control']) == s['transaction']['base_control_digest'],
+                    'authority_changed', 'original B replay cannot overwrite subsequent controller recovery')
+            request = {key: value for key, value in s['transaction'].items()
+                       if key not in {'base_control_digest', 'base_revision'}}
+            self.apply(dispatch.handle({**request, 'control': copy.deepcopy(s['control'])}))
         result = copy.deepcopy(s["transaction_result"])
         self.consume_transaction()
         return result
@@ -2086,7 +2183,12 @@ class Progress:
     def apply(self, result):
         # Save the result independently. Recovery can consume it without calling
         # B again; the original request/envelope remains until atomic consumption.
-        self.state["transaction_result"] = copy.deepcopy(result)
+        if 'checkpoint' in result:
+            self.state['control']['context'] = result['checkpoint']['context']
+            self.state['control_receipt'] = result['checkpoint'].get('discussion_receipt')
+            self.next_envelope(self.state['control_receipt'])
+        self.state["transaction_result"] = copy.deepcopy({key: value for key, value in result.items()
+            if key != 'checkpoint'})
         self.save()
 
     def consume_transaction(self):
@@ -3444,6 +3546,34 @@ class Progress:
         entry.fields(data, {"event_id", "receipt"}, {"result", "action_id", "provenance", "action_resolution", "closure", "publication_candidate", "lifecycle"})
         s, receipt = self.state, data["receipt"]
         entry.nonempty(data["event_id"])
+        receipt_error = None
+        try:
+            dispatch.receipt_for(s['dispatch'], receipt, {'create', 'lookup', 'result'})
+        except entry.PreparationError as error:
+            # Reject authority, but retain the original raw observation below.
+            # Invalid evidence never consumes a legitimate call's reservation.
+            receipt_error = error
+        action = s['host'].get('query') or s.get('host_action')
+        if receipt_error is None and action is not None and data.get('action_id') == action['action_id']:
+            self._receipt_action = action['action_id']
+        # Only a resolved, read-only running observation is coalescible. Stops,
+        # unknown calls, results and identity changes still take the full path.
+        poll_identity = None
+        if (receipt_error is None and receipt.get('event') == 'result' and receipt.get('status') == 'running' and
+                not any(key in data for key in ('result', 'closure', 'publication_candidate',
+                                                'lifecycle', 'action_resolution')) and
+                not self.unresolved_host_actions()):
+            dispatch.receipt_for(s['dispatch'], receipt, {'result'})
+            require(receipt['ref'] == self.bound_ref(), 'identity_mismatch',
+                    'poll must retain the original native identity')
+            poll_identity = entry.digest({'receipt': {key: value for key, value in receipt.items()
+                if key != 'receipt_ref'}, 'action_id': data.get('action_id')})
+            previous_poll = s.get('current_poll')
+            if (previous_poll == {'identity': poll_identity, 'generation': s['host']['generation']} and
+                    s['host']['status'] == 'running'):
+                state_store.open_store(self.path).record_poll(revision=s['revision'], identity=poll_identity)
+                return _view(s, {'operation': 'wait-host', 'ref': self.bound_ref(),
+                    'request': s['dispatch']['request']}, acknowledged=True)
         digest = entry.digest(data)
         previous = s["events"].get(data["event_id"])
         if previous is not None:
@@ -3455,7 +3585,8 @@ class Progress:
             s["events"][data["event_id"]] = {"digest": digest, "applied": False}
             s["observations"].append(copy.deepcopy(data))
             self.save()
-        dispatch.receipt_for(s["dispatch"], receipt, {"create", "lookup", "result"})
+        if receipt_error is not None:
+            raise receipt_error
         if receipt["event"] == "result":
             require(receipt["ref"] == self.bound_ref(), "identity_mismatch", "observation must name the bound role")
             require(receipt["status"] in {"running", "idle", "turn-completed", "stopped", "unknown"},
@@ -3607,6 +3738,8 @@ class Progress:
             else:
                 s["step"] = "bound"
         s["events"][data["event_id"]]["applied"] = True
+        if poll_identity is not None and s['host']['status'] == 'running':
+            s['current_poll'] = {'identity': poll_identity, 'generation': s['host']['generation']}
         if message_key is not None and s.get("deferred_observation") != data:
             s.setdefault("observed_messages", {})[message_key] = data["event_id"]
         if s["status"] == "blocked":
@@ -3956,6 +4089,20 @@ class Progress:
         return self.finish_publication(result)
 
     def control_action(self, data):
+        entry.fields(data, {'action', 'evidence', 'receipt'})
+        original_input = copy.deepcopy(data)
+        require(isinstance(data['receipt'], dict) and data['receipt'],
+                'host_evidence_missing', 'original authenticated host/controller evidence required')
+        invocation = (data['receipt'].get('reference') or data['receipt'].get('call_ref') or
+                      data['receipt'].get('operation_id') or entry.digest(data['receipt']))
+        control_subject = (data['evidence'].get('handoff_id') or data['evidence'].get('attempt') or
+                           data['evidence'].get('revision_id') or self.state['stage_subject'])
+        receipt_store, receipt_current, receipt_key = self.receipt_store(
+            'control:' + data['action'], control_subject, invocation)
+        cached_receipt = receipt_store.read_receipt(receipt_current, receipt_key, original_input)
+        if cached_receipt is not None:
+            return _view(self.state, {'operation': 'control-effects',
+                'result': {**cached_receipt, 'effects': []}, 'write_authority': False}, acknowledged=True)
         require((self.state.get("plan_revision_transaction") or {}).get("state") in (None, "activated") or
                 data.get("action") == "plan-revision-activate",
                 "plan_revision_pending", "old control lease is closed during plan revision")
@@ -4212,10 +4359,12 @@ class Progress:
         self.require_controls_reconciled(identity)
         require(s['transaction'] is None and not any(slot.get('transaction') is not None for slot in s.get('allocations',{}).values()),
                 'transaction_pending', 'reconcile original B/allocation transactions before control mutation')
-        transactions.setdefault(identity, {"request": copy.deepcopy(data), "port": copy.deepcopy(s["control"]),
+        transactions.setdefault(identity, {"request": copy.deepcopy(data),
+                                            'base_control_digest': entry.digest(s['control']),
+                                            'base_revision': s['revision'],
                                             "status": s["status"], "result": None,
                                             "business_block_id": (s.get("business_block") or {}).get("id")})
-        require(transactions[identity]['port']['context'] == s['control']['context'],
+        require(transactions[identity]['base_control_digest'] == entry.digest(s['control']),
                 'control_context_changed', 'retain the original result without overwriting newer control authority')
         if data['action'] == 'successor-ready':
             transactions[identity]['takeover_input'] = takeover_input
@@ -4229,21 +4378,21 @@ class Progress:
                     "baseline": s["control"]["context"]["handoff_progress"]["git_baseline_commit"],
                     "request": {"schema_version": 6, "action": data["action"],
                         "actor_ref": s["control"]["context"]["controller_ref"],
-                        "context": transactions[identity]["port"]["context"],
+                        "context": s['control']['context'],
                         "evidence": data["evidence"]}})
                 applied = None
             else:
-                result, applied = dispatch.checkpoint(transactions[identity]["port"], s["handoff"], data["action"], data["evidence"])
+                result, applied = dispatch.checkpoint(s['control'], s["handoff"], data["action"], data["evidence"])
         except control.ControlError as error:
             # This pure/Git read-only boundary definitively rejected before any
             # durable control mutation. OS/transport/ledger failures stay unknown.
-            if transactions[identity]['port']['discussion'] is None:
+            if s['control']['discussion'] is None:
                 transactions[identity]['rejection'] = str(error)
                 self.save()
             raise
         s["control"]["context"], s["control_receipt"] = result["context"], applied
         self.next_envelope(applied)
-        transactions[identity]["result"] = result
+        transactions[identity]["result"] = {key: value for key, value in result.items() if key != 'context'}
         if data["action"] == "scope-revise" and s.get("scope_revision_transaction"):
             correction = s["scope_revision_transaction"]
             receipt = result["scope_revision"]
@@ -4270,6 +4419,10 @@ class Progress:
             s.pop("error", None)
         if data["action"] == "recover-dispatch":
             recovery = result['recovery']
+            s['recovered_native_refs'] = sorted(set(s.get('recovered_native_refs', [])) |
+                                               set(recovery['host_evidence']['stopped_refs']))
+            require(len(s['recovered_native_refs']) <= 32, 'state_capacity',
+                    'retained native recovery window is full')
             old_record = copy.deepcopy(s['dispatch'])
             record_body = handoff.unseal(old_record)
             launch = copy.deepcopy(handoff.unseal(old_record['request']))
@@ -4307,6 +4460,11 @@ class Progress:
             s['status'] = self.stop_intent() or 'blocked'
             s['recovery_action'] = {'operation':'await-host-recovery', **self.recovery_requirements(),
                                     'reason':s['transport_loss']['reason']}
+        receipt_store, receipt_current, receipt_key = self.receipt_store(
+            'control:' + data['action'], control_subject, invocation)
+        self._commit_receipts.append(receipt_store.prepare_receipt(receipt_current, receipt_key,
+            original_input, {key: value for key, value in result.items() if key != 'context'}))
+        del transactions[identity]
         self.save()
         if data['action'] == 'dispatch-recovery-result' and s.get('transport_loss'):
             return _view(s, s['recovery_action'])
@@ -4417,6 +4575,14 @@ class Progress:
         operation = data["operation"]
         require(operation in {"prepare", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown allocation operation")
         s = self.state
+        invocation = ((data.get('receipt') or {}).get('receipt_ref') or
+                      (data.get('decision') or {}).get('reference'))
+        if invocation is not None:
+            store, current, receipt_key = self.receipt_store('allocation:' + operation, identity, invocation)
+            committed = store.read_receipt(current, receipt_key, data)
+            if committed is not None:
+                return _view(s, {'operation': 'allocation-result', 'allocation_id': identity,
+                    'result': committed, 'write_authority': False, 'checkpoint': str(self.path)}, acknowledged=True)
         plan_state = (s.get("plan_revision_transaction") or {}).get("state")
         if plan_state in {"prepared", "planning-committed"} and operation in {"bind", "reconcile", "receive", "accept"}:
             s.setdefault("plan_revision_late_allocations", []).append(copy.deepcopy(data))
@@ -4524,6 +4690,10 @@ class Progress:
                 self.save()
         else:
             require(slot is not None and slot["record"] is not None, "allocation_missing", "exact saved allocation required")
+            if isinstance(data.get('receipt'), dict):
+                dispatch.receipt_for(slot['record'], data['receipt'], {'create', 'lookup', 'result'})
+                if slot.get('action'):
+                    self._receipt_action = slot['action']['action_id']
             require(not (slot['record']['status'] == 'not-created' and (data.get('receipt') or {}).get('ref') is not None),
                     'attempt_ended', 'a late ref cannot bind a proven non-created allocation')
             required = {"allocation_id", "operation", "decision"} if operation == "accept" else {"allocation_id", "operation", "receipt"}
@@ -4533,7 +4703,7 @@ class Progress:
             self.save()
         if operation == "prepare":
             self.require_allocation_active()
-        request = {"protocol": handoff.PROTOCOL, "operation": operation, "control": copy.deepcopy(s["control"])}
+        request = {"protocol": handoff.PROTOCOL, "operation": operation}
         if 'integration_recovery' in slot['handoff']['authorization'] and 'readiness' not in slot['handoff']:
             request['scope_checkpoint_path'] = str(self.path.resolve())
         if operation == "prepare":
@@ -4546,9 +4716,10 @@ class Progress:
                 require(slot["record"]["delivery"] is not None, "result_incomplete", "receive this allocation's result first")
                 request["decision"] = {"delivery_digest": slot["record"]["delivery"]["digest"], **data["decision"]}
         # These are the same B operations/authority, not an alternate allocator.
-        slot["transaction"] = copy.deepcopy(request)
+        slot["transaction"] = {**copy.deepcopy(request),
+            'base_control_digest': entry.digest(s['control']), 'base_revision': s['revision']}
         self.save()
-        result = dispatch.handle(request)
+        result = dispatch.handle({**request, 'control': copy.deepcopy(s['control'])})
         if plan_state == "stopping":
             # B still authenticates the outstanding original native bind/result,
             # but its ordinary ready receipt cannot release an old executor
@@ -4560,12 +4731,19 @@ class Progress:
             s["control_receipt"] = result["checkpoint"].get("discussion_receipt")
             self.next_envelope(s["control_receipt"])
         slot["record"] = result.get("record", slot["record"])
-        slot["transaction"], slot["result"] = None, result
+        # Context is a single current authority update, never an audit copy in
+        # each allocation result. The sealed record already has its own slot.
+        slot["transaction"], slot["result"] = None, {
+            key: value for key, value in result.items() if key not in {'checkpoint', 'record'}}
         if (data.get('receipt') or {}).get('status') == 'stopped':
             s.get('native_adverse', {}).pop(data['receipt']['ref'], None)
         if s.get("stop_requested") == "cancelling" and s["stopped"]:
             if all(item["stopped"] for item in s["control"]["context"]["handoff_progress"]["executions"]):
                 s["status"], s["stop_effects"] = "cancelled", []
+        if invocation is not None:
+            store, current, receipt_key = self.receipt_store('allocation:' + operation, identity, invocation)
+            readonly_result = {key: value for key, value in slot['result'].items() if key != 'write_release'}
+            self._commit_receipts.append(store.prepare_receipt(current, receipt_key, data, readonly_result))
         self.save()
         if self.stop_intent() is not None and s['stopped']:
             self.advance_stop(self.stop_intent())
@@ -4582,6 +4760,7 @@ class Progress:
         action = {"action_id": str(uuid.uuid4()), "operation": "invoke-host", "allocation_id": identity,
                   "payload": slot["record"]["request"], "checkpoint": str(self.path)}
         slot["action"] = action
+        state_store.open_store(self.path).reserve(action['action_id'])
         self.save()
         return _view(self.state, action)
 
@@ -5068,8 +5247,8 @@ def handle(path, request):
                 "invalid_operation", "use the dedicated scope-seal or scope-revise operation")
     if request["operation"] == "scope-revise":
         require_scope_correction_available(read_record(path))
-    with record_lock(path):
-        outer = read_record(path)
+    with record_lock(path), state_store.operation_store(path):
+        outer = read_projection(path, projection='scope' if request['operation'] == 'inspect' else 'transaction').record
         if request["operation"] == "scope-revise":
             require_scope_correction_available(outer)
         require(outer.get("version") in (None, 10), "legacy_run_requires_original_runtime", "progression requires a standalone record or runner version 10")

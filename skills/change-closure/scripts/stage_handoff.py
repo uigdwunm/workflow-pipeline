@@ -537,7 +537,7 @@ def verify_stage_checkpoint_pin(saved, context, checkpoint_path):
     checkpoint = Path(checkpoint_path)
     require(checkpoint.is_absolute() and str(checkpoint.resolve()) == checkpoint_path,
             'invalid_checkpoint', 'canonical original Controller checkpoint required')
-    outer = progress.read_record(checkpoint)
+    outer = progress.read_projection(checkpoint, projection='scope').record
     state = outer.get(progress.KEY)
     require(isinstance(state, dict), 'handoff_not_ready', 'original Controller checkpoint is unavailable')
     progress.validate_state(state)
@@ -564,7 +564,7 @@ def current_stage3_state(saved, context, checkpoint_path=None):
                 'standalone revision needs the original Controller checkpoint pin')
         original_path = checkpoint_path
     checkpoint = Path(original_path)
-    outer = progress.read_record(checkpoint)
+    outer = progress.read_projection(checkpoint, projection='scope').record
     state = outer.get(progress.KEY)
     require(isinstance(state, dict), 'handoff_not_ready', 'original Controller checkpoint is unavailable')
     progress.validate_state(state)

@@ -20,9 +20,10 @@
     "thread_settings": "thread-settings-v5",
     "preparation": "workflow-preparation-v5",
     "stage_transfer": "workflow-stage-transfer-v14",
-    "workflow_progress": "workflow-progress-v19",
+    "workflow_progress": "workflow-progress-v20",
     "requirement_delivery": "requirement-delivery-v2",
-    "execution_plan": "execution-plan-v1"
+    "execution_plan": "execution-plan-v1",
+    "workflow_state_store": "workflow-current-v1"
   },
   "resources": {
     "design-discussion/SKILL.md": {
@@ -328,6 +329,10 @@
     "guided-implementation/scripts/foreground_host.py": {
       "source": "src/stages/guided-implementation/scripts/foreground_host.py",
       "output": "scripts/foreground_host.py"
+    },
+    "shared/scripts/workflow_state_store.py": {
+      "source": "src/shared/scripts/workflow_state_store.py",
+      "output": "scripts/workflow_state_store.py"
     }
   },
   "packages": {
@@ -381,6 +386,7 @@
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
+        "shared/scripts/workflow_state_store.py",
         "shared/references/workflow-progression.md",
         "shared/scripts/requirement_delivery.py",
         "shared/references/requirement-delivery.md"
@@ -433,6 +439,7 @@
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
+        "shared/scripts/workflow_state_store.py",
         "shared/references/workflow-progression.md",
         "shared/scripts/requirement_delivery.py",
         "shared/references/requirement-delivery.md"
@@ -493,6 +500,7 @@
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
+        "shared/scripts/workflow_state_store.py",
         "shared/references/workflow-progression.md",
         "shared/scripts/requirement_delivery.py",
         "shared/references/requirement-delivery.md"
@@ -560,6 +568,7 @@
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
+        "shared/scripts/workflow_state_store.py",
         "shared/references/workflow-progression.md",
         "shared/scripts/requirement_delivery.py",
         "shared/references/requirement-delivery.md",
@@ -619,6 +628,7 @@
         "shared/scripts/stage_dispatch.py",
         "shared/references/stage-transfer.md",
         "shared/scripts/workflow_progress.py",
+        "shared/scripts/workflow_state_store.py",
         "shared/references/workflow-progression.md",
         "shared/scripts/requirement_delivery.py",
         "shared/references/requirement-delivery.md"

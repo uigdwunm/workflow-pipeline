@@ -52,7 +52,7 @@ their exact idempotency key and revisions must be retained on an unknown result.
 """
     entry.fields(port, {"context", "discussion"})
     context = port["context"]
-    control.validate_context(context)
+    control.validate_current_context(context)
     require(context["controller_ref"] == request["controller_ref"], "identity_mismatch", "wrong checkpoint controller")
     if port["discussion"] is not None:
         envelope = port["discussion"]

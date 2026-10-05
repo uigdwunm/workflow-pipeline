@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "41a4f816c0299a9906a52c34eed7b1b5e806691316a3b68cfa42b0b384be81af",
+  "bundle_digest": "83874e542be8d5ca1effcd8401cd55d3ccd65c4c2b804ef69ee56b05c97ac668",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 11,
@@ -20,7 +20,8 @@
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "topic_gate": "phase-0-1-discussion-v2",
-    "workflow_progress": "workflow-progress-v19"
+    "workflow_progress": "workflow-progress-v20",
+    "workflow_state_store": "workflow-current-v1"
   },
   "external_actions": {
     "grill-with-docs": [
@@ -207,11 +208,11 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "861fae7adf207b4472cb84a4c6eb81c858126b44295e3127a5698d60808bd957"
+      "sha256": "486ec58632e445c06cb102c320cbec063cfe35f3d7e8464772cca3e5821163b3"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "017c9619dafa5f5856af81752afa342b3fa20ff71a3bd0c4c65bd4278ff75356"
+      "sha256": "862420b1c77a7e2efe774513e40c063e323f594807d204b2ae34009b7a2898d2"
     },
     "scripts/stage_scope.py": {
       "mode": "0644",
@@ -235,7 +236,7 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "1dd4b40b0e4dea32361182f2c00ddf97f9365430dc7779356230ccd1b36178b4"
+      "sha256": "a6e2f71987b0a4cf37509a98dce2aa4a6ab57e85f5e7bef1a2be0dbc8255b3d1"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
@@ -243,7 +244,11 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "4a1263764866357c709dfd72b1288e3a071ba2f08e643c4e88043eec60faa739"
+      "sha256": "40d58e50a29616dae88a2623ac9e70275b940f4af90f26dc3c961a588facdc3e"
+    },
+    "scripts/workflow_state_store.py": {
+      "mode": "0644",
+      "sha256": "aca6f76b18d3b8bced55d1ebdc640bc96955e73d15d5e3b68f349b7c770c61de"
     }
   },
   "format_version": 1,
@@ -302,6 +307,7 @@
     "shared/scripts/stage_handoff.py",
     "shared/scripts/stage_scope.py",
     "shared/scripts/workflow_progress.py",
+    "shared/scripts/workflow_state_store.py",
     "solution-design/references/conversation-source.md"
   ],
   "source_revision": "workflow-pipeline-v1.3.0",

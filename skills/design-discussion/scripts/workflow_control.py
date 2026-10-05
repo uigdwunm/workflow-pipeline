@@ -770,6 +770,28 @@ def validate_recovery(recovery, progress):
     require((recovery['activation'] is not None) == (recovery['state'] == 'activated'), 'recovery activation state mismatch')
 
 
+def validate_current_context(context):
+    """Validate the fixed current window, never a lazy historical collection.
+
+    New progression owners supply only current subjects. Size and cardinality
+    checks precede the existing semantic validator so its loops are bounded.
+    Hitting a boundary stops admission; it never discards permissions or proof.
+    """
+    require(isinstance(context, dict) and
+            len(json.dumps(context, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()) <= 256 * 1024,
+            'state_capacity: current Controller subject exceeds 256 KiB')
+    require(len(context.get('retired_handoffs', {})) <= 8,
+            'state_capacity: current handoff window is full')
+    progress = context.get('handoff_progress') or {}
+    require(len(progress.get('executions', [])) <= 32,
+            'state_capacity: current execution batch is full')
+    for key in ('plan_revisions', 'plan_revision_sources', 'carried_results',
+                'attempts', 'validation_history', 'recovery_history'):
+        require(len(progress.get(key, [])) <= 32,
+                'state_capacity: current ' + key + ' window is full')
+    return validate_context(context)
+
+
 def validate_context(context):
     require(isinstance(context, dict) and CONTEXT_FIELDS <= set(context) <=
             CONTEXT_FIELDS | {'successor_control', 'retired_handoffs'},
