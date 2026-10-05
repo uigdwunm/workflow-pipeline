@@ -506,6 +506,21 @@ def validate_stage3_scope(state):
             'invalid_checkpoint', 'scope does not belong to the Dispatcher')
 
 
+def implementation_outer_ready(outer, stop_transport):
+    """Current runner/transport facts may revoke a C-owned stopped delivery."""
+    if (outer.get('runner_request') or {}).get('operation') in {'pause', 'cancel'}:
+        return False
+    transport = outer.get('transport') or {}
+    if transport.get('lookup_blocked') or transport.get('state') == 'lost':
+        return False
+    if stop_transport['transport_present'] and not transport:
+        return False
+    if stop_transport['adapter'] == 'collaboration':
+        return not transport
+    return not transport or (transport.get('instance') == stop_transport['instance'] and
+        transport.get('native_event_sequence', 0) == stop_transport['native_event_sequence'])
+
+
 def implementation_delivery(state, path, store, current):
     """Freeze only accepted implementation facts; original reports remain exact refs."""
     saved, accepted = state['handoff'], state['accepted']
@@ -609,6 +624,10 @@ def implementation_delivery(state, path, store, current):
         'phase_ref': evidence({'handoff': {key: copy.deepcopy(saved[key]) for key in
             ('stage', 'entry', 'expected_entry', 'authorization', 'binding', 'requirement_identity', 'controller_ref')}}),
         'stop_ref': evidence({'host': state['host']['last_stop'], 'lifecycle': state.get('lifecycle_snapshot')}),
+        'stop_transport': {'adapter': state['native_host']['adapter'],
+            'transport_present': bool(current.root['outer'].get('transport')),
+            'instance': state['lifecycle_snapshot']['instance'],
+            'native_event_sequence': state['lifecycle_snapshot'].get('sequence')},
         'native_refs': sorted(owner.native_refs()),
         'native_source_index_ref': store.write_object(current.run_id, 'native-source-index', source_index),
         'git_evidence_ref': evidence(git_proof), 'stopped': True, 'phase_complete': True}
@@ -642,7 +661,7 @@ def read_implementation_delivery(path, reference=None, *, store=None, current=No
         'controller_ref', 'packages', 'handoff', 'accepted', 'payload', 'review_ref', 'verification_ref',
         'execution_authority', 'initial_authority_digest', 'authority_lineage', 'dispatcher',
         'dispatch_attempt', 'control_revision', 'design_predecessor', 'phase_ref', 'stop_ref',
-        'git_evidence_ref', 'stopped', 'phase_complete', 'native_refs', 'native_source_index_ref'})
+        'git_evidence_ref', 'stopped', 'phase_complete', 'native_refs', 'native_source_index_ref', 'stop_transport'})
     require(type(value['source_revision']) is int and value['source_revision'] >= 0 and
             isinstance(value['authority_lineage'], list) and len(value['authority_lineage']) <= 33,
             'handoff_not_ready', 'implementation delivery schema changed')
@@ -652,7 +671,16 @@ def read_implementation_delivery(path, reference=None, *, store=None, current=No
             all(metadata['packages'].get(name) == pin for name, pin in value['packages'].items()) and
             (reference is None or value['accepted']['digest'] == reference['accepted_digest']),
             'handoff_not_ready', 'implementation delivery identity changed')
+    stop_transport = value['stop_transport']
+    entry.fields(stop_transport, {'adapter', 'transport_present', 'instance', 'native_event_sequence'})
+    require(stop_transport['adapter'] in {'app-server', 'collaboration'} and
+            type(stop_transport['transport_present']) is bool and isinstance(stop_transport['instance'], str) and
+            (stop_transport['adapter'] == 'collaboration' or
+             type(stop_transport['native_event_sequence']) is int and stop_transport['native_event_sequence'] >= 0),
+            'handoff_not_ready', 'invalid delivery stop transport fingerprint')
     if metadata['stage'] == 3:
+        require(implementation_outer_ready(current.root['outer'], stop_transport),
+                'handoff_not_ready', 'current runner or transport revoked implementation delivery readiness')
         require(metadata['status'] == 'accepted' and metadata['stopped'] and metadata['phase_complete'] and
                 not metadata.get('stop_requested') and not metadata.get('business_block') and
                 value['source_revision'] == metadata['revision'] and
@@ -1805,6 +1833,13 @@ def _view(state, next_action=None, acknowledged=False, *, verified_readiness=Non
     downstream_ready = (readiness is not None if state.get("stage") == 2 else
         revision_stable and state["status"] == "accepted" and state.get('stopped', False) and state.get("phase_complete", True) and
         bool((state.get("accepted") or {}).get("downstream_ready")))
+    if state['stage'] == 3 and downstream_ready:
+        store = state_store.open_store(state['checkpoint_path'])
+        current = store.open_current()
+        reference = current.root.get('delivery') if current is not None else None
+        delivery = store.read_predecessor(current, reference) if reference is not None else None
+        downstream_ready = (delivery is not None and
+            implementation_outer_ready(current.root['outer'], delivery['stop_transport']))
     result = {"protocol": PROTOCOL, "revision": state["revision"], "status": state["status"],
               "step": state["step"], "pending": state.get("pending"), "next_action": next_action,
               "planning_complete": planning_complete, "handoff_ready": readiness is not None,

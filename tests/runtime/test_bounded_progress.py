@@ -234,6 +234,71 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(self.checkpoint.read_bytes(), before)
         self.assertFalse(self.state()['stopped'])
 
+    def delivery_outer_gate(self, gate, baseline):
+        outer = copy.deepcopy(baseline)
+        if gate in {'pause', 'cancel'}:
+            outer['runner_request'] = {'operation': gate, 'request_id': 'outer-' + gate, 'stage': 'stage3'}
+        elif gate != 'restore':
+            snapshot = self.state()['lifecycle_snapshot']
+            transport = outer.setdefault('transport', {'instance': snapshot['instance'],
+                'native_event_sequence': snapshot['sequence'], 'state': 'live'})
+            if gate == 'lost':
+                transport['state'] = 'lost'
+            elif gate == 'lookup_blocked':
+                transport['lookup_blocked'] = 'original lookup failed'
+            elif gate == 'sequence':
+                transport['native_event_sequence'] = snapshot['sequence'] + 1
+            elif gate == 'instance':
+                transport['instance'] = 'another-native-host'
+        current = progress.state_store.StateStore(self.checkpoint).open_current()
+        with progress.record_lock(self.checkpoint):
+            progress.save_outer_record(self.checkpoint, outer, expected_revision=current.revision)
+
+    def test_closure_entry_review_outer_cas_revokes_current_delivery(self):
+        completed = self.accepted_implementation_for_closure()
+        original = self.state()
+        root = progress.state_store.StateStore(self.checkpoint).open_current()
+        footer = json.loads(completed['completion']['stage_result']['handoff_json'])['accepted_transfer']
+        predecessor = progress.implementation_predecessor(self.checkpoint)
+        closure = self.input_for(4, original['accepted'])
+        for gate in ('pause', 'cancel', 'lost', 'lookup_blocked', 'sequence', 'instance'):
+            with self.subTest(gate=gate):
+                self.delivery_outer_gate(gate, root.root['outer'])
+                changed = progress.state_store.StateStore(self.checkpoint).open_current()
+                self.assertEqual(changed.root['metadata'], root.root['metadata'])
+                self.assertEqual(changed.root['delivery'], root.root['delivery'])
+                self.assertEqual(changed.root['subjects'], root.root['subjects'])
+                self.assertGreater(changed.revision, root.revision)
+                readers = (
+                    lambda: progress.read_projection(self.checkpoint, projection='delivery'),
+                    lambda: transfer.handoff.predecessor_facts(footer),
+                    lambda: transfer.handoff.render(original['accepted'], checkpoint_path=str(self.checkpoint)),
+                    lambda: transfer.handoff.prepare(closure, checkpoint_path=str(self.checkpoint)),
+                    lambda: progress.closure_delivery_view(predecessor))
+                for read in readers:
+                    with self.assertRaises(transfer.entry.PreparationError):
+                        read()
+                inspected = self.invoke('inspect')
+                self.assertFalse(inspected['downstream_ready'])
+                self.assertNotIn('completion', inspected)
+        self.delivery_outer_gate('restore', root.root['outer'])
+        self.assertEqual(transfer.handoff.predecessor_facts(footer)['digest'], original['accepted']['digest'])
+        self.context = self.context_for(4)
+        self.begin('continuous', closure)
+        self.invoke('observe', self.observation(ref='native:closure'))
+        stage4 = progress.state_store.StateStore(self.checkpoint).open_current()
+        self.delivery_outer_gate('pause', stage4.root['outer'])
+        # Consumed Stage-3 facts remain readable, but grant no current Stage-4 operation.
+        prior, _, _ = progress.read_implementation_delivery(self.checkpoint, self.state()['implementation_predecessor'])
+        self.assertEqual(prior['accepted']['digest'], original['accepted']['digest'])
+        with self.assertRaisesRegex(transfer.entry.PreparationError, 'resume|stop|pause|suspend'):
+            self.invoke('publication', {'candidate_commit': prior['payload']['candidate_commit'],
+                'expected_target_head': self.git('rev-parse', 'HEAD'), 'reference': 'blocked:closure'})
+        self.assertNotIn('publication', self.state())
+
+    def test_closure_entry_review_public_runner_rejects_outer_lookup_failure(self):
+        self.runner_transition('continuous', closure_entry=True, outer_gate='lookup_blocked')
+
     def test_transition_two_tickets_keep_peer_in_stop_barrier(self):
         self.two_tickets = True
         accepted = self.finish_design('continuous')
@@ -1172,7 +1237,7 @@ class BoundedProgressTests(ProgressTests):
         self.input = self.input_for(2)
         return package_root, confirmed_path
 
-    def runner_transition(self, mode, *, closure_entry=False):
+    def runner_transition(self, mode, *, closure_entry=False, outer_gate=None):
         package_root, confirmed_path = self.runner_stage2_fixture()
         configuration = json.loads(confirmed_path.read_text())
         configuration['flow_mode'] = mode
@@ -1230,6 +1295,9 @@ class BoundedProgressTests(ProgressTests):
                 fixture.request['host'].update(thread_id=session, role='scripted-carrier', source_ref='task')
                 if closure_entry:
                     fixture.accepted_stage3 = fixture.accepted_implementation_for_closure(fixture.accepted_stage2)
+                    if outer_gate is not None:
+                        current = progress.state_store.StateStore(fixture.checkpoint).open_current()
+                        fixture.delivery_outer_gate(outer_gate, current.root['outer'])
                     return json.dumps(fixture.accepted_stage3['completion']['stage_result']), 'stage3-turn'
                 successor = fixture.staged_successor(fixture.accepted_stage2)
                 successor['predecessor'] = json.loads(fixture.accepted_stage2['completion']['stage_result']['handoff_json'])['accepted_transfer']
@@ -1247,6 +1315,11 @@ class BoundedProgressTests(ProgressTests):
                 self.process = None
         with patch.object(runner, '__file__', str(package_root / 'guided-implementation/scripts/workflow.py')), \
              patch.object(runner.foreground_host, 'ForegroundHost', Host), redirect_stdout(io.StringIO()):
+            if outer_gate is not None:
+                with self.assertRaises((runner.WorkflowError, transfer.entry.PreparationError)):
+                    runner.start(confirmed_path)
+                self.assertEqual(calls, ['stage2', 'stage3'])
+                return
             self.assertEqual(runner.start(confirmed_path), 0)
         outer = progress.read_projection(self.checkpoint, projection='identity').record
         if closure_entry:
