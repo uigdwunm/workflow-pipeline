@@ -2167,6 +2167,10 @@ class Progress:
         pending = {action['action_id'] for action in self.unresolved_host_actions()}
         pending.update(slot['action']['action_id'] for slot in self.state.get('allocations', {}).values()
             if slot.get('action') and (slot.get('record') or {}).get('status') in {'prepared', 'unknown'})
+        pending.update(action['action_id'] for record in self.state.get('native_finalizations', [])
+            for action in record['actions'] if not action.get('resolved'))
+        pending.update(event['receipt_action'] for event in self.state.get('events', {}).values()
+            if not event.get('applied') and event.get('receipt_action'))
         query = self.state['host'].get('query')
         if query and not query.get('resolved'):
             pending.add(query['action_id'])
@@ -2561,6 +2565,8 @@ class Progress:
             record['actions'].append(action)
             s['lifecycle_snapshot'] = None
             s.pop('lifecycle_query', None)
+            state_store.open_store(self.path).reserve(action['action_id'], recovery=True)
+            self._receipt_action = action['action_id']
             self.save()
             return _view(s, action)
         require(record is not None, 'identity_mismatch', 'look up only the exact saved native finalization')
@@ -2619,6 +2625,7 @@ class Progress:
             action['resolved'], action['resolution'] = True, 'completed'
         elif receipt['status'] == 'failed':
             action['resolved'], action['resolution'] = True, 'failed'
+        self._receipt_action = action['action_id']
         record['receipts'].append(copy.deepcopy(data))
         s['lifecycle_snapshot'] = None
         s.pop('lifecycle_query', None)
@@ -2899,9 +2906,15 @@ class Progress:
             self.state.pop("resume_intent", None)
         self.state["action"] = action
         self.state["step"] = "host-response"
-        state_store.open_store(self.path).reserve(action['action_id'], recovery=operation == 'stop-host')
+        store = state_store.open_store(self.path)
+        store.reserve(action['action_id'], recovery=operation == 'stop-host')
         if operation == 'stop-host':
             self._receipt_action = action['action_id']
+        else:
+            # A just-completed query funds only its original receipt, never
+            # the new business invocation that the observation might enable.
+            self._receipt_action = None
+            store.receipt_action = None
         self.save()
         return _view(self.state, action)
 
@@ -4442,6 +4455,8 @@ class Progress:
                     "request": copy.deepcopy(s["dispatch"]["request"])}, "checkpoint": str(self.path)}
             if outstanding:
                 host["query"]["payload"]["unresolved_action"] = copy.deepcopy(outstanding[0])
+            state_store.open_store(self.path).reserve(host['query']['action_id'], recovery=True)
+            self._receipt_action = host['query']['action_id']
             self.save()
         query = host["query"]
         return _view(s, {"operation": "await-host-recovery", **self.recovery_requirements(), "query": query}
@@ -4667,6 +4682,13 @@ class Progress:
         if (facts is not None and facts['causal'] and
                 (receipt['event'] == 'result' or action['operation'] in {'invoke-host', 'inspect-host-state'})):
             self._receipt_action = action['action_id']
+        elif receipt_error is None and previous is not None and previous.get('receipt_action'):
+            # The exact event digest was checked above. A committed partial
+            # receipt retains its original reservation across host generations.
+            require(previous['receipt_action'] == data.get('action_id') ==
+                    (data.get('provenance') or {}).get('action_id'),
+                    'identity_mismatch', 'partial observation must retain its original call')
+            self._receipt_action = previous['receipt_action']
         # Only a resolved, read-only running observation is coalescible. Stops,
         # unknown calls, results and identity changes still take the full path.
         poll_identity = None
@@ -4701,6 +4723,8 @@ class Progress:
         # Keep even invalid/late raw receipts for exact recovery, not as authority.
         if previous is None:
             s["events"][data["event_id"]] = {"digest": digest, "applied": False}
+            if self._receipt_action is not None:
+                s['events'][data['event_id']]['receipt_action'] = self._receipt_action
             s["observations"].append(copy.deepcopy(data))
             self.save()
         if receipt_error is not None:
@@ -6078,6 +6102,10 @@ class Progress:
                 s["status"] = "paused"
         elif self.bound_ref() is not None:
             s["step"] = "bound"
+            if not s.get('transport_loss') and not (cancel and s.get('stop_effects')):
+                # The stop/query action persists this intent with its own
+                # recovery reservation, even when ordinary capacity is full.
+                return self.advance_stop(s['status'])
         self.save()
         return self.advance()
 
@@ -6166,6 +6194,10 @@ class Progress:
             if query and query.get('resolved'):
                 s['host'].setdefault('query_history', []).append(copy.deepcopy(query))
                 s['host']['query'] = None
+                if self.unresolved_host_actions() or s['host']['status'] == 'unknown':
+                    # Refreshing an ended lookup is recovery, not business
+                    # admission. Its own reserve also persists the retry intent.
+                    return self.query_host()
                 self.save()
             return self.advance_stop("pausing")
         if s["status"] == "paused":

@@ -33,11 +33,14 @@ _operation_store = ContextVar('workflow_operation_store', default=None)
 @contextmanager
 def operation_store(checkpoint):
     """Share verified immutable reads only inside one locked owner operation."""
-    token = _operation_store.set(StateStore(checkpoint))
+    store = StateStore(checkpoint)
+    token = _operation_store.set(store)
     try:
         yield
     finally:
         _operation_store.reset(token)
+    if store._pending_reserves is not None:
+        store.release_settled_reserves(store._pending_reserves)
 
 
 def open_store(checkpoint, *, receipt_action=None):
@@ -139,6 +142,7 @@ class StateStore:
         self.receipt_action = receipt_action
         self._verified_objects = {}
         self._run_id = None
+        self._pending_reserves = None
 
     def _charge(self, size):
         path = self._safe('usage.json')
@@ -181,6 +185,11 @@ class StateStore:
         return digest
 
     def release_settled_reserves(self, pending):
+        if _operation_store.get() is self:
+            # One receipt may require several authority commits. Keep its
+            # reservation until the entire locked operation has completed.
+            self._pending_reserves = set(pending)
+            return
         retained = {hashlib.sha256(identity.encode()).hexdigest() for identity in pending}
         for category in ('business', 'recovery'):
             directory = self._safe(Path('reserves') / category)

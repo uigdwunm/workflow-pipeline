@@ -2024,6 +2024,195 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(repeated['next_action']['action']['action_id'],
                          recovered['next_action']['action_id'])
 
+    def test_native_finalization_unknown_retains_its_recovery_reserve(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        request = helper.finalization()
+        finish = self.invoke('native-finalize', request)['next_action']
+        self.assertEqual(finish['operation'], 'finish-native')
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(finish['action_id'].encode()).hexdigest()
+        self.assertTrue(reserve.exists(), 'the persisted native finish must retain its own recovery reservation')
+        self.assertEqual(reserve.stat().st_size, 16 * 1024 * 1024)
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        unknown = helper.finalize_observation(finish, 'unknown')
+        self.invoke('native-finalize', unknown)
+        record = self.state()['native_finalizations'][0]
+        self.assertEqual(record['receipts'], [unknown])
+        self.assertFalse(record['actions'][0].get('resolved', False))
+        self.assertTrue(reserve.exists())
+        self.assertLess(reserve.stat().st_size, 16 * 1024 * 1024)
+        lookup = self.invoke('native-finalize', request)['next_action']
+        self.assertEqual(lookup['operation'], 'lookup-exact-native-action')
+        self.assertEqual(lookup['action']['action_id'], finish['action_id'])
+        completed = helper.finalize_observation(finish)
+        before = reserve.stat().st_size
+        for field in ('action_id', 'ref', 'status', 'raw'):
+            bad = copy.deepcopy(completed)
+            if field == 'action_id':
+                bad[field] = 'different-native-action'
+            elif field == 'raw':
+                bad['receipt'][field] = {'threadId': 'different-thread'}
+            else:
+                bad['receipt'][field] = 'invalid'
+            with self.subTest(field=field), self.assertRaises(transfer.entry.PreparationError):
+                self.invoke('native-finalize', bad)
+            self.assertEqual(reserve.stat().st_size, before, 'invalid native evidence cannot spend the original reserve')
+        self.invoke('native-finalize', completed)
+        self.assertTrue(self.state()['native_finalizations'][0]['actions'][0]['resolved'])
+        self.assertFalse(reserve.exists())
+
+    def test_native_close_prepares_and_finishes_at_ordinary_capacity_limit(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        request = helper.finalization()
+        finish = self.invoke('native-finalize', request)['next_action']
+        self.invoke('native-finalize', helper.finalize_observation(finish))
+        self.invoke('lifecycle-state', helper.snapshot())
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        close = self.invoke('native-finalize', request)['next_action']
+        self.assertEqual(close['operation'], 'close-native')
+        reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(close['action_id'].encode()).hexdigest()
+        self.assertTrue(reserve.exists())
+        self.invoke('native-finalize', helper.finalize_observation(close, 'unknown'))
+        self.assertEqual(self.invoke('native-finalize', {'operation': 'lookup', 'ref': request['ref']})['next_action']['action']['action_id'], close['action_id'])
+        self.invoke('native-finalize', helper.finalize_observation(close))
+        self.assertEqual(self.state()['native_finalizations'][0]['actions'][-1]['resolution'], 'completed')
+        self.assertFalse(reserve.exists())
+        self.assertFalse(self.state()['stopped'], 'a close receipt does not replace the original lifecycle barrier')
+
+    def test_host_recovery_query_keeps_original_stop_unknown_at_capacity(self):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        query = self.invoke('observe', self.observation('unknown', 'result', ref='native:dispatcher'))['next_action']
+        self.assertEqual(query['operation'], 'inspect-host-state')
+        self.assertEqual(query['payload']['unresolved_action']['action_id'], stop['action_id'])
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        stop_reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(stop['action_id'].encode()).hexdigest()
+        query_reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(query['action_id'].encode()).hexdigest()
+        self.assertTrue(query_reserve.exists(), 'an issued exact lookup needs an independent recovery reservation')
+        self.assertEqual(query_reserve.stat().st_size, 16 * 1024 * 1024)
+        before = stop_reserve.stat().st_size
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        incomplete = self.observation('idle', 'result', ref='native:dispatcher')
+        incomplete.pop('action_resolution')
+        result = self.invoke('observe', incomplete)
+        self.assertEqual(result['next_action']['operation'], 'await-host-recovery')
+        state = self.state()
+        self.assertEqual(state['host']['status'], 'unknown')
+        self.assertTrue(state['host']['query']['resolved'])
+        self.assertFalse(state['host_action'].get('resolved', False))
+        self.assertEqual(state['host_action']['action_id'], stop['action_id'])
+        self.assertEqual(stop_reserve.stat().st_size, before, 'a query cannot consume the stopped call reservation')
+        self.assertEqual(self.invoke('advance')['next_action']['query']['action_id'], query['action_id'])
+        retried = self.invoke('resume')['next_action']
+        self.assertEqual(retried['operation'], 'inspect-host-state')
+        self.assertNotEqual(retried['action_id'], query['action_id'])
+        self.assertEqual(retried['payload']['unresolved_action']['action_id'], stop['action_id'])
+        self.assertEqual(stop_reserve.stat().st_size, before)
+
+    def test_full_budget_still_persists_stop_without_spending_business_reserve(self):
+        self.prepare_execution()
+        action = self.allocation_slot('slice-one')['action']['action_id']
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        business = {path.name: path.stat().st_size for path in (directory / 'reserves' / 'business').iterdir()}
+        self.assertEqual(set(business), {hashlib.sha256(action.encode()).hexdigest()})
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        stop = self.invoke('pause')['next_action']
+        self.assertEqual(stop['operation'], 'stop-host')
+        query = self.invoke('observe', self.observation('unknown', 'result', ref='native:dispatcher'))['next_action']
+        self.assertEqual(query['operation'], 'inspect-host-state')
+        self.assertEqual(query['payload']['unresolved_action']['action_id'], stop['action_id'])
+        for action in (stop, query):
+            reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(action['action_id'].encode()).hexdigest()
+            self.assertTrue(reserve.exists())
+        self.assertEqual({path.name: path.stat().st_size for path in (directory / 'reserves' / 'business').iterdir()}, business)
+
+    def interrupted_query_receipt(self, interruption):
+        self.begin_dispatcher()
+        stop = self.invoke('pause')['next_action']
+        query = self.invoke('observe', self.observation('unknown', 'result', ref='native:dispatcher'))['next_action']
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        query_reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(query['action_id'].encode()).hexdigest()
+        incomplete = self.observation('idle', 'result', ref='native:dispatcher')
+        incomplete.pop('action_resolution')
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        replace = os.replace
+        def interrupt_after_host_receipt(source, target):
+            replace(source, target)
+            if Path(target) == self.checkpoint:
+                event = self.state()['events'].get(incomplete['event_id'], {})
+                if event.get('host_applied') and not event.get('applied'):
+                    raise interruption('receipt committed before the remaining observation state')
+        expected_error = KeyboardInterrupt if interruption is KeyboardInterrupt else transfer.entry.PreparationError
+        with patch.object(os, 'replace', interrupt_after_host_receipt), self.assertRaises(expected_error):
+            self.invoke('observe', incomplete)
+        self.assertTrue(self.state()['host']['query']['resolved'])
+        self.assertFalse(self.state()['events'][incomplete['event_id']]['applied'])
+        self.invoke('inspect')
+        self.assertTrue(query_reserve.exists(), 'restart reads cannot release a partly applied receipt reservation')
+        replay = self.invoke('observe', incomplete)
+        self.assertEqual(replay['next_action']['operation'], 'await-host-recovery')
+        self.assertTrue(self.state()['events'][incomplete['event_id']]['applied'])
+        self.assertFalse(self.state()['host_action'].get('resolved', False))
+        self.assertEqual(self.state()['host_action']['action_id'], stop['action_id'])
+        self.assertFalse(query_reserve.exists(), 'release only after every receipt commit has completed')
+
+    def test_host_recovery_query_replays_after_receipt_commit_interrupt(self):
+        self.interrupted_query_receipt(KeyboardInterrupt)
+
+    def test_host_recovery_query_replays_after_receipt_commit_io_failure(self):
+        self.interrupted_query_receipt(OSError)
+
+    def test_host_recovery_query_cannot_fund_new_business_continuation(self):
+        self.begin()
+        self.invoke('observe', self.observation())
+        self.invoke('pause')
+        self.invoke('observe', self.observation('stopped', 'result'))
+        query = self.invoke('resume')['next_action']
+        self.assertEqual(query['operation'], 'inspect-host-state')
+        original = copy.deepcopy(self.state()['host_action'])
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        try:
+            result = self.invoke('observe', self.observation('idle', 'result'))
+        except transfer.entry.PreparationError:
+            pass  # Capacity may refuse the next business commit, never its receipt.
+        else:
+            self.assertNotEqual((result.get('next_action') or {}).get('operation'), 'continue-host', result)
+        self.assertEqual(self.state()['host_action'], original)
+
+    def test_capacity_boundary_four_business_reserves_leave_independent_recovery(self):
+        self.begin_dispatcher()
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        # Store admission fault boundary only: the public execution protocol
+        # still refuses another allocation while its preceding launch is unknown.
+        for number in range(4):
+            store.reserve('capacity-business-' + str(number))
+        with self.assertRaises(transfer.entry.PreparationError):
+            store.reserve('capacity-business-fifth')
+        before = {path.name: path.stat().st_size for path in (store.directory / 'reserves' / 'business').iterdir()}
+        recovery = store.reserve('capacity-stop', recovery=True)
+        (store.directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        store.receipt_action = 'different-original-action'
+        with self.assertRaises(transfer.entry.PreparationError):
+            store.write_object(current.run_id, 'evidence', {'original_result': 'retained stop'})
+        stop_reserve = store.directory / 'reserves' / 'recovery' / recovery
+        self.assertEqual(stop_reserve.stat().st_size, 16 * 1024 * 1024)
+        store.receipt_action = 'capacity-stop'
+        reference = store.write_object(current.run_id, 'evidence', {'original_result': 'retained stop'})
+        self.assertEqual(store.read_evidence(reference, run_id=current.run_id)['value'], {'original_result': 'retained stop'})
+        self.assertLess(stop_reserve.stat().st_size, 16 * 1024 * 1024)
+        self.assertEqual({path.name: path.stat().st_size for path in (store.directory / 'reserves' / 'business').iterdir()}, before)
+
     def test_budget_full_keeps_original_call_receivable(self):
         execution = self.prepare_execution()
         slot = self.allocation_slot('slice-one')
