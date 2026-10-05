@@ -126,6 +126,7 @@ class StateStore:
         self.bytes_read = 0
         self.receipt_action = receipt_action
         self._verified_objects = {}
+        self._run_id = None
 
     def _charge(self, size):
         path = self._safe('usage.json')
@@ -263,6 +264,7 @@ class StateStore:
         require(root.get('revision') == envelope['revision'] and
                 isinstance(root.get('subjects'), dict) and len(root['subjects']) <= MAX_SUBJECTS,
                 'invalid current root')
+        self._run_id = envelope['run_id']
         return CurrentProjection(envelope['run_id'], envelope['revision'], root, envelope['current'])
 
     def read_subject(self, current, subject_id):
@@ -274,16 +276,61 @@ class StateStore:
         require(self.bytes_read <= READ_LIMIT, 'current subjects exceed the operation budget', 'state_capacity')
         return SubjectProjection(subject_id, body['value'], reference)
 
-    def record_poll(self, *, revision, identity):
+    def _poll_index_path(self, kind, key):
+        require(kind in {'event', 'response', 'call'}, 'invalid poll fingerprint kind')
+        self._path(key)  # Validate the digest, never use external IDs as paths.
+        return self._safe(Path('poll-fingerprints') / kind / key[:2] / key[2:4] / key)
+
+    def poll_fingerprint(self, kind, key):
+        """Direct conflict lookup; this is never an applied-operation receipt."""
+        if self._run_id is None:
+            self.open_current()
+        require(self._run_id is not None, 'open the current authority before reading fingerprints')
+        path = self._poll_index_path(kind, key)
+        if not path.exists():
+            return None
+        record = json.loads(self._read(path, 512))
+        require(isinstance(record, dict) and set(record) == {'run_id', 'digest'} and
+                record['run_id'] == self._run_id and isinstance(record['digest'], str) and
+                len(record['digest']) == 64 and all(c in '0123456789abcdef' for c in record['digest']),
+                'invalid poll conflict fingerprint', 'state_object_corrupt')
+        return record['digest']
+
+    def record_poll(self, *, revision, identity, first, latest, fingerprints):
         """Telemetry does not create a new authority revision or evidence object."""
         envelope = json.loads(self._read(self.checkpoint, ROOT_LIMIT))
-        require(envelope.get('store_format') == FORMAT and envelope.get('revision') == revision,
+        require(envelope.get('store_format') == FORMAT and envelope.get('revision') == revision and
+                envelope.get('run_id') == self._run_id,
                 'checkpoint revision changed', 'stale_checkpoint')
         previous = envelope.get('poll', {})
+        require(len(encode(first)) <= 16 * 1024 and len(encode(latest)) <= 16 * 1024,
+                'poll attribution exceeds its fixed budget', 'state_capacity')
         envelope['poll'] = {'identity': identity, 'count': min(2**63 - 1,
             previous.get('count', 0) + 1 if previous.get('identity') == identity else 1),
-            'last_seen': time.time_ns()}
-        atomic_write(self.checkpoint, encode(envelope))
+            'last_seen': time.time_ns(),
+            'first': previous.get('first', first) if previous.get('identity') == identity else first,
+            'latest': latest}
+        data = encode(envelope)
+        require(len(data) <= ROOT_LIMIT, 'current root exceeds its fixed budget', 'state_capacity')
+        additions = []
+        for kind, key, digest in fingerprints:
+            known = self.poll_fingerprint(kind, key)
+            require(known is None or known == digest, 'poll fingerprint conflict', 'state_object_corrupt')
+            if known is None:
+                additions.append((self._poll_index_path(kind, key), encode({'run_id': self._run_id, 'digest': digest})))
+        if additions:
+            # Charge file allocation units and new directories, not just the
+            # small JSON payload. The run's existing account remains conservative.
+            block = os.statvfs(self.directory).f_frsize or 4096
+            directories = {parent for path, _ in additions for parent in path.parents
+                           if parent != self.directory and parent.is_relative_to(self.directory) and not parent.exists()}
+            self._charge(sum(((len(body) + block - 1) // block) * block for _, body in additions) +
+                         len(directories) * block)
+            for path, body in additions:
+                atomic_write(path, body)
+        # Fingerprints written before this point only reject conflicts; they do
+        # not prove a business mutation or advance its authority revision.
+        atomic_write(self.checkpoint, data)
 
     def _ensure_marker(self, current):
         marker = self._safe(Path('commits') / str(current.revision))

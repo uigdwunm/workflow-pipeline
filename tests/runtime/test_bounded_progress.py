@@ -11,6 +11,59 @@ from test_workflow_progress import ProgressTests, progress, transfer
 
 
 class BoundedProgressTests(ProgressTests):
+    def test_fresh_poll_provenance_is_bounded_and_old_conflicts_remain_detectable(self):
+        self.begin_dispatcher()
+        poll = self.observation('running', 'result', ref='native:dispatcher')
+        initial = self.invoke('observe', poll)
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        objects = {path.relative_to(directory) for path in (directory / 'objects').rglob('*') if path.is_file()}
+        charged_before = json.loads((directory / 'usage.json').read_bytes())['allocated']
+        first_state = self.state()
+        middle = None
+        for number in range(1000):
+            fresh = copy.deepcopy(poll)
+            fresh['event_id'] = 'fresh-poll-' + str(number)
+            fresh['receipt']['receipt_ref'] = 'fresh-receipt-' + str(number)
+            fresh['provenance'].update(call_ref='fresh-call-' + str(number), response_ref='fresh-response-' + str(number))
+            observed = self.invoke('observe', fresh)
+            self.assertEqual(observed['revision'], initial['revision'],
+                'a fresh legal response to the same logical poll must not create another authority revision')
+            if number == 500:
+                middle = copy.deepcopy(fresh)
+        self.assertEqual({path.relative_to(directory) for path in (directory / 'objects').rglob('*') if path.is_file()}, objects)
+        self.assertEqual(self.state()['events'], first_state['events'])
+        self.assertEqual(self.state()['observations'], first_state['observations'])
+        self.assertEqual(self.state()['host']['seen'], first_state['host']['seen'])
+        self.assertEqual(self.state()['host']['calls'], first_state['host']['calls'])
+        telemetry = progress.read_record(self.checkpoint)['poll']
+        self.assertEqual(telemetry['count'], 1000)
+        self.assertEqual(telemetry['first']['provenance'], poll['provenance'])
+        self.assertEqual(telemetry['latest']['provenance'], fresh['provenance'])
+        self.assertLessEqual(self.checkpoint.stat().st_size, 256 * 1024)
+        index_root = directory / 'poll-fingerprints'
+        index_entries = [index_root, *index_root.rglob('*')]
+        index_files = [path for path in index_entries if path.is_file()]
+        metrics = {'fresh_polls': 1000, 'root_bytes': self.checkpoint.stat().st_size,
+            'new_evidence_objects': 0, 'new_current_events': 0,
+            'fingerprint_files': len(index_files),
+            'fingerprint_payload_bytes': sum(path.stat().st_size for path in index_files),
+            'fingerprint_file_allocated_bytes': sum(path.stat().st_blocks * 512 for path in index_files),
+            'fingerprint_tree_allocated_bytes': sum(path.stat().st_blocks * 512 for path in index_entries),
+            'fingerprint_budget_charge': json.loads((directory / 'usage.json').read_bytes())['allocated'] - charged_before}
+        self.assertGreaterEqual(metrics['fingerprint_budget_charge'], metrics['fingerprint_file_allocated_bytes'])
+        if os.environ.get('T01_POLL_METRICS_PATH'):
+            Path(os.environ['T01_POLL_METRICS_PATH']).write_text(json.dumps(metrics, indent=2) + '\n')
+        conflicting = copy.deepcopy(middle)
+        conflicting['receipt']['receipt_ref'] = 'changed-receipt'
+        event_conflict = self.invoke('observe', conflicting)
+        self.assertEqual(event_conflict['error']['code'], 'event_conflict')
+        conflicting = copy.deepcopy(middle)
+        conflicting['event_id'] = 'reused-middle-response'
+        conflicting['provenance']['action_id'] = 'another-original-call'
+        source_conflict = self.invoke('observe', conflicting)
+        self.assertEqual(source_conflict['error']['code'], 'host_provenance_conflict')
+        self.assertEqual(self.state()['host']['status'], 'unknown')
+
     def test_review_poll_cannot_hide_event_id_conflict(self):
         self.begin_dispatcher()
         poll = self.observation('running', 'result', ref='native:dispatcher')

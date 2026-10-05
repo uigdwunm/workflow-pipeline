@@ -3025,7 +3025,7 @@ class Progress:
         valid = (isinstance(receipt, dict) and isinstance(provenance, dict) and
                  set(provenance) == {'call_ref', 'response_ref', 'action_id'} and
                  all(isinstance(value, str) and value.strip() for value in provenance.values()))
-        facts = {'valid': valid, 'conflict': False, 'duplicate': False, 'causal': False}
+        facts = {'valid': valid, 'conflict': False, 'duplicate': False, 'attributed': False, 'causal': False}
         if not valid:
             return facts
         response_key = entry.digest([receipt['adapter'], provenance['response_ref']])
@@ -3033,15 +3033,21 @@ class Progress:
         fingerprint = entry.digest({'provenance': provenance,
             'receipt': {key: value for key, value in receipt.items() if key != 'receipt_ref'},
             'action_resolution': data.get('action_resolution')})
+        store = state_store.open_store(self.path)
         previous = host['seen'].get(response_key)
+        if previous is None:
+            previous = store.poll_fingerprint('response', response_key)
+        call_digest = (entry.digest(host['calls'][call_key]) if call_key in host['calls'] else
+                       store.poll_fingerprint('call', call_key))
         conflict = ((previous is not None and previous != fingerprint) or
-                    (call_key in host['calls'] and host['calls'][call_key] != provenance['action_id']))
+                    (call_digest is not None and call_digest != entry.digest(provenance['action_id'])))
         action = host.get('query') or self.state.get('host_action')
+        attributed = (not conflict and action is not None and
+            data.get('action_id') == provenance['action_id'] == action['action_id'] and
+            action['generation'] == host['generation'])
         facts.update(response_key=response_key, call_key=call_key, fingerprint=fingerprint,
             conflict=conflict, duplicate=previous == fingerprint and not conflict,
-            causal=(not conflict and action is not None and
-                data.get('action_id') == provenance['action_id'] == action['action_id'] and
-                action['generation'] == host['generation'] and not action.get('resolved')))
+            attributed=attributed, causal=attributed and not action.get('resolved'))
         return facts
 
     def record_host(self, data):
@@ -3578,7 +3584,12 @@ class Progress:
             # Invalid evidence never consumes a legitimate call's reservation.
             receipt_error = error
         digest = entry.digest(data)
+        event_index_key = entry.digest([s['stage_subject'], data['event_id']])
         previous = s['events'].get(data['event_id'])
+        if previous is None:
+            poll_event = state_store.open_store(self.path).poll_fingerprint('event', event_index_key)
+            require(poll_event is None or poll_event == digest,
+                    'event_conflict', 'event ID reused with different content')
         if previous is not None:
             require(previous['digest'] == digest, 'event_conflict', 'event ID reused with different content')
             if previous['applied']:
@@ -3601,10 +3612,20 @@ class Progress:
             poll_identity = entry.digest({'receipt': {key: value for key, value in receipt.items()
                 if key != 'receipt_ref'}, 'action_id': data.get('action_id')})
             previous_poll = s.get('current_poll')
-            if (facts['duplicate'] and data.get('action_id') == data['provenance']['action_id'] and
+            if (facts['valid'] and not facts['conflict'] and
+                    (facts['attributed'] or facts['duplicate'] and
+                     data.get('action_id') == data['provenance']['action_id']) and
                     previous_poll == {'identity': poll_identity, 'generation': s['host']['generation']} and
                     s['host']['status'] == 'running'):
-                state_store.open_store(self.path).record_poll(revision=s['revision'], identity=poll_identity)
+                def attribution(observation):
+                    return {'event_id': observation['event_id'],
+                        'receipt_ref': observation['receipt']['receipt_ref'],
+                        'provenance': observation['provenance']}
+                state_store.open_store(self.path).record_poll(revision=s['revision'], identity=poll_identity,
+                    first=attribution(s['host']['observation']), latest=attribution(data),
+                    fingerprints=[('event', event_index_key, digest),
+                        ('response', facts['response_key'], facts['fingerprint']),
+                        ('call', facts['call_key'], entry.digest(data['provenance']['action_id']))])
                 return _view(s, {'operation': 'wait-host', 'ref': self.bound_ref(),
                     'request': s['dispatch']['request']}, acknowledged=True)
         # Keep even invalid/late raw receipts for exact recovery, not as authority.
