@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "5f6310554a6937906620f2459f627676d398affd38da6153d91a5515b6f0c55d",
+  "bundle_digest": "6a94bf5f083fadf323ba80e2fa0405374d8aa77bbf384f8b48f4ccc75596e68d",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 11,
@@ -16,7 +16,7 @@
     "preparation": "workflow-preparation-v5",
     "requirement_delivery": "requirement-delivery-v2",
     "runner": 11,
-    "stage_transfer": "workflow-stage-transfer-v14",
+    "stage_transfer": "workflow-stage-transfer-v15",
     "supervision": "flow-worktree-v3",
     "thread_settings": "thread-settings-v5",
     "topic_gate": "phase-0-1-discussion-v2",
@@ -213,11 +213,11 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "b1a42a828706cfab46cc41aba75bdec38e08febdeaa593956ab4d49dd7e9ead7"
+      "sha256": "8d0d40cce3ccae3e5b18bb38f411bc6c5ba4f0fed478acab9c3680d01ba91980"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "862420b1c77a7e2efe774513e40c063e323f594807d204b2ae34009b7a2898d2"
+      "sha256": "892cfa68807911aecdd1fee67522af6db24e28e38914be514028729249396eb6"
     },
     "scripts/stage_scope.py": {
       "mode": "0644",
@@ -249,11 +249,11 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "208bfb8481662373ab75c8d315962207c0683b5d9b4bedbf96bdf9793e34758f"
+      "sha256": "e4e93bf0c3d6c87f9d4ec6805ce662a20c97e72f10178b7373717dc56db52511"
     },
     "scripts/workflow_state_store.py": {
       "mode": "0644",
-      "sha256": "26f5499fe359a2de13071f93960e40f9c592a61a127bd8cc04add3e1a8652559"
+      "sha256": "c70ebd5155b583b224b5db66838649bc8d4d5afdf452bdd56cb4c0dd6231d500"
     }
   },
   "format_version": 1,

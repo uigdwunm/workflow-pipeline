@@ -22,7 +22,7 @@ import workflow_control as control
 import workflow_control_git as control_git
 import supervision_protocol as supervision
 
-PROTOCOL = "workflow-stage-transfer-v14"
+PROTOCOL = "workflow-stage-transfer-v15"
 ROLES = {0: "dedicated-discussion", 1: "dedicated-problem-framing", 2: "solution-designer",
          3: "implementation-dispatcher", 4: "closure-agent"}
 FIELDS = {"protocol", "entry", "expected_entry", "stage", "role", "requirement", "predecessor",
@@ -767,11 +767,11 @@ def inherited_generated_outputs(request):
     return request.get("generated_outputs", {})
 
 
-def prepare(request, *, checkpoint_path=None):
-    return _prepare(request, checkpoint_path=checkpoint_path)[0]
+def prepare(request, *, checkpoint_path=None, allocation_store=None):
+    return _prepare(request, checkpoint_path=checkpoint_path, allocation_store=allocation_store)[0]
 
 
-def _prepare(request, *, checkpoint_path=None):
+def _prepare(request, *, checkpoint_path=None, allocation_store=None):
     """Return the sealed input and this preparation's verified entry to C."""
     request = copy.deepcopy(request)
     require(request.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime", "retain original stage-transfer runtime: " + str(request.get("protocol")))
@@ -1051,6 +1051,34 @@ def _prepare(request, *, checkpoint_path=None):
                      if prior_progress is not None else old["scope"]["closure_paths"]) == scope["closure_paths"],
                     "scope_changed", "closure must retain accepted candidate and documentation scope")
     require(stage != 4 or predecessor is not None, "predecessor_incomplete", "inherited closure requires an accepted implementation result")
+    if allocation_store is not None:
+        require(stage == 3 and role == 'execution-agent' and
+                'integration_recovery' not in request['authorization'],
+                'invalid_request', 'shared allocation requires an ordinary Execution Agent')
+        store, current_root, allocation_id = allocation_store
+        entry.nonempty(allocation_id)
+        tickets = {ref['ticket_id'] for ref in semantic['plan_refs']}
+        require(len(tickets) == 1, 'invalid_allocation', 'one allocation belongs to one Ticket')
+        contract_keys = {'requirement', 'predecessor', 'target', 'delivery', 'readiness',
+                         'inline_authority', 'generated_outputs'}
+        contract = {key: request[key] for key in contract_keys if key in request}
+        contract['scope'] = {key: value for key, value in scope.items()
+                             if key not in {'baseline', 'owned_paths', 'protected_paths'}}
+        package = {key: request[key] for key in ('entry', 'expected_entry')}
+        baseline = {'binding': request['binding'], 'source_commit': source_commit,
+                    'delivery_facts': delivered}
+        if 'manifest_baseline' in request:
+            baseline['manifest_baseline'] = request['manifest_baseline']
+        refs = {name: store.write_allocation_part(current_root, name, value)
+                for name, value in (('contract', contract), ('package', package), ('baseline', baseline))}
+        return seal({'protocol': PROTOCOL, 'kind': 'allocation-input', 'stage': 3,
+            'role': role, 'checkpoint': str(store.checkpoint.resolve()), 'run_id': current_root.run_id,
+            'refs': refs, 'allocation_id': allocation_id, 'subject_id': 'ticket:' + next(iter(tickets)) + ':0',
+            'controller_ref': current['actor']['controller_ref'],
+            'requirement_identity': identity, 'selection': configuration,
+            'scope': {key: scope[key] for key in ('baseline', 'owned_paths', 'protected_paths')},
+            'authorization': request['authorization'], 'configuration': request['configuration'],
+            'semantic': {key: value for key, value in semantic.items() if key != 'inline_plan'}}), current
     saved = seal({**{k: copy.deepcopy(request[k]) for k in FIELDS},
                  **({"readiness": copy.deepcopy(request["readiness"])} if "readiness" in request else {}),
                  **({"generated_outputs": copy.deepcopy(request["generated_outputs"])}
@@ -1074,6 +1102,16 @@ def require_current_protocol(value):
 
 
 def verify(saved, *, checkpoint_path=None):
+    if saved.get('kind') == 'allocation-input':
+        body = resolve_allocation(saved)
+        import workflow_state_store
+        store = workflow_state_store.open_store(saved['checkpoint'])
+        current = store.open_current()
+        actual = _prepare({**{key: body[key] for key in FIELDS},
+            **{key: body[key] for key in OPTIONAL_FIELDS if key in body}, 'operation': 'verify'},
+            allocation_store=(store, current, saved['allocation_id']))[0]
+        require(actual == saved, 'handoff_changed', 'allocation facts changed; retain its shared contract')
+        return saved
     body = unseal(saved)
     require_current_protocol(body)
     entry.fields(body, FIELDS | {"kind", "controller_ref", "requirement_identity", "source_commit", "delivery_facts", "selection"}, OPTIONAL_FIELDS)
@@ -1088,6 +1126,44 @@ def verify(saved, *, checkpoint_path=None):
                       "operation": "verify"}, checkpoint_path=checkpoint_path)[0]
     require(actual == saved, "handoff_changed", "stage input facts changed; retain the original handoff")
     return actual
+
+
+def resolve_allocation(saved, *, store=None, current=None):
+    """Resolve one named allocation contract; never read a roster or history."""
+    if saved.get('kind') != 'allocation-input':
+        return saved
+    body = unseal(saved)
+    require_current_protocol(body)
+    entry.fields(body, {'protocol', 'kind', 'stage', 'role', 'checkpoint', 'run_id', 'refs',
+        'controller_ref', 'requirement_identity', 'selection', 'scope', 'authorization',
+        'configuration', 'semantic', 'allocation_id', 'subject_id'})
+    require(body['stage'] == 3 and body['role'] == 'execution-agent' and
+            set(body['refs']) == {'contract', 'package', 'baseline'},
+            'invalid_evidence', 'shared allocation identity is invalid')
+    import workflow_state_store
+    store = store or workflow_state_store.open_store(body['checkpoint'])
+    require(str(store.checkpoint.resolve()) == body['checkpoint'],
+            'identity_mismatch', 'allocation checkpoint changed')
+    current = current or store.open_current()
+    require(current is not None and current.run_id == body['run_id'],
+            'identity_mismatch', 'allocation belongs to another current run')
+    parts = {name: store.read_allocation_part(current, name, reference)
+             for name, reference in body['refs'].items()}
+    contract = parts['contract']
+    entry.fields(contract, {'requirement', 'predecessor', 'target', 'delivery', 'scope'},
+                 {'readiness', 'inline_authority', 'generated_outputs'})
+    entry.fields(parts['package'], {'entry', 'expected_entry'})
+    entry.fields(parts['baseline'], {'binding', 'source_commit', 'delivery_facts'}, {'manifest_baseline'})
+    entry.fields(body['scope'], {'baseline', 'owned_paths', 'protected_paths'})
+    semantic = copy.deepcopy(body['semantic'])
+    if 'inline_authority' in contract:
+        semantic['inline_plan'] = copy.deepcopy(execution_plan.current_catalog(
+            contract['inline_authority'])['tickets'][0]['plan'])
+    return seal({**contract, **parts['package'], **parts['baseline'],
+        **{key: body[key] for key in ('protocol', 'stage', 'role', 'controller_ref',
+            'requirement_identity', 'selection', 'authorization', 'configuration')},
+        'kind': 'stage-input', 'semantic': semantic,
+        'scope': {**contract['scope'], **body['scope']}})
 
 
 def _render_verified(saved, readiness, current_progress=None):
@@ -1139,9 +1215,16 @@ def _render_verified(saved, readiness, current_progress=None):
 
 
 def render(saved, *, readiness=None, checkpoint_path=None):
+    if saved.get('kind') == 'allocation-input':
+        payload = render(resolve_allocation(saved), readiness=readiness, checkpoint_path=checkpoint_path)
+        payload['payload']['input_digest'] = saved['digest']
+        payload['text'] = json.dumps(payload['payload'], ensure_ascii=False, sort_keys=True, indent=2)
+        return payload
     body = unseal(saved)
     require_current_protocol(body)
     if body.get("status") == "accepted":
+        require('allocation_digest' not in body, 'result_incomplete',
+                'allocation acceptance is not stage completion')
         original = body["handoff"]
         if original["stage"] == 2 and readiness is not None:
             state = current_readiness(readiness)

@@ -30,7 +30,16 @@ class ProgressTests(transfer.StageTransferTests):
         self.host_response_sequence = 0
 
     def state(self):
-        return progress.read_projection(self.checkpoint, projection='transaction').record[progress.KEY]
+        return progress.read_projection(self.checkpoint, projection='scope').record[progress.KEY]
+
+    def allocation_slot(self, allocation_id, ticket_id=None):
+        if ticket_id is None:
+            tickets = self.state()['scope_authority']['execution_plan']['catalog']['tickets']
+            self.assertEqual(len(tickets), 1, 'multi-Ticket fixtures must select the exact subject')
+            ticket_id = tickets[0]['ticket_id']
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        return store.read_subject(current, 'ticket:' + ticket_id + ':0').value['allocations'][allocation_id]
 
     def retired_fixture(self):
         import test_workflow_control
@@ -162,7 +171,7 @@ class ProgressTests(transfer.StageTransferTests):
 
     def test_scope_readiness_requires_original_runtime_for_previous_progress(self):
         self.begin()
-        old = progress.read_projection(self.checkpoint, projection='transaction').record
+        old = progress.read_projection(self.checkpoint, projection='scope').record
         old[progress.KEY]['protocol'] = 'workflow-progress-v17'
         self.checkpoint = self.checkpoint.with_name('legacy.json')
         progress.atomic_save(self.checkpoint, old)
@@ -642,7 +651,7 @@ class ProgressTests(transfer.StageTransferTests):
     def test_stop_intent_guards_continue_and_effect_even_if_status_is_active(self):
         self.begin()
         self.invoke("observe", self.observation())
-        outer = progress.read_projection(self.checkpoint, projection='transaction').record
+        outer = progress.read_projection(self.checkpoint, projection='scope').record
         state = outer[progress.KEY]
         state.update(status="active", step="continue", stop_requested="cancelling")
         progress.Progress(self.checkpoint, outer).save()
@@ -650,13 +659,13 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(result["status"], "cancelling")
         self.assertEqual(result["next_action"]["operation"], "stop-host")
         owner = progress.Progress(self.checkpoint,
-            progress.read_projection(self.checkpoint, projection='transaction').record)
+            progress.read_projection(self.checkpoint, projection='scope').record)
         for operation in ("invoke-host", "continue-host", "source-lifecycle", "carrier-lifecycle"):
             with self.assertRaises(transfer.entry.PreparationError): owner.effect(operation, {})
 
     def test_runner_stop_request_defers_reply_before_shared_suspend(self):
         answer = self.pending_business_answer()
-        outer = progress.read_projection(self.checkpoint, projection='transaction').record
+        outer = progress.read_projection(self.checkpoint, projection='scope').record
         outer["runner_request"] = {"operation": "pause", "request_id": "saved-request"}
         progress.Progress(self.checkpoint, outer).save()
         response = self.invoke("decide", answer)
@@ -1372,11 +1381,11 @@ class ProgressTests(transfer.StageTransferTests):
                 with self.assertRaises(transfer.entry.PreparationError): self.invoke("allocation", request)
                 self.assertEqual(self.state(), before)
                 owner = progress.Progress(self.checkpoint,
-                    progress.read_projection(self.checkpoint, projection='transaction').record)
+                    progress.read_projection(self.checkpoint, projection='scope').record)
                 with self.assertRaises(transfer.entry.PreparationError):
-                    owner.issue_allocation("prepared", owner.state["allocations"]["prepared"])
+                    owner.issue_allocation("prepared", self.allocation_slot("prepared"))
                 self.assertEqual(self.state(), before)
-                slot = self.state()["allocations"]["prepared"]
+                slot = self.allocation_slot('prepared')
                 result = self.invoke("allocation", {"allocation_id": "prepared", "operation": "reconcile",
                     "receipt": self.receipt(slot["record"], "not-created", "lookup", ref=None)})
                 self.assertEqual(result["next_action"]["result"]["status"], "not-created")
@@ -1385,7 +1394,7 @@ class ProgressTests(transfer.StageTransferTests):
         self.begin_dispatcher()
         execution = self.execution_input()
         for operation in ("pause", "cancel"):
-            outer = progress.read_projection(self.checkpoint, projection='transaction').record
+            outer = progress.read_projection(self.checkpoint, projection='scope').record
             outer["runner_request"] = {"operation": operation, "request_id": operation}
             progress.Progress(self.checkpoint, outer).save()
             before = self.checkpoint.read_bytes()
@@ -1396,19 +1405,19 @@ class ProgressTests(transfer.StageTransferTests):
 
     def test_pausing_still_receives_and_accepts_existing_allocation(self):
         self.prepare_execution()
-        slot = self.state()["allocations"]["slice-one"]
+        slot = self.allocation_slot('slice-one')
         self.invoke("allocation", {"allocation_id": "slice-one", "operation": "bind",
             "receipt": self.receipt(slot["record"], ref="native:executor")})
         self.invoke("pause")
         data = b"print('finished before stopping')\n"
         (self.flow / "impl.py").write_bytes(data)
-        slot = self.state()["allocations"]["slice-one"]
+        slot = self.allocation_slot('slice-one')
         received = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "receive",
             "receipt": self.receipt(slot["record"], "stopped", "result", ref="native:executor"),
             "result": {"delivery_id": "stopped-slice", "status": "completed", "payload": {"changed_paths": ["impl.py"],
                 "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["fixture boundary passed"],
                 "write_release": transfer.dispatch.execution_release_token(slot["record"]),
-                "plan_refs": slot["record"]["handoff"]["semantic"]["plan_refs"],
+                "plan_refs": slot["handoff"]["semantic"]["plan_refs"],
                 "plan_authority": self.state()["control"]["context"]["handoff_progress"]["plan_authority"]}}})
         self.assertEqual(received["next_action"]["result"]["status"], "received")
         accepted = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "accept", "decision": {"reference": "dispatcher:accept-stopped"}})
@@ -1418,7 +1427,7 @@ class ProgressTests(transfer.StageTransferTests):
 
     def test_native_allocations_share_parent_authority_and_accept_real_delta(self):
         execution = self.prepare_execution()
-        slot = self.state()["allocations"]["slice-one"]
+        slot = self.allocation_slot('slice-one')
         repeated = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "prepare", "handoff": execution})
         self.assertEqual(repeated["next_action"]["operation"], "lookup-exact-allocation")
         self.assertEqual(len(self.state()["control"]["context"]["handoff_progress"]["executions"]), 1)
@@ -1426,13 +1435,13 @@ class ProgressTests(transfer.StageTransferTests):
             "receipt": self.receipt(slot["record"], ref="native:executor")})
         data = b"print('slice')\n"
         (self.flow / "impl.py").write_bytes(data)
-        slot = self.state()["allocations"]["slice-one"]
+        slot = self.allocation_slot('slice-one')
         received = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "receive",
             "receipt": self.receipt(slot["record"], "stopped", "result", ref="native:executor"),
             "result": {"delivery_id": "slice", "status": "completed", "payload": {"changed_paths": ["impl.py"],
                 "file_hashes": {"impl.py": hashlib.sha256(data).hexdigest()}, "tests": ["fixture boundary passed"],
                 "write_release": transfer.dispatch.execution_release_token(slot["record"]),
-                "plan_refs": slot["record"]["handoff"]["semantic"]["plan_refs"],
+                "plan_refs": slot["handoff"]["semantic"]["plan_refs"],
                 "plan_authority": self.state()["control"]["context"]["handoff_progress"]["plan_authority"]}}})
         self.assertEqual(received["next_action"]["result"]["status"], "received", received)
         accepted = self.invoke("allocation", {"allocation_id": "slice-one", "operation": "accept", "decision": {"reference": "dispatcher:accept"}})
@@ -1443,7 +1452,7 @@ class ProgressTests(transfer.StageTransferTests):
 
     def test_public_control_cannot_bypass_execution_receipts(self):
         self.prepare_execution()
-        slot = self.state()["allocations"]["slice-one"]
+        slot = self.allocation_slot('slice-one')
         self.invoke("allocation", {"allocation_id": "slice-one", "operation": "bind",
             "receipt": self.receipt(slot["record"], ref="native:executor")})
         before = self.state()["control"]["context"]
@@ -1459,7 +1468,7 @@ class ProgressTests(transfer.StageTransferTests):
         self.prepare_execution()
         self.invoke("cancel")
         self.invoke("observe", self.observation("stopped", "result", ref="native:dispatcher"))
-        slot = self.state()["allocations"]["slice-one"]
+        slot = self.allocation_slot('slice-one')
         data = {"allocation_id": "slice-one", "operation": "reconcile",
                 "receipt": self.receipt(slot["record"], "not-created", "lookup", ref=None)}
         released = self.invoke("allocation", data)
@@ -1647,14 +1656,14 @@ class ProgressTests(transfer.StageTransferTests):
             prepared = self.invoke('allocation', {'allocation_id': 'integrated-execution',
                 'operation': 'prepare', 'handoff': request})
             self.assertEqual((prepared.get('next_action') or {}).get('operation'), 'invoke-host', prepared)
-            slot = self.state()['allocations']['integrated-execution']
+            slot = self.allocation_slot('integrated-execution')
             self.assertEqual(slot['handoff']['controller_ref'], parent['controller_ref'])
             self.assertEqual(slot['handoff']['requirement_identity'], parent['requirement_identity'])
             bound = self.invoke('allocation', {'allocation_id': 'integrated-execution', 'operation': 'bind',
                 'receipt': self.receipt(slot['record'], ref=executor)})
             self.assertIsNotNone(bound['next_action'], bound)
             self.assertEqual(bound['next_action']['result']['status'], 'bound', bound)
-            slot = self.state()['allocations']['integrated-execution']
+            slot = self.allocation_slot('integrated-execution')
             self.invoke('allocation', {'allocation_id': 'integrated-execution', 'operation': 'receive',
                 'receipt': self.receipt(slot['record'], 'stopped', 'result', ref=executor),
                 'result': {'delivery_id': 'integrated-execution', 'status': 'completed', 'payload': {

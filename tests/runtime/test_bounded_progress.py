@@ -13,6 +13,246 @@ from test_workflow_progress import ProgressTests, progress, transfer, runner
 
 
 class BoundedProgressTests(ProgressTests):
+    def test_allocation_contract_two_active_slices_keep_peer_in_stop_barrier(self):
+        self.context = self.context_for(3)
+        initial = self.input_for(3)
+        scope = initial['scope']
+        scope['implementation_paths'].append('peer.py')
+        scope['owned_paths'].append('peer.py')
+        scope['downstream']['manifest'].append({**copy.deepcopy(scope['downstream']['manifest'][-1]), 'path': 'peer.py'})
+        initial['authorization']['scope_digest'] = transfer.entry.digest(scope)
+        plan = initial['semantic']['inline_plan']
+        plan['steps'].append({**copy.deepcopy(plan['steps'][0]), 'id': 'inline-peer',
+                              'target': {'path': 'peer.py', 'symbol': 'run', 'operation': 'add'}})
+        self.begin('continuous', initial)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        objects = self.checkpoint.with_name(self.checkpoint.name + '.state') / 'objects'
+        def object_bytes():
+            return sum(path.stat().st_size for path in objects.rglob('*') if path.is_file())
+        initial_bytes = object_bytes()
+        first = self.execution_input()
+        prepared = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'prepare', 'handoff': first})
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+        one = self.allocation_slot('slice-one')
+        first_bytes = object_bytes()
+        bound = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'bind',
+            'receipt': self.receipt(one['record'], ref='native:executor-one')})
+        self.assertEqual(bound['next_action']['result']['status'], 'bound')
+        one = self.allocation_slot('slice-one')
+        peer = self.inherited_execution_input()
+        peer['scope']['owned_paths'] = ['peer.py']
+        peer['semantic']['plan_refs'] = [ref for ref in peer['semantic']['plan_refs'] if ref['step_id'] == 'inline-peer']
+        peer['authorization']['scope_digest'] = transfer.entry.digest(peer['scope'])
+        second = self.invoke('allocation', {'allocation_id': 'slice-two', 'operation': 'prepare', 'handoff': peer})
+        self.assertEqual((second.get('next_action') or {}).get('operation'), 'invoke-host', {key: second.get(key) for key in ('status', 'error')})
+        two = self.allocation_slot('slice-two')
+        second_bytes = object_bytes()
+        self.assertEqual(one['handoff']['refs'], two['handoff']['refs'])
+        peer_receipt = self.receipt(two['record'], ref='native:executor-two')
+        peer_receipt['raw']['output'] = 'peer native output ' * 3000
+        peer_bound = self.invoke('allocation', {'allocation_id': 'slice-two', 'operation': 'bind',
+            'receipt': peer_receipt})
+        self.assertEqual(peer_bound['next_action']['result']['status'], 'bound')
+        two = self.allocation_slot('slice-two')
+        self.assertIn('raw_ref', two['record']['receipts'][0])
+        peer_delta = two['record']['receipts'][0]['raw_ref']['sha256']
+        opened = []
+        original_open = Path.open
+        def tracked_open(path, *args, **kwargs):
+            opened.append(path)
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', tracked_open):
+            target = progress.read_projection(self.checkpoint, projection='transaction',
+                subject_id='ticket:INLINE-TRANSFER:0', allocation_id='slice-one', intent=one['action']['action_id'])
+        self.assertNotIn(peer_delta, {path.name for path in opened})
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        reads = [path for path in opened if path == self.checkpoint or path.is_relative_to(directory)]
+        self.assertEqual(target.files_read, len(reads))
+        self.assertEqual(target.bytes_read, sum(path.stat().st_size for path in reads))
+        self.assertEqual(target.record[progress.KEY]['status'], 'bound')
+        self.assertNotIn('slice-two', json.dumps(target.record))
+        content = b"print('first finished')\n"
+        (self.flow / 'impl.py').write_bytes(content)
+        received = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'receive',
+            'receipt': self.receipt(one['record'], 'stopped', 'result', ref='native:executor-one'),
+            'result': {'delivery_id': 'first-finished', 'status': 'completed', 'payload': {
+                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(content).hexdigest()},
+                'tests': ['fixture boundary passed'], 'write_release': bound['next_action']['result']['write_release'],
+                'plan_refs': first['semantic']['plan_refs'],
+                'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
+        self.assertEqual(received['next_action']['result']['status'], 'received')
+        stopped = self.invoke('pause')
+        self.assertEqual(stopped['status'], 'pausing')
+        self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        self.assertEqual(self.invoke('inspect')['status'], 'pausing')
+        self.assertFalse(self.state()['stopped'])
+        self.assertEqual(self.allocation_slot('slice-two')['record']['request']['attempt'],
+                         two['record']['request']['attempt'])
+        with self.assertRaises(transfer.entry.PreparationError) as rejected:
+            self.invoke('allocation', {'allocation_id': 'new-peer', 'operation': 'prepare', 'handoff': peer})
+        self.assertEqual(rejected.exception.code, 'progression_suspended')
+        if os.environ.get('T01_ALLOCATION_METRICS_PATH'):
+            Path(os.environ['T01_ALLOCATION_METRICS_PATH']).write_text(json.dumps({
+                'subjects': 1, 'allocations': 2, 'target_files_read': target.files_read,
+                'target_bytes_read': target.bytes_read, 'peer_raw_bytes': len(peer_receipt['raw']['output']),
+                'peer_raw_read': False, 'initial_object_bytes': initial_bytes,
+                'first_prepare_added_bytes': first_bytes - initial_bytes,
+                'first_bind_and_second_prepare_added_bytes': second_bytes - first_bytes,
+                'final_object_bytes': object_bytes(), 'root_bytes': self.checkpoint.stat().st_size,
+                'scope': 'two allocations in one Ticket; not a multi-Ticket or history pressure measurement'
+            }, indent=2) + '\n')
+
+    def test_allocation_contract_receives_accepts_and_replays_original_receipt(self):
+        execution = self.prepare_execution()
+        slot = self.allocation_slot('slice-one')
+        bind = {'allocation_id': 'slice-one', 'operation': 'bind',
+                'receipt': self.receipt(slot['record'], ref='native:executor')}
+        bound = self.invoke('allocation', bind)
+        self.assertEqual(bound['next_action']['result']['status'], 'bound')
+        release = bound['next_action']['result']['write_release']
+        data = b"print('shared allocation')\n"
+        (self.flow / 'impl.py').write_bytes(data)
+        slot = self.allocation_slot('slice-one')
+        receive = {'allocation_id': 'slice-one', 'operation': 'receive',
+            'receipt': self.receipt(slot['record'], 'stopped', 'result', ref='native:executor'),
+            'result': {'delivery_id': 'slice-result', 'status': 'completed', 'payload': {
+                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
+                'tests': ['fixture boundary passed'], 'write_release': release,
+                'plan_refs': execution['semantic']['plan_refs'],
+                'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}}
+        received = self.invoke('allocation', receive)
+        self.assertEqual(received['next_action']['result']['status'], 'received')
+        accepted = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:shared-accept'}})
+        self.assertEqual(accepted['next_action']['result']['status'], 'accepted')
+        self.assertNotIn('handoff', self.allocation_slot('slice-one')['record']['acceptance'])
+        with self.assertRaises(transfer.entry.PreparationError) as rejected:
+            transfer.handoff.render(accepted['next_action']['result']['accepted'])
+        self.assertEqual(rejected.exception.code, 'result_incomplete')
+        self.assertEqual(self.invoke('inspect')['status'], 'active')
+        before = self.checkpoint.read_bytes()
+        replay = self.invoke('allocation', bind)
+        self.assertTrue(replay['acknowledged'])
+        self.assertNotIn('write_release', replay['next_action']['result'])
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+
+    def test_allocation_contract_transaction_rejects_wrong_target_without_writes(self):
+        self.prepare_execution()
+        slot = self.allocation_slot('slice-one')
+        args = {'subject_id': 'ticket:INLINE-TRANSFER:0', 'allocation_id': 'slice-one',
+                'intent': slot['action']['action_id']}
+        before = self.checkpoint.read_bytes()
+        for replacement in ({'subject_id': 'all'}, {'subject_id': 'ticket:missing:0'},
+                            {'allocation_id': 'other'}, {'intent': 'other'}, {'intent': None}):
+            with self.subTest(replacement=replacement):
+                with self.assertRaises(transfer.entry.PreparationError):
+                    progress.read_projection(self.checkpoint, projection='transaction', **{**args, **replacement})
+                self.assertEqual(self.checkpoint.read_bytes(), before)
+        with self.assertRaises(transfer.entry.PreparationError):
+            progress.read_projection(self.checkpoint, projection='transaction')
+
+    def test_allocation_contract_dispatch_requires_original_controller_intent(self):
+        self.prepare_execution()
+        slot = self.allocation_slot('slice-one')
+        before = self.checkpoint.read_bytes()
+        with self.assertRaises(transfer.entry.PreparationError) as rejected:
+            transfer.dispatch.handle({'protocol': transfer.handoff.PROTOCOL, 'operation': 'bind',
+                'record': slot['record'], 'control': self.state()['control'],
+                'receipt': self.receipt(slot['record'], ref='native:executor')})
+        self.assertEqual(rejected.exception.code, 'authority_missing')
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+
+    def test_allocation_contract_recovers_the_persisted_transaction_intent(self):
+        self.begin_dispatcher()
+        execution = self.execution_input()
+        original_replace = os.replace
+        def crash_after_intent(source, target):
+            if Path(target).parent.name == 'commits':
+                store = progress.state_store.StateStore(self.checkpoint)
+                current = store.open_current()
+                subject_id = 'ticket:INLINE-TRANSFER:0'
+                if subject_id in current.root['subjects']:
+                    slot = store.read_subject(current, subject_id).value['allocations']['slice-one']
+                    if slot.get('transaction') is not None:
+                        raise KeyboardInterrupt('persisted C allocation intent before dispatch')
+            return original_replace(source, target)
+        with patch.object(os, 'replace', crash_after_intent):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'prepare', 'handoff': execution})
+        slot = self.allocation_slot('slice-one')
+        intent = copy.deepcopy(slot['transaction'])
+        before = self.checkpoint.read_bytes()
+        with self.assertRaises(transfer.entry.PreparationError) as rejected:
+            transfer.dispatch.handle({'protocol': transfer.handoff.PROTOCOL, 'operation': 'prepare',
+                'handoff': slot['handoff'], 'control': {**self.state()['control'], 'discussion': {'forged': True}},
+                'allocation_intent': intent['intent_id']})
+        self.assertEqual(rejected.exception.code, 'authority_changed')
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        recovery = self.invoke('resume')['next_action']
+        self.assertEqual(recovery['operation'], 'allocation-recovery')
+        saved_intents = []
+        def observe_intents(source, target):
+            result = original_replace(source, target)
+            if Path(target) == self.checkpoint:
+                transaction = self.allocation_slot('slice-one')['transaction']
+                if transaction is not None:
+                    saved_intents.append(transaction)
+            return result
+        with patch.object(os, 'replace', observe_intents):
+            launched = self.invoke('allocation', recovery['data'])
+        self.assertTrue(all(saved == intent for saved in saved_intents), saved_intents)
+        self.assertEqual(launched['next_action']['operation'], 'invoke-host')
+
+    def test_allocation_contract_missing_corrupt_and_wrong_parts_fail_closed(self):
+        self.prepare_execution()
+        slot = self.allocation_slot('slice-one')
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        reference = slot['handoff']['refs']['contract']
+        path = directory / 'objects' / reference['sha256'][:2] / reference['sha256'][2:4] / reference['sha256']
+        original = path.read_bytes()
+        for corruption in ('missing', 'bytes'):
+            with self.subTest(corruption=corruption):
+                if corruption == 'missing':
+                    path.unlink()
+                else:
+                    path.write_bytes(original + b' ')
+                with self.assertRaises(transfer.entry.PreparationError):
+                    progress.read_projection(self.checkpoint, projection='transaction',
+                        subject_id='ticket:INLINE-TRANSFER:0', allocation_id='slice-one',
+                        intent=slot['action']['action_id'])
+                path.write_bytes(original)
+        # Reference integrity is also enforced when the enclosing descriptor has
+        # a valid seal: a digest alone cannot grant cross-run/type authority.
+        for field, value in (('run_id', 'other-run'), ('kind', 'subject'), ('sha256', '0' * 64)):
+            with self.subTest(field=field):
+                altered = copy.deepcopy(transfer.handoff.unseal(slot['handoff']))
+                altered['refs']['contract'][field] = value
+                with self.assertRaises(transfer.entry.PreparationError):
+                    transfer.handoff.resolve_allocation(transfer.handoff.seal(altered))
+
+
+    def test_allocation_contract_is_shared_before_dispatch_and_inspect(self):
+        execution = self.prepare_execution()
+        self.assertEqual(self.invoke('inspect')['status'], 'active')
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        ticket_id = execution['semantic']['plan_refs'][0]['ticket_id']
+        subject_id = 'ticket:' + ticket_id + ':0'
+        slot = store.read_subject(current, subject_id).value['allocations']['slice-one']
+        self.assertNotIn('input', slot)
+        self.assertEqual(slot['handoff']['kind'], 'allocation-input')
+        self.assertEqual(set(slot['handoff']['refs']), {'contract', 'package', 'baseline'})
+        self.assertNotIn('payload', slot['record']['request'])
+        self.assertNotIn('payload', slot['action'])
+        self.assertNotIn('handoff', slot['record'])
+        self.assertEqual(set(slot['record']['allocation']), {'checkpoint', 'run_id', 'reference'})
+        observed = progress.read_projection(self.checkpoint, projection='transaction',
+            subject_id=subject_id, allocation_id='slice-one', intent=slot['action']['action_id'])
+        self.assertEqual(observed.record[progress.KEY]['allocation_id'], 'slice-one')
+        self.assertNotIn('write_release', json.dumps(observed.record))
+        replay = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'prepare', 'handoff': execution})
+        self.assertEqual(replay['next_action']['operation'], 'lookup-exact-allocation')
+
     def test_stage2_scope_review_acceptance_stays_ready_for_existing_readers(self):
         accepted = self.finish_design('stepwise')
         with self.subTest(reader='handle-inspect'):
@@ -215,7 +455,7 @@ class BoundedProgressTests(ProgressTests):
 
     def test_runner_outer_cas_preserves_controller_receipt_and_stale_owner_is_rejected(self):
         self.prepare_execution()
-        slot = self.state()['allocations']['slice-one']
+        slot = self.allocation_slot('slice-one')
         request = {'allocation_id': 'slice-one', 'operation': 'bind',
                    'receipt': self.receipt(slot['record'], ref='native:executor')}
         bound = self.invoke('allocation', request)
@@ -574,19 +814,19 @@ class BoundedProgressTests(ProgressTests):
 
     def test_completed_control_keeps_only_exact_receipt(self):
         self.prepare_execution()
-        slot = self.state()['allocations']['slice-one']
+        slot = self.allocation_slot('slice-one')
         bound = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'bind',
             'receipt': self.receipt(slot['record'], ref='native:executor')})
         self.assertEqual(bound['next_action']['result']['status'], 'bound')
         content = b"print('receipt')\n"
         (self.flow / 'impl.py').write_bytes(content)
-        slot = self.state()['allocations']['slice-one']
+        slot = self.allocation_slot('slice-one')
         received = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'receive',
             'receipt': self.receipt(slot['record'], 'stopped', 'result', ref='native:executor'),
             'result': {'delivery_id': 'receipt-slice', 'status': 'completed', 'payload': {
                 'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(content).hexdigest()},
                 'tests': ['fixture boundary passed'], 'write_release': transfer.dispatch.execution_release_token(slot['record']),
-                'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_refs': slot['handoff']['semantic']['plan_refs'],
                 'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
         self.assertEqual(received['next_action']['result']['status'], 'received')
         accepted = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'accept',
@@ -602,7 +842,7 @@ class BoundedProgressTests(ProgressTests):
 
     def receipt_commit_crash(self, after_root):
         self.prepare_execution()
-        slot = self.state()['allocations']['slice-one']
+        slot = self.allocation_slot('slice-one')
         request = {'allocation_id': 'slice-one', 'operation': 'bind',
             'receipt': self.receipt(slot['record'], ref='native:executor')}
         directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
@@ -634,7 +874,7 @@ class BoundedProgressTests(ProgressTests):
         changed = {**request, 'receipt': {**request['receipt'], 'raw': {'different': True}}}
         conflict = self.invoke('allocation', changed)
         self.assertEqual(conflict['error']['code'], 'receipt_conflict')
-        self.assertEqual(self.state()['allocations']['slice-one']['record']['status'], 'bound')
+        self.assertEqual(self.allocation_slot('slice-one')['record']['status'], 'bound')
 
     def test_prepared_receipt_is_not_a_committed_ack(self):
         self.receipt_commit_crash(False)
@@ -675,7 +915,7 @@ class BoundedProgressTests(ProgressTests):
 
     def test_budget_full_keeps_original_call_receivable(self):
         execution = self.prepare_execution()
-        slot = self.state()['allocations']['slice-one']
+        slot = self.allocation_slot('slice-one')
         store = self.checkpoint.with_name(self.checkpoint.name + '.state')
         # A persisted capacity account is a filesystem boundary, representing
         # previously charged retained evidence without allocating 2 GiB in CI.
@@ -686,7 +926,7 @@ class BoundedProgressTests(ProgressTests):
             {key: result.get(key) for key in ('status', 'error')})
         with self.assertRaises(transfer.entry.PreparationError):
             self.invoke('allocation', {'allocation_id': 'new-slice', 'operation': 'prepare', 'handoff': execution})
-        self.assertEqual(self.state()['allocations']['slice-one']['record']['status'], 'bound')
+        self.assertEqual(self.allocation_slot('slice-one')['record']['status'], 'bound')
 
     def test_two_slices_poll_and_resume_keep_current_state_bounded(self):
         self.context = self.context_for(3)
@@ -709,19 +949,19 @@ class BoundedProgressTests(ProgressTests):
             replay = self.invoke('allocation', {'allocation_id': identity,
                 'operation': 'prepare', 'handoff': execution})
             self.assertEqual(replay['next_action']['operation'], 'lookup-exact-allocation')
-            slot = self.state()['allocations'][identity]
+            slot = self.allocation_slot(identity)
             self.invoke('allocation', {'allocation_id': identity, 'operation': 'bind',
                 'receipt': self.receipt(slot['record'], ref=ref)})
             content = ('print(' + str(number) + ')\n').encode()
             (self.flow / 'impl.py').write_bytes(content)
-            slot = self.state()['allocations'][identity]
+            slot = self.allocation_slot(identity)
             received = self.invoke('allocation', {'allocation_id': identity, 'operation': 'receive',
                 'receipt': self.receipt(slot['record'], 'stopped', 'result', ref=ref),
                 'result': {'delivery_id': identity, 'status': 'completed', 'payload': {
                     'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(content).hexdigest()},
                     'tests': ['fixture boundary passed'],
                     'write_release': transfer.dispatch.execution_release_token(slot['record']),
-                    'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                    'plan_refs': slot['handoff']['semantic']['plan_refs'],
                     'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
             self.assertEqual(received['next_action']['result']['status'], 'received', received)
             accepted = self.invoke('allocation', {'allocation_id': identity,

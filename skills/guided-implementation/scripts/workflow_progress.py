@@ -300,13 +300,20 @@ def read_record(path):
     return value
 
 
-def read_projection(path, *, projection, stage=None):
+def read_projection(path, *, projection, stage=None, subject_id=None, allocation_id=None, intent=None):
     """Explicit current-operation projection; never loads archived subjects."""
     require(projection in {'identity', 'scope', 'transaction', 'delivery'},
             'invalid_projection', 'choose identity, scope, transaction or delivery')
     if stage is not None:
         require(projection == 'scope' and stage == 2, 'invalid_projection', 'select the current Stage-2 scope')
-    envelope = read_record(path) if stage is None else None
+    if projection == 'transaction':
+        require(isinstance(subject_id, str) and subject_id.startswith('ticket:') and
+                isinstance(allocation_id, str) and allocation_id and isinstance(intent, str) and intent,
+                'invalid_projection', 'transaction requires exact subject, allocation and intent')
+    else:
+        require(subject_id is None and allocation_id is None and intent is None,
+                'invalid_projection', 'allocation selectors belong to transaction reads')
+    envelope = read_record(path) if stage is None and projection != 'transaction' else None
     classes = {'identity': state_store.IdentityProjection, 'scope': state_store.ScopeProjection,
                'transaction': state_store.TransactionProjection, 'delivery': state_store.DeliveryProjection}
     if envelope is not None and envelope.get('store_format') != state_store.FORMAT:
@@ -338,20 +345,64 @@ def read_projection(path, *, projection, stage=None):
         state['current_transport'] = (state['transport'] == scope_transport(current.root['outer']) and
                                       not current.root['outer'].get('runner_request'))
         return state_store.ScopeProjection({KEY: state}, store.files_read, store.bytes_read, current.revision)
-    state = store.read_subject(current, stage_id).value
     if projection == 'transaction':
-        state['allocations'] = {}
-        for subject_id in subjects:
-            if subject_id == stage_id:
-                continue
-            require(subject_id.startswith('ticket:'), 'invalid_checkpoint', 'unknown active subject')
-            subject = store.read_subject(current, subject_id).value
-            require(subject.get('batch') == 0 and isinstance(subject.get('allocations'), dict),
-                    'invalid_checkpoint', 'invalid current Ticket batch')
-            require(not set(state['allocations']) & set(subject['allocations']),
-                    'invalid_checkpoint', 'duplicate allocation identity')
-            state['allocations'].update(subject['allocations'])
+        require(isinstance(subject_id, str) and subject_id.startswith('ticket:') and
+                isinstance(allocation_id, str) and allocation_id and isinstance(intent, str) and intent,
+                'invalid_projection', 'transaction requires exact subject, allocation and intent')
+        subject = store.read_subject(current, subject_id).value
+        require(subject_id == 'ticket:' + subject.get('ticket_id', '') + ':0' and subject.get('batch') == 0,
+                'invalid_checkpoint', 'Ticket subject identity changed')
+        slot = subject.get('allocations', {}).get(allocation_id)
+        require(isinstance(slot, dict), 'allocation_missing', 'allocation is not in the specified subject')
+        action = slot.get('action') or {}
+        transaction = slot.get('transaction') or {}
+        require(intent in {action.get('action_id'), transaction.get('intent_id')},
+                'intent_mismatch', 'transaction does not name the original allocation intent')
+        saved = slot['handoff']
+        require(saved.get('allocation_id') == allocation_id and saved.get('subject_id') == subject_id,
+                'identity_mismatch', 'allocation subject identity changed')
+        handoff.resolve_allocation(saved, store=store, current=current)
+        record = slot.get('record') or {}
+        state = {'allocation_id': allocation_id, 'subject_id': subject_id, 'intent': intent,
+            'handoff_digest': saved['digest'], 'refs': copy.deepcopy(saved['refs']),
+            'status': record.get('status'), 'owner_ref': slot['owner_ref'],
+            'base_revision': transaction.get('base_revision'),
+            'base_control_digest': transaction.get('base_control_digest'),
+            'request_digest': transaction.get('request_digest'),
+            'operation': transaction.get('operation'),
+            'request': copy.deepcopy(record.get('request')),
+            'receipt_refs': [item['receipt_ref'] for item in record.get('receipts', [])],
+            'delivery_digest': (record.get('delivery') or {}).get('digest'),
+            'acceptance_digest': (record.get('acceptance') or {}).get('digest')}
+        return classes[projection]({KEY: state}, store.files_read, store.bytes_read, current.revision)
+    state = store.read_subject(current, stage_id).value
     return classes[projection](state_store.ProjectedRecord({**current.root['outer'], KEY: state}, current.revision), store.files_read, store.bytes_read, current.revision)
+
+
+def read_active_owner(path):
+    """Controller-only bounded roster needed for mutation, stop barriers and CAS.
+
+    This is not a read-only projection or an archive reader. Allocation contracts
+    remain references; only the current stage and at most 32 live slots are read.
+    """
+    outer = read_projection(path, projection='scope').record
+    if KEY not in outer or read_record(path).get('store_format') != state_store.FORMAT:
+        return outer
+    store = state_store.open_store(path)
+    current = store.open_current()
+    allocations = {}
+    for subject_id in current.root['subjects']:
+        if subject_id == current.root['metadata']['stage_subject']:
+            continue
+        require(subject_id.startswith('ticket:'), 'invalid_checkpoint', 'unknown active subject')
+        subject = store.read_subject(current, subject_id).value
+        require(subject.get('batch') == 0 and isinstance(subject.get('allocations'), dict) and
+                not set(allocations) & set(subject['allocations']),
+                'invalid_checkpoint', 'invalid current Ticket batch')
+        allocations.update(subject['allocations'])
+        require(len(allocations) <= 32, 'state_capacity', 'current allocation window is full')
+    outer[KEY]['allocations'] = allocations
+    return outer
 
 
 def scope_transport(outer):
@@ -1608,7 +1659,7 @@ class Progress:
                 record = handoff.unseal(slot['record']) if slot.get('record') else {}
                 accepted = record.get('acceptance')
                 if accepted and accepted['role_ref'] == ref and record['status'] == 'accepted':
-                    return slot['owner_ref'], accepted['digest'], slot['handoff']['expected_entry']['actor']['thread_id']
+                    return slot['owner_ref'], accepted['digest'], handoff.resolve_allocation(slot['handoff'])['expected_entry']['actor']['thread_id']
             checkpoint = saved.get('control', {}).get('context', {}).get('handoff_progress') or {}
             for group in [saved.get('review_activity', {}), *saved.get('review_history', [])]:
                 for slot in group.values():
@@ -4800,7 +4851,9 @@ class Progress:
         if operation == "prepare":
             entry.fields(data, {"allocation_id", "operation", "handoff"})
             if slot is not None:
-                require(slot["input"] == data["handoff"], "allocation_conflict", "retain the original allocation intent")
+                require(slot["input_digest"] == entry.digest(data["handoff"]) or
+                        slot.get('transaction') is not None and data['handoff'] == slot['handoff'],
+                        "allocation_conflict", "retain the original allocation intent")
                 if slot["record"] is not None:
                     if slot.get("action") is None:
                         self.require_allocation_active()
@@ -4873,16 +4926,19 @@ class Progress:
                 inline_recovery = ('integration_recovery' in request['authorization'] and
                                    request.get('readiness') is None)
                 saved = (handoff.prepare(request, checkpoint_path=str(self.path.resolve()))
-                         if inline_recovery else handoff.handle(request))
-                parent_scope, scope = s["handoff"]["scope"], saved["scope"]
+                         if inline_recovery else handoff.prepare(request,
+                             allocation_store=(state_store.open_store(self.path),
+                                 state_store.open_store(self.path).open_current(), identity)))
+                resolved = handoff.resolve_allocation(saved)
+                parent_scope, scope = s["handoff"]["scope"], resolved["scope"]
                 require(scope["implementation_paths"] == current_scope["implementation_paths"] and
                         scope["closure_paths"] == current_scope["closure_paths"] and
                         scope["downstream"] == current_scope["downstream"] and
                         set(scope["owned_paths"]) <= set(current_scope["implementation_paths"]) and
                         set(parent_scope["protected_paths"]) <= set(scope["protected_paths"]),
                         "scope_changed", "allocation must retain parent scope and protections")
-                handoff.ancestor(saved['expected_entry']['repository']['root'], parent_scope['baseline'], scope['baseline'])
-                slot = {"input": copy.deepcopy(data["handoff"]), "handoff": saved, "record": None, "owner_ref": self.bound_ref(),
+                handoff.ancestor(resolved['expected_entry']['repository']['root'], parent_scope['baseline'], scope['baseline'])
+                slot = {"input_digest": entry.digest(data["handoff"]), "handoff": saved, "record": None, "owner_ref": self.bound_ref(),
                         "transaction": None, "observations": [], "result": None}
                 slots[identity] = slot
                 self.save()
@@ -4897,7 +4953,10 @@ class Progress:
             required = {"allocation_id", "operation", "decision"} if operation == "accept" else {"allocation_id", "operation", "receipt"}
             if operation == "receive": required.add("result")
             entry.fields(data, required)
-            slot["observations"].append(copy.deepcopy(data))
+            observation_store = state_store.open_store(self.path, receipt_action=self._receipt_action)
+            observation_root = observation_store.open_current()
+            slot["observations"].append(observation_store.write_object(
+                observation_root.run_id, 'evidence', {'allocation_observation': data}))
             self.save()
         if operation == "prepare":
             self.require_allocation_active()
@@ -4914,10 +4973,19 @@ class Progress:
                 require(slot["record"]["delivery"] is not None, "result_incomplete", "receive this allocation's result first")
                 request["decision"] = {"delivery_digest": slot["record"]["delivery"]["digest"], **data["decision"]}
         # These are the same B operations/authority, not an alternate allocator.
-        slot["transaction"] = {**copy.deepcopy(request),
-            'base_control_digest': entry.digest(s['control']), 'base_revision': s['revision']}
-        self.save()
-        result = dispatch.handle({**request, 'control': copy.deepcopy(s['control'])})
+        if slot['transaction'] is None:
+            slot["transaction"] = {"operation": operation, "intent_id": entry.digest([identity, operation, data]),
+                'request_digest': entry.digest(request),
+                **{key: copy.deepcopy(data[key]) for key in ('receipt', 'result', 'decision') if key in data},
+                'base_control_digest': entry.digest(s['control']), 'base_revision': s['revision']}
+            self.save()
+        else:
+            require(slot['transaction']['request_digest'] == entry.digest(request) and
+                    slot['transaction']['base_control_digest'] == entry.digest(s['control']),
+                    'allocation_conflict', 'reconcile the original allocation intent before another request')
+        result = dispatch.handle({**request, 'control': copy.deepcopy(s['control']),
+            **({'allocation_intent': slot['transaction']['intent_id']}
+               if slot['handoff'].get('kind') == 'allocation-input' else {})})
         if plan_state == "stopping":
             # B still authenticates the outstanding original native bind/result,
             # but its ordinary ready receipt cannot release an old executor
@@ -4929,6 +4997,8 @@ class Progress:
             s["control_receipt"] = result["checkpoint"].get("discussion_receipt")
             self.next_envelope(s["control_receipt"])
         slot["record"] = result.get("record", slot["record"])
+        # The slot owns its input once; the record pins the immutable digest/refs.
+        # The compact allocation descriptor is small and contains no expanded contract.
         # Context is a single current authority update, never an audit copy in
         # each allocation result. The sealed record already has its own slot.
         slot["transaction"], slot["result"] = None, {
@@ -4955,12 +5025,18 @@ class Progress:
 
     def issue_allocation(self, identity, slot):
         self.require_allocation_active()
+        launch = dispatch.allocation_launch(slot['record']) if 'allocation' in slot['record'] else slot['record']['request']
+        if 'allocation' in slot['record']:
+            body = handoff.unseal(slot['record'])
+            body['request'] = {key: value for key, value in launch.items() if key != 'payload'}
+            body['request']['payload_digest'] = entry.digest(launch['payload'])
+            slot['record'] = handoff.seal(body)
         action = {"action_id": str(uuid.uuid4()), "operation": "invoke-host", "allocation_id": identity,
-                  "payload": slot["record"]["request"], "checkpoint": str(self.path)}
+                  "request_digest": launch['digest'], "checkpoint": str(self.path)}
         slot["action"] = action
         state_store.open_store(self.path).reserve(action['action_id'])
         self.save()
-        return _view(self.state, action)
+        return _view(self.state, {**action, 'payload': launch})
 
     def require_allocation_active(self):
         self.require_not_stopping()
@@ -5137,7 +5213,7 @@ class Progress:
                 request = slot["transaction"]
                 operation = request["operation"]
                 data = {"allocation_id": identity, "operation": operation}
-                data.update({"handoff": slot["input"]} if operation == "prepare" else
+                data.update({"handoff": slot["handoff"]} if operation == "prepare" else
                             {key: request[key] for key in ("receipt", "result", "decision") if key in request})
                 return _view(s, {"operation": "allocation-recovery", "ref": slot["owner_ref"], "data": data,
                                  "checkpoint": str(self.path)})
@@ -5446,7 +5522,8 @@ def handle(path, request):
     if request["operation"] == "scope-revise":
         require_scope_correction_available(read_record(path))
     with record_lock(path), state_store.operation_store(path):
-        outer = read_projection(path, projection='scope' if request['operation'] == 'inspect' else 'transaction').record
+        outer = (read_projection(path, projection='scope').record if request['operation'] == 'inspect'
+                 else read_active_owner(path))
         if request["operation"] == "scope-revise":
             require_scope_correction_available(outer)
         require(outer.get("version") in (None, 11), "legacy_run_requires_original_runtime", "progression requires a standalone record or runner version 11")

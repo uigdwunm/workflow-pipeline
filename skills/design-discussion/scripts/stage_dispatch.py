@@ -192,9 +192,11 @@ def inline_recovery_allocation(request, saved):
 
 
 def prepared(request):
-    entry.fields(request, {"protocol", "operation", "handoff", "control"}, {"scope_checkpoint_path"})
+    entry.fields(request, {"protocol", "operation", "handoff", "control"}, {"scope_checkpoint_path", "allocation_intent"})
     saved = handoff.verify(request["handoff"],
                            checkpoint_path=request.get("scope_checkpoint_path"))
+    compact = saved if saved.get("kind") == "allocation-input" else None
+    saved = handoff.resolve_allocation(saved)
     actor = saved["expected_entry"]["actor"]
     require(actor["role"] in {"controller", "scripted-carrier", "implementation-dispatcher"},
             "role_mismatch", "only the authorized controller/carrier may prepare dispatch")
@@ -293,6 +295,26 @@ def prepared(request):
         result, applied = checkpoint(request["control"], saved, action, evidence,
                                      checkpoint_path=checkpoint_path)
         attempt = result.get("allocation_digest", result["context"]["carrier"]["attempt"])
+    if compact is not None:
+        # Payload materialization belongs to C's persisted issue boundary.
+        launch = handoff.seal({"kind": "native", "role": role,
+            "controller_ref": saved["controller_ref"], "attempt": attempt,
+            "input_digest": compact["digest"], "configuration": saved["selection"]})
+        record = handoff.seal({"protocol": PROTOCOL, "kind": "dispatch", "allocation": allocation_reference(compact),
+            "request": launch, "receipts": [], "delivery": None, "acceptance": None, "status": "prepared"})
+        if saved['semantic'].get('adopt_paths'):
+            import workflow_state_store
+            store = workflow_state_store.open_store(compact['checkpoint'])
+            current = store.open_current()
+            progress = result['context']['handoff_progress']
+            source = control.adoption_source(progress)
+            inheritance = {'baseline': progress['git_baseline_commit'], 'snapshot': source['snapshot'],
+                'snapshot_digest': source['snapshot_digest'], 'adopt_paths': saved['semantic']['adopt_paths'],
+                'pending_paths': source['pending_paths'], 'accepted': False}
+            record = handoff.seal({**handoff.unseal(record), 'inheritance_ref': store.write_object(
+                current.run_id, 'evidence', {'allocation_inheritance': inheritance})})
+        return {"status": "prepared", "record": record, "checkpoint": port_result(result, applied),
+                "downstream_ready": False}
     payload = handoff.render(saved)["payload"]
     if role == 'execution-agent' and saved['semantic'].get('adopt_paths'):
         progress = result['context']['handoff_progress']
@@ -315,41 +337,139 @@ def prepared(request):
             "required_order": ["persist-record-and-checkpoint", "verify-input-and-target-configuration", "invoke-host-once", "save-receipt", "bind"]}
 
 
+def allocation_reference(saved):
+    import workflow_state_store
+    store = workflow_state_store.open_store(saved['checkpoint'])
+    current = store.open_current()
+    require(current.run_id == saved['run_id'], 'identity_mismatch', 'allocation run changed')
+    return {'checkpoint': saved['checkpoint'], 'run_id': current.run_id,
+            'reference': store.write_object(current.run_id, 'evidence', {'allocation_input': saved})}
+
+
+def allocation_descriptor(record):
+    import workflow_state_store
+    pin = record['allocation']
+    entry.fields(pin, {'checkpoint', 'run_id', 'reference'})
+    store = workflow_state_store.open_store(pin['checkpoint'])
+    current = store.open_current()
+    require(current is not None and current.run_id == pin['run_id'],
+            'identity_mismatch', 'allocation belongs to another run')
+    value = store.read_evidence(pin['reference'], run_id=current.run_id)['value']
+    require(isinstance(value, dict) and set(value) == {'allocation_input'},
+            'invalid_evidence', 'allocation descriptor required')
+    saved = value['allocation_input']
+    require(saved.get('kind') == 'allocation-input' and saved.get('checkpoint') == pin['checkpoint'] and
+            saved.get('run_id') == current.run_id, 'identity_mismatch', 'allocation descriptor changed')
+    handoff.unseal(saved)
+    return saved
+
+
+def allocation_receipt(record, receipt):
+    """Keep the authenticated external response once; records hold its facts/ref."""
+    if 'allocation' not in record:
+        return copy.deepcopy(receipt)
+    import workflow_state_store
+    pin = record['allocation']
+    store = workflow_state_store.open_store(pin['checkpoint'])
+    current = store.open_current()
+    require(current.run_id == pin['run_id'], 'identity_mismatch', 'allocation receipt run changed')
+    reference = store.write_object(current.run_id, 'evidence', {'allocation_receipt': receipt})
+    return {**{key: copy.deepcopy(value) for key, value in receipt.items() if key != 'raw'}, 'raw_ref': reference}
+
+
+def verify_allocation_receipts(record):
+    if 'allocation' not in record:
+        return
+    import workflow_state_store
+    pin = record['allocation']
+    store = workflow_state_store.open_store(pin['checkpoint'])
+    current = store.open_current()
+    for summary in record['receipts']:
+        require('raw' not in summary and 'raw_ref' in summary, 'invalid_evidence', 'referenced native receipt required')
+        value = store.read_evidence(summary['raw_ref'], run_id=current.run_id)['value']
+        require(isinstance(value, dict) and set(value) == {'allocation_receipt'},
+                'invalid_evidence', 'native receipt object changed')
+        original = value['allocation_receipt']
+        require({key: value for key, value in original.items() if key != 'raw'} ==
+                {key: value for key, value in summary.items() if key != 'raw_ref'},
+                'identity_mismatch', 'native receipt facts changed')
+        receipt_for(record, original, {'create', 'lookup', 'result'})
+
+
+def dispatch_input(record):
+    return handoff.resolve_allocation(allocation_descriptor(record)) if 'allocation' in record else record['handoff']
+
+
+def allocation_launch(record):
+    """Materialize only this native invocation from its immutable contract refs."""
+    require('allocation' in record, 'invalid_request', 'shared allocation required')
+    compact = allocation_descriptor(record)
+    payload = handoff.render(compact)['payload']
+    if compact['semantic'].get('adopt_paths'):
+        import workflow_state_store
+        store = workflow_state_store.open_store(compact['checkpoint'])
+        value = store.read_evidence(record.get('inheritance_ref'), run_id=compact['run_id'])['value']
+        require(isinstance(value, dict) and set(value) == {'allocation_inheritance'},
+                'invalid_evidence', 'original allocation inheritance required')
+        inherited = value['allocation_inheritance']
+        require(inherited.get('adopt_paths') == compact['semantic']['adopt_paths'] and
+                inherited.get('snapshot_digest') == compact['semantic']['adoption_snapshot_digest'],
+                'identity_mismatch', 'allocation inheritance changed')
+        payload['inherited_implementation'] = inherited
+    else:
+        require('inheritance_ref' not in record, 'invalid_evidence', 'ordinary allocation has no inheritance')
+    launch = {key: record['request'][key] for key in
+              ('kind', 'role', 'controller_ref', 'attempt', 'input_digest', 'configuration')}
+    return handoff.seal({**launch, 'payload': payload})
+
+
+def verified_launch(record):
+    if 'allocation' not in record or 'payload_digest' not in record['request']:
+        return handoff.unseal(record['request'])
+    rendered = allocation_launch(record)
+    expected = {key: value for key, value in rendered.items() if key != 'payload'}
+    expected['payload_digest'] = entry.digest(rendered['payload'])
+    require(record['request'] == expected, 'identity_mismatch', 'allocation launch changed')
+    return record['request']
+
+
 def record_for(request):
     record = handoff.unseal(request["record"])
-    entry.fields(record, {"protocol", "kind", "handoff", "request", "receipts", "delivery", "acceptance", "status"},
-                 {"scope_checkpoint_path"})
+    entry.fields(record, {"protocol", "kind", "request", "receipts", "delivery", "acceptance", "status"},
+                 {"scope_checkpoint_path", "handoff", "allocation", "inheritance_ref"})
+    require(("handoff" in record) != ("allocation" in record), "invalid_evidence", "one dispatch input required")
     handoff.require_current_protocol(record)
     require(record["kind"] == "dispatch", "invalid_evidence", "dispatch record required")
-    launch = handoff.unseal(record["request"])
-    handoff.require_current_protocol(handoff.unseal(record["handoff"]))
-    if record["handoff"]["stage"] == 3 and "readiness" in record["handoff"] and \
-            record["handoff"]["role"] == "execution-agent":
-        handoff.current_readiness(record["handoff"]["readiness"])
-    require(launch["input_digest"] == record["handoff"]["digest"], "identity_mismatch", "request belongs to another input")
+    launch = verified_launch(record)
+    verify_allocation_receipts(record)
+    handoff.require_current_protocol(handoff.unseal(dispatch_input(record)))
+    if dispatch_input(record)["stage"] == 3 and "readiness" in dispatch_input(record) and \
+            dispatch_input(record)["role"] == "execution-agent":
+        handoff.current_readiness(dispatch_input(record)["readiness"])
+    require(launch["input_digest"] == (allocation_descriptor(record) if "allocation" in record else record["handoff"])["digest"], "identity_mismatch", "request belongs to another input")
     control.validate_context(request["control"]["context"])
     require(request["control"]["context"]["controller_ref"] == launch["controller_ref"], "identity_mismatch", "checkpoint owner changed")
-    inline_recovery_allocation(request, record['handoff'])
+    inline_recovery_allocation(request, dispatch_input(record))
     if request["control"]["discussion"] is not None:
         envelope = request["control"]["discussion"]
-        verify_discussion_port(envelope, record["handoff"])
+        verify_discussion_port(envelope, dispatch_input(record))
         base = {k: envelope[k] for k in ("protocol_version", "project_path", "project_id", "tree_id", "actor_topic_id", "actor_conversation_ref")}
         current = discussion_protocol.handle({**base, "operation": "read-topic"})
         require(current["workflow_control"] is not None, "authority_missing", "discussion has no workflow control checkpoint")
         control.validate_context(current["workflow_control"])
         require(current["workflow_control"]["controller_ref"] == launch["controller_ref"], "identity_mismatch", "ledger controller changed")
         request["control"] = {**request["control"], "context": current["workflow_control"]}
-    if record["handoff"]["stage"] == 3 and record["handoff"]["role"] == "implementation-dispatcher" and \
-            ("readiness" in record["handoff"] or "scope_checkpoint_path" in record):
-        state = handoff.current_stage3_state(record["handoff"], request["control"]["context"],
+    if dispatch_input(record)["stage"] == 3 and dispatch_input(record)["role"] == "implementation-dispatcher" and \
+            ("readiness" in dispatch_input(record) or "scope_checkpoint_path" in record):
+        state = handoff.current_stage3_state(dispatch_input(record), request["control"]["context"],
                                              record.get('scope_checkpoint_path'))
         if state is not None:
             request["_current_stage3_progress"] = state["control"]["context"]["handoff_progress"]
-    elif record["handoff"]["stage"] == 3 and record["handoff"]["role"] == "implementation-dispatcher":
+    elif dispatch_input(record)["stage"] == 3 and dispatch_input(record)["role"] == "implementation-dispatcher":
         require(not (request['control']['context'].get('handoff_progress') or {}).get('plan_revisions'),
                 'handoff_not_ready', 'revised standalone delivery needs its original Controller checkpoint pin')
-    if record["handoff"]["stage"] == 4 and "scope_checkpoint_path" in record:
-        handoff.verify_stage_checkpoint_pin(record["handoff"], request["control"]["context"],
+    if dispatch_input(record)["stage"] == 4 and "scope_checkpoint_path" in record:
+        handoff.verify_stage_checkpoint_pin(dispatch_input(record), request["control"]["context"],
                                             record["scope_checkpoint_path"])
     return record
 
@@ -362,11 +482,11 @@ def matching(record, context, *, reconcile_unbound=False):
         matches = [item for item in progress.get("executions", []) if item["allocation_digest"] == launch["attempt"]]
         require(len(matches) == 1, "attempt_mismatch", "allocation is no longer eligible")
         item = matches[0]
-        semantic = record['handoff']['semantic']
+        semantic = dispatch_input(record)['semantic']
         if semantic.get('plan_refs') is not None:
-            authority = (record['handoff']['readiness']['scope_authority']
-                         if record['handoff'].get('readiness') is not None else
-                         record['handoff']['inline_authority'])
+            authority = (dispatch_input(record)['readiness']['scope_authority']
+                         if dispatch_input(record).get('readiness') is not None else
+                         dispatch_input(record)['inline_authority'])
             expected = {'revision': semantic['authority_revision'],
                 'authority_digest': semantic['authority_digest'],
                 'plan_digest': semantic['plan_digest'],
@@ -388,7 +508,7 @@ def execution_release_token(record):
     require(launch['role'] == 'execution-agent', 'role_mismatch', 'write release belongs to an Execution Agent')
     ready = next((receipt for receipt in record['receipts'] if receipt['status'] == 'ready'), None)
     require(ready is not None, 'authorization_missing', 'bound Execution Agent receipt required')
-    semantic = record['handoff']['semantic']
+    semantic = dispatch_input(record)['semantic']
     return entry.digest([launch['attempt'], ready['receipt_ref'], ready['ref'],
                          semantic.get('authority_revision'), semantic.get('authority_digest'),
                          semantic.get('plan_digest'), semantic.get('plan_refs')])
@@ -415,7 +535,7 @@ def receipt_for(record, receipt, event):
 
 def bind_discussion(port, record, receipt):
     """Bind the exact already-authorized 0/1 carrier; never activate a phase."""
-    saved = record["handoff"]
+    saved = dispatch_input(record)
     if saved["stage"] == 2 and saved["entry"]["source"]["kind"] == "discussion":
         phase = handoff.phase_evidence(saved)
         known = phase["attempt"].get("carrier_ref")
@@ -471,10 +591,10 @@ def bind_discussion(port, record, receipt):
 
 def bound(request):
     entry.fields(request, {"protocol", "operation", "record", "control", "receipt"},
-                 {"scope_checkpoint_path"})
+                 {"scope_checkpoint_path", "allocation_intent"})
     record = record_for(request)
     require(not any(isinstance(receipt, dict) and receipt.get("event") == "existing-dispatcher"
-                    for receipt in record["receipts"]),
+                    for retained_receipt in record["receipts"]),
             "invalid_operation", "an inherited Dispatcher has no creation receipt to bind")
     launch = record['request']
     receipt = request["receipt"]
@@ -484,14 +604,15 @@ def bound(request):
     require(receipt["status"] != "ready" or receipt["pending_id"] is None, "identity_mismatch", "pending identity cannot be bound")
     reconcile_unbound = (request["operation"] == "reconcile" and record["request"]["role"] == "execution-agent"
                          and receipt["status"] in {"unknown", "pending", "not-created"})
+    retained_receipt = allocation_receipt(record, receipt)
     known, state, item = matching(record, request["control"]["context"], reconcile_unbound=reconcile_unbound)
     if reconcile_unbound and receipt["status"] == "not-created" and known is None and state == "cancelled" and item["stopped"] is True:
         record["status"] = "not-created"
-        if receipt not in record["receipts"]:
-            record["receipts"].append(copy.deepcopy(receipt))
+        if retained_receipt not in record["receipts"]:
+            record["receipts"].append(retained_receipt)
         return {"status": "not-created", "record": handoff.seal(record), "acknowledged": True,
                 "checkpoint": {"context": request["control"]["context"], "discussion_receipt": None}, "downstream_ready": False}
-    if receipt in record["receipts"]:
+    if retained_receipt in record["receipts"]:
         require(known == receipt["ref"] or known is None, "identity_mismatch", "replayed receipt conflicts with checkpoint")
         result = {"status": record["status"], "record": request["record"], "acknowledged": True, "downstream_ready": False}
         if launch['role'] == 'execution-agent' and receipt['status'] == 'ready':
@@ -500,7 +621,7 @@ def bound(request):
     require(state not in {"cancelled", "creation-failed", "accepted"}, "attempt_mismatch", "late receipt cannot revive an ended attempt")
     if known is not None:
         require(receipt["status"] == "ready" and known == receipt["ref"], "identity_mismatch", "bound identity cannot be replaced")
-        record["receipts"].append(receipt)
+        record["receipts"].append(retained_receipt)
         record["status"] = "bound"
         result = {"status": "bound", "record": handoff.seal(record), "acknowledged": True,
                   "checkpoint": {"context": request["control"]["context"], "discussion_receipt": None}, "downstream_ready": False}
@@ -535,11 +656,11 @@ def bound(request):
     try:
         if ready:
             port, binding_receipt = bind_discussion(port, record, receipt)
-        result, applied = checkpoint(port, record["handoff"], action, evidence)
+        result, applied = checkpoint(port, dispatch_input(record), action, evidence)
     except entry.ERROR_TYPES as error:
         raise entry.PreparationError("binding_incomplete", "Host creation evidence retained; reconcile this exact attempt, never create again.",
               completed_evidence=[{"kind": "host-creation", "receipt": receipt, "binding_receipt": binding_receipt, "downstream_ready": False}]) from error
-    record["receipts"].append(copy.deepcopy(receipt))
+    record["receipts"].append(retained_receipt)
     record["status"] = "bound" if ready else receipt["status"]
     bound_result = {"status": record["status"], "record": handoff.seal(record), "checkpoint": port_result(result, applied), "binding_receipt": binding_receipt,
                     "downstream_ready": False, "next_action": "receive" if ready else "stop" if receipt["status"] == "not-created" else "lookup-exact-request",
@@ -551,7 +672,7 @@ def bound(request):
 
 def received(request):
     entry.fields(request, {"protocol", "operation", "record", "control", "receipt", "result"},
-                 {"scope_checkpoint_path", "scope_authority"})
+                 {"scope_checkpoint_path", "scope_authority", "allocation_intent"})
     record = record_for(request)
     receipt_for(record, request["receipt"], {"result"})
     ref, state, item = matching(record, request["control"]["context"])
@@ -568,7 +689,7 @@ def received(request):
     if message["status"] != "completed":
         return {"status": message["status"], "record": request["record"], "observation": request["receipt"], "result": message, "downstream_ready": False}
     require(request["receipt"]["status"] == "stopped", "host_evidence_missing", "completed work requires authenticated stopped evidence, not idle/turn completion")
-    saved = record["handoff"]
+    saved = dispatch_input(record)
     stage, payload = saved["stage"], message["payload"]
     if stage >= 2:
         handoff.phase_evidence(saved, role_ref=ref, receiving=True, control_context=request["control"]["context"])
@@ -625,19 +746,19 @@ def received(request):
                         "checks": payload["checks"], **payload["cleanup"], "implementation_problem": None}
     result, applied = checkpoint(request["control"], saved, action, evidence)
     record.update(status="received", delivery=claim)
-    record["receipts"].append(copy.deepcopy(request["receipt"]))
+    record["receipts"].append(allocation_receipt(record, request["receipt"]))
     return {"status": "received", "record": handoff.seal(record), "checkpoint": port_result(result, applied), "downstream_ready": False}
 
 
 def accepted(request):
     entry.fields(request, {"protocol", "operation", "record", "control", "decision"},
-                 {"scope_checkpoint_path", "scope_authority"})
+                 {"scope_checkpoint_path", "scope_authority", "allocation_intent"})
     record = record_for(request)
     entry.fields(request["decision"], {"reference", "delivery_digest"})
     entry.nonempty(request["decision"]["reference"])
     require(record["delivery"] is not None and request["decision"]["delivery_digest"] == record["delivery"]["digest"],
             "authorization_changed", "acceptance must name the received delivery")
-    saved, claim = record["handoff"], record["delivery"]
+    saved, claim = dispatch_input(record), record["delivery"]
     ref, state, item = matching(record, request["control"]["context"])
     require(ref == claim["role_ref"] and state not in {"cancelled", "creation-failed"}, "identity_mismatch", "accepted identity is no longer bound")
     if record["acceptance"] is not None:
@@ -685,6 +806,15 @@ def accepted(request):
     if saved["stage"] < 2:
         source = payload["requirement"]
         identity = source.get("requirement_identity", {k: source.get(k) for k in ("path", "sha256", "version")})
+    if "allocation" in record:
+        outcome = handoff.seal({"protocol": PROTOCOL, "status": "accepted",
+            "allocation_digest": allocation_descriptor(record)['digest'], "request_digest": record['request']['digest'],
+            "role_ref": ref, "attempt": record['request']['attempt'],
+            "requirement_identity": identity, "delivery_digest": claim['digest'],
+            "decision": request['decision'], "downstream_ready": False})
+        record['acceptance'] = outcome
+        return {"status": "accepted", "record": handoff.seal(record),
+                "checkpoint": port_result(result, applied), "accepted": outcome, "downstream_ready": False}
     outcome = handoff.seal({"protocol": PROTOCOL, "status": "accepted", "handoff": saved,
                "request_digest": record["request"]["digest"], "role_ref": ref, "attempt": record["request"]["attempt"],
                "requirement_identity": identity, "payload": payload, "delivery_digest": claim["digest"],
@@ -696,11 +826,35 @@ def accepted(request):
             "accepted": outcome, "downstream_ready": outcome["downstream_ready"]}
 
 
+def verify_allocation_intent(request):
+    """Consume the original C intent through the exact read-only transaction."""
+    if request.get('operation') == 'prepare':
+        saved = request.get('handoff', {})
+    elif 'allocation' in (request.get('record') or {}):
+        saved = allocation_descriptor(handoff.unseal(request['record']))
+    else:
+        return
+    if saved.get('kind') != 'allocation-input':
+        return
+    intent = request.get('allocation_intent')
+    require(isinstance(intent, str) and intent, 'authority_missing',
+            'referenced allocation requires its original Controller intent')
+    import workflow_progress
+    state = workflow_progress.read_projection(saved['checkpoint'], projection='transaction',
+        subject_id=saved['subject_id'], allocation_id=saved['allocation_id'], intent=intent).record[workflow_progress.KEY]
+    supplied = {key: value for key, value in request.items() if key not in {'control', 'allocation_intent'}}
+    require(state['handoff_digest'] == saved['digest'] and state['operation'] == request['operation'] and
+            state['request_digest'] == entry.digest(supplied) and
+            state['base_control_digest'] == entry.digest(request['control']),
+            'authority_changed', 'allocation request differs from the original Controller intent')
+
+
 def handle(request):
     request = copy.deepcopy(request)
     require(request.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime", "retain original stage-transfer runtime: " + str(request.get("protocol")))
     operation = request.get("operation")
     require(operation in {"prepare", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown dispatch operation")
+    verify_allocation_intent(request)
     return {"prepare": prepared, "bind": bound, "reconcile": bound, "receive": received, "accept": accepted}[operation](request)
 
 

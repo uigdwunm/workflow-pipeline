@@ -44,7 +44,8 @@ def open_store(checkpoint, *, receipt_action=None):
     store = _operation_store.get()
     if store is None or store.checkpoint != Path(checkpoint):
         return StateStore(checkpoint, receipt_action=receipt_action)
-    store.receipt_action = receipt_action
+    if receipt_action is not None:
+        store.receipt_action = receipt_action
     return store
 
 
@@ -118,7 +119,7 @@ class ScopeProjection(IdentityProjection):
 
 @dataclass(frozen=True)
 class TransactionProjection(IdentityProjection):
-    """Fixed active window required to reconcile original pending operations."""
+    """One specified allocation intent, without a write release."""
 
 
 @dataclass(frozen=True)
@@ -283,6 +284,18 @@ class StateStore:
         require(body.get('subject_id') == subject_id and isinstance(body['value'], dict), 'subject identity changed')
         require(self.bytes_read <= READ_LIMIT, 'current subjects exceed the operation budget', 'state_capacity')
         return SubjectProjection(subject_id, body['value'], reference)
+
+    def write_allocation_part(self, current, part, value):
+        require(part in {'contract', 'package', 'baseline'} and isinstance(value, dict),
+                'invalid allocation contract part')
+        return self.write_object(current.run_id, 'evidence', {'allocation_part': part, 'value': value})
+
+    def read_allocation_part(self, current, part, reference):
+        value = self.read_evidence(reference, run_id=current.run_id)['value']
+        require(isinstance(value, dict) and set(value) == {'allocation_part', 'value'} and
+                value['allocation_part'] == part and isinstance(value['value'], dict),
+                'allocation contract part changed', 'state_object_corrupt')
+        return value['value']
 
     def read_scope(self, current, subject_id):
         """Read the one current Stage-2 scope, in place of its full subject."""

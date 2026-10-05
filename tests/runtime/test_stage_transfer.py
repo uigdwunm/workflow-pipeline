@@ -580,7 +580,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
 
     def test_previous_stage_transfer_protocol_requires_original_runtime(self):
         saved = handoff.unseal(handoff.handle(self.input))
-        saved['protocol'] = 'workflow-stage-transfer-v13'
+        saved['protocol'] = 'workflow-stage-transfer-v14'
         saved = handoff.seal(saved)
         for operation in (handoff.verify, handoff.render):
             self.assert_code('legacy_run_requires_original_runtime', lambda: operation(saved))
