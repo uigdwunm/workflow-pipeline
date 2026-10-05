@@ -36,11 +36,14 @@ class AttachedDesignRecoveryTests(DesignRecoveryTests):
         candidate = f.flow_git('rev-parse', 'HEAD')
         proposal_digest = f.propose_design_scope(candidate)
         stopped = f.observation('stopped', 'result', ref='native:replacement')
-        stopped['lifecycle']['pages'][0]['response']['data'].append(
-            {'id':'native:designer','status':{'type':'idle'}})
+        original = [thread for page in stopped['lifecycle']['pages']
+                    for thread in page['response']['data'] if thread['id'] == 'native:designer']
+        self.assertEqual(original, [{'id': 'native:designer', 'status': {'type': 'idle'}}])
         stopped['publication_candidate'] = {'candidate_commit':candidate, 'artifacts':['docs/spec.md'],
             'checks':['design readiness']}
-        pending = f.invoke('observe', stopped)['pending']
+        observed = f.invoke('observe', stopped)
+        self.assertIsNotNone(observed.get('pending'), observed)
+        pending = observed['pending']
         f.invoke('decide', {'decision_id':pending['decision_id'], 'subject':pending['subject'],
             'answer':'accept', 'reference':'controller:recovered-plan'})
         f.seal_design_scope(proposal_digest)

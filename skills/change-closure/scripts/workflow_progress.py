@@ -6382,6 +6382,23 @@ def deliver_requirement(path, outer, data):
 
 def lifecycle(path, outer, data):
     """Retain original actor/envelope; only source completion chains finalize."""
+    bounded = isinstance(outer, state_store.ProjectedRecord)
+    require(bounded or KEY not in outer, 'legacy_run_requires_original_runtime',
+            'lifecycle requires the original bounded Controller or a new outer record')
+    owner = Progress(path, outer) if bounded else None
+
+    def save(*, progress_changed=False):
+        if not bounded:
+            atomic_save(path, outer)
+        elif progress_changed:
+            owner.save()
+            outer.authority_revision = owner._authority_revision
+        else:
+            committed = save_outer_record(path, {key: value for key, value in outer.items() if key != KEY},
+                                          expected_revision=outer.authority_revision)
+            outer.authority_revision = committed.revision
+            owner._authority_revision = committed.revision
+
     entry.fields(data, {"request"})
     request = copy.deepcopy(data["request"])
     allowed = {"claim-phase-carrier", "phase-ready", "phase-activate", "claim-phase-completion",
@@ -6406,40 +6423,42 @@ def lifecycle(path, outer, data):
     records = outer.setdefault("workflow_lifecycle", {})
     identity = entry.digest(request)
     saved = records.setdefault(identity, {"request": request, "result": None, "finalize": None})
-    atomic_save(path, outer)
+    save()
     # The ledger authenticates actor, binding, revisions, gates and exact replay.
     # Replaying the same envelope reads its original idempotent receipt.
-    saved["result"] = entry.discussion_protocol.handle(copy.deepcopy(saved["request"]))
-    atomic_save(path, outer)
+    if saved["result"] is None or request["operation"] == "read-phase-run":
+        saved["result"] = entry.discussion_protocol.handle(copy.deepcopy(saved["request"]))
+        save()
     if request["operation"] == "complete-phase-run":
         if saved["finalize"] is None:
             result = saved["result"]
             saved["finalize"] = {**request, "operation": "finalize-phase-run",
                 "expected_ledger_revision": result["ledger_revision"], "expected_topic_revision": result["record_revision"],
                 "idempotency_key": str(uuid.uuid4())}
-            atomic_save(path, outer)
-        saved["finalized"] = entry.discussion_protocol.handle(copy.deepcopy(saved["finalize"]))
-        atomic_save(path, outer)
-    if request["operation"] in {"complete-phase-run", "finalize-phase-run"}:
-        verify_phase_completed(outer[KEY])
-        if not outer[KEY]["phase_complete"]:
-            state = outer[KEY]
-            state["pending"] = None
-        outer[KEY]["phase_complete"] = True
-        outer[KEY]["revision"] += 1
-        atomic_save(path, outer)
-        state = outer[KEY]
-        if state["stage"] != 2 or scope_readiness(state, path):
-            state["pending"] = stage_boundary(state["mode"], state["stage"], state["accepted"], state["next_stage"])
-            state["revision"] += 1
-            atomic_save(path, outer)
+            save()
+        if saved.get("finalized") is None:
+            saved["finalized"] = entry.discussion_protocol.handle(copy.deepcopy(saved["finalize"]))
+            save()
     state = outer.get(KEY)
     action = (state or {}).get("action")
-    if action and action["operation"] in {"source-lifecycle", "carrier-lifecycle"} and action["payload"]["request"] == request:
+    action_pending = (action and action["operation"] in {"source-lifecycle", "carrier-lifecycle"} and
+                      action["payload"]["request"] == request and action.get("receipt") != saved)
+    if request["operation"] in {"complete-phase-run", "finalize-phase-run"}:
+        verify_phase_completed(state)
+        completing = not state["phase_complete"] or action_pending
+        if not state["phase_complete"]:
+            state["pending"] = None
+            state["phase_complete"] = True
+            save(progress_changed=True)
+        if completing and state["pending"] is None and (state["stage"] != 2 or scope_readiness(state, path)):
+            pending = stage_boundary(state["mode"], state["stage"], state["accepted"], state["next_stage"])
+            if pending is not None:
+                state["pending"] = pending
+                save(progress_changed=True)
+    if action_pending:
         action["receipt"] = copy.deepcopy(saved)
         state["step"] = "accepted" if state["status"] == "accepted" else action["payload"].get("return_step", "bound")
-        state["revision"] += 1
-        atomic_save(path, outer)
+        save(progress_changed=True)
     return {"protocol": PROTOCOL, "status": "lifecycle-observed", "transaction": identity, "result": saved}
 
 

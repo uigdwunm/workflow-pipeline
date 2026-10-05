@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import os
 import re
 import tempfile
 import uuid
@@ -121,8 +122,10 @@ class AttachedFlowTests(fixtures.ProgressTests):
             self.assertEqual(request['project_path'], str(self.root))
             self.invoke('lifecycle', {'request': request})
             before = self.ledger.read_bytes()
+            current = progress.state_store.StateStore(self.checkpoint).open_current()
             self.invoke('lifecycle', {'request': request})
             self.assertEqual(self.ledger.read_bytes(), before)
+            self.assertEqual(progress.state_store.StateStore(self.checkpoint).open_current().reference, current.reference)
         self.fail('phase did not complete')
 
     def runner_input(self):
@@ -148,6 +151,123 @@ class AttachedFlowTests(fixtures.ProgressTests):
             'stages': {stage: {'model': 'fixture-model', 'reasoning_effort': 'high',
                 'selection_input': fixtures.transfer.configuration('scripted-carrier')} for stage in fixtures.runner.STAGES},
             'registry': registry, 'registry_context': registry_context}
+
+    def test_lifecycle_new_outer_activates_but_inline_controller_is_rejected(self):
+        phase = self.phases[2]
+        ref = {'phase_run_id': phase['phase_run_id'], 'attempt_id': phase['attempt_id']}
+        self.mutate('authorize-phase-carrier', **ref, carrier_ref='native:designer')
+        checkpoint = self.frozen['checkpoint']
+        self.mutate('claim-phase-carrier', **ref, actor_conversation_ref='native:designer',
+            carrier_ref='native:designer', source_checkpoint_id=checkpoint['checkpoint_id'],
+            source_checkpoint_identity=checkpoint['published_identity'])
+        self.mutate('phase-ready', **ref, actor_conversation_ref='native:designer',
+            carrier_ref='native:designer', evidence=phase['evidence'])
+        topic = entry.topic_read(str(self.root), self.attachment)
+        request = {**self.base, 'operation': 'phase-activate', **ref, 'evidence': phase['evidence'],
+            'expected_ledger_revision': topic['ledger_revision'], 'expected_topic_revision': topic['record_revision'],
+            'idempotency_key': str(uuid.uuid4())}
+        command = {'protocol': progress.PROTOCOL, 'operation': 'lifecycle', 'expected_revision': 0,
+                   'data': {'request': request}}
+        query = {'protocol': progress.PROTOCOL, 'operation': 'lifecycle', 'expected_revision': 0,
+                 'data': {'request': {**self.base, 'operation': 'read-phase-run',
+                                      'phase_run_id': phase['phase_run_id']}}}
+        self.assertEqual(progress.handle(self.checkpoint, query)['result']['result']['phase_run']['state'], 'ready')
+        result = progress.handle(self.checkpoint, command)
+        self.assertEqual(result['result']['result']['state'], 'active')
+        self.assertEqual(progress.handle(self.checkpoint, query)['result']['result']['phase_run']['state'], 'active')
+        self.assertNotIn(progress.KEY, progress.read_record(self.checkpoint))
+        invalid = self.checkpoint.with_name('inline-controller.json')
+        invalid.write_text(json.dumps({progress.KEY: {'protocol': progress.PROTOCOL,
+            'control': {'context': {'schema_version': 6}}}}))
+        before, ledger = invalid.read_bytes(), self.ledger.read_bytes()
+        with self.assertRaises(entry.PreparationError) as caught:
+            progress.handle(invalid, command)
+        self.assertEqual(caught.exception.code, 'legacy_run_requires_original_runtime')
+        self.assertEqual(invalid.read_bytes(), before)
+        self.assertEqual(self.ledger.read_bytes(), ledger)
+
+    def lifecycle_activation_replace_failure(self, *, after_ledger):
+        self.begin('stepwise')
+        self.invoke('observe', self.observation())
+        phase = self.phases[2]
+        ref = {'phase_run_id': phase['phase_run_id'], 'attempt_id': phase['attempt_id']}
+        checkpoint = self.frozen['checkpoint']
+        self.mutate('claim-phase-carrier', **ref, actor_conversation_ref='native:designer',
+            carrier_ref='native:designer', source_checkpoint_id=checkpoint['checkpoint_id'],
+            source_checkpoint_identity=checkpoint['published_identity'])
+        self.mutate('phase-ready', **ref, actor_conversation_ref='native:designer',
+            carrier_ref='native:designer', evidence=phase['evidence'])
+        request = self.invoke('advance')['next_action']['payload']['request']
+        before = progress.state_store.StateStore(self.checkpoint).open_current()
+        ledger_before = self.ledger.read_bytes()
+        ledger_committed = []
+        original_replace = os.replace
+        def interrupt_replace(source, target):
+            if Path(target) == self.checkpoint and (not after_ledger or ledger_committed):
+                raise KeyboardInterrupt('checkpoint replace interrupted at lifecycle boundary')
+            result = original_replace(source, target)
+            if Path(target) == self.ledger:
+                ledger_committed.append(True)
+            return result
+        with patch.object(os, 'replace', interrupt_replace):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('lifecycle', {'request': request})
+        crashed = progress.state_store.StateStore(self.checkpoint).open_current()
+        self.assertEqual(crashed.root['subjects'], before.root['subjects'])
+        self.assertEqual(crashed.root['scope'], before.root['scope'])
+        self.assertEqual(crashed.root['metadata']['revision'], before.root['metadata']['revision'])
+        self.assertEqual(bool(ledger_committed), after_ledger)
+        if after_ledger:
+            self.assertGreater(crashed.revision, before.revision)
+            journal = crashed.root['outer']['workflow_lifecycle'][entry.digest(request)]
+            self.assertEqual(journal, {'request': request, 'result': None, 'finalize': None})
+            self.assertNotEqual(self.ledger.read_bytes(), ledger_before)
+        else:
+            self.assertEqual(crashed.revision, before.revision)
+            self.assertEqual(self.ledger.read_bytes(), ledger_before)
+        committed_ledger = self.ledger.read_bytes()
+        reads = []
+        original_open = Path.open
+        state_directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        def tracked_open(path, *args, **kwargs):
+            mode = args[0] if args else kwargs.get('mode', 'r')
+            if 'r' in mode and (path in {self.checkpoint, self.ledger} or path.is_relative_to(state_directory)):
+                reads.append((str(path), path.stat().st_size))
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', tracked_open):
+            recovered = self.invoke('lifecycle', {'request': request})
+        after = progress.state_store.StateStore(self.checkpoint).open_current()
+        self.assertGreater(after.revision, crashed.revision)
+        self.assertEqual(after.root['metadata']['revision'], before.root['metadata']['revision'] + 1)
+        self.assertEqual(self.state()['step'], 'bound')
+        self.assertEqual(self.state()['control']['context']['carrier']['ref'], 'native:designer')
+        self.assertIsNone(self.state()['control']['discussion'])
+        if after_ledger:
+            self.assertEqual(self.ledger.read_bytes(), committed_ledger)
+        self.assertEqual(recovered['result']['request'], request)
+        self.assertEqual(recovered['result']['result']['state'], 'active')
+        ledger_bytes = self.ledger.read_bytes()
+        replay = self.invoke('lifecycle', {'request': request})
+        self.assertEqual(replay, recovered)
+        self.assertEqual(self.ledger.read_bytes(), ledger_bytes)
+        self.assertEqual(progress.state_store.StateStore(self.checkpoint).open_current().reference, after.reference)
+        self.assertLessEqual(self.checkpoint.stat().st_size, progress.state_store.ROOT_LIMIT)
+        self.assertLessEqual(after.reference['size'], progress.state_store.ROOT_LIMIT)
+        self.assertTrue(all(ref['size'] <= progress.state_store.SUBJECT_LIMIT for ref in after.root['subjects'].values()))
+        self.assertLessEqual(sum(size for _, size in reads), progress.state_store.READ_LIMIT)
+        metrics = {'after_ledger': after_ledger,
+            'root_bytes': after.reference['size'], 'checkpoint_bytes': self.checkpoint.stat().st_size,
+            'subject_bytes': max(ref['size'] for ref in after.root['subjects'].values()),
+            'files_read': len(reads), 'bytes_read': sum(size for _, size in reads)}
+        if os.environ.get('T01_LIFECYCLE_METRICS_PATH'):
+            with Path(os.environ['T01_LIFECYCLE_METRICS_PATH']).open('a') as stream:
+                stream.write(json.dumps(metrics) + '\n')
+
+    def test_lifecycle_activation_recovers_before_checkpoint_replace(self):
+        self.lifecycle_activation_replace_failure(after_ledger=False)
+
+    def test_lifecycle_activation_recovers_after_ledger_commit(self):
+        self.lifecycle_activation_replace_failure(after_ledger=True)
 
     def test_runner_accepts_real_a_receipt_on_start_and_restore_and_rejects_drift(self):
         runner = fixtures.runner
