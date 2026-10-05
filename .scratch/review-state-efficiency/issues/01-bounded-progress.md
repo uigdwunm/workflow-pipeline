@@ -58,6 +58,8 @@ V03：公开runner start/pause/resume验证同carrier、已有workflow_requireme
 
 支持面校准：Stage2+ 的真实 attached 调用方可采用 `topic_ref != null`、`discussion == null` 与 Phase Run 生命周期；不等同 ledger-authoritative 初始化。后者已延期的 Stage2/Phase0 冲突继续拒绝，不造空控制状态修通。`test_attached_flow_progress.py` 因已复现 lifecycle 旧保存路径获精确修改范围：真实 Stage2 生命周期故障/幂等、C subjects、两类 revision 与读取预算；不据此扩展初始化能力。
 
+S06 协作回归补充：`test_collaboration_lifecycle.accepted_execution` 已在原样回归中复现 compact allocation 无内嵌 handoff，按 manifest 精确改为统一解析；special close-readback 的其余身份/停止语义保持原验证，不以夹具调整放宽调用归属。
+
 V04：真实 finish_design→原 C start Stage3→bind→inspect 首先复现 history 容量门禁；修复后验证真实双 Ticket 各分配一片、peer 未停不能通过停止门禁、目标读取量不随另一 subject 原文增长。覆盖前驱引用错误、root CAS 前后故障和公开 continuous/stepwise 阶段衔接。既有单 Ticket 双 allocation 证据不代替双 subject 组合验收。
 
 命令：逐文件 `python3 scripts/run_tests.py --test-file <上述路径>`；若已有runner占锁，报告owner并结束该次验证。源模块及新增store资源必须同次生成到五包闭包，package identity采用新key，不手改generated副本。

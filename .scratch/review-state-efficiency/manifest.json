@@ -1410,12 +1410,13 @@
     },
     {
       "path": "tests/runtime/test_collaboration_lifecycle.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
+        "T01",
         "T06"
       ],
       "kind": "test",
-      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "reason": "T01特殊native close回查：原样verify在accepted_execution旧slot.record.handoff处KeyError，允许该helper改用既有resolve_allocation；保原协作权限/停止/来源断言。后续query身份适配须实际失败证明，不批量改测试。",
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": []
