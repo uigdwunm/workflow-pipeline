@@ -176,7 +176,7 @@ receipt索引不常驻且仍消耗磁盘；不承诺无限工作。可达历史�
 
 ## 实施顺序与统一审阅
 
-实施顺序校准：真实首切片确认控制校验与交接pin读取属于保存/恢复的必要前置，因此T01提前适配已批准范围内的有限active校验及必经读者；T02仍负责新增审查语义。T01分为有界保存/幂等恢复首片和共享交接去重/runner/ledger读者闭合次片。该调整不改变功能合同、文件权限或Ticket依赖；中间片不是整张Ticket或可发布候选。
+实施顺序校准：真实首切片确认控制校验与交接pin读取属于保存/恢复的必要前置，因此T01提前适配已批准范围内的有限active校验及必经读者；T02仍负责新增审查语义。T01分为有界保存/幂等恢复首片和共享交接去重/runner/ledger读者闭合次片。该调整不改变功能合同或Ticket依赖；中间片不是整张Ticket或可发布候选。次片核实ledger改store_ref会影响既有Phase Run完成校验，因此将已列verify的phase_runs._check_completion_evidence晋升为精确modify并同步五包映射；只改delivery投影读取，保持原run/attempt/accepted-delivery权限判断，不新增入口。
 
 | Ticket | 交付行为 | Blocked by |
 | --- | --- | --- |

@@ -958,16 +958,27 @@
     },
     {
       "path": "src/shared/scripts/discussion_core/phase_runs.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T01",
         "T06"
       ],
       "kind": "source",
-      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "reason": "T01 ledger改为store_ref后，_check_completion_evidence必须读取精确run/attempt delivery投影，保留原accepted-delivery和Phase Run权限guard",
       "exists_at_design": true,
-      "symbols": [],
-      "generated_outputs": []
+      "symbols": [
+        {
+          "name": "_check_completion_evidence",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [
+        "skills/change-closure/scripts/discussion_core/phase_runs.py",
+        "skills/design-discussion/scripts/discussion_core/phase_runs.py",
+        "skills/guided-implementation/scripts/discussion_core/phase_runs.py",
+        "skills/problem-framing/scripts/discussion_core/phase_runs.py",
+        "skills/solution-design/scripts/discussion_core/phase_runs.py"
+      ]
     },
     {
       "path": "src/shared/scripts/skill_preflight.py",
@@ -2618,6 +2629,51 @@
       "tickets": [
         "T01",
         "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/change-closure/scripts/discussion_core/phase_runs.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_core/phase_runs.py",
+      "tickets": [
+        "T01",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/scripts/discussion_core/phase_runs.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_core/phase_runs.py",
+      "tickets": [
+        "T01",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/discussion_core/phase_runs.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_core/phase_runs.py",
+      "tickets": [
+        "T01",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/scripts/discussion_core/phase_runs.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_core/phase_runs.py",
+      "tickets": [
+        "T01",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/solution-design/scripts/discussion_core/phase_runs.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_core/phase_runs.py",
+      "tickets": [
+        "T01",
         "T06"
       ]
     }
