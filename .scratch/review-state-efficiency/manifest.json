@@ -153,13 +153,14 @@
       "path": "src/shared/scripts/workflow_control.py",
       "operation": "modify",
       "tickets": [
+        "T01",
         "T02",
         "T03",
         "T04",
         "T06"
       ],
       "kind": "source",
-      "reason": "schema7与三层审查门禁、选择性失效及有限控制view",
+      "reason": "T01有限active验证入口；后续schema7与三层审查门禁、选择性失效及有限控制view",
       "exists_at_design": true,
       "symbols": [
         {
@@ -205,6 +206,10 @@
         {
           "name": "transition",
           "status": "existing-verified"
+        },
+        {
+          "name": "validate_current_context",
+          "status": "proposed-add"
         }
       ],
       "generated_outputs": [
@@ -1892,6 +1897,7 @@
       "operation": "generate",
       "source": "src/shared/scripts/workflow_control.py",
       "tickets": [
+        "T01",
         "T02",
         "T03",
         "T04",
@@ -1903,6 +1909,7 @@
       "operation": "generate",
       "source": "src/shared/scripts/workflow_control.py",
       "tickets": [
+        "T01",
         "T02",
         "T03",
         "T04",
@@ -1914,6 +1921,7 @@
       "operation": "generate",
       "source": "src/shared/scripts/workflow_control.py",
       "tickets": [
+        "T01",
         "T02",
         "T03",
         "T04",
@@ -1925,6 +1933,7 @@
       "operation": "generate",
       "source": "src/shared/scripts/workflow_control.py",
       "tickets": [
+        "T01",
         "T02",
         "T03",
         "T04",
@@ -1936,6 +1945,7 @@
       "operation": "generate",
       "source": "src/shared/scripts/workflow_control.py",
       "tickets": [
+        "T01",
         "T02",
         "T03",
         "T04",

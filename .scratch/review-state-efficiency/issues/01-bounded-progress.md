@@ -24,13 +24,13 @@ Scope inventory: ../manifest.json（T01）
 | Step | 目标符号（现有/拟新增） | 能力、输入→输出、失败行为 | 前置 |
 | --- | --- | --- | --- |
 | S01 | 新 `workflow_state_store.open_current/read_subject/read_evidence/commit_current` | 原checkpoint owner、expected_revision→有界typed投影/不可变引用；内部canonical encode、CAS、fsync、hash、预留与提交点；冲突/容量不足在副作用前拒绝，已发调用保持unknown | 无 |
-| S02 | `workflow_progress.read_record/atomic_save/validate_state`、`Progress.save/control_action/allocation/issue_allocation` | 新格式路由到S01；transaction以base_root/request/result引用代替context副本；保留旧format拒绝语义；不返回伪装旧dict的全hydrate适配 | S01 |
+| S02 | `workflow_progress.read_record/atomic_save/validate_state`、`Progress.save/control_action/allocation/issue_allocation`、新 `workflow_control.validate_current_context` | 新格式路由到S01；transaction以base_root/request/result引用代替context副本；保留旧format拒绝语义；不返回伪装旧dict的全hydrate适配 | S01 |
 | S03 | `workflow_progress.handle/_view`、`Progress.observe/lifecycle_state/baseline_thread_state/stop_barrier_pending` | operation选择有限read set；poll按identity/status/cursor/result digest合并；身份变化、撤销停止、未知调用独立持久化 | S02 |
 | S04 | `workflow.py._read_json/_atomic_save/_stage_projection/_live_progress/CheckpointState.refresh` | 外层runner只持当前typed投影与blob refs；保存按CAS合并其自有字段；history/last_result/dispatch不复制整份Progress | S02 |
 | S05 | `stage_dispatch.checkpoint/design_scope`、`stage_handoff.verify_inline_recovery_pin/verify_stage_checkpoint_pin/current_stage3_state/accepted_stage3_progress/current_readiness`、`discussion_core.workflow_control._start_git_authority/workflow_control` | 各调用请求明确的identity/scope/current-transaction/delivery projection；验证ledger revision与projection匹配；拒绝镜像发起控制覆盖 | S02 |
 | S06 | `workflow_progress.Progress.native_finalize/record_host/unresolved_host_actions`、新store副作用预留内部实现 | 有界输入→已持久intent→精确receipt，最多4业务未知调用；停止/恢复使用独立预留；超大结果保留truncated/unknown不accept | S03、S04、S05 |
 
-这些step是行为实现计划，不意味着一函数一Agent；S01–S03作为首行为片，S04–S06作为生产读者闭合片。权威适配不能等T06才补：否则测试首片绕开真实路线。read_subject必须由调用操作给定ID，不接受“all”；只读投影不携带写lease。
+这些step是行为实现计划，不意味着一函数一Agent；S01–S03作为首行为片，S04–S06作为生产读者闭合片。首片把有限active校验及启动必经的stage_handoff pin/current-stage读取提前接入；既有全范围语义校验保留，只限制其输入为当前有界窗口。共享handoff/record构造去重、runner及ledger读者在第二片闭合，整张Ticket验收前必须完成，不能推迟到T06。权威适配不能等T06才补：否则测试首片绕开真实路线。read_subject必须由调用操作给定ID，不接受“all”；只读投影不携带写lease。
 
 ## Verification references
 
