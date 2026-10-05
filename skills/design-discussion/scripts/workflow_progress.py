@@ -359,6 +359,11 @@ def scope_transport(outer):
     return {key: transport.get(key) for key in ('instance', 'native_event_sequence', 'state', 'lookup_blocked')}
 
 
+def stage_subject_value(state):
+    """Canonical persisted stage fields; allocations belong to Ticket subjects."""
+    return {key: value for key, value in state.items() if key != 'allocations'}
+
+
 def stage2_scope(state, path, outer):
     """Derive a read-only contract from the Controller's current validated facts."""
     owner = Progress(path, outer)
@@ -368,7 +373,7 @@ def stage2_scope(state, path, outer):
     projected = {key: copy.deepcopy(state.get(key)) for key in (
         'protocol', 'revision', 'stage', 'stage_subject', 'checkpoint_path', 'status',
         'stopped', 'phase_complete', 'stop_requested', 'handoff', 'scope_authority', 'accepted')}
-    projected.update(scope_kind='stage2-scope-v1', state_digest=entry.digest(state),
+    projected.update(scope_kind='stage2-scope-v1', state_digest=entry.digest(stage_subject_value(state)),
         transport=scope_transport(outer), control_revision=context.get('revision'),
         scope_seal=copy.deepcopy(current.get('scope_seal')),
         scope_revisions=copy.deepcopy(current.get('scope_revisions', [])),
@@ -434,7 +439,7 @@ def save_current_record(path, outer, expected_revision, *, expected_authority_re
             len(state.get('control_transactions', {})) <= 64,
             'state_capacity', 'current allocation or pending receipt window is full')
     stage_id = state['stage_subject']
-    subjects = {stage_id: {key: value for key, value in state.items() if key != 'allocations'}}
+    subjects = {stage_id: stage_subject_value(state)}
     for identity, slot in state.get('allocations', {}).items():
         refs = slot['handoff']['semantic']['plan_refs']
         tickets = {ref['ticket_id'] for ref in refs}
@@ -946,7 +951,7 @@ def scope_readiness(state, checkpoint_path, *, persisted=None):
     if state.get('scope_kind') == 'stage2-scope-v1':
         if state != current:
             return None
-    elif current['state_digest'] != entry.digest(state):
+    elif current['state_digest'] != entry.digest(stage_subject_value(state)):
         return None
     state = current
     if (not state['current_transport'] or state.get("status") != "accepted" or

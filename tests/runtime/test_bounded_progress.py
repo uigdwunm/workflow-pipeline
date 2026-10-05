@@ -13,6 +13,22 @@ from test_workflow_progress import ProgressTests, progress, transfer, runner
 
 
 class BoundedProgressTests(ProgressTests):
+    def test_stage2_scope_review_acceptance_stays_ready_for_existing_readers(self):
+        accepted = self.finish_design('stepwise')
+        with self.subTest(reader='handle-inspect'):
+            inspected = self.invoke('inspect')
+            self.assertTrue(inspected['handoff_ready'], {key: inspected.get(key) for key in
+                ('status', 'revision', 'route', 'handoff_ready', 'error')})
+            self.assertEqual(inspected['route'], 'stage-3')
+            self.assertEqual(inspected['readiness'], accepted['readiness'])
+        with self.subTest(reader='stage2-delivery'):
+            delivery = progress.read_projection(self.checkpoint, projection='delivery').record[progress.KEY]
+            self.assertEqual(progress.scope_readiness(delivery, self.checkpoint), accepted['readiness'])
+        with self.subTest(reader='stale-stage2-delivery'):
+            stale = copy.deepcopy(delivery)
+            stale['revision'] -= 1
+            self.assertIsNone(progress.scope_readiness(stale, self.checkpoint))
+
     def test_stage2_scope_missing_corrupt_or_mismatched_objects_fail_closed(self):
         accepted = self.finish_design('stepwise')
         directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
@@ -245,7 +261,7 @@ class BoundedProgressTests(ProgressTests):
             'workflow_requirements'], original)
         self.assertEqual(self.invoke('inspect')['status'], 'active')
 
-    def test_runner_public_start_pause_resume_preserves_original_carrier(self):
+    def runner_stage2_fixture(self):
         package_root = Path(__file__).resolve().parents[2] / 'skills'
         registry = {'source': 'host-current-skills', 'entries': [
             {'name': name, 'entry': str(package_root / name / 'SKILL.md'),
@@ -272,6 +288,51 @@ class BoundedProgressTests(ProgressTests):
         self.settings['thread_id'] = 'carrier'
         self.request['host'].update(thread_id='carrier', role='scripted-carrier', source_ref='task')
         self.input = self.input_for(2)
+        return package_root, confirmed_path
+
+    def test_runner_public_stage2_acceptance_stops_at_stepwise_boundary(self):
+        package_root, confirmed_path = self.runner_stage2_fixture()
+        fixture = self
+        calls = []
+        class Host:
+            instance = 'fixture-host'
+            process = None
+            active = None
+            server_requests = {}
+            threads = {'stage2': 'carrier'}
+            def __init__(self, configuration, cwd, journal):
+                self.journal = journal
+            def start(self, stderr):
+                self.process = object()
+                self.journal({'kind': 'host-started', 'instance': self.instance, 'pid': os.getpid()})
+            def start_carrier(self, stage, settings):
+                calls.append(stage)
+                fixture.assertEqual(stage, 'stage2')
+                return 'carrier'
+            def run_turn(self, session, prompt, settings, schema, on_progress):
+                fixture.accepted_stage2 = fixture.finish_design('stepwise')
+                self.process = None
+                return json.dumps(fixture.accepted_stage2['completion']['stage_result']), 'stage2-turn'
+            def close(self):
+                self.process = None
+        with patch.object(runner, '__file__', str(package_root / 'guided-implementation/scripts/workflow.py')), \
+             patch.object(runner.foreground_host, 'ForegroundHost', Host), redirect_stdout(io.StringIO()):
+            self.assertEqual(runner.start(confirmed_path), 0)
+        saved = progress.read_projection(self.checkpoint, projection='identity').record
+        self.assertEqual(calls, ['stage2'])
+        self.assertEqual(saved['status'], 'needs_input')
+        self.assertEqual(saved['pending_input']['kind'], 'stage-entry')
+        self.assertEqual(saved[progress.KEY]['stage'], 2)
+        self.assertEqual(set(saved['stage_results']), {'stage2'})
+        result = saved['stage_results']['stage2']
+        payload = json.loads(result['handoff_json'])
+        self.assertTrue(payload['handoff_ready'])
+        self.assertEqual(payload['scope_revision'], self.accepted_stage2['readiness']['scope_revision'])
+        self.assertEqual(payload['planning_commit'], self.accepted_stage2['readiness']['publication']['planning_commit'])
+        self.assertEqual(result['handoff_json'], self.accepted_stage2['completion']['stage_result']['handoff_json'])
+
+    def test_runner_public_start_pause_resume_preserves_original_carrier(self):
+        package_root, confirmed_path = self.runner_stage2_fixture()
         fixture = self
         calls = []
         class Host:
