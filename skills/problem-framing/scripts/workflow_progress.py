@@ -4777,6 +4777,9 @@ class Progress:
             return _view(s, native_finalization_action(s))
         if (s.get("scope_revision_transaction") or {}).get("state") not in (None,):
             return self.scope_revise(s["scope_revision_transaction"]["input"])
+        for identity, slot in s.get('allocations', {}).items():
+            if slot.get('raw_ingress') and not slot['raw_ingress']['resolved'] and slot.get('transaction') is None:
+                return self.allocation_raw_lookup(identity, slot)
         if s.get('deferred_validation') is not None:
             if self.unresolved_host_actions() or self.stop_barrier_pending():
                 return self.query_host()
@@ -6157,6 +6160,71 @@ class Progress:
         return _view(self.state, {'operation': operation, 'recovery_id': recovery['recovery_id'],
             'request': request, 'receipts': recovery['receipts'], 'write_authority': False}, acknowledged=acknowledged)
 
+    def allocation_raw_lookup(self, identity, slot):
+        source = slot['raw_ingress']
+        require(source['binding']['action_id'] == slot['action']['action_id'] and
+                source['binding']['allocation_id'] == identity and
+                source['binding']['receipt']['request_digest'] == slot['record']['request']['digest'],
+                'identity_mismatch', 'large allocation receipt changed its original call')
+        if source.get('evidence_ref') is not None:
+            store = state_store.open_store(self.path)
+            manifest = store.read_raw_manifest(source['evidence_ref'], run_id=store.open_current().run_id)
+            require(manifest['native_receipt'] == source['binding'] and
+                    (manifest['size'], manifest['sha256']) == (source['size'], source['sha256']),
+                    'invalid_checkpoint', 'allocation raw manifest differs from its original receipt')
+        if source.get('result_ref') is not None:
+            self.allocation_raw_result(source)
+        return _view(self.state, {'operation': 'lookup-exact-allocation', 'allocation_id': identity,
+            'request': slot['record']['request'], 'checkpoint': str(self.path)})
+
+    def allocation_raw_result(self, source):
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        value = store.read_evidence(source['result_ref'], run_id=current.run_id)['value']
+        expected = {'status': 'unknown', 'action_id': source['binding']['action_id'],
+            'observation_digest': source['binding']['observation_digest'], 'evidence_ref': source['evidence_ref'],
+            'authority_revision': source['authority_revision']}
+        require(type(source['authority_revision']) is int and 0 < source['authority_revision'] <= current.revision and
+                value == {'allocation_result': expected}, 'invalid_checkpoint',
+                'original allocation unknown result changed its committed evidence')
+        return value['allocation_result']
+
+    def retain_oversized_allocation(self, identity, slot, data, measurement):
+        # The original invocation remains unbound even if every raw chunk fits.
+        # Persist its finite identity before capture; never put the external body
+        # through ordinary evidence encoding or a control transaction.
+        binding = {'allocation_id': identity, 'action_id': slot['action']['action_id'],
+            'operation': data['operation'], 'receipt': {key: value for key, value in data['receipt'].items() if key != 'raw'},
+            'observation_digest': state_store.raw_measure(data)[1]}
+        source = {'binding': binding, 'size': measurement[0], 'sha256': measurement[1],
+                  'status': 'unknown', 'reason': 'atomic_limit_exceeded', 'resolved': False}
+        slot['raw_ingress'] = source
+        self.save()
+        store = state_store.open_store(self.path, receipt_action=self._receipt_action)
+        current = store.open_current()
+        try:
+            reference, manifest = store.write_raw_evidence(current.run_id, data['receipt']['raw'],
+                measurement=measurement, commit_bytes=0, native_receipt=binding)
+        except state_store.RawEvidenceInterrupted as error:
+            source.update(evidence_ref=error.reference, reason='interrupted')
+            slot['observations'].append(error.reference)
+            self.save()
+            raise
+        source['evidence_ref'] = reference
+        if not manifest['complete']:
+            source['reason'] = manifest['reason']
+        if reference not in slot['observations']:
+            slot['observations'].append(reference)
+        # This finite result becomes authoritative only with the same root CAS
+        # that pins it. A later lookup must not rewrite its original outcome.
+        source['authority_revision'] = self._authority_revision + 1
+        source['result_ref'] = store.write_object(current.run_id, 'evidence', {'allocation_result': {
+            'status': 'unknown', 'action_id': binding['action_id'],
+            'observation_digest': binding['observation_digest'], 'evidence_ref': reference,
+            'authority_revision': source['authority_revision']}})
+        self.save()
+        return self.allocation_raw_lookup(identity, slot)
+
     def allocation(self, data):
         """B transport records share the dispatcher's existing control roster."""
         entry.fields(data, {"allocation_id", "operation"}, {"handoff", "receipt", "result", "decision"})
@@ -6289,6 +6357,20 @@ class Progress:
             if operation == "receive": required.add("result")
             entry.fields(data, required)
             if operation != 'accept':
+                source = slot.get('raw_ingress')
+                if source is not None and source['binding']['receipt']['receipt_ref'] == data['receipt']['receipt_ref']:
+                    require(source['binding']['observation_digest'] == state_store.raw_measure(data)[1],
+                            'allocation_conflict', 'original large receipt cannot name another response')
+                    if source.get('result_ref') is not None:
+                        lookup = self.allocation_raw_lookup(identity, slot)
+                        if source['resolved']:
+                            return _view(s, {'operation': 'allocation-result', 'allocation_id': identity,
+                                'result': self.allocation_raw_result(source),
+                                'result_ref': source['result_ref']}, acknowledged=True)
+                        lookup['acknowledged'] = True
+                        return lookup
+                elif source is not None and not source['resolved']:
+                    require(operation == 'reconcile', 'outcome_unknown', 'look up the original allocation call')
                 try:
                     require(not (slot['record']['status'] == 'not-created' and data['receipt'].get('ref') is not None),
                             'attempt_ended', 'a late ref cannot bind a proven non-created allocation')
@@ -6315,6 +6397,10 @@ class Progress:
                     raise
                 if action is not None:
                     self._receipt_action = action['action_id']
+                if operation == 'bind' and action is not None:
+                    measurement = state_store.raw_measure(data['receipt']['raw'])
+                    if measurement[0] > state_store.EVIDENCE_LIMIT:
+                        return self.retain_oversized_allocation(identity, slot, data, measurement)
             observation_store = state_store.open_store(self.path, receipt_action=self._receipt_action)
             observation_root = observation_store.open_current()
             observation_ref = observation_store.write_object(
@@ -6361,6 +6447,8 @@ class Progress:
             s["control_receipt"] = result["checkpoint"].get("discussion_receipt")
             self.next_envelope(s["control_receipt"])
         slot["record"] = result.get("record", slot["record"])
+        if operation == 'reconcile' and slot.get('raw_ingress') and result['status'] in {'bound', 'not-created'}:
+            slot['raw_ingress']['resolved'] = True
         # The slot owns its input once; the record pins the immutable digest/refs.
         # The compact allocation descriptor is small and contains no expanded contract.
         # Context is a single current authority update, never an audit copy in
@@ -6579,6 +6667,8 @@ class Progress:
         if s.get("recovery_action"):
             return _view(s)
         for identity, slot in s.get("allocations", {}).items():
+            if slot.get('raw_ingress') and not slot['raw_ingress']['resolved'] and slot.get('transaction') is None:
+                return self.allocation_raw_lookup(identity, slot)
             if slot.get("transaction") is not None:
                 request = slot["transaction"]
                 operation = request["operation"]

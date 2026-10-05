@@ -923,6 +923,131 @@ class BoundedProgressTests(ProgressTests):
         self.assertTrue(replay['acknowledged'])
         self.assertEqual(self.allocation_slot('slice-one')['action']['action_id'], slot['action']['action_id'])
 
+    def test_allocation_raw_atomic_limit_preserves_original_unknown_call(self):
+        self.prepare_execution()
+        original = self.allocation_slot('slice-one')
+        receipt = self.receipt(original['record'], ref='native:executor')
+        receipt['raw']['output'] = ''.join(chr(65 + index) * (1024 * 1024) for index in range(17))
+        data = {'allocation_id': 'slice-one', 'operation': 'bind', 'receipt': receipt}
+        observed = self.invoke('allocation', data)
+        self.assertEqual((observed.get('next_action') or {}).get('operation'), 'lookup-exact-allocation', observed)
+        self.assertNotIn('write_release', observed['next_action'])
+        saved = self.allocation_slot('slice-one')
+        self.assertEqual(saved['action'], original['action'])
+        self.assertEqual(saved['record'], original['record'])
+        self.assertIsNone(saved['transaction'])
+        raw = saved['raw_ingress']
+        self.assertEqual(raw['status'], 'unknown')
+        self.assertEqual(raw['reason'], 'atomic_limit_exceeded')
+        self.assertIsInstance(raw.get('authority_revision'), int)
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        manifest = store.read_raw_manifest(raw['evidence_ref'], run_id=current.run_id)
+        self.assertTrue(manifest['complete'])
+        self.assertEqual(manifest['retained_size'], manifest['size'])
+        self.assertTrue(all(chunk['size'] <= 1024 * 1024 for chunk in manifest['chunks']))
+        self.assertLessEqual(raw['evidence_ref']['size'], 256 * 1024)
+        chunks = [progress.state_store.StateStore(self.checkpoint).read_raw_chunk(
+            raw['evidence_ref'], run_id=current.run_id, index=index) for index in range(len(manifest['chunks']))]
+        self.assertEqual(json.loads(b''.join(chunks)), receipt['raw'])
+        opened = []
+        original_open = Path.open
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        def tracked_open(path, *args, **kwargs):
+            if path == self.checkpoint or path.is_relative_to(directory):
+                opened.append(path)
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', tracked_open):
+            resumed = self.invoke('resume')
+        self.assertEqual(resumed['next_action']['operation'], 'lookup-exact-allocation')
+        self.assertEqual(resumed['next_action']['request'], original['record']['request'])
+        self.assertLessEqual(sum(path.stat().st_size for path in opened), progress.state_store.READ_LIMIT)
+        self.assertLessEqual(self.checkpoint.stat().st_size, progress.state_store.ROOT_LIMIT)
+
+        replay = self.invoke('allocation', data)
+        self.assertEqual(replay['next_action']['operation'], 'lookup-exact-allocation')
+        ready = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'reconcile',
+            'receipt': self.receipt(original['record'], 'ready', 'lookup', ref='native:executor')})
+        self.assertEqual(ready['next_action']['result']['status'], 'bound', ready)
+        self.assertEqual(self.allocation_slot('slice-one')['action'], original['action'])
+        self.assertTrue(self.allocation_slot('slice-one')['raw_ingress']['resolved'])
+        replay = self.invoke('allocation', data)
+        self.assertTrue(replay['acknowledged'])
+        self.assertNotIn('write_release', replay['next_action']['result'])
+        self.assertEqual(replay['next_action']['result'], {'status': 'unknown',
+            'action_id': original['action']['action_id'], 'observation_digest': raw['binding']['observation_digest'],
+            'evidence_ref': raw['evidence_ref'], 'authority_revision': raw['authority_revision']})
+        self.assertEqual(replay['next_action']['result_ref'], raw['result_ref'])
+        original_result = progress.state_store.StateStore(self.checkpoint).read_evidence(
+            raw['result_ref'], run_id=current.run_id)['value']['allocation_result']
+        self.assertEqual(replay['next_action']['result'], original_result)
+        changed = {**data, 'receipt': {**receipt, 'raw': {'output': 'different original response'}}}
+        rejected = self.invoke('allocation', changed)
+        self.assertEqual(rejected['error']['code'], 'allocation_conflict')
+        self.assertEqual(self.allocation_slot('slice-one')['raw_ingress']['evidence_ref'], raw['evidence_ref'])
+
+    def test_allocation_raw_interruption_retains_original_lookup(self):
+        self.prepare_execution()
+        original = self.allocation_slot('slice-one')
+        receipt = self.receipt(original['record'], ref='native:executor')
+        receipt['raw']['output'] = ''.join(chr(65 + index) * (1024 * 1024) for index in range(17))
+        data = {'allocation_id': 'slice-one', 'operation': 'bind', 'receipt': receipt}
+        original_replace = os.replace
+        chunks = 0
+        def interrupt_chunk(source, target):
+            nonlocal chunks
+            if 'objects' in Path(target).parts and Path(source).stat().st_size == 1024 * 1024:
+                chunks += 1
+                if chunks == 2:
+                    raise KeyboardInterrupt('raw chunk write interrupted')
+            return original_replace(source, target)
+        with patch.object(os, 'replace', interrupt_chunk):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('allocation', data)
+        saved = self.allocation_slot('slice-one')
+        self.assertEqual(saved['action'], original['action'])
+        self.assertEqual(saved['record'], original['record'])
+        self.assertEqual(saved['raw_ingress']['reason'], 'interrupted')
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        manifest = store.read_raw_manifest(saved['raw_ingress']['evidence_ref'], run_id=current.run_id)
+        self.assertFalse(manifest['complete'])
+        self.assertEqual(manifest['retained_size'], 1024 * 1024)
+        resumed = self.invoke('resume')
+        self.assertEqual(resumed['next_action']['operation'], 'lookup-exact-allocation')
+        retried = self.invoke('allocation', data)
+        self.assertEqual(retried['next_action']['operation'], 'lookup-exact-allocation')
+        self.assertEqual(self.allocation_slot('slice-one')['raw_ingress']['reason'], 'atomic_limit_exceeded')
+
+    def test_allocation_raw_capacity_keeps_unknown_and_other_reserves(self):
+        self.prepare_execution()
+        original = self.allocation_slot('slice-one')
+        receipt = self.receipt(original['record'], ref='native:executor')
+        receipt['raw']['output'] = 'x' * (17 * 1024 * 1024)
+        store = progress.state_store.StateStore(self.checkpoint)
+        self.invoke('pause')
+        reserve_name = hashlib.sha256(original['action']['action_id'].encode()).hexdigest()
+        other_reserves = {path: path.stat().st_size for path in (store.directory / 'reserves').rglob('*')
+                          if path.is_file() and path.name != reserve_name}
+        self.assertTrue(other_reserves, 'pause owns an independent stop reservation')
+        (store.directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        observed = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'bind', 'receipt': receipt})
+        self.assertEqual(observed['next_action']['operation'], 'lookup-exact-allocation', observed)
+        saved = self.allocation_slot('slice-one')
+        self.assertEqual(saved['record'], original['record'])
+        self.assertEqual(saved['raw_ingress']['status'], 'unknown')
+        self.assertEqual(saved['raw_ingress']['reason'], 'state_capacity')
+        self.assertEqual({path: path.stat().st_size for path in other_reserves}, other_reserves)
+        manifest = store.read_raw_manifest(saved['raw_ingress']['evidence_ref'], run_id=store.open_current().run_id)
+        self.assertFalse(manifest['complete'])
+        self.assertEqual(manifest['retained_size'], 0)
+        self.assertEqual(self.invoke('resume')['next_action']['request'], original['record']['request'])
+        replay = self.invoke('allocation', {'allocation_id': 'slice-one', 'operation': 'bind', 'receipt': receipt})
+        self.assertTrue(replay['acknowledged'])
+        self.assertEqual(self.allocation_slot('slice-one')['raw_ingress']['result_ref'], saved['raw_ingress']['result_ref'])
+        self.assertEqual(self.allocation_slot('slice-one')['raw_ingress']['authority_revision'],
+                         saved['raw_ingress']['authority_revision'])
+
     def test_allocation_review_invalid_receipts_cannot_spend_original_reserve(self):
         for invalid in ('event', 'status', 'ref', 'source'):
             with self.subTest(invalid=invalid):

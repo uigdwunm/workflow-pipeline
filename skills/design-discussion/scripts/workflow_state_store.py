@@ -782,7 +782,7 @@ class StateStore:
             return None
         receipt = json.loads(self._read(path, 16 * 1024))
         require(receipt.get('run_id') == current.run_id and receipt.get('key') == key and
-                receipt.get('request_digest') == hashlib.sha256(encode(request)).hexdigest(),
+                receipt.get('request_digest') == raw_measure(request)[1],
                 'invocation key was reused with different input', 'receipt_conflict')
         revision = receipt.get('revision')
         require(type(revision) is int and revision > 0, 'invalid receipt revision')
