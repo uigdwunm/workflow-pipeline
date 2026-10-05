@@ -1,7 +1,7 @@
 # 01 — 一个执行片的有界保存与真实恢复
 
-Status: needs-info
-Design status: draft — 统一审阅前不可领取
+Status: ready-for-agent
+Design status: accepted — 普通本地连续实现已授权
 Blocked by: None
 Spec: ../PRD.md
 Scope inventory: ../manifest.json（T01）
@@ -46,4 +46,4 @@ V02：扩展 `test_workflow.py`、`test_stage_transfer.py`、`test_unified_recov
 
 ## Comments
 
-待统一用户审阅，非Stage3 handoff。
+用户已统一接受并选择连续实现；此为普通本地授权，非正式Stage3 handoff。

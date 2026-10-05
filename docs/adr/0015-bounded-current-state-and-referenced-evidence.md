@@ -1,7 +1,7 @@
 # ADR-0015: Bound current control state and reference immutable evidence
 
-Status: Proposed
-Review: pending — 普通本地规划，待一次统一审阅
+Status: Accepted
+Review: accepted — 当前对话用户接受方案并选择连续模式
 Scope: 新运行；不迁移旧记录，不替换旧Pinned Package Identity
 
 ## Context
@@ -22,4 +22,4 @@ Scope: 新运行；不迁移旧记录，不替换旧Pinned Package Identity
 
 该策略有界的是当前控制和日常恢复，历史磁盘仍随有意义工作增长并受单run硬预算限制；不承诺无限单run吞吐。保守GC可能无法释放仍有效历史，此时背压是确定结果。全部数值为待验证设计预算，不能当实测性能承诺。
 
-完整预算、布局、失败状态与验证见 [.scratch/review-state-efficiency/PRD.md](../../.scratch/review-state-efficiency/PRD.md)。本ADR未被接受，不授予安装、实现或旧记录清理权限。
+完整预算、布局、失败状态与验证见 [.scratch/review-state-efficiency/PRD.md](../../.scratch/review-state-efficiency/PRD.md)。本ADR已接受，本次连续授权包含新协议实现；不授权安装或旧记录清理。

@@ -1,12 +1,12 @@
 # 分层审查、局部返工与有界状态记录方案
 
-Status: needs-info
-Design status: draft — 待一次统一用户审阅
+Status: ready-for-agent
+Design status: accepted — 用户于当前对话选择连续模式，授权全部六张Ticket实现、审查、验证和本地收尾
 Source requirement: docs/requirements/2026-10-05-review-state-efficiency.md
 Frozen requirement commit: 61f105f1d8bdb3ebc1b574e3104332621dc31ec8
 Frozen requirement SHA256: dcc2adf2141dd49a9d383fc30a62388d267fb35e58fdddbdad1824d367c2dd77
 
-本文件是普通本地规划，不是正式 Stage Handoff，不授予 Stage 3、安装、旧运行迁移或发布权限。所有工程选择已提出确定方案；`needs-info` 仅表示等待完整草案统一审阅，不表示把工程设计留给实现者。需求保持唯一且冻结。逐文件实施范围及生成映射见 [manifest.json](manifest.json)，函数级计划见各 Ticket。本文中的数值除现状测量外均为**待验证设计预算**。
+本文件已由用户统一接受，当前对话选择普通本地连续执行，授权六张Ticket实现、必要审查/验证、文档收尾和本地main合并；不授权安装、部署、远程发布或旧运行迁移。这是普通本地授权，不是正式 B/C Stage Handoff。此前冻结需求中的“本轮只做方案”记录当时阶段边界，本次后续授权不改写冻结来源。需求保持唯一且冻结。逐文件实施范围及生成映射见 [manifest.json](manifest.json)，函数级计划见各 Ticket。本文中的数值除现状测量外均为**待验证设计预算**。
 
 ## 问题与目标
 
@@ -185,4 +185,4 @@ receipt索引不常驻且仍消耗磁盘；不承诺无限工作。可达历史�
 | 05 | 批次归档、幂等索引、GC及容量边界恢复 | 01 |
 | 06 | 当前支持路线一致性、生成包、旧版本拒绝和可比测量 | 03、04、05 |
 
-统一审阅事项：确认三层角色和独立性分工；确认共享Git仍短暂全停而失效范围局部化；确认保守GC与2GiB单run预算及背压；确认首切片的真实handle/runner测试seam；确认六个Ticket粒度/依赖是否合适。以上是对本完整草案一次审阅，不自动将Ticket标ready，不自动进入实现。
+统一审阅已接受：三层角色与独立性、共享Git短停及局部失效、保守GC与固定预算、真实handle/runner测试seam、六张Ticket及其依赖。用户随后明确选择连续模式；按原普通本地执行方式实施，不补造正式阶段交接。工程预算仍必须通过实现验证，不能以本次接受冒充性能达标。

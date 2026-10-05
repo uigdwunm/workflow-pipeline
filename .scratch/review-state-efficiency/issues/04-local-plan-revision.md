@@ -1,7 +1,7 @@
 # 04 — 共享Git短屏障下的局部计划修订
 
-Status: needs-info
-Design status: draft — 统一审阅前不可领取
+Status: ready-for-agent
+Design status: accepted — 普通本地连续实现已授权
 Blocked by: 02
 Spec: ../PRD.md
 Scope inventory: ../manifest.json（T04）
@@ -40,4 +40,4 @@ V02：`test_pending_host_actions.py`、`test_unified_recovery.py` 注入stop未�
 
 ## Comments
 
-待统一用户审阅，非Stage3 handoff。
+用户已统一接受并选择连续实现；此为普通本地授权，非正式Stage3 handoff。

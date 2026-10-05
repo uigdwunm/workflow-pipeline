@@ -1,6 +1,6 @@
 {
-  "status": "draft-needs-info",
-  "authority": "planning inventory only; not sealed scope or write authorization",
+  "status": "accepted-local-continuous",
+  "authority": "user-approved ordinary local implementation scope; not a synthetic B/C sealed scope",
   "basis_commit": "61f105f1d8bdb3ebc1b574e3104332621dc31ec8",
   "requirement_sha256": "dcc2adf2141dd49a9d383fc30a62388d267fb35e58fdddbdad1824d367c2dd77",
   "policy": {

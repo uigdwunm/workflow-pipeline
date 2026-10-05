@@ -1,7 +1,7 @@
 # 05 — 长运行归档、固定容量与恢复证据保护
 
-Status: needs-info
-Design status: draft — 统一审阅前不可领取
+Status: ready-for-agent
+Design status: accepted — 普通本地连续实现已授权
 Blocked by: 01
 Spec: ../PRD.md
 Scope inventory: ../manifest.json（T05）
@@ -43,4 +43,4 @@ V03：`test_publication_recovery.py`、`test_business_recovery.py`、`test_accep
 
 ## Comments
 
-待统一用户审阅，非Stage3 handoff。
+用户已统一接受并选择连续实现；此为普通本地授权，非正式Stage3 handoff。

@@ -1,7 +1,7 @@
 # ADR-0014: Layer review evidence and localize revalidation
 
-Status: Proposed
-Review: pending — 普通本地规划，待一次统一审阅
+Status: Accepted
+Review: accepted — 当前对话用户接受方案并选择连续模式
 Amends: ADR-0013 的结果/审查失效策略（仅新协议运行）；保留共享Git全writer停止屏障
 
 ## Context
@@ -20,4 +20,4 @@ Evidence Claim绑定原计划、合同、读写指纹、依赖、测试环境与
 
 保留“所有候选全范围重审”最简单但重复成本高；每层均新建两个reviewer机械加层会更慢；函数级语义等价自动证明太复杂且不可靠。本决策付出claim依赖和适用性验证成本，换取明确局部性。文件级保守失效可能扩大审查，这是可解释的安全折中。全writer短停未消失，不能承诺修订完全并行。
 
-详细契约、失败分支、角色数量及测试见 [.scratch/review-state-efficiency/PRD.md](../../.scratch/review-state-efficiency/PRD.md)。本ADR未被接受，不改变现行执行授权，不启动实现或迁移。
+详细契约、失败分支、角色数量及测试见 [.scratch/review-state-efficiency/PRD.md](../../.scratch/review-state-efficiency/PRD.md)。本ADR已接受，适用于本次新协议实现；不迁移旧运行。
