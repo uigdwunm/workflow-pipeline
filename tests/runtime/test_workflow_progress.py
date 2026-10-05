@@ -30,7 +30,7 @@ class ProgressTests(transfer.StageTransferTests):
         self.host_response_sequence = 0
 
     def state(self):
-        return progress.read_projection(self.checkpoint, projection='scope').record[progress.KEY]
+        return progress.read_active_owner(self.checkpoint)[progress.KEY]
 
     def allocation_slot(self, allocation_id, ticket_id=None):
         if ticket_id is None:
@@ -522,7 +522,8 @@ class ProgressTests(transfer.StageTransferTests):
         predecessor = self.state()["accepted"]
         self.context = self.context_for(3)
         self.begin("continuous", self.input_for(3, predecessor))
-        self.assertEqual(len(self.state()["history"]), 1)
+        self.assertFalse(self.state()["history"])
+        self.assertEqual(self.state()["design_predecessor"]["accepted_digest"], predecessor["digest"])
 
     def test_successor_derives_a_evidence_predecessor_and_control_without_field_copying(self):
         self.finish_design("continuous")

@@ -47,6 +47,23 @@ def unseal(value):
     return body
 
 
+def predecessor_digest(value):
+    require(isinstance(value, dict), 'invalid_evidence', 'saved predecessor identity required')
+    return value['accepted_digest'] if value.get('kind') in {'design-predecessor-ref', 'design-acceptance-ref'} else value['digest']
+
+
+def predecessor_facts(value):
+    """Resolve one explicitly named design; never hydrate an ancestor chain."""
+    require(isinstance(value, dict), "invalid_evidence", "saved predecessor identity required")
+    if value.get('kind') == 'design-acceptance-ref':
+        import workflow_progress as progress
+        return progress.read_design_acceptance(value)
+    if value.get('kind') != 'design-predecessor-ref':
+        return unseal(value)
+    import workflow_progress as progress
+    return progress.read_design_predecessor(value, value['checkpoint_path'])['accepted']
+
+
 def inline_input_digest(request, controller_ref, identity, source_commit, delivered, selection):
     """Seal the complete original B0 body before derived inline identity fields."""
     body = {k: copy.deepcopy(request[k]) for k in FIELDS}
@@ -437,9 +454,13 @@ def verify_result(stage, payload, binding, scope, root, role_ref, integration_re
 
 def effective_scope(original_handoff, authority):
     """Check the sealed current scope against an immutable Stage-2 launch."""
-    original = unseal(original_handoff)
+    return effective_scope_facts(unseal(original_handoff), authority)
+
+
+def effective_scope_facts(original, authority):
+    """Check already authenticated launch facts; this does not unseal or grant authority."""
     require_current_protocol(original)
-    require(original.get("kind") == "stage-input" and original["stage"] == 2,
+    require(original.get("kind") in {"stage-input", "design-launch-facts"} and original["stage"] == 2,
             "invalid_scope", "a Stage-2 input is required for scope finalization")
     require(isinstance(authority, dict) and authority.get("state") == "sealed" and
             type(authority.get("revision")) is int and authority["revision"] >= 1 and
@@ -540,9 +561,14 @@ def verify_stage_checkpoint_pin(saved, context, checkpoint_path):
     outer = progress.read_projection(checkpoint, projection='scope').record
     state = outer.get(progress.KEY)
     require(isinstance(state, dict), 'handoff_not_ready', 'original Controller checkpoint is unavailable')
-    progress.validate_state(state)
+    if state.get('scope_kind') == 'stage3-scope-v1':
+        progress.validate_stage3_scope(state)
+        context_matches = state['control_digest'] == entry.digest(context)
+    else:
+        progress.validate_state(state)
+        context_matches = state['control']['context'] == context
     require(state.get('stage') == saved.get('stage') and state.get('checkpoint_path') == checkpoint_path and
-            state.get('handoff') == saved and state['control']['context'] == context and
+            state.get('handoff') == saved and context_matches and
             (saved.get('readiness') is None or
              saved['readiness']['checkpoint_path'] == checkpoint_path),
             'handoff_not_ready', 'checkpoint pin differs from the original B input')
@@ -567,7 +593,10 @@ def current_stage3_state(saved, context, checkpoint_path=None):
     outer = progress.read_projection(checkpoint, projection='scope').record
     state = outer.get(progress.KEY)
     require(isinstance(state, dict), 'handoff_not_ready', 'original Controller checkpoint is unavailable')
-    progress.validate_state(state)
+    if state.get('scope_kind') == 'stage3-scope-v1':
+        progress.validate_stage3_scope(state)
+    else:
+        progress.validate_state(state)
     if state.get('stage') == 2:
         require(readiness is not None, 'handoff_not_ready',
                 'standalone Dispatcher cannot read a planning-stage checkpoint')
@@ -578,16 +607,17 @@ def current_stage3_state(saved, context, checkpoint_path=None):
                  if readiness is not None else None)
     require((readiness is None or state.get('consumed_readiness') == readiness and
              effective is not None and state.get('scope_authority') == effective['scope_authority']) and
-            state.get('scope_authority') == (state['control']['context'].get('handoff_progress') or {}).get('execution_authority') and
+            state.get('scope_authority') == (context.get('handoff_progress') or {}).get('execution_authority') and
             (state.get('plan_revision_transaction') or {}).get('state') in (None, 'activated'),
             'handoff_not_ready', 'B result must use the current activated Controller authority')
-    return state
+    # The caller supplied and digest-verified this control; the read projection grants no lease.
+    return {**state, 'control': {'context': context}}
 
 
 def accepted_stage3_progress(predecessor, checkpoint_path=None):
     """Recover the exact accepted Stage-3 authority across Stage-4 replay."""
     import workflow_progress as progress
-    prior = unseal(predecessor)
+    prior = predecessor_facts(predecessor)
     saved = prior["handoff"]
     readiness = saved.get("readiness")
     if readiness is None and checkpoint_path is None:
@@ -681,7 +711,7 @@ def attached_source_entry(saved):
 def inherited_planning_paths(predecessor):
     if predecessor is None:
         return None
-    accepted = unseal(predecessor)
+    accepted = predecessor_facts(predecessor)
     original = accepted.get("handoff") or {}
     if original.get("stage") == 2:
         return accepted["payload"]["planning_paths"]
@@ -703,10 +733,16 @@ def planning_paths_for(request):
 
 
 def accepted_design_state(state, accepted):
-    matches = [item for item in ([state] + state.get("history", []))
-               if item.get("stage") == 2 and item.get("accepted") == accepted]
-    require(len(matches) == 1, "handoff_not_ready", "one original accepted design must own the handoff")
-    return matches[0]
+    if state.get('design_predecessor') is not None:
+        import workflow_progress as progress
+        prior = progress.read_design_predecessor(state['design_predecessor'], state['checkpoint_path'])
+        require(prior['accepted']['digest'] == predecessor_digest(accepted),
+                'handoff_not_ready', 'predecessor differs from the original accepted design')
+        return prior
+    require(state.get('stage') == 2 and
+            (state.get('accepted') or {}).get('digest') == predecessor_digest(accepted),
+            'handoff_not_ready', 'one original accepted design must own the handoff')
+    return state
 
 
 def inherited_manifest_baseline(request):
@@ -717,7 +753,7 @@ def inherited_manifest_baseline(request):
         return readiness["scope_authority"]["scope"]["baseline"]
     predecessor = request.get("predecessor")
     if predecessor is not None:
-        prior = unseal(predecessor)
+        prior = predecessor_facts(predecessor)
         previous = prior.get("handoff") or {}
         if previous.get("stage") == 3:
             readiness = previous.get("readiness")
@@ -732,7 +768,7 @@ def inherited_planning_candidate(request):
         return readiness["scope_authority"]["candidate_commit"]
     predecessor = request.get("predecessor")
     if predecessor is not None:
-        prior = unseal(predecessor)
+        prior = predecessor_facts(predecessor)
         previous = prior.get("handoff") or {}
         if previous.get("stage") == 3 and previous.get("readiness") is not None:
             return previous["readiness"]["scope_authority"]["candidate_commit"]
@@ -758,7 +794,7 @@ def inherited_generated_outputs(request):
         return authority_generated_outputs(readiness["scope_authority"])
     predecessor = request.get("predecessor")
     if predecessor is not None:
-        prior = unseal(predecessor)
+        prior = predecessor_facts(predecessor)
         previous = prior.get("handoff") or {}
         if previous.get("stage") == 3:
             if previous.get("readiness") is not None:
@@ -965,8 +1001,7 @@ def _prepare(request, *, checkpoint_path=None, allocation_store=None):
                 'execution_plan_stale', 'allocation names an older plan authority')
         execution_plan.validate_plan_refs(execution_plan.current_catalog(authority_record), semantic.get('plan_refs'),
             scope['owned_paths'], scope['protected_paths'],
-            ((parent['control']['context'].get('handoff_progress') or {}).get('carried_results', []) +
-             (parent['control']['context'].get('handoff_progress') or {}).get('executions', [])),
+            parent['plan_results'],
             authority_record)
     entry.nonempty(semantic["objective"]); entry.nonempty(semantic["testing_basis"])
     strings(semantic["completion_criteria"]); strings(semantic["constraints"])
@@ -988,7 +1023,7 @@ def _prepare(request, *, checkpoint_path=None, allocation_store=None):
             "configuration_changed", "role configuration requires a controller decision")
     predecessor = request["predecessor"]
     if predecessor is not None:
-        prior = unseal(predecessor)
+        prior = predecessor_facts(predecessor)
         require_current_protocol(prior)
         require(prior.get("status") == "accepted", "predecessor_incomplete", "an accepted B result is required")
         old = prior["handoff"]
@@ -997,11 +1032,12 @@ def _prepare(request, *, checkpoint_path=None, allocation_store=None):
             readiness = request.get("readiness")
             state = current_readiness(readiness)
             source_state = accepted_design_state(state, predecessor)
-            require(source_state.get("accepted") == predecessor and source_state.get("handoff") == old and
-                    readiness["accepted_digest"] == predecessor["digest"] and
+            require(source_state.get("accepted", {}).get("digest") == predecessor_digest(predecessor) and
+                    source_state.get("handoff", {}).get("digest") == old["digest"] and
+                    readiness["accepted_digest"] == predecessor_digest(predecessor) and
                     source_state.get("scope_authority") == readiness["scope_authority"],
                     "handoff_not_ready", "readiness must bind the original accepted design and current scope")
-            effective = effective_scope(old, readiness["scope_authority"])
+            effective = effective_scope_facts(old, readiness["scope_authority"])
             require(effective["downstream"]["implementation_required"] is True and
                     bool(effective["implementation_paths"]),
                     "scope_incomplete", "planning-only or empty implementation scope has no Stage-3 handoff")
@@ -1186,9 +1222,13 @@ def _render_verified(saved, readiness, current_progress=None):
         require(body["downstream_ready"] is True, "result_incomplete", "accepted stage is not complete")
         effective, ready = None, True
     payload = copy.deepcopy(body["payload"])
+    accepted_transfer = (seal({'kind': 'design-acceptance-ref', 'protocol': PROTOCOL,
+        'stage': 2, 'run_id': readiness['run_id'],
+        'checkpoint_path': readiness['checkpoint_path'],
+        'accepted_digest': saved['digest']}) if stage == 2 and readiness is not None else saved)
     projection = {"controller_ref": original["controller_ref"], "role_ref": body["role_ref"],
                   "binding": original["binding"], "requirement_identity": body["requirement_identity"],
-                  "source_commit": original["source_commit"], "accepted_transfer": saved,
+                  "source_commit": original["source_commit"], "accepted_transfer": accepted_transfer,
                   "control_checkpoint": {"controller_ref": original["controller_ref"], "stage": stage,
                       "role_ref": body["role_ref"], "state": "completed", "role_kind": original["role"]}}
     projection.update({k: v for k, v in payload.items() if k not in {"artifacts", "checks"}})
@@ -1229,7 +1269,7 @@ def render(saved, *, readiness=None, checkpoint_path=None):
         if original["stage"] == 2 and readiness is not None:
             state = current_readiness(readiness)
             source_state = accepted_design_state(state, saved)
-            require(source_state.get("accepted") == saved, "handoff_not_ready",
+            require(source_state.get("accepted", {}).get("digest") == saved["digest"], "handoff_not_ready",
                     "readiness belongs to another planning result")
             effective_scope(original, readiness["scope_authority"])
         current_progress = (accepted_stage3_progress(saved, checkpoint_path)

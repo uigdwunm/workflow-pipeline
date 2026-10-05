@@ -315,6 +315,19 @@ def prepared(request):
                 current.run_id, 'evidence', {'allocation_inheritance': inheritance})})
         return {"status": "prepared", "record": record, "checkpoint": port_result(result, applied),
                 "downstream_ready": False}
+    if role == 'implementation-dispatcher' and checkpoint_path is not None:
+        import workflow_state_store
+        store = workflow_state_store.open_store(checkpoint_path)
+        current = store.open_current()
+        pin = {'checkpoint': checkpoint_path, 'run_id': current.run_id,
+               'reference': store.write_object(current.run_id, 'evidence', {'stage_input': saved})}
+        launch = handoff.seal({'kind': 'native', 'role': role, 'controller_ref': saved['controller_ref'],
+            'attempt': attempt, 'input_digest': saved['digest'], 'configuration': saved['selection']})
+        record = handoff.seal({'protocol': PROTOCOL, 'kind': 'dispatch', 'stage_input': pin,
+            'scope_checkpoint_path': checkpoint_path, 'request': launch, 'receipts': [],
+            'delivery': None, 'acceptance': None, 'status': 'prepared'})
+        return {'status': 'prepared', 'record': record, 'checkpoint': port_result(result, applied),
+                'downstream_ready': False}
     payload = handoff.render(saved)["payload"]
     if role == 'execution-agent' and saved['semantic'].get('adopt_paths'):
         progress = result['context']['handoff_progress']
@@ -397,6 +410,23 @@ def verify_allocation_receipts(record):
 
 
 def dispatch_input(record):
+    if 'stage_input' in record:
+        import workflow_state_store
+        pin = record['stage_input']
+        entry.fields(pin, {'checkpoint', 'run_id', 'reference'})
+        require(pin['checkpoint'] == record.get('scope_checkpoint_path'), 'identity_mismatch',
+                'Dispatcher input checkpoint changed')
+        store = workflow_state_store.open_store(pin['checkpoint'])
+        current = store.open_current()
+        require(current is not None and current.run_id == pin['run_id'], 'identity_mismatch', 'Dispatcher run changed')
+        value = store.read_evidence(pin['reference'], run_id=current.run_id)['value']
+        entry.fields(value, {'stage_input'})
+        saved = value['stage_input']
+        handoff.unseal(saved)
+        require(saved.get('stage') == 3 and saved.get('role') == 'implementation-dispatcher' and
+                saved['digest'] == current.root['metadata']['handoff']['digest'],
+                'identity_mismatch', 'Dispatcher input differs from the current Controller')
+        return saved
     return handoff.resolve_allocation(allocation_descriptor(record)) if 'allocation' in record else record['handoff']
 
 
@@ -423,7 +453,30 @@ def allocation_launch(record):
     return handoff.seal({**launch, 'payload': payload})
 
 
+def stage_launch(record):
+    saved = dispatch_input(record)
+    launch = {key: record['request'][key] for key in
+              ('kind', 'role', 'controller_ref', 'attempt', 'input_digest', 'configuration')}
+    payload = handoff.render(saved)['payload']
+    if record.get('dispatch_recovery_ref') is not None:
+        import workflow_state_store
+        pin = record['stage_input']
+        store = workflow_state_store.open_store(pin['checkpoint'])
+        current = store.open_current()
+        value = store.read_evidence(record['dispatch_recovery_ref'], run_id=current.run_id)['value']
+        entry.fields(value, {'dispatcher_recovery'})
+        entry.fields(value['dispatcher_recovery'], {'recovery_id', 'snapshot_digest', 'remaining_paths', 'revalidate', 'ownership'})
+        payload['dispatch_recovery'] = value['dispatcher_recovery']
+    return handoff.seal({**launch, 'payload': payload})
+
+
 def verified_launch(record):
+    if 'stage_input' in record and 'payload_digest' in record['request']:
+        rendered = stage_launch(record)
+        expected = {key: value for key, value in rendered.items() if key != 'payload'}
+        expected['payload_digest'] = entry.digest(rendered['payload'])
+        require(record['request'] == expected, 'identity_mismatch', 'Dispatcher launch changed')
+        return record['request']
     if 'allocation' not in record or 'payload_digest' not in record['request']:
         return handoff.unseal(record['request'])
     rendered = allocation_launch(record)
@@ -436,8 +489,8 @@ def verified_launch(record):
 def record_for(request):
     record = handoff.unseal(request["record"])
     entry.fields(record, {"protocol", "kind", "request", "receipts", "delivery", "acceptance", "status"},
-                 {"scope_checkpoint_path", "handoff", "allocation", "inheritance_ref"})
-    require(("handoff" in record) != ("allocation" in record), "invalid_evidence", "one dispatch input required")
+                 {"scope_checkpoint_path", "handoff", "allocation", "inheritance_ref", "stage_input", "dispatch_recovery_ref"})
+    require(sum(key in record for key in ("handoff", "allocation", "stage_input")) == 1, "invalid_evidence", "one dispatch input required")
     handoff.require_current_protocol(record)
     require(record["kind"] == "dispatch", "invalid_evidence", "dispatch record required")
     launch = verified_launch(record)
@@ -446,7 +499,7 @@ def record_for(request):
     if dispatch_input(record)["stage"] == 3 and "readiness" in dispatch_input(record) and \
             dispatch_input(record)["role"] == "execution-agent":
         handoff.current_readiness(dispatch_input(record)["readiness"])
-    require(launch["input_digest"] == (allocation_descriptor(record) if "allocation" in record else record["handoff"])["digest"], "identity_mismatch", "request belongs to another input")
+    require(launch["input_digest"] == (allocation_descriptor(record) if "allocation" in record else dispatch_input(record))["digest"], "identity_mismatch", "request belongs to another input")
     control.validate_context(request["control"]["context"])
     require(request["control"]["context"]["controller_ref"] == launch["controller_ref"], "identity_mismatch", "checkpoint owner changed")
     inline_recovery_allocation(request, dispatch_input(record))

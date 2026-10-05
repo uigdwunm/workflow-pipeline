@@ -143,6 +143,8 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
             if stage == 3 and predecessor["handoff"]["stage"] == 2:
                 import workflow_progress as progress
                 state = progress.read_record(self.checkpoint).get(progress.KEY, {})
+                if state.get("stage") == 2:
+                    state = progress.read_projection(self.checkpoint, projection="scope", stage=2).record[progress.KEY]
                 if state.get("stage") == 2 and state.get("accepted") == predecessor:
                     inherited = state["scope_authority"]["scope"]
             scope["downstream"] = copy.deepcopy(inherited["downstream"])
@@ -168,6 +170,8 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         if stage == 3 and predecessor is not None:
             import workflow_progress as progress
             state = progress.read_record(self.checkpoint).get(progress.KEY, {})
+            if state.get("stage") == 2:
+                state = progress.read_projection(self.checkpoint, projection="scope", stage=2).record[progress.KEY]
             if state.get("stage") == 2 and state.get("accepted") == predecessor:
                 request["readiness"] = progress.scope_readiness(state, self.checkpoint)
         if stage == 3 and predecessor is None:
@@ -231,8 +235,10 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         if value["stage"] == 3 and value.get("predecessor") is not None:
             import workflow_progress as progress
             state = progress.read_record(self.checkpoint).get(progress.KEY, {})
+            if state.get("stage") == 2:
+                state = progress.read_projection(self.checkpoint, projection="scope", stage=2).record[progress.KEY]
             if state.get("stage") == 2 and state.get("accepted") == value["predecessor"]:
-                pending = state.get("pending")
+                pending = self.state().get("pending")
                 if pending is not None and pending["kind"] == "stage-entry":
                     self.invoke("decide", {"decision_id": pending["decision_id"],
                         "subject": pending["subject"], "answer": "confirm",
@@ -244,7 +250,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                 self.assertEqual(started["next_action"]["operation"], "invoke-host", started)
                 state = self.state()
                 self.context = state["control"]["context"]
-                return {"record": state["dispatch"], "host_call": state["dispatch"]["request"],
+                return {"record": state["dispatch"], "host_call": started["next_action"]["payload"],
                         "checkpoint": {"context": self.context}}
         saved = handoff.handle(value)
         result = dispatch.handle({"protocol": handoff.PROTOCOL, "operation": "prepare", "handoff": saved,

@@ -78,7 +78,10 @@ def atomic_write(path, data):
             os.close(descriptor)
     finally:
         if temporary is not None:
-            os.unlink(temporary)
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass  # replace may have completed before interruption was delivered.
 
 
 @dataclass(frozen=True)
@@ -222,7 +225,7 @@ class StateStore:
         return self._safe(Path('objects') / digest[:2] / digest[2:4] / digest)
 
     def write_object(self, run_id, kind, value, *, subject_id=None):
-        require(kind in {'root', 'subject', 'scope', 'evidence', 'receipt'}, 'invalid object type')
+        require(kind in {'root', 'subject', 'scope', 'predecessor', 'native-source-index', 'evidence', 'receipt'}, 'invalid object type')
         body = {'format': FORMAT, 'run_id': run_id, 'kind': kind, 'value': value}
         if subject_id is not None:
             body['subject_id'] = subject_id
@@ -296,6 +299,20 @@ class StateStore:
                 value['allocation_part'] == part and isinstance(value['value'], dict),
                 'allocation contract part changed', 'state_object_corrupt')
         return value['value']
+
+    def write_predecessor(self, current, value):
+        """Persist only the verified design facts, never an old current root."""
+        require(isinstance(value, dict) and value.get('kind') == 'accepted-design-v1',
+                'invalid predecessor facts')
+        return self.write_object(current.run_id, 'predecessor', value)
+
+    def read_predecessor(self, current, reference):
+        value = self.read_evidence(reference, run_id=current.run_id, kind='predecessor')['value']
+        require(isinstance(value, dict) and value.get('kind') == 'accepted-design-v1' and
+                value.get('checkpoint_path') == str(self.checkpoint.resolve()),
+                'predecessor belongs to another Controller checkpoint')
+        require(self.bytes_read <= READ_LIMIT, 'predecessor exceeds read budget', 'state_capacity')
+        return value
 
     def read_scope(self, current, subject_id):
         """Read the one current Stage-2 scope, in place of its full subject."""
