@@ -689,6 +689,9 @@ def read_implementation_delivery(path, reference=None, *, store=None, current=No
                 'handoff_not_ready', 'delivery differs from current Controller revision')
     if value['handoff']['authorization'].get('phase') is not None:
         phase = store.read_evidence(value['phase_ref'], run_id=current.run_id)['value']
+        require(all(phase.get('handoff', {}).get(key) == value['handoff'][key] for key in
+                    ('authorization', 'binding', 'requirement_identity', 'controller_ref')),
+                'identity_mismatch', 'implementation phase proof belongs to another acceptance')
         verify_phase_completed(phase)
     for pin in value['packages'].values():
         skill_preflight.verify_identity(pin)
@@ -850,6 +853,13 @@ def design_predecessor(state, path, readiness):
                 source_index[entry.digest([key, source[key]])] = source_ref
     value['native_source_index_ref'] = store.write_object(current.run_id, 'native-source-index', source_index)
     value['stop_source_ref'] = store.write_object(current.run_id, 'evidence', {'native_stop': state['host']['last_stop']})
+    if saved['authorization'].get('phase') is not None:
+        verify_phase_completed(state)
+        value['phase_ref'] = store.write_object(current.run_id, 'evidence', {'handoff': {
+            'authorization': copy.deepcopy(saved['authorization']),
+            'entry': {'source': copy.deepcopy(saved['entry']['source'])},
+            'expected_entry': {key: copy.deepcopy(saved['expected_entry'][key]) for key in
+                ('discussion_project', 'requirement', 'repository')}}})
     reference = store.write_predecessor(current, value)
     return handoff.seal({'kind': 'design-predecessor-ref', 'protocol': handoff.PROTOCOL,
         'checkpoint_path': str(Path(path).resolve()), 'reference': reference,
@@ -928,6 +938,12 @@ def read_design_predecessor(reference, path):
             value['scope_authority'] == value['readiness']['scope_authority'] and
             value['stop_evidence_ref'] == value['readiness']['stop_evidence_ref'],
             'handoff_not_ready', 'accepted design predecessor facts changed')
+    if value['handoff']['authorization'].get('phase') is not None:
+        require(value.get('phase_ref') is not None, 'phase_pending', 'original planning phase proof is unavailable')
+        phase = store.read_evidence(value['phase_ref'], run_id=current.run_id)['value']
+        require(phase.get('handoff', {}).get('authorization') == value['handoff']['authorization'],
+                'identity_mismatch', 'planning phase proof belongs to another authorization')
+        verify_phase_completed(phase)
     verify_scope_authority(value['scope_authority'], initial_seal=value['scope_seal'],
         revision_records=value['scope_revisions'], requirement_identity=value['handoff']['requirement_identity'],
         binding=value['handoff']['binding'], decision_records=value['decision_provenance'])
@@ -1896,6 +1912,14 @@ def verify_completion(state):
     validate_state(state)
     require(state["stage"] == 4 and state["status"] == "accepted", "result_incomplete", "final B acceptance is required")
     require(state.get('stopped') is True, 'host_evidence_missing', 'final release requires the complete native stop barrier')
+    outer = read_projection(state['checkpoint_path'], projection='identity').record
+    current = outer[KEY]
+    require(current['stage_subject'] == state['stage_subject'] and current['revision'] == state['revision'] and
+            current['handoff']['digest'] == state['handoff']['digest'],
+            'stale_checkpoint', 'completion must retain the current closure authority')
+    owner = Progress(state['checkpoint_path'], {**outer, KEY: state})
+    require(owner.stop_intent() is None and not owner.stop_barrier_pending(),
+            'host_evidence_missing', 'current runner or native state revoked closure completion')
     accepted = state["accepted"]
     handoff.unseal(accepted)
     require(state["dispatch"]["acceptance"] == accepted, "result_changed", "final acceptance differs from the original dispatch")
@@ -1910,23 +1934,21 @@ def verify_completion(state):
     actual = supervision.reconcile_publication({key: publication[key] for key in ("operation", "request", "facts")})
     require(actual["state"] == "completed" and actual["merge_commit"] == payload["merge_commit"] and
             publication["completion_payload"] == payload, "publication_pending", "publication or cleanup differs from the accepted delivery")
-    # Historical worktrees are gone. Verify immutable predecessor links and their
-    # saved acceptances/phases, never demand the old worktree HEAD again.
-    previous = saved.get("predecessor")
-    while previous is not None:
-        handoff.unseal(previous)
-        prior = previous["handoff"]
-        matches = [item for item in state.get("history", []) if (item.get("accepted") or {}).get("digest") == previous["digest"]]
-        if matches:
-            require(len(matches) == 1 and matches[0]["status"] == "accepted", "result_changed", "ambiguous prior acceptance")
-            verify_phase_completed(matches[0])
-        elif prior["authorization"].get("phase") is not None:
-            verify_phase_completed({"handoff": prior})
-        if prior["stage"] == 2:
-            root = saved["binding"]["repository"]
-            handoff.ancestor(root, previous["payload"]["planning_commit"], previous["payload"]["planning_merge_commit"])
-            handoff.ancestor(root, previous["payload"]["planning_merge_commit"], payload["merge_commit"])
-        previous = prior.get("predecessor")
+    # Only the exact accepted implementation and its planning predecessor are
+    # needed after cleanup. Their old worktree and full Controller state are not.
+    reference = state.get('implementation_predecessor')
+    require(reference is not None and reference == saved.get('predecessor'),
+            'handoff_not_ready', 'completion requires its exact accepted implementation')
+    implementation, _, _ = read_implementation_delivery(state['checkpoint_path'], reference)
+    require(implementation['payload']['candidate_commit'] == payload['candidate_commit'],
+            'source_changed', 'completion differs from accepted implementation')
+    planning = implementation['design_predecessor']
+    if planning is not None:
+        previous = read_design_predecessor(planning, state['checkpoint_path'])
+        proof = previous['accepted']['payload']
+        root = saved['binding']['repository']
+        handoff.ancestor(root, proof['planning_commit'], proof['planning_merge_commit'])
+        handoff.ancestor(root, proof['planning_merge_commit'], payload['merge_commit'])
     return {"completed": True, "merge_commit": payload["merge_commit"], "cleanup": actual["cleanup"],
             "acceptance": accepted["digest"], "phase_complete": True}
 
@@ -4753,7 +4775,7 @@ class Progress:
         scope, binding = saved["scope"], saved["binding"]
         root = binding["repository"]
         if s["stage"] == 4:
-            predecessor = handoff.unseal(saved["predecessor"])
+            predecessor = handoff.predecessor_facts(saved["predecessor"])
             accepted = predecessor["payload"]["candidate_commit"]
             require(owner["candidate"] == accepted and owner["closure_paths"] == scope["closure_paths"] and
                     owner["implementation_paths"] == scope["implementation_paths"] and
@@ -4820,7 +4842,7 @@ class Progress:
                            planning_paths=s["publication"]["request"]["allowed_paths"])
         else:
             binding, scope = s["handoff"]["binding"], s["handoff"]["scope"]
-            payload.update(candidate_commit=s["handoff"]["predecessor"]["payload"]["candidate_commit"],
+            payload.update(candidate_commit=handoff.predecessor_facts(s["handoff"]["predecessor"])["payload"]["candidate_commit"],
                            merge_commit=result["merge_commit"],
                            cleanup=supervision.verify_disposition(binding, result["candidate_commit"], result["merge_commit"]),
                            changed_paths=copy.deepcopy(result['changed_paths']))

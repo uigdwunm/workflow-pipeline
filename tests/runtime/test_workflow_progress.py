@@ -1089,9 +1089,9 @@ class ProgressTests(transfer.StageTransferTests):
                 'evidence':{'candidate':current['handoff_progress']['candidate'],'reference':'fixture:remediation','reason':'replacement'},
                 'receipt':{'adapter':'fixture','call_ref':'remediate','response_ref':'remediation','raw':{'decision':'fix'}}})
         if fixture_execution:
-            outer = progress.read_record(self.checkpoint)
+            outer = progress.read_active_owner(self.checkpoint)
             self.fixture_accepted_execution(outer[progress.KEY]['control']['context'], candidate)
-            progress.atomic_save(self.checkpoint, outer)
+            progress.Progress(self.checkpoint, outer).save()
         self.invoke('observe', self.observation('idle','result',ref=dispatcher))
         current = self.state()['control']['context']
         plan = current['handoff_progress']['validation_plan']

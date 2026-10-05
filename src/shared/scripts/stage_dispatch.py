@@ -862,7 +862,7 @@ def received(request):
             evidence = {"dispatcher_ref":ref, "candidate":payload['candidate_commit'],
                         "review":payload['review'], "verification":payload['verification']}
         else:
-            require(payload["candidate_commit"] == saved["predecessor"]["payload"]["candidate_commit"], "source_changed", "closure candidate differs from accepted input")
+            require(payload["candidate_commit"] == handoff.predecessor_facts(saved["predecessor"])["payload"]["candidate_commit"], "source_changed", "closure candidate differs from accepted input")
             action = "closure-result"
             evidence = {"ref": ref, "candidate": payload["candidate_commit"], "merge": payload["merge_commit"],
                         "ancestor_verified": True, "changed_paths": payload["changed_paths"], "binding": saved["binding"],

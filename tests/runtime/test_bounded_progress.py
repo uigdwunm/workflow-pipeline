@@ -107,6 +107,101 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(result['status'], 'accepted', result)
         return result
 
+    def complete_closure_publication(self):
+        implementation = self.state()['handoff']['predecessor']['accepted_digest']
+        accepted = transfer.handoff.predecessor_facts(self.state()['handoff']['predecessor'])
+        candidate = accepted['payload']['candidate_commit']
+        (self.flow / 'CHANGELOG.md').write_text('documented accepted implementation\n')
+        self.flow_git('add', 'CHANGELOG.md')
+        self.flow_git('commit', '-qm', 'closure documentation')
+        tip = self.flow_git('rev-parse', 'HEAD')
+        self.assertNotEqual(tip, candidate)
+        self.ready_publication(tip, 'controller:closure', 'native:closure')
+        published = self.invoke('publication', {'candidate_commit': tip,
+            'expected_target_head': self.git('rev-parse', 'HEAD'), 'reference': 'controller:closure'})
+        self.assertTrue(published['next_action']['publication']['result']['ok'], published)
+        payload = copy.deepcopy(self.state()['publication']['completion_payload'])
+        self.assertEqual(payload['candidate_commit'], candidate)
+        self.assertEqual(self.git('rev-parse', payload['merge_commit'] + '^2'), tip)
+        received = self.invoke('receive-publication')
+        self.assertEqual(received['pending']['kind'], 'acceptance', received)
+        pending = received['pending']
+        result = self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
+            'answer': 'accept', 'reference': 'controller:final-acceptance'})
+        self.assertEqual(result['status'], 'accepted', result)
+        self.assertTrue(result['workflow_completion']['completed'], result)
+        self.assertEqual(self.state()['accepted']['payload'], payload)
+        self.assertEqual(self.state()['handoff']['predecessor']['accepted_digest'], implementation)
+        self.assertFalse(self.flow.exists())
+        for operation in ('inspect', 'resume'):
+            self.assertEqual(self.invoke(operation)['workflow_completion'], result['workflow_completion'])
+        self.assertEqual(json.loads(result['completion']['stage_result']['handoff_json'])['merge_commit'],
+                         payload['merge_commit'])
+        return result
+
+    def completed_closure(self):
+        implementation = self.accepted_implementation_for_closure()
+        prior = progress.state_store.StateStore(self.checkpoint).open_current()
+        self.completion_prior_subjects = {ref['sha256'] for ref in prior.root['subjects'].values()}
+        closure = self.input_for(4, self.state()['accepted'])
+        closure['predecessor'] = json.loads(implementation['completion']['stage_result']['handoff_json'])['accepted_transfer']
+        self.context = self.context_for(4)
+        self.begin('continuous', closure)
+        self.invoke('observe', self.observation(ref='native:closure'))
+        return self.complete_closure_publication()
+
+    def test_completion_publishes_real_closure_and_consumes_exact_proofs(self):
+        result = self.completed_closure()
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        opened = []
+        original_open = Path.open
+        def tracked_open(path, *args, **kwargs):
+            if path == self.checkpoint or path.is_relative_to(directory):
+                opened.append(path)
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', tracked_open):
+            self.assertEqual(self.invoke('inspect')['workflow_completion'], result['workflow_completion'])
+        self.assertFalse(self.completion_prior_subjects & {path.name for path in opened})
+        read_bytes = sum(path.stat().st_size for path in opened)
+        self.assertLessEqual(read_bytes, progress.state_store.READ_LIMIT)
+        current = progress.state_store.StateStore(self.checkpoint).open_current()
+        self.assertEqual(self.state()['history'], [])
+        self.assertLessEqual(self.checkpoint.stat().st_size, progress.state_store.ROOT_LIMIT)
+        if os.environ.get('T01_COMPLETION_METRICS_PATH'):
+            Path(os.environ['T01_COMPLETION_METRICS_PATH']).write_text(json.dumps({
+                'root_bytes': self.checkpoint.stat().st_size,
+                'stage_subject_bytes': current.root['subjects'][current.root['metadata']['stage_subject']]['size'],
+                'inspect_read_bytes': read_bytes, 'inspect_read_files': len(opened),
+                'footer_bytes': len(result['completion']['stage_result']['handoff_json'].encode()),
+                'merge_commit': result['workflow_completion']['merge_commit']}, indent=2) + '\n')
+        predecessor = current.root['metadata']['implementation_predecessor']
+        facts, _, _ = progress.read_implementation_delivery(self.checkpoint, predecessor)
+        for reference in (predecessor['reference'], facts['design_predecessor']['reference']):
+            digest = reference['sha256']
+            proof_path = directory / 'objects' / digest[:2] / digest[2:4] / digest
+            original = proof_path.read_bytes()
+            proof_path.write_bytes(b'corrupt accepted predecessor')
+            try:
+                with self.assertRaises(transfer.entry.PreparationError):
+                    self.invoke('inspect')
+            finally:
+                proof_path.write_bytes(original)
+        self.assertTrue(self.invoke('inspect')['workflow_completion']['completed'])
+        self.flow.mkdir()
+        (self.flow / 'personal.txt').write_text('unrelated replacement')
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('inspect')
+        self.assertEqual((self.flow / 'personal.txt').read_text(), 'unrelated replacement')
+
+    def test_completion_rejects_current_outer_stop_revocation(self):
+        self.completed_closure()
+        root = progress.state_store.StateStore(self.checkpoint).open_current()
+        for gate in ('pause', 'cancel', 'lost', 'lookup_blocked', 'sequence', 'instance'):
+            with self.subTest(gate=gate):
+                self.delivery_outer_gate(gate, root.root['outer'])
+                with self.assertRaises(transfer.entry.PreparationError):
+                    self.invoke('inspect')
+
     def test_closure_entry_same_controller_keeps_exact_delivery(self):
         completed = self.accepted_implementation_for_closure()
         accepted = self.state()['accepted']
@@ -237,7 +332,7 @@ class BoundedProgressTests(ProgressTests):
     def delivery_outer_gate(self, gate, baseline):
         outer = copy.deepcopy(baseline)
         if gate in {'pause', 'cancel'}:
-            outer['runner_request'] = {'operation': gate, 'request_id': 'outer-' + gate, 'stage': 'stage3'}
+            outer['runner_request'] = {'operation': gate, 'request_id': 'outer-' + gate, 'stage': 'stage' + str(self.state()['stage'])}
         elif gate != 'restore':
             snapshot = self.state()['lifecycle_snapshot']
             transport = outer.setdefault('transport', {'instance': snapshot['instance'],
@@ -1237,7 +1332,7 @@ class BoundedProgressTests(ProgressTests):
         self.input = self.input_for(2)
         return package_root, confirmed_path
 
-    def runner_transition(self, mode, *, closure_entry=False, outer_gate=None):
+    def runner_transition(self, mode, *, closure_entry=False, closure_completion=False, outer_gate=None):
         package_root, confirmed_path = self.runner_stage2_fixture()
         configuration = json.loads(confirmed_path.read_text())
         configuration['flow_mode'] = mode
@@ -1280,6 +1375,9 @@ class BoundedProgressTests(ProgressTests):
                     fixture.context = fixture.context_for(4)
                     fixture.begin(mode, value)
                     fixture.invoke('observe', fixture.observation(ref='native:closure'))
+                    if closure_completion:
+                        result = fixture.complete_closure_publication()
+                        return json.dumps(result['completion']['stage_result']), 'stage4-turn'
                     pending = fixture.invoke('observe', fixture.observation('idle', 'result', {
                         'delivery_id': 'closure-entry-pending', 'status': 'needs_input',
                         'payload': {'question': 'bounded transition reached Stage 4'}}, ref='native:closure'))['pending']
@@ -1326,7 +1424,14 @@ class BoundedProgressTests(ProgressTests):
             self.assertEqual(calls, ['stage2', 'stage3', 'stage4'])
             self.assertEqual(outer['current_stage'], 'stage4')
             self.assertEqual(outer[progress.KEY]['stage'], 4)
-            self.assertEqual(outer['status'], 'needs_input')
+            self.assertEqual(outer['status'], 'completed' if closure_completion else 'needs_input')
+            if closure_completion:
+                self.assertEqual(set(outer['stage_results']), set(runner.STAGES))
+                self.assertFalse(self.flow.exists())
+                with patch.object(runner, '__file__', str(package_root / 'guided-implementation/scripts/workflow.py')), \
+                     redirect_stdout(io.StringIO()):
+                    self.assertEqual(runner.resume(self.checkpoint), 0)
+                self.assertEqual(calls, ['stage2', 'stage3', 'stage4'])
             footer = json.loads(outer['stage_results']['stage3']['handoff_json'])['accepted_transfer']
             self.assertEqual(footer['kind'], 'implementation-acceptance-ref')
             self.assertNotIn('handoff', footer)
@@ -1346,6 +1451,9 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(previous['run_id'], outer[progress.KEY]['design_predecessor']['reference']['run_id'])
         self.assertEqual(previous['stage'], 2)
         self.assertEqual(transfer.handoff.predecessor_digest(previous), self.accepted_stage2['readiness']['accepted_digest'])
+
+    def test_completion_runner_public_continuous(self):
+        self.runner_transition('continuous', closure_entry=True, closure_completion=True)
 
     def test_closure_entry_runner_public_continuous(self):
         self.runner_transition('continuous', closure_entry=True)
