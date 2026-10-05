@@ -1,0 +1,2659 @@
+{
+  "status": "draft-needs-info",
+  "authority": "planning inventory only; not sealed scope or write authorization",
+  "basis_commit": "61f105f1d8bdb3ebc1b574e3104332621dc31ec8",
+  "requirement_sha256": "dcc2adf2141dd49a9d383fc30a62388d267fb35e58fdddbdad1824d367c2dd77",
+  "policy": {
+    "modify": "implementation requires this file change",
+    "add": "proposed new path/symbol, not claimed existing",
+    "verify": "explicit read/test inventory; no automatic file-write permission. Promote only when actual fixture dependency is documented within confirmed behavior scope.",
+    "generated": "single canonical output inventory; never hand edit generated copies"
+  },
+  "entries": [
+    {
+      "path": "src/shared/scripts/workflow_progress.py",
+      "operation": "modify",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05"
+      ],
+      "kind": "source",
+      "reason": "当前root有限投影、去重、审查/修复/修订与归档入口",
+      "exists_at_design": true,
+      "symbols": [
+        {
+          "name": "read_record",
+          "status": "existing-verified"
+        },
+        {
+          "name": "atomic_save",
+          "status": "existing-verified"
+        },
+        {
+          "name": "validate_state",
+          "status": "existing-verified"
+        },
+        {
+          "name": "handle",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_view",
+          "status": "existing-verified"
+        },
+        {
+          "name": "verify_completion",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.save",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.control_action",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.allocation",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.issue_allocation",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.observe",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.review_activity",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.stop_barrier_pending",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.prepare_plan_revision",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.advance_plan_revision",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.commit_plan_revision",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.activate_plan_revision",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.reconcile_plan_revision",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.native_finalize",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.record_host",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.unresolved_host_actions",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.consume_transaction",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.finish_lifecycle",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.archive_action",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.receive_publication",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.suspend",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.resume",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.baseline_thread_state",
+          "status": "existing-verified"
+        },
+        {
+          "name": "Progress.lifecycle_state",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [
+        "skills/change-closure/scripts/workflow_progress.py",
+        "skills/design-discussion/scripts/workflow_progress.py",
+        "skills/guided-implementation/scripts/workflow_progress.py",
+        "skills/problem-framing/scripts/workflow_progress.py",
+        "skills/solution-design/scripts/workflow_progress.py"
+      ]
+    },
+    {
+      "path": "src/shared/scripts/workflow_control.py",
+      "operation": "modify",
+      "tickets": [
+        "T02",
+        "T03",
+        "T04",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "schema7与三层审查门禁、选择性失效及有限控制view",
+      "exists_at_design": true,
+      "symbols": [
+        {
+          "name": "validate_context",
+          "status": "existing-verified"
+        },
+        {
+          "name": "validate_progress",
+          "status": "existing-verified"
+        },
+        {
+          "name": "validate_reviewable",
+          "status": "existing-verified"
+        },
+        {
+          "name": "validate_review_axes",
+          "status": "existing-verified"
+        },
+        {
+          "name": "validate_review",
+          "status": "existing-verified"
+        },
+        {
+          "name": "validate_deliverable",
+          "status": "existing-verified"
+        },
+        {
+          "name": "validate_validation_plan",
+          "status": "existing-verified"
+        },
+        {
+          "name": "validate_checks",
+          "status": "existing-verified"
+        },
+        {
+          "name": "validate_result_source",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_transition_single",
+          "status": "existing-verified"
+        },
+        {
+          "name": "transition",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [
+        "skills/change-closure/scripts/workflow_control.py",
+        "skills/design-discussion/scripts/workflow_control.py",
+        "skills/guided-implementation/scripts/workflow_control.py",
+        "skills/problem-framing/scripts/workflow_control.py",
+        "skills/solution-design/scripts/workflow_control.py"
+      ]
+    },
+    {
+      "path": "src/shared/scripts/workflow_control_git.py",
+      "operation": "modify",
+      "tickets": [
+        "T02",
+        "T04"
+      ],
+      "kind": "source",
+      "reason": "指纹证据/短停Git分区一致性",
+      "exists_at_design": true,
+      "symbols": [
+        {
+          "name": "file_fingerprint",
+          "status": "existing-verified"
+        },
+        {
+          "name": "execution_delta",
+          "status": "existing-verified"
+        },
+        {
+          "name": "plan_revision_snapshot",
+          "status": "existing-verified"
+        },
+        {
+          "name": "verify_plan_revision",
+          "status": "existing-verified"
+        },
+        {
+          "name": "verify_stopped_snapshot",
+          "status": "existing-verified"
+        },
+        {
+          "name": "verified_transition",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [
+        "skills/change-closure/scripts/workflow_control_git.py",
+        "skills/design-discussion/scripts/workflow_control_git.py",
+        "skills/guided-implementation/scripts/workflow_control_git.py",
+        "skills/problem-framing/scripts/workflow_control_git.py",
+        "skills/solution-design/scripts/workflow_control_git.py"
+      ]
+    },
+    {
+      "path": "src/shared/scripts/execution_plan.py",
+      "operation": "modify",
+      "tickets": [
+        "T02",
+        "T04"
+      ],
+      "kind": "source",
+      "reason": "v2行为片、依赖与验证映射、影响闭包",
+      "exists_at_design": true,
+      "symbols": [
+        {
+          "name": "validate_ticket_plan",
+          "status": "existing-verified"
+        },
+        {
+          "name": "collect_execution_plan",
+          "status": "existing-verified"
+        },
+        {
+          "name": "validate_plan_refs",
+          "status": "existing-verified"
+        },
+        {
+          "name": "current_accepted_steps",
+          "status": "existing-verified"
+        },
+        {
+          "name": "affected_plan_closure",
+          "status": "existing-verified"
+        },
+        {
+          "name": "classify_retained_results",
+          "status": "existing-verified"
+        },
+        {
+          "name": "contract_projection",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [
+        "skills/change-closure/scripts/execution_plan.py",
+        "skills/design-discussion/scripts/execution_plan.py",
+        "skills/guided-implementation/scripts/execution_plan.py",
+        "skills/problem-framing/scripts/execution_plan.py",
+        "skills/solution-design/scripts/execution_plan.py"
+      ]
+    },
+    {
+      "path": "src/shared/scripts/stage_dispatch.py",
+      "operation": "modify",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03"
+      ],
+      "kind": "source",
+      "reason": "typed控制/计划投影与repair identity",
+      "exists_at_design": true,
+      "symbols": [
+        {
+          "name": "checkpoint",
+          "status": "existing-verified"
+        },
+        {
+          "name": "design_scope",
+          "status": "existing-verified"
+        },
+        {
+          "name": "prepared",
+          "status": "existing-verified"
+        },
+        {
+          "name": "record_for",
+          "status": "existing-verified"
+        },
+        {
+          "name": "matching",
+          "status": "existing-verified"
+        },
+        {
+          "name": "bound",
+          "status": "existing-verified"
+        },
+        {
+          "name": "received",
+          "status": "existing-verified"
+        },
+        {
+          "name": "accepted",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [
+        "skills/change-closure/scripts/stage_dispatch.py",
+        "skills/design-discussion/scripts/stage_dispatch.py",
+        "skills/guided-implementation/scripts/stage_dispatch.py",
+        "skills/problem-framing/scripts/stage_dispatch.py",
+        "skills/solution-design/scripts/stage_dispatch.py"
+      ]
+    },
+    {
+      "path": "src/shared/scripts/stage_handoff.py",
+      "operation": "modify",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "移除read_record全hydrate及递归handoff、v15有效覆盖",
+      "exists_at_design": true,
+      "symbols": [
+        {
+          "name": "verify_inline_recovery_pin",
+          "status": "existing-verified"
+        },
+        {
+          "name": "verify_stage_checkpoint_pin",
+          "status": "existing-verified"
+        },
+        {
+          "name": "current_stage3_state",
+          "status": "existing-verified"
+        },
+        {
+          "name": "accepted_stage3_progress",
+          "status": "existing-verified"
+        },
+        {
+          "name": "current_readiness",
+          "status": "existing-verified"
+        },
+        {
+          "name": "verify_result",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_render_verified",
+          "status": "existing-verified"
+        },
+        {
+          "name": "prepare",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_prepare",
+          "status": "existing-verified"
+        },
+        {
+          "name": "render",
+          "status": "existing-verified"
+        },
+        {
+          "name": "require_current_protocol",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [
+        "skills/change-closure/scripts/stage_handoff.py",
+        "skills/design-discussion/scripts/stage_handoff.py",
+        "skills/guided-implementation/scripts/stage_handoff.py",
+        "skills/problem-framing/scripts/stage_handoff.py",
+        "skills/solution-design/scripts/stage_handoff.py"
+      ]
+    },
+    {
+      "path": "src/shared/scripts/discussion_core/workflow_control.py",
+      "operation": "modify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "原ledger authority指针、scope/transaction有限只读投影、schema7拒旧",
+      "exists_at_design": true,
+      "symbols": [
+        {
+          "name": "_start_git_authority",
+          "status": "existing-verified"
+        },
+        {
+          "name": "workflow_control",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [
+        "skills/change-closure/scripts/discussion_core/workflow_control.py",
+        "skills/design-discussion/scripts/discussion_core/workflow_control.py",
+        "skills/guided-implementation/scripts/discussion_core/workflow_control.py",
+        "skills/problem-framing/scripts/discussion_core/workflow_control.py",
+        "skills/solution-design/scripts/discussion_core/workflow_control.py"
+      ]
+    },
+    {
+      "path": "src/stages/guided-implementation/scripts/workflow.py",
+      "operation": "modify",
+      "tickets": [
+        "T01",
+        "T03",
+        "T05",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "runner11有限current/history projection、host修复/验证",
+      "exists_at_design": true,
+      "symbols": [
+        {
+          "name": "_read_json",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_atomic_save",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_stage_projection",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_live_progress",
+          "status": "existing-verified"
+        },
+        {
+          "name": "CheckpointState.refresh",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_stage_prompt",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_invoke",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_advance_in_host",
+          "status": "existing-verified"
+        },
+        {
+          "name": "validate_confirmed",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_validate_record",
+          "status": "existing-verified"
+        },
+        {
+          "name": "_verify_run_completion",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [
+        "skills/guided-implementation/scripts/workflow.py"
+      ]
+    },
+    {
+      "path": "src/shared/scripts/workflow_state_store.py",
+      "operation": "add",
+      "tickets": [
+        "T01",
+        "T05"
+      ],
+      "kind": "source",
+      "reason": "原owner下的有界文件存储、原子提交与归档",
+      "exists_at_design": false,
+      "symbols": [
+        {
+          "name": "open_current",
+          "status": "proposed-new"
+        },
+        {
+          "name": "read_subject",
+          "status": "proposed-new"
+        },
+        {
+          "name": "read_evidence",
+          "status": "proposed-new"
+        },
+        {
+          "name": "commit_current",
+          "status": "proposed-new"
+        },
+        {
+          "name": "compact",
+          "status": "proposed-new"
+        }
+      ],
+      "generated_outputs": [
+        "skills/change-closure/scripts/workflow_state_store.py",
+        "skills/design-discussion/scripts/workflow_state_store.py",
+        "skills/guided-implementation/scripts/workflow_state_store.py",
+        "skills/problem-framing/scripts/workflow_state_store.py",
+        "skills/solution-design/scripts/workflow_state_store.py"
+      ]
+    },
+    {
+      "path": "src/shared/scripts/review_evidence.py",
+      "operation": "add",
+      "tickets": [
+        "T02"
+      ],
+      "kind": "source",
+      "reason": "claim适用性与完整覆盖",
+      "exists_at_design": false,
+      "symbols": [
+        {
+          "name": "validate_claim",
+          "status": "proposed-new"
+        },
+        {
+          "name": "affected_claims",
+          "status": "proposed-new"
+        },
+        {
+          "name": "applicable_claims",
+          "status": "proposed-new"
+        },
+        {
+          "name": "coverage_certificate",
+          "status": "proposed-new"
+        }
+      ],
+      "generated_outputs": [
+        "skills/change-closure/scripts/review_evidence.py",
+        "skills/design-discussion/scripts/review_evidence.py",
+        "skills/guided-implementation/scripts/review_evidence.py",
+        "skills/problem-framing/scripts/review_evidence.py",
+        "skills/solution-design/scripts/review_evidence.py"
+      ]
+    },
+    {
+      "path": "src/stages/guided-implementation/scripts/workflow_stage_result.schema.json",
+      "operation": "modify",
+      "tickets": [
+        "T02",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "更新runner/progress及交付coverage描述",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/guided-implementation/scripts/workflow_stage_result.schema.json"
+      ]
+    },
+    {
+      "path": "src/shared/references/guided-implementation/execution-protocol.md",
+      "operation": "modify",
+      "tickets": [
+        "T02",
+        "T03"
+      ],
+      "kind": "source",
+      "reason": "行为片上下文、独立局部review、早测及片内修复",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/guided-implementation/references/shared/guided-implementation/execution-protocol.md"
+      ]
+    },
+    {
+      "path": "src/shared/references/guided-implementation/originating-task-protocol.md",
+      "operation": "modify",
+      "tickets": [
+        "T02",
+        "T04"
+      ],
+      "kind": "source",
+      "reason": "Controller证据继承、最终覆盖与计划短屏障",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/guided-implementation/references/shared/guided-implementation/originating-task-protocol.md"
+      ]
+    },
+    {
+      "path": "src/shared/references/guided-implementation/workflow-control-protocol.md",
+      "operation": "modify",
+      "tickets": [
+        "T02",
+        "T04",
+        "T05"
+      ],
+      "kind": "source",
+      "reason": "三层状态/权限及有限current协议",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/change-closure/references/shared/guided-implementation/workflow-control-protocol.md",
+        "skills/design-discussion/references/shared/guided-implementation/workflow-control-protocol.md",
+        "skills/guided-implementation/references/shared/guided-implementation/workflow-control-protocol.md",
+        "skills/problem-framing/references/shared/guided-implementation/workflow-control-protocol.md",
+        "skills/solution-design/references/shared/guided-implementation/workflow-control-protocol.md"
+      ]
+    },
+    {
+      "path": "src/shared/references/guided-implementation/worktree-execution.md",
+      "operation": "modify",
+      "tickets": [
+        "T04",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "真实共享Git和版本边界",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/change-closure/references/shared/guided-implementation/worktree-execution.md",
+        "skills/guided-implementation/references/shared/guided-implementation/worktree-execution.md",
+        "skills/solution-design/references/shared/guided-implementation/worktree-execution.md"
+      ]
+    },
+    {
+      "path": "src/shared/references/workflow-progression.md",
+      "operation": "modify",
+      "tickets": [
+        "T01",
+        "T05",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "有界typed操作投影与归档恢复",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/change-closure/references/shared/workflow-progression.md",
+        "skills/design-discussion/references/shared/workflow-progression.md",
+        "skills/guided-implementation/references/shared/workflow-progression.md",
+        "skills/problem-framing/references/shared/workflow-progression.md",
+        "skills/solution-design/references/shared/workflow-progression.md"
+      ]
+    },
+    {
+      "path": "src/shared/references/stage-transfer.md",
+      "operation": "modify",
+      "tickets": [
+        "T02",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "v15 handoff evidence引用/coverage",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/change-closure/references/shared/stage-transfer.md",
+        "skills/design-discussion/references/shared/stage-transfer.md",
+        "skills/guided-implementation/references/shared/stage-transfer.md",
+        "skills/problem-framing/references/shared/stage-transfer.md",
+        "skills/solution-design/references/shared/stage-transfer.md"
+      ]
+    },
+    {
+      "path": "src/shared/references/package-execution.md",
+      "operation": "modify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "新版本固定身份与旧运行拒绝",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/change-closure/references/shared/package-execution.md",
+        "skills/design-discussion/references/shared/package-execution.md",
+        "skills/guided-implementation/references/shared/package-execution.md",
+        "skills/problem-framing/references/shared/package-execution.md",
+        "skills/solution-design/references/shared/package-execution.md"
+      ]
+    },
+    {
+      "path": "src/stages/guided-implementation/SKILL.md.in",
+      "operation": "modify",
+      "tickets": [
+        "T02",
+        "T03",
+        "T04"
+      ],
+      "kind": "source",
+      "reason": "删除完整候选重复全审规则，同步新执行协议",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/guided-implementation/SKILL.md"
+      ]
+    },
+    {
+      "path": "src/stages/change-closure/SKILL.md.in",
+      "operation": "modify",
+      "tickets": [
+        "T02",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "Stage4验证新coverage而非要求所有报告原commit一致",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/change-closure/SKILL.md"
+      ]
+    },
+    {
+      "path": "src/stages/change-closure/references/closure-protocol.md",
+      "operation": "modify",
+      "tickets": [
+        "T02",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "验收新handoff，失败返回Stage3",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/change-closure/references/change-closure/closure-protocol.md"
+      ]
+    },
+    {
+      "path": "src/stages/solution-design/references/templates.md",
+      "operation": "modify",
+      "tickets": [
+        "T02"
+      ],
+      "kind": "source",
+      "reason": "新函数计划v2行为分组和验证关系",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/solution-design/references/solution-design/templates.md"
+      ]
+    },
+    {
+      "path": "src/stages/solution-design/references/subagent-protocol.md",
+      "operation": "modify",
+      "tickets": [
+        "T02"
+      ],
+      "kind": "source",
+      "reason": "生成函数计划及manifest的v2语义",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": [
+        "skills/solution-design/references/solution-design/subagent-protocol.md"
+      ]
+    },
+    {
+      "path": "CONTEXT.md",
+      "operation": "modify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "documentation",
+      "reason": "增加已审阅的新领域术语，保留既有角色和边界",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "build/skill-packages.json",
+      "operation": "modify",
+      "tickets": [
+        "T01",
+        "T02",
+        "T06"
+      ],
+      "kind": "tooling",
+      "reason": "新模块加入全部五包roots，兼容key和release同步",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "scripts/validate_repository.py",
+      "operation": "modify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "tooling",
+      "reason": "协议文本静态检查更新，不能接受冲突旧规则",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "scripts/field_acceptance.py",
+      "operation": "modify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "tooling",
+      "reason": "真实host案例worksheet和测量字段",
+      "exists_at_design": true,
+      "symbols": [
+        {
+          "name": "main",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": []
+    },
+    {
+      "path": "docs/adr/0013-revise-function-plans-within-contract.md",
+      "operation": "modify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "documentation",
+      "reason": "接受新决策后仅添加被0014修正关系，不重写历史",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "docs/adr/0014-layered-review-and-local-revalidation.md",
+      "operation": "modify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "documentation",
+      "reason": "经用户确认后记录接受状态",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "docs/adr/0015-bounded-current-state-and-referenced-evidence.md",
+      "operation": "modify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "documentation",
+      "reason": "经用户确认后记录接受状态",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "scripts/measure_review_state.py",
+      "operation": "add",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "tooling",
+      "reason": "只读计量/匿名导出指标与字节放大",
+      "exists_at_design": false,
+      "symbols": [
+        {
+          "name": "main",
+          "status": "proposed-new"
+        }
+      ],
+      "generated_outputs": []
+    },
+    {
+      "path": "scripts/build_skills.py",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "tooling",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "src/stages/guided-implementation/scripts/foreground_host.py",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "src/shared/scripts/discussion_core/state.py",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "src/shared/scripts/discussion_core/phase_runs.py",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "src/shared/scripts/skill_preflight.py",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "src/shared/scripts/host_skill_registry.py",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "src/shared/scripts/entry_prepare.py",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "src/shared/scripts/stage_scope.py",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "src/stages/solution-design/SKILL.md.in",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "src/stages/change-closure/references/closure-actions.md",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "src/shared/references/design-discussion/ledger-protocol.md",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "source",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "README.md",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "documentation",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "operation": "verify",
+      "tickets": [
+        "T01",
+        "T06"
+      ],
+      "kind": "documentation",
+      "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_workflow_progress.py",
+      "operation": "modify",
+      "tickets": [
+        "T01"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_workflow.py",
+      "operation": "modify",
+      "tickets": [
+        "T01"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_stage_transfer.py",
+      "operation": "modify",
+      "tickets": [
+        "T01"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_unified_recovery.py",
+      "operation": "modify",
+      "tickets": [
+        "T01"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_discussion_protocol.py",
+      "operation": "modify",
+      "tickets": [
+        "T01"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_review_first_validation.py",
+      "operation": "modify",
+      "tickets": [
+        "T02"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_plan_driven_dispatch.py",
+      "operation": "modify",
+      "tickets": [
+        "T02"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_execution_plans.py",
+      "operation": "modify",
+      "tickets": [
+        "T02"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_workflow_control.py",
+      "operation": "modify",
+      "tickets": [
+        "T02"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_plan_revision_progress.py",
+      "operation": "modify",
+      "tickets": [
+        "T04"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_workflow_control_git.py",
+      "operation": "modify",
+      "tickets": [
+        "T04"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_repository_validation.py",
+      "operation": "modify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "修改新协议核心行为断言及相关fixture",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_bounded_progress.py",
+      "operation": "add",
+      "tickets": [
+        "T01"
+      ],
+      "kind": "test",
+      "reason": "新增真实生产边界行为回归",
+      "exists_at_design": false,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_layered_review.py",
+      "operation": "add",
+      "tickets": [
+        "T02"
+      ],
+      "kind": "test",
+      "reason": "新增真实生产边界行为回归",
+      "exists_at_design": false,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_state_archive.py",
+      "operation": "add",
+      "tickets": [
+        "T05"
+      ],
+      "kind": "test",
+      "reason": "新增真实生产边界行为回归",
+      "exists_at_design": false,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_accepted_query_retry.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_attached_design_recovery.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_attached_flow_progress.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_business_recovery.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_collaboration_lifecycle.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_dedicated_stage.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_design_recovery.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_discussion_project_identity.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_dispatch_recovery.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_entry_prepare.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_entry_recovery_chain.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_foreground_host.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_git_identity_reads.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_handoff_document_reads.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_lifecycle_snapshot_retry.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_model_inventory.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_parallel_runner.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_pending_host_actions.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_publication_progress.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_publication_recovery.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_registration_context.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_requirement_delivery.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_requirement_prepare.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_requirement_workspace.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_scope_seal_control.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_solution_design_contract.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_solution_review_progress.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_stage_scope.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_stage_scope_progress.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_stage_scope_runner.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_stage_scope_transfer.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_stage_start_verification.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_supervision_protocol.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_thread_settings.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_topic_dependencies.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_topic_dependency_checkpoint.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_topic_dependency_handoffs.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_topic_dependency_operations.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_topic_dependency_phase_gates.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_topic_dependency_support.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/runtime/test_workspace_handoff.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/packages/test_build.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "五包资源闭包/compatibility/固定身份回归；按实际fixture适配",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/packages/test_cross_package.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "五包资源闭包/compatibility/固定身份回归；按实际fixture适配",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/packages/test_host_registry.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "五包资源闭包/compatibility/固定身份回归；按实际fixture适配",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/packages/test_preflight.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "五包资源闭包/compatibility/固定身份回归；按实际fixture适配",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/host/README.md",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "核验真实宿主取证格式与新worksheet一致",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    },
+    {
+      "path": "tests/host/verify_native_lifecycle.py",
+      "operation": "verify",
+      "tickets": [
+        "T06"
+      ],
+      "kind": "test",
+      "reason": "核验真实宿主取证格式与新worksheet一致",
+      "exists_at_design": true,
+      "symbols": [],
+      "generated_outputs": []
+    }
+  ],
+  "generated_outputs": [
+    {
+      "path": "skills/change-closure/scripts/workflow_progress.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_progress.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/scripts/workflow_progress.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_progress.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/workflow_progress.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_progress.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/scripts/workflow_progress.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_progress.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/solution-design/scripts/workflow_progress.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_progress.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/change-closure/scripts/workflow_control.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_control.py",
+      "tickets": [
+        "T02",
+        "T03",
+        "T04",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/scripts/workflow_control.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_control.py",
+      "tickets": [
+        "T02",
+        "T03",
+        "T04",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/workflow_control.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_control.py",
+      "tickets": [
+        "T02",
+        "T03",
+        "T04",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/scripts/workflow_control.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_control.py",
+      "tickets": [
+        "T02",
+        "T03",
+        "T04",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/solution-design/scripts/workflow_control.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_control.py",
+      "tickets": [
+        "T02",
+        "T03",
+        "T04",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/change-closure/scripts/workflow_control_git.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_control_git.py",
+      "tickets": [
+        "T02",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/scripts/workflow_control_git.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_control_git.py",
+      "tickets": [
+        "T02",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/workflow_control_git.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_control_git.py",
+      "tickets": [
+        "T02",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/scripts/workflow_control_git.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_control_git.py",
+      "tickets": [
+        "T02",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/solution-design/scripts/workflow_control_git.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/workflow_control_git.py",
+      "tickets": [
+        "T02",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/change-closure/scripts/execution_plan.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/execution_plan.py",
+      "tickets": [
+        "T02",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/scripts/execution_plan.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/execution_plan.py",
+      "tickets": [
+        "T02",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/execution_plan.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/execution_plan.py",
+      "tickets": [
+        "T02",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/scripts/execution_plan.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/execution_plan.py",
+      "tickets": [
+        "T02",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/solution-design/scripts/execution_plan.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/execution_plan.py",
+      "tickets": [
+        "T02",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/change-closure/scripts/stage_dispatch.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/stage_dispatch.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/scripts/stage_dispatch.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/stage_dispatch.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/stage_dispatch.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/stage_dispatch.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/scripts/stage_dispatch.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/stage_dispatch.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03"
+      ]
+    },
+    {
+      "path": "skills/solution-design/scripts/stage_dispatch.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/stage_dispatch.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03"
+      ]
+    },
+    {
+      "path": "skills/change-closure/scripts/stage_handoff.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/stage_handoff.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/scripts/stage_handoff.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/stage_handoff.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/stage_handoff.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/stage_handoff.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/scripts/stage_handoff.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/stage_handoff.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/solution-design/scripts/stage_handoff.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/stage_handoff.py",
+      "tickets": [
+        "T01",
+        "T02",
+        "T03",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/change-closure/scripts/discussion_core/workflow_control.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_core/workflow_control.py",
+      "tickets": [
+        "T01",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/scripts/discussion_core/workflow_control.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_core/workflow_control.py",
+      "tickets": [
+        "T01",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/discussion_core/workflow_control.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_core/workflow_control.py",
+      "tickets": [
+        "T01",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/scripts/discussion_core/workflow_control.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_core/workflow_control.py",
+      "tickets": [
+        "T01",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/solution-design/scripts/discussion_core/workflow_control.py",
+      "operation": "generate",
+      "source": "src/shared/scripts/discussion_core/workflow_control.py",
+      "tickets": [
+        "T01",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/workflow.py",
+      "operation": "generate",
+      "source": "src/stages/guided-implementation/scripts/workflow.py",
+      "tickets": [
+        "T01",
+        "T03",
+        "T05",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/change-closure/scripts/workflow_state_store.py",
+      "operation": "add",
+      "source": "src/shared/scripts/workflow_state_store.py",
+      "tickets": [
+        "T01",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/scripts/workflow_state_store.py",
+      "operation": "add",
+      "source": "src/shared/scripts/workflow_state_store.py",
+      "tickets": [
+        "T01",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/workflow_state_store.py",
+      "operation": "add",
+      "source": "src/shared/scripts/workflow_state_store.py",
+      "tickets": [
+        "T01",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/scripts/workflow_state_store.py",
+      "operation": "add",
+      "source": "src/shared/scripts/workflow_state_store.py",
+      "tickets": [
+        "T01",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/solution-design/scripts/workflow_state_store.py",
+      "operation": "add",
+      "source": "src/shared/scripts/workflow_state_store.py",
+      "tickets": [
+        "T01",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/change-closure/scripts/review_evidence.py",
+      "operation": "add",
+      "source": "src/shared/scripts/review_evidence.py",
+      "tickets": [
+        "T02"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/scripts/review_evidence.py",
+      "operation": "add",
+      "source": "src/shared/scripts/review_evidence.py",
+      "tickets": [
+        "T02"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/review_evidence.py",
+      "operation": "add",
+      "source": "src/shared/scripts/review_evidence.py",
+      "tickets": [
+        "T02"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/scripts/review_evidence.py",
+      "operation": "add",
+      "source": "src/shared/scripts/review_evidence.py",
+      "tickets": [
+        "T02"
+      ]
+    },
+    {
+      "path": "skills/solution-design/scripts/review_evidence.py",
+      "operation": "add",
+      "source": "src/shared/scripts/review_evidence.py",
+      "tickets": [
+        "T02"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/workflow_stage_result.schema.json",
+      "operation": "generate",
+      "source": "src/stages/guided-implementation/scripts/workflow_stage_result.schema.json",
+      "tickets": [
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/references/shared/guided-implementation/execution-protocol.md",
+      "operation": "generate",
+      "source": "src/shared/references/guided-implementation/execution-protocol.md",
+      "tickets": [
+        "T02",
+        "T03"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/references/shared/guided-implementation/originating-task-protocol.md",
+      "operation": "generate",
+      "source": "src/shared/references/guided-implementation/originating-task-protocol.md",
+      "tickets": [
+        "T02",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/change-closure/references/shared/guided-implementation/workflow-control-protocol.md",
+      "operation": "generate",
+      "source": "src/shared/references/guided-implementation/workflow-control-protocol.md",
+      "tickets": [
+        "T02",
+        "T04",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/references/shared/guided-implementation/workflow-control-protocol.md",
+      "operation": "generate",
+      "source": "src/shared/references/guided-implementation/workflow-control-protocol.md",
+      "tickets": [
+        "T02",
+        "T04",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/references/shared/guided-implementation/workflow-control-protocol.md",
+      "operation": "generate",
+      "source": "src/shared/references/guided-implementation/workflow-control-protocol.md",
+      "tickets": [
+        "T02",
+        "T04",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/references/shared/guided-implementation/workflow-control-protocol.md",
+      "operation": "generate",
+      "source": "src/shared/references/guided-implementation/workflow-control-protocol.md",
+      "tickets": [
+        "T02",
+        "T04",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/solution-design/references/shared/guided-implementation/workflow-control-protocol.md",
+      "operation": "generate",
+      "source": "src/shared/references/guided-implementation/workflow-control-protocol.md",
+      "tickets": [
+        "T02",
+        "T04",
+        "T05"
+      ]
+    },
+    {
+      "path": "skills/change-closure/references/shared/guided-implementation/worktree-execution.md",
+      "operation": "generate",
+      "source": "src/shared/references/guided-implementation/worktree-execution.md",
+      "tickets": [
+        "T04",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/references/shared/guided-implementation/worktree-execution.md",
+      "operation": "generate",
+      "source": "src/shared/references/guided-implementation/worktree-execution.md",
+      "tickets": [
+        "T04",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/solution-design/references/shared/guided-implementation/worktree-execution.md",
+      "operation": "generate",
+      "source": "src/shared/references/guided-implementation/worktree-execution.md",
+      "tickets": [
+        "T04",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/change-closure/references/shared/workflow-progression.md",
+      "operation": "generate",
+      "source": "src/shared/references/workflow-progression.md",
+      "tickets": [
+        "T01",
+        "T05",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/references/shared/workflow-progression.md",
+      "operation": "generate",
+      "source": "src/shared/references/workflow-progression.md",
+      "tickets": [
+        "T01",
+        "T05",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/references/shared/workflow-progression.md",
+      "operation": "generate",
+      "source": "src/shared/references/workflow-progression.md",
+      "tickets": [
+        "T01",
+        "T05",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/references/shared/workflow-progression.md",
+      "operation": "generate",
+      "source": "src/shared/references/workflow-progression.md",
+      "tickets": [
+        "T01",
+        "T05",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/solution-design/references/shared/workflow-progression.md",
+      "operation": "generate",
+      "source": "src/shared/references/workflow-progression.md",
+      "tickets": [
+        "T01",
+        "T05",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/change-closure/references/shared/stage-transfer.md",
+      "operation": "generate",
+      "source": "src/shared/references/stage-transfer.md",
+      "tickets": [
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/references/shared/stage-transfer.md",
+      "operation": "generate",
+      "source": "src/shared/references/stage-transfer.md",
+      "tickets": [
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/references/shared/stage-transfer.md",
+      "operation": "generate",
+      "source": "src/shared/references/stage-transfer.md",
+      "tickets": [
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/references/shared/stage-transfer.md",
+      "operation": "generate",
+      "source": "src/shared/references/stage-transfer.md",
+      "tickets": [
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/solution-design/references/shared/stage-transfer.md",
+      "operation": "generate",
+      "source": "src/shared/references/stage-transfer.md",
+      "tickets": [
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/change-closure/references/shared/package-execution.md",
+      "operation": "generate",
+      "source": "src/shared/references/package-execution.md",
+      "tickets": [
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/references/shared/package-execution.md",
+      "operation": "generate",
+      "source": "src/shared/references/package-execution.md",
+      "tickets": [
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/references/shared/package-execution.md",
+      "operation": "generate",
+      "source": "src/shared/references/package-execution.md",
+      "tickets": [
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/references/shared/package-execution.md",
+      "operation": "generate",
+      "source": "src/shared/references/package-execution.md",
+      "tickets": [
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/solution-design/references/shared/package-execution.md",
+      "operation": "generate",
+      "source": "src/shared/references/package-execution.md",
+      "tickets": [
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/SKILL.md",
+      "operation": "generate",
+      "source": "src/stages/guided-implementation/SKILL.md.in",
+      "tickets": [
+        "T02",
+        "T03",
+        "T04"
+      ]
+    },
+    {
+      "path": "skills/change-closure/SKILL.md",
+      "operation": "generate",
+      "source": "src/stages/change-closure/SKILL.md.in",
+      "tickets": [
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/change-closure/references/change-closure/closure-protocol.md",
+      "operation": "generate",
+      "source": "src/stages/change-closure/references/closure-protocol.md",
+      "tickets": [
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/solution-design/references/solution-design/templates.md",
+      "operation": "generate",
+      "source": "src/stages/solution-design/references/templates.md",
+      "tickets": [
+        "T02"
+      ]
+    },
+    {
+      "path": "skills/solution-design/references/solution-design/subagent-protocol.md",
+      "operation": "generate",
+      "source": "src/stages/solution-design/references/subagent-protocol.md",
+      "tickets": [
+        "T02"
+      ]
+    },
+    {
+      "path": "skills/design-discussion/package.json",
+      "operation": "generate",
+      "source": "build/skill-packages.json + complete emitted closure",
+      "tickets": [
+        "T01",
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/problem-framing/package.json",
+      "operation": "generate",
+      "source": "build/skill-packages.json + complete emitted closure",
+      "tickets": [
+        "T01",
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/solution-design/package.json",
+      "operation": "generate",
+      "source": "build/skill-packages.json + complete emitted closure",
+      "tickets": [
+        "T01",
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/package.json",
+      "operation": "generate",
+      "source": "build/skill-packages.json + complete emitted closure",
+      "tickets": [
+        "T01",
+        "T02",
+        "T06"
+      ]
+    },
+    {
+      "path": "skills/change-closure/package.json",
+      "operation": "generate",
+      "source": "build/skill-packages.json + complete emitted closure",
+      "tickets": [
+        "T01",
+        "T02",
+        "T06"
+      ]
+    }
+  ],
+  "ticket_dag": {
+    "T01": [],
+    "T02": [
+      "T01"
+    ],
+    "T03": [
+      "T02"
+    ],
+    "T04": [
+      "T02"
+    ],
+    "T05": [
+      "T01"
+    ],
+    "T06": [
+      "T03",
+      "T04",
+      "T05"
+    ]
+  },
+  "new_resource_mappings": {
+    "shared/scripts/workflow_state_store.py": {
+      "source": "src/shared/scripts/workflow_state_store.py",
+      "output": "scripts/workflow_state_store.py",
+      "add_to_roots": [
+        "design-discussion",
+        "problem-framing",
+        "solution-design",
+        "guided-implementation",
+        "change-closure"
+      ]
+    },
+    "shared/scripts/review_evidence.py": {
+      "source": "src/shared/scripts/review_evidence.py",
+      "output": "scripts/review_evidence.py",
+      "add_to_roots": [
+        "design-discussion",
+        "problem-framing",
+        "solution-design",
+        "guided-implementation",
+        "change-closure"
+      ]
+    }
+  }
+}
