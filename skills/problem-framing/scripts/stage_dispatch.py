@@ -288,9 +288,13 @@ def prepared(request):
                     adoption_snapshot_digest=saved['semantic']['adoption_snapshot_digest'])
         else:
             action = "start-closure"
-            prior = saved["predecessor"]
+            prior = handoff.predecessor_facts(saved["predecessor"])
+            verification = prior['payload']['verification']
+            if saved['predecessor'].get('kind') == 'implementation-predecessor-ref':
+                import workflow_progress
+                verification = workflow_progress.closure_delivery_view(saved['predecessor'])
             evidence.update(candidate=prior["payload"]["candidate_commit"], dispatcher_ref=prior["role_ref"],
-                            review=prior["payload"]["review"], verification=prior["payload"]["verification"], binding=saved["binding"],
+                            review=prior["payload"]["review"], verification=verification, binding=saved["binding"],
                             implementation_paths=scope["implementation_paths"], closure_paths=scope["closure_paths"], protected_paths=scope["protected_paths"])
         result, applied = checkpoint(request["control"], saved, action, evidence,
                                      checkpoint_path=checkpoint_path)
@@ -315,7 +319,7 @@ def prepared(request):
                 current.run_id, 'evidence', {'allocation_inheritance': inheritance})})
         return {"status": "prepared", "record": record, "checkpoint": port_result(result, applied),
                 "downstream_ready": False}
-    if role == 'implementation-dispatcher' and checkpoint_path is not None:
+    if role in {'implementation-dispatcher', 'closure-agent'} and checkpoint_path is not None:
         import workflow_state_store
         store = workflow_state_store.open_store(checkpoint_path)
         current = store.open_current()
@@ -423,8 +427,8 @@ def dispatch_input(record):
         entry.fields(value, {'stage_input'})
         saved = value['stage_input']
         handoff.unseal(saved)
-        require(saved.get('stage') == 3 and saved.get('role') == 'implementation-dispatcher' and
-                saved['digest'] == current.root['metadata']['handoff']['digest'],
+        require((saved.get('stage'), saved.get('role')) in {(3, 'implementation-dispatcher'), (4, 'closure-agent')} and
+                saved['stage'] == current.root['metadata']['stage'] and saved['digest'] == current.root['metadata']['handoff']['digest'],
                 'identity_mismatch', 'Dispatcher input differs from the current Controller')
         return saved
     return handoff.resolve_allocation(allocation_descriptor(record)) if 'allocation' in record else record['handoff']

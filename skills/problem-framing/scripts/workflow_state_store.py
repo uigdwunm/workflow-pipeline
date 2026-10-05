@@ -274,7 +274,7 @@ class StateStore:
                 'legacy_run_requires_original_runtime')
         root = self.read_evidence(envelope['current'], run_id=envelope['run_id'], kind='root')['value']
         require(root.get('revision') == envelope['revision'] and
-                isinstance(root.get('subjects'), dict) and len(root['subjects']) + ('scope' in root) <= MAX_SUBJECTS,
+                isinstance(root.get('subjects'), dict) and len(root['subjects']) + ('scope' in root) + ('delivery' in root) <= MAX_SUBJECTS,
                 'invalid current root')
         self._run_id = envelope['run_id']
         return CurrentProjection(envelope['run_id'], envelope['revision'], root, envelope['current'])
@@ -301,14 +301,14 @@ class StateStore:
         return value['value']
 
     def write_predecessor(self, current, value):
-        """Persist only the verified design facts, never an old current root."""
-        require(isinstance(value, dict) and value.get('kind') == 'accepted-design-v1',
+        """Persist only verified stage facts, never an old current root."""
+        require(isinstance(value, dict) and value.get('kind') in {'accepted-design-v1', 'accepted-implementation-v1'},
                 'invalid predecessor facts')
         return self.write_object(current.run_id, 'predecessor', value)
 
     def read_predecessor(self, current, reference):
         value = self.read_evidence(reference, run_id=current.run_id, kind='predecessor')['value']
-        require(isinstance(value, dict) and value.get('kind') == 'accepted-design-v1' and
+        require(isinstance(value, dict) and value.get('kind') in {'accepted-design-v1', 'accepted-implementation-v1'} and
                 value.get('checkpoint_path') == str(self.checkpoint.resolve()),
                 'predecessor belongs to another Controller checkpoint')
         require(self.bytes_read <= READ_LIMIT, 'predecessor exceeds read budget', 'state_capacity')
@@ -430,7 +430,7 @@ class StateStore:
         return self.read_evidence(receipt['result'], run_id=current.run_id)['value']
 
     def commit_current(self, *, expected_revision, revision, subjects, metadata, outer, receipts=(), initial_outer=None,
-                       scope=None):
+                       scope=None, delivery=None):
         if initial_outer is not None:
             require(self.checkpoint.exists() and not self.directory.exists() and
                     json.loads(self._read(self.checkpoint, ROOT_LIMIT)) == initial_outer and
@@ -447,7 +447,7 @@ class StateStore:
         require(actual == expected_revision, 'checkpoint revision changed', 'stale_checkpoint')
         if current is not None:
             self._ensure_marker(current)
-        require(type(revision) is int and revision > actual and len(subjects) + (scope is not None) <= MAX_SUBJECTS,
+        require(type(revision) is int and revision > actual and len(subjects) + (scope is not None) + (delivery is not None) <= MAX_SUBJECTS,
                 'invalid revision or active subject count', 'state_capacity')
         run_id = current.run_id if current else str(uuid.uuid4())
         # Validate the complete bounded candidate before writing any object.
@@ -467,6 +467,13 @@ class StateStore:
             require(len(encode({'format': FORMAT, 'run_id': run_id, 'kind': 'scope',
                                 'value': scope_body})) <= SUBJECT_LIMIT,
                     'scope exceeds its fixed budget', 'state_capacity')
+        if delivery is not None:
+            require(isinstance(delivery, dict) and delivery.get('kind') == 'accepted-implementation-v1' and
+                    delivery.get('source_revision') == metadata['revision'] and
+                    delivery.get('stage_subject') == metadata['stage_subject'] and metadata['stage'] == 3 and
+                    len(encode({'format': FORMAT, 'run_id': run_id, 'kind': 'predecessor',
+                                'value': delivery})) <= SUBJECT_LIMIT,
+                    'invalid current implementation delivery', 'state_capacity')
         references = {name: self.write_object(run_id, 'subject', value, subject_id=name)
                       for name, value in subjects.items()}
         require(len(receipts) <= 16, 'receipt commit batch exceeds its fixed proof budget', 'state_capacity')
@@ -474,6 +481,8 @@ class StateStore:
                 'receipts': list(receipts)}
         if scope is not None:
             root['scope'] = self.write_object(run_id, 'scope', scope_body)
+        if delivery is not None:
+            root['delivery'] = self.write_object(run_id, 'predecessor', delivery)
         return self._commit_root(current, run_id, root)
 
     def commit_outer(self, *, expected_revision, outer):

@@ -393,6 +393,8 @@ def _runner_route(saved: dict[str, Any], state: dict[str, Any]) -> str:
 
 def _stage_projection(record_path: Path, stage: str, current: dict[str, Any]) -> dict[str, Any]:
     """Use C's current authority for Stage 2, and B's immutable result thereafter."""
+    if stage == 'stage3' and current.get('delivery_kind') == 'accepted-implementation-v1':
+        return stage_handoff.render_implementation_delivery(str(record_path))['stage_result']
     readiness = None
     if stage == "stage2":
         readiness = progression.scope_readiness(current, str(record_path))
@@ -405,7 +407,8 @@ def _stage_projection(record_path: Path, stage: str, current: dict[str, Any]) ->
                     "scope_incomplete: accepted planning has no current sealed Stage-3 readiness; "
                     "inspect C and use scope-propose or scope-revise"
                 )
-    result = stage_handoff.render(current["accepted"], readiness=readiness)["stage_result"]
+    result = stage_handoff.render(current["accepted"], readiness=readiness,
+        checkpoint_path=str(record_path) if stage == "stage3" else None)["stage_result"]
     if stage == "stage3" and current.get("scope_authority") is not None:
         authority = current["scope_authority"]
         catalog = authority["execution_plan"]["catalog"]
@@ -844,7 +847,9 @@ def _require_handoff(stage: str, result: dict[str, Any]) -> None:
     elif stage == "stage2":
         required = {"binding", "planning_commit", "allowed_paths", "protected_paths"}
     else:
-        required = {"binding", "candidate_commit", "review", "verification", "implementation_paths", "closure_paths", "protected_paths"}
+        required = {"binding", "candidate_commit", "implementation_paths", "closure_paths", "protected_paths"}
+        required |= ({"accepted_transfer", "review_ref", "verification_ref"} if
+                     handoff.get("accepted_transfer", {}).get("kind") == "implementation-acceptance-ref" else {"review", "verification"})
     required |= {"controller_ref", "role_ref", "control_checkpoint"}
     if not required <= set(handoff):
         raise WorkflowError(f"{stage} handoff missing: " + ", ".join(sorted(required - set(handoff))))
@@ -886,12 +891,26 @@ def _require_handoff(stage: str, result: dict[str, Any]) -> None:
             raise WorkflowError("stage4 publication or cleanup is incomplete")
     else:
         try:
-            validate_review(handoff["candidate_commit"], handoff["review"], handoff["verification"], handoff["role_ref"])
-        except ControlError as error:
+            if handoff.get('accepted_transfer', {}).get('kind') == 'implementation-acceptance-ref':
+                reference = handoff['accepted_transfer']
+                accepted, _ = progression.implementation_acceptance(reference)
+                store = progression.state_store.open_store(reference['checkpoint_path'])
+                current = store.open_current()
+                facts, _, _ = progression.read_implementation_delivery(reference['checkpoint_path'],
+                    current.root['metadata'].get('implementation_predecessor'), store=store, current=current)
+                entry_prepare.require(handoff['review_ref'] == facts['review_ref'] and
+                    handoff['verification_ref'] == facts['verification_ref'] and
+                    handoff['candidate_commit'] == accepted['payload']['candidate_commit'] and
+                    handoff['role_ref'] == accepted['role_ref'] and handoff['binding'] == facts['handoff']['binding'] and
+                    handoff['controller_ref'] == facts['controller_ref'],
+                    'result_changed', 'runner delivery differs from original accepted proof')
+            else:
+                validate_review(handoff["candidate_commit"], handoff["review"], handoff["verification"], handoff["role_ref"])
+        except (ControlError, *entry_prepare.ERROR_TYPES) as error:
             raise WorkflowError(str(error)) from error
         if not _is_git_sha(handoff["candidate_commit"]):
             raise WorkflowError("stage3 handoff.candidate_commit must be a string")
-        if not isinstance(handoff["review"], dict) or not handoff["review"]:
+        if "review" in handoff and (not isinstance(handoff["review"], dict) or not handoff["review"]):
             raise WorkflowError("stage3 handoff.review must be an object")
 
 
@@ -1586,13 +1605,19 @@ def _accepted_stage(record_path, stage, result, confirmed):
     outer = _read_checkpoint(record_path, projection="delivery")
     current = outer.get(progression.KEY)
     try:
-        progression.validate_state(current)
-        entry_prepare.require(current["status"] == "accepted" and current["stage"] == int(stage[-1]),
-                              "result_incomplete", "stage requires its persisted B acceptance")
-        entry_prepare.require(current.get('stopped') is True and not progression.Progress(record_path,outer).stop_barrier_pending(),
-                              'host_evidence_missing', 'stage handoff requires the current complete native stop barrier')
-        accepted = current["accepted"]
-        progression.verify_phase_completed(current)
+        if stage == 'stage3' and current.get('delivery_kind') == 'accepted-implementation-v1':
+            facts, _, _ = progression.read_implementation_delivery(record_path)
+            entry_prepare.require(current['status'] == 'accepted' and current['stopped'] and facts['phase_complete'],
+                                  'handoff_not_ready', 'original implementation acceptance is not ready')
+            accepted = current['accepted']
+        else:
+            progression.validate_state(current)
+            entry_prepare.require(current["status"] == "accepted" and current["stage"] == int(stage[-1]),
+                                  "result_incomplete", "stage requires its persisted B acceptance")
+            entry_prepare.require(current.get('stopped') is True and not progression.Progress(record_path,outer).stop_barrier_pending(),
+                                  'host_evidence_missing', 'stage handoff requires the current complete native stop barrier')
+            accepted = current["accepted"]
+            progression.verify_phase_completed(current)
         projection = _stage_projection(record_path, stage, current)
         entry_prepare.require(all(result[k] == v for k, v in projection.items()), "result_changed", "return the exact B completion projection")
         saved = accepted["handoff"]
@@ -1601,7 +1626,8 @@ def _accepted_stage(record_path, stage, result, confirmed):
             saved["source_commit"] == confirmed["frozen_requirement"]["commit"],
             "source_changed", "accepted stage differs from confirmed source/controller")
         stage_handoff.verify_result(int(stage[-1]), accepted["payload"], saved["binding"], saved["scope"],
-                                   saved["expected_entry"]["repository"]["root"], accepted["role_ref"])
+                                   saved["binding"]["worktree"], accepted["role_ref"],
+                                   current_progress=current.get("delivery_progress"))
         return accepted
     except entry_prepare.ERROR_TYPES as error:
         raise WorkflowError("stage acceptance failed: " + entry_prepare.error_message(error)) from error

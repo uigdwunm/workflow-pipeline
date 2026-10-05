@@ -49,12 +49,15 @@ def unseal(value):
 
 def predecessor_digest(value):
     require(isinstance(value, dict), 'invalid_evidence', 'saved predecessor identity required')
-    return value['accepted_digest'] if value.get('kind') in {'design-predecessor-ref', 'design-acceptance-ref'} else value['digest']
+    return value['accepted_digest'] if value.get('kind') in {'design-predecessor-ref', 'design-acceptance-ref', 'implementation-predecessor-ref', 'implementation-acceptance-ref'} else value['digest']
 
 
 def predecessor_facts(value):
     """Resolve one explicitly named design; never hydrate an ancestor chain."""
     require(isinstance(value, dict), "invalid_evidence", "saved predecessor identity required")
+    if value.get('kind') in {'implementation-predecessor-ref', 'implementation-acceptance-ref'}:
+        import workflow_progress as progress
+        return progress.implementation_acceptance(value)[0]
     if value.get('kind') == 'design-acceptance-ref':
         import workflow_progress as progress
         return progress.read_design_acceptance(value)
@@ -620,6 +623,8 @@ def accepted_stage3_progress(predecessor, checkpoint_path=None):
     prior = predecessor_facts(predecessor)
     saved = prior["handoff"]
     readiness = saved.get("readiness")
+    if predecessor.get("kind") in {"implementation-predecessor-ref", "implementation-acceptance-ref"}:
+        checkpoint_path = checkpoint_path or predecessor["checkpoint_path"]
     if readiness is None and checkpoint_path is None:
         inline = saved.get("inline_authority") or {}
         original_plan = inline.get("execution_plan") or {}
@@ -636,59 +641,13 @@ def accepted_stage3_progress(predecessor, checkpoint_path=None):
     checkpoint = Path(original_path)
     require(checkpoint.is_absolute() and str(checkpoint.resolve()) == original_path,
             "invalid_checkpoint", "canonical original Controller checkpoint required")
-    outer = progress.read_record(checkpoint)
-    current = outer.get(progress.KEY)
-    require(isinstance(current, dict), "handoff_not_ready",
-            "original Controller checkpoint is unavailable")
-    progress.validate_state(current)
-    require(current.get("checkpoint_path") == original_path,
-            "handoff_not_ready", "Stage-4 checkpoint differs from its original path")
-    history = current.get("history", [])
-    snapshots = [(current, history)] + [(state, history[:index])
-                                      for index, state in enumerate(history)]
-    matches = [(state, earlier) for state, earlier in snapshots
-               if state.get("stage") == 3 and state.get("handoff") == saved and
-               state.get("accepted") == predecessor]
-    require(matches and all(state == matches[0][0] for state, _ in matches),
-            "handoff_not_ready", "Stage-4 predecessor differs from the original Controller acceptance")
-    state, earlier = matches[0]
-    prior_state = {**state, "history": earlier}
-    progress.validate_state(prior_state)
-    effective = (progress.consumed_scope_readiness(prior_state, checkpoint)
-                 if readiness is not None else None)
-    current_progress = state["control"]["context"].get("handoff_progress") or {}
-    initial = readiness["scope_authority"] if readiness is not None else saved.get("inline_authority")
-    require(isinstance(initial, dict), "handoff_not_ready",
-            "Stage-3 launch lacks its original authority")
-    lineage = initial
-    revisions = [*state.get("plan_revision_history", {}).values()]
-    transaction = state.get("plan_revision_transaction")
-    if transaction is not None:
-        require(all(revision["old_authority"]["revision"] <= transaction["old_authority"]["revision"]
-                    for revision in revisions), "handoff_not_ready",
-                "Stage-3 plan revision history follows its current transaction")
-        revisions.append(transaction)
-    for revision in sorted(revisions, key=lambda item: (
-            item["old_authority"]["revision"], item["state"] == "activated")):
-        require(revision["old_authority"] == lineage,
-                "handoff_not_ready", "Stage-3 plan revision lost its original lineage")
-        if revision["state"] == "activated":
-            lineage = revision["proposed_authority"]
-        else:
-            require(revision["state"] == "rejected", "handoff_not_ready",
-                    "Stage-3 plan revision lacks a final Controller decision")
-    require(state.get("status") == "accepted" and
-            (state.get("dispatch") or {}).get("acceptance") == predecessor and
-            state.get("consumed_readiness") == readiness and
-            (readiness is None or effective is not None and
-             state.get("scope_authority") == effective["scope_authority"]) and
-            state.get("scope_authority") == lineage == current_progress.get("execution_authority") and
-            lineage["execution_plan"]["contract_digest"] ==
-            initial["execution_plan"]["contract_digest"] and
-            lineage["scope"]["protected_paths"] == initial["scope"]["protected_paths"] and
-            current_progress.get("git_baseline_commit") == saved["scope"]["baseline"] and
-            (state.get("plan_revision_transaction") or {}).get("state") in (None, "activated"),
-            "handoff_not_ready", "Stage-4 predecessor lacks current activated Controller authority")
+    reference = (predecessor if predecessor.get('kind') in
+                 {'implementation-predecessor-ref', 'implementation-acceptance-ref'} else
+                 progress.implementation_predecessor(checkpoint))
+    accepted, current_progress = progress.implementation_acceptance(reference, original_path)
+    require(accepted['digest'] == predecessor_digest(predecessor) and
+            accepted['handoff']['digest'] == saved['digest'],
+            'handoff_not_ready', 'Stage-4 predecessor differs from original Controller acceptance')
     return current_progress
 
 
@@ -713,6 +672,8 @@ def inherited_planning_paths(predecessor):
         return None
     accepted = predecessor_facts(predecessor)
     original = accepted.get("handoff") or {}
+    if original.get("kind") == "implementation-launch-facts":
+        return original["planning_paths"]
     if original.get("stage") == 2:
         return accepted["payload"]["planning_paths"]
     if original.get("stage") == 3 and original.get("predecessor") is not None:
@@ -755,6 +716,8 @@ def inherited_manifest_baseline(request):
     if predecessor is not None:
         prior = predecessor_facts(predecessor)
         previous = prior.get("handoff") or {}
+        if previous.get("kind") == "implementation-launch-facts":
+            return previous["manifest_baseline"]
         if previous.get("stage") == 3:
             readiness = previous.get("readiness")
             if readiness is not None:
@@ -1212,6 +1175,12 @@ def _render_verified(saved, readiness, current_progress=None):
     require(body.get("status") == "accepted", "invalid_evidence", "accepted stage result required")
     original = body["handoff"]
     unseal(original)
+    return _render_accepted_facts(saved, readiness, current_progress)
+
+
+def _render_accepted_facts(saved, readiness, current_progress=None):
+    body = saved
+    original = body["handoff"]
     stage = original["stage"]
     require(original["role"] != "execution-agent", "result_incomplete", "allocation acceptance is not stage completion")
     if stage == 2:
@@ -1254,6 +1223,26 @@ def _render_verified(saved, readiness, current_progress=None):
     return result
 
 
+def render_implementation_delivery(checkpoint_path):
+    import workflow_progress as progress
+    reference = progress.implementation_predecessor(checkpoint_path)
+    accepted, checkpoint = progress.implementation_acceptance(reference)
+    # Build the footer from finite facts, not from reports and then strip them.
+    facts, current, _ = progress.read_implementation_delivery(checkpoint_path)
+    footer_acceptance = {**accepted, 'payload': {**facts['payload'],
+        'review_ref': facts['review_ref'], 'verification_ref': facts['verification_ref']}}
+    rendered = _render_accepted_facts(footer_acceptance, None, checkpoint)
+    rendered['payload']['accepted_transfer'] = seal({'kind': 'implementation-acceptance-ref',
+        'protocol': PROTOCOL, 'stage': 3, 'run_id': current.run_id,
+        'checkpoint_path': str(checkpoint_path), 'accepted_digest': accepted['digest']})
+    authority = checkpoint['execution_authority']
+    rendered['payload'].update(current_scope_authority=authority, execution_plan=authority['execution_plan']['catalog'],
+        generated_outputs=authority_generated_outputs(authority))
+    rendered['text'] = json.dumps(rendered['payload'], ensure_ascii=False, sort_keys=True)
+    rendered['stage_result']['handoff_json'] = rendered['text']
+    return rendered
+
+
 def render(saved, *, readiness=None, checkpoint_path=None):
     if saved.get('kind') == 'allocation-input':
         payload = render(resolve_allocation(saved), readiness=readiness, checkpoint_path=checkpoint_path)
@@ -1274,7 +1263,10 @@ def render(saved, *, readiness=None, checkpoint_path=None):
             effective_scope(original, readiness["scope_authority"])
         current_progress = (accepted_stage3_progress(saved, checkpoint_path)
                             if original["stage"] == 3 and checkpoint_path is not None else None)
+        if original['stage'] == 3 and checkpoint_path is not None:
+            return render_implementation_delivery(checkpoint_path)
         return _render_verified(saved, readiness, current_progress)
+
     require(body.get("kind") == "stage-input" and body.get("protocol") == PROTOCOL, "invalid_evidence", "stage input required")
     # Stable machine payload is also the readable footer; no independently
     # reconstructed hashes, paths, or status assertions occur in templates.

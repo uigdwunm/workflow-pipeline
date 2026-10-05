@@ -65,6 +65,175 @@ class BoundedProgressTests(ProgressTests):
         successor['authorization']['scope_digest'] = transfer.entry.digest(successor['scope'])
         return successor
 
+    def accepted_implementation_for_closure(self, design=None):
+        design = design or self.finish_design('continuous')
+        self.context = self.context_for(3)
+        self.begin('continuous', self.staged_successor(design))
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        actor_settings = self.settings['thread_id']
+        actor_host = copy.deepcopy(self.request['host'])
+        execution = self.execution_input()
+        prepared = self.invoke('allocation', {'allocation_id': 'closure-slice',
+            'operation': 'prepare', 'handoff': execution})
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+        slot = self.allocation_slot('closure-slice')
+        receipt = self.receipt(slot['record'], ref='native:executor')
+        receipt['raw']['output'] = 'original allocation report ' * 4000
+        bound = self.invoke('allocation', {'allocation_id': 'closure-slice', 'operation': 'bind',
+            'receipt': receipt})
+        content = b"print('accepted implementation')\n"
+        (self.flow / 'impl.py').write_bytes(content)
+        slot = self.allocation_slot('closure-slice')
+        received = self.invoke('allocation', {'allocation_id': 'closure-slice', 'operation': 'receive',
+            'receipt': self.receipt(slot['record'], 'stopped', 'result', ref='native:executor'),
+            'result': {'delivery_id': 'closure-slice-result', 'status': 'completed', 'payload': {
+                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(content).hexdigest()},
+                'tests': ['implementation behavior passed'],
+                'write_release': bound['next_action']['result']['write_release'],
+                'plan_refs': execution['semantic']['plan_refs'],
+                'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
+        self.assertEqual(received['next_action']['result']['status'], 'received', received)
+        accepted = self.invoke('allocation', {'allocation_id': 'closure-slice', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:closure-slice'}})
+        self.assertEqual(accepted['next_action']['result']['status'], 'accepted', accepted)
+        self.flow_git('add', 'impl.py')
+        self.flow_git('commit', '-qm', 'accepted implementation')
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        self.settings['thread_id'] = actor_settings
+        self.request['host'] = actor_host
+        result = self.accept_current({'artifacts': ['impl.py'], 'checks': ['implementation behavior passed'],
+            'candidate_commit': candidate, 'review': {axis: {'reviewer_ref': axis}
+                for axis in ('standards', 'spec')}}, 'native:dispatcher', fixture_execution=False)
+        self.assertEqual(result['status'], 'accepted', result)
+        return result
+
+    def test_closure_entry_same_controller_keeps_exact_delivery(self):
+        completed = self.accepted_implementation_for_closure()
+        accepted = self.state()['accepted']
+        original = progress.state_store.StateStore(self.checkpoint).open_current()
+        opened = []
+        original_open = Path.open
+        def tracked_open(path, *args, **kwargs):
+            opened.append(path)
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', tracked_open):
+            delivery = progress.read_projection(self.checkpoint, projection='delivery')
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        actual_reads = [path for path in opened if path == self.checkpoint or path.is_relative_to(directory)]
+        actual_bytes = sum(path.stat().st_size for path in actual_reads)
+        self.assertLessEqual(actual_bytes, progress.state_store.READ_LIMIT)
+        original_subjects = {reference['sha256'] for reference in original.root['subjects'].values()}
+        self.assertFalse(original_subjects & {path.name for path in actual_reads})
+        self.assertNotIn('control', delivery.record[progress.KEY])
+        self.assertNotIn('allocations', delivery.record[progress.KEY])
+        self.assertLessEqual(delivery.bytes_read, progress.state_store.READ_LIMIT)
+        footer = json.loads(completed['completion']['stage_result']['handoff_json'])['accepted_transfer']
+        self.assertEqual(footer['accepted_digest'], accepted['digest'])
+        self.assertNotIn('handoff', footer)
+        closure = self.input_for(4, accepted)
+        closure['predecessor'] = footer
+        for field, replacement in [('run_id', 'another-run'), ('accepted_digest', '0' * 64),
+                                    ('checkpoint_path', str(self.checkpoint.with_name('missing.json')))]:
+            invalid = copy.deepcopy(closure)
+            body = transfer.handoff.unseal(footer)
+            body[field] = replacement
+            invalid['predecessor'] = transfer.handoff.seal(body)
+            before = self.checkpoint.read_bytes()
+            with self.assertRaises(transfer.entry.PreparationError):
+                self.invoke('start', {'handoff': invalid})
+            self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.context = self.context_for(4)
+        started = self.begin('continuous', closure)
+        self.assertEqual(started['next_action']['operation'], 'invoke-host', started)
+        before = self.checkpoint.read_bytes()
+        forged_control = copy.deepcopy(self.state()['control'])
+        forged_control['context']['handoff_progress']['verification']['view']['review_sources']['spec']['evidence_digest'] = '0' * 64
+        with self.assertRaisesRegex((transfer.entry.PreparationError, transfer.control.ControlError), 'checkpoint pin'):
+            transfer.dispatch.handle({'protocol': transfer.handoff.PROTOCOL, 'operation': 'bind',
+                'record': self.state()['dispatch'], 'control': forged_control,
+                'receipt': self.receipt(self.state()['dispatch'], ref='native:closure')})
+        with self.assertRaisesRegex((transfer.entry.PreparationError, transfer.control.ControlError), 'exact committed'):
+            progress.control_git.verified_transition({'repository': str(self.flow),
+                'baseline': self.state()['handoff']['scope']['baseline'],
+                'request': {'schema_version': forged_control['context']['schema_version'],
+                    'action': 'closure-bound', 'actor_ref': 'task', 'context': forged_control['context'],
+                    'evidence': {'ref': 'native:closure',
+                        'attempt': self.state()['control']['context']['carrier']['attempt']}}})
+        request = {'schema_version': forged_control['context']['schema_version'],
+            'action': 'closure-bound', 'actor_ref': 'task', 'context': self.state()['control']['context'],
+            'evidence': {'ref': 'native:closure',
+                'attempt': self.state()['control']['context']['carrier']['attempt']}}
+        verified = progress.control_git.verified_transition({'repository': str(self.flow),
+            'baseline': self.state()['handoff']['scope']['baseline'], 'request': request})
+        self.assertEqual(verified['context']['carrier']['ref'], 'native:closure')
+        self.assertEqual(verified['context']['handoff_progress']['verification']['kind'],
+                         'implementation-verification-ref')
+        wrong_reference = copy.deepcopy(request)
+        wrong_reference['context']['handoff_progress']['verification']['verification_ref']['sha256'] = '0' * 64
+        with self.assertRaisesRegex((transfer.entry.PreparationError, transfer.control.ControlError), 'exact committed'):
+            progress.control_git.verified_transition({'repository': str(self.flow),
+                'baseline': self.state()['handoff']['scope']['baseline'], 'request': wrong_reference})
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        bound = self.invoke('observe', self.observation(ref='native:closure'))
+        self.assertEqual(bound['status'], 'active', bound)
+        self.assertEqual(self.invoke('inspect')['status'], 'active')
+        current = progress.state_store.StateStore(self.checkpoint).open_current()
+        self.assertEqual(current.run_id, original.run_id)
+        self.assertEqual(self.state()['stage'], 4)
+        self.assertEqual(self.state()['history'], [])
+        self.assertLessEqual(self.checkpoint.stat().st_size, progress.state_store.ROOT_LIMIT)
+        reference = self.state()['handoff']['predecessor']
+        self.assertEqual(reference, current.root['metadata']['implementation_predecessor'])
+        self.assertNotIn('handoff', reference)
+        facts, _, store = progress.read_implementation_delivery(self.checkpoint, reference)
+        self.assertEqual(facts['source_revision'], original.root['metadata']['revision'])
+        self.assertEqual(facts['payload']['candidate_commit'], accepted['payload']['candidate_commit'])
+        self.assertNotIn('verification', facts['payload'])
+        proof = store.read_evidence(facts['verification_ref'], run_id=current.run_id)['value']
+        self.assertEqual(proof['attempt_count'], 1)
+        self.assertEqual(len(proof['attempt_ids_digest']), 64)
+        self.assertNotIn('prior_attempt_ids', proof)
+        self.assertNotIn('attempts', proof)
+        self.assertIn('final_attempt_ref', proof)
+        self.assertNotIn('history', facts)
+        self.assertEqual(facts['design_predecessor'], original.root['metadata']['design_predecessor'])
+        observed = transfer.handoff.accepted_stage3_progress(reference, str(self.checkpoint))
+        self.assertEqual(observed['candidate'], accepted['payload']['candidate_commit'])
+        self.assertEqual(observed['attempts'], accepted['payload']['verification']['attempts'])
+        self.assertIn('stage_input', self.state()['dispatch'])
+        self.assertNotIn('payload', self.state()['dispatch']['request'])
+        closure_verification = self.state()['control']['context']['handoff_progress']['verification']
+        self.assertEqual(closure_verification.get('kind'), 'implementation-verification-ref')
+        self.assertNotIn('raw', json.dumps(closure_verification))
+        self.assertNotIn('attempts', closure_verification)
+        proof_path = directory / 'objects' / facts['verification_ref']['sha256'][:2] / facts['verification_ref']['sha256'][2:4] / facts['verification_ref']['sha256']
+        proof_bytes = proof_path.read_bytes()
+        proof_path.write_bytes(b'corrupt verification')
+        try:
+            with self.assertRaises(transfer.entry.PreparationError):
+                transfer.handoff.verify(self.state()['handoff'], checkpoint_path=str(self.checkpoint))
+        finally:
+            proof_path.write_bytes(proof_bytes)
+        if os.environ.get('T01_CLOSURE_ENTRY_METRICS_PATH'):
+            Path(os.environ['T01_CLOSURE_ENTRY_METRICS_PATH']).write_text(json.dumps({
+                'root_bytes': self.checkpoint.stat().st_size, 'delivery_bytes': reference['reference']['size'],
+                'stage3_delivery_read_bytes': delivery.bytes_read, 'stage3_delivery_read_files': delivery.files_read,
+                'actual_delivery_read_bytes': actual_bytes, 'actual_delivery_read_files': len(actual_reads),
+                'stage4_predecessor_read_bytes': store.bytes_read, 'stage4_predecessor_read_files': store.files_read,
+                'stage4_subject_bytes': current.root['subjects'][current.root['metadata']['stage_subject']]['size'],
+                'accepted_candidate': facts['payload']['candidate_commit'],
+                'source_revision': facts['source_revision']}, indent=2) + '\n')
+
+    def test_closure_entry_rejects_unknown_dispatcher_stop(self):
+        self.accepted_implementation_for_closure()
+        closure = self.input_for(4, self.state()['accepted'])
+        observed = self.invoke('observe', self.observation('running', 'result', ref='native:dispatcher'))
+        before = self.checkpoint.read_bytes()
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('start', {'handoff': closure})
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertFalse(self.state()['stopped'])
+
     def test_transition_two_tickets_keep_peer_in_stop_barrier(self):
         self.two_tickets = True
         accepted = self.finish_design('continuous')
@@ -1003,7 +1172,7 @@ class BoundedProgressTests(ProgressTests):
         self.input = self.input_for(2)
         return package_root, confirmed_path
 
-    def runner_transition(self, mode):
+    def runner_transition(self, mode, *, closure_entry=False):
         package_root, confirmed_path = self.runner_stage2_fixture()
         configuration = json.loads(confirmed_path.read_text())
         configuration['flow_mode'] = mode
@@ -1024,7 +1193,7 @@ class BoundedProgressTests(ProgressTests):
                 self.journal({'kind': 'host-started', 'instance': self.instance, 'pid': os.getpid()})
             def start_carrier(self, stage, settings):
                 calls.append(stage)
-                self.threads[stage] = 'carrier' if stage == 'stage2' else 'carrier-three'
+                self.threads[stage] = {'stage2': 'carrier', 'stage3': 'carrier-three', 'stage4': 'carrier-four'}[stage]
                 return self.threads[stage]
             def poll(self, timeout):
                 outer = progress.read_projection(fixture.checkpoint, projection='identity').record
@@ -1038,12 +1207,30 @@ class BoundedProgressTests(ProgressTests):
                 if session == 'carrier':
                     fixture.accepted_stage2 = fixture.finish_design(mode)
                     return json.dumps(fixture.accepted_stage2['completion']['stage_result']), 'stage2-turn'
+                if session == 'carrier-four':
+                    fixture.settings['thread_id'] = session
+                    fixture.request['host'].update(thread_id=session, role='scripted-carrier', source_ref='task')
+                    value = fixture.input_for(4, fixture.state()['accepted'])
+                    value['predecessor'] = json.loads(fixture.accepted_stage3['completion']['stage_result']['handoff_json'])['accepted_transfer']
+                    fixture.context = fixture.context_for(4)
+                    fixture.begin(mode, value)
+                    fixture.invoke('observe', fixture.observation(ref='native:closure'))
+                    pending = fixture.invoke('observe', fixture.observation('idle', 'result', {
+                        'delivery_id': 'closure-entry-pending', 'status': 'needs_input',
+                        'payload': {'question': 'bounded transition reached Stage 4'}}, ref='native:closure'))['pending']
+                    self.process = None
+                    return json.dumps({'result': 'needs_input', 'needs_input_kind': 'user_decision',
+                        'question': pending['question'], 'artifacts': [], 'evidence': [],
+                        'handoff_json': '{}', 'message': ''}), 'stage4-turn'
                 fixture.assertEqual(session, 'carrier-three')
                 outer = progress.read_projection(fixture.checkpoint, projection='identity').record
                 if outer.get('controller_decision'):
                     fixture.invoke('decide', outer['controller_decision'])
                 fixture.settings['thread_id'] = session
                 fixture.request['host'].update(thread_id=session, role='scripted-carrier', source_ref='task')
+                if closure_entry:
+                    fixture.accepted_stage3 = fixture.accepted_implementation_for_closure(fixture.accepted_stage2)
+                    return json.dumps(fixture.accepted_stage3['completion']['stage_result']), 'stage3-turn'
                 successor = fixture.staged_successor(fixture.accepted_stage2)
                 successor['predecessor'] = json.loads(fixture.accepted_stage2['completion']['stage_result']['handoff_json'])['accepted_transfer']
                 fixture.context = fixture.context_for(3)
@@ -1062,6 +1249,20 @@ class BoundedProgressTests(ProgressTests):
              patch.object(runner.foreground_host, 'ForegroundHost', Host), redirect_stdout(io.StringIO()):
             self.assertEqual(runner.start(confirmed_path), 0)
         outer = progress.read_projection(self.checkpoint, projection='identity').record
+        if closure_entry:
+            self.assertEqual(calls, ['stage2', 'stage3', 'stage4'])
+            self.assertEqual(outer['current_stage'], 'stage4')
+            self.assertEqual(outer[progress.KEY]['stage'], 4)
+            self.assertEqual(outer['status'], 'needs_input')
+            footer = json.loads(outer['stage_results']['stage3']['handoff_json'])['accepted_transfer']
+            self.assertEqual(footer['kind'], 'implementation-acceptance-ref')
+            self.assertNotIn('handoff', footer)
+            persisted = json.loads(outer['stage_results']['stage3']['handoff_json'])
+            self.assertNotIn('verification', persisted)
+            self.assertIn('verification_ref', persisted)
+            self.assertNotIn('attempts', persisted)
+            self.assertNotIn('raw', json.dumps(persisted))
+            return
         self.assertEqual(calls, ['stage2', 'stage3'])
         self.assertEqual(len(queued), int(mode == 'stepwise'))
         self.assertEqual(outer['current_stage'], 'stage3')
@@ -1072,6 +1273,9 @@ class BoundedProgressTests(ProgressTests):
         self.assertEqual(previous['run_id'], outer[progress.KEY]['design_predecessor']['reference']['run_id'])
         self.assertEqual(previous['stage'], 2)
         self.assertEqual(transfer.handoff.predecessor_digest(previous), self.accepted_stage2['readiness']['accepted_digest'])
+
+    def test_closure_entry_runner_public_continuous(self):
+        self.runner_transition('continuous', closure_entry=True)
 
     def test_transition_runner_public_continuous_stops_in_stage3(self):
         self.runner_transition('continuous')

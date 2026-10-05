@@ -591,12 +591,30 @@ def verify_binding(repository, binding):
     return report
 
 
+def verify_closure_delivery(progress):
+    """Authenticate a finite Stage-4 view against its original committed C proof."""
+    require(progress is None or isinstance(progress, dict), 'structured closure progress required')
+    verification = (progress or {}).get('verification') or {}
+    require(isinstance(verification, dict), 'structured closure verification required')
+    if verification.get('kind') != 'implementation-verification-ref':
+        return
+    keys(verification, {'kind', 'predecessor', 'review_ref', 'verification_ref', 'expected_target_head',
+                        'plan_authority', 'controller_ref', 'requirement_identity', 'view'})
+    import workflow_progress
+    expected = workflow_progress.closure_delivery_view(verification['predecessor'])
+    require(verification == expected, 'closure view differs from the exact committed implementation proof')
+
+
 def verified_transition(payload):
     keys(payload, {'repository', 'baseline', 'request'})
     require(isinstance(payload['repository'], str) and Path(payload['repository']).is_absolute(), 'repository must be absolute')
     keys(payload['request'], {'schema_version', 'action', 'actor_ref', 'context', 'evidence'})
     validate_context(payload['request']['context'])
     require(isinstance(payload['request']['evidence'], dict), 'evidence must be an object')
+    if payload['request']['context'].get('stage') == 4:
+        verify_closure_delivery(payload['request']['context'].get('handoff_progress'))
+        if payload['request']['action'] == 'start-closure':
+            verify_closure_delivery(payload['request']['evidence'])
     repository = Path(payload['repository']).resolve()
     require(repository.is_dir() and repository.is_absolute(), 'repository must exist')
     request = copy.deepcopy(payload['request'])

@@ -322,6 +322,16 @@ def read_projection(path, *, projection, stage=None, subject_id=None, allocation
     store = state_store.open_store(path)
     current = store.open_current()
     require(current is not None, 'missing_checkpoint', 'current scope checkpoint is unavailable')
+    if projection == 'delivery' and current.root['metadata']['stage'] == 3 and current.root.get('delivery') is not None:
+        value, _, store = read_implementation_delivery(path, store=store, current=current)
+        reference = handoff.seal({'kind': 'implementation-predecessor-ref', 'protocol': handoff.PROTOCOL,
+            'checkpoint_path': str(Path(path).resolve()), 'reference': current.root['delivery'],
+            'accepted_digest': value['accepted']['digest']})
+        accepted, checkpoint = implementation_acceptance(reference, store=store)
+        state = {**current.root['metadata'], 'delivery_kind': value['kind'], 'accepted': accepted,
+                 'delivery_progress': checkpoint}
+        return classes[projection](state_store.ProjectedRecord({**current.root['outer'], KEY: state}, current.revision),
+                                   store.files_read, store.bytes_read, current.revision)
     if projection == 'identity':
         return classes[projection](state_store.ProjectedRecord({**current.root['outer'], KEY: current.root['metadata']}, current.revision),
                                    store.files_read, store.bytes_read, current.revision)
@@ -496,6 +506,275 @@ def validate_stage3_scope(state):
             'invalid_checkpoint', 'scope does not belong to the Dispatcher')
 
 
+def implementation_delivery(state, path, store, current):
+    """Freeze only accepted implementation facts; original reports remain exact refs."""
+    saved, accepted = state['handoff'], state['accepted']
+    owner = Progress(path, {**current.root['outer'], KEY: state})
+    require(state['stage'] == 3 and state['status'] == 'accepted' and state['stopped'] and
+            not owner.stop_barrier_pending() and not owner.unresolved_host_actions() and
+            state['phase_complete'] and state['dispatch']['acceptance'] == accepted,
+            'handoff_not_ready', 'implementation delivery requires original acceptance and complete stop proof')
+    verify_phase_completed(state)
+    checkpoint = state['control']['context']['handoff_progress']
+    initial = (saved.get('readiness') or {}).get('scope_authority') or saved.get('inline_authority')
+    lineage = initial
+    revisions = list(state.get('plan_revision_history', {}).values())
+    transaction = state.get('plan_revision_transaction')
+    if transaction is not None:
+        require(all(item['old_authority']['revision'] <= transaction['old_authority']['revision']
+                    for item in revisions), 'handoff_not_ready', 'revision history follows current transaction')
+        revisions.append(transaction)
+    chain = []
+    for item in sorted(revisions, key=lambda item: (item['old_authority']['revision'], item['state'] == 'activated')):
+        require(item['old_authority'] == lineage and item['state'] in {'activated', 'rejected'},
+                'handoff_not_ready', 'implementation lost its original authority lineage')
+        before = entry.digest(lineage)
+        if item['state'] == 'activated':
+            lineage = item['proposed_authority']
+        chain.append({'state': item['state'], 'old_authority_digest': before,
+                      'authority_digest': entry.digest(lineage)})
+    require(isinstance(initial, dict) and lineage == state['scope_authority'] == checkpoint['execution_authority'] and
+            lineage['execution_plan']['contract_digest'] == initial['execution_plan']['contract_digest'] and
+            lineage['scope']['protected_paths'] == initial['scope']['protected_paths'] and
+            checkpoint['git_baseline_commit'] == saved['scope']['baseline'] and
+            (transaction or {}).get('state') in (None, 'activated') and
+            (saved.get('readiness') is None or consumed_scope_readiness(state, path) is not None),
+            'handoff_not_ready', 'implementation delivery lacks current activated authority')
+    control.validate_deliverable(checkpoint, accepted['payload']['candidate_commit'],
+        accepted['payload']['review'], accepted['payload']['verification'], accepted['role_ref'])
+    def evidence(value):
+        return store.write_object(current.run_id, 'evidence', value)
+    verification = accepted['payload']['verification']
+    decision = verification['review_decision']
+    native_refs = {axis: evidence(source) for axis, source in decision['native_evidence'].items()}
+    latest = verification['attempts'][-1]
+    final = {key: copy.deepcopy(item) for key, item in latest.items() if key not in {'source', 'result'}}
+    final['source_ref'] = evidence(latest['source'])
+    verification_facts = {key: copy.deepcopy(item) for key, item in verification.items()
+                          if key not in {'review_decision', 'attempts'}}
+    verification_facts.update(kind='implementation-verification-v1',
+        review_decision={key: copy.deepcopy(item) for key, item in decision.items() if key != 'native_evidence'},
+        review_sources=native_refs, final_attempt_ref=evidence(final),
+        attempt_count=len(verification['attempts']),
+        attempt_ids_digest=entry.digest([item['attempt_id'] for item in verification['attempts']]))
+    native_sources = list(state.get('collaboration_lookups', {}).values())
+    for query in state.get('baseline_thread_queries', []):
+        native_sources.append(query['input']['binding'])
+        if query.get('result') is not None:
+            native_sources.append(query['result'])
+    source_index = {}
+    for source in {entry.digest(source): source for source in native_sources}.values():
+        source_ref = evidence({'native_source': source})
+        for key in ('query_id', 'call_ref', 'response_ref'):
+            if key in source:
+                source_index[entry.digest([key, source[key]])] = source_ref
+    git_proof = {'candidate_evidence': {'plan_authority': copy.deepcopy(checkpoint['candidate_evidence']['plan_authority'])},
+        'plan_revisions': [], 'plan_revision_sources': []}
+    for record in checkpoint.get('plan_revisions', []):
+        facts = record['evidence']
+        git_proof['plan_revisions'].append({'controller_ref': record['controller_ref'], 'evidence': {
+            key: copy.deepcopy(facts[key]) for key in
+            ('revision_id', 'planning_commit', 'planning_paths', 'git_facts', 'snapshot', 'new_scope')}})
+    for source in checkpoint.get('plan_revision_sources', []):
+        git_proof['plan_revision_sources'].append({'revision_id': source['revision_id'], 'executions': [
+            {key: copy.deepcopy(item[key]) for key in ('state', 'stopped', 'paths', 'git_result_snapshot') if key in item} |
+            ({'git_snapshot': {key: copy.deepcopy(item['git_snapshot'][key]) for key in ('head', 'files')}}
+             if 'git_snapshot' in item else {}) for item in source['executions']]})
+    # The Git reader needs only the final retained-candidate boundary, never its old reports.
+    if checkpoint.get('integration_retained') is not None:
+        git_proof.update({key: copy.deepcopy(checkpoint[key]) for key in ('integration_retained', 'integration_candidate')})
+        prior_validation = checkpoint.get('validation_history', [])
+        git_proof['validation_history'] = ([{'candidate': prior_validation[-1].get('candidate')}]
+                                           if prior_validation else [])
+    original = {key: copy.deepcopy(saved[key]) for key in ('protocol', 'stage', 'role', 'controller_ref',
+        'requirement_identity', 'requirement', 'binding', 'scope', 'authorization', 'source_commit', 'digest')}
+    original.update(planning_paths=handoff.inherited_planning_paths(saved.get('predecessor')),
+        manifest_baseline=handoff.inherited_manifest_baseline(saved),
+        kind='implementation-launch-facts', expected_entry={
+        'discussion_project': saved['expected_entry']['discussion_project']})
+    payload = {key: copy.deepcopy(accepted['payload'][key]) for key in ('artifacts', 'checks', 'candidate_commit')}
+    value = {'kind': 'accepted-implementation-v1', 'checkpoint_path': str(Path(path).resolve()),
+        'stage': 3, 'stage_subject': state['stage_subject'], 'source_revision': state['revision'],
+        'controller_ref': saved['controller_ref'], 'packages': copy.deepcopy(state['packages']),
+        'handoff': original, 'accepted': {key: copy.deepcopy(accepted[key]) for key in
+            ('protocol', 'status', 'downstream_ready', 'role_ref', 'requirement_identity', 'digest')},
+        'payload': payload, 'review_ref': evidence(accepted['payload']['review']),
+        'verification_ref': evidence(verification_facts),
+        'execution_authority': copy.deepcopy(lineage), 'initial_authority_digest': entry.digest(initial),
+        'authority_lineage': chain, 'dispatcher': {key: state['control']['context']['carrier'][key]
+            for key in ('ref', 'attempt')},
+        'dispatch_attempt': state['dispatch']['request']['attempt'],
+        'control_revision': state['control']['context'].get('revision'),
+        'design_predecessor': copy.deepcopy(state.get('design_predecessor')),
+        'phase_ref': evidence({'handoff': {key: copy.deepcopy(saved[key]) for key in
+            ('stage', 'entry', 'expected_entry', 'authorization', 'binding', 'requirement_identity', 'controller_ref')}}),
+        'stop_ref': evidence({'host': state['host']['last_stop'], 'lifecycle': state.get('lifecycle_snapshot')}),
+        'native_refs': sorted(owner.native_refs()),
+        'native_source_index_ref': store.write_object(current.run_id, 'native-source-index', source_index),
+        'git_evidence_ref': evidence(git_proof), 'stopped': True, 'phase_complete': True}
+    return value
+
+
+def read_implementation_delivery(path, reference=None, *, store=None, current=None):
+    """Read the one current or pinned accepted delivery, without a writer lease."""
+    store = store or state_store.open_store(path)
+    current = current or store.open_current()
+    require(current is not None, 'handoff_not_ready', 'original implementation checkpoint is unavailable')
+    require(str(store.checkpoint.resolve()) == str(Path(path).resolve()),
+            'handoff_not_ready', 'delivery store belongs to another checkpoint')
+    metadata = current.root['metadata']
+    if reference is None:
+        require(metadata['stage'] == 3, 'handoff_not_ready', 'current implementation delivery required')
+        raw_ref = current.root.get('delivery')
+    else:
+        body = handoff.unseal(reference)
+        entry.fields(body, {'kind', 'protocol', 'checkpoint_path', 'reference', 'accepted_digest'})
+        require(body['kind'] == 'implementation-predecessor-ref' and body['protocol'] == handoff.PROTOCOL and
+                body['checkpoint_path'] == str(Path(path).resolve()),
+                'handoff_not_ready', 'implementation predecessor checkpoint changed')
+        raw_ref = body['reference']
+        require((metadata['stage'] == 3 and raw_ref == current.root.get('delivery')) or
+                (metadata['stage'] == 4 and metadata.get('implementation_predecessor') == reference),
+                'handoff_not_ready', 'implementation predecessor is not pinned by this Controller')
+    require(raw_ref is not None, 'handoff_not_ready', 'accepted implementation delivery is unavailable')
+    value = store.read_predecessor(current, raw_ref)
+    entry.fields(value, {'kind', 'checkpoint_path', 'stage', 'stage_subject', 'source_revision',
+        'controller_ref', 'packages', 'handoff', 'accepted', 'payload', 'review_ref', 'verification_ref',
+        'execution_authority', 'initial_authority_digest', 'authority_lineage', 'dispatcher',
+        'dispatch_attempt', 'control_revision', 'design_predecessor', 'phase_ref', 'stop_ref',
+        'git_evidence_ref', 'stopped', 'phase_complete', 'native_refs', 'native_source_index_ref'})
+    require(type(value['source_revision']) is int and value['source_revision'] >= 0 and
+            isinstance(value['authority_lineage'], list) and len(value['authority_lineage']) <= 33,
+            'handoff_not_ready', 'implementation delivery schema changed')
+    require(value['kind'] == 'accepted-implementation-v1' and value['stage'] == 3 and
+            value['controller_ref'] == metadata['controller_ref'] and
+            value['handoff']['binding'] == metadata['binding'] and value['stopped'] and value['phase_complete'] and
+            all(metadata['packages'].get(name) == pin for name, pin in value['packages'].items()) and
+            (reference is None or value['accepted']['digest'] == reference['accepted_digest']),
+            'handoff_not_ready', 'implementation delivery identity changed')
+    if metadata['stage'] == 3:
+        require(metadata['status'] == 'accepted' and metadata['stopped'] and metadata['phase_complete'] and
+                not metadata.get('stop_requested') and not metadata.get('business_block') and
+                value['source_revision'] == metadata['revision'] and
+                value['stage_subject'] == metadata['stage_subject'] and
+                value['handoff']['digest'] == metadata['handoff']['digest'],
+                'handoff_not_ready', 'delivery differs from current Controller revision')
+    if value['handoff']['authorization'].get('phase') is not None:
+        phase = store.read_evidence(value['phase_ref'], run_id=current.run_id)['value']
+        verify_phase_completed(phase)
+    for pin in value['packages'].values():
+        skill_preflight.verify_identity(pin)
+    require(value['handoff']['controller_ref'] == value['controller_ref'] and
+            value['accepted']['requirement_identity'] == value['handoff']['requirement_identity'],
+            'handoff_not_ready', 'implementation source identity changed')
+    require(value['dispatcher']['ref'] == value['accepted']['role_ref'] and
+            value['dispatcher']['attempt'] == value['dispatch_attempt'],
+            'handoff_not_ready', 'original Dispatcher identity changed')
+    lineage = value['initial_authority_digest']
+    for item in value['authority_lineage']:
+        require(item['old_authority_digest'] == lineage and item['state'] in {'activated', 'rejected'} and
+                (item['state'] != 'rejected' or item['authority_digest'] == lineage),
+                'handoff_not_ready', 'implementation authority lineage changed')
+        lineage = item['authority_digest']
+    require(lineage == entry.digest(value['execution_authority']),
+            'handoff_not_ready', 'current implementation authority differs from lineage')
+    return value, current, store
+
+
+def implementation_predecessor(path):
+    value, current, _ = read_implementation_delivery(path)
+    return handoff.seal({'kind': 'implementation-predecessor-ref', 'protocol': handoff.PROTOCOL,
+        'checkpoint_path': str(Path(path).resolve()), 'reference': current.root['delivery'],
+        'accepted_digest': value['accepted']['digest']})
+
+
+def implementation_acceptance(reference, path=None, *, store=None):
+    """Resolve an immutable footer or predecessor to the exact finite delivery evidence."""
+    body = handoff.unseal(reference)
+    if body.get('kind') == 'implementation-acceptance-ref':
+        entry.fields(body, {'kind', 'protocol', 'stage', 'run_id', 'checkpoint_path', 'accepted_digest'})
+        require(body['stage'] == 3 and body['protocol'] == handoff.PROTOCOL and
+                str(Path(body['checkpoint_path']).resolve()) == body['checkpoint_path'] and
+                (path is None or str(path) == body['checkpoint_path']),
+                'handoff_not_ready', 'original implementation acceptance checkpoint required')
+        path = body['checkpoint_path']
+        store = store or state_store.open_store(path)
+        current = store.open_current()
+        require(current is not None and current.run_id == body['run_id'],
+                'handoff_not_ready', 'acceptance belongs to another run')
+        pinned = current.root['metadata'].get('implementation_predecessor')
+        value, current, store = read_implementation_delivery(path, pinned, store=store, current=current)
+    else:
+        path = path or body['checkpoint_path']
+        value, current, store = read_implementation_delivery(path, reference, store=store)
+    require(value['accepted']['digest'] == body['accepted_digest'],
+            'handoff_not_ready', 'footer differs from original implementation acceptance')
+    review = store.read_evidence(value['review_ref'], run_id=current.run_id)['value']
+    proof = store.read_evidence(value['verification_ref'], run_id=current.run_id)['value']
+    entry.fields(proof, (control.DELIVERY_VERIFICATION_FIELDS - {'review_decision', 'attempts'}) |
+        {'kind', 'review_decision', 'review_sources', 'final_attempt_ref', 'attempt_count', 'attempt_ids_digest'})
+    require(proof['kind'] == 'implementation-verification-v1' and type(proof['attempt_count']) is int and
+            proof['attempt_count'] > 0 and isinstance(proof['attempt_ids_digest'], str) and
+            re.fullmatch('[0-9a-f]{64}', proof['attempt_ids_digest']) and
+            set(proof['review_sources']) == {'standards', 'spec'},
+            'handoff_not_ready', 'implementation verification proof changed')
+    final = store.read_evidence(proof['final_attempt_ref'], run_id=current.run_id)['value']
+    source = store.read_evidence(final['source_ref'], run_id=current.run_id)['value']
+    latest = {key: copy.deepcopy(item) for key, item in final.items() if key != 'source_ref'}
+    latest['source'] = source
+    latest['result'] = {key: copy.deepcopy(latest[key]) for key in ('attempt_id', 'checks', 'source', 'source_snapshot')}
+    verification = {key: copy.deepcopy(proof[key]) for key in control.DELIVERY_VERIFICATION_FIELDS
+                    if key not in {'review_decision', 'attempts'}}
+    verification['review_decision'] = {**proof['review_decision'], 'native_evidence': {
+        axis: store.read_evidence(ref, run_id=current.run_id)['value'] for axis, ref in proof['review_sources'].items()}}
+    verification['attempts'] = [latest]
+    git_facts = store.read_evidence(value['git_evidence_ref'], run_id=current.run_id)['value']
+    checkpoint = {**verification, **git_facts, 'state': 'deliverable',
+        'binding': value['handoff']['binding'], 'git_baseline_commit': value['handoff']['scope']['baseline'],
+        'execution_authority': value['execution_authority'],
+        'allowed_paths': value['execution_authority']['scope']['implementation_paths'],
+        'protected_paths': value['handoff']['scope']['protected_paths']}
+    accepted = {**value['accepted'], 'handoff': value['handoff'],
+                'payload': {**value['payload'], 'review': review, 'verification': verification}}
+    control.validate_deliverable(checkpoint, value['payload']['candidate_commit'], review, verification,
+                                 accepted['role_ref'])
+    require(store.bytes_read <= state_store.READ_LIMIT, 'state_capacity', 'implementation delivery exceeds read budget')
+    return accepted, checkpoint
+
+
+def closure_delivery_view(reference):
+    """Adapter-only resolution of one committed delivery into raw-free control facts."""
+    accepted, checkpoint = implementation_acceptance(reference)
+    facts, _, _ = read_implementation_delivery(reference['checkpoint_path'], reference)
+    verification = accepted['payload']['verification']
+    latest = verification['attempts'][-1]
+    source = latest['source']
+    final = {key: copy.deepcopy(value) for key, value in latest.items()
+             if key not in {'source', 'source_snapshot', 'result'}}
+    final['source_snapshot_digest'] = entry.digest(latest['source_snapshot'])
+    final['source'] = {key: source[key] for key in ('adapter', 'call_ref', 'response_ref')}
+    final['source'].update(evidence_digest=entry.digest(source), checks_digest=entry.digest(source['raw']['checks']),
+        source_unchanged=source['raw']['source_unchanged'], stopped=source['raw']['stopped'],
+        dispatcher_ref=source['raw']['dispatcher_ref'], attempt_id=source['raw']['attempt_id'])
+    scope = checkpoint['execution_authority']['scope']
+    view = {'accepted_digest': accepted['digest'], 'candidate': verification['candidate'],
+        'dispatcher_ref': accepted['role_ref'], 'dispatch_attempt': facts['dispatch_attempt'],
+        'binding': facts['handoff']['binding'], 'controller_ref': facts['controller_ref'],
+        'requirement_identity': accepted['requirement_identity'],
+        'implementation_paths': scope['implementation_paths'], 'closure_paths': scope['closure_paths'],
+        'protected_paths': sorted(set(facts['handoff']['scope']['protected_paths']) - set(scope['closure_paths'])),
+        'validation_plan': verification['validation_plan'], 'plan_digest': verification['plan_digest'],
+        'review_digest': verification['review_digest'], 'review_sources': {
+            axis: {key: item[key] for key in ('adapter', 'call_ref', 'response_ref', 'status', 'ref')} |
+                  {'evidence_digest': entry.digest(item)}
+            for axis, item in verification['review_decision']['native_evidence'].items()},
+        'final_attempt': final}
+    return {'kind': 'implementation-verification-ref', 'predecessor': copy.deepcopy(reference),
+        'review_ref': facts['review_ref'], 'verification_ref': facts['verification_ref'],
+        'expected_target_head': verification['expected_target_head'], 'plan_authority': verification['plan_authority'],
+        'controller_ref': facts['controller_ref'], 'requirement_identity': accepted['requirement_identity'], 'view': view}
+
+
 def design_predecessor(state, path, readiness):
     """Freeze accepted facts after the original Controller has checked every gate."""
     store = state_store.open_store(path)
@@ -604,7 +883,12 @@ def read_design_predecessor(reference, path):
                     if key in value['handoff'] and key not in {'kind', 'expected_entry'}),
                 'handoff_not_ready', 'predecessor was not accepted by this Controller revision')
     else:
-        require(metadata['stage'] == 3 and metadata.get('design_predecessor') == reference,
+        pinned = metadata.get('design_predecessor') if metadata['stage'] == 3 else None
+        if metadata['stage'] == 4 and metadata.get('implementation_predecessor') is not None:
+            delivery, _, _ = read_implementation_delivery(path, metadata['implementation_predecessor'],
+                                                         store=store, current=current)
+            pinned = delivery['design_predecessor']
+        require(metadata['stage'] in (3, 4) and pinned == reference,
                 'handoff_not_ready', 'predecessor is not pinned by the current Controller')
     require(value['accepted']['digest'] == body['accepted_digest'] == value['readiness']['accepted_digest'] and
             value['readiness']['checkpoint_revision'] == value['source_revision'] and
@@ -683,6 +967,8 @@ def save_current_record(path, outer, expected_revision, *, expected_authority_re
     metadata['stage_subject'] = stage_id
     if state.get('design_predecessor') is not None:
         metadata['design_predecessor'] = copy.deepcopy(state['design_predecessor'])
+    if state.get('implementation_predecessor') is not None:
+        metadata['implementation_predecessor'] = copy.deepcopy(state['implementation_predecessor'])
     metadata.update(controller_ref=state['control']['context']['controller_ref'],
         checkpoint_path=state['checkpoint_path'], packages=state['packages'],
         binding=state['handoff'].get('binding'))
@@ -717,7 +1003,9 @@ def save_current_record(path, outer, expected_revision, *, expected_authority_re
         revision=current.revision + 1 if current else 1, subjects=subjects, metadata=metadata,
         outer={key: value for key, value in outer.items() if key != KEY}, receipts=receipts,
         initial_outer=initial, scope=(stage2_scope(state, path, outer) if state['stage'] == 2 else
-               stage3_scope(state) if state['stage'] == 3 else None))
+               stage3_scope(state) if state['stage'] == 3 else None),
+        delivery=(implementation_delivery(state, path, store, current) if state['stage'] == 3 and
+                  state['status'] == 'accepted' and state['stopped'] and state['phase_complete'] else None))
 
 
 def save_outer_record(path, outer, *, expected_revision):
@@ -1006,6 +1294,13 @@ def validate_state(state):
                 requirement_identity=state["handoff"]["requirement_identity"],
                 binding=state["handoff"]["binding"],
                 decision_records=change_decision_journal(state))
+    if state.get('implementation_predecessor') is not None:
+        require(state['stage'] == 4 and state['handoff']['predecessor'] == state['implementation_predecessor'],
+                'handoff_not_ready', 'closure lost its exact accepted implementation')
+        prior, _, _ = read_implementation_delivery(state['checkpoint_path'], state['implementation_predecessor'])
+        require(state['scope_authority'] == prior['execution_authority'],
+                'handoff_not_ready', 'closure changed accepted implementation authority')
+        control_git.verify_closure_delivery(state['control']['context'].get('handoff_progress'))
     if state.get('design_predecessor') is not None:
         require(consumed_scope_readiness(state, state['checkpoint_path']) is not None,
                 'handoff_not_ready', 'current Stage 3 lost its accepted design predecessor')
@@ -1735,6 +2030,9 @@ class Progress:
         """Registered writers, including replaced roles and historical reviewers."""
         s = self.state if state is None else state
         refs = set()
+        if s.get('implementation_predecessor') is not None and s.get('native_host', {}).get('adapter') == 'collaboration':
+            prior, _, _ = read_implementation_delivery(self.path, s['implementation_predecessor'])
+            refs.update(prior['native_refs'])
         if s.get('design_predecessor') is not None and s.get('native_host', {}).get('adapter') == 'collaboration':
             prior = read_design_predecessor(s['design_predecessor'], self.path)
             refs.add(prior['accepted']['role_ref'])
@@ -1784,18 +2082,23 @@ class Progress:
                                          for record in s.get('native_finalizations', [])]})
 
     def reject_design_native_replay(self, data):
-        if self.state.get('design_predecessor') is None:
-            return
-        prior = read_design_predecessor(self.state['design_predecessor'], self.path)
+        references = []
+        design = self.state.get('design_predecessor')
+        if self.state.get('implementation_predecessor') is not None:
+            prior, _, _ = read_implementation_delivery(self.path, self.state['implementation_predecessor'])
+            references.append(prior['native_source_index_ref'])
+            design = prior['design_predecessor']
+        if design is not None:
+            references.append(read_design_predecessor(design, self.path)['native_source_index_ref'])
         store = state_store.open_store(self.path)
         current = store.open_current()
-        index = store.read_evidence(prior['native_source_index_ref'], run_id=current.run_id,
-                                    kind='native-source-index')['value']
-        require(isinstance(index, dict), 'state_object_corrupt', 'invalid design native source index')
-        require(store.bytes_read <= state_store.READ_LIMIT, 'state_capacity', 'design native lookup exceeds read budget')
-        require(all(entry.digest([key, data[key]]) not in index
-                    for key in ('query_id', 'call_ref', 'response_ref') if key in data),
-                'host_provenance_conflict', 'original design native receipt cannot be rebound to current work')
+        for reference in references:
+            index = store.read_evidence(reference, run_id=current.run_id, kind='native-source-index')['value']
+            require(isinstance(index, dict), 'state_object_corrupt', 'invalid predecessor native source index')
+            require(store.bytes_read <= state_store.READ_LIMIT, 'state_capacity', 'native lookup exceeds read budget')
+            require(all(entry.digest([key, data[key]]) not in index
+                        for key in ('query_id', 'call_ref', 'response_ref') if key in data),
+                    'host_provenance_conflict', 'original native receipt cannot be rebound to current work')
 
     def collaboration_pending(self):
         s = self.state
@@ -2385,6 +2688,7 @@ class Progress:
         require(request.get("operation") == "prepare", "invalid_request", "handoff prepare input required")
         old = self.state
         predecessor_ref = None
+        implementation_ref = None
         consumed_readiness = None
         retry = old is not None and old["status"] == "cancelled" and (old.get("dispatch") or {}).get("status") == "not-created" and not old.get("stop_requested")
         if old is not None:
@@ -2423,6 +2727,9 @@ class Progress:
             request.setdefault("predecessor", predecessor)
             request.setdefault("requirement", old["handoff"]["requirement"] if retry or old["stage"] >= 2 else old["accepted"]["payload"]["requirement"])
             require(request['predecessor'] == predecessor or
+                    old['stage'] == 3 and request['stage'] == 4 and isinstance(request['predecessor'], dict) and
+                    request['predecessor'].get('kind') == 'implementation-acceptance-ref' and
+                    implementation_acceptance(request['predecessor'])[0]['digest'] == predecessor['digest'] or
                     old['stage'] == 2 and request['stage'] == 3 and isinstance(request['predecessor'], dict) and
                     request['predecessor'].get('kind') == 'design-acceptance-ref' and
                     read_design_acceptance(request['predecessor']) == predecessor,
@@ -2484,6 +2791,9 @@ class Progress:
         if old and old['stage'] == 2 and request['stage'] == 3 and not retry:
             predecessor_ref = design_predecessor(old, self.path, consumed_readiness)
             request['predecessor'] = predecessor_ref
+        if old and old['stage'] == 3 and request['stage'] == 4 and not retry:
+            implementation_ref = implementation_predecessor(self.path)
+            request['predecessor'] = implementation_ref
         saved, resolved = handoff._prepare(request,
             checkpoint_path=str(self.path.resolve()) if old and old['stage'] == 3 and request['stage'] == 4 else None)
         mode = request["authorization"]["flow_mode"]
@@ -2567,6 +2877,7 @@ class Progress:
             "scope_authority": copy.deepcopy(old.get("scope_authority") if old and request["stage"] >= 3 else None),
             "consumed_readiness": consumed_readiness,
             "design_predecessor": predecessor_ref,
+            "implementation_predecessor": implementation_ref,
             "scope_proposals": {}, "scope_seals": {},
             "dispatch": None, "accepted": None, "action": None, "pending": None,
             "events": {}, "observations": [], "transaction": None, "transaction_source": None,
@@ -2578,7 +2889,7 @@ class Progress:
             "host_preflight": copy.deepcopy(data.get('native_host')),
             "host": {"generation": 0, "status": "unknown", "proof": None, "query": None,
                      "seen": {}, "calls": {}, "last_stop": None},
-            "history": (old["history"] + [{k: copy.deepcopy(value) for k, value in old.items() if k != "history"}]) if old and predecessor_ref is None else []}
+            "history": (old["history"] + [{k: copy.deepcopy(value) for k, value in old.items() if k != "history"}]) if old and predecessor_ref is None and implementation_ref is None else []}
         self.save()
         return self.advance()
 
@@ -2711,7 +3022,8 @@ class Progress:
             if "result" in source:
                 s.setdefault("observed_messages", {})[self.message_key(source)] = source["event_id"]
         s["transaction"], s["transaction_source"], s["transaction_result"] = None, None, None
-        s["last_result"] = result
+        s["last_result"] = ({"status": result["status"], "record_digest": result["record"]["digest"],
+            "accepted_digest": result["accepted"]["digest"]} if operation == "accept" and s["stage"] == 3 else result)
         self.save()
         if operation == "accept" and s["stage"] == 2 and s["phase_complete"]:
             readiness = scope_readiness(s, self.path)

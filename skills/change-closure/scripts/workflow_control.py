@@ -337,6 +337,65 @@ def validate_deliverable(progress, candidate, review, verification, dispatcher_r
     validate_review(candidate, review, verification, dispatcher_ref)
 
 
+def validate_closure_delivery(progress):
+    """Check the exact committed delivery proof at the Stage-4 boundary."""
+    verification = progress['verification']
+    require(isinstance(verification, dict), 'structured closure verification required')
+    if verification.get('kind') != 'implementation-verification-ref':
+        validate_review(progress['candidate'], progress['review'], verification, progress['dispatcher_ref'])
+        return verification
+    keys(verification, {'kind', 'predecessor', 'review_ref', 'verification_ref',
+                        'expected_target_head', 'plan_authority', 'controller_ref', 'requirement_identity', 'view'})
+    view = verification['view']
+    keys(view, {'accepted_digest', 'candidate', 'dispatcher_ref', 'dispatch_attempt', 'binding', 'controller_ref',
+                'requirement_identity', 'implementation_paths', 'closure_paths', 'protected_paths',
+                'validation_plan', 'plan_digest', 'review_digest', 'review_sources', 'final_attempt'})
+    reference = verification['predecessor']
+    require(reference.get('kind') == 'implementation-predecessor-ref' and
+            reference.get('accepted_digest') == view['accepted_digest'], 'closure requires its original acceptance')
+    require(all(progress[key] == view[key] for key in ('candidate', 'dispatcher_ref', 'binding',
+                'implementation_paths', 'closure_paths')) and
+            verification['controller_ref'] == view['controller_ref'] and
+            verification['requirement_identity'] == view['requirement_identity'] and
+            set(view['protected_paths']) <= set(progress['protected_paths']),
+            'closure delivery differs from the original implementation binding')
+    validate_validation_plan(view['validation_plan'], progress['binding'])
+    require(view['plan_digest'] == digest(view['validation_plan']), 'closure validation plan changed')
+    validate_review_axes(progress['candidate'], verification['expected_target_head'], view['plan_digest'],
+                         progress['review'], progress['dispatcher_ref'], verification['plan_authority'])
+    keys(view['review_sources'], {'standards', 'spec'})
+    for axis, source in view['review_sources'].items():
+        keys(source, {'adapter', 'call_ref', 'response_ref', 'status', 'ref', 'evidence_digest'})
+        for key in ('adapter', 'call_ref', 'response_ref'):
+            text(source[key])
+        require(source['status'] == 'stopped' and source['ref'] == progress['review'][axis]['reviewer_ref'] and
+                source['response_ref'] == progress['review'][axis]['result_ref'] and
+                isinstance(source['evidence_digest'], str) and re.fullmatch('[0-9a-f]{64}', source['evidence_digest']),
+                'closure needs the original stopped reviewer sources')
+    final = view['final_attempt']
+    keys(final, {'attempt_id', 'carrier_attempt', 'candidate', 'expected_target_head', 'plan_digest',
+        'plan_authority', 'review_digest', 'dispatcher_ref', 'required', 'state', 'checks',
+        'source_snapshot_digest', 'source'})
+    text(final['attempt_id'])
+    require(final['state'] == 'passed' and final['carrier_attempt'] == view['dispatch_attempt'] and
+            all(final[key] == view[key] for key in ('candidate', 'plan_digest', 'review_digest', 'dispatcher_ref')) and
+            all(final[key] == verification[key] for key in ('expected_target_head', 'plan_authority')) and
+            final['required'] == view['validation_plan']['final_required'] and
+            isinstance(final['source_snapshot_digest'], str) and
+            re.fullmatch('[0-9a-f]{64}', final['source_snapshot_digest']), 'closure final attempt fixed point changed')
+    validate_checks(view['validation_plan']['final_required'], final['checks'], progress['candidate'])
+    source = final['source']
+    keys(source, {'adapter', 'call_ref', 'response_ref', 'evidence_digest', 'checks_digest',
+                 'source_unchanged', 'stopped', 'dispatcher_ref', 'attempt_id'})
+    for key in ('adapter', 'call_ref', 'response_ref'):
+        text(source[key])
+    require(source['checks_digest'] == digest(final['checks']) and source['source_unchanged'] is True and
+            source['stopped'] is True and source['dispatcher_ref'] == progress['dispatcher_ref'] and
+            source['attempt_id'] == final['attempt_id'] and isinstance(source['evidence_digest'], str) and
+            re.fullmatch('[0-9a-f]{64}', source['evidence_digest']), 'closure final command source changed')
+    return view
+
+
 def validate_binding(binding):
     keys(binding, {'repository', 'worktree', 'git_common_dir', 'branch', 'target_branch', 'base_commit', 'lifecycle'})
     for field in ('repository', 'worktree', 'git_common_dir'):
@@ -671,7 +730,7 @@ def validate_progress(progress):
         allowed = {'state', 'candidate', 'dispatcher_ref', 'review', 'verification', 'binding', 'implementation_paths', 'closure_paths', 'protected_paths', 'configuration', 'merge', 'problem', 'git_baseline_commit'}
         require(state in {'closure-pending', 'closing', 'cleanup-pending', 'completed', 'implementation-required', 'cancelled'}, 'invalid closure state')
         validate_binding(progress['binding'])
-        validate_review(progress['candidate'], progress['review'], progress['verification'], progress['dispatcher_ref'])
+        validate_closure_delivery(progress)
     else:
         allowed = {'state', 'plan', 'decision', 'creation_status', 'delivery', 'delivery_digest', 'successor', 'archive_ref', 'archive_status'}
         require(state in {'prepared', 'creation-pending', 'current-task', 'cancelled', 'creation-failed', 'carrier-bound', 'result-received', 'result-accepted', 'successor-ready', 'archive-pending', 'archived', 'handoff-complete'}, 'invalid dedicated state')
@@ -857,6 +916,11 @@ def validate_context(context):
         require(context['flow_authority']['controller_ref'] == context['controller_ref'] and context['flow_authority']['topic_ref'] == context['topic_ref'], 'continuous authority identity mismatch')
     if context['handoff_progress'] is not None:
         validate_progress(context['handoff_progress'])
+        closure_proof = context['handoff_progress'].get('verification') or {}
+        if context['stage'] == 4 and closure_proof.get('kind') == 'implementation-verification-ref':
+            require(closure_proof['controller_ref'] == context['controller_ref'] and
+                    closure_proof['requirement_identity'] == context['requirement_identity'],
+                    'closure delivery belongs to another Controller or requirement')
         seal = context['handoff_progress'].get('scope_seal')
         if seal is not None:
             require(seal['controller_ref'] == context['controller_ref'] and
@@ -1191,14 +1255,18 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         keys(evidence, {'candidate', 'dispatcher_ref', 'review', 'verification', 'binding',
                         'implementation_paths', 'closure_paths', 'protected_paths', 'configuration'})
         require(context['stage'] == 4 and progress is None and context['carrier'] is None, 'only one closure agent')
-        validate_review(evidence['candidate'], evidence['review'], evidence['verification'], evidence['dispatcher_ref'])
+        verified_delivery = validate_closure_delivery(evidence)
+        if evidence['verification'].get('kind') == 'implementation-verification-ref':
+            require(evidence['verification']['controller_ref'] == context['controller_ref'] and
+                    evidence['verification']['requirement_identity'] == context['requirement_identity'],
+                    'closure delivery belongs to another Controller or requirement')
         validate_binding(evidence['binding'])
         implementation = paths(evidence['implementation_paths'])
         closure = paths(evidence['closure_paths'], empty=True)
         require(all(PurePosixPath(p).suffix.lower() in {'.md', '.mdx', '.rst', '.adoc', '.asciidoc', '.org', '.txt'} or PurePosixPath(p).name.lower() in {'readme', 'changelog', 'authors', 'maintainers'} for p in closure), 'closure scope must contain documentation files only')
         protected = paths(evidence['protected_paths'], empty=True)
         require(not set(implementation) & set(closure), 'closure overlaps implementation contracts')
-        validate_validation_plan(evidence['verification']['validation_plan'], evidence['binding'])
+        validate_validation_plan(verified_delivery['validation_plan'], evidence['binding'])
         require(not (set(implementation) | set(closure)) & set(protected), 'closure scope includes protected source')
         attempt = digest(evidence)
         context['carrier'] = {'kind': 'closure-agent', 'ref': None, 'attempt': attempt}
