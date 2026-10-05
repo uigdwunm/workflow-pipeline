@@ -38,6 +38,8 @@ V01：扩展 `tests/runtime/test_workflow_progress.py`、新 `test_bounded_progr
 
 V02：扩展 `test_workflow.py`、`test_stage_transfer.py`、`test_unified_recovery.py`、`test_discussion_protocol.py`，覆盖外层runner及ledger提交后镜像丢失。现有其它直连fixture按manifest的verify条目核验，仅确实依赖旧内联结构时修改。
 
+V03：公开runner start/pause/resume验证同carrier、已有workflow_requirements初始化及真实Controller decision消费；补充真实handle分配→生产save_outer_record→handle精确回执重放，验证存储CAS前进但C业务revision、subjects和原回执证明不变，并拒绝过期owner写。此补充仅为覆盖Stage 2动作集无法自然产生的receipt交错，不替代V01/V02、不mock内部控制。
+
 命令：逐文件 `python3 scripts/run_tests.py --test-file <上述路径>`；若已有runner占锁，报告owner并结束该次验证。源模块及新增store资源必须同次生成到五包闭包，package identity采用新key，不手改generated副本。
 
 ## 实施约束与演示

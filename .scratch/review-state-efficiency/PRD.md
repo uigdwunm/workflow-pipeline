@@ -164,6 +164,8 @@ receipt索引不常驻且仍消耗磁盘；不承诺无限工作。可达历史�
 
 最高共同seam选择 `workflow_progress.handle` →真实Progress/dispatch/control/Git→临时文件系统与原生宿主adapter。宿主工具响应可确定性fixture，但不mock控制转移、存储或Git。runner再用其公开start/resume确认同一路径，已有 `test_workflow_progress`、`test_plan_driven_dispatch`、`test_review_first_validation`、`test_plan_revision_progress`、`test_unified_recovery`为先例。
 
+运行器补充验证：公开start/pause/resume及已有需求准备的首次初始化保持为主seam。Stage 2当前动作集没有无需额外退役历史便可生成exact receipt的控制动作，因此另以真实Stage 3 handle分配→运行器实际调用的save_outer_record系统写边界→handle原回执重放，验证outer/C交错、storage CAS与C业务revision分离、原提交证明保留和过期owner写拒绝。这是公开链路之外的补充集成测试，不mock内部业务、不伪造历史，也不替代最高seam。
+
 首个红灯：真实临时Git中的一个Ticket、两个行为片，经过start→allocation prepare/bind/receive/accept→暂停/恢复；注入1000次相同poll，当前文件不能随次数增长，重复副作用调用只一次，恢复只读有限subject而不碰归档。第01 Ticket先证明不改变业务语义的完整切片；后续Ticket逐步启用新审查契约，集成分支在最终Ticket之前不声明可发布。
 
 必要反例：单文件内相邻函数变动、公共合同/共享fixture变动、漏报读取、原reviewer消失、旧lease回执、相同key不同结果、停止证据撤销、命令运行中pause、空集成delta、写root前/后崩溃、ledger提交后runner崩溃、损坏/缺失/跨run引用、16MiB边界、10000已完成片、2GiB预算、GC扫描中新增pin。每个反例应断言下一可执行动作/权限/验收与调用次数，不测私有函数调用顺序。
