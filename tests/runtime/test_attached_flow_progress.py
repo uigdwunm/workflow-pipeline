@@ -324,6 +324,71 @@ class AttachedFlowTests(fixtures.ProgressTests):
                     with self.assertRaises(runner.WorkflowError):
                         runner._validate_record(changed)
 
+    def test_lifecycle_delayed_readiness_issues_one_boundary_until_confirmed(self):
+        self.begin('stepwise')
+        self.invoke('observe', self.observation())
+        self.activate_designer()
+        self.write_planning_spec()
+        self.flow_git('add', 'docs/spec.md')
+        self.flow_git('commit', '-qm', 'planning for delayed boundary')
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        proposal_digest = self.propose_design_scope(candidate)
+        self.ready_publication(candidate, 'controller:planning')
+        self.seal_design_scope(proposal_digest)
+        self.invoke('publication', {'candidate_commit': candidate, 'reference': 'controller:planning'})
+        pending = self.invoke('receive-publication')['pending']
+        self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
+            'answer': 'accept', 'reference': 'controller:accept-plan'})
+        for _ in range(3):
+            action = self.invoke('advance')['next_action']
+            if action['operation'] == 'reconcile-source-lifecycle':
+                action = action['action']
+            request = action['payload']['request']
+            if request['operation'] == 'complete-phase-run':
+                break
+            self.invoke('lifecycle', {'request': request})
+        else:
+            self.fail('the original accepted phase did not reach completion')
+
+        def set_runner_gate(blocked):
+            with progress.record_lock(self.checkpoint):
+                outer = progress.read_projection(self.checkpoint, projection='identity').record
+                authority_revision = outer.authority_revision
+                values = {key: value for key, value in outer.items() if key != progress.KEY}
+                if blocked:
+                    values['runner_request'] = {'operation': 'pause', 'request_id': 'temporary-source-pause'}
+                else:
+                    values.pop('runner_request')
+                progress.save_outer_record(self.checkpoint, values, expected_revision=authority_revision)
+
+        set_runner_gate(True)
+        original = self.invoke('lifecycle', {'request': request})
+        self.assertTrue(self.state()['phase_complete'])
+        self.assertIsNone(self.state()['pending'])
+        self.assertIsNone(progress.scope_readiness(self.state(), self.checkpoint))
+        gated = self.checkpoint.read_bytes()
+        self.assertEqual(self.invoke('lifecycle', {'request': request}), original)
+        self.assertEqual(self.checkpoint.read_bytes(), gated)
+        ledger = self.ledger.read_bytes()
+        set_runner_gate(False)
+        self.assertIsNotNone(progress.scope_readiness(self.state(), self.checkpoint))
+        self.assertEqual(self.invoke('lifecycle', {'request': request}), original)
+        pending = self.state()['pending']
+        self.assertIsNotNone(pending, 'released readiness must still ask for the first Stage-3 confirmation')
+        self.assertEqual(pending['kind'], 'stage-entry')
+        self.assertEqual(pending['subject'], {'stage': 3, 'predecessor': self.state()['accepted']['digest']})
+        pending_root = self.checkpoint.read_bytes()
+        self.assertEqual(self.invoke('lifecycle', {'request': request}), original)
+        self.assertEqual(self.state()['pending'], pending)
+        self.assertEqual(self.checkpoint.read_bytes(), pending_root)
+        self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
+            'answer': 'confirm', 'reference': 'controller:delayed-confirmation'})
+        confirmed_root = self.checkpoint.read_bytes()
+        self.assertEqual(self.invoke('lifecycle', {'request': request}), original)
+        self.assertIsNone(self.state()['pending'])
+        self.assertEqual(self.checkpoint.read_bytes(), confirmed_root)
+        self.assertEqual(self.ledger.read_bytes(), ledger)
+
     def test_attached_stage3_rejects_direct_before_native_dispatch(self):
         self.begin('stepwise')
         self.invoke('observe', self.observation())

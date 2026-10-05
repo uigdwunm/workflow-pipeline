@@ -6445,12 +6445,17 @@ def lifecycle(path, outer, data):
                       action["payload"]["request"] == request and action.get("receipt") != saved)
     if request["operation"] in {"complete-phase-run", "finalize-phase-run"}:
         verify_phase_completed(state)
-        completing = not state["phase_complete"] or action_pending
         if not state["phase_complete"]:
             state["pending"] = None
             state["phase_complete"] = True
             save(progress_changed=True)
-        if completing and state["pending"] is None and (state["stage"] != 2 or scope_readiness(state, path)):
+        # Phase completion can precede readiness. Its receipt does not prove
+        # that this acceptance's stepwise boundary was issued or consumed.
+        boundary_subject = {"stage": state["next_stage"], "predecessor": state["accepted"]["digest"]}
+        confirmed = any(decision.get("subject") == boundary_subject and
+                        decision.get("answer") in {"confirm", "continuous"}
+                        for decision in state.get("decisions", {}).values())
+        if not confirmed and state["pending"] is None and (state["stage"] != 2 or scope_readiness(state, path)):
             pending = stage_boundary(state["mode"], state["stage"], state["accepted"], state["next_stage"])
             if pending is not None:
                 state["pending"] = pending
