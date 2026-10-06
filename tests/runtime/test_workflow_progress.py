@@ -33,6 +33,22 @@ class ProgressTests(transfer.StageTransferTests):
     def state(self):
         return progress.read_active_owner(self.checkpoint)[progress.KEY]
 
+    def save_transport(self, **changes):
+        identity = progress.read_projection(self.checkpoint, projection='identity')
+        store = progress.state_store.StateStore(self.checkpoint)
+        original = store.open_current()
+        outer = {key: copy.deepcopy(value) for key, value in identity.record.items() if key != progress.KEY}
+        outer.setdefault('transport', {}).update(changes)
+        progress.save_outer_record(self.checkpoint, outer, expected_revision=identity.authority_revision)
+        current = store.open_current()
+        # Runner transport updates retain the exact Controller facts and proof refs.
+        for key in ('metadata', 'subjects', 'scope', 'delivery'):
+            self.assertEqual(current.root.get(key), original.root.get(key))
+        self.assertEqual(progress.read_record(self.checkpoint)['previous'], original.reference)
+        retained = progress.state_store.StateStore(self.checkpoint).read_evidence(
+            original.reference, run_id=original.run_id, kind='root')['value']
+        self.assertEqual(retained, original.root)
+
     def allocation_slot(self, allocation_id, ticket_id=None):
         if ticket_id is None:
             tickets = self.state()['scope_authority']['execution_plan']['catalog']['tickets']
@@ -252,8 +268,8 @@ class ProgressTests(transfer.StageTransferTests):
             listed = {thread['id'] for thread in threads}
             threads.extend({'id': prior, 'status': {'type': 'idle'}}
                            for prior in saved.get('recovered_native_refs', []) if prior not in listed)
-            carrier = progress.read_record(self.checkpoint).get('sessions', {}).get('stage' + str(saved['stage'])) or saved['handoff']['expected_entry']['actor']['thread_id']
-            transport = progress.read_record(self.checkpoint).get('transport') or {}
+            carrier = progress.read_projection(self.checkpoint, projection='identity').record.get('sessions', {}).get('stage' + str(saved['stage'])) or saved['handoff']['expected_entry']['actor']['thread_id']
+            transport = progress.read_projection(self.checkpoint, projection='identity').record.get('transport') or {}
             value['lifecycle'] = {'instance':transport.get('instance','fixture-host'),'carrier_thread':carrier,
                 'sequence':transport.get('native_event_sequence',0),'events':[],
                 'pages':[{'request':{'method':'thread/list','params':{'ancestorThreadId':carrier,'archived':archived,
@@ -981,9 +997,7 @@ class ProgressTests(transfer.StageTransferTests):
 
     def test_malformed_host_event_is_controlled_and_does_not_mutate_checkpoint(self):
         self.begin()
-        saved = progress.read_record(self.checkpoint)
-        saved['transport'] = {'instance':'fixture-host','state':'live'}
-        progress.atomic_save(self.checkpoint,saved)
+        self.save_transport(instance='fixture-host', state='live')
         before = self.checkpoint.read_bytes()
         for params in ([], None, {'item':[]}, {'item':None},
                        {'threadId':'carrier','item':{'type':'subAgentActivity','id':'call','kind':'started','agentPath':['bad']}}):
@@ -1121,18 +1135,14 @@ class ProgressTests(transfer.StageTransferTests):
         self.begin()
         self.invoke('observe',self.observation())
         self.invoke('pause')
-        saved = progress.read_record(self.checkpoint)
-        saved['transport'] = {'instance':'fixture-host','state':'live','native_event_sequence':0}
-        progress.atomic_save(self.checkpoint,saved)
+        self.save_transport(instance='fixture-host', state='live', native_event_sequence=0)
         self.assertEqual(self.invoke('observe',self.observation('stopped','result'))['status'],'paused')
         original = copy.deepcopy(self.state()['lifecycle_snapshot'])
         omitted = copy.deepcopy(original)
         omitted['pages'][0]['response']['data'] = []
         self.assertEqual(self.invoke('lifecycle-state',omitted)['status'],'pausing')
         self.assertEqual(self.invoke('lifecycle-state',original)['status'],'paused')
-        saved = progress.read_record(self.checkpoint)
-        saved['transport']['native_event_sequence'] = 1
-        progress.atomic_save(self.checkpoint,saved)
+        self.save_transport(native_event_sequence=1)
         event = {'method':'item/started','params':{'threadId':self.state()['lifecycle_snapshot']['carrier_thread'],
             'turnId':'original-turn','item':{'type':'subAgentActivity','id':'late-call','kind':'started',
             'agentPath':'native:late-child','agentThreadId':'late-child-thread'}}}
@@ -1146,13 +1156,9 @@ class ProgressTests(transfer.StageTransferTests):
         self.begin()
         self.invoke('observe',self.observation())
         self.invoke('pause')
-        saved = progress.read_record(self.checkpoint)
-        saved['transport'] = {'instance':'fixture-host','state':'live','native_event_sequence':0}
-        progress.atomic_save(self.checkpoint,saved)
+        self.save_transport(instance='fixture-host', state='live', native_event_sequence=0)
         self.assertEqual(self.invoke('observe',self.observation('stopped','result'))['status'],'paused')
-        saved = progress.read_record(self.checkpoint)
-        saved['transport']['lookup_blocked'] = 'original host lookup unavailable'
-        progress.atomic_save(self.checkpoint,saved)
+        self.save_transport(lookup_blocked='original host lookup unavailable')
         self.assertEqual(self.invoke('advance')['status'],'pausing')
         self.assertFalse(self.state()['stopped'])
 
