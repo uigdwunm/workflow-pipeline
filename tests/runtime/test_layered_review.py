@@ -13,9 +13,11 @@ import workflow_progress as progress
 
 
 class LayeredReviewTests(fixture.ProgressTests):
-    def layered_flow(self, *, shared_verification=False):
+    def layered_flow(self, *, shared_verification=False, same_file=False, shared_read=False, unknown_shared=False):
         self.shared_verification = shared_verification
-        self.implementation_paths = ['a1.py', 'a2.py', 'b1.py', 'b2.py']
+        self.same_file = same_file
+        self.shared_read = shared_read
+        self.implementation_paths = ['a1.py', *([] if same_file else ['a2.py']), 'b1.py', 'b2.py']
         self.planning_documents = {'docs/spec.md':
             'approved design\n## Implementation Decisions\n### D1 — Plan\nTwo independent Tickets.\n'}
         for ticket in ('A', 'B'):
@@ -35,6 +37,14 @@ class LayeredReviewTests(fixture.ProgressTests):
                     'depends_on': [], 'verification_refs': [verify], 'read_only': []})
                 plan['behavior_slices'].append({'id': step, 'step_ids': [step], 'ac_refs': [ac],
                     'verification_refs': [verify], 'read_only': [], 'shared_state': []})
+                if same_file and ticket == 'A' and number == 2:
+                    plan['steps'][-1]['target'].update(path='a1.py', symbol='neighbor')
+                    plan['steps'][-1]['depends_on'] = ['A1']
+                if shared_read and ticket == 'B':
+                    plan['steps'][-1]['read_only'] = ['a1.py']
+                    plan['behavior_slices'][-1].update(read_only=['a1.py'], shared_state=['a1.py'])
+                if unknown_shared and ticket == 'A' and number == 1:
+                    plan['behavior_slices'][-1]['shared_state'] = ['unmapped-shared-registry']
                 if shared_verification and ticket == 'A' and number == 1:
                     shared = copy.deepcopy(plan['verifications'][-1])
                     shared['id'] = verify + '-shared'
@@ -57,8 +67,10 @@ class LayeredReviewTests(fixture.ProgressTests):
                 identity, path = step['id'], step['target']['path']
                 request = self.execution_input()
                 request['scope']['owned_paths'] = [path]
+                request['scope']['protected_paths'] = sorted(set(request['scope']['protected_paths']) | set(step['read_only']))
                 request['authorization']['scope_digest'] = fixture.transfer.entry.digest(request['scope'])
-                request['semantic']['plan_refs'] = [execution_plan.step_ref(ticket, step)]
+                selected = ([ticket['plan']['steps'][0], step] if same_file and identity == 'A2' else [step])
+                request['semantic']['plan_refs'] = [execution_plan.step_ref(ticket, item) for item in selected]
                 self.invoke('allocation', {'allocation_id': identity, 'operation': 'prepare', 'handoff': request})
                 slot = self.allocation_slot(identity, ticket['ticket_id'])
                 native = 'native:executor-' + identity
@@ -66,6 +78,10 @@ class LayeredReviewTests(fixture.ProgressTests):
                     'receipt': self.receipt(slot['record'], ref=native)})
                 release = bound['next_action']['result']['write_release']
                 body = b'def run():\n    return True\n'
+                if same_file and identity == 'A2':
+                    body = (self.flow / path).read_bytes() + b'\ndef neighbor():\n    return 1\n'
+                if shared_read and ticket['ticket_id'] == 'B':
+                    body = b'import a1\n\ndef run():\n    return a1.run()\n'
                 (self.flow / path).write_bytes(body)
                 slot = self.allocation_slot(identity, ticket['ticket_id'])
                 received = self.invoke('allocation', {'allocation_id': identity, 'operation': 'receive',
@@ -109,27 +125,100 @@ class LayeredReviewTests(fixture.ProgressTests):
                 'fixture': {'slice': slice_id, 'candidate': candidate}}}
         return {'plan_authority': checkpoint['plan_authority'], 'checks': checks, 'source': source}
 
-    def local_review(self, candidate, ticket='A', slice_id='A1', reviewer=None):
+    def local_review(self, candidate, ticket='A', slice_id='A1', reviewer=None, *, raw_padding=0, read_paths=None, expect_rejected=False):
         checkpoint = self.state()['control']['context']['handoff_progress']
         axis = 'local:' + ticket + ':' + slice_id
         verification = self.local_verification(candidate, ticket, slice_id)
         prepared = self.invoke('review-activity', {'operation': 'prepare', 'axis': axis,
             'candidate': candidate, 'actor_ref': 'task', 'verification': verification})
         self.assertEqual(prepared['next_action']['operation'], 'invoke-review', prepared)
-        semantic = {'status': 'accepted', 'findings': [], 'read_paths': [],
+        semantic = {'status': 'accepted', 'findings': [], 'read_paths': prepared['next_action']['review_scope']['read_paths'] if read_paths is None else read_paths,
                     'ac_refs': [ticket + ':AC-' + slice_id[-1]], 'checks': verification['checks']}
+        semantic.update(dependency_claim_ids=prepared['next_action']['review_scope']['dependency_claim_ids'])
         response_ref = 'local-stopped:' + slice_id + ':' + candidate
         observed = self.invoke('review-activity', {'operation': 'observe', 'axis': axis,
             'candidate': candidate, 'actor_ref': 'task', 'action_id': prepared['next_action']['action_id'],
             'receipt': {'adapter': 'fixture-native', 'call_ref': 'local-call:' + slice_id + ':' + candidate,
                 'response_ref': response_ref, 'status': 'stopped', 'ref': reviewer or 'native:reviewer-' + ticket,
-                'raw': {'review': semantic}}})
-        self.assertNotEqual(observed['status'], 'blocked', observed)
+                'raw': {'review': semantic, **({'padding': 'x' * raw_padding} if raw_padding else {})}}})
+        if expect_rejected and observed['status'] == 'blocked':
+            # advance may retry the preceding rejected local request. Always
+            # consume this axis's own stopped response below as well.
+            self.assertEqual(observed['error']['code'], 'review_incomplete', observed)
+        else:
+            self.assertNotEqual(observed['status'], 'blocked', observed)
+        if raw_padding:
+            slot = self.state()['review_activity'][axis]
+            retained = slot['receipts'][-1]['raw']
+            manifest = progress.state_store.StateStore(self.checkpoint).read_raw_manifest(
+                retained['evidence_ref'], run_id=retained['evidence_ref']['run_id'])
+            self.assertTrue(manifest['complete'])
+            self.assertFalse(retained['truncated'])
+            self.assertGreater(manifest['size'], raw_padding)
+            self.assertLess(manifest['size'], progress.state_store.EVIDENCE_LIMIT)
         result = self.invoke('control', {'action': 'local-review', 'evidence': {
             'axis': axis, 'candidate': candidate, 'result_ref': response_ref},
             'receipt': {'controller_ref': 'task', 'reference': 'controller:local-' + slice_id + ':' + candidate}})
+        if expect_rejected:
+            self.assertEqual(result['status'], 'blocked', result)
+            self.assertEqual(result['error']['code'], 'review_incomplete', result)
+            self.assertIn('reads', result['error']['message'])
+            self.assertNotIn(axis, self.state()['control']['context']['handoff_progress'].get('review_claims', {}))
+            self.assertNotIn('coverage', self.state()['control']['context']['handoff_progress'])
+            return result
+        self.assertIsNotNone(result['next_action'], result)
         self.assertTrue(result['next_action']['result']['ok'], result)
         return result['next_action']['result']['claim']
+
+    def test_large_complete_local_report_consumes_committed_semantics_within_budget(self):
+        candidate = self.layered_flow()
+        original_read = progress.state_store.StateStore._read
+        original_spool = progress.state_store.StateStore.write_raw_evidence
+        accounts, spools = {}, []
+        def measured_read(store, path, maximum):
+            caller = sys._getframe(1).f_code.co_name
+            data = original_read(store, path, maximum)
+            account = accounts.setdefault(store, {'metadata': 0, 'raw_chunks': 0})
+            category = 'raw_chunks' if maximum == 1024 * 1024 and caller in {'flush', 'read_raw_chunk', 'read_raw_evidence'} else 'metadata'
+            account[category] += len(data)
+            return data
+        def measured_spool(store, run_id, value, **kwargs):
+            result = original_spool(store, run_id, value, **kwargs)
+            spools.append({'raw_bytes': result[1]['size'], 'retained_bytes': result[1]['retained_size'],
+                'complete': result[1]['complete'], 'native_action_id': result[1]['native_receipt']['action_id']})
+            return result
+        with fixture.patch.object(progress.state_store.StateStore, '_read', measured_read), \
+             fixture.patch.object(progress.state_store.StateStore, 'write_raw_evidence', measured_spool):
+            for ticket in ('A', 'B'):
+                for number in (1, 2):
+                    claim = self.local_review(candidate, ticket, ticket + str(number), raw_padding=8 * 1024 * 1024)
+                    self.assertEqual(claim['layer'], 'local')
+                self.ticket_review(candidate, ticket, raw_padding=8 * 1024 * 1024)
+            reviews = self.delivery_reviews(candidate, raw_padding=8 * 1024 * 1024)
+            self.finish_certificate_delivery(candidate, reviews)
+        current = progress.state_store.StateStore(self.checkpoint).open_current()
+        metrics = {'root_bytes': current.reference['size'],
+            'subject_bytes': {key: value['size'] for key, value in current.root['subjects'].items()},
+            'maximum_operation_read_bytes': max(sum(value.values()) for value in accounts.values()),
+            'maximum_metadata_read_bytes': max(value['metadata'] for value in accounts.values()),
+            'maximum_raw_read_bytes': max(value['raw_chunks'] for value in accounts.values()),
+            'read_limit': progress.state_store.READ_LIMIT, 'raw_limit': progress.state_store.EVIDENCE_LIMIT,
+            'combined_limit': progress.state_store.READ_LIMIT + progress.state_store.EVIDENCE_LIMIT,
+            'accounts': list(accounts.values()), 'spools': spools,
+            'reports': 8, 'raw_padding_bytes_each': 8 * 1024 * 1024}
+        self.assertLessEqual(metrics['root_bytes'], progress.state_store.ROOT_LIMIT)
+        self.assertTrue(all(size <= progress.state_store.SUBJECT_LIMIT for size in metrics['subject_bytes'].values()))
+        self.assertLessEqual(metrics['maximum_metadata_read_bytes'], metrics['read_limit'])
+        self.assertLessEqual(metrics['maximum_raw_read_bytes'], metrics['raw_limit'])
+        self.assertLessEqual(metrics['maximum_operation_read_bytes'], metrics['combined_limit'])
+        self.assertEqual(len(spools), 8)
+        self.assertEqual(len({row['native_action_id'] for row in spools}), 8)
+        self.assertTrue(all(row['complete'] and row['retained_bytes'] == row['raw_bytes'] for row in spools))
+        destination = fixture.os.environ.get('T02_SEMANTIC_BUDGET_METRICS')
+        if destination:
+            with Path(destination).open('x') as output:
+                json.dump(metrics, output, indent=2)
+                output.write('\n')
 
     def test_local_claim_blocks_unaccepted_ticket(self):
         candidate = self.layered_flow()
@@ -206,7 +295,7 @@ class LayeredReviewTests(fixture.ProgressTests):
         self.assertEqual(claim['layer'], 'local')
         self.assertEqual(claim['ticket_id'], 'A')
 
-    def ticket_review(self, candidate, ticket, *, unknown_first=False):
+    def ticket_review(self, candidate, ticket, *, unknown_first=False, raw_padding=0):
         first = self.local_verification(candidate, ticket, ticket + '1')
         second = self.local_verification(candidate, ticket, ticket + '2')
         first['checks'].extend(second['checks'])
@@ -225,6 +314,8 @@ class LayeredReviewTests(fixture.ProgressTests):
                 'ac_refs': [ticket + ':AC-1', ticket + ':AC-2'], 'checks': first['checks'],
                 'dependency_claim_ids': scope['dependency_claim_ids'],
                 'requirement_refs': scope['requirement_refs'], 'review_scope': scope}}}
+        if raw_padding:
+            receipt['raw']['padding'] = 'x' * raw_padding
         if unknown_first:
             previous = copy.deepcopy(self.state()['control']['context']['handoff_progress']['review_claims'][axis])
             unknown = {**receipt, 'response_ref': receipt['response_ref'] + ':unknown',
@@ -523,6 +614,192 @@ class LayeredReviewTests(fixture.ProgressTests):
         self.assertNotIn('Traceback', result.stderr)
         self.assertEqual(self.checkpoint.read_bytes(), before)
 
+    def reviewed_ac4_candidate(self, **variant):
+        candidate = self.layered_flow(**variant)
+        for ticket in ('A', 'B'):
+            for number in (1, 2):
+                self.local_review(candidate, ticket, ticket + str(number))
+            self.ticket_review(candidate, ticket)
+        self.delivery_reviews(candidate)
+        before = copy.deepcopy(self.state()['control']['context']['handoff_progress']['review_claims'])
+        self.invoke('control', {'action': 'invalidate-candidate', 'evidence': {'candidate': candidate,
+            'reason': 'AC4 in-scope countercase', 'reference': 'controller:AC4-change'},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:AC4-change'}})
+        return candidate, before
+
+    def ac4_application_and_gate(self, candidate):
+        applied = self.invoke('control', {'action': 'review-applicability', 'evidence': {
+            'candidate': candidate, 'reference': 'controller:AC4-applicability'},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:AC4-applicability'}})
+        self.assertIsNotNone(applied['next_action'], applied)
+        proof = applied['next_action']['result']['applicability']
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        checks = fixture.transfer.checks_for(checkpoint['validation_plan']['review_required'], candidate)
+        denied = self.invoke('control', {'action': 'candidate-ready', 'evidence': {
+            'dispatcher_ref': 'native:dispatcher', 'attempt': self.state()['control']['context']['carrier']['attempt'],
+            'commit': candidate, 'expected_target_head': checkpoint['git_baseline_commit'], 'binding': self.binding,
+            'plan_digest': checkpoint['plan_digest'], 'checks': checks},
+            'receipt': {'adapter': 'fixture-command', 'call_ref': 'AC4-current-command', 'response_ref': 'AC4-current-stop',
+                'raw': {'checks': checks, 'source_unchanged': True, 'stopped': True, 'dispatcher_ref': 'native:dispatcher'}}})
+        self.assertEqual(denied['status'], 'blocked', denied)
+        self.assertEqual(denied['error']['code'], 'review_incomplete', denied)
+        self.assertIn('no longer applicable', denied['error']['message'])
+        self.assertNotEqual(checkpoint['state'], 'deliverable')
+        return proof
+
+    def test_ac4_influence_samefile_other_function_invalidates_both_slices(self):
+        original, before = self.reviewed_ac4_candidate(same_file=True)
+        self.repair_a(neighbor=True)
+        target = self.flow_git('rev-parse', 'HEAD')
+        self.assertNotEqual(original, target)
+        self.assertTrue((self.flow / 'a1.py').read_text().startswith('def run():\n    return True'))
+        proof = self.ac4_application_and_gate(target)
+        for axis in ('local:A:A1', 'local:A:A2', 'ticket:A', 'standards', 'spec'):
+            self.assertIn(before[axis]['claim_id'], proof['affected'])
+        for axis in ('local:B:B1', 'local:B:B2', 'ticket:B'):
+            self.assertIn(before[axis]['claim_id'], proof['retained'])
+            self.assertEqual(self.state()['control']['context']['handoff_progress']['review_claims'][axis], before[axis])
+
+    def test_ac4_influence_shared_fixture_reverse_closure_invalidates_consumers(self):
+        original, before = self.reviewed_ac4_candidate(shared_read=True)
+        b_bytes = {path: (self.flow / path).read_bytes() for path in ('b1.py', 'b2.py')}
+        self.repair_a()
+        target = self.flow_git('rev-parse', 'HEAD')
+        proof = self.ac4_application_and_gate(target)
+        self.assertEqual({path: (self.flow / path).read_bytes() for path in b_bytes}, b_bytes)
+        for axis in ('local:A:A1', 'local:B:B1', 'local:B:B2', 'ticket:A', 'ticket:B', 'standards', 'spec'):
+            self.assertIn(before[axis]['claim_id'], proof['affected'])
+        self.assertIn(before['local:A:A2']['claim_id'], proof['retained'])
+
+    def test_ac4_unknown_shared_change_conservatively_invalidates_all_proofs(self):
+        original, before = self.reviewed_ac4_candidate(unknown_shared=True)
+        self.repair_a()
+        proof = self.ac4_application_and_gate(self.flow_git('rev-parse', 'HEAD'))
+        self.assertEqual(set(proof['affected']), {view['claim_id'] for view in before.values()})
+        self.assertEqual(proof['retained'], [])
+
+    def test_ac4_report_reads_omitted_or_added_rejects_original_stopped_claim(self):
+        candidate = self.layered_flow(shared_read=True)
+        self.local_review(candidate, 'A', 'A1')
+        self.local_review(candidate, 'A', 'A2')
+        self.ticket_review(candidate, 'A')
+        for slice_id, paths in (('B1', []), ('B2', ['a1.py', 'b1.py'])):
+            rejected = self.local_review(candidate, 'B', slice_id, read_paths=paths, expect_rejected=True)
+            self.assertEqual(rejected['error']['code'], 'review_incomplete')
+
+    def test_native_report_boundary_oversize_retains_original_unknown_and_cannot_grant(self):
+        candidate = self.layered_flow()
+        axis = 'local:A:A1'
+        verification = self.local_verification(candidate)
+        prepare = {'operation': 'prepare', 'axis': axis, 'candidate': candidate,
+            'actor_ref': 'task', 'verification': verification}
+        action = self.invoke('review-activity', prepare)['next_action']
+        semantic = {'status': 'accepted', 'findings': [], 'ac_refs': ['A:AC-1'],
+            'checks': verification['checks'], 'read_paths': action['review_scope']['read_paths'],
+            'dependency_claim_ids': action['review_scope']['dependency_claim_ids']}
+        observation = {'operation': 'observe', 'axis': axis, 'candidate': candidate, 'actor_ref': 'task',
+            'action_id': action['action_id'], 'receipt': {'adapter': 'fixture-native',
+                'call_ref': 'oversize-original-call', 'response_ref': 'oversize-original-response',
+                'status': 'stopped', 'ref': 'native:reviewer-A',
+                'raw': {'review': semantic, 'padding': 'x' * (17 * 1024 * 1024)}}}
+        self.invoke('review-activity', observation)
+        slot = self.state()['review_activity'][axis]
+        self.assertFalse(slot['stopped'])
+        retained = slot['receipts'][-1]
+        self.assertEqual(retained['status'], 'unknown')
+        self.assertTrue(retained['raw']['truncated'])
+        store = progress.state_store.StateStore(self.checkpoint)
+        manifest = store.read_raw_manifest(retained['raw']['evidence_ref'], run_id=retained['raw']['evidence_ref']['run_id'])
+        self.assertTrue(manifest['complete'])
+        self.assertGreater(manifest['size'], progress.state_store.EVIDENCE_LIMIT)
+        self.assertEqual(manifest['retained_size'], manifest['size'])
+        self.assertEqual(retained['raw']['reason'], 'atomic_limit_exceeded')
+        store.require_reserve(action['action_id'])
+        before = copy.deepcopy(slot)
+        lookup = self.invoke('review-activity', prepare)['next_action']
+        self.assertEqual(lookup['operation'], 'lookup-exact-review')
+        self.assertEqual(lookup['action_id'], action['action_id'])
+        self.assertEqual(lookup['call_ref'], 'oversize-original-call')
+        self.invoke('review-activity', observation)
+        slot = self.state()['review_activity'][axis]
+        self.assertEqual(slot['action_id'], before['action_id'])
+        self.assertEqual(slot['receipts'], before['receipts'])
+        denied = self.invoke('control', {'action': 'local-review', 'evidence': {
+            'axis': axis, 'candidate': candidate, 'result_ref': 'oversize-original-response'},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:oversize'}})
+        self.assertEqual(denied['status'], 'blocked', denied)
+        self.assertNotIn(axis, self.state()['control']['context']['handoff_progress'].get('review_claims', {}))
+        self.assertNotIn('coverage', self.state()['control']['context']['handoff_progress'])
+        self.assertEqual(len(slot['receipts']), 1)
+        self.assertEqual(store.read_raw_manifest(retained['raw']['evidence_ref'], run_id=retained['raw']['evidence_ref']['run_id']), manifest)
+
+    def test_native_report_boundary_partial_retains_unknown_without_semantic_grant(self):
+        candidate = self.layered_flow()
+        axis = 'local:A:A1'
+        verification = self.local_verification(candidate)
+        prepare = {'operation': 'prepare', 'axis': axis, 'candidate': candidate,
+            'actor_ref': 'task', 'verification': verification}
+        action = self.invoke('review-activity', prepare)['next_action']
+        semantic = {'status': 'accepted', 'findings': [], 'ac_refs': ['A:AC-1'],
+            'checks': verification['checks'], 'read_paths': action['review_scope']['read_paths'],
+            'dependency_claim_ids': action['review_scope']['dependency_claim_ids']}
+        observation = {'operation': 'observe', 'axis': axis, 'candidate': candidate, 'actor_ref': 'task',
+            'action_id': action['action_id'], 'receipt': {'adapter': 'fixture-native',
+                'call_ref': 'partial-original-call', 'response_ref': 'partial-original-response',
+                'status': 'stopped', 'ref': 'native:reviewer-A',
+                'raw': {'review': semantic, 'padding': 'x' * (2 * 1024 * 1024)}}}
+        atomic_write = progress.state_store.atomic_write
+        interrupted = []
+        def stop_chunk(path, data, *args, **kwargs):
+            if len(data) == 1024 * 1024 and not interrupted:
+                interrupted.append(str(path))
+                raise KeyboardInterrupt('actual original raw chunk write interrupted')
+            return atomic_write(path, data, *args, **kwargs)
+        with fixture.patch.object(progress.state_store, 'atomic_write', side_effect=stop_chunk):
+            with self.assertRaises(progress.state_store.RawEvidenceInterrupted):
+                self.invoke('review-activity', observation)
+        self.assertEqual(len(interrupted), 1)
+        slot = self.state()['review_activity'][axis]
+        retained = slot['receipts'][-1]
+        self.assertEqual(retained['status'], 'unknown')
+        self.assertTrue(retained['raw']['truncated'])
+        self.assertFalse(slot['stopped'])
+        store = progress.state_store.StateStore(self.checkpoint)
+        manifest = store.read_raw_manifest(retained['raw']['evidence_ref'], run_id=retained['raw']['evidence_ref']['run_id'])
+        self.assertFalse(manifest['complete'])
+        self.assertEqual(manifest['reason'], 'interrupted')
+        self.assertLess(manifest['retained_size'], manifest['size'])
+        store.require_reserve(action['action_id'])
+        denied = self.invoke('control', {'action': 'local-review', 'evidence': {
+            'axis': axis, 'candidate': candidate, 'result_ref': 'partial-original-response'},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:partial'}})
+        self.assertEqual(denied['status'], 'blocked', denied)
+        self.assertNotIn(axis, self.state()['control']['context']['handoff_progress'].get('review_claims', {}))
+        lookup = self.invoke('review-activity', prepare)['next_action']
+        self.assertEqual(lookup['operation'], 'lookup-exact-review')
+        self.assertEqual(lookup['action_id'], action['action_id'])
+        self.assertEqual(lookup['call_ref'], 'partial-original-call')
+
+    def test_ac4_missing_dependency_claim_invalidates_slice_and_blocks_ticket(self):
+        candidate = self.layered_flow(same_file=True)
+        neighbor = self.local_review(candidate, 'A', 'A2')
+        self.assertEqual(neighbor['layer'], 'local')
+        proof = self.invoke('control', {'action': 'review-applicability', 'evidence': {
+            'candidate': candidate, 'reference': 'controller:missing-dependency'},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:missing-dependency'}})
+        self.assertIn(neighbor['claim_id'], proof['next_action']['result']['applicability']['affected'])
+        self.local_review(candidate, 'A', 'A1')
+        verification = self.local_verification(candidate, 'A', 'A1')
+        verification['checks'].extend(self.local_verification(candidate, 'A', 'A2')['checks'])
+        verification['source']['raw']['checks'] = copy.deepcopy(verification['checks'])
+        with self.assertRaises(progress.entry.PreparationError) as denied:
+            self.invoke('review-activity', {'operation': 'prepare', 'axis': 'ticket:A',
+                'candidate': candidate, 'actor_ref': 'task', 'verification': verification})
+        self.assertEqual(denied.exception.code, 'review_incomplete')
+        self.assertIn('every applicable local slice', str(denied.exception))
+        self.assertNotIn('ticket:A', self.state().get('review_activity', {}))
+        self.assertNotIn('coverage', self.state()['control']['context']['handoff_progress'])
+
     def recover_layered_dispatcher(self):
         stopped = self.observation('stopped', 'result', ref='native:dispatcher')
         stopped['receipt']['raw'].update(resumable=False, dispatch_available=True)
@@ -569,7 +846,7 @@ class LayeredReviewTests(fixture.ProgressTests):
         self.assertTrue(ready['next_action']['result']['ok'], ready)
         return checks
 
-    def delivery_reviews(self, candidate):
+    def delivery_reviews(self, candidate, *, raw_padding=0):
         checks = self.candidate_ready(candidate)
         checkpoint = self.state()['control']['context']['handoff_progress']
         reviews = {}
@@ -587,7 +864,7 @@ class LayeredReviewTests(fixture.ProgressTests):
                     'response_ref': response, 'status': 'stopped', 'ref': 'native:delivery-' + axis,
                     'raw': {'review': {'status': 'accepted', 'findings': [], 'ac_refs': scope['ac_refs'],
                         'requirement_refs': scope['requirement_refs'], 'dependency_claim_ids': scope['dependency_claim_ids'],
-                        'review_scope': scope}}}})
+                        'review_scope': scope}, **({'padding': 'x' * raw_padding} if raw_padding else {})}}})
             reviews[axis] = {'candidate': candidate, 'expected_target_head': checkpoint['expected_target_head'],
                 'plan_digest': checkpoint['plan_digest'], 'plan_authority': checkpoint['plan_authority'],
                 'reviewer_ref': 'native:delivery-' + axis, 'status': 'accepted', 'result_ref': response}
@@ -613,19 +890,22 @@ class LayeredReviewTests(fixture.ProgressTests):
         self.assertTrue(all(report['candidate'] == candidate for report in reviews.values()))
         self.finish_certificate_delivery(target, reviews)
 
-    def repair_a(self):
+    def repair_a(self, *, neighbor=False):
         ticket = self.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
         step = ticket['plan']['steps'][0]
         request = self.execution_input()
         request['scope']['owned_paths'] = ['a1.py']
         request['authorization']['scope_digest'] = fixture.transfer.entry.digest(request['scope'])
-        request['semantic']['plan_refs'] = [execution_plan.step_ref(ticket, step)]
+        selected = ticket['plan']['steps'] if neighbor else [step]
+        request['semantic']['plan_refs'] = [execution_plan.step_ref(ticket, item) for item in selected]
         self.invoke('allocation', {'allocation_id': 'A1-repair', 'operation': 'prepare', 'handoff': request})
         slot = self.allocation_slot('A1-repair', 'A')
         bound = self.invoke('allocation', {'allocation_id': 'A1-repair', 'operation': 'bind',
             'receipt': self.receipt(slot['record'], ref='native:executor-A1-repair')})
         release = bound['next_action']['result']['write_release']
         body = b'def run():\n    return 2\n'
+        if neighbor:
+            body = b'def run():\n    return True\n\ndef neighbor():\n    return 2\n'
         (self.flow / 'a1.py').write_bytes(body)
         slot = self.allocation_slot('A1-repair', 'A')
         self.invoke('allocation', {'allocation_id': 'A1-repair', 'operation': 'receive',

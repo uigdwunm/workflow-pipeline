@@ -720,11 +720,8 @@ def verified_transition(payload):
                 claim['verification']['ids'] == projection['verification_refs'] and
                 claim['verification']['checks'] == slot['prepare']['verification']['checks'],
                 'local claim changed its original contract, reads or verification')
-        raw = stop['raw']
-        if raw.get('format') == 'review-raw-reference-v1':
-            require(raw.get('truncated') is False, 'local review result is incomplete')
-            raw = store.read_raw_evidence(raw['evidence_ref'], run_id=current.run_id)
-        report = raw.get('review')
+        observed = store.read_evidence(source_authority['stop_request_ref'], run_id=current.run_id)['value']
+        report = read_review_semantic(store, current, stop, observed, source_authority['stage_subject'])
         require(isinstance(report, dict) and report.get('status') == 'accepted' and report.get('findings') == [] and
                 report.get('checks') == claim['verification']['checks'] and
                 report.get('ac_refs') == claim['ac_refs'] and
@@ -1061,14 +1058,13 @@ def verify_review_native_anchor(store, current, claim, authority, stop, *, slot=
     key = store.receipt_key(current, actor=authority['originating_ref'], kind='review:observe',
         subject=authority['stage_subject'], invocation=claim['native_stop']['response_ref'])
     observation = store.read_receipt(current, key, observed)
-    require(observation == {'action_id': claim['native_stop']['action_id'],
+    require(isinstance(observation, dict) and set(observation) == {
+        'action_id', 'response_ref', 'native_stop_ref', 'native_stop_semantic_ref'} and
+        {key: observation[key] for key in ('action_id', 'response_ref', 'native_stop_ref')} == {
+        'action_id': claim['native_stop']['action_id'],
         'response_ref': claim['native_stop']['response_ref'], 'native_stop_ref': claim['native_stop_ref']},
         'native stop lacks its original committed observation receipt')
-    raw = stop['raw']
-    if raw.get('format') == 'review-raw-reference-v1':
-        require(not raw['truncated'], 'truncated native review cannot grant coverage')
-        raw = store.read_raw_evidence(raw['evidence_ref'], run_id=current.run_id)
-    report = raw.get('review')
+    report = read_review_semantic(store, current, stop, observed, authority['stage_subject'], proof=observation)
     require(isinstance(report, dict) and report.get('status') == 'accepted' and report.get('findings') == [] and
             set(report.get('ac_refs', [])) == set(claim['ac_refs']) and
             report.get('dependency_claim_ids', []) == claim['dependency_claim_ids'] and
@@ -1082,6 +1078,37 @@ def verify_review_native_anchor(store, current, claim, authority, stop, *, slot=
         scope = report.get('review_scope', {})
         require(isinstance(scope, dict) and scope.get('layer') == 'delivery' and scope.get('mode') == 'cross-ticket-and-coverage' and
                 scope.get('shared_state') == claim['shared_state'], 'original delivery scope changed')
+
+
+def read_review_semantic(store, current, stop, observed, stage_subject, *, proof=None):
+    """Consume only the complete semantic snapshot committed with original raw ingress."""
+    if proof is None:
+        key = store.receipt_key(current, actor=observed['actor_ref'], kind='review:observe',
+            subject=stage_subject, invocation=stop['response_ref'])
+        proof = store.read_receipt(current, key, observed)
+    require(isinstance(proof, dict) and proof.get('action_id') == observed['action_id'] and
+        proof.get('response_ref') == stop['response_ref'] and 'native_stop_semantic_ref' in proof,
+        'native semantic lacks original committed observation')
+    recorded = store.read_evidence(proof['native_stop_ref'], run_id=current.run_id)['value']['native_review_stop']
+    require(recorded == stop, 'native semantic changed its original stopped receipt')
+    value = store.read_evidence(proof['native_stop_semantic_ref'], run_id=current.run_id)['value']['native_stop_semantic']
+    require(set(value) == {'kind', 'complete', 'report', 'binding', 'receipt', 'raw_proof', 'raw_manifest_ref'} and
+        value['kind'] == 'native-stop-semantic-v1' and value['complete'] is True and
+        value['binding'] == {key: observed[key] for key in ('axis', 'candidate', 'actor_ref', 'action_id')} and
+        value['receipt'] == {key: stop[key] for key in ('adapter', 'call_ref', 'response_ref', 'status', 'ref')} and
+        value['raw_proof'] == observed['receipt']['raw'], 'native semantic is incomplete or changed its source binding')
+    raw = stop['raw']
+    if raw.get('format') == 'review-raw-reference-v1':
+        require(not raw['truncated'] and value['raw_manifest_ref'] == raw['evidence_ref'],
+            'truncated native review cannot grant coverage')
+        manifest = store.read_raw_manifest(raw['evidence_ref'], run_id=current.run_id)
+        require(manifest['complete'] is True and manifest['size'] == raw['size'] and
+            manifest['sha256'] == raw['sha256'] and manifest['native_receipt'] == {
+                **value['receipt'], 'action_id': observed['action_id'], 'candidate': observed['candidate'],
+                'originating_ref': observed['actor_ref']}, 'native semantic changed its complete original manifest')
+    else:
+        require(value['raw_manifest_ref'] is None, 'inline native semantic has an unexpected manifest')
+    return value['report']
 
 
 def verify_stored_review_coverage(view, progress, packages, run_id):

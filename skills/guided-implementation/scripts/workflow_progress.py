@@ -7236,7 +7236,7 @@ class Progress:
                     latest = slot['receipts'][-1]['raw']
                     if latest.get('format') == 'review-raw-reference-v1' and not latest.get('truncated'):
                         store = state_store.open_store(self.path)
-                        latest = store.read_raw_evidence(latest['evidence_ref'], run_id=store.open_current().run_id)
+                        latest = {'review': self.read_original_review_semantic(store, store.open_current(), slot, slot['receipts'][-1])}
                     report = latest.get('review')
                     if isinstance(report, dict) and (report.get('findings') or report.get('status') != 'accepted'):
                         invalid.add(claim['claim_id'])
@@ -7296,11 +7296,7 @@ class Progress:
         scope = self.review_scope(axis)
         store = state_store.open_store(self.path)
         current = store.open_current()
-        raw = receipt['raw']
-        if raw.get('format') == 'review-raw-reference-v1':
-            require(not raw['truncated'], 'outcome_unknown', 'delivery review response is incomplete')
-            raw = store.read_raw_evidence(raw['evidence_ref'], run_id=current.run_id)
-        report = raw.get('review')
+        report = self.read_original_review_semantic(store, current, slot, receipt)
         require(isinstance(report, dict) and report.get('status') == 'accepted' and report.get('findings') == [] and
                 report.get('review_scope') == scope and report.get('ac_refs') == scope['ac_refs'] and
                 report.get('requirement_refs') == scope['requirement_refs'] and
@@ -7415,11 +7411,7 @@ class Progress:
                 'identity_mismatch', 'a reviewer cannot review any version of its implementation')
         store = state_store.open_store(self.path)
         current = store.open_current()
-        raw = receipt['raw']
-        if raw.get('format') == 'review-raw-reference-v1':
-            require(not raw['truncated'], 'outcome_unknown', 'a truncated review cannot pass')
-            raw = store.read_raw_evidence(raw['evidence_ref'], run_id=current.run_id)
-        semantic = raw.get('review')
+        semantic = self.read_original_review_semantic(store, current, slot, receipt)
         require(isinstance(semantic, dict) and semantic.get('status') == 'accepted' and
                 semantic.get('findings') == [] and semantic.get('checks') == slot['prepare']['verification']['checks'] and
                 set(semantic.get('read_paths', [])) == set(projection['read_fingerprints']) and
@@ -7475,6 +7467,15 @@ class Progress:
         verification['source_authority_ref'] = store.write_object(current.run_id, 'evidence',
             {'review_source_authority': authority})
         verification['source_authority_digest'] = entry.digest(authority)
+
+    def read_original_review_semantic(self, store, current, slot, receipt):
+        observation = {'operation': 'observe', 'axis': slot['prepare']['axis'], 'candidate': slot['candidate'],
+            'actor_ref': slot['originating_ref'], 'action_id': slot['action_id'], 'receipt': copy.deepcopy(receipt)}
+        if receipt['raw'].get('format') == 'review-raw-reference-v1':
+            observation['receipt']['raw'] = {key: receipt['raw'][key] for key in ('size', 'sha256')}
+        else:
+            observation = self.review_receipt_request(observation)
+        return control_git.read_review_semantic(store, current, receipt, observation, self.state['stage_subject'])
 
     def commit_review_start(self, slot, result, applied):
         self.state['control']['context'] = result['context']
@@ -7579,7 +7580,30 @@ class Progress:
         size, digest = state_store.raw_measure(data['receipt']['raw'])
         return {**data, 'receipt': {**data['receipt'], 'raw': {'size': size, 'sha256': digest}}}
 
-    def apply_review_receipt(self, slot, receipt, original, key, current, *, proof=True):
+    def review_semantic_fact(self, receipt, original, raw):
+        projection = receipt['raw']
+        complete = projection.get('format') != 'review-raw-reference-v1' or not projection['truncated']
+        report = raw.get('review') if isinstance(raw, dict) else None
+        report = ({key: copy.deepcopy(report[key]) for key in ('status', 'findings', 'read_paths', 'ac_refs',
+            'checks', 'dependency_claim_ids', 'requirement_refs', 'review_scope') if key in report}
+            if isinstance(report, dict) else None)
+        fact = {'kind': 'native-stop-semantic-v1', 'complete': complete, 'report': report if complete else None,
+            'binding': {key: copy.deepcopy(original[key]) for key in ('axis', 'candidate', 'actor_ref', 'action_id')},
+            'receipt': {key: receipt[key] for key in ('adapter', 'call_ref', 'response_ref', 'status', 'ref')},
+            'raw_proof': copy.deepcopy(original['receipt']['raw']),
+            'raw_manifest_ref': projection.get('evidence_ref') if projection.get('format') == 'review-raw-reference-v1' else None}
+        if len(state_store.encode(fact)) > state_store.SUBJECT_LIMIT:
+            fact.update(complete=False, report=None)
+        return fact
+
+    def prepare_review_observation_proof(self, store, current, key, slot, receipt, original, raw):
+        return store.prepare_receipt(current, key, original, {
+            'action_id': slot['action_id'], 'response_ref': receipt['response_ref'],
+            'native_stop_ref': store.write_object(current.run_id, 'evidence', {'native_review_stop': receipt}),
+            'native_stop_semantic_ref': store.write_object(current.run_id, 'evidence', {
+                'native_stop_semantic': self.review_semantic_fact(receipt, original, raw)})})
+
+    def apply_review_receipt(self, slot, receipt, original, key, current, *, proof=True, semantic_raw=None):
         query = slot.get('query')
         if 'call_ref' not in slot:
             slot['call_ref'] = receipt['call_ref']
@@ -7593,9 +7617,8 @@ class Progress:
             self.state.get('native_adverse', {}).pop(slot['ref'], None)
         if proof:
             store = state_store.open_store(self.path, receipt_action=self._receipt_action)
-            self._commit_receipts.append(store.prepare_receipt(current, key, original,
-                {'action_id': slot['action_id'], 'response_ref': receipt['response_ref'],
-                 'native_stop_ref': store.write_object(current.run_id, 'evidence', {'native_review_stop': receipt})}))
+            self._commit_receipts.append(self.prepare_review_observation_proof(store, current, key, slot, receipt,
+                original, receipt['raw'] if semantic_raw is None else semantic_raw))
         self.save()
 
     def review_raw_projection(self, receipt, reference, manifest, measurement):
@@ -7644,8 +7667,7 @@ class Progress:
                 if reason != 'interrupted':
                     saved.pop('raw_ingress', None)
                 candidate.apply_review_receipt(saved, projected, original, key, current, proof=False)
-                store.prepare_receipt(current, key, original,
-                    {'action_id': slot['action_id'], 'response_ref': receipt['response_ref']})
+                candidate.prepare_review_observation_proof(store, current, key, saved, projected, original, receipt['raw'])
                 measured.append(sum(writes.values()) + 2 * state_store.ROOT_LIMIT)
         commit_bytes = max(measured)
         require(commit_bytes <= state_store.EVIDENCE_LIMIT,
@@ -7657,7 +7679,7 @@ class Progress:
             slot['raw_ingress']['evidence_ref'] = error.reference
             manifest = store.read_raw_manifest(error.reference, run_id=current.run_id)
             self.apply_review_receipt(slot, self.review_raw_projection(receipt, error.reference, manifest, measurement),
-                                      original, key, current)
+                                      original, key, current, semantic_raw=receipt['raw'])
             raise
         slot.pop('raw_ingress', None)
         return self.review_raw_projection(receipt, reference, manifest, measurement)
@@ -7863,7 +7885,7 @@ class Progress:
         store = state_store.open_store(self.path, receipt_action=self._receipt_action)
         self.bind_review_receipt(data['axis'], slot, receipt, data['actor_ref'])
         retained = self.retain_review_receipt(slot, data, original, key, receipt_current)
-        self.apply_review_receipt(slot, retained, original, key, receipt_current)
+        self.apply_review_receipt(slot, retained, original, key, receipt_current, semantic_raw=receipt['raw'])
         return self.advance_stop(self.stop_intent()) if self.stop_intent() else _view(s)
 
     def suspend(self, cancel=False):
