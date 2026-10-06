@@ -657,7 +657,7 @@ def verified_transition(payload):
     progress = context.get('handoff_progress')
     if progress and 'git_baseline_commit' in progress:
         require(payload['baseline'] == progress['git_baseline_commit'], 'frozen Git baseline changed')
-    if action == 'local-review':
+    if action in {'local-review', 'ticket-accept'}:
         import workflow_state_store as store_module
         import review_evidence
         checkpoint_path = evidence.get('claim_checkpoint')
@@ -719,12 +719,25 @@ def verified_transition(payload):
         require(isinstance(report, dict) and report.get('status') == 'accepted' and report.get('findings') == [] and
                 report.get('checks') == claim['verification']['checks'] and
                 report.get('ac_refs') == claim['ac_refs'] and
-                set(report.get('read_paths', [])) == set(claim['read_fingerprints']),
+                set(report.get('read_paths', [])) == set(claim['read_fingerprints']) and
+                report.get('dependency_claim_ids', []) == claim['dependency_claim_ids'] and
+                report.get('requirement_refs', []) == claim['requirement_refs'],
                 'original native reviewer did not accept this exact local contract')
         owned, reads = claim['owned_fingerprints'], claim['read_fingerprints']
         actual = review_fingerprints(repository, evidence['candidate'], set(owned) | set(reads))
         require(actual == owned | reads and snapshot(repository)['head'] == evidence['candidate'] and
                 not git(repository, 'status', '--porcelain'), 'local reviewed source snapshot changed')
+    if action == 'candidate-ready':
+        verify_review_coverage(evidence['ticket_coverage'], progress, delivery=False)
+    if action == 'review-converged':
+        verify_review_coverage(evidence['coverage'], progress, delivery=True, extra=evidence['claims'])
+        for axis in ('standards', 'spec'):
+            view = evidence['claims'][axis]
+            report = evidence['review'][axis]
+            require(view['source_candidate'] == report['candidate'] and view['reviewer_ref'] == report['reviewer_ref'] and
+                    view['result_ref'] == report['result_ref'], 'delivery report cannot relabel an original claim')
+    if action in {'delivery-ready', 'accept-delivery'} and progress and progress.get('coverage'):
+        verify_review_coverage(progress['coverage'], progress, delivery=True)
     if action == 'receive':
         verify_delivery(repository, payload['baseline'], evidence)
     if action == 'plan-revision-activate':
@@ -974,3 +987,84 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
+
+
+def verify_review_coverage(view, progress, *, delivery, extra=None):
+    """Recompute finite original-claim coverage against actual target Git bytes."""
+    import workflow_progress as progression
+    import workflow_state_store as state_store
+    import review_evidence
+    from workflow_control import validate_coverage_view
+    validate_coverage_view(view, view['candidate'], progress['plan_authority'], delivery=delivery)
+    path_value = Path(view['checkpoint_path'])
+    require(path_value.is_absolute() and str(path_value.resolve()) == str(path_value), 'coverage checkpoint must be canonical')
+    outer = progression.read_active_owner(path_value)
+    owner = progression.Progress(path_value, outer)
+    checkpoint = owner.state['control']['context']['handoff_progress']
+    require(checkpoint['execution_authority'] == progress['execution_authority'] and checkpoint['binding'] == progress['binding'],
+            'coverage differs from current original C authority')
+    checkpoint['review_claims'] = {**checkpoint.get('review_claims', {}), **(extra or {})}
+    claims, expected = owner.review_applications(view['candidate'])
+    store = state_store.open_store(path_value)
+    current = store.open_current()
+    certificate = store.read_evidence(view['certificate_ref'], run_id=current.run_id)['value']['review_coverage']
+    applications = {}
+    for axis, app in expected.items():
+        if axis not in certificate['applications']:
+            continue
+        ref = certificate['applications'][axis]['applicability_ref']
+        observed = store.read_evidence(ref, run_id=current.run_id)['value']['review_applicability']
+        require(observed == app, 'coverage applicability differs from actual fingerprints/dependency closure')
+        applications[axis] = {**observed, 'applicability_ref': ref, 'claim_ref': certificate['claims'][axis]['claim_ref']}
+    computed = review_evidence.coverage_certificate(checkpoint['execution_authority']['execution_plan']['catalog'],
+        claims, applications, view['candidate'], progress['plan_authority'], progress['allowed_paths'], delivery=delivery)
+    require(certificate == computed and certificate['certificate_digest'] == view['certificate_digest'],
+            'coverage certificate has missing, stale or altered requirement/AC/file/native proof')
+
+
+def verify_stored_review_coverage(view, progress, packages, run_id):
+    """Read accepted immutable proof after its active Stage-3 subjects have retired."""
+    import workflow_state_store as state_store
+    import review_evidence
+    from workflow_control import validate_coverage_view
+    validate_coverage_view(view, progress['candidate'], progress['plan_authority'], delivery=True)
+    store = state_store.open_store(view['checkpoint_path'])
+    current = store.open_current()
+    require(current.run_id == run_id, 'accepted coverage belongs to another run')
+    certificate = store.read_evidence(view['certificate_ref'], run_id=run_id)['value']['review_coverage']
+    require(certificate['certificate_digest'] == view['certificate_digest'] and
+            certificate['certificate_digest'] == state_store.entry.digest({key: value for key, value in certificate.items() if key != 'certificate_digest'}),
+            'accepted coverage certificate digest changed')
+    claims, applications = {}, {}
+    repository = Path(progress['binding']['worktree'])
+    # Closure may retain only the surviving primary repository after Flow removal.
+    if not repository.exists():
+        repository = Path(progress['binding']['repository'])
+    for axis, claim_view in certificate['claims'].items():
+        claim = store.read_evidence(claim_view['claim_ref'], run_id=run_id)['value']['review_claim']
+        review_evidence.validate_claim(claim)
+        require(review_evidence.claim_view(claim, claim_view['claim_ref']) == claim_view and
+                claim['package_digest'] == state_store.entry.digest(packages), 'accepted original review claim changed package or identity')
+        stop = store.read_evidence(claim['native_stop_ref'], run_id=run_id)['value']['native_review_stop']
+        require(all(stop[key] == claim['native_stop'][key] for key in ('adapter', 'call_ref', 'response_ref', 'status', 'ref')),
+                'accepted review lost its original stopped native source')
+        source = store.read_evidence(claim['verification']['source_ref'], run_id=run_id)['value']['local_check_source']
+        require(state_store.entry.digest(source) == claim['verification']['source_digest'], 'accepted regression source changed')
+        control_source = source['raw']
+        require(control_source.get('stopped') is True and control_source.get('source_unchanged') is True and
+                control_source.get('checks') == claim['verification']['checks'], 'accepted regression lacks original stopped checks')
+        app_ref = certificate['applications'][axis]['applicability_ref']
+        app = store.read_evidence(app_ref, run_id=run_id)['value']['review_applicability']
+        compared = app['compared']
+        require(app['claim_id'] == claim['claim_id'] and app['source_candidate'] == claim['source_candidate'] and
+                app['target_candidate'] == view['candidate'] and app['target_plan_authority'] == progress['plan_authority'] and
+                app['applicable'] is True and app['applicability_id'] == certificate['applications'][axis]['applicability_id'] and
+                app['applicability_id'] == state_store.entry.digest({key: value for key, value in app.items() if key != 'applicability_id'}),
+                'accepted applicability changed its original claim or target')
+        actual = review_fingerprints(repository, view['candidate'], set(compared['owned_fingerprints']) | set(compared['read_fingerprints']))
+        require(actual == compared['owned_fingerprints'] | compared['read_fingerprints'], 'accepted review target fingerprints changed')
+        applications[axis] = {**app, 'applicability_ref': app_ref, 'claim_ref': claim_view['claim_ref']}
+        claims[axis] = claim
+    computed = review_evidence.coverage_certificate(progress['execution_authority']['execution_plan']['catalog'],
+        claims, applications, view['candidate'], progress['plan_authority'], progress['allowed_paths'], delivery=True)
+    require(computed == certificate, 'accepted coverage has missing requirement/AC/file/native proof')

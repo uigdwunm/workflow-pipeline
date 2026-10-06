@@ -243,7 +243,9 @@ Completed payloads are strict:
 | 4 | artifacts, checks, candidate_commit, merge_commit, changed_paths, cleanup |
 
 Artifacts/checks are nonempty text lists, not proof that commands ran. Review uses
-the existing two-independent-reviewer schema on the exact candidate. Execution
+two independent delivery axes plus an immutable complete three-layer coverage
+certificate. Original report candidates may differ only with mechanically
+verified target applicability; full validation always names the final candidate. Execution
 results use actual allocation snapshots and peer attribution checks. Stage 1
 completion requires target delivery. Stage 4 cleanup records the original binding's
 verified retained/deleted disposition from Git and resource identity. Retained

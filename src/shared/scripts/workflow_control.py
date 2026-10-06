@@ -20,7 +20,7 @@ CONTEXT_FIELDS = {'schema_version', 'controller_ref', 'topic_ref', 'stage', 'car
                   'preference', 'flow_authority', 'requirement_identity', 'handoff_progress'}
 DELIVERY_VERIFICATION_FIELDS = {'candidate', 'expected_target_head', 'validation_plan', 'plan_digest',
                                 'review_digest', 'review_decision', 'attempts', 'dispatcher_ref',
-                                'plan_authority'}
+                                'plan_authority', 'coverage'}
 STAGE3_DEFAULT_CONFIGURATIONS = frozenset({
     ('gpt-6-luna', 'high'),
     ('gpt-6-luna', 'xhigh'),
@@ -240,6 +240,15 @@ def validate_checks(required, checks, candidate, *, passed=True, complete=True):
         require(isinstance(result['output_digest'], str) and re.fullmatch('[0-9a-f]{64}', result['output_digest']), 'raw output digest required')
 
 
+def validate_coverage_view(view, candidate, plan_authority, *, delivery):
+    keys(view, {'kind', 'candidate', 'plan_authority', 'requirement_identity', 'delivery', 'certificate_digest',
+                'certificate_ref', 'checkpoint_path'})
+    require(view['kind'] == 'review-coverage-v1' and view['candidate'] == candidate and
+            view['plan_authority'] == plan_authority and view['delivery'] is delivery and
+            isinstance(view['certificate_ref'], dict) and re.fullmatch('[0-9a-f]{64}', view['certificate_digest']),
+            'current complete review coverage required')
+
+
 def validate_reviewable(progress, candidate, verification):
     require(progress and progress['state'] in {'reviewable', 'reviewing'}, 'candidate is not reviewable')
     require(progress['candidate'] == candidate, 'review candidate changed')
@@ -250,14 +259,15 @@ def validate_reviewable(progress, candidate, verification):
     validate_checks(progress['validation_plan']['review_required'], verification['checks'], candidate)
 
 
-def validate_review_axes(candidate, target, plan_digest, review, dispatcher_ref, plan_authority):
+def validate_review_axes(candidate, target, plan_digest, review, dispatcher_ref, plan_authority, coverage=None):
     require(isinstance(candidate, str) and re.fullmatch('[0-9a-f]{40}', candidate), 'invalid reviewed candidate')
     keys(review, {'standards', 'spec'})
     reviewers = []
     for axis in ('standards', 'spec'):
         keys(review[axis], {'candidate', 'expected_target_head', 'plan_digest',
                             'plan_authority', 'reviewer_ref', 'status', 'result_ref'})
-        require(review[axis]['candidate'] == candidate and review[axis]['status'] == 'accepted' and
+        require((review[axis]['candidate'] == candidate or coverage is not None and coverage['candidate'] == candidate and coverage['delivery'] is True) and
+                re.fullmatch('[0-9a-f]{40}', review[axis]['candidate']) and review[axis]['status'] == 'accepted' and
                 review[axis]['expected_target_head'] == target and review[axis]['plan_digest'] == plan_digest and
                 review[axis]['plan_authority'] == plan_authority,
                 'review does not accept exact candidate, target and current function plan')
@@ -280,9 +290,11 @@ def validate_review(candidate, review, verification, dispatcher_ref):
     validate_validation_plan(plan)
     require(verification['plan_digest'] == digest(plan), 'validation plan digest changed')
     validate_review_axes(candidate, verification['expected_target_head'], verification['plan_digest'],
-                         review, dispatcher_ref, verification['plan_authority'])
+                         review, dispatcher_ref, verification['plan_authority'], verification['coverage'])
+    validate_coverage_view(verification['coverage'], candidate, verification['plan_authority'], delivery=True)
     decision = verification['review_decision']
-    keys(decision, {'controller_ref', 'reference', 'review', 'native_evidence'})
+    keys(decision, {'controller_ref', 'reference', 'review', 'native_evidence', 'coverage'})
+    require(decision['coverage'] == verification['coverage'], 'delivery coverage differs from convergence')
     require(decision['review'] == review and verification['review_digest'] == digest(decision), 'review convergence mismatch')
     text(decision['controller_ref']); text(decision['reference'])
     keys(decision['native_evidence'], {'standards', 'spec'})
@@ -325,7 +337,7 @@ def validate_result_source(source, checks, dispatcher_ref, attempt_id=None):
 
 def delivery_verification(progress, dispatcher_ref):
     return {k: copy.deepcopy(progress[k]) for k in ('candidate', 'expected_target_head', 'validation_plan', 'plan_digest',
-            'review_digest', 'review_decision', 'attempts', 'plan_authority')} | {'dispatcher_ref': dispatcher_ref}
+            'review_digest', 'review_decision', 'attempts', 'plan_authority', 'coverage')} | {'dispatcher_ref': dispatcher_ref}
 
 
 def validate_deliverable(progress, candidate, review, verification, dispatcher_ref):
@@ -349,7 +361,7 @@ def validate_closure_delivery(progress):
     view = verification['view']
     keys(view, {'accepted_digest', 'candidate', 'dispatcher_ref', 'dispatch_attempt', 'binding', 'controller_ref',
                 'requirement_identity', 'implementation_paths', 'closure_paths', 'protected_paths',
-                'validation_plan', 'plan_digest', 'review_digest', 'review_sources', 'final_attempt'})
+                'validation_plan', 'plan_digest', 'review_digest', 'coverage', 'review_sources', 'final_attempt'})
     reference = verification['predecessor']
     require(reference.get('kind') == 'implementation-predecessor-ref' and
             reference.get('accepted_digest') == view['accepted_digest'], 'closure requires its original acceptance')
@@ -359,10 +371,11 @@ def validate_closure_delivery(progress):
             verification['requirement_identity'] == view['requirement_identity'] and
             set(view['protected_paths']) <= set(progress['protected_paths']),
             'closure delivery differs from the original implementation binding')
+    validate_coverage_view(view['coverage'], progress['candidate'], verification['plan_authority'], delivery=True)
     validate_validation_plan(view['validation_plan'], progress['binding'])
     require(view['plan_digest'] == digest(view['validation_plan']), 'closure validation plan changed')
     validate_review_axes(progress['candidate'], verification['expected_target_head'], view['plan_digest'],
-                         progress['review'], progress['dispatcher_ref'], verification['plan_authority'])
+                         progress['review'], progress['dispatcher_ref'], verification['plan_authority'], view['coverage'])
     keys(view['review_sources'], {'standards', 'spec'})
     for axis, source in view['review_sources'].items():
         keys(source, {'adapter', 'call_ref', 'response_ref', 'status', 'ref', 'evidence_digest'})
@@ -559,7 +572,7 @@ def validate_progress(progress):
             validate_scope_seal_evidence(seal['evidence'],
                                          {'requirement_identity': seal['evidence']['requirement_identity']}, progress)
     elif 'executions' in progress:
-        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'integration_target_head', 'integration_candidate', 'integration_source', 'integration_retained', 'plan_authority', 'execution_authority', 'plan_revisions', 'plan_revision_sources', 'carried_results', 'revalidation_source', 'review_claims'}
+        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'integration_target_head', 'integration_candidate', 'integration_source', 'integration_retained', 'plan_authority', 'execution_authority', 'plan_revisions', 'plan_revision_sources', 'carried_results', 'revalidation_source', 'review_claims', 'review_applicability', 'coverage'}
         if 'integration_target_head' in progress:
             for field in ('integration_target_head', 'integration_candidate'):
                 require(re.fullmatch('[0-9a-f]{40}', progress.get(field, '')), 'invalid final integration identity')
@@ -1637,12 +1650,13 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                         execution['stopped'] = True
         return {'ok': True, 'context': context, 'effects': effects, 'recovery': recovery,
                 'remaining_paths': recovery['remaining_paths'], 'revalidate': recovery['revalidate']}
-    elif action == 'local-review':
+    elif action in {'local-review', 'ticket-accept'}:
         keys(evidence, {'axis', 'candidate', 'result_ref', 'claim', 'claim_checkpoint'})
         require(progress and progress['state'] == 'implementing', 'local review requires current implementation')
         claim = evidence['claim']
         keys(claim, {'claim_id', 'layer', 'ticket_id', 'slice_id', 'source_candidate', 'plan_authority', 'claim_ref', 'result_ref', 'reviewer_ref'})
-        require(claim['layer'] == 'local' and evidence['axis'] == 'local:' + claim['ticket_id'] + ':' + claim['slice_id'] and
+        expected_axis = 'ticket:' + claim['ticket_id'] if action == 'ticket-accept' else 'local:' + claim['ticket_id'] + ':' + claim['slice_id']
+        require(claim['layer'] == ('ticket' if action == 'ticket-accept' else 'local') and evidence['axis'] == expected_axis and
                 claim['source_candidate'] == evidence['candidate'] and claim['result_ref'] == evidence['result_ref'] and
                 claim['plan_authority'] == progress['plan_authority'], 'local claim subject or authority changed')
         require(claim['reviewer_ref'] != context['carrier']['ref'], 'Dispatcher cannot grant itself local review acceptance')
@@ -1650,10 +1664,16 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         require(len(claims) < 32 or evidence['axis'] in claims, 'state_capacity: current review window is full')
         claims[evidence['axis']] = copy.deepcopy(claim)
         return {'ok': True, 'context': context, 'effects': [], 'claim': claim}
+    elif action == 'review-applicability':
+        keys(evidence, {'candidate', 'reference', 'applicability'})
+        require(progress and progress['state'] == 'implementing', 'refresh applicability only after original calls and candidate retire')
+        require(evidence['candidate'] == evidence['applicability']['candidate'], 'applicability target changed')
+        progress['review_applicability'] = copy.deepcopy(evidence['applicability'])
+        return {'ok': True, 'context': context, 'effects': [], 'applicability': evidence['applicability']}
     elif action == 'candidate-ready':
         keys(evidence, {'dispatcher_ref', 'attempt', 'commit', 'expected_target_head', 'binding',
                         'plan_digest', 'plan_authority', 'checks', 'source', 'clean',
-                        'changed_paths', 'file_hashes'} |
+                        'changed_paths', 'file_hashes', 'ticket_coverage'} |
              ({'direct_provenance'} if 'direct_provenance' in evidence else set()))
         require(progress and evidence['dispatcher_ref'] == context['carrier']['ref'] and evidence['attempt'] == context['carrier']['attempt'], 'wrong dispatcher identity or attempt')
         if progress.get('candidate_evidence') is not None:
@@ -1689,6 +1709,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             missing = [identity for identity in catalog['ordered_step_ids'] if identity not in completed]
             require(not missing, 'candidate requires an accepted result for current function step: ' +
                     missing[0] if missing else 'candidate function steps are complete')
+        validate_coverage_view(evidence['ticket_coverage'], evidence['commit'], progress['plan_authority'], delivery=False)
         require(evidence['clean'] is True and evidence['binding'] == progress['binding'], 'candidate must be clean in bound worktree')
         changed = set(paths(evidence['changed_paths']))
         if direct_implementation(progress):
@@ -1731,12 +1752,15 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         require(progress and progress['state'] in {'reviewable', 'reviewing'} and progress['candidate'] == evidence['candidate'], 'candidate is not reviewable')
         progress['state'] = 'reviewing'
     elif action == 'review-converged':
-        keys(evidence, {'candidate', 'review', 'reference', 'native_evidence'})
-        require(progress and progress['state'] == 'reviewing' and evidence['candidate'] == progress['candidate'], 'review has not started for exact candidate')
+        keys(evidence, {'candidate', 'review', 'reference', 'native_evidence', 'coverage', 'claims'})
+        require(progress and progress['state'] in {'reviewable', 'reviewing'} and evidence['candidate'] == progress['candidate'], 'review has not started for exact candidate')
         validate_review_axes(progress['candidate'], progress['expected_target_head'],
                              progress['plan_digest'], evidence['review'],
-                             context['carrier']['ref'], progress['plan_authority'])
-        decision = {'controller_ref':context['controller_ref'], 'reference':text(evidence['reference']),
+                             context['carrier']['ref'], progress['plan_authority'], evidence['coverage'])
+        validate_coverage_view(evidence['coverage'], progress['candidate'], progress['plan_authority'], delivery=True)
+        progress.setdefault('review_claims', {}).update(evidence['claims'])
+        progress['coverage'] = copy.deepcopy(evidence['coverage'])
+        decision = {'controller_ref':context['controller_ref'], 'coverage': evidence['coverage'], 'reference':text(evidence['reference']),
                     'review':evidence['review'], 'native_evidence':evidence['native_evidence']}
         keys(decision['native_evidence'], {'standards', 'spec'})
         for axis, receipt in decision['native_evidence'].items():

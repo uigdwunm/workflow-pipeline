@@ -429,6 +429,7 @@ def verify_result(stage, payload, binding, scope, root, role_ref, integration_re
                 not history_paths & set(scope["protected_paths"]),
                 "invalid_scope", "candidate history escapes implementation scope")
         control.validate_review(candidate, payload["review"], payload["verification"], role_ref)
+        require(payload['verification']['coverage']['candidate'] == candidate, 'review_incomplete', 'Stage-3 result requires current complete review coverage')
         control.validate_validation_plan(payload["verification"]["validation_plan"], binding)
         protected_revision = candidate
     else:

@@ -240,8 +240,9 @@ execution-result reports stopped, diff/hashes, tests and Git state; the Git adap
 compares actual allocation snapshot. accept-execution rechecks bytes and file modes. candidate-ready
 requires at least one accepted Execution Agent, every changed implementation path
 covered by the latest accepted allocation with matching final bytes and mode, all writers stopped,
-frozen review-required checks and clean verified HEAD. The controller owns
-two independent review axes on that exact candidate. Recovery proves all old writers
+frozen review-required checks, complete applicable local/Ticket coverage and clean
+verified HEAD. The controller owns the two independent delivery axes for current
+cross-Ticket, shared-state and coverage checks. Recovery proves all old writers
 stopped, rechecks accepted hashes and revalidates remaining work. Preserve differences
 on interruption/cancel; reconcile unknown native dispatch before replacement.
 For a path with serial accepted allocations, recovery uses the last accepted
@@ -352,14 +353,17 @@ check names its required fingerprint; otherwise record an explicit
 `environment_not_applicable` basis. Plan digests identify approved bytes, not
 execution or semantic authority. A plan revision follows the original Controller-only transaction and makes earlier candidate review and validation historical.
 
-C's bounded `control` channel accepts candidate-ready, review-converged,
+C's bounded `control` channel accepts local-review, ticket-accept,
+review-applicability, candidate-ready, review-converged,
 validation-start, validation-result, validation-retry and invalidate-candidate.
 Git enriches candidate-ready with actual clean HEAD, paths and fingerprints.
 The candidate binds dispatcher ref/attempt, commit, expected_target_head, binding,
 plan_digest and checks. C review-activity consumes exactly those review checks.
 Each review axis binds candidate, expected_target_head, plan_digest, reviewer_ref,
 accepted status and result_ref naming its real stopped native response. The
-original Controller's convergence decision includes both raw native receipts.
+original Controller's convergence decision includes both original raw native
+receipts and complete current coverage. An inherited report retains its original
+candidate; a separate immutable applicability proof binds the current target.
 
 validation-start records attempt_id, original dispatcher_ref/carrier_attempt,
 candidate/target/plan/review digests, full required list and actual source snapshot
@@ -440,6 +444,45 @@ current Ticket subject. Unknown calls retain their original lookup and reserve.
 An accepted Execution result supplies implementation provenance; local review is
 a separate native result. Local claims alone cannot satisfy `candidate-ready`: C
 returns `review_incomplete` while any complete Ticket acceptance is missing.
+
+## Ticket, delivery and target coverage
+
+`review-activity prepare` with `axis: ticket:<ticket_id>` uses the same protected
+native intent, structured frozen verification-command index and stopped response
+as local review. Its scope is every Ticket AC and every applicable local slice
+plus prerequisite Tickets. The native result must accept the prepared complete
+scope, exact requirement/AC refs, read set and dependency claim IDs without
+findings. The original Controller consumes it through `control ticket-accept`.
+The existing independent local reviewer may perform this acceptance; it cannot
+be any historical implementation owner of the Ticket's files.
+
+The Controller requests `control review-applicability` for a clean current
+candidate. C compares original claims against current Git fingerprints, frozen
+contracts, verification commands and explicit dependency edges, and persists
+separate immutable target proofs. File modes, symlink blobs and absence remain
+part of the fingerprint. Same-file edits invalidate every affected slice;
+read/shared inputs and dependent claims expand the closure. Missing dependencies,
+uncovered changed files or unknown shared impact fail conservatively. Unaffected
+claims retain their original claim ID, source candidate and native stop reference.
+
+`candidate-ready` requires complete applicable Ticket coverage. Delivery
+`standards` and `spec` scopes then check cross-Ticket relationships, shared state,
+requirement/AC/file reachability and integration delta rather than repeating all
+locally accepted bytes. Even an empty integration delta requires the first two
+independent native checks. `review-converged` consumes their exact stopped
+reports and current coverage certificate; Git recomputes the proof graph and
+target applicability. A no-code successor can reuse both original reports only
+when that recomputation proves complete current coverage. No flag or Dispatcher
+decision supplies missing native acceptance. Repeated `inspect` does not dispatch
+reviewers or create review proof objects.
+
+Unknown calls, current findings, old authority or missing stopped responses
+cannot grant coverage. Ticket intents stay in their bounded Ticket subject;
+delivery intents/history stay in `review:delivery:0`. Stop barriers and original
+receipt recovery read those same subjects. Final validation remains required on
+the exact target candidate. Stage-3 acceptance and the real Stage-4 caller retain
+and verify the immutable certificate, original claim/stop/check sources and
+target proofs; damaged or stale coverage refuses the handoff.
 
 ## Controlled Stage-3 recovery
 

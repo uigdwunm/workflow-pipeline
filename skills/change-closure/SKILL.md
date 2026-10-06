@@ -166,5 +166,12 @@ implementation commit I and the unchanged expected target. Closure commit D is
 I or its descendant, with the complete I→D path/byte/mode delta limited to exact
 closure_paths. Check documentation at D without claiming I's test result validates
 D. An implementation or target change returns to the original dispatcher for
-focused/affected checks, both review axes and a new final validation attempt.
+focused/affected checks, complete applicable three-layer coverage and a new full final validation attempt.
 Already-published facts retain cleanup-only and original Phase Run completion.
+
+The Stage-3 coverage certificate is mandatory at closure intake. Resolve its
+original local/Ticket/delivery claim references and target applicability; no
+requirement, AC, changed file, shared influence or original stopped source may
+be missing. Old reports keep their original source candidate and response;
+closure never rewrites them to the accepted commit. Invalid coverage returns to
+Stage 3. The final complete validation remains bound to the accepted candidate.

@@ -537,11 +537,15 @@ def read_active_owner(path):
     current = store.open_current()
     state = store.read_subject(current, current.root['metadata']['stage_subject']).value
     outer = state_store.ProjectedRecord({**current.root['outer'], KEY: state}, current.revision)
+    accepted = state.get('accepted')
+    if isinstance(accepted, dict) and accepted.get('kind') == 'current-implementation-acceptance-body-ref':
+        state['accepted'] = store.read_evidence(accepted['reference'], run_id=current.run_id)['value']['accepted']
+        handoff.unseal(state['accepted'])
     allocations = {}
     for subject_id in current.root['subjects']:
         if subject_id == current.root['metadata']['stage_subject']:
             continue
-        require(subject_id.startswith('ticket:'), 'invalid_checkpoint', 'unknown active subject')
+        require(subject_id.startswith('ticket:') or subject_id == 'review:delivery:0', 'invalid_checkpoint', 'unknown active subject')
         subject = store.read_subject(current, subject_id).value
         require(subject.get('batch') == 0 and isinstance(subject.get('allocations'), dict) and
                 not set(allocations) & set(subject['allocations']),
@@ -551,6 +555,7 @@ def read_active_owner(path):
         require(isinstance(reviews, dict) and not set(reviews) & set(state.get('review_activity', {})),
                 'invalid_checkpoint', 'local review subject identity is duplicated')
         state.setdefault('review_activity', {}).update(reviews)
+        state.setdefault('review_history', []).extend(subject.get('review_history', []))
         require(len(allocations) <= 32, 'state_capacity', 'current allocation window is full')
     outer[KEY]['allocations'] = allocations
     restore_ledger_mirror(outer[KEY])
@@ -565,8 +570,13 @@ def scope_transport(outer):
 def stage_subject_value(state):
     """Canonical persisted stage fields; allocations belong to Ticket subjects."""
     value = {key: value for key, value in state.items() if key != 'allocations'}
-    value['review_activity'] = {key: slot for key, slot in state.get('review_activity', {}).items()
-                                if not key.startswith('local:')}
+    value['review_history'] = []
+    value['review_activity'] = {}
+    if state.get('stage') == 3 and state.get('accepted') is not None:
+        store = state_store.open_store(state['checkpoint_path'])
+        current = store.open_current()
+        value['accepted'] = {'kind': 'current-implementation-acceptance-body-ref',
+            'reference': store.write_object(current.run_id, 'evidence', {'accepted': state['accepted']})}
     port = state.get('control') or {}
     if port.get('discussion') is not None:
         reference = port.get('store_ref')
@@ -1112,6 +1122,7 @@ def implementation_acceptance(reference, path=None, *, store=None):
                 'payload': {**value['payload'], 'review': review, 'verification': verification}}
     control.validate_deliverable(checkpoint, value['payload']['candidate_commit'], review, verification,
                                  accepted['role_ref'])
+    control_git.verify_stored_review_coverage(verification['coverage'], checkpoint, value['packages'], current.run_id)
     require(store.bytes_read <= state_store.READ_LIMIT, 'state_capacity', 'implementation delivery exceeds read budget')
     return accepted, checkpoint
 
@@ -1138,7 +1149,7 @@ def closure_delivery_view(reference):
         'implementation_paths': scope['implementation_paths'], 'closure_paths': scope['closure_paths'],
         'protected_paths': sorted(set(facts['handoff']['scope']['protected_paths']) - set(scope['closure_paths'])),
         'validation_plan': verification['validation_plan'], 'plan_digest': verification['plan_digest'],
-        'review_digest': verification['review_digest'], 'review_sources': {
+        'review_digest': verification['review_digest'], 'coverage': verification['coverage'], 'review_sources': {
             axis: {key: item[key] for key in ('adapter', 'call_ref', 'response_ref', 'status', 'ref')} |
                   {'evidence_digest': entry.digest(item)}
             for axis, item in verification['review_decision']['native_evidence'].items()},
@@ -1486,11 +1497,16 @@ def save_current_record(path, outer, expected_revision, *, expected_authority_re
         subject_id = 'ticket:' + ticket + ':0'
         subject = subjects.setdefault(subject_id, {'ticket_id': ticket, 'batch': 0, 'allocations': {}})
         subject['allocations'][identity] = slot
+    def review_subject(axis, slot):
+        if axis in {'standards', 'spec'}:
+            return subjects.setdefault('review:delivery:0', {'batch': 0, 'allocations': {}})
+        ticket = slot['subject']['ticket_id']
+        return subjects.setdefault('ticket:' + ticket + ':0', {'ticket_id': ticket, 'batch': 0, 'allocations': {}})
     for axis, slot in state.get('review_activity', {}).items():
-        if axis.startswith('local:'):
-            ticket = slot['subject']['ticket_id']
-            subject = subjects.setdefault('ticket:' + ticket + ':0', {'ticket_id': ticket, 'batch': 0, 'allocations': {}})
-            subject.setdefault('review_activity', {})[axis] = slot
+        review_subject(axis, slot).setdefault('review_activity', {})[axis] = slot
+    for group in state.get('review_history', []):
+        for axis, slot in group.items():
+            review_subject(axis, slot).setdefault('review_history', []).append({axis: slot})
     metadata = {key: state[key] for key in ('protocol', 'revision', 'stage', 'status')}
     metadata['stage_subject'] = stage_id
     if state.get('design_predecessor') is not None:
@@ -1692,7 +1708,7 @@ def validate_saved_reviews(state):
     identities = set()
     for group in [state.get('review_activity', {}), *state.get('review_history', [])]:
         require(isinstance(group, dict) and len(group) <= 32 and all(isinstance(key, str) and
-                (key in {'standards', 'spec'} or key.startswith('local:')) for key in group),
+                (key in {'standards', 'spec'} or key.startswith(('local:', 'ticket:'))) for key in group),
                 'invalid_checkpoint', 'retain the two original review axes')
         for axis, slot in group.items():
             require(isinstance(slot, dict) and isinstance(slot.get('action_id'), str) and slot['action_id'] and
@@ -3876,11 +3892,12 @@ class Progress:
             require(s['stopped'] and not self.stop_barrier_pending(), 'host_evidence_missing', 'acceptance requires all original native calls and writers to be closed')
             if s['stage'] == 3:
                 payload = s['dispatch']['delivery']['message']['payload']
-                slots = s.get('review_activity', {})
-                require(set(slots) == {'standards','spec'} and all(
-                    slots[axis]['candidate'] == payload['candidate_commit'] and slots[axis]['stopped'] and
-                    slots[axis]['ref'] == payload['review'][axis]['reviewer_ref'] for axis in slots),
-                    'review_incomplete', 'both stopped native reviewers must match the exact candidate')
+                claims, applications = self.review_applications(payload['candidate_commit'])
+                require(all(axis in claims and applications[axis]['applicable'] and
+                    claims[axis]['reviewer_ref'] == payload['review'][axis]['reviewer_ref'] and
+                    claims[axis]['source_candidate'] == payload['review'][axis]['candidate']
+                    for axis in ('standards', 'spec')), 'review_incomplete',
+                    'acceptance requires original native delivery claims applicable to this exact candidate')
         if (s["stage"] == 2 and (operation == "accept" or
                 operation == "receive" and extra.get("result", {}).get("status") == "completed")):
             authority = s.get("scope_authority")
@@ -6147,7 +6164,7 @@ class Progress:
         entry.fields(data, {"action", "evidence", "receipt"})
         entry.nonempty(data["action"])
         require(data["action"] in {"successor-ready", "archive", "archive-result",
-                    "scope-seal", "scope-revise", "plan-revision-activate", "escalate-implementation", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "capture-integration", "local-review", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
+                    "scope-seal", "scope-revise", "plan-revision-activate", "escalate-implementation", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "capture-integration", "local-review", "ticket-accept", "review-applicability", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
                 "invalid_operation", "use the original bounded control recovery/closure operation")
         require(isinstance(data["receipt"], dict) and data["receipt"], "host_evidence_missing", "original authenticated host/controller evidence required")
         s = self.state
@@ -6346,22 +6363,41 @@ class Progress:
                 require(all('ticket:' + ticket['ticket_id'] in checkpoint.get('review_claims', {})
                             for ticket in execution_plan.current_catalog(s['scope_authority'])['tickets']),
                         'review_incomplete', 'Ticket acceptance is required before candidate-ready')
+                data = copy.deepcopy(data)
+                data['evidence']['ticket_coverage'] = self.build_review_coverage(data['evidence']['commit'], delivery=False)
             if data['action'] == 'validation-start' and self.unresolved_host_actions():
                 return self.query_host()
             data = copy.deepcopy(data)
             if data['action'] == 'review-converged':
+                checkpoint = s['control']['context']['handoff_progress']
+                existing, applications = self.review_applications(data['evidence']['candidate'])
                 slots = s.get('review_activity', {})
-                require(set(slots) == {'standards','spec'}, 'review_incomplete', 'both native review axes required')
-                native = {}
-                for axis, slot in slots.items():
+                native, claims = {}, {}
+                for axis in ('standards', 'spec'):
                     review = data['evidence']['review'][axis]
-                    require(slot['stopped'] and (not slot.get('query') or slot['query']['resolved']) and
-                            slot['ref'] == review['reviewer_ref'] and slot['candidate'] == data['evidence']['candidate'],
-                            'review_incomplete', 'native reviews and their exact lookups must stop at exact candidate')
-                    receipts = [r for r in slot['receipts'] if r['response_ref'] == review['result_ref'] and r['status'] == 'stopped']
-                    require(len(receipts) == 1, 'review_incomplete', 'semantic result must name original stopped response')
-                    native[axis] = receipts[0]
+                    retained = existing.get(axis)
+                    if retained is not None and applications[axis]['applicable'] and                            retained['source_candidate'] == review['candidate'] and retained['native_stop']['response_ref'] == review['result_ref'] and                            retained['reviewer_ref'] == review['reviewer_ref']:
+                        store = state_store.open_store(self.path)
+                        current = store.open_current()
+                        native[axis] = store.read_evidence(retained['native_stop_ref'], run_id=current.run_id)['value']['native_review_stop']
+                        claims[axis] = checkpoint['review_claims'][axis]
+                    else:
+                        slot = slots.get(axis)
+                        require(slot and slot['stopped'] and (not slot.get('query') or slot['query']['resolved']) and
+                                slot['ref'] == review['reviewer_ref'] and slot['candidate'] == data['evidence']['candidate'],
+                                'review_incomplete', 'both original delivery reviewers or valid inherited claims are required')
+                        receipts = [r for r in slot['receipts'] if r['response_ref'] == review['result_ref'] and r['status'] == 'stopped']
+                        require(len(receipts) == 1, 'review_incomplete', 'semantic result must name original stopped response')
+                        native[axis] = receipts[0]
+                        claims[axis] = self.accept_delivery_review(axis, review['result_ref'])
                 data['evidence']['native_evidence'] = native
+                original = checkpoint.get('review_claims', {})
+                checkpoint['review_claims'] = {**original, **claims}
+                try:
+                    data['evidence']['coverage'] = self.build_review_coverage(data['evidence']['candidate'], delivery=True)
+                finally:
+                    checkpoint['review_claims'] = original
+                data['evidence']['claims'] = claims
             if data['action'] in {'candidate-ready', 'validation-result'}:
                 data['evidence']['source'] = copy.deepcopy(data['receipt'])
                 if data['action'] == 'candidate-ready' and control.direct_implementation(s['control']['context']['handoff_progress']):
@@ -6386,12 +6422,16 @@ class Progress:
             if data['action'] in {'validation-retry', 'invalidate-candidate'}:
                 require(not self.unresolved_host_actions(), 'host_action_pending', 'reconcile original calls before validation recovery')
                 require(all(v.get('stopped') for v in s.get('review_activity', {}).values()), 'review_active', 'stop old native reviewers before recovery')
-        if data['action'] == 'local-review':
+        if data['action'] in {'local-review', 'ticket-accept'}:
             data = copy.deepcopy(data)
             require(set(data['evidence']) == {'axis', 'candidate', 'result_ref'},
                     'invalid_evidence', 'local claim is derived from its original native result')
             data['evidence']['claim'] = self.accept_local_review(data['evidence'])
             data['evidence']['claim_checkpoint'] = str(self.path)
+        if data['action'] == 'review-applicability':
+            data = copy.deepcopy(data)
+            require(set(data['evidence']) == {'candidate', 'reference'}, 'invalid_evidence', 'derive target applicability from original claims and Git')
+            data['evidence']['applicability'] = self.persist_review_applicability(data['evidence']['candidate'])
         identity = entry.digest(data)
         transactions = s.setdefault("control_transactions", {})
         previous = transactions.get(identity)
@@ -7096,6 +7136,189 @@ class Progress:
         self.require_not_stopping()
         self.require_finalizations_released()
 
+    def review_dependency_axes(self, axis):
+        catalog = execution_plan.current_catalog(self.state['scope_authority'])
+        if axis in {'standards', 'spec'}:
+            return ['ticket:' + ticket['ticket_id'] for ticket in catalog['tickets']]
+        ticket, group, steps = review_evidence.subject(catalog, axis)
+        if axis.startswith('ticket:'):
+            dependencies = ['local:' + ticket['ticket_id'] + ':' + item['id'] for item in ticket['plan']['behavior_slices']]
+        else:
+            deps = {step_id for step in steps for step_id in step.get('depends_on', [])} - set(group['step_ids'])
+            dependencies = ['local:' + other['ticket_id'] + ':' + item['id'] for other in catalog['tickets']
+                for item in other['plan']['behavior_slices'] if set(item['step_ids']) & deps]
+        dependencies += ['ticket:' + identity for identity in ticket['plan']['blocked_by']]
+        return sorted(set(dependencies))
+
+    def review_dependencies(self, axis):
+        views = self.state['control']['context']['handoff_progress'].get('review_claims', {})
+        axes = self.review_dependency_axes(axis)
+        return sorted(views[key]['claim_id'] for key in axes if key in views), any(key not in views for key in axes)
+
+    def review_scope(self, axis, projection=None):
+        catalog = execution_plan.current_catalog(self.state['scope_authority'])
+        dependencies, missing = self.review_dependencies(axis)
+        if axis in {'standards', 'spec'}:
+            return {'layer': 'delivery', 'mode': 'cross-ticket-and-coverage', 'axis': axis,
+                'ticket_ids': [ticket['ticket_id'] for ticket in catalog['tickets']],
+                'requirement_refs': catalog['requirement_refs'],
+                'ac_refs': sorted({ac for ticket in catalog['tickets'] for group in ticket['plan']['behavior_slices'] for ac in group['ac_refs']}),
+                'dependency_claim_ids': dependencies, 'read_paths': sorted({p for ticket in catalog['tickets'] for group in ticket['plan']['behavior_slices'] for p in group['read_only']}),
+                'shared_state': sorted({p for ticket in catalog['tickets'] for group in ticket['plan']['behavior_slices'] for p in group['shared_state']}),
+                'integration_delta_paths': [], 'missing_dependencies': missing}
+        projection = projection or self.local_review_subject({'axis': axis, 'candidate': control_git.snapshot(Path(self.state['handoff']['binding']['worktree']))['head']})
+        return {'layer': 'ticket' if axis.startswith('ticket:') else 'local', 'axis': axis,
+            'mode': 'complete-ticket-AC' if axis.startswith('ticket:') else 'local-standards-and-contract',
+            'ac_refs': projection['ac_refs'], 'requirement_refs': projection['requirement_refs'],
+            'dependency_claim_ids': dependencies, 'read_paths': sorted(projection['read_fingerprints']),
+            'shared_state': projection['shared_state'], 'missing_dependencies': missing}
+
+    def read_review_claims(self):
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        views = self.state['control']['context']['handoff_progress'].get('review_claims', {})
+        claims = {}
+        for axis, view in views.items():
+            claim = store.read_evidence(view['claim_ref'], run_id=current.run_id, maximum=state_store.SUBJECT_LIMIT)['value']['review_claim']
+            review_evidence.validate_claim(claim)
+            require(review_evidence.claim_view(claim, view['claim_ref']) == view and
+                    claim['run_id'] == current.run_id and claim['package_digest'] == entry.digest(self.state['packages']),
+                    'review_incomplete', 'review claim belongs to another run or package')
+            stop = store.read_evidence(claim['native_stop_ref'], run_id=current.run_id)['value']['native_review_stop']
+            require(all(stop[key] == claim['native_stop'][key] for key in ('adapter', 'call_ref', 'response_ref', 'status', 'ref')),
+                    'review_incomplete', 'original native stopped claim source changed')
+            source = store.read_evidence(claim['verification']['source_ref'], run_id=current.run_id)['value']['local_check_source']
+            require(entry.digest(source) == claim['verification']['source_digest'] and
+                    source['raw'].get('checks') == claim['verification']['checks'],
+                    'review_incomplete', 'original stopped regression source changed')
+            control.validate_result_source(source, claim['verification']['checks'], self.bound_ref())
+            claims[axis] = claim
+        return claims
+
+    def review_applications(self, candidate):
+        claims = self.read_review_claims()
+        catalog = execution_plan.current_catalog(self.state['scope_authority'])
+        checkpoint = self.state['control']['context']['handoff_progress']
+        targets, changed, invalid = {}, set(), set()
+        repository = Path(self.state['handoff']['binding']['worktree'])
+        for axis, claim in claims.items():
+            if axis in {'standards', 'spec'}:
+                target = self.delivery_review_subject(candidate, axis)
+                target['required'] = checkpoint['validation_plan']['review_required']
+            else:
+                target = self.local_review_subject({'axis': axis, 'candidate': candidate})
+                target['required'] = review_evidence.local_required_checks(catalog, axis, checkpoint['binding']['worktree'])
+            target.pop('verification_refs', None)
+            target['known_paths'] = checkpoint['allowed_paths'] + checkpoint['protected_paths']
+            _, target['missing_dependencies'] = self.review_dependencies(axis)
+            targets[axis] = target
+            changed.update(set(control_git.git(repository, 'diff', '--name-only', claim['source_candidate'], candidate).decode().splitlines()) -
+                           control_git.verified_planning_paths(repository, checkpoint))
+            if claim['reviewer_ref'] in self.state.get('native_adverse', {}):
+                invalid.add(claim['claim_id'])
+            for group in [self.state.get('review_activity', {}), *self.state.get('review_history', [])]:
+                slot = group.get(axis)
+                if slot and slot['action_id'] == claim['native_stop']['action_id'] and (
+                        not slot['stopped'] or slot.get('query') and not slot['query']['resolved']):
+                    invalid.add(claim['claim_id'])
+                if slot and slot['action_id'] == claim['native_stop']['action_id'] and slot['receipts']:
+                    latest = slot['receipts'][-1]['raw']
+                    if latest.get('format') == 'review-raw-reference-v1' and not latest.get('truncated'):
+                        store = state_store.open_store(self.path)
+                        latest = store.read_raw_evidence(latest['evidence_ref'], run_id=store.open_current().run_id)
+                    report = latest.get('review')
+                    if isinstance(report, dict) and (report.get('findings') or report.get('status') != 'accepted'):
+                        invalid.add(claim['claim_id'])
+        return claims, review_evidence.applicable_claims(claims, targets, candidate, checkpoint['plan_authority'], changed, invalid_ids=invalid)
+
+    def persist_review_applicability(self, candidate):
+        repository = Path(self.state['handoff']['binding']['worktree'])
+        require(control_git.snapshot(repository)['head'] == candidate and not control_git.git(repository, 'status', '--porcelain'),
+                'candidate_changed', 'applicability requires one exact clean target candidate')
+        claims, applications = self.review_applications(candidate)
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        views = self.state['control']['context']['handoff_progress'].get('review_claims', {})
+        for axis, application in applications.items():
+            reference = store.write_object(current.run_id, 'evidence', {'review_applicability': application})
+            application.update(applicability_ref=reference, claim_ref=views[axis]['claim_ref'])
+        value = {'kind': 'review-applicability-set-v1', 'candidate': candidate,
+            'plan_authority': self.state['control']['context']['handoff_progress']['plan_authority'],
+            'applications': applications}
+        reference = store.write_object(current.run_id, 'evidence', value)
+        return {'candidate': candidate, 'reference': reference, 'digest': entry.digest(value),
+            'retained': sorted(app['claim_id'] for app in applications.values() if app['applicable']),
+            'affected': sorted(app['claim_id'] for app in applications.values() if not app['applicable']),
+            'checkpoint_path': str(self.path)}
+
+    def build_review_coverage(self, candidate, *, delivery):
+        claims, applications = self.review_applications(candidate)
+        proof = self.persist_review_applicability(candidate)
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        applications = store.read_evidence(proof['reference'], run_id=current.run_id)['value']['applications']
+        checkpoint = self.state['control']['context']['handoff_progress']
+        certificate = review_evidence.coverage_certificate(execution_plan.current_catalog(self.state['scope_authority']),
+            claims, applications, candidate, checkpoint['plan_authority'], checkpoint['allowed_paths'], delivery=delivery)
+        reference = store.write_object(current.run_id, 'evidence', {'review_coverage': certificate})
+        return review_evidence.certificate_view(certificate, reference, str(self.path))
+
+    def delivery_review_subject(self, candidate, axis):
+        scope = self.review_scope(axis)
+        checkpoint = self.state['control']['context']['handoff_progress']
+        read = set(scope['read_paths']) | (set(scope['shared_state']) & set(checkpoint['allowed_paths'] + checkpoint['protected_paths']))
+        return {'ticket_id': 'delivery', 'slice_id': axis, 'plan_refs': [],
+            'ac_refs': scope['ac_refs'], 'requirement_refs': scope['requirement_refs'],
+            'dependency_claim_ids': scope['dependency_claim_ids'], 'shared_state': scope['shared_state'],
+            'owned_fingerprints': {}, 'read_fingerprints': control_git.review_fingerprints(Path(checkpoint['binding']['worktree']), candidate, read),
+            'contract_digest': entry.digest({'requirements': scope['requirement_refs'], 'acs': scope['ac_refs'],
+                'shared_state': scope['shared_state'], 'plan_contract': checkpoint['plan_authority']['contract_digest']})}
+
+    def accept_delivery_review(self, axis, result_ref):
+        slot = self.state.get('review_activity', {}).get(axis)
+        checkpoint = self.state['control']['context']['handoff_progress']
+        require(slot and slot['stopped'] and slot['candidate'] == checkpoint['candidate'] and
+                (not slot.get('query') or slot['query']['resolved']), 'review_incomplete', 'original delivery reviewer must stop')
+        receipts = [receipt for receipt in slot['receipts'] if receipt['status'] == 'stopped' and receipt['response_ref'] == result_ref]
+        require(len(receipts) == 1, 'review_incomplete', 'delivery report needs its original stopped response')
+        receipt = receipts[0]
+        scope = self.review_scope(axis)
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        raw = receipt['raw']
+        if raw.get('format') == 'review-raw-reference-v1':
+            require(not raw['truncated'], 'outcome_unknown', 'delivery review response is incomplete')
+            raw = store.read_raw_evidence(raw['evidence_ref'], run_id=current.run_id)
+        report = raw.get('review')
+        require(isinstance(report, dict) and report.get('status') == 'accepted' and report.get('findings') == [] and
+                report.get('review_scope') == scope and report.get('ac_refs') == scope['ac_refs'] and
+                report.get('requirement_refs') == scope['requirement_refs'] and
+                report.get('dependency_claim_ids') == scope['dependency_claim_ids'],
+                'review_incomplete', 'delivery review must accept cross-Ticket/shared-state and complete coverage')
+        writers = checkpoint['executions'] + checkpoint.get('carried_results', [])
+        for source in checkpoint.get('plan_revision_sources', []):
+            writers += source['executions'] + source['carried_results']
+        require(receipt['ref'] not in {item['agent_ref'] for item in writers} | {self.bound_ref(), self.state['handoff']['controller_ref']},
+                'identity_mismatch', 'delivery reviewer cannot be any implementation author')
+        source = checkpoint['candidate_evidence']['source']
+        required = checkpoint['validation_plan']['review_required']
+        control.validate_checks(required, checkpoint['tests'], checkpoint['candidate'])
+        control.validate_result_source(source, checkpoint['tests'], self.bound_ref())
+        projection = self.delivery_review_subject(checkpoint['candidate'], axis)
+        claim = {'schema_version': 1, 'run_id': current.run_id, 'package_digest': entry.digest(self.state['packages']),
+            'layer': 'delivery', **projection, 'plan_authority': checkpoint['plan_authority'],
+            'source_candidate': checkpoint['candidate'], 'verification': {'ids': [item['id'] for item in required],
+                'required': required, 'checks': checkpoint['tests'], 'source_results': [],
+                'source_ref': store.write_object(current.run_id, 'evidence', {'local_check_source': source}),
+                'source_digest': entry.digest(source), 'environment_digest': entry.digest(source['raw'].get('environment')),
+                'fixture_digest': entry.digest(source['raw'].get('fixture'))},
+            'reviewer_ref': receipt['ref'], 'native_stop': {**{key: receipt[key] for key in ('adapter', 'call_ref', 'response_ref', 'status', 'ref')},
+                'action_id': slot['action_id']}, 'native_stop_ref': store.write_object(current.run_id, 'evidence', {'native_review_stop': receipt}),
+            'findings': [], 'status': 'accepted'}
+        claim['claim_id'] = entry.digest(claim)
+        reference = store.write_object(current.run_id, 'evidence', {'review_claim': claim})
+        return review_evidence.claim_view(claim, reference)
+
     def local_review_subject(self, data):
         checkpoint = self.state['control']['context']['handoff_progress']
         ticket, group, steps = review_evidence.subject(execution_plan.current_catalog(self.state['scope_authority']), data['axis'])
@@ -7103,9 +7326,12 @@ class Progress:
         for item in self.state['scope_authority']['scope']['downstream']['manifest']:
             if item['owner'] == 'implementation' and item['kind'] == 'generated' and owned & set(item['source_paths']):
                 owned.add(item['path'])
-        read = set(group['read_only'])
+        read = set(group['read_only']) | (set(group['shared_state']) &
+            set(self.state['scope_authority']['scope']['implementation_paths'] + self.state['scope_authority']['scope']['protected_paths']))
+        read -= owned
         fingerprints = control_git.review_fingerprints(Path(self.state['handoff']['binding']['worktree']),
             data['candidate'], owned | read)
+        dependencies, missing = self.review_dependencies(data['axis'])
         return {'ticket_id': ticket['ticket_id'], 'slice_id': group['id'],
             'plan_refs': [execution_plan.step_ref(ticket, step) for step in steps],
             'ac_refs': group['ac_refs'], 'shared_state': group['shared_state'],
@@ -7113,7 +7339,9 @@ class Progress:
             'read_fingerprints': {p: fingerprints[p] for p in sorted(read)},
             'contract_digest': entry.digest({'contract_refs': ticket['plan']['contract_refs'],
                                             'slice': group}),
-            'verification_refs': group['verification_refs']}
+            'verification_refs': group['verification_refs'], 'dependency_claim_ids': dependencies,
+            'requirement_refs': review_evidence.ticket_requirement_refs(execution_plan.current_catalog(self.state['scope_authority']), ticket)
+                if data['axis'].startswith('ticket:') else []}
 
     def validate_local_review(self, data):
         checkpoint = self.state['control']['context']['handoff_progress']
@@ -7128,15 +7356,22 @@ class Progress:
         completed = execution_plan.current_accepted_steps(execution_plan.current_catalog(self.state['scope_authority']),
             results, self.state['scope_authority'])
         require(set(group['step_ids']) <= completed, 'review_incomplete', 'accept and stop every local Execution result first')
+        selected_paths = set(self.local_review_subject(data)['owned_fingerprints'])
+        final_owned = {}
         for result in results:
-            if any(ref['step_id'] in group['step_ids'] for ref in result.get('plan_refs', [])):
-                require(result['stopped'] and result['state'] == 'accepted' and result.get('plan_authority') == checkpoint['plan_authority'],
-                        'review_incomplete', 'local review requires the original current stopped Execution')
-                owned = execution_plan.accepted_owned_fingerprints(result)
-                repository = Path(self.state['handoff']['binding']['worktree'])
-                require(owned is not None and all(control_git.file_fingerprint(repository, relative) == fingerprint
-                            for relative, fingerprint in owned.items()),
-                        'review_incomplete', 'local source differs from its accepted Execution fingerprints')
+            owned = execution_plan.accepted_owned_fingerprints(result)
+            require(owned is not None and result['stopped'] and result['state'] == 'accepted' and
+                    result.get('plan_authority') == checkpoint['plan_authority'],
+                    'review_incomplete', 'current stopped Execution fingerprints are required')
+            final_owned.update(owned)
+        repository = Path(self.state['handoff']['binding']['worktree'])
+        require(selected_paths <= set(final_owned) and all(control_git.file_fingerprint(repository, relative) == final_owned[relative]
+                    for relative in selected_paths), 'review_incomplete', 'local source differs from its latest accepted Execution owner')
+        if data['axis'].startswith('ticket:'):
+            claims, applications = self.review_applications(data['candidate'])
+            required_axes = self.review_dependency_axes(data['axis'])
+            require(all(axis in claims and applications[axis]['applicable'] for axis in required_axes),
+                    'review_incomplete', 'Ticket acceptance requires every applicable local slice and prerequisite Ticket')
         return required
 
     def accept_local_review(self, evidence):
@@ -7176,15 +7411,18 @@ class Progress:
         require(isinstance(semantic, dict) and semantic.get('status') == 'accepted' and
                 semantic.get('findings') == [] and semantic.get('checks') == slot['prepare']['verification']['checks'] and
                 set(semantic.get('read_paths', [])) == set(projection['read_fingerprints']) and
-                set(semantic.get('ac_refs', [])) == set(projection['ac_refs']),
+                set(semantic.get('ac_refs', [])) == set(projection['ac_refs']) and
+                semantic.get('dependency_claim_ids', []) == projection['dependency_claim_ids'] and
+                semantic.get('requirement_refs', []) == projection['requirement_refs'] and
+                (not evidence['axis'].startswith('ticket:') or semantic.get('review_scope') == self.review_scope(evidence['axis'], projection)),
                 'review_incomplete', 'original reviewer must accept exact ACs, reads and local regressions without findings')
         stop_ref = store.write_object(current.run_id, 'evidence', {'native_review_stop': receipt})
         source = slot['prepare']['verification']['source']
         source_ref = store.write_object(current.run_id, 'evidence', {'local_check_source': source})
         claim = {'schema_version': 1, 'run_id': current.run_id, 'package_digest': entry.digest(self.state['packages']),
-            'layer': 'local', **{k: copy.deepcopy(v) for k, v in projection.items() if k != 'verification_refs'},
+            'layer': 'ticket' if evidence['axis'].startswith('ticket:') else 'local', **{k: copy.deepcopy(v) for k, v in projection.items() if k != 'verification_refs'},
             'plan_authority': checkpoint['plan_authority'], 'source_candidate': evidence['candidate'],
-            'dependency_claim_ids': [], 'verification': {'ids': projection['verification_refs'],
+            'verification': {'ids': projection['verification_refs'],
                 'required': required, 'checks': semantic['checks'], 'source_ref': source_ref,
                 'source_digest': entry.digest(source),
                 'environment_digest': entry.digest(source['raw']['environment']),
@@ -7215,7 +7453,7 @@ class Progress:
         start = slot['start']
         if start['applied']:
             return
-        if slot['prepare']['axis'].startswith('local:'):
+        if slot['prepare']['axis'].startswith(('local:', 'ticket:')):
             require(entry.digest(self.state['control']) == start['control_digest'],
                     'control_context_changed', 'pending local review cannot replace a newer authority')
             return {'context': copy.deepcopy(self.state['control']['context'])}, None
@@ -7388,7 +7626,7 @@ class Progress:
         """Two fixed review slots; allocation and candidate acceptance stay in B."""
         entry.fields(data, {'operation','axis','candidate','actor_ref'}, {'verification','action_id','receipt'})
         s = self.state
-        require(s['stage'] == 3 and isinstance(data['axis'], str) and (data['axis'] in {'standards','spec'} or data['axis'].startswith('local:')), 'role_mismatch', 'only the Stage-3 review axes are supported')
+        require(s['stage'] == 3 and isinstance(data['axis'], str) and (data['axis'] in {'standards','spec'} or data['axis'].startswith(('local:', 'ticket:'))), 'role_mismatch', 'only the Stage-3 review axes are supported')
         current = handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
         actor = s['handoff']['expected_entry']['actor']
         require(data['actor_ref'] == actor['thread_id'] == current['actor']['thread_id'] and
@@ -7422,7 +7660,7 @@ class Progress:
             self.require_business_ready()
             if slot is None or slot['candidate'] != data['candidate']:
                 self.require_finalizations_released()
-            local = data['axis'].startswith('local:')
+            local = data['axis'].startswith(('local:', 'ticket:'))
             if local:
                 self.validate_local_review(data)
             else:
@@ -7448,8 +7686,8 @@ class Progress:
             if not local and any(value['candidate'] != data['candidate'] for key, value in slots.items()
                                  if key in {'standards', 'spec'}):
                 require(all(value.get('stopped') for value in slots.values()), 'review_active', 'stop and reconcile both old review axes first')
-                s.setdefault('review_history', []).append(copy.deepcopy(slots))
-                s['review_activity'] = slots = {}
+                old_delivery = {key: slots.pop(key) for key in ('standards', 'spec') if key in slots}
+                s.setdefault('review_history', []).append(old_delivery)
                 slot = None
             slot = {'candidate':data['candidate'], 'originating_ref':data['actor_ref'], 'prepare':copy.deepcopy(data),
                     'action_id':str(uuid.uuid4()), 'ref':None, 'stopped':False, 'receipts':[],
@@ -7524,7 +7762,7 @@ class Progress:
             self.commit_review_start(slot, result, applied)
             return _view(s, {'operation':'invoke-review','axis':data['axis'],
                 'candidate':data['candidate'], 'verification':copy.deepcopy(data['verification']),
-                'action_id':slot['action_id']})
+                'action_id':slot['action_id'], 'review_scope': self.review_scope(data['axis'], slot.get('subject'))})
         entry.fields(data, {'operation','axis','candidate','actor_ref','action_id','receipt'})
         require(data['operation'] == 'observe' and slot is not None and slot['candidate'] == data['candidate'] and
                 slot['action_id'] == data['action_id'], 'review_missing', 'observe the original exact review call')

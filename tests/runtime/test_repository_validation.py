@@ -175,28 +175,39 @@ or
             self.assertNotIn("pins the exact candidate commit", source)
             self.assertNotIn("reruns both axes against that replacement candidate", source)
         for marker in (
-            "review contract is authoritative",
-            "pins the exact candidate commit",
-            "sealed implementation baseline as one review fixed point",
-            "passes that same fixed point and candidate to both Standards and Spec review axes",
-            "dispatches the Standards and Spec review axes independently",
+            "three-layer review contract is authoritative",
+            "independent local Standards/contract review",
+            "accept complete Ticket ACs, combinations and shared fixtures",
+            "not be any version's implementation owner",
+            "sealed implementation baseline as `expected_target_head`",
+            "Delivery Standards and Spec are independent axes",
+            "full requirement/AC/file coverage",
+            "do not rescan unchanged locally covered implementation",
+            "first empty delta still needs real independent coverage/shared-state review",
+            "complete immutable coverage certificate",
+            "Unchanged claims and reports retain their source commit, identity and original stopped response",
+            "A target applicability record carries them to a new candidate",
+            "Same-file changes invalidate all claims touching that file",
+            "public/shared/unknown effects widen through consumers and Tickets",
             "same Dedicated Implementation Task and verified worktree",
-            "Any replacement candidate invalidates both review results",
-            "reruns both axes against that replacement candidate",
             "Only the Originating Task accepts the candidate; Stage 4 integrates it",
-            "Target advancement preserves the current candidate, review and validation during Stage 3",
-            "Then record `review-converged`",
-            "Persist one `validation-start` attempt",
-            "Only the latest complete passed final attempt permits formal B acceptance",
+            "persist one original `validation-start` attempt",
+            "Only its latest complete passed result permits B acceptance",
+            "A new candidate cannot inherit an old full validation pass",
         ):
             self.assertIn(marker, normalized_originating)
+        for obsolete in ("Any replacement candidate invalidates both review results",
+                         "reruns both axes against that replacement candidate"):
+            self.assertNotIn(obsolete, normalized_originating)
         accept_contract = " ".join(originating.split("## Accept", 1)[1].split("## Diagnosis-first remediation", 1)[0].split())
         review_first_order = (
-            "focused and affected checks",
-            "dispatches the Standards and Spec review axes independently",
-            "Then record `review-converged`",
-            "Persist one `validation-start` attempt",
-            "Only the latest complete passed final attempt permits formal B acceptance",
+            "independent local Standards/contract review",
+            "accept complete Ticket ACs",
+            "focused/affected early integration results",
+            "Delivery Standards and Spec are independent axes",
+            "complete immutable coverage certificate",
+            "persist one original `validation-start` attempt",
+            "Only its latest complete passed result permits B acceptance",
         )
         positions = [accept_contract.index(marker) for marker in review_first_order]
         self.assertEqual(positions, sorted(positions))
@@ -206,16 +217,22 @@ or
             "Dedicated Implementation Task merges the new target",
             "runs affected checks",
             "commits a replacement candidate",
-            "Originating Task establishes the new review fixed point",
-            "reruns both Standards and Spec axes",
-            "complete the frozen final validation before retrying",
+            "Originating Task compares original claims with the new target",
+            "invalidates the affected file/read/dependency closure",
+            "independent review for missing local/Ticket/delivery coverage",
+            "Unaffected claims",
+            "original source candidate and stopped response",
+            "separate target applicability proves their reuse",
+            "both independent delivery axes",
+            "frozen final validation before retrying",
         ):
             self.assertIn(marker, normalized_worktree_execution)
         replacement_order = (
             "runs affected checks",
             "commits a replacement candidate",
-            "reruns both Standards and Spec axes",
-            "complete the frozen final validation before retrying",
+            "invalidates the affected file/read/dependency closure",
+            "both independent delivery axes",
+            "frozen final validation before retrying",
         )
         positions = [normalized_worktree_execution.index(marker) for marker in replacement_order]
         self.assertEqual(positions, sorted(positions))

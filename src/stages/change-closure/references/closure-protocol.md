@@ -62,12 +62,19 @@ Inherited Stage-3 delivery requires the strict schema-2 final verification on
 implementation commit I and the unchanged expected target. Confirm that the
 candidate, both stopped review axes, latest passed final attempt and B acceptance
 name the same current `plan_authority` (revision, authority, execution-plan and
-contract digests). A formal plan revision retires the earlier candidate, reviews
+contract digests). A formal plan revision retires the earlier candidate and affected reviews
 and final attempt even when I's code bytes are unchanged; wait for the original
 Dispatcher's newly accepted delivery before publication. Closure commit D is
 I or its descendant, with the complete I→D path/byte/mode delta limited to exact
 closure_paths. Check documentation at D without claiming I's test result validates
 D. An implementation or target change returns to the original dispatcher for
-focused/affected checks, both review axes and a new final validation attempt
+focused/affected checks, complete applicable three-layer coverage and a new full final validation attempt
 under the current plan authority.
 Already-published facts retain cleanup-only and original Phase Run completion.
+
+The Stage-3 coverage certificate is mandatory at closure intake. Resolve its
+original local/Ticket/delivery claim references and target applicability; no
+requirement, AC, changed file, shared influence or original stopped source may
+be missing. Old reports keep their original source candidate and response;
+closure never rewrites them to the accepted commit. Invalid coverage returns to
+Stage 3. The final complete validation remains bound to the accepted candidate.

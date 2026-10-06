@@ -100,33 +100,40 @@ Execution Agent deliveries under the current plan refs and authority. An empty
 allocation list is not stopped-writer evidence. The original Controller alone
 classifies and commits an internal plan revision after the full stop barrier.
 
-This review contract is authoritative. Require a clean committed candidate plus
-focused and affected checks. The Originating Task pins the exact candidate commit and
-the sealed implementation baseline as one review fixed point (`expected_target_head`), independently
-inspects the candidate diff against that fixed point, and passes that same fixed
-point and candidate to both Standards and Spec review axes. Give the Spec axis
-the committed planning artifacts for an inherited flow or the exact fixed
-standalone brief. It dispatches the Standards and Spec review axes independently
-and records their results
-separately. Neither reviewer may be the Dispatcher.
-Do not accept a candidate until both axes correspond to that exact
-fixed point and candidate commit and have no unresolved actionable findings.
-Then record `review-converged` with semantic result references matching the two
-stopped native responses. Persist one `validation-start` attempt and consume its
-followup on the original dispatcher. Only the latest complete passed final attempt
-permits formal B acceptance; inspect raw outputs and every frozen check condition.
-Reject an unplanned feature, behavior change, deletion, replacement, side
-effect, or optional adjacent improvement even when its tests pass.
-Return every actionable test or review finding to the same Implementation Dispatcher and verified worktree; the originating task does not edit
-the implementation or create a replacement for ordinary remediation. Any
-replacement candidate invalidates both review results. The Originating Task
-reruns both axes against that replacement candidate before accepting it. Only
-the Originating Task accepts the candidate; Stage 4 integrates it. Route only a material
-unresolved decision to the user. Target advancement preserves the current
-candidate, review and validation during Stage 3. Final integration is initiated
-only by Stage 4 through the bounded recovery procedure in Workflow Progression;
-the original accepted result remains immutable history. A recovered replacement
-requires both fresh review axes and the frozen final validation.
+This three-layer review contract is authoritative. Each behavior slice has one
+independent local Standards/contract review after its exact frozen regression
+commands pass. A Ticket reviewer may reuse its native context for several slices
+and then accept complete Ticket ACs, combinations and shared fixtures. It must
+not be any version's implementation owner. Keep original native stopped proofs.
+
+Require all current Ticket acceptances plus the exact focused/affected early
+integration results before `candidate-ready`. Preserve the sealed implementation
+baseline as `expected_target_head`. Delivery Standards and Spec are independent
+axes over cross-Ticket/shared-state consistency and full requirement/AC/file
+coverage. Supply original local/Ticket claims, target applicability and the
+coverage delta; do not rescan unchanged locally covered implementation. The first
+empty delta still needs real independent coverage/shared-state review.
+
+C verifies original claims and actual target fingerprints/dependencies and
+requires the complete immutable coverage certificate at review convergence,
+formal B acceptance and Stage 4 entry. Unchanged claims and reports retain their
+source commit, identity and original stopped response. A target applicability
+record carries them to a new candidate; neither Controller nor Dispatcher may
+relabel old review metadata. Same-file changes invalidate all claims touching
+that file; public/shared/unknown effects widen through consumers and Tickets.
+Return actionable findings for scoped implementation repair and native re-review;
+missing or revoked stop/source evidence, old leases and unresolved calls block.
+Use the same Implementation Dispatcher and verified worktree for remediation.
+Only the Originating Task accepts the candidate; Stage 4 integrates it.
+
+After coverage convergence, persist one original `validation-start` attempt and
+run the entire frozen final list on this final candidate. Only its latest complete
+passed result permits B acceptance. A new candidate cannot inherit an old full
+validation pass. Stage 4 owns final publication and integration; its bounded
+recovery retains original accepted history and reuses only independently proven
+applicable claims, while the recovered candidate requires fresh complete final
+validation. Reject unapproved behavior/scope changes and route material unresolved
+user decisions through the original Controller.
 
 ## Diagnosis-first remediation
 

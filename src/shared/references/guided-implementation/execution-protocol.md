@@ -172,7 +172,8 @@ advances do not trigger integration during Stage 3. Only the final Stage-4
 the selected target in this same worktree. After the merge attempt, stop for C's
 `capture-integration`; then use the existing full allocations and explicit
 adoption to verify or repair the captured implementation paths. Return a fresh
-candidate for both review axes and final validation. Retained closure documents
+candidate with applicable local/Ticket/delivery coverage and fresh complete final
+validation. Retained closure documents
 remain read-only during that recovery.
 
 The dispatcher never updates the target branch and never removes the Flow
@@ -187,22 +188,35 @@ the original-baseline cumulative change, acceptance target and tests. Its result
 separates actual `changed_paths` from `adopted_paths`; unchanged inherited bytes
 need explicit verification and acceptance, not a fabricated edit.
 
-## Review-first final validation
+## Layered review and final validation
 
-Read the frozen `validation_plan` in the existing control checkpoint. Implement all
-Tickets, run `review_required`, and commit a clean reviewable checkpoint. Report
-`candidate-ready` through C control using the original carrier attempt, exact
-commit, target, plan digest and structured results. This never completes B.
-The Originating Task records two independent review responses and issues
-`review-converged`. Only then consume C's `continue-host` validation attempt on
-this same dispatcher identity. Run every `final_required` item from that attempt;
-retain the original command outputs and observed source state for Controller
-verification. Final full validation and required real environment acceptance are
-mandatory before delivery, never prerequisites for initial or replacement review.
+Every behavior slice first completes its frozen local verification commands and
+one independent native local review. Submit the original stopped command source,
+current plan refs, source fingerprints and native review response through C.
+Execution acceptance alone is not review acceptance. The same independent
+Ticket reviewer may cover its local slices and then accept all Ticket ACs,
+composition and shared fixtures; it may never be any version's implementation
+owner for those files.
 
-A failed attempt remains immutable. Retry the complete final list only after the
-Controller names that failed attempt; reuse review only while commit, target,
-plan, binding and source state remain unchanged. A candidate code change returns
-to implementation, focused/affected checks and both review axes before another
-final attempt. Unknown command completion requires original-host reconciliation,
-not replay. Pause/cancel intent precedes all new business actions.
+Run Ticket/shared or affected integration checks as soon as multiple slices are
+combined, and at the latest before complete Ticket acceptance. After all Tickets
+are applicable, run every frozen `review_required` item and commit a clean
+candidate. `candidate-ready` requires complete applicable Ticket coverage and
+these exact early focused/affected results; it never completes B.
+
+Delivery retains two independent native axes. Standards covers cross-Ticket
+consistency, shared state and uncovered files; Spec covers requirement-to-AC
+reachability and cross-Ticket scenarios. Their input includes existing original
+claims and the bounded coverage delta, not another whole-delivery line review.
+Even an empty integration delta needs its first coverage/shared-state review.
+No code change and repeated inspect do not create another reviewer or raw claim.
+
+A code change invalidates its owned/read/dependency closure, conservatively at
+file granularity. Shared or unknown influence widens the closure. Unaffected
+claims keep their original IDs, source candidates and stopped responses; only
+new target applicability is recorded. They are never relabeled as reviews of a
+new commit. Complete `review-converged` with original native axis references and
+the verified final coverage certificate. Then run every `final_required` item
+on the exact final candidate through C's original validation attempt. A changed
+candidate always needs new complete final validation; an old full pass cannot
+be inherited. Unknown calls retain their original exact lookup and stop barriers.

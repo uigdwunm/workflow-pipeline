@@ -892,6 +892,13 @@ class ProgressTests(transfer.StageTransferTests):
             for slot in saved.get('review_activity', {}).values():
                 if slot and slot.get('ref'):
                     threads.append({'id':slot['ref'], 'status':{'type':'idle' if slot['stopped'] else 'active'}})
+            # A Ticket reviewer may legitimately appear in several stopped slice slots.
+            unique_threads = {}
+            for thread in threads:
+                previous = unique_threads.get(thread['id'])
+                if previous is None or thread['status']['type'] == 'active':
+                    unique_threads[thread['id']] = thread
+            threads = list(unique_threads.values())
             # The external host still lists stopped writers from the previous delivery.
             listed = {thread['id'] for thread in threads}
             threads.extend({'id': prior, 'status': {'type': 'idle'}}

@@ -532,7 +532,17 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
                                      spec_path=next(iter(spec_paths)) if len(spec_paths) == 1 else None,
                                      contract_refs={ref for plan in plans for ref in plan["plan"]["contract_refs"]},
                                      retained_record_baseline=retained_record_baseline)
-    catalog = {"schema_version": 2, "commit": commit, "requirement_identity": requirement_identity,
+    requirement_body = _committed_file(repository, scope["baseline"], requirement_identity["path"])["body"]
+    _incomplete(hashlib.sha256(requirement_body).hexdigest() == requirement_identity["sha256"],
+                "frozen requirement bytes differ from the plan basis")
+    requirement_refs = sorted(set(match.decode() for match in re.findall(rb"(?m)^#{1,4} (N[0-9]+)\b", requirement_body)))
+    if not requirement_refs:
+        requirement_refs = ["requirement:" + requirement_identity["sha256"]]
+    else:
+        _incomplete(all(any(ref.startswith("PRD:" + name + ":") or ref == "PRD:" + name
+                           for record in records for ref in record["plan"]["contract_refs"])
+                        for name in requirement_refs), "every frozen requirement needs Ticket contract coverage")
+    catalog = {"schema_version": 2, "requirement_refs": requirement_refs, "commit": commit, "requirement_identity": requirement_identity,
                "tickets": records, "ordered_step_ids": ordered,
                "sources": [{"path": item["path"], "commit": commit, "mode": item["mode"],
                             "sha256": item["sha256"], "blob": item["blob"]} for item in sources],
@@ -1157,7 +1167,7 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
               "source": {"kind": "inline", "commit": None, "sha256": entry.digest(plan),
                          "plan_version": plan["plan_version"]},
               "plan": copy_plan_refs([plan])[0], "covered_paths": sorted(covered)}
-    catalog = {"schema_version": 2, "commit": None, "requirement_identity": requirement_identity,
+    catalog = {"schema_version": 2, "requirement_refs": ["requirement:" + requirement_identity["sha256"]], "commit": None, "requirement_identity": requirement_identity,
                "tickets": [record], "ordered_step_ids": ordered,
                "contract_projection": projection, "contract_digest": entry.digest(projection)}
     catalog["plan_digest"] = entry.digest(catalog)

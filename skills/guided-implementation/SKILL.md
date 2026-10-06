@@ -263,7 +263,7 @@ and policy; Stage 4 handles target integration at final publication.
 
 ## Hand off the retained Flow Worktree
 
-After both review axes accept the exact clean candidate, Stage 3 does not merge
+After complete applicable local/Ticket/delivery coverage and exact final validation, Stage 3 does not merge
 the implementation into the target and does not remove the worktree or branch.
 It passes the retained Flow Worktree, candidate, planning merge or standalone
 base commit, implementation and closure path scopes, protected

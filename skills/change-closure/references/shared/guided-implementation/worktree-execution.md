@@ -174,9 +174,13 @@ before Git can overwrite them; unrelated ignored paths do not block it.
 When two candidates race from one base, one completes and the other receives
 `target_changed`. The Implementation Dispatcher merges the new target into
 the retained Flow Worktree, runs affected checks, and commits a
-replacement candidate. The Originating Task establishes the new review fixed
-point and reruns both Standards and Spec axes, then authorizes the same
-dispatcher to complete the frozen final validation before retrying. There is no
+replacement candidate. The Originating Task compares original claims with the
+new target, invalidates the affected file/read/dependency closure and obtains
+independent review for missing local/Ticket/delivery coverage. Unaffected claims
+retain their original source candidate and stopped response; separate target
+applicability proves their reuse. Require complete current coverage across both
+independent delivery axes, then authorize the same dispatcher to complete the
+frozen final validation before retrying. There is no
 scheduler or queue.
 
 ## Exact publication recovery (flow-worktree-v3)
