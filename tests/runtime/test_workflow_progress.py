@@ -102,9 +102,13 @@ class ProgressTests(transfer.StageTransferTests):
     def test_retired_archive_after_start_preserves_current_native_context(self):
         handoff_id = self.retired_fixture()
         self.finish_design('continuous')
-        outer = progress.read_record(self.checkpoint)
-        outer[progress.KEY].setdefault('control_transactions', {})[transfer.entry.digest(self.takeover_transaction['request'])] = self.takeover_transaction
-        progress.atomic_save(self.checkpoint, outer)
+        outer = progress.read_active_owner(self.checkpoint)
+        retained = {key: copy.deepcopy(value) for key, value in self.takeover_transaction.items() if key != 'port'}
+        retained['result'] = {key: value for key, value in retained['result'].items() if key != 'context'}
+        retained.update(base_control_digest=transfer.entry.digest(outer[progress.KEY]['control']),
+                        base_revision=outer[progress.KEY]['revision'], status=outer[progress.KEY]['status'])
+        outer[progress.KEY].setdefault('control_transactions', {})[transfer.entry.digest(retained['request'])] = retained
+        progress.Progress(self.checkpoint, outer).save()
         intent = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
             'receipt': {'controller_ref': 'task', 'reference': 'automatic'}})
         effect = intent['next_action']['result']['effects'][0]
@@ -112,7 +116,7 @@ class ProgressTests(transfer.StageTransferTests):
         with patch.object(progress.dispatch, 'checkpoint', side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 self.invoke('control', self.archive_receipt(effect, 'unknown'))
-        self.assertFalse(progress.Progress(self.checkpoint, progress.read_record(self.checkpoint)).unresolved_control_transactions())
+        self.assertFalse(progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint)).unresolved_control_transactions())
         predecessor = self.state()['accepted']
         self.context = self.context_for(3)
         self.begin('continuous', self.input_for(3, predecessor))
@@ -126,8 +130,11 @@ class ProgressTests(transfer.StageTransferTests):
         query = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
             'receipt': {'controller_ref': 'task', 'reference': 'user-recovery'}})['next_action']['result']['effects'][0]
         self.assertEqual((query['operation'], query['ref']), ('read-archive-state', 'old-task'))
-        self.invoke('control', self.archive_receipt(query, 'issued'))
-        self.invoke('control', self.archive_receipt(query, 'archived'))
+        issued_query = self.invoke('control', self.archive_receipt(query, 'issued'))
+        self.assertTrue(issued_query['next_action']['result']['ok'], issued_query)
+        archived_query = self.invoke('control', self.archive_receipt(query, 'archived'))
+        self.assertTrue(archived_query['next_action']['result']['ok'], archived_query)
+        self.assertEqual(self.state()['control']['context']['retired_handoffs'][handoff_id]['archive_status'], 'archived')
         replay = self.invoke('control', self.archive_receipt(effect, 'unknown'))
         self.assertTrue(replay['acknowledged'], replay)
         self.assertEqual(self.state()['control']['context']['retired_handoffs'][handoff_id]['archive_status'], 'archived')
@@ -150,7 +157,7 @@ class ProgressTests(transfer.StageTransferTests):
         with patch.object(progress.dispatch, 'checkpoint', side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 self.invoke('control', request)
-        self.assertTrue(progress.Progress(self.checkpoint, progress.read_record(self.checkpoint)).unresolved_control_transactions())
+        self.assertTrue(progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint)).unresolved_control_transactions())
         first = self.invoke('control', request)['next_action']['result']['effects'][0]
         replay = self.invoke('control', request)
         self.assertEqual(replay['next_action']['result']['effects'], [])
@@ -169,22 +176,30 @@ class ProgressTests(transfer.StageTransferTests):
 
     def test_new_runtime_rejects_old_control_and_c_without_writes(self):
         self.begin()
-        saved = progress.read_record(self.checkpoint)
+        original_path = self.checkpoint
+        original_bytes = original_path.read_bytes()
+        saved = progress.read_active_owner(original_path)
         for version in ('control', 'workflow-progress-v9', 'workflow-progress-v11',
                         'workflow-progress-v17', 'runner-9'):
-            old = copy.deepcopy(saved)
-            if version == 'control':
-                old[progress.KEY]['control']['context']['schema_version'] = 5
-            elif version == 'runner-9':
-                old['version'] = 9
-            else:
-                old[progress.KEY]['protocol'] = version
-            progress.atomic_save(self.checkpoint, old)
-            before = self.checkpoint.read_bytes()
-            with self.assertRaises(transfer.entry.PreparationError) as error:
-                self.invoke('inspect')
-            self.assertEqual(error.exception.code, 'legacy_run_requires_original_runtime')
-            self.assertEqual(self.checkpoint.read_bytes(), before)
+            with self.subTest(version=version):
+                old = copy.deepcopy(dict(saved))
+                if version == 'control':
+                    old[progress.KEY]['control']['context']['schema_version'] = 5
+                elif version == 'runner-9':
+                    old['version'] = 9
+                else:
+                    old[progress.KEY]['protocol'] = version
+                self.checkpoint = original_path.with_name('legacy-' + version + '.json')
+                progress.atomic_save(self.checkpoint, old)
+                before = self.checkpoint.read_bytes()
+                with patch.object(progress.dispatch, 'checkpoint', side_effect=AssertionError('legacy-control-effect')) as dispatched:
+                    with self.assertRaises(transfer.entry.PreparationError) as error:
+                        self.invoke('inspect')
+                self.assertEqual(error.exception.code, 'legacy_run_requires_original_runtime')
+                self.assertEqual(dispatched.call_count, 0)
+                self.assertEqual(self.checkpoint.read_bytes(), before)
+                self.assertEqual(original_path.read_bytes(), original_bytes)
+        self.checkpoint = original_path
 
     def test_scope_readiness_requires_original_runtime_for_previous_progress(self):
         self.begin()
@@ -200,14 +215,35 @@ class ProgressTests(transfer.StageTransferTests):
 
     def test_unknown_business_control_blocks_start_and_supplied_stop_is_rejected(self):
         self.begin()
+        self.invoke('observe', self.observation())
+        self.invoke('pause')
+        self.invoke('observe', self.observation('stopped', 'result'))
         rejected = self.invoke('control', {'action': 'successor-ready', 'evidence': {'takeover_proof': {'stopped': True}},
             'receipt': {'controller_ref': 'task'}})
         self.assertEqual(rejected['error']['code'], 'invalid_evidence')
-        outer = progress.read_record(self.checkpoint)
-        request = {'action': 'successor-ready', 'evidence': {}, 'receipt': {'controller_ref': 'task'}}
-        outer[progress.KEY]['control_transactions'] = {transfer.entry.digest(request): {
-            'request': request, 'port': outer[progress.KEY]['control'], 'result': None}}
-        progress.atomic_save(self.checkpoint, outer)
+        original_owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+        self.assertTrue(original_owner.host_stopped())
+        self.assertFalse(original_owner.unresolved_host_actions())
+        self.assertFalse(original_owner.unresolved_control_transactions())
+        self.checkpoint = self.checkpoint.with_name('unknown-business.json')
+        self.begin()
+        self.invoke('observe', self.observation())
+        self.invoke('pause')
+        self.invoke('observe', self.observation('stopped', 'result'))
+        request = {'action': 'successor-ready', 'evidence': {},
+                   'receipt': {'controller_ref': 'task'}}
+        with patch.object(progress.dispatch, 'checkpoint', side_effect=KeyboardInterrupt):
+            try:
+                response = self.invoke('control', request)
+            except KeyboardInterrupt:
+                pass
+            else:
+                self.fail('control intent did not reach its authority: ' + str(response))
+        pending = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint)).unresolved_control_transactions()
+        self.assertEqual(len(pending), 1)
+        transaction = next(iter(pending.values()))
+        self.assertEqual(transaction['takeover_input'], request)
+        self.assertIsNone(transaction['result'])
         with self.assertRaises(transfer.entry.PreparationError) as error:
             self.invoke('start', {'handoff': self.input})
         self.assertEqual(error.exception.code, 'control_outcome_unknown')
@@ -936,7 +972,7 @@ class ProgressTests(transfer.StageTransferTests):
                     self.checkpoint.unlink()
                     queued = self.pending_business_answer()
                     self.invoke("decide", queued)
-                    shared = progress.read_record(self.checkpoint)
+                    shared = copy.deepcopy(self.state())
                 else:
                     queued = {"decision_id": "unconsumed", "subject": {"stage": 2}, "answer": "yes", "reference": "controller:input"}
                 state = runner._new_state({})
@@ -946,8 +982,15 @@ class ProgressTests(transfer.StageTransferTests):
                                    "request": ["fixture", reason], "invocation_id": reason}
                 state["controller_decision"] = queued
                 self.checkpoint = self.checkpoint.resolve()
-                progress.atomic_save(self.checkpoint, {**shared, **state, "workflow_requirements": {"keep": "C-owned"}})
-                state.refresh(progress.read_record(self.checkpoint))
+                if consumed:
+                    identity = progress.read_projection(self.checkpoint, projection='identity')
+                    outer = {key: copy.deepcopy(value) for key, value in identity.record.items() if key != progress.KEY}
+                    outer.update(state)
+                    outer['workflow_requirements'] = {"keep": "C-owned"}
+                    progress.save_outer_record(self.checkpoint, outer, expected_revision=identity.authority_revision)
+                else:
+                    progress.atomic_save(self.checkpoint, {**state, "workflow_requirements": {"keep": "C-owned"}})
+                state.refresh(runner._read_checkpoint(self.checkpoint))
                 result = {"result": "needs_input", "artifacts": [], "evidence": [], "handoff_json": "{}",
                           "handoff": {}, "question": "Next choice?", "message": "", "needs_input_kind": "user_decision"}
                 receipt = {"run_record": str(self.checkpoint), "stage": "stage2", "turn": 1, "invocation_id": reason,
@@ -961,12 +1004,12 @@ class ProgressTests(transfer.StageTransferTests):
                 self.assertEqual(state["status"], "needs_input")
                 if consumed:
                     self.assertNotIn("controller_decision", state)
-                    self.assertEqual(progress.read_record(self.checkpoint)[progress.KEY], shared[progress.KEY])
+                    self.assertEqual(self.state(), shared)
                 else:
                     self.assertEqual(state["controller_decision"], queued)
                 for key in ("resume_progression", "answer_pending_delivery", "progression_response"):
                     self.assertNotIn(key, state)
-                self.assertEqual(progress.read_record(self.checkpoint)["workflow_requirements"], {"keep": "C-owned"})
+                self.assertEqual(progress.read_projection(self.checkpoint, projection="identity").record["workflow_requirements"], {"keep": "C-owned"})
 
     def test_cancellation_dominates_shared_pause_and_late_receipts(self):
         self.begin()
@@ -1030,7 +1073,7 @@ class ProgressTests(transfer.StageTransferTests):
             (self.flow/'impl.py').write_text('implemented = '+str(number)+'\n')
             self.flow_git('add','impl.py'); self.flow_git('commit','-qm','candidate '+str(number))
             candidate = self.flow_git('rev-parse','HEAD')
-            verification = self.mark_reviewable(candidate)
+            verification = self.mark_reviewable(candidate, evidence_suffix="-candidate-" + str(number))
             slots = {}
             for axis in ('standards','spec'):
                 prepared = self.invoke('review-activity',{'operation':'prepare','axis':axis,'candidate':candidate,
@@ -1059,9 +1102,7 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.invoke('lifecycle-state',omitted)['status'],'pausing')
         self.assertEqual(self.invoke('lifecycle-state',snapshot)['status'],'paused')
         old = rounds[0]['standards']
-        saved = progress.read_record(self.checkpoint)
-        saved['transport'] = {'instance':snapshot['instance'],'state':'live','native_event_sequence':1}
-        progress.atomic_save(self.checkpoint,saved)
+        self.save_transport(instance=snapshot['instance'], state='live', native_event_sequence=1)
         event = {'method':'item/started','params':{'threadId':snapshot['carrier_thread'],'item':{
             'id':'late-old-review','type':'subAgentActivity','kind':'interacted','agentPath':old['receipt']['ref'],
             'agentThreadId':old['receipt']['ref']}}}
@@ -1516,9 +1557,9 @@ class ProgressTests(transfer.StageTransferTests):
     def test_raw_footer_without_saved_acceptance_cannot_advance(self):
         result = self.finish_design("continuous")["completion"]["stage_result"]
         value = {**result, "handoff": json.loads(result["handoff_json"])}
-        outer = progress.read_record(self.checkpoint)
+        outer = progress.read_active_owner(self.checkpoint)
         outer[progress.KEY]["status"] = "active"
-        progress.atomic_save(self.checkpoint, outer)
+        progress.Progress(self.checkpoint, outer).save()
         with self.assertRaises(runner.WorkflowError):
             runner._accepted_stage(self.checkpoint, "stage2", value, {"controller_ref": "task", "frozen_requirement": self.frozen})
 
