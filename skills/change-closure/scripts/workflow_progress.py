@@ -3414,6 +3414,9 @@ class Progress:
                         "decision_required", "a new controller retry decision must distinguish the failed request")
                 require(all(request[key] == old["handoff"][key] for key in ("role", "scope", "target", "binding", "semantic")),
                         "scope_changed", "non-creation retry cannot widen or replace the original work")
+                predecessor_ref = copy.deepcopy(old.get('design_predecessor'))
+                implementation_ref = copy.deepcopy(old.get('implementation_predecessor'))
+                consumed_readiness = copy.deepcopy(old.get('consumed_readiness'))
         else:
             request.setdefault("predecessor", None)
             if self.outer.get("confirmed", {}).get("requirement") is not None:

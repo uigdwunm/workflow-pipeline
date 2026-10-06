@@ -498,6 +498,63 @@ class ProgressTests(transfer.StageTransferTests):
                     self.invoke("start", {"handoff": retry})
                 self.assertEqual(self.checkpoint.read_bytes(), before)
 
+    def assert_noncreation_retry_keeps_stage_predecessor(self, request, role_ref):
+        original = self.state()
+        original_root = progress.state_store.StateStore(self.checkpoint).open_current()
+        old_request = copy.deepcopy(original['dispatch']['request'])
+        self.assertEqual(original['control']['context']['controller_ref'], 'task')
+        self.invoke('observe', self.observation('not-created', 'lookup', ref=None))
+        self.assertEqual(self.state()['status'], 'cancelled')
+        retry = copy.deepcopy(request)
+        for key in ('role', 'scope', 'target', 'binding', 'semantic'):
+            retry[key] = copy.deepcopy(original['handoff'][key])
+        retry['predecessor'] = copy.deepcopy(original['handoff']['predecessor'])
+        retry['authorization']['reference'] = 'controller:retry-stage-' + str(original['stage'])
+        # start durably saves the retry, then advance prepares its B dispatch.
+        started = self.invoke('start', {'handoff': retry})
+        self.assertEqual(started['next_action']['operation'], 'invoke-host', started)
+        retried = self.state()
+        for key in ('design_predecessor', 'consumed_readiness', 'implementation_predecessor',
+                    'packages', 'native_host', 'workspace_evidence'):
+            self.assertEqual(retried[key], original[key], key)
+        self.assertEqual(retried['handoff']['binding'], original['handoff']['binding'])
+        self.assertEqual(retried['control']['context']['controller_ref'], 'task')
+        self.assertEqual(retried['history'], [])
+        self.assertNotEqual(retried['dispatch']['request']['digest'], old_request['digest'])
+        current = progress.state_store.StateStore(self.checkpoint).open_current()
+        self.assertEqual(current.run_id, original_root.run_id)
+        self.assertLessEqual(current.reference['size'], progress.state_store.ROOT_LIMIT)
+        self.assertEqual(self.invoke('advance')['next_action']['operation'], 'lookup-exact-action')
+        self.assertEqual(self.invoke('observe', self.observation(ref=role_ref))['next_action']['operation'], 'wait-host')
+        self.assertEqual(self.invoke('inspect')['status'], 'active')
+        if original['stage'] == 3:
+            self.assertEqual(progress.consumed_scope_readiness(self.state(), self.checkpoint),
+                             original['consumed_readiness'])
+        else:
+            prior, _, _ = progress.read_implementation_delivery(self.checkpoint,
+                                                                original['implementation_predecessor'])
+            self.assertEqual(prior['accepted']['digest'], original['handoff']['predecessor']['accepted_digest'])
+        late = self.observation()
+        late['receipt']['request_digest'] = old_request['digest']
+        self.assertEqual(self.invoke('observe', late)['status'], 'blocked')
+
+    def test_noncreation_retry_stage3_retains_consumed_design_predecessor(self):
+        design = self.finish_design('continuous')
+        request = self.staged_successor(design)
+        request['authorization']['flow_mode'] = 'continuous'
+        self.assertEqual(self.invoke('start', {'handoff': request})['next_action']['operation'], 'invoke-host')
+        self.assertIsNotNone(self.state()['design_predecessor'])
+        self.assertIsNotNone(self.state()['consumed_readiness'])
+        self.assert_noncreation_retry_keeps_stage_predecessor(request, 'native:dispatcher-retry')
+
+    def test_noncreation_retry_stage4_retains_implementation_predecessor(self):
+        self.accepted_implementation_for_closure()
+        request = self.input_for(4, self.state()['accepted'])
+        request['authorization']['flow_mode'] = 'continuous'
+        self.assertEqual(self.invoke('start', {'handoff': request})['next_action']['operation'], 'invoke-host')
+        self.assertIsNotNone(self.state()['implementation_predecessor'])
+        self.assert_noncreation_retry_keeps_stage_predecessor(request, 'native:closure-retry')
+
     def test_unknown_creation_cannot_retry_with_fresh_controller_authorization(self):
         self.begin("continuous")
         self.invoke("observe", self.observation("unknown", ref=None))
