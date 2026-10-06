@@ -647,7 +647,7 @@ class AttachedFlowTests(fixtures.ProgressTests):
                        'validation-result', 'delivery-ready', 'accept-delivery'):
             self.assertIn(action, actions)
 
-    def test_attached_start_rejects_head_ahead_of_frozen_b_baseline(self):
+    def original_ledger_start_fixture(self):
         self.begin('stepwise')
         self.invoke('observe', self.observation())
         self.activate_designer()
@@ -705,6 +705,10 @@ class AttachedFlowTests(fixtures.ProgressTests):
         topic = entry.topic_read(str(self.root), self.attachment)
         envelope = {**self.base, 'expected_ledger_revision': topic['ledger_revision'],
             'expected_topic_revision': topic['record_revision'], 'idempotency_key': str(uuid.uuid4())}
+        return value, envelope, pointer
+
+    def test_attached_start_rejects_head_ahead_of_frozen_b_baseline(self):
+        value, envelope, pointer = self.original_ledger_start_fixture()
         original = protocol.handle
         raced = []
         def after_b_preparation(request):
@@ -727,6 +731,96 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.assertEqual(checked.call_count, 1)
         latest = protocol.handle({**self.base, 'operation': 'read-topic'})['workflow_control']
         self.assertIsNone(latest['handoff_progress'])
+
+    def test_attached_start_prepares_original_ledger_b_and_preserves_launch_boundary(self):
+        value, envelope, pointer = self.original_ledger_start_fixture()
+        ledger_before = self.ledger.read_bytes()
+        original = ledger_control._start_git_authority
+        checked = []
+        def verify_original(request, context, evidence, action):
+            before = self.ledger.read_bytes()
+            reads = []
+            original_read = progress.state_store.StateStore._read
+            def tracked_read(store, path, limit):
+                result = original_read(store, path, limit)
+                reads.append((str(path), len(result)))
+                return result
+            with patch.object(progress.state_store.StateStore, '_read', tracked_read):
+                identity = progress.read_projection(self.checkpoint, projection='identity')
+                stage_id = identity.record[progress.KEY]['stage_subject']
+                target = progress.read_projection(self.checkpoint, projection='transaction',
+                                                 subject_id=stage_id, intent='prepare')
+            current = target.record[progress.KEY]
+            self.assertIsInstance(target, progress.state_store.TransactionProjection)
+            self.assertEqual(current['handoff'], current['transaction']['handoff'])
+            self.assertEqual(current['control_ref'], pointer)
+            self.assertEqual(current['control_digest'], entry.digest(self.context))
+            self.assertEqual(current['transaction']['operation'], 'prepare')
+            self.assertEqual(current['transaction']['scope_checkpoint_path'], str(self.checkpoint))
+            self.assertEqual(current['transaction']['base_control_digest'], current['control_port_digest'])
+            self.assertNotIn('control', current)
+            self.assertNotIn('allocations', current)
+            self.assertNotIn('history', current)
+            self.assertLessEqual(target.bytes_read + identity.bytes_read, progress.state_store.READ_LIMIT)
+            self.assertLessEqual(sum(size for _, size in reads), progress.state_store.READ_LIMIT)
+            for changed_context, changed_evidence, changed_action in (
+                    ({**context, 'controller_ref': 'another-controller'}, evidence, action),
+                    (context, {**evidence, 'binding': {**evidence['binding'], 'branch': 'other'}}, action),
+                    (context, evidence, 'start-design')):
+                with self.assertRaises(ledger_control.ProtocolError) as rejected:
+                    original(request, changed_context, changed_evidence, changed_action)
+                self.assertEqual(rejected.exception.code, 'invalid_request')
+                self.assertEqual(self.ledger.read_bytes(), before)
+            with self.assertRaises(ledger_control.ProtocolError) as rejected:
+                original({**request, 'expected_control_ref': {**pointer, 'control_revision': 0}},
+                         context, evidence, action)
+            self.assertEqual(rejected.exception.code, 'invalid_request')
+            self.assertEqual(self.ledger.read_bytes(), before)
+            for args in ({'subject_id': 'stage:missing', 'intent': 'prepare'},
+                         {'subject_id': stage_id, 'intent': 'accept'},
+                         {'subject_id': 'all', 'intent': 'prepare'},
+                         {'subject_id': stage_id, 'intent': 'prepare', 'allocation_id': 'another'}):
+                with self.assertRaises(entry.PreparationError):
+                    progress.read_projection(self.checkpoint, projection='transaction', **args)
+                self.assertEqual(self.ledger.read_bytes(), before)
+            result = original(request, context, evidence, action)
+            self.assertEqual(result, (str(self.flow), current['handoff']['scope']['baseline']))
+            self.assertEqual(self.ledger.read_bytes(), before)
+            checked.append(True)
+            if os.environ.get('T01_LEDGER_PREPARE_METRICS_PATH'):
+                Path(os.environ['T01_LEDGER_PREPARE_METRICS_PATH']).write_text(json.dumps({
+                    'identity_bytes': identity.bytes_read, 'transaction_bytes': target.bytes_read,
+                    'actual_files_read': len(reads), 'actual_bytes_read': sum(size for _, size in reads),
+                    'read_paths': [path for path, _ in reads],
+                    'returned_fields': sorted(current), 'baseline': result[1]}, indent=2) + '\n')
+            return result
+        with patch.object(ledger_control, '_start_git_authority', side_effect=verify_original):
+            # This existing-authority fixture supports B preparation. Stage-3
+            # ledger-backed launch retains its original strict entry boundary;
+            # preparation changes the live topic control view, not source bytes.
+            with self.assertRaises(entry.PreparationError) as rejected:
+                self.invoke('start', {'handoff': value,
+                    'control': {'context': self.context, 'discussion': envelope, 'store_ref': pointer}})
+        self.assertEqual(checked, [True])
+        self.assertEqual(rejected.exception.code, 'entry_changed')
+        self.assertEqual(str(rejected.exception), 'entry evidence changed: requirement')
+        latest = protocol.handle({**self.base, 'operation': 'read-topic'})
+        self.assertEqual(latest['workflow_control']['controller_ref'], self.context['controller_ref'])
+        self.assertEqual(latest['workflow_control']['handoff_progress']['state'], 'dispatcher-pending')
+        self.assertIsNone(latest['workflow_control']['carrier']['ref'])
+        self.assertEqual(latest['workflow_control']['handoff_progress']['binding'], value['binding'])
+        self.assertEqual(latest['workflow_control']['handoff_progress']['allowed_paths'],
+                         value['scope']['implementation_paths'])
+        self.assertEqual(latest['ledger_revision'], envelope['expected_ledger_revision'] + 1)
+        self.assertEqual(latest['workflow_control_ref']['control_revision'], pointer['control_revision'] + 1)
+        self.assertNotEqual(self.ledger.read_bytes(), ledger_before)
+        self.assertNotEqual(latest['workflow_control_ref'], pointer)
+        current = self.state()
+        self.assertEqual(current['control']['store_ref'], latest['workflow_control_ref'])
+        self.assertEqual(current['dispatch']['status'], 'prepared')
+        self.assertEqual(current['step'], 'launch')
+        self.assertIsNone(current['action'])
+        self.assertIsNone(current['transaction'])
 
     def test_attached_flow_publication_cleanup_acceptance_and_phase_replay(self):
         self.attached_publication_chain()

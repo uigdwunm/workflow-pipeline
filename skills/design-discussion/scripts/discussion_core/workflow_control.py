@@ -62,7 +62,11 @@ def _start_git_authority(request, context, evidence, action):
     checkpoint = Path(checkpoint_path)
     if not checkpoint.is_absolute() or str(checkpoint.resolve()) != checkpoint_path:
         raise ProtocolError('invalid_request', 'attached start checkpoint must be canonical')
-    state = _progress.read_record(checkpoint).get(_progress.KEY)
+    identity = _progress.read_projection(checkpoint, projection='identity')
+    subject_id = identity.record.get(_progress.KEY, {}).get('stage_subject')
+    transaction = _progress.read_projection(checkpoint, projection='transaction',
+                                           subject_id=subject_id, intent='prepare')
+    state = transaction.record.get(_progress.KEY)
     pending = state.get('transaction') if isinstance(state, dict) else None
     saved = pending.get('handoff') if isinstance(pending, dict) else None
     if not isinstance(saved, dict):
@@ -72,11 +76,16 @@ def _start_git_authority(request, context, evidence, action):
                      'start-dispatch': 'implementation-dispatcher',
                      'start-closure': 'closure-agent'}[action]
     if not (state.get('checkpoint_path') == checkpoint_path and
+            transaction.authority_revision == identity.authority_revision and
             state.get('handoff') == saved and state.get('stage') == saved.get('stage') and
-            state.get('control', {}).get('context') == context and
+            state.get('control_digest') == _progress.entry.digest(context) and
+            state.get('control_ref') == request.get('expected_control_ref') and
             pending.get('operation') == 'prepare' and
             pending.get('scope_checkpoint_path') == checkpoint_path and
-            pending.get('control', {}).get('context') == context and
+            pending.get('base_control_digest') == state.get('control_port_digest') and
+            type(pending.get('base_revision')) is int and
+            0 <= pending['base_revision'] < state.get('revision') and
+            saved.get('controller_ref') == context.get('controller_ref') and
             saved.get('role') == expected_role and
             saved.get('binding') == evidence.get('binding')):
         raise ProtocolError('invalid_request', 'attached start differs from the original C/B authority')

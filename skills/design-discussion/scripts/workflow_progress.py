@@ -398,9 +398,11 @@ def read_projection(path, *, projection, stage=None, subject_id=None, allocation
     if stage is not None:
         require(projection == 'scope' and stage == 2, 'invalid_projection', 'select the current Stage-2 scope')
     if projection == 'transaction':
-        require(isinstance(subject_id, str) and subject_id.startswith('ticket:') and
-                isinstance(allocation_id, str) and allocation_id and isinstance(intent, str) and intent,
-                'invalid_projection', 'transaction requires exact subject, allocation and intent')
+        require(isinstance(subject_id, str) and (
+                subject_id.startswith('stage:') and allocation_id is None and intent == 'prepare' or
+                subject_id.startswith('ticket:') and isinstance(allocation_id, str) and allocation_id and
+                isinstance(intent, str) and intent),
+                'invalid_projection', 'transaction requires an exact stage prepare or allocation intent')
     else:
         require(subject_id is None and allocation_id is None and intent is None,
                 'invalid_projection', 'allocation selectors belong to transaction reads')
@@ -430,6 +432,30 @@ def read_projection(path, *, projection, stage=None, subject_id=None, allocation
     stage_id = current.root['metadata']['stage_subject']
     require(stage_id in subjects and stage_id.startswith('stage:'),
             'invalid_checkpoint', 'current stage subject is missing')
+    if projection == 'transaction' and subject_id.startswith('stage:'):
+        require(subject_id == stage_id, 'intent_mismatch', 'prepare belongs to the current stage subject')
+        state = store.read_subject(current, subject_id).value
+        restore_ledger_mirror(state)
+        saved = state.get('handoff')
+        require(isinstance(saved, dict) and state.get('stage_subject') == subject_id and
+                state.get('revision') == current.root['metadata']['revision'] and
+                state.get('stage') == current.root['metadata']['stage'] and
+                state.get('checkpoint_path') == str(Path(path).resolve()) and
+                saved.get('digest') == current.root['metadata']['handoff']['digest'] and
+                saved.get('controller_ref') == current.root['metadata']['controller_ref'] and
+                saved.get('binding') == current.root['metadata']['binding'],
+                'invalid_checkpoint', 'prepare identity differs from its current root')
+        handoff.unseal(saved)
+        for pin in current.root['metadata']['packages'].values():
+            skill_preflight.verify_identity(pin)
+        pending = state.get('transaction')
+        require(isinstance(pending, dict) and pending.get('operation') == intent,
+                'intent_mismatch', 'current stage has no original prepare intent')
+        port = state['control']
+        value = {key: state[key] for key in ('checkpoint_path', 'stage', 'stage_subject', 'revision', 'handoff')}
+        value.update(control_digest=entry.digest(port['context']), control_port_digest=entry.digest(port),
+                     control_ref=port.get('store_ref'), transaction=copy.deepcopy(pending))
+        return state_store.TransactionProjection({KEY: value}, store.files_read, store.bytes_read, current.revision)
     if stage is not None:
         require(projection == 'scope' and stage == 2 and current.root['metadata']['stage'] == stage,
                 'invalid_projection', 'select the current Stage-2 scope')
@@ -3661,7 +3687,8 @@ class Progress:
             require(all(key not in supplied_history or supplied_history[key] == value for key, value in previous_history.items()),
                     'control_context_changed', 'retired handoff projection conflicts with original authority')
             port = copy.deepcopy(port)
-            port['context']['retired_handoffs'] = {**previous_history, **supplied_history}
+            if previous_history or supplied_history:
+                port['context']['retired_handoffs'] = {**previous_history, **supplied_history}
         control.validate_context(port["context"])
         next_stage = data.get("next_stage", old["next_stage"] if retry else 2 if request["stage"] == 0 and mode == "continuous" else request["stage"] + 1)
         require(request["stage"] == 4 or (request["stage"], next_stage) in {(0, 1), (0, 2), (1, 2), (2, 3), (3, 4)},
