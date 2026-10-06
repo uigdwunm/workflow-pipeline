@@ -1169,15 +1169,22 @@ class ProgressTests(transfer.StageTransferTests):
         self.invoke("observe", self.observation("stopped", "result", ref="native:dispatcher" if stage == 3 else "native:designer"))
         with redirect_stdout(io.StringIO()):
             runner._advance(state, self.checkpoint)
-        self.assertEqual(progress.read_record(self.checkpoint)["status"], "paused")
+        self.assertEqual(runner._read_json(self.checkpoint, "run record")["status"], "paused")
         stopped = copy.deepcopy(self.state()["observations"])
         action = copy.deepcopy(self.state()["action"])
         with patch.object(runner, "_invoke", side_effect=AssertionError("carrier reissued")), redirect_stdout(io.StringIO()):
             if recovery:
                 # A crash after the runner stop request is durable, before C intake.
-                outer = progress.read_record(self.checkpoint)
+                outer = runner._read_json(self.checkpoint, "run record")
                 outer["runner_request"] = {"operation": "cancel", "request_id": "durable-cancel"}
-                progress.atomic_save(self.checkpoint, outer)
+                store = progress.state_store.StateStore(self.checkpoint)
+                original = store.open_current()
+                progress.save_outer_record(self.checkpoint,
+                    {key: value for key, value in outer.items() if key != progress.KEY},
+                    expected_revision=outer.authority_revision)
+                current = store.open_current()
+                self.assertEqual(current.root["subjects"], original.root["subjects"])
+                self.assertEqual(current.root["metadata"], original.root["metadata"])
                 self.invoke(recovery)
             else:
                 runner.request_control(self.checkpoint, "cancel")
@@ -1195,7 +1202,7 @@ class ProgressTests(transfer.StageTransferTests):
             with patch.object(runner, "validate_confirmed", return_value={}):
                 self.assertEqual(runner.resume(self.checkpoint), 0)
             self.assertEqual(self.checkpoint.read_bytes(), before_ack)
-        self.assertEqual(progress.read_record(self.checkpoint)["status"], "cancelled")
+        self.assertEqual(runner._read_json(self.checkpoint, "run record")["status"], "cancelled")
         self.assertEqual(self.state()["stop_requested"], "cancelling")
         self.assertEqual(self.state()["control"]["context"]["handoff_progress"]["state"], "cancelled")
         self.assertTrue(self.state()["stopped"])
@@ -1239,11 +1246,11 @@ class ProgressTests(transfer.StageTransferTests):
             self.assertEqual(runner._advance(state, self.checkpoint), 0)
         self.assertFalse(self.state()["stopped"])
         self.assertEqual(self.state()["status"], "pausing")
-        self.assertEqual(progress.read_record(self.checkpoint)["status"], "pausing")
+        self.assertEqual(runner._read_json(self.checkpoint, "run record")["status"], "pausing")
         self.invoke("observe", self.observation("stopped", "result"))
         with redirect_stdout(io.StringIO()):
             self.assertEqual(runner._advance(state, self.checkpoint), 0)
-        self.assertEqual(progress.read_record(self.checkpoint)["status"], "paused")
+        self.assertEqual(runner._read_json(self.checkpoint, "run record")["status"], "paused")
 
     def test_runner_pause_before_any_carrier_can_be_paused(self):
         state = runner._new_state({})
@@ -1260,12 +1267,12 @@ class ProgressTests(transfer.StageTransferTests):
         with redirect_stdout(io.StringIO()):
             runner.request_control(self.checkpoint, "pause")
             runner._advance(state, self.checkpoint)
-        self.assertEqual(progress.read_record(self.checkpoint)["status"], "pausing")
+        self.assertEqual(runner._read_json(self.checkpoint, "run record")["status"], "pausing")
         self.assertFalse(self.state()["stopped"])
         self.invoke("observe", self.observation("not-created", "lookup", ref=None))
         with redirect_stdout(io.StringIO()):
             runner._advance(state, self.checkpoint)
-        self.assertEqual(progress.read_record(self.checkpoint)["status"], "paused")
+        self.assertEqual(runner._read_json(self.checkpoint, "run record")["status"], "paused")
 
     def test_runner_and_shared_cancel_pause_order_keeps_cancellation(self):
         self.begin()
@@ -1278,11 +1285,11 @@ class ProgressTests(transfer.StageTransferTests):
             runner.request_control(self.checkpoint, "pause")
             runner._advance(state, self.checkpoint)
         self.assertEqual(self.state()["stop_requested"], "cancelling")
-        self.assertEqual(progress.read_record(self.checkpoint)["runner_request"]["operation"], "cancel")
+        self.assertEqual(runner._read_json(self.checkpoint, "run record")["runner_request"]["operation"], "cancel")
         self.invoke("observe", self.observation("stopped", "result"))
         with redirect_stdout(io.StringIO()):
             runner._advance(state, self.checkpoint)
-        self.assertEqual(progress.read_record(self.checkpoint)["status"], "cancelled")
+        self.assertEqual(runner._read_json(self.checkpoint, "run record")["status"], "cancelled")
 
     def test_runner_pause_acknowledges_prior_shared_cancellation_without_write(self):
         self.begin()
@@ -1495,7 +1502,7 @@ class ProgressTests(transfer.StageTransferTests):
                 self.assertTrue(runner._live_commands(state, self.checkpoint))
                 self.assertEqual(runner._advance_in_host(state, self.checkpoint, "accept", object()), 0)
         self.assertEqual(invoked.call_count, 1)
-        outer = progress.read_record(self.checkpoint)
+        outer = runner._read_json(self.checkpoint, "run record")
         self.assertEqual(outer["current_stage"], "stage3")
         self.assertEqual(outer["pending_input"]["kind"], "stage-entry")
         self.assertNotIn("controller_decision", outer)
@@ -1614,12 +1621,14 @@ class ProgressTests(transfer.StageTransferTests):
                     with self.assertRaises(KeyboardInterrupt): self.invoke("allocation", request)
                 self.invoke(operation)
                 before = self.state()
-                with self.assertRaises(transfer.entry.PreparationError): self.invoke("allocation", request)
+                with self.assertRaises(transfer.entry.PreparationError) as error:
+                    self.invoke("allocation", request)
+                self.assertEqual(error.exception.code, "progression_suspended")
                 self.assertEqual(self.state(), before)
-                owner = progress.Progress(self.checkpoint,
-                    progress.read_projection(self.checkpoint, projection='scope').record)
-                with self.assertRaises(transfer.entry.PreparationError):
+                owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+                with self.assertRaises(transfer.entry.PreparationError) as error:
                     owner.issue_allocation("prepared", self.allocation_slot("prepared"))
+                self.assertEqual(error.exception.code, "progression_suspended")
                 self.assertEqual(self.state(), before)
                 slot = self.allocation_slot('prepared')
                 result = self.invoke("allocation", {"allocation_id": "prepared", "operation": "reconcile",
@@ -1630,9 +1639,16 @@ class ProgressTests(transfer.StageTransferTests):
         self.begin_dispatcher()
         execution = self.execution_input()
         for operation in ("pause", "cancel"):
-            outer = progress.read_projection(self.checkpoint, projection='scope').record
+            outer = runner._read_json(self.checkpoint, "run record")
             outer["runner_request"] = {"operation": operation, "request_id": operation}
-            progress.Progress(self.checkpoint, outer).save()
+            store = progress.state_store.StateStore(self.checkpoint)
+            original = store.open_current()
+            progress.save_outer_record(self.checkpoint,
+                {key: value for key, value in outer.items() if key != progress.KEY},
+                expected_revision=outer.authority_revision)
+            current = store.open_current()
+            self.assertEqual(current.root["subjects"], original.root["subjects"])
+            self.assertEqual(current.root["metadata"], original.root["metadata"])
             before = self.checkpoint.read_bytes()
             with self.assertRaises(transfer.entry.PreparationError) as error:
                 self.invoke("allocation", {"allocation_id": operation, "operation": "prepare", "handoff": execution})
