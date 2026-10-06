@@ -12,7 +12,8 @@ import workflow_progress as progress
 
 
 class LayeredReviewTests(fixture.ProgressTests):
-    def layered_flow(self):
+    def layered_flow(self, *, shared_verification=False):
+        self.shared_verification = shared_verification
         self.implementation_paths = ['a1.py', 'a2.py', 'b1.py', 'b2.py']
         self.planning_documents = {'docs/spec.md':
             'approved design\n## Implementation Decisions\n### D1 — Plan\nTwo independent Tickets.\n'}
@@ -33,6 +34,12 @@ class LayeredReviewTests(fixture.ProgressTests):
                     'depends_on': [], 'verification_refs': [verify], 'read_only': []})
                 plan['behavior_slices'].append({'id': step, 'step_ids': [step], 'ac_refs': [ac],
                     'verification_refs': [verify], 'read_only': [], 'shared_state': []})
+                if shared_verification and ticket == 'A' and number == 1:
+                    shared = copy.deepcopy(plan['verifications'][-1])
+                    shared['id'] = verify + '-shared'
+                    plan['verifications'].append(shared)
+                    plan['steps'][-1]['verification_refs'].append(shared['id'])
+                    plan['behavior_slices'][-1]['verification_refs'].append(shared['id'])
             self.planning_documents['.scratch/layered/issues/' + ticket + '.md'] = (
                 'Ticket ID: ' + ticket + '\nPlan Version: 1\n**What to build:** independent behavior\n'
                 '**Blocked by:** None\nAC-1: first result\nAC-2: second result\n'
@@ -78,15 +85,38 @@ class LayeredReviewTests(fixture.ProgressTests):
         candidate = self.flow_git('rev-parse', 'HEAD')
         return candidate
 
+    def local_verification(self, candidate, ticket='A', slice_id='A1'):
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        checks = [{'id': 'V-' + slice_id + ':1', 'category': 'focused',
+            'command': 'python3 scripts/run_tests.py --test-file tests/runtime/test_layered_review.py',
+            'cwd': str(self.flow), 'pass_condition': 'exit 0', 'allowed_skips': [],
+            'environment': None, 'status': 'passed', 'exit_code': 0,
+            'start_commit': candidate, 'end_commit': candidate, 'environment_fingerprint': None,
+            'output_ref': 'native-output:' + slice_id, 'output_digest': 'c' * 64}]
+        if self.shared_verification and ticket == 'A' and slice_id == 'A1':
+            shared = copy.deepcopy(checks[0])
+            shared['id'] = 'V-A1-shared:1'
+            checks.append(shared)
+        source = {'adapter': 'fixture-command', 'call_ref': 'regression-call:' + slice_id,
+            'response_ref': 'regression-stopped:' + slice_id,
+            'raw': {'checks': copy.deepcopy(checks), 'source_unchanged': True,
+                'stopped': True, 'dispatcher_ref': 'native:dispatcher', 'candidate': candidate,
+                'run_id': progress.read_record(self.checkpoint)['current']['run_id'],
+                'package_digest': fixture.transfer.entry.digest(self.state()['packages']),
+                'plan_authority': copy.deepcopy(checkpoint['plan_authority']),
+                'environment': {'adapter': 'fixture-command', 'cwd': str(self.flow)},
+                'fixture': {'slice': slice_id, 'candidate': candidate}}}
+        return {'plan_authority': checkpoint['plan_authority'], 'checks': checks, 'source': source}
+
     def local_review(self, candidate, ticket='A', slice_id='A1', reviewer=None):
         checkpoint = self.state()['control']['context']['handoff_progress']
         axis = 'local:' + ticket + ':' + slice_id
+        verification = self.local_verification(candidate, ticket, slice_id)
         prepared = self.invoke('review-activity', {'operation': 'prepare', 'axis': axis,
-            'candidate': candidate, 'actor_ref': 'task', 'verification': {
-                'plan_authority': checkpoint['plan_authority'], 'checks': ['focused behavior passed']}})
+            'candidate': candidate, 'actor_ref': 'task', 'verification': verification})
         self.assertEqual(prepared['next_action']['operation'], 'invoke-review', prepared)
         semantic = {'status': 'accepted', 'findings': [], 'read_paths': [],
-                    'ac_refs': [ticket + ':AC-' + slice_id[-1]], 'checks': ['focused behavior passed']}
+                    'ac_refs': [ticket + ':AC-' + slice_id[-1]], 'checks': verification['checks']}
         response_ref = 'local-stopped:' + slice_id
         observed = self.invoke('review-activity', {'operation': 'observe', 'axis': axis,
             'candidate': candidate, 'actor_ref': 'task', 'action_id': prepared['next_action']['action_id'],
@@ -119,6 +149,61 @@ class LayeredReviewTests(fixture.ProgressTests):
         self.assertIn('Ticket acceptance', str(result))
         self.assertIsNone(self.state()['dispatch']['delivery'])
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'implementing')
+
+    def test_local_review_rejects_failed_check_observations(self):
+        candidate = self.layered_flow()
+        verification = self.local_verification(candidate)
+        verification['checks'][0].update(status='failed', exit_code=1)
+        verification['source']['raw']['checks'] = copy.deepcopy(verification['checks'])
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            self.invoke('review-activity', {'operation': 'prepare', 'axis': 'local:A:A1',
+                'candidate': candidate, 'actor_ref': 'task', 'verification': verification})
+        self.assertEqual(error.exception.code, 'review_incomplete')
+        self.assertNotIn('local:A:A1', self.state().get('review_activity', {}))
+        self.assertNotIn('local:A:A1', self.state()['control']['context']['handoff_progress'].get('review_claims', {}))
+
+    def test_local_review_rejects_stale_candidate_wrong_ref_and_command_source(self):
+        candidate = self.layered_flow()
+        old = self.state()['control']['context']['handoff_progress']['git_baseline_commit']
+        variants = (
+            ('stale candidate', lambda item: item['checks'][0].update(start_commit=old, end_commit=old)),
+            ('wrong verification ref', lambda item: item['checks'][0].update(id='V-B1:1')),
+            ('wrong frozen command', lambda item: item['checks'][0].update(command='python3 scripts/run_tests.py --test-file tests/runtime/test_solution_review_progress.py')),
+            ('duplicate ref', lambda item: item['checks'].append(copy.deepcopy(item['checks'][0]))),
+            ('unknown check', lambda item: item['checks'][0].update(status='unknown', exit_code=None)),
+            ('old package source', lambda item: item['source']['raw'].update(package_digest='0' * 64)),
+            ('other run source', lambda item: item['source']['raw'].update(run_id='other-run')),
+            ('unstopped command', lambda item: item['source']['raw'].update(stopped=False)),
+            ('old authority source', lambda item: item['source']['raw']['plan_authority'].update(revision=0)),
+            ('missing original source', lambda item: item.pop('source')),
+        )
+        for label, mutate in variants:
+            with self.subTest(label=label):
+                verification = self.local_verification(candidate)
+                mutate(verification)
+                self.assertEqual(verification['plan_authority'],
+                    self.state()['control']['context']['handoff_progress']['plan_authority'])
+                if 'source' in verification:
+                    verification['source']['raw']['checks'] = copy.deepcopy(verification['checks'])
+                with self.assertRaises(progress.entry.PreparationError) as error:
+                    self.invoke('review-activity', {'operation': 'prepare', 'axis': 'local:A:A1',
+                        'candidate': candidate, 'actor_ref': 'task', 'verification': verification})
+                self.assertEqual(error.exception.code, 'review_incomplete')
+                self.assertNotIn('local:A:A1', self.state().get('review_activity', {}))
+                self.assertNotIn('local:A:A1', self.state()['control']['context']['handoff_progress'].get('review_claims', {}))
+
+    def test_shared_command_requires_each_frozen_verification_ref(self):
+        candidate = self.layered_flow(shared_verification=True)
+        verification = self.local_verification(candidate)
+        verification['checks'].pop()
+        verification['source']['raw']['checks'] = copy.deepcopy(verification['checks'])
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            self.invoke('review-activity', {'operation': 'prepare', 'axis': 'local:A:A1',
+                'candidate': candidate, 'actor_ref': 'task', 'verification': verification})
+        self.assertEqual(error.exception.code, 'review_incomplete')
+        claim = self.local_review(candidate)
+        self.assertEqual(claim['layer'], 'local')
+        self.assertEqual(claim['ticket_id'], 'A')
 
 
 for _name in dir(fixture.ProgressTests):

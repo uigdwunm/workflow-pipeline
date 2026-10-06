@@ -7118,9 +7118,12 @@ class Progress:
     def validate_local_review(self, data):
         checkpoint = self.state['control']['context']['handoff_progress']
         require(checkpoint['state'] == 'implementing', 'review_incomplete', 'local review precedes Ticket acceptance')
-        require(data['verification'].get('plan_authority') == checkpoint['plan_authority'] and
-                data['verification'].get('checks'), 'review_incomplete', 'current local regression evidence required')
-        ticket, group, steps = review_evidence.subject(execution_plan.current_catalog(self.state['scope_authority']), data['axis'])
+        catalog = execution_plan.current_catalog(self.state['scope_authority'])
+        current = state_store.open_store(self.path).open_current()
+        required = review_evidence.validate_local_verification(catalog, data['axis'], data['verification'],
+            data['candidate'], checkpoint['plan_authority'], self.state['handoff']['binding']['worktree'],
+            current.run_id, entry.digest(self.state['packages']), self.bound_ref())
+        ticket, group, steps = review_evidence.subject(catalog, data['axis'])
         results = control.current_accepted_results(checkpoint)
         completed = execution_plan.current_accepted_steps(execution_plan.current_catalog(self.state['scope_authority']),
             results, self.state['scope_authority'])
@@ -7134,6 +7137,7 @@ class Progress:
                 require(owned is not None and all(control_git.file_fingerprint(repository, relative) == fingerprint
                             for relative, fingerprint in owned.items()),
                         'review_incomplete', 'local source differs from its accepted Execution fingerprints')
+        return required
 
     def accept_local_review(self, evidence):
         self.require_not_stopping()
@@ -7143,7 +7147,7 @@ class Progress:
         require(slot is not None and slot['candidate'] == evidence['candidate'] and slot['start']['applied'] and
                 slot['stopped'] and (not slot.get('query') or slot['query']['resolved']),
                 'review_incomplete', 'original local native review must stop')
-        self.validate_local_review(slot['prepare'])
+        required = self.validate_local_review(slot['prepare'])
         require(slot['subject'] == self.local_review_subject(slot['prepare']),
                 'review_incomplete', 'local review source or dependency snapshot changed')
         repository = Path(self.state['handoff']['binding']['worktree'])
@@ -7175,11 +7179,17 @@ class Progress:
                 set(semantic.get('ac_refs', [])) == set(projection['ac_refs']),
                 'review_incomplete', 'original reviewer must accept exact ACs, reads and local regressions without findings')
         stop_ref = store.write_object(current.run_id, 'evidence', {'native_review_stop': receipt})
+        source = slot['prepare']['verification']['source']
+        source_ref = store.write_object(current.run_id, 'evidence', {'local_check_source': source})
         claim = {'schema_version': 1, 'run_id': current.run_id, 'package_digest': entry.digest(self.state['packages']),
             'layer': 'local', **{k: copy.deepcopy(v) for k, v in projection.items() if k != 'verification_refs'},
             'plan_authority': checkpoint['plan_authority'], 'source_candidate': evidence['candidate'],
             'dependency_claim_ids': [], 'verification': {'ids': projection['verification_refs'],
-                'checks': semantic['checks'], 'source_results': [entry.digest(result) for result in executions
+                'required': required, 'checks': semantic['checks'], 'source_ref': source_ref,
+                'source_digest': entry.digest(source),
+                'environment_digest': entry.digest(source['raw']['environment']),
+                'fixture_digest': entry.digest(source['raw']['fixture']),
+                'source_results': [entry.digest(result) for result in executions
                     if set(result['paths']) & set(projection['owned_fingerprints'])]},
             'reviewer_ref': slot['ref'], 'native_stop': {**{k: receipt[k] for k in
                 ('adapter', 'call_ref', 'response_ref', 'status', 'ref')}, 'action_id': slot['action_id']},

@@ -694,6 +694,19 @@ def verified_transition(payload):
                 all(stop[key] == claim['native_stop'][key] for key in ('adapter', 'call_ref', 'response_ref', 'status', 'ref')),
                 'local claim stop evidence does not match its original receipt')
         projection = slot['subject']
+        from execution_plan import current_catalog
+        required = review_evidence.validate_local_verification(current_catalog(progress['execution_authority']),
+            evidence['axis'], slot['prepare']['verification'], evidence['candidate'], progress['plan_authority'],
+            progress['binding']['worktree'], current.run_id, store_module.entry.digest(metadata['packages']),
+            context['carrier']['ref'])
+        source = store.read_evidence(claim['verification']['source_ref'], run_id=current.run_id,
+            maximum=store_module.SUBJECT_LIMIT)['value']['local_check_source']
+        require(source == slot['prepare']['verification']['source'] and
+                store_module.entry.digest(source) == claim['verification']['source_digest'] and
+                store_module.entry.digest(source['raw']['environment']) == claim['verification']['environment_digest'] and
+                store_module.entry.digest(source['raw']['fixture']) == claim['verification']['fixture_digest'] and
+                claim['verification']['required'] == required,
+                'local claim changed its original command, environment or fixture proof')
         require(all(claim[key] == value for key, value in projection.items() if key != 'verification_refs') and
                 claim['verification']['ids'] == projection['verification_refs'] and
                 claim['verification']['checks'] == slot['prepare']['verification']['checks'],

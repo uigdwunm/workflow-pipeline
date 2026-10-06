@@ -409,7 +409,22 @@ into passed evidence.
 
 For a current `execution-plan-v2` behavior slice, C `review-activity prepare`
 uses `axis: local:<ticket_id>:<slice_id>` and an exact clean committed candidate.
-Its verification names the current plan authority and local regression evidence.
+Its verification has exactly `plan_authority`, structured `checks`, and the
+original command `source`. Each frozen slice verification ref and each command
+in that verification produces one required check: ID `<verification-id>:<1-based
+command-index>`, category `focused`, the exact frozen command, the bound worktree
+cwd, pass condition `exit 0`, no allowed skips, and environment `null`. Distinct
+verification refs remain distinct even when they name the same command. The
+existing check validator requires complete, unique results, passed status,
+zero exit code, original output reference/digest, and start/end at this candidate.
+The original source uses the existing authenticated adapter/call/response/raw
+contract and stopped command result validator. Its raw evidence also binds this
+candidate, run ID, package digest, current plan authority and original Dispatcher;
+retain its actual environment and fixture evidence without inventing an
+additional environment acceptance requirement. Producer and consumer apply the
+same frozen command index and original validators. Claims reference the immutable
+command source and digest plus its original environment/fixture digests;
+Execution-result test descriptions and a reviewer's echo do not prove a pass.
 The returned `invoke-review` is one durable native intent with protected receipt
 capacity; observe only that action and retain its authenticated stopped response.
 The native `raw.review` accepts the exact AC refs, read paths and check evidence
