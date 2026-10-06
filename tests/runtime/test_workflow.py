@@ -215,21 +215,38 @@ class BusinessRecoveryTransportTests(unittest.TestCase):
         self.record.write_text(json.dumps(self.state))
 
     def test_recovery_requires_persisted_exact_consumption_and_never_launches(self):
+        # Transport-only routing double. The real store and outer CAS persist
+        # routing facts; this does not manufacture execution or Stage-3 ingress.
+        progression = self.runner.progression
+        store = progression.state_store.StateStore(self.record)
+        outer = {key: value for key, value in self.state.items() if key != progression.KEY}
+        outer['version'] = 11
+        self.record.write_bytes(progression.state_store.encode(outer))
+        stage_id = 'stage:transport-routing'
+        routing = {**self.state[progression.KEY], 'protocol': progression.PROTOCOL,
+                   'stage_subject': stage_id}
+        store.commit_current(expected_revision=0, revision=1, subjects={stage_id: routing},
+            metadata=routing, outer=outer, initial_outer=outer)
+
         def consume(path, request):
-            self.assertEqual(request, {"protocol": self.runner.progression.PROTOCOL, "operation": "recover-business",
+            self.assertEqual(request, {"protocol": progression.PROTOCOL, "operation": "recover-business",
                                       "expected_revision": 7, "data": self.decision})
-            saved = json.loads(path.read_text())
-            saved[self.runner.progression.KEY].update(status="active", business_block=None,
-                                                      recovery_decisions={"repair-1": self.decision})
-            path.write_text(json.dumps(saved))
+            current = store.open_current()
+            routing = store.read_subject(current, stage_id).value
+            routing.update(revision=8, status="active", business_block=None,
+                           recovery_decisions={"repair-1": self.decision})
+            store.commit_current(expected_revision=current.revision, revision=current.revision + 1,
+                subjects={stage_id: routing}, metadata=routing, outer=current.root['outer'])
             return {"status": "active"}
         with patch.object(self.runner, "_validate_record", side_effect=lambda x: x), \
-             patch.object(self.runner.progression, "handle", side_effect=consume), \
+             patch.object(progression, "handle", side_effect=consume), \
              patch.object(self.runner, "_invoke") as invoke:
             self.assertEqual(self.runner.recover_business(self.record, self.decision_path), 0)
-        saved = json.loads(self.record.read_text())
+        saved = progression.read_projection(self.record, projection='identity').record
         self.assertTrue(saved["resume_progression"])
         self.assertEqual(saved["sessions"], {"stage3": "original-cli"})
+        self.assertEqual(saved[progression.KEY]['recovery_decisions'], {"repair-1": self.decision})
+        self.assertEqual(store.open_current().revision, 3)
         invoke.assert_not_called()
 
     def test_success_response_alone_cannot_authorize_carrier_recovery(self):

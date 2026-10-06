@@ -453,23 +453,42 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.context = self.context_for(3)
         self.begin('stepwise', value)
         self.invoke('observe', self.observation(ref='native:dispatcher'))
-        # This fixture's older Stage-2 helper ran with a local control port.
-        # Seed its already-bound Stage-3 context as the original ledger record,
-        # then exercise revision only through the real attached C/B port.
-        outer = progress.read_record(self.checkpoint)
+        outer = progress.read_active_owner(self.checkpoint)
         current_context = copy.deepcopy(outer[progress.KEY]['control']['context'])
-        frontmatter, records = protocol._load_records(self.ledger)
-        records['Phase Results'].append({'result_id': 'WC-' + self.attachment['actor_topic_id'],
-            'result_kind': 'workflow-control', 'topic_id': self.attachment['actor_topic_id'],
-            'record_revision': 0, 'state': 'active',
-            'data_json': protocol._canonical_json(current_context)})
-        self.ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
+        # Simulated existing caller-owned Stage-3 ledger authority. This fixture
+        # commits a valid pointer under the original ledger lock/CAS; it does
+        # not exercise or enable deferred ledger Stage-2 initialization.
+        seed_request = {**self.base, 'operation': 'workflow-control',
+            'action': 'fixture-original-control', 'evidence': {},
+            'expected_ledger_revision': entry.topic_read(str(self.root), self.attachment)['ledger_revision'],
+            'expected_topic_revision': entry.topic_read(str(self.root), self.attachment)['record_revision'],
+            'idempotency_key': str(uuid.uuid4())}
+        ledger_path, lock_path, _, owner_ref = ledger_control._handoff_mutation_context(
+            seed_request, {'action', 'evidence'})
+        with lock_path.open('a+b') as stream:
+            ledger_control._flock_with_timeout(stream)
+            frontmatter, records = protocol._load_records(ledger_path)
+            topic_record = ledger_control._record_by_id(records['Current Topics'], 'topic_id',
+                self.attachment['actor_topic_id'], 'topic_id')
+            revision, _ = ledger_control._validate_revisions(seed_request, frontmatter, topic_record)
+            self.assertEqual(current_context['controller_ref'], owner_ref)
+            self.assertFalse(any(record.get('result_kind') == 'workflow-control'
+                and record.get('topic_id') == self.attachment['actor_topic_id']
+                for record in records['Phase Results']))
+            pointer = progress.state_store.StateStore(ledger_path).prepare_ledger_control(
+                current_context, topic_id=self.attachment['actor_topic_id'],
+                ledger_revision=revision + 1, control_revision=1, previous=None, receipt=None)
+            records['Phase Results'].append({'result_id': 'WC-' + self.attachment['actor_topic_id'],
+                'result_kind': 'workflow-control', 'topic_id': self.attachment['actor_topic_id'],
+                'record_revision': 1, 'state': 'active', 'data_json': protocol._canonical_json(pointer)})
+            ledger_control._write_ledger_transaction(ledger_path, frontmatter, records, seed_request,
+                ledger_revision=revision + 1, event_type='fixture-original-control', result={'store_ref': pointer})
         topic = entry.topic_read(str(self.root), self.attachment)
-        outer[progress.KEY]['control']['discussion'] = {**self.base,
+        outer[progress.KEY]['control'].update(store_ref=pointer, discussion={**self.base,
             'expected_ledger_revision': topic['ledger_revision'],
             'expected_topic_revision': topic['record_revision'],
-            'idempotency_key': str(uuid.uuid4())}
-        progress.atomic_save(self.checkpoint, outer)
+            'idempotency_key': str(uuid.uuid4())})
+        progress.Progress(self.checkpoint, outer).save()
         authority = self.state()['scope_authority']
         old_ledger = self.ledger
         report = {'revision_id': 'attached-private-1',
@@ -639,12 +658,35 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
             'answer': 'confirm', 'reference': 'controller:enter-stage3'})
         self.context = self.context_for(3)
-        frontmatter, records = protocol._load_records(self.ledger)
-        records['Phase Results'].append({'result_id': 'WC-' + self.attachment['actor_topic_id'],
-            'result_kind': 'workflow-control', 'topic_id': self.attachment['actor_topic_id'],
-            'record_revision': 0, 'state': 'active',
-            'data_json': protocol._canonical_json(self.context)})
-        self.ledger.write_bytes(protocol._render_records_ledger(frontmatter, records))
+        current_context = copy.deepcopy(self.context)
+        # Simulated existing caller-owned Stage-3 ledger authority. This fixture
+        # commits a valid pointer under the original ledger lock/CAS; it does
+        # not exercise or enable deferred ledger Stage-2 initialization.
+        seed_request = {**self.base, 'operation': 'workflow-control',
+            'action': 'fixture-original-control', 'evidence': {},
+            'expected_ledger_revision': entry.topic_read(str(self.root), self.attachment)['ledger_revision'],
+            'expected_topic_revision': entry.topic_read(str(self.root), self.attachment)['record_revision'],
+            'idempotency_key': str(uuid.uuid4())}
+        ledger_path, lock_path, _, owner_ref = ledger_control._handoff_mutation_context(
+            seed_request, {'action', 'evidence'})
+        with lock_path.open('a+b') as stream:
+            ledger_control._flock_with_timeout(stream)
+            frontmatter, records = protocol._load_records(ledger_path)
+            topic_record = ledger_control._record_by_id(records['Current Topics'], 'topic_id',
+                self.attachment['actor_topic_id'], 'topic_id')
+            revision, _ = ledger_control._validate_revisions(seed_request, frontmatter, topic_record)
+            self.assertEqual(current_context['controller_ref'], owner_ref)
+            self.assertFalse(any(record.get('result_kind') == 'workflow-control'
+                and record.get('topic_id') == self.attachment['actor_topic_id']
+                for record in records['Phase Results']))
+            pointer = progress.state_store.StateStore(ledger_path).prepare_ledger_control(
+                current_context, topic_id=self.attachment['actor_topic_id'],
+                ledger_revision=revision + 1, control_revision=1, previous=None, receipt=None)
+            records['Phase Results'].append({'result_id': 'WC-' + self.attachment['actor_topic_id'],
+                'result_kind': 'workflow-control', 'topic_id': self.attachment['actor_topic_id'],
+                'record_revision': 1, 'state': 'active', 'data_json': protocol._canonical_json(pointer)})
+            ledger_control._write_ledger_transaction(ledger_path, frontmatter, records, seed_request,
+                ledger_revision=revision + 1, event_type='fixture-original-control', result={'store_ref': pointer})
         value = self.input_for(3, self.state()['accepted'])
         topic = entry.topic_read(str(self.root), self.attachment)
         envelope = {**self.base, 'expected_ledger_revision': topic['ledger_revision'],
@@ -663,7 +705,7 @@ class AttachedFlowTests(fixtures.ProgressTests):
                              wraps=ledger_control._start_git_authority) as checked:
             with self.assertRaises(Exception) as raised:
                 self.invoke('start', {'handoff': value,
-                    'control': {'context': self.context, 'discussion': envelope}})
+                    'control': {'context': self.context, 'discussion': envelope, 'store_ref': pointer}})
         self.assertEqual(raced, [True], str(raised.exception))
         self.assertEqual(checked.call_count, 1)
         latest = protocol.handle({**self.base, 'operation': 'read-topic'})['workflow_control']
@@ -712,7 +754,9 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.begin('stepwise', value)
         self.invoke('observe', self.observation(ref='native:closure'))
         if recover:
-            original_stage3 = copy.deepcopy(self.state()['history'][-1])
+            original_stage3 = copy.deepcopy(self.state()['implementation_predecessor'])
+            original_delivery, _, _ = progress.read_implementation_delivery(self.checkpoint, original_stage3)
+            original_design = copy.deepcopy(original_delivery['design_predecessor'])
             completed_phase = copy.deepcopy(self.phases[3])
             (self.root / 'other-task.md').write_text('parallel update\n')
             self.git('add', 'other-task.md'); self.git('commit', '-qm', 'parallel task')
@@ -762,7 +806,10 @@ class AttachedFlowTests(fixtures.ProgressTests):
             accepted = self.accept_current(payload,'native:dispatcher')
             self.assertEqual(accepted['status'],'accepted',accepted.get('error'))
             self.assertEqual(self.phases[3], completed_phase)
-            self.assertIn(original_stage3, self.state()['history'])
+            self.assertEqual(self.state()['recovery_predecessor'], original_stage3)
+            self.assertEqual(self.state()['design_predecessor'], original_design)
+            retained, _, _ = progress.read_implementation_delivery(self.checkpoint, original_stage3)
+            self.assertEqual(retained, original_delivery)
             pending = self.state()['pending']
             self.invoke('decide', {'decision_id':pending['decision_id'], 'subject':pending['subject'],
                 'answer':'confirm','reference':'controller:return-stage4'})

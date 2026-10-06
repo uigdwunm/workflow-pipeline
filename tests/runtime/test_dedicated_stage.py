@@ -34,8 +34,9 @@ class EntrySupport:
         saved = {'controller_ref': 'discussion-task', 'entry': {'source': {'attachment': attachment}},
             'expected_entry': {'repository': repository, 'discussion_project': discussion_project,
                 'requirement': {'attachment': attachment}, 'actor': {'thread_id': proof['host_ref']}}}
+        saved['digest'] = progression.entry.digest(saved)
         state = {'protocol': progression.PROTOCOL, 'revision': 0, 'mode': 'continuous', 'stage': context['stage'],
-            'status': 'active', 'step': 'bound', 'control': {'context': context, 'discussion': {**base,
+            'status': 'active', 'step': 'bound', 'control': {'context': context, 'store_ref': latest['workflow_control_ref'], 'discussion': {**base,
                 'expected_ledger_revision': latest['ledger_revision'], 'expected_topic_revision': latest['record_revision'],
                 'idempotency_key': str(uuid.uuid4())}}, 'handoff': saved, 'packages': {}, 'dispatch': None,
             'transaction': None, 'transaction_source': None, 'transaction_result': None, 'history': [], 'stopped': True,
@@ -45,7 +46,10 @@ class EntrySupport:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         checkpoint = Path(temporary.name) / 'takeover.json'
-        progression.atomic_save(checkpoint, {progression.KEY: state})
+        state.update(stage_subject='stage:dedicated-takeover', checkpoint_path=str(checkpoint.resolve()))
+        # Original ledger C0/1 is authoritative; the local subject carries only
+        # its exact pointer and the persisted host stop used for takeover.
+        progression.Progress(checkpoint, {progression.KEY: state}).save()
         request = {'action': 'successor-ready', 'evidence': evidence, 'receipt': {'controller_ref': 'discussion-task', 'reference': 'takeover'}}
         def invoke():
             revision = progression.read_record(checkpoint)[progression.KEY]['revision']
@@ -69,7 +73,9 @@ class EntrySupport:
         replay = invoke()
         self.assertTrue(replay['acknowledged'], replay)
         self.assertEqual(replay['next_action']['result']['effects'], [])
-        return {'control': result['next_action']['result']}
+        return {'control': result['next_action']['result'],
+                'port': progression.read_active_owner(checkpoint)[progression.KEY]['control'],
+                'checkpoint': checkpoint}
 
     def mutate(self, topic, operation, owner='discussion-task', success=True, **parameters):
         code, current, err = self.run_cli(self.evolution_request(topic, operation='read-topic'))
@@ -452,7 +458,8 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
             self.assertNotIn('successor_control', takeover['control']['context'])
             import workflow_progress as progression
             progression.verify_phase_completed({'stage': 0, 'handoff': {'authorization': {}},
-                'control': {'context': takeover['control']['context']},
+                'control': {'context': progression.read_archive_context(
+                    takeover['port'], takeover['control']['handoff_id'])},
                 'dispatch': {'request': {'attempt': old_plan['plan_id']}}})
             archive_fields = {'handoff_id': takeover['control']['handoff_id'], 'control_plan_id': old_plan['plan_id']}
             intent = takeover['control']
@@ -509,54 +516,31 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
             'takeover_proof': takeover_proof('dedicated', plan['plan']['plan_id'], stage=1)})['control']
         self.assertTrue(next_ready['handoff_completed'])
         if predecessor:
-            self.assertEqual(next_ready['context']['retired_handoffs'][takeover['control']['handoff_id']]['archive_status'], archive_status)
+            archive_base = self.evolution_request(topic, operation='read-topic')
+            archive_base.pop('operation')
+            archive_context = progression.read_archive_context(
+                {'discussion': archive_base, 'store_ref': next_ready['store_ref']},
+                takeover['control']['handoff_id'])
+            self.assertEqual(archive_context['retired_handoffs'][takeover['control']['handoff_id']]['archive_status'], archive_status)
             if archive_status == 'unknown':
-                self.recover_attached_archive(topic, project, next_ready['context'], takeover['control']['handoff_id'], delivery['requirement_identity'])
+                self.recover_attached_archive(topic, project, archive_context, takeover['control']['handoff_id'],
+                    delivery['requirement_identity'], checkpoint=takeover['checkpoint'])
 
-    def recover_attached_archive(self, topic, project, source_context, handoff_id, requirement_identity):
-        """A persisted downstream checkpoint routes cleanup through the real original ledger."""
+    def recover_attached_archive(self, topic, project, source_context, handoff_id, requirement_identity, *, checkpoint):
+        """Recover cleanup on the same existing dedicated C0/1 checkpoint."""
         import copy
-        import tempfile
         from unittest.mock import patch
         import workflow_progress as progression
-        import supervision_protocol
-        import subprocess
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        flow = Path(temporary.name) / 'flow'
-        target_branch = subprocess.run(['git', '-C', str(project), 'branch', '--show-current'],
-                                       capture_output=True, text=True, check=True).stdout.strip()
-        binding = supervision_protocol.start_worktree({'repository': str(project.resolve()),
-            'worktree': str(flow.resolve()), 'branch': 'codex/archive-fixture', 'target_branch': target_branch})['binding']
-        self.addCleanup(lambda: subprocess.run(['git', '-C', str(project), 'worktree', 'remove', '--force', str(flow)], capture_output=True))
         base = self.evolution_request(topic, operation='read-topic')
         base.pop('operation')
-        latest = progression.dispatch.discussion_protocol.handle({**base, 'operation': 'read-topic'})
-        attachment = {key: base[key] for key in ('project_id', 'tree_id', 'actor_topic_id', 'actor_conversation_ref')}
-        repository = progression.entry.repository_facts(str(project))
-        discussion_project, _ = progression.entry.resolve_discussion_project(repository, attachment)
-        saved = {'controller_ref': 'discussion-task', 'binding': binding, 'entry': {'source': {'attachment': attachment}},
-            'requirement_identity': copy.deepcopy(requirement_identity),
-            'scope': {'baseline': binding['base_commit'], 'owned_paths': [],
-                'protected_paths': [requirement_identity['path']], 'implementation_paths': None, 'closure_paths': None,
-                'downstream': {'state': 'unresolved', 'revision': 0, 'implementation_required': None,
-                    'manifest': None, 'proposal_ref': None, 'seal_ref': None}},
-            'expected_entry': {'repository': repository, 'discussion_project': discussion_project,
-                'requirement': {'attachment': attachment}}}
-        port = {'context': copy.deepcopy(source_context), 'discussion': {**base,
-            'expected_ledger_revision': latest['ledger_revision'], 'expected_topic_revision': latest['record_revision'],
-            'idempotency_key': str(uuid.uuid4())}}
-        current = copy.deepcopy(source_context)
-        current.update(stage=2, carrier=None, handoff_progress=None)
-        state = {'protocol': progression.PROTOCOL, 'revision': 0, 'mode': 'continuous', 'stage': 2,
-            'workspace_evidence': progression.workspace_evidence(binding, 'discussion-task', None),
-            'native_host': {'adapter': 'app-server', 'instance': 'fixture-downstream-host'},
-            'status': 'active', 'step': 'prepare-dispatch', 'control': {'context': current, 'discussion': None},
-            'handoff': saved, 'packages': {}, 'dispatch': None, 'transaction': None,
-            'transaction_source': None, 'transaction_result': None, 'history': [{'control': port, 'handoff': saved}],
-            'host': {'generation': 0, 'status': 'unknown', 'seen': {}, 'calls': {}, 'proof': None, 'query': None, 'last_stop': None}}
-        checkpoint = Path(temporary.name) / 'downstream.json'
-        progression.atomic_save(checkpoint, {progression.KEY: state})
+        checkpoint = Path(checkpoint)
+        original = progression.read_active_owner(checkpoint)[progression.KEY]
+        store = progression.state_store.StateStore(checkpoint)
+        before = store.open_current()
+        self.assertIn(original['stage'], (0, 1))
+        self.assertEqual(original['control']['context']['controller_ref'], source_context['controller_ref'])
+        self.assertEqual(original['control']['store_ref']['ledger_path'], str(Path(topic['ledger_path']).resolve()))
+        original_control = copy.deepcopy(original['control'])
         def invoke(data):
             revision = progression.read_record(checkpoint)[progression.KEY]['revision']
             return progression.handle(checkpoint, {'protocol': progression.PROTOCOL, 'operation': 'control',
@@ -566,6 +550,10 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
         original_save = progression.Progress.save
         saves = []
         def crash_after_ledger(owner):
+            # Capacity measurement runs the real serializer without publishing.
+            # Interrupt the second durable save, after the actual ledger commit.
+            if progression.state_store.open_store(owner.path)._measured_writes is not None:
+                return original_save(owner)
             saves.append(True)
             if len(saves) == 2:
                 raise KeyboardInterrupt('ledger committed before C response save')
@@ -589,11 +577,15 @@ class ProblemFramingEntryTests(EntrySupport, DiscussionProtocolScenarioFixture, 
         invoke(result('archived'))
         conflict = invoke(result('not-archived'))
         self.assertFalse(conflict['next_action']['result']['ok'])
-        restored = progression.read_record(checkpoint)[progression.KEY]
-        self.assertEqual(restored['history'], state['history'])
-        self.assertEqual({key:value for key,value in restored['control']['context'].items() if key != 'retired_handoffs'},
-            {key:value for key,value in current.items() if key != 'retired_handoffs'})
-        authoritative = progression.dispatch.discussion_protocol.handle({**base, 'operation': 'read-topic'})['workflow_control']
+        restored = progression.read_active_owner(checkpoint)[progression.KEY]
+        self.assertEqual(restored['history'], original['history'])
+        self.assertEqual(restored['stage'], original['stage'])
+        self.assertEqual(restored['stage_subject'], original['stage_subject'])
+        self.assertEqual(restored['control'], original_control)
+        self.assertEqual(set(store.open_current().root['subjects']), set(before.root['subjects']))
+        latest = progression.dispatch.discussion_protocol.handle({**base, 'operation': 'read-topic'})
+        authoritative = progression.read_archive_context(
+            {'discussion': base, 'store_ref': latest['workflow_control_ref']}, handoff_id)
         self.assertEqual(authoritative['retired_handoffs'][handoff_id]['archive_status'], 'archived')
         self.assertEqual(len(authoritative['retired_handoffs'][handoff_id]['conflicts']), 1)
 

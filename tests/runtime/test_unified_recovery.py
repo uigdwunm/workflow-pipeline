@@ -35,7 +35,18 @@ class UnifiedRecoveryTests(unittest.TestCase):
         with patch.object(progress.Progress, "apply", new=crash):
             with self.assertRaises(KeyboardInterrupt):
                 self.f.invoke("observe", data)
-        return copy.deepcopy(self.f.state()["transaction"])
+        transaction = copy.deepcopy(self.f.state()["transaction"])
+        self.original_control = copy.deepcopy(self.f.state()["control"])
+        return transaction
+
+    def assert_replayed_input(self, actual, transaction):
+        self.assertEqual(transaction['base_control_digest'], progress.entry.digest(self.original_control))
+        self.assertIs(type(transaction['base_revision']), int)
+        self.assertGreaterEqual(transaction['base_revision'], 0)
+        expected = {key: copy.deepcopy(value) for key, value in transaction.items()
+                    if key not in {'base_control_digest', 'base_revision'}}
+        expected['control'] = copy.deepcopy(self.original_control)
+        self.assertEqual(actual, expected)
 
     def recovery_after_pause(self, saved):
         self.start()
@@ -52,7 +63,7 @@ class UnifiedRecoveryTests(unittest.TestCase):
         self.assertEqual(resumed["next_action"]["operation"], "inspect-host-state")
         self.assertEqual(calls.call_count, 0 if saved else 1)
         if not saved:
-            self.assertEqual(calls.call_args.args[0], transaction)
+            self.assert_replayed_input(calls.call_args.args[0], transaction)
         self.assertEqual(self.f.state()["host"]["observation"], stopped["observation"])
         query = resumed["next_action"]
         self.assertEqual(self.f.invoke("advance")["next_action"], query)
@@ -81,7 +92,7 @@ class UnifiedRecoveryTests(unittest.TestCase):
             result = self.f.invoke("resume")
         self.assertEqual(calls.call_count, 0 if saved else 1)
         if not saved:
-            self.assertEqual(calls.call_args.args[0], transaction)
+            self.assert_replayed_input(calls.call_args.args[0], transaction)
         self.assertIsNone(self.f.state()["transaction"])
         self.assertTrue(self.f.invoke("observe", data)["acknowledged"])
         if status == "needs_input":
@@ -149,7 +160,7 @@ class UnifiedRecoveryTests(unittest.TestCase):
         data = self.f.observation("idle", "result", self.message())
         data.pop("action_id")
         self.f.invoke("observe", data)
-        outer = progress.read_record(self.f.checkpoint)
+        outer = progress.read_active_owner(self.f.checkpoint)
         owner = progress.Progress(self.f.checkpoint, outer)
         result = owner.effect("continue-host", {"ref": owner.bound_ref()})
         self.assertEqual(result["next_action"]["operation"], "inspect-host-state")
@@ -157,14 +168,20 @@ class UnifiedRecoveryTests(unittest.TestCase):
 
     def test_old_checkpoint_requires_original_runtime(self):
         self.start()
-        outer = progress.read_record(self.f.checkpoint)
+        # Independent old-format input fixture, leaving the original bounded
+        # checkpoint and its immutable objects untouched.
+        original_checkpoint = self.f.checkpoint
+        original_bytes = original_checkpoint.read_bytes()
+        outer = progress.read_active_owner(original_checkpoint)
         outer[progress.KEY]["protocol"] = "workflow-progress-v2"
-        progress.atomic_save(self.f.checkpoint, outer)
+        self.f.checkpoint = original_checkpoint.with_name('legacy-checkpoint.json')
+        self.f.checkpoint.write_bytes(progress.state_store.encode(dict(outer)))
         before = self.f.checkpoint.read_bytes()
         with self.assertRaises(fixtures.transfer.entry.PreparationError) as error:
             self.f.invoke("resume")
         self.assertEqual(error.exception.code, "legacy_run_requires_original_runtime")
         self.assertEqual(self.f.checkpoint.read_bytes(), before)
+        self.assertEqual(original_checkpoint.read_bytes(), original_bytes)
 
     def completed_window(self, saved):
         payload = self.f.prepare_design_result("continuous")
@@ -178,7 +195,7 @@ class UnifiedRecoveryTests(unittest.TestCase):
         self.assertEqual(result["pending"]["kind"], "acceptance")
         self.assertEqual(calls.call_count, 0 if saved else 1)
         if not saved:
-            self.assertEqual(calls.call_args.args[0], transaction)
+            self.assert_replayed_input(calls.call_args.args[0], transaction)
         self.assertEqual(self.f.state()["host"]["observation"], host["observation"])
         self.assertEqual(self.f.invoke("advance")["pending"], result["pending"])
 
@@ -194,7 +211,7 @@ class UnifiedRecoveryTests(unittest.TestCase):
         self.assertEqual(result["next_action"]["operation"], "wait-host")
         self.assertEqual(calls.call_count, 0 if saved else 1)
         if not saved:
-            self.assertEqual(calls.call_args.args[0], transaction)
+            self.assert_replayed_input(calls.call_args.args[0], transaction)
         self.assertIsNone(self.f.state()["host"]["proof"])
         self.assertTrue(self.f.invoke("observe", data)["acknowledged"])
 
@@ -261,9 +278,10 @@ class UnifiedRecoveryTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 self.f.invoke("observe", data)
         transaction = copy.deepcopy(self.f.state()["transaction"])
+        self.original_control = copy.deepcopy(self.f.state()["control"])
         with patch.object(progress.dispatch, "handle", wraps=progress.dispatch.handle) as calls:
             self.assertEqual(self.f.invoke("resume")["next_action"]["operation"], "continue-host")
-        self.assertEqual(calls.call_args.args[0], transaction)
+        self.assert_replayed_input(calls.call_args.args[0], transaction)
         self.assertEqual(calls.call_count, 1)
 
     def test_reobserving_pending_business_during_pause_does_not_consume_it(self):

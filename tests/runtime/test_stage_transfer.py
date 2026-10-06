@@ -373,11 +373,11 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         return {'artifacts':['impl.py'],'checks':['CLI passed'],'candidate_commit':candidate,
                 'review':review,'verification':control.delivery_verification(self.context['handoff_progress'],'native:dispatcher')}
 
-    def mark_reviewable(self, candidate, *, fixture_execution=True):
+    def mark_reviewable(self, candidate, *, fixture_execution=True, evidence_suffix=""):
         if fixture_execution:
-            outer = progress.read_record(self.checkpoint)
+            outer = progress.read_active_owner(self.checkpoint)
             self.fixture_accepted_execution(outer[progress.KEY]['control']['context'], candidate)
-            progress.atomic_save(self.checkpoint, outer)
+            progress.Progress(self.checkpoint, outer).save()
         self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
         checkpoint = self.state()['control']['context']['handoff_progress']
         checks = checks_for(checkpoint['validation_plan']['review_required'], candidate)
@@ -387,8 +387,8 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
             'commit': candidate, 'expected_target_head': self.git('rev-parse', 'main'),
             'binding': self.binding, 'plan_digest': checkpoint['plan_digest'],
             'plan_authority': checkpoint['plan_authority'], 'checks': checks},
-            'receipt': {'adapter': 'fixture', 'call_ref': 'focused-stage3',
-                'response_ref': 'focused-stage3-result', 'raw': {'checks': checks,
+            'receipt': {'adapter': 'fixture', 'call_ref': 'focused-stage3' + evidence_suffix,
+                'response_ref': 'focused-stage3-result' + evidence_suffix, 'raw': {'checks': checks,
                     'source_unchanged': True, 'stopped': True,
                     'dispatcher_ref': 'native:dispatcher'}}})
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'reviewable', ready)

@@ -447,7 +447,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
                         'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
                         'tests': ['implementation bytes verified'],
                         'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record']),
-                        'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                        'plan_refs': progress.handoff.resolve_allocation(slot['handoff'])['semantic']['plan_refs'],
                         'plan_authority': f.state()['control']['context']['handoff_progress']['plan_authority']}}})
                 f.invoke('allocation', {'allocation_id': 'first-slice', 'operation': 'accept',
                     'decision': {'reference': 'dispatcher:accept-first-slice'}})
@@ -466,12 +466,23 @@ class CollaborationLifecycleTests(unittest.TestCase):
             if retire_dispatcher:
                 retire(self.finalization('/root/dispatcher', 'dispatcher-thread'))
             predecessor = f.state()['accepted']
+            store = progress.state_store.StateStore(f.checkpoint)
+            accepted_current = store.open_current()
+            slot = f.state()['allocations']['first-slice']
+            ticket_id = progress.handoff.resolve_allocation(slot['handoff'])['semantic']['plan_refs'][0]['ticket_id']
+            accepted_ticket_ref = copy.deepcopy(accepted_current.root['subjects']['ticket:' + ticket_id + ':0'])
+            accepted_record = copy.deepcopy(store.read_evidence(accepted_ticket_ref,
+                run_id=accepted_current.run_id, kind='subject')['value']['allocations']['first-slice']['record'])
             (f.root / 'other-task.md').write_text('parallel update\n')
             f.git('add', 'other-task.md')
             f.git('commit', '-qm', 'parallel target update')
             request = f.input_for(4, predecessor)
             f.context = f.context_for(4)
             f.begin('continuous', request)
+            original_predecessor_ref = copy.deepcopy(f.state()['handoff']['predecessor'])
+            original_delivery = progress.read_implementation_delivery(f.checkpoint, original_predecessor_ref)[0]
+            self.assertEqual(original_predecessor_ref['accepted_digest'], predecessor['digest'])
+            self.assertEqual(original_delivery['accepted']['digest'], predecessor['digest'])
             f.invoke('observe', f.observation(ref='/root/closure'))
             observation = f.observation('stopped', 'result', ref='/root/closure')
             observation['closure'] = {'ref': '/root/closure', 'candidate': candidate, 'merge': None,
@@ -484,7 +495,9 @@ class CollaborationLifecycleTests(unittest.TestCase):
             if retire_dispatcher:
                 self.assertEqual(result['error']['code'], 'identity_retired', result)
                 self.assertEqual(f.state()['stage'], 4)
-                self.assertEqual(f.state()['handoff']['predecessor'], predecessor)
+                self.assertEqual(f.state()['handoff']['predecessor'], original_predecessor_ref)
+                self.assertEqual(progress.read_implementation_delivery(f.checkpoint,
+                    original_predecessor_ref)[0], original_delivery)
                 self.assertNotIn('/root/dispatcher', agents)
                 return
             self.assertEqual(f.state()['stage'], 3, result)
@@ -508,9 +521,13 @@ class CollaborationLifecycleTests(unittest.TestCase):
                 close = f.invoke('native-finalize', execution_close)['next_action']
                 f.invoke('native-finalize', self.finalize_observation(close))
                 self.assertEqual(f.invoke('resume')['status'], 'active')
-            accepted_record = copy.deepcopy(f.state()['allocations']['first-slice']['record'])
             f.revalidate_integrated_execution()
-            self.assertEqual(f.state()['allocations']['first-slice']['record'], accepted_record)
+            # The retired allocation is immutable audit evidence, not a live
+            # allocation or execution permission in the recovered Controller.
+            retained_ticket = store.read_evidence(accepted_ticket_ref,
+                run_id=accepted_current.run_id, kind='subject')['value']
+            self.assertEqual(retained_ticket['allocations']['first-slice']['record'], accepted_record)
+            self.assertNotIn('first-slice', f.state()['allocations'])
             self.assertIn('/root/dispatcher', agents)
             self.assertNotIn('/root/dispatcher/executor', agents)
             self.assertEqual(f.state()['control']['context']['carrier']['ref'], '/root/dispatcher')
@@ -1207,14 +1224,26 @@ class CollaborationLifecycleTests(unittest.TestCase):
         f = self.f
         self.finish_execution()
         original = json.loads(f.checkpoint.read_text())
+        store = progress.state_store.StateStore(f.checkpoint)
+        current = store.open_current()
+        subject_id = current.root['metadata']['stage_subject']
+        subject = store.read_subject(current, subject_id).value
+        scope = store.read_evidence(current.root['scope'], run_id=current.run_id, kind='scope')['value']
         for value in (None, '', [], {}, True, 'invalid', 'A' * 64):
-            damaged = copy.deepcopy(original)
-            record = damaged[progress.KEY]['native_finalizations'][0]
+            damaged = copy.deepcopy(subject)
+            record = damaged['native_finalizations'][0]
             if value is None:
                 record.pop('delivery_digest')
             else:
                 record['delivery_digest'] = value
-            f.checkpoint.write_text(json.dumps(damaged))
+            subject_ref = store.write_object(current.run_id, 'subject', damaged, subject_id=subject_id)
+            damaged_scope = copy.deepcopy(scope)
+            damaged_scope['subject_ref'] = subject_ref
+            damaged_scope['value']['state_digest'] = progress.entry.digest(damaged)
+            root = {**current.root, 'subjects': {**current.root['subjects'], subject_id: subject_ref},
+                    'scope': store.write_object(current.run_id, 'scope', damaged_scope)}
+            root_ref = store.write_object(current.run_id, 'root', root)
+            f.checkpoint.write_bytes(progress.state_store.encode({**original, 'current': root_ref}))
             before = f.checkpoint.read_bytes()
             with self.subTest(value=value):
                 with self.assertRaises(progress.entry.PreparationError) as error:
