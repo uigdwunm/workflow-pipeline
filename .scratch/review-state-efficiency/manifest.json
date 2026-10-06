@@ -752,6 +752,7 @@
       "path": "src/shared/references/guided-implementation/worktree-execution.md",
       "operation": "modify",
       "tickets": [
+        "T02",
         "T04",
         "T06"
       ],
@@ -763,7 +764,8 @@
         "skills/change-closure/references/shared/guided-implementation/worktree-execution.md",
         "skills/guided-implementation/references/shared/guided-implementation/worktree-execution.md",
         "skills/solution-design/references/shared/guided-implementation/worktree-execution.md"
-      ]
+      ],
+      "implementation_note": "T02 精确同步现有 target_changed replacement review 段（原177–180）：按影响闭包复查、保留原 claim/source 与新 target applicability、完整 frozen final validation 后重试。保原 merge/affected/final/retry 次序、publication 功能及 v19 历史段，不扩大安装/迁移/初始化。"
     },
     {
       "path": "src/shared/references/workflow-progression.md",
@@ -1347,13 +1349,20 @@
       "path": "tests/runtime/test_repository_validation.py",
       "operation": "modify",
       "tickets": [
+        "T02",
         "T06"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
-      "symbols": [],
-      "generated_outputs": []
+      "symbols": [
+        {
+          "name": "test_stage_three_assigns_candidate_review_to_the_originating_task",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [],
+      "implementation_note": "T02 已有必要 focused 实际失败；仅该方法原140–220静态合同适配三层审查、原 claim 继承/target applicability 与最终验证顺序。保独立角色、Originating Task 原接收职责、affected/final/retry 次序；不批量删除守卫或改其它测试。"
     },
     {
       "path": "tests/runtime/test_bounded_progress.py",
