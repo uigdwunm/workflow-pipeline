@@ -770,6 +770,7 @@
       "operation": "modify",
       "tickets": [
         "T01",
+        "T02",
         "T05",
         "T06"
       ],
@@ -783,7 +784,8 @@
         "skills/guided-implementation/references/shared/workflow-progression.md",
         "skills/problem-framing/references/shared/workflow-progression.md",
         "skills/solution-design/references/shared/workflow-progression.md"
-      ]
+      ],
+      "implementation_note": "T02 仅同步现有 current-version 兼容性段：progress v20、transfer v15、runner11、execution-plan-v2、control12/schema7。旧版本历史叙述按原意保留；不扩安装/迁移/初始化或业务。"
     },
     {
       "path": "src/shared/references/stage-transfer.md",
@@ -808,6 +810,7 @@
       "path": "src/shared/references/package-execution.md",
       "operation": "modify",
       "tickets": [
+        "T02",
         "T06"
       ],
       "kind": "source",
@@ -820,7 +823,8 @@
         "skills/guided-implementation/references/shared/package-execution.md",
         "skills/problem-framing/references/shared/package-execution.md",
         "skills/solution-design/references/shared/package-execution.md"
-      ]
+      ],
+      "implementation_note": "T02 仅同步现有 current-version 兼容性段：progress v20、transfer v15、runner11、execution-plan-v2、control12/schema7。旧版本历史叙述按原意保留；不扩安装/迁移/初始化或业务。"
     },
     {
       "path": "src/stages/guided-implementation/SKILL.md.in",
@@ -1749,15 +1753,22 @@
     },
     {
       "path": "tests/runtime/test_solution_review_progress.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
+        "T02",
         "T06"
       ],
       "kind": "test",
-      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "reason": "实际 module verify 7 PASS/1 ERROR：queued_scope 方法仍从 checkpoint envelope 读 outer decision；精确改为已存在 identity typed projection，不改 Stage2 语义",
       "exists_at_design": true,
-      "symbols": [],
-      "generated_outputs": []
+      "symbols": [
+        {
+          "name": "test_queued_scope_intent_is_consumed_exactly_and_conflicting_retry_rejected",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [],
+      "implementation_note": "仅该方法原179/188两处 fixtures.progress.read_record(checkpoint) 的 outer 状态读取，使用 read_projection(checkpoint, identity).record；保留 RunLock、resume、decision_conflict、队列消费和 flow_intent 原断言。workflow._queue_resume 已正确持久 outer，不扩大 source workflow 权限。"
     },
     {
       "path": "tests/runtime/test_stage_scope.py",
