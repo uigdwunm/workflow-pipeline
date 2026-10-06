@@ -289,9 +289,22 @@ class ProgressTests(transfer.StageTransferTests):
     def test_proven_noncreation_can_retry_only_with_new_controller_request(self):
         self.begin("continuous")
         original_binding = copy.deepcopy(self.state()["handoff"]["binding"])
+        original_controller = self.state()['control']['context']['controller_ref']
+        original_packages = copy.deepcopy(self.state()['packages'])
         original_requirement = (self.flow / self.requirement_path).read_bytes()
         old_request = self.state()["dispatch"]["request"]
-        self.invoke("observe", self.observation("not-created", "lookup", ref=None))
+        old_action = copy.deepcopy(self.state()['host_action'])
+        noncreation = self.observation("not-created", "lookup", ref=None)
+        self.invoke("observe", noncreation)
+        closed = self.state()
+        old_result = copy.deepcopy(closed['last_result'])
+        old_subject, old_revision = closed['stage_subject'], closed['revision']
+        before_store = progress.state_store.StateStore(self.checkpoint)
+        before_current = before_store.open_current()
+        before_store.read_subject(before_current, old_subject)
+        before_metrics = {'root_bytes': before_current.reference['size'],
+            'stage_bytes': before_current.root['subjects'][old_subject]['size'],
+            'files_read': before_store.files_read, 'bytes_read': before_store.bytes_read}
         retry = copy.deepcopy(self.input)
         retry["authorization"]["flow_mode"] = "continuous"
         with self.assertRaises(transfer.entry.PreparationError):
@@ -302,11 +315,171 @@ class ProgressTests(transfer.StageTransferTests):
             create.assert_not_called()
         self.assertEqual(started["next_action"]["operation"], "invoke-host")
         self.assertEqual(self.state()["handoff"]["binding"], original_binding)
+        self.assertEqual(self.state()['control']['context']['controller_ref'], original_controller)
+        self.assertEqual(self.state()['packages'], original_packages)
+        self.assertEqual(self.state()['history'], [])
         self.assertEqual((self.flow / self.requirement_path).read_bytes(), original_requirement)
         self.assertNotEqual(self.state()["dispatch"]["request"]["digest"], old_request["digest"])
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        reference = self.state()['noncreation_retry']
+        self.assertEqual(reference, current.root['metadata']['noncreation_retry'])
+        proof = progress.read_noncreation_retry(self.state(), store=store, current=current)
+        self.assertEqual((proof['stage_subject'], proof['source_revision']), (old_subject, old_revision))
+        self.assertEqual(store.read_evidence(proof['result_ref'], run_id=current.run_id)['value'], old_result)
+        retained_action = store.read_evidence(proof['action_ref'], run_id=current.run_id)['value']
+        self.assertEqual(retained_action['action_id'], old_action['action_id'])
+        self.assertEqual(retained_action['payload'], old_request)
+        self.assertEqual(store.read_evidence(proof['observation_ref'], run_id=current.run_id)['value'], noncreation)
+        self.assertNotIn('history', proof)
+        self.assertNotIn('root', proof)
+        self.assertLessEqual(reference['size'], progress.state_store.ROOT_LIMIT)
+        self.assertLessEqual(current.reference['size'], progress.state_store.ROOT_LIMIT)
+        self.assertLessEqual(current.root['subjects'][self.state()['stage_subject']]['size'], progress.state_store.SUBJECT_LIMIT)
+        measured_store = progress.state_store.StateStore(self.checkpoint)
+        measured_current = measured_store.open_current()
+        measured_state = measured_store.read_subject(measured_current, self.state()['stage_subject']).value
+        progress.read_noncreation_retry(measured_state, store=measured_store, current=measured_current)
+        self.assertLessEqual(measured_store.bytes_read, progress.state_store.READ_LIMIT)
+        if os.environ.get('T01_NONCREATION_RETRY_METRICS_PATH'):
+            Path(os.environ['T01_NONCREATION_RETRY_METRICS_PATH']).write_text(json.dumps({
+                'before': before_metrics, 'after': {'root_bytes': measured_current.reference['size'],
+                    'stage_bytes': measured_current.root['subjects'][measured_state['stage_subject']]['size'],
+                    'proof_bytes': reference['size'], 'files_read': measured_store.files_read,
+                    'bytes_read': measured_store.bytes_read},
+                'proof_refs': {key: proof[key]['size'] for key in ('result_ref', 'action_ref', 'observation_ref')},
+                'history_entries': len(measured_state['history'])}, indent=2) + '\n')
+        new_action = copy.deepcopy(self.state()['host_action'])
+        before = self.checkpoint.read_bytes()
+        with self.assertRaisesRegex(transfer.entry.PreparationError, 'finish the current stage'):
+            self.invoke('start', {'handoff': retry})
+        changed = copy.deepcopy(retry)
+        changed['semantic']['objective'] = 'different work with the same retry decision'
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('start', {'handoff': changed})
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertEqual(self.invoke('advance')['next_action']['operation'], 'lookup-exact-action')
+        self.assertEqual(self.state()['host_action'], new_action)
+        self.assertEqual(self.invoke('inspect')['status'], 'active')
         late = self.observation()
         late["receipt"]["request_digest"] = old_request["digest"]
         self.assertEqual(self.invoke("observe", late)["status"], "blocked")
+
+    def test_noncreation_retry_proof_references_fail_closed(self):
+        self.begin('continuous')
+        self.invoke('observe', self.observation('not-created', 'lookup', ref=None))
+        retry = copy.deepcopy(self.input)
+        retry['authorization'].update(flow_mode='continuous', reference='controller:retry-proof')
+        self.invoke('start', {'handoff': retry})
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        reference = self.state()['noncreation_retry']
+        proof = progress.read_noncreation_retry(self.state())
+        before = self.checkpoint.read_bytes()
+        for key in ('noncreation_retry', 'result_ref', 'action_ref', 'observation_ref'):
+            with self.subTest(reference=key):
+                selected = reference if key == 'noncreation_retry' else proof[key]
+                path = store._path(selected['sha256'])
+                original = path.read_bytes()
+                for content in (None, b'corrupt retry proof'):
+                    with self.subTest(content=content):
+                        if content is None:
+                            path.unlink()
+                        else:
+                            path.write_bytes(content)
+                        try:
+                            with self.assertRaises(transfer.entry.PreparationError):
+                                self.invoke('inspect')
+                            self.assertEqual(self.checkpoint.read_bytes(), before)
+                        finally:
+                            path.write_bytes(original)
+        for changes in ({'run_id': 'different-run'}, {'size': progress.state_store.ROOT_LIMIT + 1},
+                        {'kind': 'subject'}, {'sha256': 'invalid-digest'}):
+            with self.subTest(changes=changes):
+                owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+                owner.state['noncreation_retry'] = {**reference, **changes}
+                with self.assertRaises(transfer.entry.PreparationError):
+                    owner.save()
+                self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertEqual(self.invoke('advance')['next_action']['operation'], 'lookup-exact-action')
+        self.invoke('observe', self.observation('not-created', 'lookup', ref=None))
+        retry['authorization']['reference'] = 'controller:retry-proof-again'
+        self.assertEqual(self.invoke('start', {'handoff': retry})['next_action']['operation'], 'invoke-host')
+        latest = self.state()
+        self.assertEqual(latest['history'], [])
+        latest_proof = progress.read_noncreation_retry(latest)
+        self.assertNotEqual(latest['noncreation_retry'], reference)
+        self.assertNotIn(reference['sha256'], json.dumps(latest_proof))
+        self.assertEqual(store.read_evidence(reference, run_id=current.run_id)['value'], proof)
+        self.assertLessEqual(latest['noncreation_retry']['size'], progress.state_store.ROOT_LIMIT)
+
+    def test_untrusted_noncreation_cannot_enable_retry(self):
+        self.begin('continuous')
+        observation = self.observation('not-created', 'lookup', ref=None)
+        observation.pop('provenance')
+        self.invoke('observe', observation)
+        self.assertNotEqual(self.state()['status'], 'cancelled')
+        retry = copy.deepcopy(self.input)
+        retry['authorization'].update(flow_mode='continuous', reference='controller:retry-missing-proof')
+        before = self.checkpoint.read_bytes()
+        with self.assertRaisesRegex(transfer.entry.PreparationError, 'reconcile non-creation'):
+            self.invoke('start', {'handoff': retry})
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+
+    def test_noncreation_retry_valid_object_chain_rejects_false_proof(self):
+        self.begin('continuous')
+        self.invoke('observe', self.observation('not-created', 'lookup', ref=None))
+        retry = copy.deepcopy(self.input)
+        retry['authorization'].update(flow_mode='continuous', reference='controller:retry-semantic-proof')
+        self.invoke('start', {'handoff': retry})
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        saved = self.state()
+        proof = progress.read_noncreation_retry(saved)
+        action = store.read_evidence(proof['action_ref'], run_id=current.run_id)['value']
+        observation = store.read_evidence(proof['observation_ref'], run_id=current.run_id)['value']
+        result = store.read_evidence(proof['result_ref'], run_id=current.run_id)['value']
+
+        def publish_corrupt_fixture(changed):
+            # Simulate storage corruption with valid hashes and run references.
+            # The public handle must reject the proof's business facts too.
+            active = store.open_current()
+            candidate = copy.deepcopy(saved)
+            candidate['noncreation_retry'] = store.write_object(active.run_id, 'evidence', changed)
+            metadata = {**active.root['metadata'], 'noncreation_retry': candidate['noncreation_retry']}
+            store.commit_current(expected_revision=active.revision, revision=active.revision + 1,
+                subjects={candidate['stage_subject']: progress.stage_subject_value(candidate)},
+                metadata=metadata, outer=active.root['outer'],
+                scope=progress.stage2_scope(candidate, self.checkpoint,
+                                           {**active.root['outer'], progress.KEY: candidate}))
+
+        for corruption in ('schema', 'action', 'receipt', 'result'):
+            with self.subTest(corruption=corruption):
+                changed = copy.deepcopy(proof)
+                if corruption == 'schema':
+                    changed['unexpected'] = 'a valid hash cannot widen the proof schema'
+                elif corruption == 'action':
+                    changed_action = {**action, 'action_id': 'another-native-invocation'}
+                    changed['action_ref'] = store.write_object(current.run_id, 'evidence', changed_action)
+                elif corruption == 'receipt':
+                    changed_observation = copy.deepcopy(observation)
+                    changed_observation['receipt']['request_digest'] = 'f' * 64
+                    changed_result = copy.deepcopy(result)
+                    record = progress.handoff.unseal(changed_result['record'])
+                    record['receipts'] = [changed_observation['receipt']]
+                    changed_result['record'] = progress.handoff.seal(record)
+                    changed['observation_ref'] = store.write_object(current.run_id, 'evidence', changed_observation)
+                    changed['result_ref'] = store.write_object(current.run_id, 'evidence', changed_result)
+                else:
+                    changed['result_ref'] = store.write_object(current.run_id, 'evidence', {**result, 'status': 'unknown'})
+                publish_corrupt_fixture(changed)
+                before = self.checkpoint.read_bytes()
+                with self.assertRaises(transfer.entry.PreparationError) as caught:
+                    self.invoke('inspect')
+                self.assertEqual(caught.exception.code, {'schema': 'invalid_request',
+                    'action': 'host_evidence_missing', 'receipt': 'identity_mismatch',
+                    'result': 'invalid_checkpoint'}[corruption])
+                self.assertEqual(self.checkpoint.read_bytes(), before)
 
     def test_noncreation_retry_cannot_change_work_or_target(self):
         self.begin("continuous")

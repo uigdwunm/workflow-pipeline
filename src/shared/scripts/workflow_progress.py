@@ -1201,6 +1201,142 @@ def read_design_predecessor(reference, path):
     return value
 
 
+def read_noncreation_retry(state, *, store=None, current=None):
+    """Resolve one ended invocation, without its old stage or ancestors."""
+    store = store or state_store.open_store(state['checkpoint_path'])
+    current = current or store.open_current()
+    reference = state['noncreation_retry']
+    proof = store.read_evidence(reference, run_id=current.run_id,
+                                maximum=state_store.ROOT_LIMIT)['value']
+    entry.fields(proof, {'kind', 'checkpoint_path', 'stage', 'stage_subject', 'source_revision',
+        'controller_ref', 'binding', 'requirement_identity', 'packages', 'native_host',
+        'workspace_evidence', 'result_ref', 'action_ref', 'observation_ref', 'retry_handoff_digest'})
+    require(proof['kind'] == 'noncreation-retry-v1' and
+            proof['checkpoint_path'] == state['checkpoint_path'] == str(store.checkpoint.resolve()) and
+            proof['stage'] == state['stage'] and type(proof['source_revision']) is int and
+            0 <= proof['source_revision'] < state['revision'] and
+            isinstance(proof['stage_subject'], str) and proof['stage_subject'].startswith('stage:') and
+            proof['controller_ref'] == state['handoff']['controller_ref'] and
+            proof['binding'] == state['handoff']['binding'] and
+            proof['requirement_identity'] == state['handoff']['requirement_identity'] and
+            proof['packages'] == state['packages'] and proof['native_host'] == state['native_host'] and
+            proof['workspace_evidence'] == state['workspace_evidence'] and
+            proof['retry_handoff_digest'] == state['handoff']['digest'],
+            'invalid_checkpoint', 'non-creation retry identity changed')
+    metadata = current.root['metadata']
+    require((metadata['stage_subject'] == state['stage_subject'] and
+             metadata.get('noncreation_retry') == reference) or
+            (metadata['stage_subject'] == proof['stage_subject'] and
+             metadata['revision'] == proof['source_revision']),
+            'invalid_checkpoint', 'retry proof is not pinned by the original Controller')
+    result, action, observation = [store.read_evidence(proof[key], run_id=current.run_id,
+        maximum=state_store.ROOT_LIMIT)['value'] for key in ('result_ref', 'action_ref', 'observation_ref')]
+    require(isinstance(result, dict) and result.get('status') == 'not-created' and
+            isinstance(result.get('record'), dict) and isinstance(action, dict) and
+            isinstance(observation, dict), 'invalid_checkpoint', 'original non-creation proof is incomplete')
+    record = handoff.unseal(result['record'])
+    entry.fields(record, {'protocol', 'kind', 'request', 'receipts', 'delivery', 'acceptance', 'status'},
+                 {'handoff', 'stage_input', 'scope_checkpoint_path'})
+    entry.fields(observation, {'event_id', 'receipt', 'action_id', 'provenance'},
+                 {'result', 'action_resolution', 'closure', 'publication_candidate', 'lifecycle'})
+    entry.nonempty(observation['event_id'])
+    require(record['protocol'] == handoff.PROTOCOL and record['kind'] == 'dispatch' and
+            sum(key in record for key in ('handoff', 'stage_input')) == 1 and
+            record.get('status') == 'not-created' and record.get('delivery') is None and
+            record.get('acceptance') is None and isinstance(record.get('request'), dict) and
+            isinstance(record.get('receipts'), list),
+            'invalid_checkpoint', 'retry requires an ended unbound dispatch')
+    if 'stage_input' in record:
+        pin = record['stage_input']
+        entry.fields(pin, {'checkpoint', 'run_id', 'reference'})
+        require(pin['checkpoint'] == state['checkpoint_path'] and pin['run_id'] == current.run_id,
+                'identity_mismatch', 'retry input belongs to another checkpoint')
+        value = store.read_evidence(pin['reference'], run_id=current.run_id,
+                                    maximum=state_store.ROOT_LIMIT)['value']
+        entry.fields(value, {'stage_input'})
+        original = value['stage_input']
+    else:
+        original = record.get('handoff')
+    handoff.unseal(original)
+    handoff.require_current_protocol(original)
+    launch = record['request']
+    require(all(key in original for key in ('stage', 'controller_ref', 'role', 'selection', 'scope',
+            'target', 'binding', 'semantic', 'requirement_identity', 'predecessor', 'authorization')) and
+            isinstance(original['authorization'], dict) and
+            all(key in original['authorization'] for key in ('reference', 'flow_mode')) and
+            all(key in launch for key in ('input_digest', 'controller_ref', 'role', 'configuration', 'attempt', 'digest')) and
+            isinstance(observation.get('receipt'), dict),
+            'invalid_checkpoint', 'original retry invocation schema changed')
+    require(launch['input_digest'] == original['digest'] and
+            launch['controller_ref'] == original['controller_ref'] == proof['controller_ref'] and
+            launch['role'] == original['role'] and launch['configuration'] == original['selection'] and
+            action.get('operation') == 'invoke-host' and action.get('checkpoint') == state['checkpoint_path'] and
+            action.get('payload') == launch and action.get('creation_resolved') is True and
+            action.get('creation_receipt') == {'event_id': observation.get('event_id'), 'outcome': 'not-created'} and
+            all(original[key] == state['handoff'][key] for key in
+                ('stage', 'role', 'scope', 'target', 'binding', 'semantic', 'requirement_identity', 'predecessor')) and
+            original['authorization']['reference'] != state['handoff']['authorization']['reference'] and
+            original['authorization']['flow_mode'] == state['mode'],
+            'invalid_checkpoint', 'retry differs from the original ended invocation')
+    receipt = observation['receipt']
+    dispatch.receipt_for({'request': launch}, receipt, {'lookup'})
+    provenance = observation.get('provenance')
+    require(receipt['status'] == 'not-created' and receipt['ref'] is None and
+            receipt in record['receipts'] and isinstance(provenance, dict) and
+            set(provenance) == {'call_ref', 'response_ref', 'action_id'} and
+            all(isinstance(value, str) and value.strip() for value in provenance.values()) and
+            observation.get('action_id') == provenance['action_id'] == action.get('action_id'),
+            'host_evidence_missing', 'retry requires the exact authenticated non-creation lookup')
+    raw = receipt['raw']
+    if raw.get('format') == 'host-raw-reference-v1':
+        manifest = store.read_raw_manifest(raw['evidence_ref'], run_id=current.run_id)
+        binding = manifest.get('native_receipt', {})
+        require(manifest['complete'] and raw.get('truncated') is False and
+                raw.get('sha256') == manifest['sha256'] and raw.get('size') == manifest['size'] and
+                binding == host_raw_binding(observation, binding.get('facts'), raw.get('event_digest')),
+                'host_evidence_missing', 'original non-creation raw proof is incomplete')
+    require(store.bytes_read <= state_store.READ_LIMIT, 'state_capacity', 'retry proof exceeds read budget')
+    return proof
+
+
+def noncreation_retry(state, path, saved):
+    store = state_store.open_store(path)
+    current = store.open_current()
+    require(current.root['metadata']['stage_subject'] == state['stage_subject'] and
+            current.root['metadata']['revision'] == state['revision'],
+            'stale_checkpoint', 'retry must close the current failed request')
+    record = state['dispatch']
+    known, status, _ = dispatch.matching(record, state['control']['context'])
+    action = state.get('host_action') or {}
+    event_id = (action.get('creation_receipt') or {}).get('event_id')
+    observation = next((item for item in state['observations'] if item['event_id'] == event_id), None)
+    event = state['events'].get(event_id, {})
+    result = state.get('last_result')
+    provenance = (observation or {}).get('provenance') or {}
+    require(known is None and status == 'cancelled' and state['stopped'] and
+            not state.get('stop_requested') and observation is not None and event.get('applied') and
+            not event.get('host_conflict') and action.get('creation_resolved') is True and
+            state['host']['calls'].get(entry.digest([observation['receipt']['adapter'],
+                provenance.get('call_ref')])) == provenance.get('action_id') == action.get('action_id') and
+            isinstance(result, dict) and result.get('status') == 'not-created' and result.get('record') == record,
+            'host_evidence_missing', 'retain the original applied non-creation lookup and result')
+    values = {'result_ref': result, 'action_ref': action, 'observation_ref': observation}
+    # No evidence object may hide a whole old current state behind a large limit.
+    require(all(len(state_store.encode({'format': state_store.FORMAT, 'run_id': current.run_id,
+            'kind': 'evidence', 'value': value})) <= state_store.ROOT_LIMIT for value in values.values()),
+            'state_capacity', 'non-creation proof exceeds its fixed budget')
+    proof = {key: copy.deepcopy(state[key]) for key in ('stage', 'stage_subject', 'checkpoint_path',
+        'packages', 'native_host', 'workspace_evidence')}
+    proof.update(kind='noncreation-retry-v1', source_revision=state['revision'],
+        controller_ref=state['handoff']['controller_ref'], binding=state['handoff']['binding'],
+        requirement_identity=state['handoff']['requirement_identity'], retry_handoff_digest=saved['digest'])
+    proof.update({key: store.write_object(current.run_id, 'evidence', value) for key, value in values.items()})
+    require(len(state_store.encode({'format': state_store.FORMAT, 'run_id': current.run_id,
+            'kind': 'evidence', 'value': proof})) <= state_store.ROOT_LIMIT,
+            'state_capacity', 'retry predecessor exceeds its fixed budget')
+    return store.write_object(current.run_id, 'evidence', proof)
+
+
 def validate_stage2_scope(state):
     fields = {'protocol', 'revision', 'stage', 'stage_subject', 'checkpoint_path', 'status', 'stopped',
         'phase_complete', 'stop_requested', 'handoff', 'scope_authority', 'accepted', 'scope_kind', 'state_digest',
@@ -1260,7 +1396,7 @@ def save_current_record(path, outer, expected_revision, *, expected_authority_re
     metadata['stage_subject'] = stage_id
     if state.get('design_predecessor') is not None:
         metadata['design_predecessor'] = copy.deepcopy(state['design_predecessor'])
-    for key in ('implementation_predecessor', 'recovery_predecessor'):
+    for key in ('implementation_predecessor', 'recovery_predecessor', 'noncreation_retry'):
         if state.get(key) is not None:
             metadata[key] = copy.deepcopy(state[key])
     metadata.update(controller_ref=state['control']['context']['controller_ref'],
@@ -1293,6 +1429,8 @@ def save_current_record(path, outer, expected_revision, *, expected_authority_re
                 'legacy_run_requires_original_runtime', 'retain original checkpoint runtime')
     else:
         initial = None
+    if state.get('noncreation_retry') is not None:
+        read_noncreation_retry(state, store=store, current=current)
     return store.commit_current(expected_revision=current.revision if current else 0,
         revision=current.revision + 1 if current else 1, subjects=subjects, metadata=metadata,
         outer={key: value for key, value in outer.items() if key != KEY}, receipts=receipts,
@@ -1435,6 +1573,8 @@ def validate_state(state):
     require(type(state.get("revision")) is int and state["revision"] >= 0,
             "invalid_checkpoint", "checkpoint revision is invalid")
     require(state.get("mode") in {"stepwise", "continuous"}, "invalid_checkpoint", "invalid mode")
+    if state.get('noncreation_retry') is not None:
+        read_noncreation_retry(state)
     native_host = state.get('native_host')
     if state.get('stage', 0) >= 2:
         require('workspace_evidence' in state, 'host_evidence_missing', 'original workspace evidence is missing')
@@ -3409,6 +3549,7 @@ class Progress:
             selector = request["authorization"].get("control_plan_id")
             selected = control.selected_control(port["context"], {"control_plan_id": selector} if selector else {})
             phase_required = (selected.get("handoff_progress") or {}).get("plan", {}).get("entry_authority", {}).get("kind") == "wrapper-phase-run"
+        retry_ref = noncreation_retry(old, self.path, saved) if retry else None
         self.state = {"protocol": PROTOCOL, "revision": old["revision"] if old else 0,
             "stage_subject": 'stage:' + str(request['stage']) + ':' + str(uuid.uuid4()),
             "mode": mode, "stage": request["stage"], "status": "active", "step": "prepare-dispatch",
@@ -3419,6 +3560,7 @@ class Progress:
             "consumed_readiness": consumed_readiness,
             "design_predecessor": predecessor_ref,
             "implementation_predecessor": implementation_ref,
+            "noncreation_retry": retry_ref,
             "scope_proposals": {}, "scope_seals": {},
             "dispatch": None, "accepted": None, "action": None, "pending": None,
             "events": {}, "observations": [], "transaction": None, "transaction_source": None,
@@ -3430,7 +3572,7 @@ class Progress:
             "host_preflight": copy.deepcopy(data.get('native_host')),
             "host": {"generation": 0, "status": "unknown", "proof": None, "query": None,
                      "seen": {}, "calls": {}, "last_stop": None},
-            "history": (old["history"] + [{k: copy.deepcopy(value) for k, value in old.items() if k != "history"}]) if old and predecessor_ref is None and implementation_ref is None else []}
+            "history": (old["history"] + [{k: copy.deepcopy(value) for k, value in old.items() if k != "history"}]) if old and predecessor_ref is None and implementation_ref is None and retry_ref is None else []}
         self.save()
         return self.advance()
 
