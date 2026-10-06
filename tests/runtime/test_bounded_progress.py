@@ -6,6 +6,7 @@ import os
 import io
 from contextlib import redirect_stdout
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -197,6 +198,52 @@ class BoundedProgressTests(ProgressTests):
         with self.assertRaises(transfer.entry.PreparationError):
             self.invoke('review-activity', changed)
         self.assertEqual(self.checkpoint.read_bytes(), authority)
+
+    def maximum_first_lookup_outcome(self, escaped=False):
+        prepare = self.public_review_candidate()
+        self.save_transport(instance='fixture-host', state='live', native_event_sequence=0)
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        subject_size = current.root['subjects'][current.root['metadata']['stage_subject']]['size']
+        event = {'method': 'item/completed', 'params': {'threadId': self.settings['thread_id'],
+            'item': {'type': 'subAgentActivity', 'id': 'x' * (224 * 1024 - subject_size), 'kind': 'started',
+                     'agentPath': 'native:review-executor', 'agentThreadId': 'native:review-executor'}}}
+        self.invoke('host-event', {'instance': 'fixture-host', 'event': event})
+        authority = self.checkpoint.read_bytes()
+        control_before = copy.deepcopy(self.state()['control'])
+        try:
+            prepared = self.invoke('review-activity', prepare)
+        except transfer.entry.PreparationError as error:
+            self.assertEqual(error.code, 'state_capacity')
+            self.assertEqual(self.checkpoint.read_bytes(), authority)
+            self.assertEqual(self.state()['control'], control_before)
+            self.assertFalse(list((store.directory / 'reserves' / 'business').glob('*')))
+            self.assertFalse(list((store.directory / 'reserves' / 'recovery').glob('*')))
+            return
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-review')
+        lookup = self.invoke('review-activity', prepare)['next_action']
+        self.assertEqual(lookup['action_id'], prepared['next_action']['action_id'])
+        call = ('\x01' if escaped else 'c') * 4096
+        response = self.public_review_response(prepare, lookup, 'unknown',
+            response=('\x01' if escaped else 'r') * 4096, call=call,
+            ref=('\x02' if escaped else 'n') * 4096, raw={'output': 'x' * (4 * 1024 - 13)})
+        response['receipt']['adapter'] = ('\x01' if escaped else 'a') * 4096
+        try:
+            self.invoke('review-activity', response)
+        except transfer.entry.PreparationError as error:
+            self.fail('published original review/lookup before a legal maximum first outcome overflowed: ' + str(error))
+        slot = self.state()['review_activity']['standards']
+        self.assertEqual(slot['call_ref'], call)
+        self.assertEqual(slot['query']['call_ref'], call)
+        self.assertEqual(slot['receipts'][-1]['call_ref'], call)
+        current = store.open_current()
+        self.assertLessEqual(current.root['subjects'][current.root['metadata']['stage_subject']]['size'], 256 * 1024)
+
+    def test_public_review_maximum_first_lookup_outcome_is_preflighted(self):
+        self.maximum_first_lookup_outcome()
+
+    def test_public_review_escaped_first_lookup_outcome_is_preflighted(self):
+        self.maximum_first_lookup_outcome(escaped=True)
 
     def test_public_review_worst_result_schema_is_checked_before_effect(self):
         prepare = self.public_review_candidate()
@@ -4096,7 +4143,145 @@ class BoundedProgressTests(ProgressTests):
         self.assertLessEqual(self.checkpoint.stat().st_size - before, 16 * 1024)
 
 
+from test_attached_flow_progress import AttachedFlowTests
+
+
+class ExistingLedgerStage3Ready(Exception):
+    pass
+
+
+class LedgerReviewProgressTests(AttachedFlowTests):
+    def invoke(self, operation, data=None, revision=None):
+        if getattr(self, '_capture_ledger_stage3', False) and operation == 'prepare-plan-revision':
+            raise ExistingLedgerStage3Ready()
+        return super().invoke(operation, data, revision)
+
+    def original_ledger_review_candidate(self):
+        # Reuse the supported existing-authority fixture only up to the original
+        # bound Stage3 ledger pointer; do not enter deferred ledger initialization.
+        self._capture_ledger_stage3 = True
+        with self.assertRaises(ExistingLedgerStage3Ready):
+            AttachedFlowTests.test_attached_plan_revision_uses_original_ledger_record(self)
+        self._capture_ledger_stage3 = False
+        state = self.state()
+        self.assertEqual(state['stage'], 3)
+        self.assertEqual(state['control']['store_ref'], self.read_ledger()['workflow_control_ref'])
+        self.assertEqual(state['control']['context']['handoff_progress']['binding'], self.binding)
+        from test_plan_driven_dispatch import PlanDrivenDispatchTests
+        controller_request, controller_settings = copy.deepcopy(self.request), copy.deepcopy(self.settings)
+        self.request['source'] = {'kind': 'frozen', 'path': self.requirement_path}
+        with patch.object(self, 'input_for', side_effect=lambda stage, predecessor=None:
+                          ProgressTests.input_for(self, stage, predecessor)):
+            execution = PlanDrivenDispatchTests.execution_request(self, self)
+        self.invoke('allocation', {'allocation_id': 'ledger-review', 'operation': 'prepare', 'handoff': execution})
+        slot = self.state()['allocations']['ledger-review']
+        bound = self.invoke('allocation', {'allocation_id': 'ledger-review', 'operation': 'bind',
+            'receipt': self.receipt(slot['record'], ref='native:ledger-review-agent')})
+        content = b"print('ledger review')\n"
+        (self.flow / 'impl.py').write_bytes(content)
+        slot = self.state()['allocations']['ledger-review']
+        self.invoke('allocation', {'allocation_id': 'ledger-review', 'operation': 'receive',
+            'receipt': self.receipt(slot['record'], 'stopped', 'result', ref='native:ledger-review-agent'),
+            'result': {'delivery_id': 'ledger-review-result', 'status': 'completed', 'payload': {
+                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(content).hexdigest()},
+                'tests': ['ledger review boundary'], 'write_release': bound['next_action']['result']['write_release'],
+                'plan_refs': execution['semantic']['plan_refs'],
+                'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
+        self.invoke('allocation', {'allocation_id': 'ledger-review', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:ledger-review'}})
+        self.request, self.settings = controller_request, controller_settings
+        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'ledger review candidate')
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        verification = self.mark_reviewable(candidate, fixture_execution=False)
+        return {'operation': 'prepare', 'axis': 'standards', 'candidate': candidate,
+            'actor_ref': self.state()['handoff']['expected_entry']['actor']['thread_id'], 'verification': verification}
+
+    def read_ledger(self):
+        return transfer.discussion_protocol.handle({**self.base, 'operation': 'read-topic'})
+
+    def lost_ledger_review_start(self, prepare):
+        replace = os.replace
+        interrupted, observed_measurement_exit = [], []
+        directories = [self.checkpoint.with_name(self.checkpoint.name + '.state'),
+                       self.ledger.with_name(self.ledger.name + '.state')]
+        git_index = Path(self.flow_git('rev-parse', '--git-path', 'index'))
+        if not git_index.is_absolute():
+            git_index = self.flow / git_index
+        def frozen_files(ignore=()):
+            paths = [self.checkpoint, self.ledger, git_index]
+            paths.extend(path for directory in directories for path in directory.rglob('*') if path.is_file())
+            return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths if path not in ignore}
+        before = frozen_files()
+        head = self.flow_git('rev-parse', 'HEAD')
+        def lost(source, target):
+            self.assertFalse(progress.state_store._measurement_stores.get(),
+                             'virtual producer measurement cannot call the physical filesystem publisher')
+            if Path(target).parent == directories[0] / 'reserves' / 'business':
+                self.assertEqual(frozen_files(ignore={Path(source)}), before,
+                                 'preflight cannot write ledger/root/object/index/marker/Git state')
+                self.assertEqual(self.flow_git('rev-parse', 'HEAD'), head)
+                observed_measurement_exit.append(True)
+            result = replace(source, target)
+            if Path(target) == self.ledger and not interrupted:
+                interrupted.append(True)
+                raise KeyboardInterrupt('original review-start ledger CAS applied before return')
+            return result
+        with patch.object(os, 'replace', lost):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('review-activity', prepare)
+        self.assertEqual(interrupted, [True])
+        self.assertEqual(observed_measurement_exit, [True])
+        self.assertFalse(progress.state_store._measurement_stores.get())
+        slot = self.state()['review_activity']['standards']
+        self.assertFalse(slot['start']['applied'])
+        self.assertEqual(self.read_ledger()['workflow_control']['handoff_progress']['state'], 'reviewing')
+        return slot['action_id']
+
+    def test_public_review_ledger_cas_loss_recovers_only_original_receipt(self):
+        prepare = self.original_ledger_review_candidate()
+        authority, ledger = self.checkpoint.read_bytes(), self.ledger.read_bytes()
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('review-activity', {**prepare, 'ledger_review': {'enabled': True}})
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+        self.assertEqual(self.ledger.read_bytes(), ledger)
+        identity = self.lost_ledger_review_start(prepare)
+        committed = self.read_ledger()
+        ledger_bytes = self.ledger.read_bytes()
+        original = transfer.discussion_protocol.handle
+        def only_original_lookup(request):
+            self.assertFalse(request.get('operation') == 'workflow-control' and request.get('action') == 'review-start',
+                             'exact recovery cannot repeat the original public review-start RPC')
+            return original(request)
+        with patch.object(transfer.discussion_protocol, 'handle', side_effect=only_original_lookup):
+            recovered = self.invoke('review-activity', prepare)
+        self.assertEqual(recovered['next_action']['operation'], 'lookup-exact-review')
+        self.assertEqual(recovered['next_action']['action_id'], identity)
+        self.assertEqual(self.ledger.read_bytes(), ledger_bytes)
+        self.assertEqual(self.state()['control']['store_ref'], committed['workflow_control_ref'])
+        self.assertTrue(self.state()['review_activity']['standards']['start']['applied'])
+        authority = self.checkpoint.read_bytes()
+        self.assertTrue(self.invoke('review-activity', prepare)['acknowledged'])
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+        self.assertEqual(self.ledger.read_bytes(), ledger_bytes)
+
+    def test_public_review_ledger_later_authority_rejects_original_recovery_without_write(self):
+        prepare = self.original_ledger_review_candidate()
+        self.lost_ledger_review_start(prepare)
+        current = self.read_ledger()
+        request = {**self.base, 'operation': 'workflow-control', 'action': 'review-start',
+            'evidence': {'candidate': prepare['candidate']},
+            'expected_ledger_revision': current['ledger_revision'],
+            'expected_topic_revision': current['record_revision'],
+            'expected_control_ref': current['workflow_control_ref'], 'idempotency_key': str(uuid.uuid4())}
+        transfer.discussion_protocol.handle(request)
+        authority, ledger_bytes = self.checkpoint.read_bytes(), self.ledger.read_bytes()
+        with self.assertRaises(transfer.entry.PreparationError) as rejected:
+            self.invoke('review-activity', prepare)
+        self.assertEqual(rejected.exception.code, 'control_context_changed')
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+        self.assertEqual(self.ledger.read_bytes(), ledger_bytes)
+
+
 def load_tests(loader, tests, pattern):
-    return unittest.TestSuite(BoundedProgressTests(name)
-        for name in loader.getTestCaseNames(BoundedProgressTests)
-        if name in BoundedProgressTests.__dict__)
+    return unittest.TestSuite(case(name) for case in (BoundedProgressTests, LedgerReviewProgressTests)
+        for name in loader.getTestCaseNames(case) if name in case.__dict__)

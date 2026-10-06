@@ -20,7 +20,7 @@ def read_control_projection(ledger_path, record, *, selector=None):
     if pointer.get('topic_id') != record['topic_id'] or pointer.get('control_revision') != record['record_revision']:
         raise ProtocolError('state_corrupt', 'ledger control pointer differs from its record')
     try:
-        context, _ = _store.StateStore(ledger_path).read_ledger_control(pointer, selector=selector)
+        context, _ = _store.open_store(ledger_path).read_ledger_control(pointer, selector=selector)
         _control.validate_current_context(context)
     except (_store.entry.PreparationError, _control.ControlError) as error:
         raise ProtocolError('state_corrupt', str(error)) from error
@@ -34,7 +34,7 @@ def public_control_result(result, ledger_path):
     if 'store_ref' not in value:
         return result
     try:
-        context, _ = _store.StateStore(ledger_path).read_ledger_control(value['store_ref'])
+        context, _ = _store.open_store(ledger_path).read_ledger_control(value['store_ref'])
     except _store.entry.PreparationError as error:
         raise ProtocolError('state_corrupt', str(error)) from error
     return {**result, 'control': {**value, 'context': context}}
@@ -174,7 +174,13 @@ def _bounded_workflow_control(request):
         elif request['action'] == 'successor-ready' and evidence.get('input_digest'):
             selector = {'delivery_digest': evidence['input_digest']}
         context, pointer = read_control_projection(ledger_path, matches[0], selector=selector) if matches else (None, None)
-        store = _store.StateStore(ledger_path)
+        store = _store.open_store(ledger_path)
+        measurement = store._review_measurement
+        if store._measured_writes is not None:
+            if not (measurement is not None and measurement['request'] == request and
+                    measurement['pointer'] == pointer and context['stage'] == 3 and
+                    context['handoff_progress']['binding'] == measurement['binding']):
+                raise ProtocolError('invalid_request', 'measurement is limited to its original bound review-start')
         if pointer is not None:
             # The lock and actual ledger record establish this commit, not object existence.
             store.certify_ledger_control(pointer)
@@ -353,8 +359,11 @@ def _bounded_workflow_control(request):
             receipt={'key': request['idempotency_key'], 'fingerprint': _mutation_fingerprint(request), 'result': result})
         record['data_json'] = _canonical_json(pointer)
         result = {**result, 'control': {**compact, 'store_ref': pointer}}
-        _write_ledger_transaction(ledger_path, frontmatter, records, request,
-            ledger_revision=revision + 1, event_type='workflow-control', result=result)
+        if measurement is None:
+            _write_ledger_transaction(ledger_path, frontmatter, records, request,
+                ledger_revision=revision + 1, event_type='workflow-control', result=result)
+        # Only the internal, exact bound review-start overlay returns virtual
+        # objects. No public request can select it or obtain a committed ACK.
         store.certify_ledger_control(pointer)
         return public_control_result(result, ledger_path)
 

@@ -564,7 +564,7 @@ def stage_subject_value(state):
     if port.get('discussion') is not None:
         reference = port.get('store_ref')
         require(reference is not None, 'authority_missing', 'attached control requires its original ledger pointer')
-        context, _ = state_store.StateStore(reference['ledger_path']).read_ledger_control(reference)
+        context, _ = state_store.open_store(reference['ledger_path']).read_ledger_control(reference)
         require(context == port['context'], 'control_context_changed', 'runner cannot publish a modified ledger projection')
         value['control'] = {key: item for key, item in port.items() if key != 'context'}
     return value
@@ -7083,7 +7083,7 @@ class Progress:
             'control_ref': slot['start']['result_ref']}))
         self.save()
 
-    def recover_review_start(self, slot):
+    def read_review_start_result(self, slot):
         """Read the original ledger transaction proof, never invoke review-start again."""
         start = slot['start']
         if start['applied'] or start['discussion'] is None:
@@ -7125,16 +7125,33 @@ class Progress:
                 result['context']['handoff_progress']['candidate'] == slot['candidate'] and
                 result['context']['handoff_progress']['state'] == 'reviewing',
                 'review_conflict', 'original ledger proof does not apply this candidate review')
-        self._receipt_action = slot['query']['action_id']
-        self.commit_review_start(slot, result, recovered)
+        return result, recovered
+
+    def new_review_query(self, slot):
+        return {'action_id': str(uuid.uuid4()), 'resolved': False,
+                'original_action_id': slot['action_id'], 'call_ref': None}
+
+    def bind_review_receipt(self, axis, slot, receipt, actor_ref):
+        if receipt['status'] == 'not-created':
+            require(slot['ref'] is None and receipt['ref'] is None,
+                    'identity_mismatch', 'bound reviewer cannot become not-created')
+        elif receipt['ref'] is not None:
+            entry.nonempty(receipt['ref'])
+            require(slot['ref'] in {None, receipt['ref']} and receipt['ref'] not in {self.bound_ref(), actor_ref},
+                    'identity_mismatch', 'reviewer must retain an independent native identity')
+            require(all(other_axis == axis or value.get('ref') != receipt['ref']
+                        for other_axis, value in self.state.get('review_activity', {}).items()),
+                    'identity_mismatch', 'review axes require separate identities')
+            slot['ref'] = receipt['ref']
+        require(receipt['status'] != 'stopped' or slot['ref'] is not None,
+                'host_evidence_missing', 'stopped review needs an actual ref')
 
     def review_lookup(self, axis, slot):
         """Protect the exact original call lookup independently of business space."""
         store = state_store.open_store(self.path)
         query = slot.get('query')
         if query is None or query.get('resolved'):
-            query = {'action_id': str(uuid.uuid4()), 'resolved': False,
-                     'original_action_id': slot['action_id'], 'call_ref': None}
+            query = self.new_review_query(slot)
             store.reserve(query['action_id'], recovery=True)
             slot['query'] = query
             self._receipt_action = query['action_id']
@@ -7261,8 +7278,11 @@ class Progress:
                     require(proof == {'action_id': slot['action_id'],
                             'control_digest': slot['start']['result_digest'], 'control_ref': slot['start']['result_ref']},
                             'review_conflict', 'review start lacks its committed original receipt')
+                recovered = self.read_review_start_result(slot)
                 lookup = self.review_lookup(data['axis'], slot)
-                self.recover_review_start(slot)
+                if recovered is not None:
+                    self._receipt_action = slot['query']['action_id']
+                    self.commit_review_start(slot, *recovered)
                 return _view(s, lookup, acknowledged=True)
             self.require_not_stopping()
             self.require_business_ready()
@@ -7296,31 +7316,54 @@ class Progress:
             store = state_store.open_store(self.path)
             # Reject every bounded candidate before reserve allocation or C's
             # review-start. No external call can escape this durable intent.
-            with store.measure_writes(sequence=True) as writes:
-                candidate = Progress(self.path, copy.deepcopy(self.outer))
-                candidate._authority_revision = self._authority_revision
-                candidate.save()
-                intent_bytes = sum(writes.values())
-                if candidate.state['control']['discussion'] is None:
-                    candidate.state['control']['context']['handoff_progress']['state'] = 'reviewing'
-                target = candidate.state['review_activity'][data['axis']]
-                target['start']['applied'] = True
-                candidate.save()
-                # Bound the largest inline native outcome, including its own
-                # identities. Larger raw bodies use finite manifest references.
-                worst_receipt = {name: 'x' * 4096 for name in ('adapter', 'call_ref', 'response_ref', 'ref')}
-                worst_receipt.update(status='unknown', raw={'output': 'x' * (REVIEW_INLINE_RAW_LIMIT - 16)})
-                target['ref'] = worst_receipt['ref']
-                target['receipts'].append(worst_receipt)
-                target['query'] = {'action_id': 'x' * 36, 'original_action_id': slot['action_id'],
-                                   'resolved': False, 'call_ref': worst_receipt['call_ref']}
-                candidate.save()
-                measured_current = store.open_current()
-                key = store.receipt_key(measured_current, actor=data['actor_ref'], kind='review:prepare',
-                    subject=s['stage_subject'], invocation=slot['action_id'])
-                store.prepare_receipt(measured_current, key, data, {'action_id': slot['action_id']})
-                require(sum(writes.values()) + 2 * state_store.ROOT_LIMIT <= state_store.EVIDENCE_LIMIT,
-                        'state_capacity', 'review completion exceeds its original receipt reserve')
+            ledger_review = None
+            if s['control']['discussion'] is not None:
+                ledger_review = {**s['control']['discussion'], 'operation': 'workflow-control',
+                    'action': 'review-start', 'evidence': {'candidate': data['candidate']},
+                    'expected_control_ref': s['control']['store_ref']}
+            intent_bytes = 0
+            for status in ('unknown', 'running', 'stopped', 'not-created'):
+                with store.measure_writes(sequence=True, ledger_review=ledger_review) as writes:
+                    candidate = Progress(self.path, copy.deepcopy(self.outer))
+                    candidate._authority_revision = self._authority_revision
+                    candidate.save()
+                    intent_bytes = max(intent_bytes, sum(writes.values()))
+                    target = candidate.state['review_activity'][data['axis']]
+                    if ledger_review is None:
+                        context = candidate.state['control']['context']
+                        preview = control.transition({'schema_version': context['schema_version'],
+                            'actor_ref': context['controller_ref'], 'context': context,
+                            'action': 'review-start', 'evidence': {'candidate': data['candidate']}})
+                        applied = None
+                    else:
+                        # The existing ledger adapter runs its original guards,
+                        # pure/Git transition and pointer/receipt serializer; its
+                        # exact named overlay prevents only physical publication.
+                        preview, applied = dispatch.checkpoint(candidate.state['control'], candidate.state['handoff'],
+                            'review-start', {'candidate': data['candidate']})
+                    candidate.commit_review_start(target, preview, applied)
+                    target['query'] = candidate.new_review_query(target)
+                    candidate.save()
+                    # Every permitted opaque UTF-8 byte may encode as six JSON
+                    # bytes. Raw's limit already measures canonical JSON bytes.
+                    opaque = '\x01' * 4096
+                    ref = next(chr(code) * 4096 for code in (2, 3, 4)
+                        if chr(code) * 4096 not in {candidate.bound_ref(), data['actor_ref']} and
+                        all(axis == data['axis'] or value.get('ref') != chr(code) * 4096
+                            for axis, value in candidate.state['review_activity'].items()))
+                    receipt = {'adapter': opaque, 'call_ref': opaque, 'response_ref': opaque,
+                        'ref': None if status == 'not-created' else ref, 'status': status,
+                        'raw': {'output': 'x' * (REVIEW_INLINE_RAW_LIMIT - 13)}}
+                    observation = {key: data[key] for key in ('axis', 'candidate', 'actor_ref')}
+                    observation.update(operation='observe', action_id=target['action_id'], receipt=receipt)
+                    candidate.bind_review_receipt(data['axis'], target, receipt, data['actor_ref'])
+                    original = candidate.review_receipt_request(observation)
+                    current = store.open_current()
+                    key = store.receipt_key(current, actor=candidate.state['control']['context']['controller_ref'],
+                        kind='review:observe', subject=s['stage_subject'], invocation=receipt['response_ref'])
+                    candidate.apply_review_receipt(target, receipt, original, key, current)
+                    require(sum(writes.values()) + 2 * state_store.ROOT_LIMIT <= state_store.EVIDENCE_LIMIT,
+                            'state_capacity', 'review completion exceeds its original receipt reserve')
             store.require_ordinary_capacity(intent_bytes)
             store.reserve(slot['action_id'])
             self.save()
@@ -7378,16 +7421,7 @@ class Progress:
             store.require_reserve(slot['action_id'])
             self._receipt_action = slot['action_id']
         store = state_store.open_store(self.path, receipt_action=self._receipt_action)
-        if receipt['status'] == 'not-created':
-            require(slot['ref'] is None and receipt['ref'] is None, 'identity_mismatch', 'bound reviewer cannot become not-created')
-        elif receipt['ref'] is not None:
-            entry.nonempty(receipt['ref'])
-            require(slot['ref'] in {None,receipt['ref']} and receipt['ref'] not in {self.bound_ref(),data['actor_ref']},
-                    'identity_mismatch', 'reviewer must retain an independent native identity')
-            require(all(axis == data['axis'] or value.get('ref') != receipt['ref'] for axis,value in slots.items()),
-                    'identity_mismatch', 'review axes require separate identities')
-            slot['ref'] = receipt['ref']
-        require(receipt['status'] != 'stopped' or slot['ref'] is not None, 'host_evidence_missing', 'stopped review needs an actual ref')
+        self.bind_review_receipt(data['axis'], slot, receipt, data['actor_ref'])
         retained = self.retain_review_receipt(slot, data, original, key, receipt_current)
         self.apply_review_receipt(slot, retained, original, key, receipt_current)
         return self.advance_stop(self.stop_intent()) if self.stop_intent() else _view(s)

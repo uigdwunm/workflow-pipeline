@@ -29,6 +29,7 @@ MAX_SUBJECTS = 8
 BUSINESS_RESERVE = 4 * EVIDENCE_LIMIT
 RECOVERY_RESERVE = 4 * EVIDENCE_LIMIT
 _operation_store = ContextVar('workflow_operation_store', default=None)
+_measurement_stores = ContextVar('workflow_measurement_stores', default={})
 
 
 @contextmanager
@@ -47,7 +48,10 @@ def operation_store(checkpoint):
 def open_store(checkpoint, *, receipt_action=None):
     store = _operation_store.get()
     if store is None or store.checkpoint != Path(checkpoint):
-        return StateStore(checkpoint, receipt_action=receipt_action)
+        measured = _measurement_stores.get().get(str(Path(checkpoint).resolve()))
+        if measured is None:
+            return StateStore(checkpoint, receipt_action=receipt_action)
+        store = measured
     if receipt_action is not None:
         store.receipt_action = receipt_action
     return store
@@ -208,20 +212,52 @@ class StateStore:
         self._measured_writes = None
         self._measured_current = None
         self._measure_sequence = False
+        self._review_measurement = None
 
     @contextmanager
-    def measure_writes(self, *, sequence=False):
+    def measure_writes(self, *, sequence=False, ledger_review=None):
         """Encode a bounded candidate through the normal commit path without publishing it."""
         require(_operation_store.get() is self and self._measured_writes is None,
                 'native commit measurement requires its locked owner operation')
         cached, pending = self._verified_objects.copy(), self._pending_reserves
         original_action, original_run = self.receipt_action, self._run_id
         measured = {}
+        ledger, ledger_saved = None, None
+        stores = {str(self.checkpoint.resolve()): self}
+        if ledger_review is not None:
+            request = copy.deepcopy(ledger_review)
+            current = self.open_current()
+            stage = self.read_subject(current, current.root['metadata']['stage_subject']).value
+            pointer = stage.get('control', {}).get('store_ref')
+            require(current.root['metadata']['stage'] == 3 and isinstance(pointer, dict) and
+                    request.get('operation') == 'workflow-control' and request.get('action') == 'review-start' and
+                    request.get('expected_control_ref') == pointer and
+                    request.get('actor_conversation_ref') == current.root['metadata']['controller_ref'] and
+                    request.get('actor_topic_id') == pointer['topic_id'] and
+                    isinstance(request.get('evidence'), dict) and set(request['evidence']) == {'candidate'},
+                    'measurement must name the original Stage-3 review-start and ledger pointer')
+            ledger = StateStore(pointer['ledger_path'])
+            context, _ = ledger.read_ledger_control(pointer)
+            require(context['stage'] == 3 and context['handoff_progress']['candidate'] == request['evidence']['candidate'] and
+                    context['handoff_progress']['binding'] == stage['handoff']['binding'] ==
+                        current.root['metadata']['binding'] and stage['packages'] == current.root['metadata']['packages'],
+                    'measurement changed the original review candidate, package or binding')
+            ledger_saved = (ledger._verified_objects.copy(), ledger.receipt_action, ledger._run_id)
+            ledger._measured_writes = measured
+            ledger._review_measurement = {'request': request, 'pointer': pointer,
+                                         'binding': copy.deepcopy(stage['handoff']['binding'])}
+            stores[str(ledger.checkpoint.resolve())] = ledger
+        token = _measurement_stores.set(stores)
         self._measured_writes = measured
         self._measure_sequence = sequence
         try:
             yield measured
         finally:
+            _measurement_stores.reset(token)
+            if ledger is not None:
+                ledger._verified_objects, ledger.receipt_action, ledger._run_id = ledger_saved
+                ledger._measured_writes = None
+                ledger._review_measurement = None
             self._verified_objects = cached
             self._pending_reserves = pending
             self._measured_writes = None
@@ -619,7 +655,10 @@ class StateStore:
         if receipt is not None:
             certificate = encode({'pointer': pointer, 'fingerprint': receipt['fingerprint'], 'result': receipt['result']})
             require(len(certificate) <= SUBJECT_LIMIT, 'ledger receipt exceeds its fixed budget', 'state_capacity')
-            self._charge(len(certificate))
+            if self._measured_writes is not None:
+                self._measured_writes[str(self.ledger_receipt_path(topic_id, receipt['key']))] = len(certificate)
+            else:
+                self._charge(len(certificate))
         return pointer
 
     def ledger_receipt_path(self, topic_id, key):
@@ -638,6 +677,8 @@ class StateStore:
         require(len(data) <= SUBJECT_LIMIT, 'ledger receipt exceeds its fixed budget', 'state_capacity')
         if path.exists():
             require(self._read(path, SUBJECT_LIMIT) == data, 'original ledger receipt changed', 'state_object_corrupt')
+        elif self._measured_writes is not None:
+            self._measured_writes[str(path)] = len(data)
         else:
             atomic_write(path, data)
 
@@ -879,13 +920,17 @@ class StateStore:
         revision, receipts, metadata = root['revision'], root['receipts'], root['metadata']
         reference = self.write_object(run_id, 'root', root)
         if self._measured_writes is not None:
-            require(not receipts, 'raw receipt measurement cannot publish control receipts')
+            for receipt in receipts:
+                index = {**receipt, 'revision': revision, 'run_id': run_id, 'root': reference['sha256']}
+                data = encode(index)
+                require(len(data) <= 16 * 1024, 'receipt index exceeds its fixed budget', 'state_capacity')
+                self._measured_writes[str(self._receipt_path(receipt['key']))] = len(data)
             envelope = {'store_format': FORMAT, 'run_id': run_id, 'revision': revision,
                         'current': reference, 'previous': current.reference if current else None,
                         'workflow_progress': metadata}
             require(len(encode(envelope)) <= ROOT_LIMIT, 'current root exceeds its fixed budget', 'state_capacity')
             self._measured_writes[str(self.checkpoint)] = len(encode(envelope))
-            marker = {'revision': revision, 'root': reference['sha256'], 'receipts': []}
+            marker = {'revision': revision, 'root': reference['sha256'], 'receipts': list(receipts)}
             self._measured_writes[str(self._safe(Path('commits') / str(revision)))] = len(encode(marker))
             measured_current = CurrentProjection(run_id, revision, root, reference)
             if self._measure_sequence:
