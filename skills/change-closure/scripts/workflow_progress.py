@@ -5937,7 +5937,9 @@ class Progress:
                 data['evidence']['takeover_proof'] = {'ref': carrier['ref'], 'attempt': carrier['attempt'],
                     'adapter': stop['receipt']['adapter'], 'host_ref': s['handoff']['expected_entry']['actor']['thread_id'],
                     'invocation_id': stop['provenance']['call_ref'], 'response_id': stop['provenance']['response_ref'],
-                    'stop_receipt': copy.deepcopy(stop), 'business_calls': calls, 'business_calls_digest': entry.digest(calls)}
+                    'stop_receipt': {key: copy.deepcopy(stop[key]) for key in
+                        ('event_id', 'receipt', 'action_id', 'provenance', 'action_resolution')},
+                    'business_calls': calls, 'business_calls_digest': entry.digest(calls)}
             takeover_input = original
         if data['action'] == 'escalate-implementation':
             escalation_paused = (s['status'] == 'paused' or s['status'] == 'blocked' and s.get('blocked_from') == 'paused') and s.get('stopped') is True and self.stop_intent() == 'pausing'

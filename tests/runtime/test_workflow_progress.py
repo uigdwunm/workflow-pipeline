@@ -363,7 +363,8 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(handoff['digest'], original['handoff']['digest'])
         self.assertEqual(action, 'successor-ready')
         proof = evidence['takeover_proof']
-        self.assertEqual(proof['stop_receipt'], original['host']['last_stop'])
+        self.assertEqual(proof['stop_receipt'], {key: original['host']['last_stop'][key] for key in
+            ('event_id', 'receipt', 'action_id', 'provenance', 'action_resolution')})
         self.assertEqual(proof['ref'], stopped['receipt']['ref'])
         self.assertEqual(proof['attempt'], original['control']['context']['carrier']['attempt'])
         self.assertEqual(proof['host_ref'], original['handoff']['expected_entry']['actor']['thread_id'])
@@ -383,6 +384,74 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.state()['host'], original['host'])
         self.assertEqual(self.state()['lifecycle_snapshot'], original['lifecycle_snapshot'])
         self.assertEqual(progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint)).unresolved_control_transactions(), pending)
+
+    def test_dedicated_successor_ready_consumes_causal_stop_through_real_control(self):
+        self.context = self.context_for(0)
+        for action, evidence in (
+            ('prepare', {'target': 'local', 'project': 'project', 'title': 'Discuss',
+                'missing_context': [], 'configuration': transfer.configuration('dedicated-discussion'),
+                'next_step': 'stage1', 'archive_ref': None, 'gate_open': True}),
+            ('decide', None),
+        ):
+            if evidence is None:
+                evidence = {'plan_id': self.context['handoff_progress']['plan']['plan_id'], 'intent': 'confirm'}
+            self.context = progress.control.transition({'schema_version': 6, 'actor_ref': 'task',
+                'context': self.context, 'action': action, 'evidence': evidence})['context']
+        value = self.input_for(0)
+        value['binding'] = None
+        value['scope'].pop('downstream')
+        value['scope'].update(owned_paths=[self.requirement_path], protected_paths=[],
+            implementation_paths=[], closure_paths=[])
+        value['authorization']['scope_digest'] = transfer.entry.digest(value['scope'])
+        self.begin(input_data=value)
+        self.invoke('observe', self.observation(ref='task:dedicated'))
+        self.assertEqual(self.invoke('pause')['next_action']['operation'], 'stop-host')
+        stopped = self.observation('stopped', 'result', {
+            'delivery_id': 'dedicated-result', 'status': 'completed',
+            'payload': {'artifacts': [self.requirement_path], 'checks': ['confirmed requirement'],
+                'requirement': self.frozen, 'delivery': None}}, ref='task:dedicated')
+        self.assertEqual(self.invoke('observe', stopped)['status'], 'paused')
+        resumed = self.invoke('resume')
+        self.assertEqual(resumed['status'], 'needs_input', resumed)
+        pending = resumed['pending']
+        accepted = self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
+            'answer': 'accept', 'reference': 'controller:dedicated-accept'})
+        self.assertEqual(accepted['status'], 'accepted', accepted)
+        original = copy.deepcopy(self.state())
+        self.assertEqual(original['control']['context']['handoff_progress']['state'], 'result-accepted')
+        self.assertEqual(original['host']['last_stop'], original['host']['observation'])
+        request = {'action': 'successor-ready', 'evidence': {
+            'ref': 'task:successor', 'stage': 1, 'role': 'dedicated-problem-framing',
+            'input_digest': original['control']['context']['handoff_progress']['delivery_digest'],
+            'binding_verified': True, 'activated': False, 'confirmed': True, 'archive_ref': 'task:dedicated'},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:dedicated-takeover'}}
+        result = self.invoke('control', request)
+        self.assertNotIn('error', result, result)
+        self.assertTrue(result['next_action']['result']['ok'], result)
+        saved = self.state()
+        retired = next(iter(saved['control']['context']['retired_handoffs'].values()))
+        self.assertTrue(retired['handoff_completed'])
+        self.assertEqual(retired['carrier']['ref'], 'task:dedicated')
+        self.assertEqual(retired['successor']['ref'], 'task:successor')
+        self.assertEqual(retired['successor']['takeover_proof']['stop_receipt'], {
+            key: original['host']['last_stop'][key] for key in
+            ('event_id', 'receipt', 'action_id', 'provenance', 'action_resolution')})
+        self.assertEqual(saved['host'], original['host'])
+        self.assertFalse(progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint)).unresolved_control_transactions())
+        if os.environ.get('T01_CAUSAL_STOP_P2_EVIDENCE_PATH'):
+            store = progress.state_store.StateStore(self.checkpoint)
+            current = store.open_current()
+            subject = store.read_subject(current, current.root['metadata']['stage_subject'])
+            Path(os.environ['T01_CAUSAL_STOP_P2_EVIDENCE_PATH']).write_text(json.dumps({
+                'actual_result': result, 'committed_root': current.root, 'root_ref': current.reference,
+                'stage_subject_ref': subject.reference, 'retired_handoff': retired,
+                'saved_stop': saved['host']['last_stop'], 'current_observation': saved['host']['observation'],
+                'current_generation': saved['host']['generation']}, indent=2) + '\n')
+        before = self.checkpoint.read_bytes()
+        replay = self.invoke('control', request)
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertEqual(replay['next_action']['result']['effects'], [])
+        self.assertEqual(self.checkpoint.read_bytes(), before)
 
     def test_successor_ready_rejects_noncausal_and_revoked_stop_observations(self):
         checkpoint = self.checkpoint
