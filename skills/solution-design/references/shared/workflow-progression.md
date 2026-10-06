@@ -858,9 +858,9 @@ paths do not authenticate them. Pending envelopes and keys remain unchanged on r
 Final completion rereads the original ledger and surviving repository's published
 Git facts, without recreating a Flow. The discussion owner must remain available.
 
-New runner records use outer version 10 and pin workflow-progress-v19 /
-workflow-stage-transfer-v14 / flow-worktree-v3 packages with control compatibility
-key 11 and control JSON schema 6. Earlier progress protocols and runner records require their original
+New runner records use outer version 11 and pin workflow-progress-v20 /
+workflow-stage-transfer-v15 / flow-worktree-v3 packages with control compatibility
+key 12 and control JSON schema 7. Earlier progress protocols and runner records require their original
 runtime and pinned packages; neither new APIs nor registry refresh migrate
 or replace records. Complete
 registration is required for live actions. No installation is implied.

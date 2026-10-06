@@ -271,7 +271,7 @@ class WorkflowControlTests(unittest.TestCase):
                 'inherited': None, 'upgrade_attempted': False}
 
     def context(self):
-        return {'schema_version': 6, 'controller_ref': 'controller', 'topic_ref': None,
+        return {'schema_version': 7, 'controller_ref': 'controller', 'topic_ref': None,
                 'stage': 0, 'carrier': None,
                 'preference': {'topic_current': False, 'stage_current': False},
                 'flow_authority': None, 'requirement_identity': {'path': 'docs/draft.md',

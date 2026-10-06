@@ -213,7 +213,7 @@ def _bounded_workflow_control(request):
             record = {'result_id': 'WC-' + request['actor_topic_id'], 'result_kind': 'workflow-control',
                       'topic_id': request['actor_topic_id'], 'record_revision': 0, 'state': 'active'}
             records['Phase Results'].append(record)
-            context = {'schema_version': 6, 'controller_ref': owner_ref,
+            context = {'schema_version': 7, 'controller_ref': owner_ref,
                        'topic_ref': request['actor_topic_id'], 'stage': topic['current_phase'],
                        'carrier': None, 'preference': {'topic_current': False, 'stage_current': False},
                        'flow_authority': None, 'requirement_identity': identity, 'handoff_progress': None}

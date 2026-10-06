@@ -23,7 +23,7 @@ unless the brief explicitly identifies one. The explicit invocation authorizes
 only this bounded local implementation flow.
 
 Use `full` for each new Stage-3 launch. For standalone entry, the original
-Controller freezes one inline execution-plan-v1 logical slice and its user
+Controller freezes one inline execution-plan-v2 logical slice and its user
 contract projection inside B input; no Ticket document is required. The
 Dispatcher reads the sealed plan and never supplies its own revision decision.
 

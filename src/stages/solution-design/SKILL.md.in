@@ -252,8 +252,11 @@ At launch, freeze only the known planning and protection paths. Downstream
 implementation and closure paths are null until design is complete. Require the
 child to list every implementation and closure file in a committed Spec/Ticket
 decision, including tests, generated outputs and required documentation. Its
-implementation Tickets must also contain complete `execution-plan-v1` function
-plans before this seal: stable step IDs, exact targets, ordered approach, key
+implementation Tickets must also contain complete `execution-plan-v2` function
+plans before this seal, with explicit `behavior_slices` mapping each step to
+ACs, verifications, read files and shared state. Preserve empty relationships
+explicitly; the groups partition all steps and cover every AC. Include stable
+step IDs, exact targets, ordered approach, key
 inputs/outputs/failures, dependencies and shared behavior verifications. When
 there are no Tickets, the Spec carries one inline logical-slice plan. The
 completion evidence supplies the exact manifest and `implementation_required`;

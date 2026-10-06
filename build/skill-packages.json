@@ -13,7 +13,7 @@
     ],
     "ledger_write": 3,
     "topic_gate": "phase-0-1-discussion-v2",
-    "control": 11,
+    "control": 12,
     "entry": "workflow-entry-v4",
     "runner": 11,
     "supervision": "flow-worktree-v3",
@@ -22,7 +22,7 @@
     "stage_transfer": "workflow-stage-transfer-v15",
     "workflow_progress": "workflow-progress-v20",
     "requirement_delivery": "requirement-delivery-v2",
-    "execution_plan": "execution-plan-v1",
+    "execution_plan": "execution-plan-v2",
     "workflow_state_store": "workflow-current-v1"
   },
   "resources": {
@@ -333,6 +333,10 @@
     "shared/scripts/workflow_state_store.py": {
       "source": "src/shared/scripts/workflow_state_store.py",
       "output": "scripts/workflow_state_store.py"
+    },
+    "shared/scripts/review_evidence.py": {
+      "source": "src/shared/scripts/review_evidence.py",
+      "output": "scripts/review_evidence.py"
     }
   },
   "packages": {
@@ -389,7 +393,8 @@
         "shared/scripts/workflow_state_store.py",
         "shared/references/workflow-progression.md",
         "shared/scripts/requirement_delivery.py",
-        "shared/references/requirement-delivery.md"
+        "shared/references/requirement-delivery.md",
+        "shared/scripts/review_evidence.py"
       ],
       "external_actions": {
         "discuss": []
@@ -442,7 +447,8 @@
         "shared/scripts/workflow_state_store.py",
         "shared/references/workflow-progression.md",
         "shared/scripts/requirement_delivery.py",
-        "shared/references/requirement-delivery.md"
+        "shared/references/requirement-delivery.md",
+        "shared/scripts/review_evidence.py"
       ],
       "external_actions": {
         "route": [
@@ -503,7 +509,8 @@
         "shared/scripts/workflow_state_store.py",
         "shared/references/workflow-progression.md",
         "shared/scripts/requirement_delivery.py",
-        "shared/references/requirement-delivery.md"
+        "shared/references/requirement-delivery.md",
+        "shared/scripts/review_evidence.py"
       ],
       "external_actions": {
         "spec": [
@@ -572,7 +579,8 @@
         "shared/references/workflow-progression.md",
         "shared/scripts/requirement_delivery.py",
         "shared/references/requirement-delivery.md",
-        "guided-implementation/scripts/foreground_host.py"
+        "guided-implementation/scripts/foreground_host.py",
+        "shared/scripts/review_evidence.py"
       ],
       "external_actions": {
         "dispatch": [
@@ -631,7 +639,8 @@
         "shared/scripts/workflow_state_store.py",
         "shared/references/workflow-progression.md",
         "shared/scripts/requirement_delivery.py",
-        "shared/references/requirement-delivery.md"
+        "shared/references/requirement-delivery.md",
+        "shared/scripts/review_evidence.py"
       ],
       "external_actions": {
         "route": [

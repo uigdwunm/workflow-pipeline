@@ -176,7 +176,7 @@ class CombinedSolutionReviewTests(unittest.TestCase):
             with runner.RunLock(f.checkpoint):
                 self.assertEqual(runner.resume(f.checkpoint, "finish design only", decision_id=pending["decision_id"],
                                               flow_intent="design-only"), 0)
-                queued = runner.CheckpointState(fixtures.progress.read_record(f.checkpoint))
+                queued = runner.CheckpointState(fixtures.progress.read_projection(f.checkpoint, projection="identity").record)
                 decision = queued["controller_decision"]
                 self.assertEqual(decision["flow_intent"], "design-only")
                 self.assertEqual(f.state()["mode"], "continuous", "queueing cannot consume the decision")
@@ -185,7 +185,7 @@ class CombinedSolutionReviewTests(unittest.TestCase):
                                   flow_intent="continuous")
             f.invoke("decide", decision)
             runner._atomic_save(f.checkpoint, queued)
-            consumed = fixtures.progress.read_record(f.checkpoint)
+            consumed = fixtures.progress.read_projection(f.checkpoint, projection="identity").record
             self.assertNotIn("controller_decision", consumed)
             self.assertEqual(f.state()["flow_intent"], decision)
             with runner.RunLock(f.checkpoint):

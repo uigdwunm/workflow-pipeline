@@ -9,7 +9,7 @@ Dispatcher and at least one real Execution Agent with accepted implementation
 bytes; stage 4 uses one Closure Agent. A split child
 is one independent Workflow Controller and inherits no preferences or authority.
 
-`workflow_control.py` accepts bounded strict JSON with schema_version=6, action,
+`workflow_control.py` accepts bounded strict JSON with schema_version=7, action,
 actor_ref, context and evidence. Context contains schema_version, controller_ref,
 topic_ref, stage, carrier, preference, flow_authority, requirement_identity and
 handoff_progress, optional top-level retired_handoffs, and at most one temporary successor_control slot. The caller authenticates actor_ref and persists the returned
@@ -398,12 +398,33 @@ No implementation contract, tests, generated package or protected source belongs
 to closure scope. After a recorded merge, reconcile publication/cleanup instead
 of demanding a new validation or merge.
 
-New records use runner 10, C workflow-progress-v19, B
-workflow-stage-transfer-v14 and control compatibility key 11 (JSON schema 6).
+New records use runner 11, C workflow-progress-v20, B
+workflow-stage-transfer-v15 and control compatibility key 12 (JSON schema 7).
 Old executable records fail with `legacy_run_requires_original_runtime` before
 writes or host calls. Embedded old control keeps the ledger outer version and
 bytes; resume with its original pinned package. Never migrate checks strings
 into passed evidence.
+
+## Local behavior review evidence
+
+For a current `execution-plan-v2` behavior slice, C `review-activity prepare`
+uses `axis: local:<ticket_id>:<slice_id>` and an exact clean committed candidate.
+Its verification names the current plan authority and local regression evidence.
+The returned `invoke-review` is one durable native intent with protected receipt
+capacity; observe only that action and retain its authenticated stopped response.
+The native `raw.review` accepts the exact AC refs, read paths and check evidence
+with no unresolved findings. A reviewer cannot be any version's implementation
+owner for those files. It may review another slice of the same Ticket.
+
+The original Controller then calls `control local-review` with `axis`,
+`candidate`, and the original `result_ref`. C derives an immutable claim and
+its original stopped-evidence reference; the Git adapter verifies the current
+Controller checkpoint, source fingerprints, package, contract and native slot.
+Claims are references, and local review intents live in the corresponding
+current Ticket subject. Unknown calls retain their original lookup and reserve.
+An accepted Execution result supplies implementation provenance; local review is
+a separate native result. Local claims alone cannot satisfy `candidate-ready`: C
+returns `review_incomplete` while any complete Ticket acceptance is missing.
 
 ## Controlled Stage-3 recovery
 

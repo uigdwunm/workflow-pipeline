@@ -13,7 +13,7 @@ import entry_prepare as entry
 import stage_scope
 
 
-PLAN_BLOCK = re.compile(rb"(?m)^```execution-plan-v1\r?\n(.*?)\r?\n```[ \t]*$", re.DOTALL)
+PLAN_BLOCK = re.compile(rb"(?m)^```execution-plan-v2\r?\n(.*?)\r?\n```[ \t]*$", re.DOTALL)
 HEADING = re.compile(rb"(?m)^(##|###) ([^\r\n]+)\r?$")
 SECTION_ID = re.compile(rb"^(N[0-9]+|D[0-9]+)\b")
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\Z")
@@ -61,10 +61,10 @@ def _unique_object(pairs):
 
 
 def read_ticket_plan(repository, commit, path):
-    """Read exactly one bounded execution-plan-v1 block from a Git document."""
+    """Read exactly one bounded execution-plan-v2 block from a Git document."""
     source = _committed_file(repository, commit, path)
     matches = list(PLAN_BLOCK.finditer(source["body"]))
-    _incomplete(len(matches) == 1, "exactly one execution-plan-v1 block required: " + path)
+    _incomplete(len(matches) == 1, "exactly one execution-plan-v2 block required: " + path)
     raw = matches[0].group(1)
     _incomplete(len(raw) <= MAX_PLAN, "function plan exceeds size limit: " + path)
     try:
@@ -317,9 +317,9 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
     """Validate one Ticket's function, artifact and behavior contracts."""
     plan, path = source["plan"], source["path"]
     _incomplete(set(plan) == {"schema_version", "ticket_id", "plan_version", "spec_ref", "contract_refs",
-                               "blocked_by", "verifications", "steps", "artifact_steps"},
+                               "blocked_by", "verifications", "steps", "artifact_steps", "behavior_slices"},
                 "function-plan root fields are incomplete: " + path)
-    _incomplete(type(plan["schema_version"]) is int and plan["schema_version"] == 1 and
+    _incomplete(type(plan["schema_version"]) is int and plan["schema_version"] == 2 and
                 type(plan["plan_version"]) is int and plan["plan_version"] > 0 and
                 isinstance(plan["ticket_id"], str) and IDENTIFIER.fullmatch(plan["ticket_id"]) and
                 isinstance(plan["spec_ref"], dict) and set(plan["spec_ref"]) == {"path", "section"},
@@ -424,10 +424,42 @@ def validate_ticket_plan(source, repository, commit, manifest_paths, *, baseline
         ids.append(artifact["id"])
         covered.add(artifact["path"])
     _incomplete(len(ids) == len(set(ids)), "duplicate function/artifact ID: " + path)
+    validate_behavior_slices(plan, path)
     return {"ticket_id": plan["ticket_id"], "plan_version": plan["plan_version"], "source":
             {**{key: source[key] for key in ("path", "commit", "mode", "sha256", "blob")},
              "plan_version": plan["plan_version"]},
             "plan": plan, "covered_paths": sorted(covered)}
+
+
+def validate_behavior_slices(plan, source):
+    """Require complete, explicit groups before the Stage-2 authority is frozen."""
+    slices = plan["behavior_slices"]
+    _incomplete(isinstance(slices, list) and 0 < len(slices) <= 4096,
+                "bounded behavior slices required: " + source)
+    steps = {step["id"]: step for step in plan["steps"] + plan["artifact_steps"]}
+    declared, identities, acs = [], set(), set()
+    for group in slices:
+        _incomplete(isinstance(group, dict) and set(group) == {
+            "id", "step_ids", "ac_refs", "verification_refs", "read_only", "shared_state"},
+            "behavior slice fields are incomplete: " + source)
+        _incomplete(isinstance(group["id"], str) and IDENTIFIER.fullmatch(group["id"]) and
+                    group["id"] not in identities, "duplicate or invalid behavior slice: " + source)
+        identities.add(group["id"])
+        for field in ("step_ids", "ac_refs", "verification_refs", "read_only", "shared_state"):
+            _strings(group[field], field, empty=field in {"read_only", "shared_state"})
+            _incomplete(len(group[field]) == len(set(group[field])), "duplicate slice relationship: " + source)
+        _incomplete(set(group["step_ids"]) <= set(steps) and
+                    set(group["ac_refs"]) <= set(plan["contract_refs"]),
+                    "unknown slice step or AC: " + source)
+        selected = [steps[identity] for identity in group["step_ids"]]
+        _incomplete(set(group["verification_refs"]) == {v for step in selected for v in step["verification_refs"]} and
+                    set(group["read_only"]) == {p for step in selected for p in step.get("read_only", [])},
+                    "slice must declare every verification and read relationship: " + source)
+        declared.extend(group["step_ids"])
+        acs.update(group["ac_refs"])
+    required = {ref for ref in plan["contract_refs"] if ref.startswith(plan["ticket_id"] + ":AC-")}
+    _incomplete(len(declared) == len(set(declared)) and set(declared) == set(steps) and required <= acs,
+                "behavior slices must cover all steps and ACs exactly: " + source)
 
 
 def collect_execution_plan(repository, commit, planning_paths, scope, requirement_identity,
@@ -500,7 +532,7 @@ def collect_execution_plan(repository, commit, planning_paths, scope, requiremen
                                      spec_path=next(iter(spec_paths)) if len(spec_paths) == 1 else None,
                                      contract_refs={ref for plan in plans for ref in plan["plan"]["contract_refs"]},
                                      retained_record_baseline=retained_record_baseline)
-    catalog = {"schema_version": 1, "commit": commit, "requirement_identity": requirement_identity,
+    catalog = {"schema_version": 2, "commit": commit, "requirement_identity": requirement_identity,
                "tickets": records, "ordered_step_ids": ordered,
                "sources": [{"path": item["path"], "commit": commit, "mode": item["mode"],
                             "sha256": item["sha256"], "blob": item["blob"]} for item in sources],
@@ -514,7 +546,7 @@ def authority_envelope(catalog, original_scope_revision, *, input_digest=None):
     _incomplete(type(original_scope_revision) is int and original_scope_revision > 0,
                 "original Scope Authority revision is invalid")
     _incomplete(isinstance(catalog, dict) and type(catalog.get("schema_version")) is int and
-                catalog["schema_version"] == 1 and
+                catalog["schema_version"] == 2 and
                 isinstance(catalog.get("tickets"), list) and len(catalog["tickets"]) <= 4096 and
                 isinstance(catalog.get("ordered_step_ids"), list) and
                 len(catalog["ordered_step_ids"]) <= 4096 and
@@ -543,7 +575,7 @@ def authority_envelope(catalog, original_scope_revision, *, input_digest=None):
                         {"path", "commit", "mode", "sha256", "blob"} and
                         source["commit"] == catalog["commit"] for source in sources),
                     "staged plan source requires committed identity")
-    return {"schema_version": 1, "catalog": copy_plan_refs(catalog),
+    return {"schema_version": 2, "catalog": copy_plan_refs(catalog),
             "plan_digest": catalog["plan_digest"], "contract_digest": catalog["contract_digest"],
             "plan_commit": catalog["commit"], "sources": sources,
             "original_scope_revision": original_scope_revision}
@@ -555,7 +587,7 @@ def current_catalog(authority):
     if (not isinstance(envelope, dict) or set(envelope) != {
             "schema_version", "catalog", "plan_digest", "contract_digest", "plan_commit",
             "sources", "original_scope_revision"} or
-            type(envelope.get("schema_version")) is not int or envelope["schema_version"] != 1):
+            type(envelope.get("schema_version")) is not int or envelope["schema_version"] != 2):
         raise entry.PreparationError("execution_plan_stale", "current execution-plan envelope is invalid")
     catalog = envelope.get("catalog")
     try:
@@ -1016,9 +1048,9 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
     """Validate a standalone logical slice without inventing a Ticket document."""
     _incomplete(isinstance(plan, dict) and set(plan) == {
         "schema_version", "ticket_id", "plan_version", "spec_ref", "contract_refs",
-        "blocked_by", "verifications", "steps", "artifact_steps"},
-        "standalone inline plan needs the execution-plan-v1 fields")
-    _incomplete(type(plan["schema_version"]) is int and plan["schema_version"] == 1 and
+        "blocked_by", "verifications", "steps", "artifact_steps", "behavior_slices"},
+        "standalone inline plan needs the execution-plan-v2 fields")
+    _incomplete(type(plan["schema_version"]) is int and plan["schema_version"] == 2 and
                 type(plan["plan_version"]) is int and
                 plan["plan_version"] > 0 and isinstance(plan["ticket_id"], str) and
                 IDENTIFIER.fullmatch(plan["ticket_id"]) is not None and
@@ -1113,6 +1145,7 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
             _incomplete(not _code_source(item) or
                         any(step['target']['path'] == item['path'] for step in plan['steps']),
                         "inline code source requires a real function step: " + item['path'])
+    validate_behavior_slices(plan, "inline")
     contract = {key: semantic[key] for key in
                 ("objective", "testing_basis", "completion_criteria", "constraints")}
     projection = {"brief": contract, "requirement_identity": requirement_identity,
@@ -1124,7 +1157,7 @@ def collect_inline_plan(plan, scope, semantic, requirement_identity, *, reposito
               "source": {"kind": "inline", "commit": None, "sha256": entry.digest(plan),
                          "plan_version": plan["plan_version"]},
               "plan": copy_plan_refs([plan])[0], "covered_paths": sorted(covered)}
-    catalog = {"schema_version": 1, "commit": None, "requirement_identity": requirement_identity,
+    catalog = {"schema_version": 2, "commit": None, "requirement_identity": requirement_identity,
                "tickets": [record], "ordered_step_ids": ordered,
                "contract_projection": projection, "contract_digest": entry.digest(projection)}
     catalog["plan_digest"] = entry.digest(catalog)

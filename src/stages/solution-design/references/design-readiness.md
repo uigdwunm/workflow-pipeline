@@ -105,8 +105,14 @@ the combined review before planning publication, or direct publication in contin
   silently redesign it. Repair the Spec first, then regenerate the affected
   Ticket content.
 
-Before the Stage-2 scope seal, put one versioned `execution-plan-v1` JSON block
-in each implementation Ticket. Retain its delivery behavior, ACs and Blocked by
+Before the Stage-2 scope seal, put one versioned `execution-plan-v2` JSON block
+in each implementation Ticket (JSON `schema_version: 2`). Declare `behavior_slices`: each has
+`id`, exact `step_ids`, `ac_refs`, `verification_refs`, `read_only`, and `shared_state`.
+Groups partition every function/artifact step and cover all Ticket ACs; reads and
+verifications equal the grouped steps, and empty shared/read relationships are
+explicit lists. Shared-state names identify effects whose consumers need impact
+checking; do not omit an unknown dependency to claim safe inheritance.
+Retain its delivery behavior, ACs and Blocked by
 outside the block. Give each function step a stable ID, exact path/symbol and
 operation, capability, ordered approach, key inputs/outputs/failures, declared
 dependencies and behavior verification references. Several related functions

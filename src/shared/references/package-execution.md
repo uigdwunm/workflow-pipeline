@@ -1,8 +1,8 @@
 # Package execution and action preflight
 
 Registration provenance and controlled recovery require preparation=workflow-preparation-v5,
-stage_transfer=workflow-stage-transfer-v14, workflow_progress=workflow-progress-v19,
-execution_plan=execution-plan-v1, and topic_gate=phase-0-1-discussion-v2. The topic gate key separates packages
+stage_transfer=workflow-stage-transfer-v15, workflow_progress=workflow-progress-v20,
+execution_plan=execution-plan-v2, and topic_gate=phase-0-1-discussion-v2. The topic gate key separates packages
 that allow discussion behind a closed dependency from the older blanket guard.
 Preparation v5 retains stable actor identity and permits the original Stage-2
 conversation Controller to freeze in a verified independent source checkout. Requirement freeze preserves unrelated edits made since
@@ -11,8 +11,8 @@ Entry requests use workflow-entry-v4 and requirement requests use requirement-fr
 Old pinned runs keep their original packages and records; ordinary new-package
 operations reject incompatible exchanges instead of filling missing identity
 fields.
-Runner outer version 10 requires workflow-progress-v19, workflow-stage-transfer-v14
-and control compatibility key 11 (JSON schema 6). Supervision flow-worktree-v3
+Runner outer version 11 requires workflow-progress-v20, workflow-stage-transfer-v15
+and control compatibility key 12 (JSON schema 7). Supervision flow-worktree-v3
 requires lifecycle provenance and disposition; requirement-delivery-v2 accepts
 bounded Stage-2 conversation delivery. Discussion request/ledger, requirement-freeze
 and thread-settings retain their existing versions. Older records require

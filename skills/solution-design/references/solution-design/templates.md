@@ -101,7 +101,7 @@ Flow Worktree：<exact verified binding, including lifecycle>
 允许动作：完整执行 $to-spec、必要 ADR、$ask-matt、$to-tickets、精确目标原生发布；只写入并提交本阶段拥有的本地规划文档。
 禁止动作：修改实现代码、创建 PR、部署、发布版本、改变规划目标、进入 3实现、修改冻结需求文档或处理无关任务。
 文档权威：冻结需求文档拥有需求；CONTEXT.md 拥有术语；ADR 拥有难逆决策；Spec 拥有实施方案与测试决策；Tickets 拥有实施切片和阻塞关系。不要创建单独的 2方案草案。
-范围交付：启动时 implementation_paths 与 closure_paths 均为未定；先按 design-readiness.md 的文件归属与首个 TDD 切片指引制定 Spec/Tickets；每个实施 Ticket 写入完整 execution-plan-v1 函数计划，若无 Tickets 则在 Spec 写一个 inline 计划；再交付逐文件清单及依据、完整 manifest、implementation_required、生成物 source→outputs 映射和实际规划提交/路径/章节。你只提案，由原 Controller 同时封存 manifest 与计划目录并出版。
+范围交付：启动时 implementation_paths 与 closure_paths 均为未定；先按 design-readiness.md 的文件归属与首个 TDD 切片指引制定 Spec/Tickets；每个实施 Ticket 写入完整 execution-plan-v2 函数计划（schema_version=2），behavior_slices 明确列出 id/step_ids/ac_refs/verification_refs/read_only/shared_state，覆盖全部步骤与AC且空关系显式为空列表，若无 Tickets 则在 Spec 写一个 inline 计划；再交付逐文件清单及依据、完整 manifest、implementation_required、生成物 source→outputs 映射和实际规划提交/路径/章节。你只提案，由原 Controller 同时封存 manifest 与计划目录并出版。
 逐阶段模式：先完成 Spec、必要 ADR 和 Tickets 草稿及就绪检查；发布与终态前返回一次合并 SOLUTION_REVIEW_REQUIRED，询问接受完整方案、发布并进入实现；按匹配 review ID 的 PARENT_DECISION 修订或发布，主 Agent 沿用该授权进入实现。
 连续模式：此前的 执行后续全部流程 是标准方案选择和原生审阅问题的预授权；不发出 review 消息；仍完成方案就绪检查、原生发布和规划提交，通过后直接交付。
 范围扩展：认为需求边界外的改动是形成完整方案的必要条件时，按 $solution-design 的 visible-scope 规则返回 SOLUTION_DESIGN_ANOMALY，并等待用户明确决定。

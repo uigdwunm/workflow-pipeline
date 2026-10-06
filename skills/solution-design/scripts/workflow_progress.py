@@ -29,6 +29,7 @@ import stage_handoff as handoff
 import stage_dispatch as dispatch
 import stage_scope
 import execution_plan
+import review_evidence
 import workflow_control as control
 import workflow_control_git as control_git
 import skill_preflight
@@ -546,6 +547,10 @@ def read_active_owner(path):
                 not set(allocations) & set(subject['allocations']),
                 'invalid_checkpoint', 'invalid current Ticket batch')
         allocations.update(subject['allocations'])
+        reviews = subject.get('review_activity', {})
+        require(isinstance(reviews, dict) and not set(reviews) & set(state.get('review_activity', {})),
+                'invalid_checkpoint', 'local review subject identity is duplicated')
+        state.setdefault('review_activity', {}).update(reviews)
         require(len(allocations) <= 32, 'state_capacity', 'current allocation window is full')
     outer[KEY]['allocations'] = allocations
     restore_ledger_mirror(outer[KEY])
@@ -560,6 +565,8 @@ def scope_transport(outer):
 def stage_subject_value(state):
     """Canonical persisted stage fields; allocations belong to Ticket subjects."""
     value = {key: value for key, value in state.items() if key != 'allocations'}
+    value['review_activity'] = {key: slot for key, slot in state.get('review_activity', {}).items()
+                                if not key.startswith('local:')}
     port = state.get('control') or {}
     if port.get('discussion') is not None:
         reference = port.get('store_ref')
@@ -1479,6 +1486,11 @@ def save_current_record(path, outer, expected_revision, *, expected_authority_re
         subject_id = 'ticket:' + ticket + ':0'
         subject = subjects.setdefault(subject_id, {'ticket_id': ticket, 'batch': 0, 'allocations': {}})
         subject['allocations'][identity] = slot
+    for axis, slot in state.get('review_activity', {}).items():
+        if axis.startswith('local:'):
+            ticket = slot['subject']['ticket_id']
+            subject = subjects.setdefault('ticket:' + ticket + ':0', {'ticket_id': ticket, 'batch': 0, 'allocations': {}})
+            subject.setdefault('review_activity', {})[axis] = slot
     metadata = {key: state[key] for key in ('protocol', 'revision', 'stage', 'status')}
     metadata['stage_subject'] = stage_id
     if state.get('design_predecessor') is not None:
@@ -1679,7 +1691,8 @@ def validate_saved_reviews(state):
     current = store.open_current()
     identities = set()
     for group in [state.get('review_activity', {}), *state.get('review_history', [])]:
-        require(isinstance(group, dict) and set(group) <= {'standards', 'spec'},
+        require(isinstance(group, dict) and len(group) <= 32 and all(isinstance(key, str) and
+                (key in {'standards', 'spec'} or key.startswith('local:')) for key in group),
                 'invalid_checkpoint', 'retain the two original review axes')
         for axis, slot in group.items():
             require(isinstance(slot, dict) and isinstance(slot.get('action_id'), str) and slot['action_id'] and
@@ -6134,7 +6147,7 @@ class Progress:
         entry.fields(data, {"action", "evidence", "receipt"})
         entry.nonempty(data["action"])
         require(data["action"] in {"successor-ready", "archive", "archive-result",
-                    "scope-seal", "scope-revise", "plan-revision-activate", "escalate-implementation", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "capture-integration", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
+                    "scope-seal", "scope-revise", "plan-revision-activate", "escalate-implementation", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "capture-integration", "local-review", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
                 "invalid_operation", "use the original bounded control recovery/closure operation")
         require(isinstance(data["receipt"], dict) and data["receipt"], "host_evidence_missing", "original authenticated host/controller evidence required")
         s = self.state
@@ -6328,6 +6341,11 @@ class Progress:
             self.require_not_stopping()
             current = handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
             require(current['actor']['thread_id'] == s['handoff']['expected_entry']['actor']['thread_id'], 'identity_mismatch', 'original controller required')
+            if data['action'] == 'candidate-ready':
+                checkpoint = s['control']['context']['handoff_progress']
+                require(all('ticket:' + ticket['ticket_id'] in checkpoint.get('review_claims', {})
+                            for ticket in execution_plan.current_catalog(s['scope_authority'])['tickets']),
+                        'review_incomplete', 'Ticket acceptance is required before candidate-ready')
             if data['action'] == 'validation-start' and self.unresolved_host_actions():
                 return self.query_host()
             data = copy.deepcopy(data)
@@ -6368,6 +6386,12 @@ class Progress:
             if data['action'] in {'validation-retry', 'invalidate-candidate'}:
                 require(not self.unresolved_host_actions(), 'host_action_pending', 'reconcile original calls before validation recovery')
                 require(all(v.get('stopped') for v in s.get('review_activity', {}).values()), 'review_active', 'stop old native reviewers before recovery')
+        if data['action'] == 'local-review':
+            data = copy.deepcopy(data)
+            require(set(data['evidence']) == {'axis', 'candidate', 'result_ref'},
+                    'invalid_evidence', 'local claim is derived from its original native result')
+            data['evidence']['claim'] = self.accept_local_review(data['evidence'])
+            data['evidence']['claim_checkpoint'] = str(self.path)
         identity = entry.digest(data)
         transactions = s.setdefault("control_transactions", {})
         previous = transactions.get(identity)
@@ -6405,7 +6429,7 @@ class Progress:
             if data["action"] == "plan-revision-activate" and s["control"]["discussion"] is None:
                 result = control_git.verified_transition({"repository": s["handoff"]["binding"]["worktree"],
                     "baseline": s["control"]["context"]["handoff_progress"]["git_baseline_commit"],
-                    "request": {"schema_version": 6, "action": data["action"],
+                    "request": {"schema_version": 7, "action": data["action"],
                         "actor_ref": s["control"]["context"]["controller_ref"],
                         "context": s['control']['context'],
                         "evidence": data["evidence"]}})
@@ -7072,6 +7096,99 @@ class Progress:
         self.require_not_stopping()
         self.require_finalizations_released()
 
+    def local_review_subject(self, data):
+        checkpoint = self.state['control']['context']['handoff_progress']
+        ticket, group, steps = review_evidence.subject(execution_plan.current_catalog(self.state['scope_authority']), data['axis'])
+        owned = {step['target']['path'] if 'target' in step else step['path'] for step in steps}
+        for item in self.state['scope_authority']['scope']['downstream']['manifest']:
+            if item['owner'] == 'implementation' and item['kind'] == 'generated' and owned & set(item['source_paths']):
+                owned.add(item['path'])
+        read = set(group['read_only'])
+        fingerprints = control_git.review_fingerprints(Path(self.state['handoff']['binding']['worktree']),
+            data['candidate'], owned | read)
+        return {'ticket_id': ticket['ticket_id'], 'slice_id': group['id'],
+            'plan_refs': [execution_plan.step_ref(ticket, step) for step in steps],
+            'ac_refs': group['ac_refs'], 'shared_state': group['shared_state'],
+            'owned_fingerprints': {p: fingerprints[p] for p in sorted(owned)},
+            'read_fingerprints': {p: fingerprints[p] for p in sorted(read)},
+            'contract_digest': entry.digest({'contract_refs': ticket['plan']['contract_refs'],
+                                            'slice': group}),
+            'verification_refs': group['verification_refs']}
+
+    def validate_local_review(self, data):
+        checkpoint = self.state['control']['context']['handoff_progress']
+        require(checkpoint['state'] == 'implementing', 'review_incomplete', 'local review precedes Ticket acceptance')
+        require(data['verification'].get('plan_authority') == checkpoint['plan_authority'] and
+                data['verification'].get('checks'), 'review_incomplete', 'current local regression evidence required')
+        ticket, group, steps = review_evidence.subject(execution_plan.current_catalog(self.state['scope_authority']), data['axis'])
+        results = control.current_accepted_results(checkpoint)
+        completed = execution_plan.current_accepted_steps(execution_plan.current_catalog(self.state['scope_authority']),
+            results, self.state['scope_authority'])
+        require(set(group['step_ids']) <= completed, 'review_incomplete', 'accept and stop every local Execution result first')
+        for result in results:
+            if any(ref['step_id'] in group['step_ids'] for ref in result.get('plan_refs', [])):
+                require(result['stopped'] and result['state'] == 'accepted' and result.get('plan_authority') == checkpoint['plan_authority'],
+                        'review_incomplete', 'local review requires the original current stopped Execution')
+                owned = execution_plan.accepted_owned_fingerprints(result)
+                repository = Path(self.state['handoff']['binding']['worktree'])
+                require(owned is not None and all(control_git.file_fingerprint(repository, relative) == fingerprint
+                            for relative, fingerprint in owned.items()),
+                        'review_incomplete', 'local source differs from its accepted Execution fingerprints')
+
+    def accept_local_review(self, evidence):
+        self.require_not_stopping()
+        self.require_business_ready()
+        require(not self.unresolved_host_actions(), 'outcome_unknown', 'resolve original calls before accepting local review')
+        slot = self.state.get('review_activity', {}).get(evidence['axis'])
+        require(slot is not None and slot['candidate'] == evidence['candidate'] and slot['start']['applied'] and
+                slot['stopped'] and (not slot.get('query') or slot['query']['resolved']),
+                'review_incomplete', 'original local native review must stop')
+        self.validate_local_review(slot['prepare'])
+        require(slot['subject'] == self.local_review_subject(slot['prepare']),
+                'review_incomplete', 'local review source or dependency snapshot changed')
+        repository = Path(self.state['handoff']['binding']['worktree'])
+        require(control_git.snapshot(repository)['head'] == evidence['candidate'] and
+                not control_git.git(repository, 'status', '--porcelain'),
+                'candidate_changed', 'local review consumes its exact clean source snapshot')
+        receipts = [r for r in slot['receipts'] if r['response_ref'] == evidence['result_ref'] and r['status'] == 'stopped']
+        require(len(receipts) == 1 and receipts[0]['ref'] == slot['ref'],
+                'review_incomplete', 'semantic claim must name its original native stopped response')
+        receipt, projection = receipts[0], slot['subject']
+        checkpoint = self.state['control']['context']['handoff_progress']
+        executions = list(checkpoint['executions']) + list(checkpoint.get('carried_results', []))
+        for previous in checkpoint.get('plan_revision_sources', []):
+            executions.extend(previous['executions'] + previous['carried_results'])
+        require(slot['ref'] not in {result['agent_ref'] for result in executions
+                    if set(result['paths']) & set(projection['owned_fingerprints'])} and
+                slot['ref'] not in {self.bound_ref(), self.state['handoff']['controller_ref']},
+                'identity_mismatch', 'a reviewer cannot review any version of its implementation')
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        raw = receipt['raw']
+        if raw.get('format') == 'review-raw-reference-v1':
+            require(not raw['truncated'], 'outcome_unknown', 'a truncated review cannot pass')
+            raw = store.read_raw_evidence(raw['evidence_ref'], run_id=current.run_id)
+        semantic = raw.get('review')
+        require(isinstance(semantic, dict) and semantic.get('status') == 'accepted' and
+                semantic.get('findings') == [] and semantic.get('checks') == slot['prepare']['verification']['checks'] and
+                set(semantic.get('read_paths', [])) == set(projection['read_fingerprints']) and
+                set(semantic.get('ac_refs', [])) == set(projection['ac_refs']),
+                'review_incomplete', 'original reviewer must accept exact ACs, reads and local regressions without findings')
+        stop_ref = store.write_object(current.run_id, 'evidence', {'native_review_stop': receipt})
+        claim = {'schema_version': 1, 'run_id': current.run_id, 'package_digest': entry.digest(self.state['packages']),
+            'layer': 'local', **{k: copy.deepcopy(v) for k, v in projection.items() if k != 'verification_refs'},
+            'plan_authority': checkpoint['plan_authority'], 'source_candidate': evidence['candidate'],
+            'dependency_claim_ids': [], 'verification': {'ids': projection['verification_refs'],
+                'checks': semantic['checks'], 'source_results': [entry.digest(result) for result in executions
+                    if set(result['paths']) & set(projection['owned_fingerprints'])]},
+            'reviewer_ref': slot['ref'], 'native_stop': {**{k: receipt[k] for k in
+                ('adapter', 'call_ref', 'response_ref', 'status', 'ref')}, 'action_id': slot['action_id']},
+            'native_stop_ref': stop_ref, 'findings': [], 'status': 'accepted'}
+        claim['claim_id'] = entry.digest(claim)
+        review_evidence.validate_claim(claim)
+        reference = store.write_object(current.run_id, 'evidence', {'review_claim': claim})
+        return review_evidence.claim_view(claim, reference)
+
     def commit_review_start(self, slot, result, applied):
         self.state['control']['context'] = result['context']
         self.next_envelope(applied)
@@ -7086,7 +7203,13 @@ class Progress:
     def read_review_start_result(self, slot):
         """Read the original ledger transaction proof, never invoke review-start again."""
         start = slot['start']
-        if start['applied'] or start['discussion'] is None:
+        if start['applied']:
+            return
+        if slot['prepare']['axis'].startswith('local:'):
+            require(entry.digest(self.state['control']) == start['control_digest'],
+                    'control_context_changed', 'pending local review cannot replace a newer authority')
+            return {'context': copy.deepcopy(self.state['control']['context'])}, None
+        if start['discussion'] is None:
             return
         require(entry.digest(self.state['control']) == start['control_digest'],
                 'control_context_changed', 'pending review start cannot replace a newer authority')
@@ -7140,7 +7263,8 @@ class Progress:
             require(slot['ref'] in {None, receipt['ref']} and receipt['ref'] not in {self.bound_ref(), actor_ref},
                     'identity_mismatch', 'reviewer must retain an independent native identity')
             require(all(other_axis == axis or value.get('ref') != receipt['ref']
-                        for other_axis, value in self.state.get('review_activity', {}).items()),
+                        for other_axis, value in self.state.get('review_activity', {}).items()
+                        if axis in {'standards', 'spec'} and other_axis in {'standards', 'spec'}),
                     'identity_mismatch', 'review axes require separate identities')
             slot['ref'] = receipt['ref']
         require(receipt['status'] != 'stopped' or slot['ref'] is not None,
@@ -7254,7 +7378,7 @@ class Progress:
         """Two fixed review slots; allocation and candidate acceptance stay in B."""
         entry.fields(data, {'operation','axis','candidate','actor_ref'}, {'verification','action_id','receipt'})
         s = self.state
-        require(s['stage'] == 3 and data['axis'] in {'standards','spec'}, 'role_mismatch', 'only the Stage-3 review axes are supported')
+        require(s['stage'] == 3 and isinstance(data['axis'], str) and (data['axis'] in {'standards','spec'} or data['axis'].startswith('local:')), 'role_mismatch', 'only the Stage-3 review axes are supported')
         current = handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
         actor = s['handoff']['expected_entry']['actor']
         require(data['actor_ref'] == actor['thread_id'] == current['actor']['thread_id'] and
@@ -7288,7 +7412,11 @@ class Progress:
             self.require_business_ready()
             if slot is None or slot['candidate'] != data['candidate']:
                 self.require_finalizations_released()
-            control.validate_reviewable(s['control']['context']['handoff_progress'], data['candidate'], data['verification'])
+            local = data['axis'].startswith('local:')
+            if local:
+                self.validate_local_review(data)
+            else:
+                control.validate_reviewable(s['control']['context']['handoff_progress'], data['candidate'], data['verification'])
             binding = s['handoff']['binding']
             scope = (s.get('scope_authority') or {}).get('scope', s['handoff']['scope'])
             observed = supervision.verify_worktree({'binding':binding,'platform_cwd':binding['worktree']})
@@ -7296,13 +7424,19 @@ class Progress:
                     'candidate_changed', 'review requires the clean exact candidate')
             checkpoint = s['control']['context']['handoff_progress']
             changed = (set(supervision._changed_paths(Path(binding['repository']),
-                checkpoint['expected_target_head'], data['candidate'])) -
+                checkpoint.get('expected_target_head', checkpoint['git_baseline_commit']), data['candidate'])) -
                 set(checkpoint.get('integration_retained', {}).get('paths', [])) -
                 control_git.verified_planning_paths(Path(binding['worktree']), checkpoint))
             require(set(changed) <= set(scope['implementation_paths']) and
                     not set(changed) & set(checkpoint['protected_paths']),
                     'scope_changed', 'review candidate escaped implementation scope')
-            if any(value['candidate'] != data['candidate'] for value in slots.values()):
+            if local and slot is not None:
+                require(slot.get('stopped'), 'review_active', 'stop the original local review before replacing it')
+                s.setdefault('review_history', []).append({data['axis']: copy.deepcopy(slot)})
+                slots.pop(data['axis'])
+                slot = None
+            if not local and any(value['candidate'] != data['candidate'] for key, value in slots.items()
+                                 if key in {'standards', 'spec'}):
                 require(all(value.get('stopped') for value in slots.values()), 'review_active', 'stop and reconcile both old review axes first')
                 s.setdefault('review_history', []).append(copy.deepcopy(slots))
                 s['review_activity'] = slots = {}
@@ -7312,12 +7446,14 @@ class Progress:
                     'start': {'control_digest': entry.digest(s['control']),
                               'discussion': copy.deepcopy(s['control']['discussion']),
                               'store_ref': copy.deepcopy(s['control'].get('store_ref')), 'applied': False}}
+            if local:
+                slot['subject'] = self.local_review_subject(data)
             slots[data['axis']] = slot
             store = state_store.open_store(self.path)
             # Reject every bounded candidate before reserve allocation or C's
             # review-start. No external call can escape this durable intent.
             ledger_review = None
-            if s['control']['discussion'] is not None:
+            if not local and s['control']['discussion'] is not None:
                 ledger_review = {**s['control']['discussion'], 'operation': 'workflow-control',
                     'action': 'review-start', 'evidence': {'candidate': data['candidate']},
                     'expected_control_ref': s['control']['store_ref']}
@@ -7329,7 +7465,10 @@ class Progress:
                     candidate.save()
                     intent_bytes = max(intent_bytes, sum(writes.values()))
                     target = candidate.state['review_activity'][data['axis']]
-                    if ledger_review is None:
+                    if local:
+                        preview = {'context': copy.deepcopy(candidate.state['control']['context'])}
+                        applied = None
+                    elif ledger_review is None:
                         context = candidate.state['control']['context']
                         preview = control.transition({'schema_version': context['schema_version'],
                             'actor_ref': context['controller_ref'], 'context': context,
@@ -7367,7 +7506,10 @@ class Progress:
             store.require_ordinary_capacity(intent_bytes)
             store.reserve(slot['action_id'])
             self.save()
-            result, applied = dispatch.checkpoint(s['control'], s['handoff'], 'review-start', {'candidate':data['candidate']})
+            if local:
+                result, applied = {'context': copy.deepcopy(s['control']['context'])}, None
+            else:
+                result, applied = dispatch.checkpoint(s['control'], s['handoff'], 'review-start', {'candidate':data['candidate']})
             self._receipt_action = slot['action_id']
             self.commit_review_start(slot, result, applied)
             return _view(s, {'operation':'invoke-review','axis':data['axis'],
@@ -7889,7 +8031,7 @@ def handle(path, request):
                 (pinned_protocol is None or pinned_protocol == PROTOCOL),
                 "legacy_run_requires_original_runtime", "all operations require the original pinned progression runtime")
         if member is not None:
-            require(member.get("control",{}).get("context",{}).get("schema_version") == 6,
+            require(member.get("control",{}).get("context",{}).get("schema_version") == 7,
                     "legacy_run_requires_original_runtime", "retain the original embedded control runtime")
         if request["operation"] == "deliver-requirement":
             return deliver_requirement(path, outer, request.get("data", {}))

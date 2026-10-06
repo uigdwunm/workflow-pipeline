@@ -66,7 +66,7 @@ class ProgressTests(transfer.StageTransferTests):
         context['controller_ref'] = 'task'
         def apply(action, evidence):
             nonlocal context
-            result = progress.control.transition({'schema_version': 6, 'actor_ref': 'task',
+            result = progress.control.transition({'schema_version': 7, 'actor_ref': 'task',
                 'context': context, 'action': action, 'evidence': evidence})
             context = result['context']
             return result
@@ -735,7 +735,7 @@ class ProgressTests(transfer.StageTransferTests):
         ):
             if evidence is None:
                 evidence = {'plan_id': self.context['handoff_progress']['plan']['plan_id'], 'intent': 'confirm'}
-            self.context = progress.control.transition({'schema_version': 6, 'actor_ref': 'task',
+            self.context = progress.control.transition({'schema_version': 7, 'actor_ref': 'task',
                 'context': self.context, 'action': action, 'evidence': evidence})['context']
         value = self.input_for(0)
         value['binding'] = None
@@ -1241,7 +1241,7 @@ class ProgressTests(transfer.StageTransferTests):
 
     def ready_publication(self, candidate, reference, role="native:designer"):
         observed = self.observation("stopped", "result", ref=role)
-        observed["publication_candidate"] = {"candidate_commit": candidate, "artifacts": ["docs/spec.md" if role == "native:designer" else "impl.py"], "checks": ["design readiness" if role == "native:designer" else "publication verified"]}
+        observed["publication_candidate"] = {"candidate_commit": candidate, "artifacts": sorted(getattr(self, "planning_documents", {"docs/spec.md": None})) if role == "native:designer" else ["impl.py"], "checks": ["design readiness" if role == "native:designer" else "publication verified"]}
         response = self.invoke("observe", observed)
         self.assertEqual(response["status"], "needs_input", response)
         pending = response["pending"]
@@ -1255,8 +1255,9 @@ class ProgressTests(transfer.StageTransferTests):
             "candidate_commit": candidate, "manifest": [
                 {"path": "CHANGELOG.md", "owner": "closure", "kind": "document",
                  "operation": "add", "basis": basis},
-                {"path": "impl.py", "owner": "implementation", "kind": "source",
-                 "operation": "add", "basis": basis}],
+                *[{"path": path, "owner": "implementation", "kind": "source",
+                   "operation": "add", "basis": basis}
+                  for path in getattr(self, "implementation_paths", ["impl.py"])]],
             "implementation_required": True,
             "requirement_identity": copy.deepcopy(saved["handoff"]["requirement_identity"]),
             "binding": copy.deepcopy(saved["handoff"]["binding"]), "previous_scope_revision": 0}
@@ -1265,7 +1266,7 @@ class ProgressTests(transfer.StageTransferTests):
         return proposed["next_action"]["proposal"]["digest"]
 
     def planning_spec(self):
-        plan = {"schema_version": 1, "ticket_id": "FEP-01", "plan_version": 1,
+        plan = {"schema_version": 2, "ticket_id": "FEP-01", "plan_version": 1,
             "spec_ref": {"path": "docs/spec.md", "section": "Implementation Decisions"},
             "contract_refs": ["FEP-01:What to build", "FEP-01:AC-1", "PRD:D1:Plan"],
             "blocked_by": [], "verifications": [{"id": "V1", "behavior": "approved behavior",
@@ -1275,11 +1276,13 @@ class ProgressTests(transfer.StageTransferTests):
                 "capability": "implement approved behavior", "approach": ["implement and connect run"],
                 "inputs": ["approved design"], "outputs": ["observable result"],
                 "failures": ["invalid input is reported"], "depends_on": [],
-                "verification_refs": ["V1"], "read_only": []}], "artifact_steps": []}
+                "verification_refs": ["V1"], "read_only": []}], "artifact_steps": [], "behavior_slices": [{"id": "SL1",
+                "step_ids": ["FP1-01"], "ac_refs": ["FEP-01:AC-1"], "verification_refs": ["V1"],
+                "read_only": [], "shared_state": []}]}
         return ("approved design\nTicket ID: FEP-01\nPlan Version: 1\n"
                 "**What to build:** approved behavior\n**Blocked by:** None\n"
                 "AC-1: approved behavior\n## Implementation Decisions\n### D1 — Plan\n"
-                "```execution-plan-v1\n" + json.dumps(plan) + "\n```\n")
+                "```execution-plan-v2\n" + json.dumps(plan) + "\n```\n")
 
     def seal_design_scope(self, proposal_digest):
         sealed = self.invoke("scope-seal", {"proposal_id": "proposal-1",
@@ -1290,8 +1293,12 @@ class ProgressTests(transfer.StageTransferTests):
     def prepare_design_result(self, mode):
         self.begin(mode)
         self.invoke("observe", self.observation())
-        (self.flow / "docs/spec.md").write_text(self.planning_spec())
-        self.flow_git("add", "docs/spec.md")
+        documents = getattr(self, "planning_documents", None) or {"docs/spec.md": self.planning_spec()}
+        for path, body in documents.items():
+            target = self.flow / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body)
+        self.flow_git("add", *sorted(documents))
         self.flow_git("commit", "-qm", "plan")
         planning = self.flow_git("rev-parse", "HEAD")
         proposal_digest = self.propose_design_scope(planning)
@@ -1300,7 +1307,7 @@ class ProgressTests(transfer.StageTransferTests):
         published = self.invoke("publication", {"candidate_commit": planning, "reference": "controller:planning-readiness"})
         self.assertTrue(published["next_action"]["publication"]["result"]["ok"], published)
         payload = {"artifacts": ["docs/spec.md"], "checks": ["design readiness"], "planning_commit": planning,
-                   "planning_merge_commit": self.flow_git("rev-parse", "HEAD"), "planning_paths": ["docs/spec.md"]}
+                   "planning_merge_commit": self.flow_git("rev-parse", "HEAD"), "planning_paths": sorted(documents)}
         return payload
 
     def test_publication_requires_exact_readiness_and_stopped_writer(self):

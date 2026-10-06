@@ -559,7 +559,7 @@ def validate_progress(progress):
             validate_scope_seal_evidence(seal['evidence'],
                                          {'requirement_identity': seal['evidence']['requirement_identity']}, progress)
     elif 'executions' in progress:
-        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'integration_target_head', 'integration_candidate', 'integration_source', 'integration_retained', 'plan_authority', 'execution_authority', 'plan_revisions', 'plan_revision_sources', 'carried_results', 'revalidation_source'}
+        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'integration_target_head', 'integration_candidate', 'integration_source', 'integration_retained', 'plan_authority', 'execution_authority', 'plan_revisions', 'plan_revision_sources', 'carried_results', 'revalidation_source', 'review_claims'}
         if 'integration_target_head' in progress:
             for field in ('integration_target_head', 'integration_candidate'):
                 require(re.fullmatch('[0-9a-f]{40}', progress.get(field, '')), 'invalid final integration identity')
@@ -855,7 +855,7 @@ def validate_context(context):
     require(isinstance(context, dict) and CONTEXT_FIELDS <= set(context) <=
             CONTEXT_FIELDS | {'successor_control', 'retired_handoffs'},
             'invalid context fields')
-    require(type(context['schema_version']) is int and context['schema_version'] == 6,
+    require(type(context['schema_version']) is int and context['schema_version'] == 7,
             'legacy_run_requires_original_runtime: control schema ' + str(context.get('schema_version')))
     require(len(json.dumps(context).encode()) <= MAX_BYTES, 'control history exceeds byte limit')
     if context.get('successor_control') is not None:
@@ -1018,7 +1018,7 @@ def select_configuration(evidence):
 
 def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     keys(request, {'schema_version', 'action', 'actor_ref', 'context', 'evidence'})
-    require(type(request['schema_version']) is int and request['schema_version'] == 6, 'legacy_run_requires_original_runtime: control request schema ' + str(request.get('schema_version')))
+    require(type(request['schema_version']) is int and request['schema_version'] == 7, 'legacy_run_requires_original_runtime: control request schema ' + str(request.get('schema_version')))
     context = copy.deepcopy(request['context'])
     validate_context(context)
     require(request['actor_ref'] == context['controller_ref'], 'only authenticated controller writes control checkpoints')
@@ -1148,7 +1148,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                 progress['state'] not in {'cancelled', 'validating'} and
                 progress.get('accepted_delivery') is None,
                 'plan revision requires the active original dispatcher')
-        require(request['schema_version'] == 6, 'legacy_run_requires_original_runtime: plan revision requires control schema 6')
+        require(request['schema_version'] == 7, 'legacy_run_requires_original_runtime: plan revision requires control schema 7')
         require(isinstance(evidence['revision_id'], str) and evidence['revision_id'], 'revision ID required')
         keys(evidence['classification'], {'kind', 'reference'})
         require(evidence['classification']['kind'] == 'internal' and
@@ -1239,7 +1239,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         progress.pop('accepted_delivery', None)
         progress.pop('expected_target_head', None)
         progress.update(state='implementing', candidate=None, tests=[])
-        context['schema_version'] = 6
+        context['schema_version'] = 7
         return {'ok': True, 'context': context, 'effects': [], 'plan_revision': record}
     elif action == 'native-dispatch-result':
         keys(evidence, {'attempt', 'status'})
@@ -1637,6 +1637,19 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                         execution['stopped'] = True
         return {'ok': True, 'context': context, 'effects': effects, 'recovery': recovery,
                 'remaining_paths': recovery['remaining_paths'], 'revalidate': recovery['revalidate']}
+    elif action == 'local-review':
+        keys(evidence, {'axis', 'candidate', 'result_ref', 'claim', 'claim_checkpoint'})
+        require(progress and progress['state'] == 'implementing', 'local review requires current implementation')
+        claim = evidence['claim']
+        keys(claim, {'claim_id', 'layer', 'ticket_id', 'slice_id', 'source_candidate', 'plan_authority', 'claim_ref', 'result_ref', 'reviewer_ref'})
+        require(claim['layer'] == 'local' and evidence['axis'] == 'local:' + claim['ticket_id'] + ':' + claim['slice_id'] and
+                claim['source_candidate'] == evidence['candidate'] and claim['result_ref'] == evidence['result_ref'] and
+                claim['plan_authority'] == progress['plan_authority'], 'local claim subject or authority changed')
+        require(claim['reviewer_ref'] != context['carrier']['ref'], 'Dispatcher cannot grant itself local review acceptance')
+        claims = progress.setdefault('review_claims', {})
+        require(len(claims) < 32 or evidence['axis'] in claims, 'state_capacity: current review window is full')
+        claims[evidence['axis']] = copy.deepcopy(claim)
+        return {'ok': True, 'context': context, 'effects': [], 'claim': claim}
     elif action == 'candidate-ready':
         keys(evidence, {'dispatcher_ref', 'attempt', 'commit', 'expected_target_head', 'binding',
                         'plan_digest', 'plan_authority', 'checks', 'source', 'clean',
@@ -1647,6 +1660,9 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             require(progress['candidate_evidence'] == evidence, 'candidate identity cannot change; invalidate explicitly')
             return {'ok': True, 'context': context, 'effects': [], 'acknowledged': True}
         require(progress['state'] == 'implementing', 'candidate is not implementing')
+        require(all('ticket:' + ticket['ticket_id'] in progress.get('review_claims', {})
+                    for ticket in progress['execution_authority']['execution_plan']['catalog']['tickets']),
+                'Ticket acceptance is required before candidate-ready')
         require(all(e['stopped'] and e['state'] in {'accepted', 'cancelled'} for e in progress['executions']), 'all executions must stop and be accepted')
         accepted = current_accepted_results(progress)
         if direct_implementation(progress):
@@ -2015,7 +2031,7 @@ def transition(request: dict[str, Any]) -> dict[str, Any]:
     evidence = copy.deepcopy(request['evidence'])
     require(isinstance(evidence, dict), 'evidence must be an object')
     action = request['action']
-    require(type(request['schema_version']) is int and request['schema_version'] == 6, 'legacy_run_requires_original_runtime: control request schema')
+    require(type(request['schema_version']) is int and request['schema_version'] == 7, 'legacy_run_requires_original_runtime: control request schema')
     require(request['actor_ref'] == context['controller_ref'], 'only authenticated controller writes control checkpoints')
     if action in {'archive', 'archive-result'}:
         result = archive_transition(context, action, evidence)

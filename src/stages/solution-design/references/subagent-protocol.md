@@ -179,7 +179,9 @@ The child is the complete stage owner. It must:
    publish them to the exact configured carrier.
 10. Record the complete downstream per-file manifest and rationale in those
     Spec/Ticket decisions; commit only clean-baseline, stage-owned local paths.
-    Put a complete versioned function-plan block in each implementation Ticket,
+    Put a complete `execution-plan-v2` block (`schema_version: 2`) in each implementation Ticket,
+    including `behavior_slices` with exact step IDs, ACs, verifications, read paths
+    and shared-state relationships (empty lists are explicit),
     or one inline Spec block when there are no Tickets. Trace every implementation
     path and verification to the committed plan before reporting readiness.
 11. Return a combined review in stepwise mode before publication; after its

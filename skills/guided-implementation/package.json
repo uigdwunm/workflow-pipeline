@@ -1,11 +1,11 @@
 {
-  "bundle_digest": "0cb1c68c0adc5cf3298d563bffb3746d80b59b5922686883f8cf9f34df2174c3",
+  "bundle_digest": "74b4e9ee3cc496ee8ca810bf4d4b31f1dc68a9ca2d2a7490bb1b2a1d488a5ef2",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
-    "control": 11,
+    "control": 12,
     "discussion_request": 1,
     "entry": "workflow-entry-v4",
-    "execution_plan": "execution-plan-v1",
+    "execution_plan": "execution-plan-v2",
     "handoff": "workflow-controller-v1",
     "ledger_read": [
       1,
@@ -68,7 +68,7 @@
     },
     "references/shared/guided-implementation/originating-task-protocol.md": {
       "mode": "0644",
-      "sha256": "79f12cc31049adc1301c18fa38fd3c179c2635be536da52af1a7a0f2831d7ffc"
+      "sha256": "9c0d4fd1085ba7c8d004820155617796021c39d94fdcb897891f1c1d7053a068"
     },
     "references/shared/guided-implementation/thread-settings-protocol.md": {
       "mode": "0644",
@@ -76,7 +76,7 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "f60c83546fb0e38eb4ca6fe0e453e15936c8dbd437d3d9f2f89d86d81bde82ed"
+      "sha256": "157eccbaae92e0c2fdedc71b30f7fc3ff06309d9f90076f5625b34ac9c791a9a"
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
@@ -84,7 +84,7 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "d6aa5dace112c9c4cb067a0ed843875e5b25b4da305bd16901eeee00ec587741"
+      "sha256": "90dbee7497b2ada643c9bd9bd6b6238d087543d6f0be92e0b271ea631432aac2"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -100,7 +100,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "84e495b2170329f69225e19a89df4922b2cf5ea7d616cb17d84295f39bf0a0e2"
+      "sha256": "a1ad9c0073b284fce4f796144e04e12818c76dc26d6fd7d57a1314ef1244dd96"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -164,7 +164,7 @@
     },
     "scripts/discussion_core/workflow_control.py": {
       "mode": "0644",
-      "sha256": "122f278856179ed2513e22bbf3662963c7ea5ec4fdd00a528e97ed5dae564fd7"
+      "sha256": "3c3b7b0fcbc2f94827dfb074051749a0fea3bc294cce27dd4f8f2e4cd8672434"
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
@@ -176,7 +176,7 @@
     },
     "scripts/execution_plan.py": {
       "mode": "0644",
-      "sha256": "f1f79b27f4fcbcfe584e7b120cf0adb6525f4ef867fc4e4b3c8998e23e569712"
+      "sha256": "cbb7df8f55e0a6e92b156918a47480bdcb88208361ad744261218a17ccc33dd0"
     },
     "scripts/foreground_host.py": {
       "mode": "0644",
@@ -197,6 +197,10 @@
     "scripts/requirement_prepare.py": {
       "mode": "0644",
       "sha256": "0eb3eeff016e1d7605127dac177ab8e80ad0d1617b3e517c24992b3355da8112"
+    },
+    "scripts/review_evidence.py": {
+      "mode": "0644",
+      "sha256": "f1914a4ae8f7dcb74e56511d0eee8b8d95095bbd1a6d1f80dfab7d750038d216"
     },
     "scripts/skill_preflight.py": {
       "mode": "0644",
@@ -236,15 +240,15 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "6c31bf637547600b49559f446d57813f0833bdb5ec746c3cddf8afcd7ff0efa9"
+      "sha256": "c4ab65827f09f3502bd41bc161c7d06de37ca614931e0bf266e83a3570cc113a"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "9256a42487d0d859672707fe6f59425c9dcee7a29da42fcd3f675517e3feac13"
+      "sha256": "bb540653ab889ae9bfabbf02e08e8971521b7af3193efd53eb2fdce73b655dd8"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "8811d16266cb210a9d027f9b896bb924790fb21ede5313e5569044ea2daf262a"
+      "sha256": "91a18be1c378c08b9d9c410a82340c6215fa98ed903bcb9c0f662bcb14cbda36"
     },
     "scripts/workflow_stage_result.schema.json": {
       "mode": "0644",
@@ -307,6 +311,7 @@
     "shared/scripts/model_inventory.py",
     "shared/scripts/requirement_delivery.py",
     "shared/scripts/requirement_prepare.py",
+    "shared/scripts/review_evidence.py",
     "shared/scripts/skill_preflight.py",
     "shared/scripts/stage_dispatch.py",
     "shared/scripts/stage_handoff.py",

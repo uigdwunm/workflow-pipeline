@@ -94,6 +94,24 @@ def file_fingerprint(repository, relative):
     return hashlib.sha256(json.dumps([content, mode]).encode()).hexdigest()
 
 
+
+def review_fingerprints(repository, revision, paths):
+    """Exact tree entries, including absence and symlink identity, for read-only review."""
+    values = {}
+    for relative in sorted(set(paths)):
+        record = git(repository, 'ls-tree', '-z', commit(revision), '--', path(relative))
+        if not record:
+            values[relative] = {'type': 'absent', 'mode': None, 'sha256': None}
+            continue
+        header, name = record.rstrip(b'\0').split(b'\t', 1)
+        mode, kind, blob = header.decode().split(' ')
+        require(name.decode() == relative and kind == 'blob' and mode in {'100644', '100755', '120000'},
+                'review source must be one exact file or symlink tree entry')
+        body = git(repository, 'cat-file', 'blob', blob)
+        values[relative] = {'type': 'symlink' if mode == '120000' else 'file',
+                            'mode': mode, 'sha256': hashlib.sha256(body).hexdigest()}
+    return values
+
 def committed_fingerprint(repository, revision, relative):
     record = git(repository, 'ls-tree', '-z', commit(revision), '--', path(relative))
     if not record:
@@ -639,6 +657,61 @@ def verified_transition(payload):
     progress = context.get('handoff_progress')
     if progress and 'git_baseline_commit' in progress:
         require(payload['baseline'] == progress['git_baseline_commit'], 'frozen Git baseline changed')
+    if action == 'local-review':
+        import workflow_state_store as store_module
+        import review_evidence
+        checkpoint_path = evidence.get('claim_checkpoint')
+        require(isinstance(checkpoint_path, str) and Path(checkpoint_path).is_absolute() and
+                str(Path(checkpoint_path).resolve()) == checkpoint_path,
+                'local claim requires its canonical Controller checkpoint')
+        store = store_module.open_store(checkpoint_path)
+        current = store.open_current()
+        metadata = current.root['metadata']
+        require(metadata['stage'] == 3 and metadata['controller_ref'] == context['controller_ref'] and
+                metadata['binding'] == progress['binding'], 'local claim belongs to another Controller')
+        original = store.read_subject(current, metadata['stage_subject']).value['control']
+        if original.get('discussion') is None:
+            recorded_context = original['context']
+        else:
+            recorded_context, _ = store_module.open_store(original['store_ref']['ledger_path']).read_ledger_control(original['store_ref'])
+        require(recorded_context == context, 'local claim requires the current original C authority')
+        view = evidence['claim']
+        claim = store.read_evidence(view['claim_ref'], run_id=current.run_id,
+            maximum=store_module.SUBJECT_LIMIT)['value']['review_claim']
+        review_evidence.validate_claim(claim)
+        require(review_evidence.claim_view(claim, view['claim_ref']) == view and
+                claim['run_id'] == current.run_id and claim['package_digest'] == store_module.entry.digest(metadata['packages']) and
+                claim['plan_authority'] == progress['plan_authority'], 'local claim identity or package changed')
+        ticket = store.read_subject(current, 'ticket:' + claim['ticket_id'] + ':0').value
+        slot = ticket.get('review_activity', {}).get(evidence['axis'])
+        require(slot is not None and slot['stopped'] and slot['start']['applied'] and
+                (slot.get('query') is None or slot['query']['resolved']) and
+                slot['candidate'] == claim['source_candidate'] == evidence['candidate'] and
+                slot['ref'] == claim['reviewer_ref'] and slot['action_id'] == claim['native_stop']['action_id'],
+                'local claim lacks its committed original native review slot')
+        stop = store.read_evidence(claim['native_stop_ref'], run_id=current.run_id)['value']['native_review_stop']
+        require(stop in slot['receipts'] and stop['response_ref'] == evidence['result_ref'] and
+                all(stop[key] == claim['native_stop'][key] for key in ('adapter', 'call_ref', 'response_ref', 'status', 'ref')),
+                'local claim stop evidence does not match its original receipt')
+        projection = slot['subject']
+        require(all(claim[key] == value for key, value in projection.items() if key != 'verification_refs') and
+                claim['verification']['ids'] == projection['verification_refs'] and
+                claim['verification']['checks'] == slot['prepare']['verification']['checks'],
+                'local claim changed its original contract, reads or verification')
+        raw = stop['raw']
+        if raw.get('format') == 'review-raw-reference-v1':
+            require(raw.get('truncated') is False, 'local review result is incomplete')
+            raw = store.read_raw_evidence(raw['evidence_ref'], run_id=current.run_id)
+        report = raw.get('review')
+        require(isinstance(report, dict) and report.get('status') == 'accepted' and report.get('findings') == [] and
+                report.get('checks') == claim['verification']['checks'] and
+                report.get('ac_refs') == claim['ac_refs'] and
+                set(report.get('read_paths', [])) == set(claim['read_fingerprints']),
+                'original native reviewer did not accept this exact local contract')
+        owned, reads = claim['owned_fingerprints'], claim['read_fingerprints']
+        actual = review_fingerprints(repository, evidence['candidate'], set(owned) | set(reads))
+        require(actual == owned | reads and snapshot(repository)['head'] == evidence['candidate'] and
+                not git(repository, 'status', '--porcelain'), 'local reviewed source snapshot changed')
     if action == 'receive':
         verify_delivery(repository, payload['baseline'], evidence)
     if action == 'plan-revision-activate':
