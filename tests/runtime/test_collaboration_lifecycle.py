@@ -508,7 +508,44 @@ class CollaborationLifecycleTests(unittest.TestCase):
                 'receipt': {'controller_ref': 'task', 'reference': 'controller:merged'}})
             if pending_execution:
                 f.invoke('lifecycle-state', self.snapshot(inventory()))
+                before = f.checkpoint.read_bytes()
+                for mutation, code in (('actor', 'authority_missing'), ('parent', 'identity_mismatch'),
+                                       ('unregistered', 'identity_mismatch'), ('unaccepted', 'result_incomplete')):
+                    wrong = copy.deepcopy(execution_close)
+                    if mutation == 'actor':
+                        wrong['actor_ref'] = 'task'
+                    elif mutation == 'parent':
+                        wrong['binding']['raw']['thread']['id'] = 'task'
+                    else:
+                        wrong['ref'] = '/root/never-accepted' if mutation == 'unregistered' else '/root/closure'
+                    with self.subTest(mutation=mutation):
+                        with self.assertRaises(progress.entry.PreparationError) as error:
+                            f.invoke('native-finalize', wrong)
+                        self.assertEqual(error.exception.code, code)
+                        self.assertEqual(f.checkpoint.read_bytes(), before)
+                wrong_prior = progress.handoff.unseal(original_predecessor_ref)
+                wrong_prior['accepted_digest'] = '0' * 64
+                with self.assertRaises(progress.entry.PreparationError):
+                    progress.read_implementation_delivery(f.checkpoint, progress.handoff.seal(wrong_prior))
+                owner_ref = original_delivery['native_owner_refs']['/root/dispatcher/executor']
+                original_owner = store.read_evidence(owner_ref, run_id=accepted_current.run_id)['value']
+                self.assertEqual((original_owner['owner_ref'], original_owner['parent_thread'],
+                                  original_owner['delivery_digest']),
+                                 ('/root/dispatcher', 'dispatcher-runtime', accepted_record['acceptance']['digest']))
+                owner_object = store.directory / 'objects' / owner_ref['sha256'][:2] / owner_ref['sha256'][2:4] / owner_ref['sha256']
+                owner_bytes = owner_object.read_bytes()
+                try:
+                    owner_object.write_bytes(b'corrupted original owner proof')
+                    with self.assertRaises(progress.entry.PreparationError) as error:
+                        f.invoke('native-finalize', execution_close)
+                    self.assertEqual(error.exception.code, 'state_object_corrupt')
+                    self.assertEqual(f.checkpoint.read_bytes(), before)
+                finally:
+                    owner_object.write_bytes(owner_bytes)
                 finish = f.invoke('native-finalize', execution_close)['next_action']
+                retirement = next(item for item in f.state()['native_finalizations'] if item['ref'] == execution_close['ref'])
+                self.assertEqual(retirement['delivery_digest'], accepted_record['acceptance']['digest'])
+                self.assertEqual(retirement['thread_id'], 'executor-thread')
                 with patch.dict(f.settings, thread_id='dispatcher-runtime'):
                     request = f.inherited_execution_input()
                     control = copy.deepcopy(f.state()['control'])

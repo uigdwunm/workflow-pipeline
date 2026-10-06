@@ -695,6 +695,44 @@ def freeze_native_source_index(state, store, current, inherited=()):
     return store.write_object(current.run_id, 'native-source-index', index)
 
 
+def freeze_implementation_native_owners(state, store, current, prior):
+    """Keep accepted owner facts after allocations leave the active read set."""
+    references = copy.deepcopy(prior['native_owner_refs']) if prior else {}
+
+    def accepted_owner(ref, owner, thread, digest, stopped):
+        require(stopped is True, 'handoff_not_ready', 'native owner requires original stopped business work')
+        references[ref] = store.write_object(current.run_id, 'evidence', {
+            'kind': 'accepted-native-owner-v1', 'ref': ref, 'owner_ref': owner,
+            'parent_thread': thread, 'delivery_digest': digest, 'stopped': True,
+            'status': 'accepted'})
+
+    accepted_owner(state['accepted']['role_ref'], state['handoff']['controller_ref'],
+        state['handoff']['expected_entry']['actor']['thread_id'], state['accepted']['digest'],
+        state['host']['status'] == 'stopped')
+    slots = [slot for history in reversed(state.get('plan_revision_allocation_history', []))
+             for slot in history['allocations'].values()]
+    slots.extend(state.get('allocations', {}).values())
+    for slot in slots:
+        record = handoff.unseal(slot['record']) if slot.get('record') else {}
+        accepted = record.get('acceptance')
+        if accepted and record['status'] == 'accepted':
+            require(accepted['status'] == 'accepted' and record['receipts'] and
+                    record['receipts'][-1]['status'] == 'stopped' and
+                    record['receipts'][-1]['ref'] == accepted['role_ref'],
+                    'handoff_not_ready', 'allocation owner lost original acceptance or stop proof')
+            accepted_owner(accepted['role_ref'], slot['owner_ref'],
+                handoff.resolve_allocation(slot['handoff'])['expected_entry']['actor']['thread_id'],
+                accepted['digest'], True)
+    checkpoint = state['control']['context']['handoff_progress']
+    for group in [*reversed(state.get('review_history', [])), state.get('review_activity', {})]:
+        for slot in group.values():
+            if slot and slot.get('ref') and slot.get('stopped') and checkpoint.get('state') in {
+                    'final-validation-pending', 'validating', 'final-validation-failed', 'deliverable', 'completed'}:
+                accepted_owner(slot['ref'], slot['originating_ref'], slot['originating_ref'],
+                    entry.digest(slot['receipts']), True)
+    return references
+
+
 def implementation_delivery(state, path, store, current):
     """Freeze only accepted implementation facts; original reports remain exact refs."""
     saved, accepted = state['handoff'], state['accepted']
@@ -800,6 +838,7 @@ def implementation_delivery(state, path, store, current):
             'instance': state['lifecycle_snapshot']['instance'],
             'native_event_sequence': state['lifecycle_snapshot'].get('sequence')},
         'native_refs': sorted(owner.native_refs()),
+        'native_owner_refs': freeze_implementation_native_owners(state, store, current, recovery_prior),
         'native_source_index_ref': source_index_ref,
         'git_evidence_ref': evidence(git_proof),
         # Recovery consumes contracts and scalar authority facts, never an old stage/control.
@@ -916,7 +955,7 @@ def read_implementation_delivery(path, reference=None, *, store=None, current=No
         'controller_ref', 'packages', 'handoff', 'accepted', 'payload', 'review_ref', 'verification_ref',
         'execution_authority', 'initial_authority_digest', 'authority_lineage', 'dispatcher',
         'dispatch_attempt', 'control_revision', 'design_predecessor', 'phase_ref', 'stop_ref',
-        'git_evidence_ref', 'recovery_ref', 'stopped', 'phase_complete', 'native_refs', 'native_source_index_ref', 'stop_transport'})
+        'git_evidence_ref', 'recovery_ref', 'stopped', 'phase_complete', 'native_refs', 'native_owner_refs', 'native_source_index_ref', 'stop_transport'})
     require(type(value['source_revision']) is int and value['source_revision'] >= 0 and
             isinstance(value['authority_lineage'], list) and len(value['authority_lineage']) <= 33,
             'handoff_not_ready', 'implementation delivery schema changed')
@@ -956,6 +995,11 @@ def read_implementation_delivery(path, reference=None, *, store=None, current=No
     require(value['dispatcher']['ref'] == value['accepted']['role_ref'] and
             value['dispatcher']['attempt'] == value['dispatch_attempt'],
             'handoff_not_ready', 'original Dispatcher identity changed')
+    require(isinstance(value['native_owner_refs'], dict) and
+            value['native_owner_refs'].keys() <= set(value['native_refs']),
+            'handoff_not_ready', 'native owner facts differ from original registered identities')
+    for owner_ref in value['native_owner_refs'].values():
+        validate_recovery_publication_ref(owner_ref, current.run_id)
     lineage = value['initial_authority_digest']
     for item in value['authority_lineage']:
         require(item['old_authority_digest'] == lineage and item['state'] in {'activated', 'rejected'} and
@@ -2758,6 +2802,19 @@ class Progress:
             prior = read_design_predecessor(self.state['design_predecessor'], self.path)
             if prior['accepted']['role_ref'] == ref:
                 return prior['controller_ref'], prior['accepted']['digest'], prior['handoff']['expected_entry']['actor']['thread_id']
+        predecessor = self.state.get('implementation_predecessor') or self.state.get('recovery_predecessor')
+        if predecessor is not None:
+            prior, current, store = read_implementation_delivery(self.path, predecessor)
+            reference = prior['native_owner_refs'].get(ref)
+            if reference is not None:
+                facts = store.read_evidence(reference, run_id=current.run_id, kind='evidence')['value']
+                entry.fields(facts, {'kind', 'ref', 'owner_ref', 'parent_thread', 'delivery_digest', 'stopped', 'status'})
+                require(facts['kind'] == 'accepted-native-owner-v1' and facts['ref'] == ref and
+                        facts['status'] == 'accepted' and facts['stopped'] is True and
+                        isinstance(facts['delivery_digest'], str) and re.fullmatch('[0-9a-f]{64}', facts['delivery_digest']),
+                        'result_incomplete', 'original native business acceptance or stop proof changed')
+                entry.nonempty(facts['owner_ref']); entry.nonempty(facts['parent_thread'])
+                return facts['owner_ref'], facts['delivery_digest'], facts['parent_thread']
         for saved in [self.state, *reversed(self.state.get('history', []))]:
             accepted = saved.get('accepted')
             if accepted and accepted['role_ref'] == ref and saved.get('host', {}).get('status') == 'stopped':
