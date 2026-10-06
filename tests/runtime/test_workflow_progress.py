@@ -8,6 +8,7 @@ import io
 import os
 import subprocess
 import hashlib
+import errno
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -58,7 +59,7 @@ class ProgressTests(transfer.StageTransferTests):
         current = store.open_current()
         return store.read_subject(current, 'ticket:' + ticket_id + ':0').value['allocations'][allocation_id]
 
-    def retired_fixture(self):
+    def retired_fixture(self, carrier_ref='old-task'):
         import test_workflow_control
         helper = test_workflow_control.WorkflowControlTests()
         context = helper.context()
@@ -74,14 +75,14 @@ class ProgressTests(transfer.StageTransferTests):
             'archive_ref': None, 'gate_open': True})
         attempt = planned['plan']['plan_id']
         apply('decide', {'plan_id': attempt, 'intent': 'confirm'})
-        apply('creation-result', {'status': 'ready', 'ref': 'old-task', 'attempt': attempt})
-        received = apply('receive', {'delivery_id': 'old-delivery', 'source_ref': 'old-task', 'attempt': attempt,
+        apply('creation-result', {'status': 'ready', 'ref': carrier_ref, 'attempt': attempt})
+        received = apply('receive', {'delivery_id': 'old-delivery', 'source_ref': carrier_ref, 'attempt': attempt,
             'requirement_identity': context['requirement_identity'], 'commit': 'b' * 40,
             'verified_commit_hash': context['requirement_identity']['sha256']})
         apply('accept', {'delivery_digest': received['delivery_digest']})
         ready = apply('successor-ready', {'ref': 'native:designer', 'stage': 2, 'role': 'solution-designer',
             'input_digest': received['delivery_digest'], 'binding_verified': True, 'activated': False,
-            'confirmed': True, 'archive_ref': 'old-task', 'takeover_proof': test_workflow_control.takeover_proof('old-task', attempt)})
+            'confirmed': True, 'archive_ref': carrier_ref, 'takeover_proof': test_workflow_control.takeover_proof(carrier_ref, attempt)})
         self.context['retired_handoffs'] = context['retired_handoffs']
         evidence = context['retired_handoffs'][ready['handoff_id']]['successor']
         request = {'action': 'successor-ready', 'evidence': evidence,
@@ -119,6 +120,10 @@ class ProgressTests(transfer.StageTransferTests):
         intent = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
             'receipt': {'controller_ref': 'task', 'reference': 'automatic'}})
         effect = intent['next_action']['result']['effects'][0]
+        pins = self.state()['control_transactions']
+        original_pin = next(pin for pin in pins.values() if pin.get('reserve_owner'))
+        reserve = self.checkpoint.with_name(self.checkpoint.name + '.state') / 'reserves' / 'business' / hashlib.sha256(original_pin['reserve_action'].encode()).hexdigest()
+        self.assertTrue(reserve.exists())
         self.invoke('control', self.archive_receipt(effect, 'issued'))
         with patch.object(progress.dispatch, 'checkpoint', side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
@@ -127,6 +132,9 @@ class ProgressTests(transfer.StageTransferTests):
         predecessor = self.state()['accepted']
         self.context = self.context_for(3)
         self.begin('continuous', self.input_for(3, predecessor))
+        self.assertTrue(reserve.exists(), 'successor start retains the exact original archive capacity')
+        self.assertTrue(any(pin.get('reserve_action') == original_pin['reserve_action']
+            for pin in self.state()['control_transactions'].values()))
         before = copy.deepcopy(self.state()['control']['context'])
         history = copy.deepcopy(self.state()['history'])
         late = self.invoke('control', self.archive_receipt(effect, 'unknown'))
@@ -156,6 +164,7 @@ class ProgressTests(transfer.StageTransferTests):
         with patch.object(Path, 'open', opened):
             archived_query = self.invoke('control', self.archive_receipt(query, 'archived'))
         self.assertTrue(archived_query['next_action']['result']['ok'], archived_query)
+        self.assertFalse(reserve.exists(), 'exact committed archived readback settles the inherited original slot')
         self.assertLessEqual(sum(size for _, size in reads), progress.state_store.READ_LIMIT)
         self.assertFalse(any('/archives/' in path for path, _ in reads), reads)
         store = progress.state_store.StateStore(self.checkpoint)
@@ -200,6 +209,332 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(fresh['error']['code'], 'host_evidence_missing')
         self.assertEqual(self.state()['control']['context'], saved['control']['context'])
 
+    def test_archive_reservation_exists_before_dispatch_and_survives_pending_effect(self):
+        handoff_id = self.retired_fixture()
+        self.begin()
+        store = progress.state_store.StateStore(self.checkpoint)
+        business = store.directory / 'reserves' / 'business'
+        before = {path.name for path in business.iterdir()}
+        snapshots = []
+        original = progress.dispatch.checkpoint
+        def observed(*args, **kwargs):
+            snapshots.append({path.name: path.stat().st_size for path in business.iterdir()})
+            return original(*args, **kwargs)
+        request = {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+            'receipt': {'controller_ref': 'task', 'reference': 'reserved-archive'}}
+        with patch.object(progress.dispatch, 'checkpoint', side_effect=observed):
+            result = self.invoke('control', request)
+        self.assertEqual(len(result['next_action']['result']['effects']), 1, result)
+        self.assertEqual(len(snapshots), 1)
+        reserved = set(snapshots[0]) - before
+        self.assertEqual(len(reserved), 1, 'archive dispatch needs its own durable receipt capacity')
+        self.assertEqual(snapshots[0][next(iter(reserved))], 16 * 1024 * 1024)
+        archive_reserve = business / next(iter(reserved))
+        if hasattr(archive_reserve.stat(), 'st_blocks'):
+            self.assertGreaterEqual(archive_reserve.stat().st_blocks * 512, 16 * 1024 * 1024)
+        self.assertTrue(reserved <= {path.name for path in business.iterdir()},
+            'returning an external intent cannot settle its original reservation')
+        effect = result['next_action']['result']['effects'][0]
+        self.invoke('control', self.archive_receipt(effect, 'issued'))
+        self.invoke('control', self.archive_receipt(effect, 'unknown'))
+        self.assertTrue(reserved <= {path.name for path in business.iterdir()})
+        if os.environ.get('T01_ARCHIVE_RESERVATION_EVIDENCE_PATH'):
+            current = progress.state_store.StateStore(self.checkpoint).open_current()
+            Path(os.environ['T01_ARCHIVE_RESERVATION_EVIDENCE_PATH']).write_text(json.dumps({
+                'before_dispatch_reserves': snapshots[0],
+                'original_archive_reserve': {'path_digest': archive_reserve.name,
+                    'usable_bytes': archive_reserve.stat().st_size,
+                    'allocated_bytes': archive_reserve.stat().st_blocks * 512 if hasattr(archive_reserve.stat(), 'st_blocks') else None},
+                'operation': effect, 'pending_transactions': self.state()['control_transactions'],
+                'unknown_root_reference': current.reference}, indent=2) + '\n')
+        replay = self.invoke('control', request)
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertEqual(replay['next_action']['result']['effects'], [])
+        self.assertTrue(reserved <= {path.name for path in business.iterdir()})
+
+    def test_archive_reservation_rejects_full_business_window_before_dispatch(self):
+        handoff_id = self.retired_fixture()
+        self.begin()
+        store = progress.state_store.StateStore(self.checkpoint)
+        business = store.directory / 'reserves' / 'business'
+        self.assertEqual(len(list(business.iterdir())), 1)
+        for number in range(3):
+            store.reserve('other-original-business-' + str(number))
+        before = self.checkpoint.read_bytes()
+        original = progress.dispatch.checkpoint
+        calls = []
+        def observed(*args, **kwargs):
+            calls.append(args)
+            return original(*args, **kwargs)
+        with patch.object(progress.dispatch, 'checkpoint', side_effect=observed):
+            result = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+                'receipt': {'controller_ref': 'task', 'reference': 'full-window'}})
+        self.assertEqual(calls, [], 'a fifth business intent must never reach archive dispatch')
+        self.assertEqual(result['next_action']['result']['error']['code'], 'state_capacity', result)
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertEqual(self.state()['control']['context']['retired_handoffs'][handoff_id]['operations'], [])
+        self.assertEqual(len(list(business.iterdir())), 4)
+        if all(hasattr(path.stat(), 'st_blocks') for path in business.iterdir()):
+            self.assertGreaterEqual(sum(path.stat().st_blocks * 512 for path in business.iterdir()), 64 * 1024 * 1024)
+
+    def test_archive_reservation_query_and_stop_use_recovery_until_exact_completion(self):
+        handoff_id = self.retired_fixture()
+        self.begin()
+        self.invoke('observe', self.observation())
+        request = {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+            'receipt': {'controller_ref': 'task', 'reference': 'original-business-archive'}}
+        effect = self.invoke('control', request)['next_action']['result']['effects'][0]
+        self.invoke('control', self.archive_receipt(effect, 'issued'))
+        self.invoke('control', self.archive_receipt(effect, 'unknown'))
+        store = progress.state_store.StateStore(self.checkpoint)
+        business = store.directory / 'reserves' / 'business'
+        recovery = store.directory / 'reserves' / 'recovery'
+        business_before = {path.name: path.stat().st_size for path in business.iterdir()}
+        self.assertEqual(len(business_before), 1, 'unknown archive retains its business slot')
+        ordinary_limit = progress.state_store.RUN_LIMIT - progress.state_store.BUSINESS_RESERVE - progress.state_store.RECOVERY_RESERVE
+        progress.state_store.atomic_write(store.directory / 'usage.json', progress.state_store.encode({'allocated': ordinary_limit}))
+        query = self.invoke('control', {**request, 'receipt': {
+            'controller_ref': 'task', 'reference': 'exact-original-query'}})['next_action']['result']['effects'][0]
+        self.assertEqual(query['operation'], 'read-archive-state')
+        self.assertEqual({path.name: path.stat().st_size for path in business.iterdir()}, business_before)
+        self.assertEqual(len(list(recovery.iterdir())), 1)
+        query_reserve = next(recovery.iterdir())
+        self.assertGreater(query_reserve.stat().st_size, 0)
+        stopped = self.invoke('pause')
+        self.assertEqual(stopped['next_action']['operation'], 'stop-host', stopped)
+        self.assertEqual({path.name: path.stat().st_size for path in business.iterdir()}, business_before)
+        self.assertEqual(len(list(recovery.iterdir())), 2)
+        self.invoke('control', self.archive_receipt(query, 'issued'))
+        self.assertTrue(query_reserve.exists())
+        completed = self.archive_receipt(query, 'archived')
+        result = self.invoke('control', completed)
+        self.assertTrue(result['next_action']['result']['ok'], result)
+        self.assertFalse(query_reserve.exists())
+        self.assertEqual(len(list(business.iterdir())), 0, 'exact archive readback releases the original archive slot')
+        before = self.checkpoint.read_bytes()
+        usage = (store.directory / 'usage.json').read_bytes()
+        replay = self.invoke('control', completed)
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertEqual(replay['next_action']['result']['effects'], [])
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertEqual((store.directory / 'usage.json').read_bytes(), usage)
+        changed = copy.deepcopy(completed)
+        changed['evidence']['status'] = 'unknown'
+        conflict = self.invoke('control', changed)
+        self.assertEqual(conflict['next_action']['result']['error']['code'], 'receipt_conflict', conflict)
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertEqual((store.directory / 'usage.json').read_bytes(), usage)
+
+    def test_archive_reservation_capacity_failure_cannot_dispatch_new_business(self):
+        handoff_id = self.retired_fixture()
+        self.begin()
+        store = progress.state_store.StateStore(self.checkpoint)
+        ordinary_limit = progress.state_store.RUN_LIMIT - progress.state_store.BUSINESS_RESERVE - progress.state_store.RECOVERY_RESERVE
+        progress.state_store.atomic_write(store.directory / 'usage.json', progress.state_store.encode({'allocated': ordinary_limit}))
+        before = self.checkpoint.read_bytes()
+        original = progress.dispatch.checkpoint
+        calls = []
+        def observed(*args, **kwargs):
+            calls.append(args)
+            return original(*args, **kwargs)
+        with patch.object(progress.dispatch, 'checkpoint', side_effect=observed):
+            result = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+                'receipt': {'controller_ref': 'task', 'reference': 'ordinary-capacity-full'}})
+        self.assertEqual(calls, [])
+        self.assertEqual(result['next_action']['result']['error']['code'], 'state_capacity', result)
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertEqual(self.state()['control']['context']['retired_handoffs'][handoff_id]['operations'], [])
+
+    def test_archive_reservation_terminal_receipt_faults_release_only_after_commit_proof(self):
+        checkpoint = self.checkpoint
+        for after_root in (False, True):
+            with self.subTest(after_root=after_root):
+                self.checkpoint = checkpoint.with_name('reserved-terminal-' + str(after_root) + '.json')
+                handoff_id = self.retired_fixture()
+                self.begin()
+                request = {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+                    'receipt': {'controller_ref': 'task', 'reference': 'terminal-archive'}}
+                effect = self.invoke('control', request)['next_action']['result']['effects'][0]
+                self.invoke('control', self.archive_receipt(effect, 'issued'))
+                store = progress.state_store.StateStore(self.checkpoint)
+                before_reserves = {path.name for path in (store.directory / 'reserves' / 'business').iterdir()}
+                self.assertEqual(len(before_reserves), 2)
+                completed = self.archive_receipt(effect, 'archived')
+                replace = os.replace
+                interrupted_once = False
+                def interrupted(source, target):
+                    nonlocal interrupted_once
+                    target = Path(target)
+                    if interrupted_once:
+                        return replace(source, target)
+                    if target == self.checkpoint and not after_root:
+                        envelope = json.loads(Path(source).read_bytes())
+                        digest = envelope['current']['sha256']
+                        root = json.loads((store.directory / 'objects' / digest[:2] / digest[2:4] / digest).read_bytes())['value']
+                        if root.get('receipts'):
+                            interrupted_once = True
+                            raise KeyboardInterrupt('terminal receipt before archive root')
+                    elif target.parent.name == 'commits' and after_root:
+                        if json.loads(Path(source).read_bytes()).get('receipts'):
+                            interrupted_once = True
+                            raise KeyboardInterrupt('terminal root before archive proof')
+                    return replace(source, target)
+                with patch.object(os, 'replace', interrupted):
+                    with self.assertRaises(KeyboardInterrupt):
+                        self.invoke('control', completed)
+                self.assertEqual({path.name for path in (store.directory / 'reserves' / 'business').iterdir()}, before_reserves,
+                    'a fault must never release before the committed receipt membership is proven')
+                before = self.checkpoint.read_bytes()
+                recovered = self.invoke('control', completed)
+                self.assertTrue(recovered['next_action']['result']['ok'], recovered)
+                self.assertEqual(recovered['acknowledged'], after_root)
+                self.assertEqual(self.state()['control']['context']['retired_handoffs'][handoff_id]['archive_status'], 'archived')
+                self.assertEqual(len(list((store.directory / 'reserves' / 'business').iterdir())), 1)
+                if after_root:
+                    self.assertEqual(self.checkpoint.read_bytes(), before)
+                saved = self.checkpoint.read_bytes()
+                replay = self.invoke('control', completed)
+                self.assertTrue(replay['acknowledged'], replay)
+                self.assertEqual(replay['next_action']['result']['effects'], [])
+                self.assertEqual(self.checkpoint.read_bytes(), saved)
+                self.assertEqual(len(self.state()['control']['context']['retired_handoffs'][handoff_id]['operations']), 1)
+
+    def test_archive_reservation_inline_recovery_keeps_original_unknown_operation(self):
+        handoff_id = self.retired_fixture()
+        self.accepted_implementation_for_closure()
+        request = {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+            'receipt': {'controller_ref': 'task', 'reference': 'archive-before-inline-recovery'}}
+        effect = self.invoke('control', request)['next_action']['result']['effects'][0]
+        self.invoke('control', self.archive_receipt(effect, 'issued'))
+        self.invoke('control', self.archive_receipt(effect, 'unknown'))
+        original_pin = next(pin for pin in self.state()['control_transactions'].values() if pin.get('reserve_owner'))
+        store = progress.state_store.StateStore(self.checkpoint)
+        reserve = store.directory / 'reserves' / 'business' / hashlib.sha256(original_pin['reserve_action'].encode()).hexdigest()
+        original = copy.deepcopy(self.state())
+        recovery_input, failed_publication = self.prepare_final_recovery(original)
+        self.assertTrue(reserve.exists())
+        self.recover_final_integration(original, recovery_input, failed_publication)
+        self.assertTrue(reserve.exists(), 'inline recovery retains the unknown original external operation')
+        retained = next(pin for pin in self.state()['control_transactions'].values() if pin.get('reserve_owner'))
+        self.assertEqual(retained, original_pin)
+        self.assertEqual(retained['operation_id'], effect['operation_id'])
+        dispatcher = copy.deepcopy(self.state()['dispatch'])
+        replay = self.invoke('control', request)
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertEqual(replay['next_action']['result']['effects'], [])
+        query = self.invoke('control', {**request, 'receipt': {
+            'controller_ref': 'task', 'reference': 'inline-recovery-exact-query'}})['next_action']['result']['effects'][0]
+        self.assertEqual(query['operation'], 'read-archive-state')
+        self.assertTrue(reserve.exists())
+        self.invoke('control', self.archive_receipt(query, 'issued'))
+        self.invoke('control', self.archive_receipt(query, 'archived'))
+        self.assertFalse(reserve.exists())
+        self.assertEqual(self.state()['dispatch'], dispatcher)
+        self.assertEqual([operation['operation_id'] for operation in self.state()['control']['context']['retired_handoffs'][handoff_id]['operations']],
+            [effect['operation_id'], query['operation_id']])
+
+    def test_archive_reservation_enospc_and_caught_exception_preserve_original_identity(self):
+        handoff_id = self.retired_fixture()
+        self.begin()
+        store = progress.state_store.StateStore(self.checkpoint)
+        business = store.directory / 'reserves' / 'business'
+        before = self.checkpoint.read_bytes()
+        reserves_before = {path.name for path in business.iterdir()}
+        original_dispatch = progress.dispatch.checkpoint
+        calls, effects = [], []
+        def observed(*args, **kwargs):
+            calls.append(args)
+            result = original_dispatch(*args, **kwargs)
+            effects.extend(result[0]['effects'])
+            return result
+        replace = os.replace
+        def no_space(source, target):
+            if Path(target).parent == business:
+                raise OSError(errno.ENOSPC, 'controlled archive reservation allocation failure')
+            return replace(source, target)
+        request = {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+            'receipt': {'controller_ref': 'task', 'reference': 'original-error-archive'}}
+        with patch.object(os, 'replace', no_space), patch.object(progress.dispatch, 'checkpoint', side_effect=observed):
+            rejected = self.invoke('control', request)
+        self.assertFalse(rejected['next_action']['result']['ok'], rejected)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertEqual({path.name for path in business.iterdir()}, reserves_before)
+        def lost_response(*args, **kwargs):
+            observed(*args, **kwargs)
+            raise transfer.entry.PreparationError('archive_response_lost', 'controlled original response loss')
+        with patch.object(progress.dispatch, 'checkpoint', side_effect=lost_response):
+            failed = self.invoke('control', request)
+        self.assertEqual(failed['next_action']['result']['error']['code'], 'archive_response_lost', failed)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(effects), 1)
+        pending = self.state()['control_transactions'][transfer.entry.digest(request)]
+        self.assertEqual(pending['request'], request)
+        reserve = business / hashlib.sha256(pending['reserve_action'].encode()).hexdigest()
+        self.assertEqual(reserve.stat().st_size, 16 * 1024 * 1024,
+            'normal exception exit cannot collect an unknown original invocation reserve')
+        recovered = self.invoke('control', request)
+        self.assertEqual(recovered['next_action']['result']['effects'], effects)
+        self.assertTrue(reserve.exists())
+        self.assertEqual(self.state()['control']['context']['retired_handoffs'][handoff_id]['operations'][0]['operation_id'], effects[0]['operation_id'])
+        replay = self.invoke('control', request)
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertEqual(replay['next_action']['result']['effects'], [])
+        self.assertEqual(len(self.state()['control']['context']['retired_handoffs'][handoff_id]['operations']), 1)
+
+    def test_archive_reservation_does_not_block_unrelated_native_finalization(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        handoff_id = self.retired_fixture()
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        request = {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+            'receipt': {'controller_ref': 'task', 'reference': 'unrelated-old-task-archive'}}
+        effect = self.invoke('control', request)['next_action']['result']['effects'][0]
+        self.invoke('control', self.archive_receipt(effect, 'issued'))
+        self.invoke('control', self.archive_receipt(effect, 'unknown'))
+        original = next(pin for pin in self.state()['control_transactions'].values() if pin.get('reserve_owner'))
+        store = progress.state_store.StateStore(self.checkpoint)
+        reserve = store.directory / 'reserves' / 'business' / hashlib.sha256(original['reserve_action'].encode()).hexdigest()
+        self.invoke('lifecycle-state', helper.snapshot())
+        prepared = self.invoke('native-finalize', helper.finalization())
+        self.assertEqual(prepared['next_action']['operation'], 'finish-native', prepared)
+        self.assertTrue(reserve.exists(), 'unrelated native closure cannot settle the original archive')
+        self.assertEqual(next(pin for pin in self.state()['control_transactions'].values()
+            if pin.get('reserve_owner')), original)
+        self.invoke('native-finalize', helper.finalize_observation(prepared['next_action']))
+        self.assertTrue(reserve.exists())
+        self.assertEqual(self.state()['control']['context']['retired_handoffs'][handoff_id]['archive_status'], 'unknown')
+
+    def test_archive_reservation_blocks_finalization_of_its_original_target(self):
+        from test_collaboration_lifecycle import CollaborationLifecycleTests
+        handoff_id = self.retired_fixture('/root/designer')
+        helper = CollaborationLifecycleTests(methodName='runTest')
+        helper.f = self
+        self.input['authorization']['flow_mode'] = 'continuous'
+        helper.test_real_tool_shape_allows_planning_publication_without_rpc_pages()
+        request = {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+            'receipt': {'controller_ref': 'task', 'reference': 'original-native-target-archive'}}
+        effect = self.invoke('control', request)['next_action']['result']['effects'][0]
+        self.assertEqual(effect['ref'], '/root/designer')
+        self.invoke('control', self.archive_receipt(effect, 'issued'))
+        self.invoke('control', self.archive_receipt(effect, 'unknown'))
+        original = next(pin for pin in self.state()['control_transactions'].values() if pin.get('reserve_owner'))
+        self.assertEqual(original['archive_ref'], '/root/designer')
+        store = progress.state_store.StateStore(self.checkpoint)
+        reserve = store.directory / 'reserves' / 'business' / hashlib.sha256(original['reserve_action'].encode()).hexdigest()
+        self.invoke('lifecycle-state', helper.snapshot())
+        before = self.checkpoint.read_bytes()
+        with self.assertRaises(transfer.entry.PreparationError) as rejected:
+            self.invoke('native-finalize', helper.finalization())
+        self.assertEqual(rejected.exception.code, 'host_action_pending')
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertEqual(self.state().get('native_finalizations', []), [])
+        self.assertEqual(reserve.stat().st_size, 16 * 1024 * 1024)
+        self.assertEqual(next(pin for pin in self.state()['control_transactions'].values()
+            if pin.get('reserve_owner')), original)
+
     def test_archive_intent_crash_replays_without_duplicate_operation(self):
         handoff_id = self.retired_fixture()
         self.begin()
@@ -216,7 +551,12 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(transaction['handoff'], {'controller_ref': 'task'})
         self.assertEqual(transaction['base_control_digest'], transfer.entry.digest(self.state()['control']))
         self.assertLess(transaction['base_revision'], self.state()['revision'])
+        reserve = self.checkpoint.with_name(self.checkpoint.name + '.state') / 'reserves' / 'business' / hashlib.sha256(transaction['reserve_action'].encode()).hexdigest()
+        self.assertEqual(reserve.stat().st_size, 16 * 1024 * 1024)
         first = self.invoke('control', request)['next_action']['result']['effects'][0]
+        self.assertTrue(reserve.exists())
+        self.assertEqual(next(pin for pin in self.state()['control_transactions'].values()
+            if pin.get('reserve_owner'))['reserve_action'], transaction['reserve_action'])
         replay = self.invoke('control', request)
         self.assertEqual(replay['next_action']['result']['effects'], [])
         self.assertEqual(len(self.state()['control']['context']['retired_handoffs'][handoff_id]['operations']), 1)
@@ -2725,6 +3065,8 @@ class AttachedProgressTests(transfer.AttachedTransferTests):
                 self.invoke_progress('control', request)
         pending = progress.read_active_owner(self.checkpoint)[progress.KEY]['control_transactions'][transfer.entry.digest(request)]
         original_pointer = pending['port']['store_ref']
+        original_reserve = self.checkpoint.with_name(self.checkpoint.name + '.state') / 'reserves' / 'business' / hashlib.sha256(pending['reserve_action'].encode()).hexdigest()
+        self.assertEqual(original_reserve.stat().st_size, 16 * 1024 * 1024)
         self.assertEqual(pending['request'], request)
         self.assertEqual(set(pending['port']), {'discussion', 'store_ref'})
         self.assertEqual(set(pending['handoff']), {'controller_ref', 'expected_entry'})
@@ -2751,6 +3093,9 @@ class AttachedProgressTests(transfer.AttachedTransferTests):
         self.assertLessEqual(sum(size for _, size in reads), progress.state_store.READ_LIMIT)
         self.assertFalse(any('/archives/' in path for path, _ in reads), reads)
         self.assertEqual(self.ledger.read_bytes(), ledger_bytes)
+        self.assertTrue(original_reserve.exists(), 'exact ledger replay retains the original business reserve')
+        restored = progress.read_active_owner(self.checkpoint)[progress.KEY]['control_transactions']
+        self.assertEqual(restored[transfer.entry.digest(request)]['reserve_action'], pending['reserve_action'])
         effect = intent['next_action']['result']['effects'][0]
         self.assertEqual((effect['operation'], effect['ref']), ('archive', 'task:dedicated'))
         for status in ('issued', 'unknown'):
@@ -2765,6 +3110,7 @@ class AttachedProgressTests(transfer.AttachedTransferTests):
         selected, _ = progress.state_store.StateStore(self.ledger).read_ledger_control(
             public['workflow_control_ref'], selector={'handoff_id': handoff_id})
         self.assertEqual(selected['retired_handoffs'][handoff_id]['archive_status'], 'archived')
+        self.assertFalse(original_reserve.exists())
         self.assertEqual(progress.read_active_owner(self.checkpoint)[progress.KEY]['control'], before)
         store = progress.state_store.StateStore(self.checkpoint)
         current = store.open_current()

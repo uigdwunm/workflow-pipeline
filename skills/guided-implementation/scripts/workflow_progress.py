@@ -1752,11 +1752,27 @@ def validate_state(state):
             require(retired is not None and retired['handoff_completed'] and
                     transaction.get('handoff_completed') is True and
                     transaction['request']['action'] in {'archive', 'archive-result'} and
-                    transaction['request']['evidence']['handoff_id'] == transaction['handoff_id'],
+                    transaction['request']['evidence']['handoff_id'] == transaction['handoff_id'] and
+                    transaction.get('archive_ref') == retired['carrier']['ref'],
                     'invalid_checkpoint', 'archive transaction lacks committed handoff authority')
             require(transaction.get('intent_persisted') is not True or transaction.get('result') is not None or
                     any(op['operation_id'] == transaction.get('operation_id') for op in retired['operations']),
                     'invalid_checkpoint', 'archive intent has no durable result')
+            reserve_kind = transaction.get('reserve_kind')
+            require(reserve_kind in {'archive:archive', 'archive:read-archive-state',
+                                    'control:archive', 'control:archive-result'} and
+                    type(transaction.get('reserve_owner')) is bool and
+                    transaction.get('reserve_recovery') is (reserve_kind != 'archive:archive') and
+                    (not transaction['reserve_owner'] or reserve_kind.startswith('archive:')),
+                    'invalid_checkpoint', 'archive reservation lost its original capacity class')
+            invocation = (transaction.get('operation_id') if reserve_kind.startswith('archive:') else
+                transaction['request']['receipt'].get('reference') or transaction['request']['receipt'].get('call_ref') or
+                transaction['request']['receipt'].get('operation_id') or entry.digest(transaction['request']['receipt']))
+            store = state_store.open_store(state['checkpoint_path'])
+            expected = store.receipt_key(store.open_current(), actor=state['control']['context']['controller_ref'],
+                kind=reserve_kind, subject=transaction['handoff_id'], invocation=invocation)
+            require(transaction.get('reserve_action') == expected,
+                    'invalid_checkpoint', 'archive reservation changed its original run or operation identity')
     for pin in state["packages"].values():
         skill_preflight.verify_identity(pin)
     if state["stage"] == 2:
@@ -2471,6 +2487,8 @@ class Progress:
         query = self.state['host'].get('query')
         if query and not query.get('resolved'):
             pending.add(query['action_id'])
+        pending.update(transaction['reserve_action'] for transaction in self.state.get('control_transactions', {}).values()
+            if transaction.get('reserve_action') and transaction.get('result') is None)
         state_store.open_store(self.path).release_settled_reserves(pending)
 
     def current_verified_readiness(self):
@@ -2780,9 +2798,11 @@ class Progress:
         host_calls = [action for action in self.unresolved_host_actions()
                       if action['payload'].get('ref', self.bound_ref()) in targets]
         transactions = [transaction for transaction in self.state.get('control_transactions', {}).values()
-                        if transaction.get('result') is None and (self.bound_ref() in targets or
-                           any(value in targets for key, value in transaction['request'].get('evidence', {}).items()
-                               if key in {'ref', 'agent_ref', 'dispatcher_ref'} and isinstance(value, str)))]
+                        if transaction.get('result') is None and
+                           (transaction.get('archive_ref') in targets if transaction.get('scope') == 'archive' else
+                            self.bound_ref() in targets or
+                            any(value in targets for key, value in transaction['request'].get('evidence', {}).items()
+                                if key in {'ref', 'agent_ref', 'dispatcher_ref'} and isinstance(value, str)))]
         allocations = [slot for slot in self.state.get('allocations', {}).values() if slot.get('transaction') and
                        (slot['owner_ref'] in targets or any(receipt.get('ref') in targets
                         for receipt in (slot.get('record') or {}).get('receipts', [])))]
@@ -3597,6 +3617,10 @@ class Progress:
             "events": {}, "observations": [], "transaction": None, "transaction_source": None,
             "transaction_result": None, "stopped": False,
             "retained_host_actions": [],
+            "control_transactions": {identity: copy.deepcopy(transaction)
+                for identity, transaction in (old or {}).get('control_transactions', {}).items()
+                if transaction.get('scope') == 'archive' and transaction.get('intent_persisted') is True
+                and transaction.get('reserve_action') and transaction.get('operation_id')},
             "native_finalizations": copy.deepcopy(old.get('native_finalizations', []) if old else []),
             "native_host": native_host,
             "workspace_evidence": selection,
@@ -4823,7 +4847,11 @@ class Progress:
             final_integration_recovery={'reference': data['reference'], 'closure_handoff': closure},
             history=[], allocations={}, accepted=None, pending=None, status='active', step='continue',
             transaction=None, transaction_source=None, transaction_result=None, events={}, observations=[],
-            control_transactions={}, retained_host_actions=[], phase_complete=facts['phase_complete'],
+            control_transactions={identity: copy.deepcopy(transaction)
+                for identity, transaction in s.get('control_transactions', {}).items()
+                if transaction.get('scope') == 'archive' and transaction.get('intent_persisted') is True
+                and transaction.get('reserve_action') and transaction.get('operation_id')},
+            retained_host_actions=[], phase_complete=facts['phase_complete'],
             stopped=False, continuation_intent={'kind': 'final-integration', 'reference': data['reference']},
             review_activity={}, action=None, host_action=None,
             recovered_native_refs=recovered_refs,
@@ -5862,6 +5890,10 @@ class Progress:
             'control:' + data['action'], control_subject, invocation)
         cached_receipt = receipt_store.read_receipt(receipt_current, receipt_key, original_input)
         if cached_receipt is not None:
+            if data['action'] in {'archive', 'archive-result'}:
+                # read_receipt has verified/repaired the committed membership
+                # proof; a crash after root CAS must not strand a settled slot.
+                self.release_settled_reserves()
             return _view(self.state, {'operation': 'control-effects',
                 'result': {**cached_receipt, 'effects': []}, 'write_authority': False}, acknowledged=True)
         require((self.state.get("plan_revision_transaction") or {}).get("state") in (None, "activated") or
@@ -6330,10 +6362,10 @@ class Progress:
                 transactions[identity] = {'request': copy.deepcopy(data), 'port': archive_port,
                     'handoff': archive_handoff, 'base_revision': s['revision'],
                     'base_control_digest': entry.digest(s['control']),
-                    'scope': 'archive', 'handoff_id': handoff_id, 'operation_id': data['evidence'].get('operation_id'),
+                    'scope': 'archive', 'handoff_id': handoff_id, 'archive_ref': retired['carrier']['ref'],
+                    'operation_id': data['evidence'].get('operation_id'),
                     'handoff_completed': True, 'intent_persisted': data['action'] == 'archive-result' and
                         any(op['operation_id'] == data['evidence'].get('operation_id') for op in authoritative['operations']), 'result': None}
-            self.save()
         transaction = transactions[identity]
         if data['action'] == 'archive-result':
             require(data['receipt'] == data['evidence'].get('receipt'), 'host_evidence_missing', 'retain exact authenticated archive receipt')
@@ -6344,6 +6376,77 @@ class Progress:
             execution_port['context'] = copy.deepcopy(current)
         else:
             execution_port['context'] = read_archive_context(execution_port, handoff_id)
+        # Plan through the same pure archive transition before any ledger write
+        # or executable effect. The original operation ID is independent of C's
+        # receipt key and remains fixed across lost responses and exact lookup.
+        preview_context = copy.deepcopy(execution_port['context'])
+        preview = control.archive_transition(preview_context, data['action'], data['evidence'])
+        preview_retired = preview_context['retired_handoffs'][handoff_id]
+        effects = preview['effects']
+        operation_id = (effects[0]['operation_id'] if effects else
+                        data['evidence'].get('operation_id'))
+        operation = next((item for item in preview_retired['operations']
+                          if item['operation_id'] == operation_id), None)
+        store = state_store.open_store(self.path)
+        reserve_owner = bool(effects)
+        if operation is not None:
+            reserve_action = store.receipt_key(store.open_current(), actor=current['controller_ref'],
+                kind='archive:' + operation['kind'], subject=handoff_id, invocation=operation_id)
+            recovery = operation['kind'] == 'read-archive-state'
+            original_operation = next((item for item in execution_port['context']['retired_handoffs'][handoff_id]['operations']
+                                       if item['operation_id'] == operation_id), None)
+            reserve_owner = reserve_owner and (original_operation is None or transaction.get('reserve_owner') is True)
+            if original_operation is None:
+                store.reserve(reserve_action, recovery=recovery)
+            elif (original_operation['status'] in {'intent', 'issued', 'unknown'} and
+                  execution_port['context']['retired_handoffs'][handoff_id]['archive_status'] not in {'archived', 'not-archived'}):
+                store.require_reserve(reserve_action, recovery=recovery)
+            else:
+                operation = None  # Retaining a late conflict is recovery only.
+        if operation is None:
+            invocation = (data['receipt'].get('reference') or data['receipt'].get('call_ref') or
+                          data['receipt'].get('operation_id') or entry.digest(data['receipt']))
+            reserve_action = store.receipt_key(store.open_current(), actor=current['controller_ref'],
+                kind='control:' + data['action'], subject=handoff_id, invocation=invocation)
+            recovery, reserve_owner = True, False
+            store.reserve(reserve_action, recovery=True)
+        if transaction.get('reserve_action') is not None:
+            require(transaction['reserve_action'] == reserve_action and
+                    transaction['reserve_recovery'] == recovery,
+                    'identity_mismatch', 'archive replay changed its original reservation')
+        else:
+            transaction.update(reserve_action=reserve_action, reserve_recovery=recovery,
+                               reserve_owner=reserve_owner, operation_id=operation_id,
+                               reserve_kind='archive:' + operation['kind'] if operation is not None else 'control:' + data['action'])
+            # Measure the bounded completion through the production serializer.
+            # Keeping every pending pin is conservative relative to settlement;
+            # two root budgets also cover the finite ledger pointer/proof delta.
+            with store.measure_writes(sequence=True) as writes:
+                candidate = Progress(self.path, copy.deepcopy(self.outer))
+                candidate._authority_revision = self._authority_revision
+                if execution_port['discussion'] is None:
+                    candidate.state['control']['context']['retired_handoffs'][handoff_id] = preview_retired
+                candidate.state['control_transactions'][identity]['intent_persisted'] = bool(operation_id)
+                invocation = (data['receipt'].get('reference') or data['receipt'].get('call_ref') or
+                              data['receipt'].get('operation_id') or entry.digest(data['receipt']))
+                receipt_current = store.open_current()
+                receipt_key = store.receipt_key(receipt_current, actor=current['controller_ref'],
+                    kind='control:' + data['action'], subject=handoff_id, invocation=invocation)
+                prepared = store.prepare_receipt(receipt_current, receipt_key, data,
+                    {key: value for key, value in preview.items() if key != 'context'})
+                candidate.save()
+                measured_current = store.open_current()
+                store.write_object(measured_current.run_id, 'root',
+                    {**measured_current.root, 'receipts': [prepared]})
+                require(sum(writes.values()) + 2 * state_store.ROOT_LIMIT <= state_store.EVIDENCE_LIMIT,
+                    'state_capacity', 'archive completion exceeds its original receipt reserve')
+            # New business intent must fit ordinary capacity. Receipt, stop and
+            # exact query saves may use their own independent reserved space.
+            if recovery or data['action'] == 'archive-result':
+                self._receipt_action = reserve_action
+            self.save()
+        self._receipt_action = reserve_action
+        store.require_reserve(reserve_action, recovery=recovery)
         result, applied = dispatch.checkpoint(execution_port, transaction['handoff'], data['action'], data['evidence'])
         if transaction['port']['discussion'] is None:
             updated = result['context']['retired_handoffs'][handoff_id]
@@ -6365,7 +6468,21 @@ class Progress:
         self._commit_receipts.append(store.prepare_receipt(receipt_current, key, data, frozen_result))
         # The exact request/result and receipt membership are committed with
         # this current projection. Completed routes do not occupy active memory.
-        del transactions[identity]
+        settled = updated['archive_status'] in {'archived', 'not-archived'}
+        for pending_id, pending in list(transactions.items()):
+            if pending.get('scope') != 'archive' or pending.get('handoff_id') != handoff_id:
+                continue
+            original_operation = next((item for item in updated['operations']
+                if item['operation_id'] == pending.get('operation_id')), None)
+            known_no_write = (original_operation is not None and original_operation['status'] == 'failed' and
+                original_operation['kind'] == 'archive' and
+                original_operation['receipt']['receipt']['no_write'])
+            if settled or known_no_write or not pending.get('reserve_owner'):
+                del transactions[pending_id]
+            else:
+                pending['intent_persisted'] = True
+                if pending['port']['discussion'] is not None:
+                    pending['port']['store_ref'] = copy.deepcopy(result['store_ref'])
         self.save()
         return _view(s, {'operation': 'control-effects', 'result': {**frozen_result, 'context': current}})
 
