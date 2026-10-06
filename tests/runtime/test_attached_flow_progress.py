@@ -914,7 +914,8 @@ class AttachedFlowTests(fixtures.ProgressTests):
             payload = {'candidate_commit':candidate, 'artifacts':['impl.py'], 'checks':['verified'],
                 'review':{axis:{'candidate':candidate,'reviewer_ref':axis,'status':'accepted'} for axis in ('standards','spec')},
                 'verification':{'candidate':candidate}}
-            accepted = self.accept_current(payload,'native:dispatcher')
+            accepted = self.accept_current(payload, 'native:dispatcher',
+                evidence_suffix='-attached-final-recovery')
             self.assertEqual(accepted['status'],'accepted',accepted.get('error'))
             self.assertEqual(self.phases[3], completed_phase)
             self.assertEqual(self.state()['recovery_predecessor'], original_stage3)
