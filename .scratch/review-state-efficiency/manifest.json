@@ -1391,9 +1391,22 @@
         "T06"
       ],
       "kind": "test",
-      "reason": "真实supported attached生命周期在Progress.lifecycle旧atomic_save报state_owner_required；补真Stage2 lifecycle ledger/C提交前后故障、原envelope重放/C subjects保持/两revision区分及实际读取预算，不改延期attached初始化或既有业务语义。",
+      "reason": "真实supported attached生命周期在Progress.lifecycle旧atomic_save报state_owner_required；补真Stage2 lifecycle ledger/C提交前后故障、原envelope重放/C subjects保持/两revision区分及实际读取预算，不改延期attached初始化或既有业务语义。 T01累计原06完整10项中的三方法旧夹具在业务断言前失败：test_attached_final_recovery_keeps_completed_phase_and_active_closure改用有限implementation/design前驱；test_attached_plan_revision_uses_original_ledger_record使用合法typed owner与原ledger CAS；test_attached_start_rejects_head_ahead_of_frozen_b_baseline构造引用链有效的原store_ref后注入真实head-ahead竞态。保原completed phase/active closure/recovery、原ledger权限及frozen B baseline拒绝；不修延期初始化。",
       "exists_at_design": true,
-      "symbols": [],
+      "symbols": [
+        {
+          "name": "test_attached_final_recovery_keeps_completed_phase_and_active_closure",
+          "status": "existing-verified"
+        },
+        {
+          "name": "test_attached_plan_revision_uses_original_ledger_record",
+          "status": "existing-verified"
+        },
+        {
+          "name": "test_attached_start_rejects_head_ahead_of_frozen_b_baseline",
+          "status": "existing-verified"
+        }
+      ],
       "generated_outputs": []
     },
     {
@@ -1416,21 +1429,48 @@
         "T06"
       ],
       "kind": "test",
-      "reason": "T01特殊native close回查：原样verify在accepted_execution旧slot.record.handoff处KeyError，允许该helper改用既有resolve_allocation；保原协作权限/停止/来源断言。后续query身份适配须实际失败证明，不批量改测试。 已实证test_close_readback_failures_and_new_activity_preserve_original_close_and_revoke在unknown后更换call_ref被原调用保留门禁拒绝：仅该测试加入错call拒绝，用同pending call的新response终结，再explicit lookup创建后续query；保close/actions/revoked/raw反例，不全局改helper身份。 T01组合另限test_missing_baseline_saved_readback_is_validated_before_use：已实证旧root索引在业务断言前失败，改为精确stage subject原baseline raw.thread.id故障注入，保持有效subject/scope/root引用链以验证真实身份拒绝；不删skip、不新增baseline外置模型。",
+      "reason": "T01特殊native close回查：原样verify在accepted_execution旧slot.record.handoff处KeyError，允许该helper改用既有resolve_allocation；保原协作权限/停止/来源断言。后续query身份适配须实际失败证明，不批量改测试。 已实证test_close_readback_failures_and_new_activity_preserve_original_close_and_revoke在unknown后更换call_ref被原调用保留门禁拒绝：仅该测试加入错call拒绝，用同pending call的新response终结，再explicit lookup创建后续query；保close/actions/revoked/raw反例，不全局改helper身份。 T01组合另限test_missing_baseline_saved_readback_is_validated_before_use：已实证旧root索引在业务断言前失败，改为精确stage subject原baseline raw.thread.id故障注入，保持有效subject/scope/root引用链以验证真实身份拒绝；不删skip、不新增baseline外置模型。 T01累计原15/16实证两项在原业务断言前读旧checkpoint header.native_finalizations及compact record.handoff失败；仅增CollaborationLifecycleTests.test_native_retirement_rejects_invalid_delivery_digest合法引用链的原digest损坏注入，以及final_recovery_with_native_retirement/test_final_recovery_allocates_after_verified_execution_retirement经现resolve_allocation读取精确plan_refs。保原native finish/close、恢复身份、权限/下一allocation及无effect重放断言，不扩静态raw来源。",
       "exists_at_design": true,
-      "symbols": [],
+      "symbols": [
+        {
+          "name": "CollaborationLifecycleTests.test_native_retirement_rejects_invalid_delivery_digest",
+          "status": "existing-verified"
+        },
+        {
+          "name": "CollaborationLifecycleTests.final_recovery_with_native_retirement",
+          "status": "existing-verified"
+        },
+        {
+          "name": "CollaborationLifecycleTests.test_final_recovery_allocates_after_verified_execution_retirement",
+          "status": "existing-verified"
+        }
+      ],
       "generated_outputs": []
     },
     {
       "path": "tests/runtime/test_dedicated_stage.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
+        "T01",
         "T06"
       ],
       "kind": "test",
-      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改 T01累计原08完整18项中的两ProblemFramingEntry调用在EntrySupport.commit_takeover手写inline progress-v21/缺stage_subject与store_ref处失败，原ledger C0/1已存在；晋升该helper及test_accepted_stage_zero_successor_advances_before_archive、test_archive_failure_does_not_block_stage_one_completion，使用当前PROTOCOL/原ledger CAS pointer与合法有限subject。保不完整stop不写ledger、原响应丢失恢复、Stage1唯一authority、精确无effect重放与archive失败不阻完成，不改legacy拒绝/Stage2桥。",
       "exists_at_design": true,
-      "symbols": [],
+      "symbols": [
+        {
+          "name": "EntrySupport.commit_takeover",
+          "status": "existing-verified"
+        },
+        {
+          "name": "ProblemFramingEntryTests.test_accepted_stage_zero_successor_advances_before_archive",
+          "status": "existing-verified"
+        },
+        {
+          "name": "ProblemFramingEntryTests.test_archive_failure_does_not_block_stage_one_completion",
+          "status": "existing-verified"
+        }
+      ],
       "generated_outputs": []
     },
     {
