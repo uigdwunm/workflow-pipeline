@@ -103,12 +103,19 @@ class ProgressTests(transfer.StageTransferTests):
         handoff_id = self.retired_fixture()
         self.finish_design('continuous')
         outer = progress.read_active_owner(self.checkpoint)
-        retained = {key: copy.deepcopy(value) for key, value in self.takeover_transaction.items() if key != 'port'}
-        retained['result'] = {key: value for key, value in retained['result'].items() if key != 'context'}
-        retained.update(base_control_digest=transfer.entry.digest(outer[progress.KEY]['control']),
-                        base_revision=outer[progress.KEY]['revision'], status=outer[progress.KEY]['status'])
-        outer[progress.KEY].setdefault('control_transactions', {})[transfer.entry.digest(retained['request'])] = retained
-        progress.Progress(self.checkpoint, outer).save()
+        owner = progress.Progress(self.checkpoint, outer)
+        # Completed production control calls commit the original unaugmented
+        # input/result receipt and remove their active transaction in one CAS.
+        subject = owner.control_receipt_subject(self.takeover_input)
+        self.assertEqual(subject, self.takeover_input['evidence']['input_digest'])
+        store, current, key = owner.receipt_store('control:successor-ready', subject,
+            self.takeover_input['receipt']['reference'])
+        result = {key: value for key, value in self.takeover_transaction['result'].items() if key != 'context'}
+        owner._commit_receipts.append(store.prepare_receipt(current, key, self.takeover_input, result))
+        owner.save()
+        committed = store.open_current()
+        self.assertEqual(store.read_receipt(committed, key, self.takeover_input), result)
+        self.assertFalse(owner.state.get('control_transactions'))
         intent = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
             'receipt': {'controller_ref': 'task', 'reference': 'automatic'}})
         effect = intent['next_action']['result']['effects'][0]
@@ -132,8 +139,39 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual((query['operation'], query['ref']), ('read-archive-state', 'old-task'))
         issued_query = self.invoke('control', self.archive_receipt(query, 'issued'))
         self.assertTrue(issued_query['next_action']['result']['ok'], issued_query)
-        archived_query = self.invoke('control', self.archive_receipt(query, 'archived'))
+        reads = []
+        original_open = Path.open
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        def opened(path, mode='r', *args, **kwargs):
+            stream = original_open(path, mode, *args, **kwargs)
+            if 'r' in mode and (path == self.checkpoint or path.is_relative_to(directory) or
+                                path.is_relative_to(self.root)):
+                original_read = stream.read
+                def read(*args, **kwargs):
+                    value = original_read(*args, **kwargs)
+                    reads.append((str(path), len(value.encode('utf-8') if isinstance(value, str) else value)))
+                    return value
+                stream.read = read
+            return stream
+        with patch.object(Path, 'open', opened):
+            archived_query = self.invoke('control', self.archive_receipt(query, 'archived'))
         self.assertTrue(archived_query['next_action']['result']['ok'], archived_query)
+        self.assertLessEqual(sum(size for _, size in reads), progress.state_store.READ_LIMIT)
+        self.assertFalse(any('/archives/' in path for path, _ in reads), reads)
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        self.assertLessEqual(len(progress.state_store.encode({'format': progress.state_store.FORMAT,
+            'run_id': current.run_id, 'kind': 'root', 'value': current.root})), progress.state_store.ROOT_LIMIT)
+        subject = store.read_subject(current, current.root['metadata']['stage_subject'])
+        self.assertLessEqual(subject.reference['size'], progress.state_store.SUBJECT_LIMIT)
+        self.assertFalse(any(item.get('scope') == 'archive'
+            for item in subject.value.get('control_transactions', {}).values()))
+        changed = self.archive_receipt(query, 'archived')
+        changed['evidence']['status'] = 'unknown'
+        bytes_before = self.checkpoint.read_bytes()
+        conflicting_key = self.invoke('control', changed)
+        self.assertEqual(conflicting_key['next_action']['result']['error']['code'], 'receipt_conflict')
+        self.assertEqual(self.checkpoint.read_bytes(), bytes_before)
         self.assertEqual(self.state()['control']['context']['retired_handoffs'][handoff_id]['archive_status'], 'archived')
         replay = self.invoke('control', self.archive_receipt(effect, 'unknown'))
         self.assertTrue(replay['acknowledged'], replay)
@@ -148,6 +186,19 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertTrue(replayed_takeover['acknowledged'])
         self.assertEqual(replayed_takeover['next_action']['result']['effects'], [])
         self.assertEqual(self.state()['control']['context'], saved['control']['context'])
+        # The original receipt cannot authorize changed bytes under the same
+        # frozen delivery, or a different delivery that has no saved receipt.
+        changed_takeover = copy.deepcopy(self.takeover_input)
+        changed_takeover['evidence']['ref'] = 'native:other'
+        conflicting = self.invoke('control', changed_takeover)
+        self.assertEqual(conflicting['error']['code'], 'receipt_conflict')
+        self.assertEqual(self.state()['control']['context'], saved['control']['context'])
+        fresh_takeover = copy.deepcopy(self.takeover_input)
+        fresh_takeover['evidence']['input_digest'] = 'f' * 64
+        fresh = self.invoke('control', fresh_takeover)
+        self.assertFalse(fresh['acknowledged'])
+        self.assertEqual(fresh['error']['code'], 'host_evidence_missing')
+        self.assertEqual(self.state()['control']['context'], saved['control']['context'])
 
     def test_archive_intent_crash_replays_without_duplicate_operation(self):
         handoff_id = self.retired_fixture()
@@ -157,7 +208,14 @@ class ProgressTests(transfer.StageTransferTests):
         with patch.object(progress.dispatch, 'checkpoint', side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 self.invoke('control', request)
-        self.assertTrue(progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint)).unresolved_control_transactions())
+        pending = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint)).unresolved_control_transactions()
+        self.assertTrue(pending)
+        transaction = pending[transfer.entry.digest(request)]
+        self.assertEqual(transaction['request'], request)
+        self.assertEqual(transaction['port'], {'discussion': None})
+        self.assertEqual(transaction['handoff'], {'controller_ref': 'task'})
+        self.assertEqual(transaction['base_control_digest'], transfer.entry.digest(self.state()['control']))
+        self.assertLess(transaction['base_revision'], self.state()['revision'])
         first = self.invoke('control', request)['next_action']['result']['effects'][0]
         replay = self.invoke('control', request)
         self.assertEqual(replay['next_action']['result']['effects'], [])
@@ -173,6 +231,51 @@ class ProgressTests(transfer.StageTransferTests):
         query = self.invoke('control', {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
             'receipt': {'controller_ref': 'task', 'reference': 'lost-response'}})
         self.assertEqual(query['next_action']['result']['effects'][0]['operation'], 'read-archive-state')
+
+    def test_archive_receipt_commit_crashes_preserve_exact_replay(self):
+        for after_root in (False, True):
+            with self.subTest(after_root=after_root):
+                self.checkpoint = self.checkpoint.with_name('archive-' + str(after_root) + '.json')
+                handoff_id = self.retired_fixture()
+                self.begin()
+                request = {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+                    'receipt': {'controller_ref': 'task', 'reference': 'original-archive'}}
+                directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+                original_replace = os.replace
+                def interrupted(source, target):
+                    target = Path(target)
+                    if target == self.checkpoint and not after_root:
+                        envelope = json.loads(Path(source).read_bytes())
+                        digest = envelope['current']['sha256']
+                        root = json.loads((directory / 'objects' / digest[:2] / digest[2:4] / digest).read_bytes())['value']
+                        if root.get('receipts'):
+                            raise KeyboardInterrupt('archive receipt before root commit')
+                    elif target.parent.name == 'commits' and after_root:
+                        if json.loads(Path(source).read_bytes()).get('receipts'):
+                            raise KeyboardInterrupt('archive root before commit marker')
+                    return original_replace(source, target)
+                with patch.object(os, 'replace', interrupted):
+                    with self.assertRaises(KeyboardInterrupt):
+                        self.invoke('control', request)
+                before = self.invoke('inspect')['revision']
+                recovered = self.invoke('control', request)
+                self.assertTrue(recovered['next_action']['result']['ok'], recovered)
+                self.assertEqual(recovered['acknowledged'], after_root)
+                self.assertEqual(len(recovered['next_action']['result']['effects']), 0 if after_root else 1)
+                if after_root:
+                    self.assertEqual(recovered['revision'], before)
+                operations = self.state()['control']['context']['retired_handoffs'][handoff_id]['operations']
+                self.assertEqual(len(operations), 1)
+                saved_bytes = self.checkpoint.read_bytes()
+                replay = self.invoke('control', request)
+                self.assertTrue(replay['acknowledged'])
+                self.assertEqual(replay['next_action']['result']['effects'], [])
+                self.assertEqual(self.checkpoint.read_bytes(), saved_bytes)
+                changed = copy.deepcopy(request)
+                changed['evidence']['call_lookup'] = {}
+                conflict = self.invoke('control', changed)
+                self.assertEqual(conflict['next_action']['result']['error']['code'], 'receipt_conflict')
+                self.assertEqual(self.checkpoint.read_bytes(), saved_bytes)
 
     def test_new_runtime_rejects_old_control_and_c_without_writes(self):
         self.begin()
@@ -2414,6 +2517,119 @@ class AttachedProgressTests(transfer.AttachedTransferTests):
         self.assertTrue(self.invoke_progress('observe', {'event_id': 'created', 'receipt': receipt})['acknowledged'])
         if self.NON_GIT:
             self.assertIsNone(state['handoff']['source_commit'])
+
+    def test_retired_archive_uses_exact_ledger_handoff_without_replacing_current_context(self):
+        import test_workflow_control
+        started = self.invoke_progress('start', {'handoff': self.input, 'control': self.port()})
+        self.assertEqual(started['next_action']['operation'], 'invoke-host')
+        state = progress.read_active_owner(self.checkpoint)[progress.KEY]
+        record = state['dispatch']
+        created = {'adapter': 'fixture-task-host', 'receipt_ref': 'created',
+            'request_digest': record['request']['digest'], 'attempt': record['request']['attempt'],
+            'role': 'dedicated-discussion', 'event': 'create', 'status': 'ready',
+            'ref': 'task:dedicated', 'pending_id': None,
+            'configuration': {'model': 'fixture-model', 'effort': 'high'}, 'raw': {'threadId': 'task:dedicated'}}
+        self.invoke_progress('observe', {'event_id': 'created', 'receipt': created})
+        carrier = lambda operation, **values: transfer.discussion_protocol.handle({
+            **self.envelope(), 'actor_conversation_ref': 'task:dedicated', 'operation': operation, **values})
+        carrier('accept-handoff', handoff_id=self.original['handoff_id'], attempt_id=self.original['attempt_id'],
+            payload_sha256=self.original['payload_sha256'],
+            source_reference_sha256=self.original['authoritative_references_sha256'], turn_number=1)
+        path = self.input['scope']['owned_paths'][0]
+        self.git('add', '-f', path)
+        self.git('commit', '-qm', 'accepted dedicated topic')
+        old = self.read()['workflow_control']
+        received = self.mutate('workflow-control', action='receive', evidence={
+            'delivery_id': 'dedicated-result', 'source_ref': 'task:dedicated',
+            'attempt': old['carrier']['attempt'], 'commit': self.git('rev-parse', 'HEAD'),
+            'requirement_identity': old['requirement_identity'],
+            'verified_commit_hash': old['requirement_identity']['sha256']})['control']
+        self.mutate('workflow-control', action='accept', evidence={'delivery_digest': received['delivery_digest']})
+        checkpoint = carrier('prepare-checkpoint', purpose='stage-entry', base_ref='HEAD')
+        published = carrier('publish-git-checkpoint', checkpoint_id=checkpoint['checkpoint_id'],
+            expected_checkpoint_revision=checkpoint['checkpoint_record_revision'])
+        phase = self.mutate('prepare-wrapper-phase-run', from_phase=0, to_phase=1, route='0->1',
+            carrier_kind='current-problem-framing', source_checkpoint_id=checkpoint['checkpoint_id'],
+            flow_mode='stepwise', flow_mode_source='explicit-stage-confirmation', scope=['requirements'])
+        identity = {'phase_run_id': phase['phase_run_id'], 'attempt_id': phase['attempt_id']}
+        self.mutate('authorize-phase-carrier', **identity, carrier_ref='task')
+        self.mutate('claim-phase-carrier', **identity, carrier_ref='task',
+            source_checkpoint_id=checkpoint['checkpoint_id'], source_checkpoint_identity=published['commit_id'])
+        self.mutate('phase-ready', **identity, carrier_ref='task', evidence=phase['evidence'])
+        self.mutate('phase-activate', **identity, evidence=phase['evidence'])
+        retired = self.mutate('workflow-control', action='successor-ready', evidence={
+            'ref': 'task', 'stage': 1, 'input_digest': received['delivery_digest'],
+            'role': 'current-problem-framing', 'binding_verified': True, 'activated': True,
+            'confirmed': True, 'archive_ref': 'task:dedicated',
+            'takeover_proof': test_workflow_control.takeover_proof('task:dedicated',
+                old['carrier']['attempt'], model='fixture-model')})['control']
+        handoff_id = retired['handoff_id']
+        before = copy.deepcopy(progress.read_active_owner(self.checkpoint)[progress.KEY]['control'])
+        request = {'action': 'archive', 'evidence': {'handoff_id': handoff_id},
+            'receipt': {'controller_ref': 'task', 'reference': 'original-ledger-archive'}}
+        original_checkpoint = progress.dispatch.checkpoint
+        def lost_response(*args, **kwargs):
+            original_checkpoint(*args, **kwargs)
+            raise KeyboardInterrupt('ledger archive committed before Controller receipt')
+        with patch.object(progress.dispatch, 'checkpoint', side_effect=lost_response):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke_progress('control', request)
+        pending = progress.read_active_owner(self.checkpoint)[progress.KEY]['control_transactions'][transfer.entry.digest(request)]
+        original_pointer = pending['port']['store_ref']
+        self.assertEqual(pending['request'], request)
+        self.assertEqual(set(pending['port']), {'discussion', 'store_ref'})
+        self.assertEqual(set(pending['handoff']), {'controller_ref', 'expected_entry'})
+        self.assertEqual(set(pending['handoff']['expected_entry']), {'discussion_project', 'requirement', 'repository'})
+        self.assertNotEqual(original_pointer, self.read()['workflow_control_ref'])
+        ledger_bytes = self.ledger.read_bytes()
+        reads = []
+        original_open = Path.open
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        def opened(path, mode='r', *args, **kwargs):
+            stream = original_open(path, mode, *args, **kwargs)
+            if 'r' in mode and (path == self.checkpoint or path.is_relative_to(directory) or
+                                path.is_relative_to(self.root)):
+                original_read = stream.read
+                def read(*args, **kwargs):
+                    value = original_read(*args, **kwargs)
+                    reads.append((str(path), len(value.encode('utf-8') if isinstance(value, str) else value)))
+                    return value
+                stream.read = read
+            return stream
+        with patch.object(Path, 'open', opened):
+            intent = self.invoke_progress('control', request)
+        self.assertTrue(intent['next_action']['result']['ok'], intent)
+        self.assertLessEqual(sum(size for _, size in reads), progress.state_store.READ_LIMIT)
+        self.assertFalse(any('/archives/' in path for path, _ in reads), reads)
+        self.assertEqual(self.ledger.read_bytes(), ledger_bytes)
+        effect = intent['next_action']['result']['effects'][0]
+        self.assertEqual((effect['operation'], effect['ref']), ('archive', 'task:dedicated'))
+        for status in ('issued', 'unknown'):
+            self.assertTrue(self.invoke_progress('control', ProgressTests.archive_receipt(self, effect, status))['next_action']['result']['ok'])
+        query = self.invoke_progress('control', {**request, 'receipt': {
+            'controller_ref': 'task', 'reference': 'ledger-readback'}})['next_action']['result']['effects'][0]
+        self.assertEqual(query['operation'], 'read-archive-state')
+        for status in ('issued', 'archived'):
+            result = self.invoke_progress('control', ProgressTests.archive_receipt(self, query, status))
+            self.assertTrue(result['next_action']['result']['ok'], result)
+        public = self.read()
+        selected, _ = progress.state_store.StateStore(self.ledger).read_ledger_control(
+            public['workflow_control_ref'], selector={'handoff_id': handoff_id})
+        self.assertEqual(selected['retired_handoffs'][handoff_id]['archive_status'], 'archived')
+        self.assertEqual(progress.read_active_owner(self.checkpoint)[progress.KEY]['control'], before)
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        subject = store.read_subject(current, current.root['metadata']['stage_subject'])
+        self.assertNotIn('context', subject.value['control'])
+        self.assertFalse(subject.value.get('control_transactions'))
+        self.assertLessEqual(current.reference['size'], progress.state_store.ROOT_LIMIT)
+        self.assertLessEqual(subject.reference['size'], progress.state_store.SUBJECT_LIMIT)
+        ledger_bytes = self.ledger.read_bytes()
+        replay = self.invoke_progress('control', ProgressTests.archive_receipt(self, effect, 'unknown'))
+        self.assertTrue(replay['acknowledged'])
+        self.assertEqual(replay['next_action']['result']['effects'], [])
+        self.assertEqual(self.ledger.read_bytes(), ledger_bytes)
+        self.assertEqual(progress.read_active_owner(self.checkpoint)[progress.KEY]['control'], before)
 
     def test_uncommitted_ledger_objects_do_not_acknowledge_a_control_call(self):
         self.invoke_progress('start', {'handoff': self.input, 'control': self.port()})

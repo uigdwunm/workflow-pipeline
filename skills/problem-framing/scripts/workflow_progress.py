@@ -558,6 +558,22 @@ def restore_ledger_mirror(state):
     port['context'] = context
 
 
+def read_archive_context(port, handoff_id):
+    """Resolve one retired handoff at the original ledger generation."""
+    pointer = port.get('store_ref')
+    envelope = port.get('discussion')
+    require(isinstance(pointer, dict) and isinstance(envelope, dict) and
+            pointer.get('topic_id') == envelope.get('actor_topic_id') and
+            pointer.get('controller_ref') == envelope.get('actor_conversation_ref'),
+            'identity_mismatch', 'archive ledger pointer differs from its original owner')
+    context, _ = state_store.StateStore(pointer['ledger_path']).read_ledger_control(
+        pointer, selector={'handoff_id': handoff_id})
+    control.validate_current_context(context)
+    require(handoff_id in context.get('retired_handoffs', {}),
+            'identity_mismatch', 'exact completed ledger handoff required')
+    return context
+
+
 def stage2_scope(state, path, outer):
     """Derive a read-only contract from the Controller's current validated facts."""
     owner = Progress(path, outer)
@@ -1720,7 +1736,19 @@ def validate_state(state):
     for identity, transaction in state.get('control_transactions', {}).items():
         require(entry.digest(transaction['request']) == identity, 'invalid_checkpoint', 'control transaction identity changed')
         if transaction.get('scope') == 'archive':
+            port = transaction.get('port')
+            require(isinstance(port, dict) and
+                    set(port) == ({'discussion'} if port.get('discussion') is None else {'discussion', 'store_ref'}) and
+                    transaction.get('result') is None and
+                    type(transaction.get('base_revision')) is int and
+                    0 <= transaction['base_revision'] < state['revision'] and
+                    isinstance(transaction.get('base_control_digest'), str) and
+                    re.fullmatch(r'[0-9a-f]{64}', transaction['base_control_digest']) and
+                    transaction.get('handoff', {}).get('controller_ref') == state['control']['context']['controller_ref'],
+                    'invalid_checkpoint', 'archive intent lost its finite original authority binding')
             retired = state['control']['context'].get('retired_handoffs', {}).get(transaction.get('handoff_id'))
+            if retired is None and transaction.get('port', {}).get('discussion') is not None:
+                retired = read_archive_context(transaction['port'], transaction.get('handoff_id'))['retired_handoffs'][transaction['handoff_id']]
             require(retired is not None and retired['handoff_completed'] and
                     transaction.get('handoff_completed') is True and
                     transaction['request']['action'] in {'archive', 'archive-result'} and
@@ -5814,6 +5842,14 @@ class Progress:
             return self.block(entry.PreparationError(error.code, "publication requires original-protocol reconciliation; do not republish"))
         return self.finish_publication(result)
 
+    def control_receipt_subject(self, data):
+        # A completed takeover belongs to its frozen delivery, so an exact
+        # replay keeps its receipt identity when the current stage changes.
+        if data['action'] == 'successor-ready':
+            return data['evidence'].get('input_digest') or self.state['stage_subject']
+        return (data['evidence'].get('handoff_id') or data['evidence'].get('attempt') or
+                data['evidence'].get('revision_id') or self.state['stage_subject'])
+
     def control_action(self, data):
         entry.fields(data, {'action', 'evidence', 'receipt'})
         original_input = copy.deepcopy(data)
@@ -5821,8 +5857,7 @@ class Progress:
                 'host_evidence_missing', 'original authenticated host/controller evidence required')
         invocation = (data['receipt'].get('reference') or data['receipt'].get('call_ref') or
                       data['receipt'].get('operation_id') or entry.digest(data['receipt']))
-        control_subject = (data['evidence'].get('handoff_id') or data['evidence'].get('attempt') or
-                           data['evidence'].get('revision_id') or self.state['stage_subject'])
+        control_subject = self.control_receipt_subject(data)
         receipt_store, receipt_current, receipt_key = self.receipt_store(
             'control:' + data['action'], control_subject, invocation)
         cached_receipt = receipt_store.read_receipt(receipt_current, receipt_key, original_input)
@@ -6219,11 +6254,25 @@ class Progress:
         s = self.state
         handoff_id = data['evidence'].get('handoff_id')
         current = s['control']['context']
-        retired = current.get('retired_handoffs', {}).get(handoff_id)
-        require(retired is not None and retired.get('handoff_completed'), 'identity_mismatch', 'exact completed handoff required')
         identity = entry.digest(data)
         self.require_controls_reconciled(identity)
         transactions = s.setdefault('control_transactions', {})
+        retired = current.get('retired_handoffs', {}).get(handoff_id)
+        archive_route = None
+        if retired is None and s['control']['discussion'] is not None:
+            pending = transactions.get(identity)
+            port = copy.deepcopy(pending['port'] if pending else s['control'])
+            if pending is None:
+                query = {key: value for key, value in port['discussion'].items()
+                         if key not in {'expected_ledger_revision', 'expected_topic_revision', 'idempotency_key'}}
+                latest = dispatch.discussion_protocol.handle({**query, 'operation': 'read-topic'})
+                port['store_ref'] = latest['workflow_control_ref']
+                port['discussion'].update(expected_ledger_revision=latest['ledger_revision'],
+                    expected_topic_revision=latest['record_revision'], idempotency_key=str(uuid.uuid4()))
+            port['context'] = read_archive_context(port, handoff_id)
+            retired = port['context']['retired_handoffs'][handoff_id]
+            archive_route = (port, s['handoff'])
+        require(retired is not None and retired.get('handoff_completed'), 'identity_mismatch', 'exact completed handoff required')
         original = None
         for state in [s, *s.get('history', [])]:
             for transaction_id, transaction in state.get('control_transactions', {}).items():
@@ -6242,7 +6291,7 @@ class Progress:
                 transactions[identity] = copy.deepcopy(original)
                 transactions[identity]['original_transaction'] = identity
             else:
-                routes = []
+                routes = [archive_route] if archive_route is not None else []
                 for state in [s, *s.get('history', [])]:
                     port = state['control']
                     if port['discussion'] is not None and port['context']['controller_ref'] == retired['controller_ref'] and port['context']['topic_ref'] == retired['topic_ref']:
@@ -6253,15 +6302,32 @@ class Progress:
                     route_keys = ('project_path', 'project_id', 'tree_id', 'actor_topic_id', 'actor_conversation_ref')
                     require(all(all(other['discussion'][key] == port['discussion'][key] for key in route_keys) for other, _ in routes), 'identity_mismatch', 'conflicting original archive authority')
                     query = {key: value for key, value in port['discussion'].items() if key in {*route_keys, 'protocol_version'}}
-                    latest = dispatch.discussion_protocol.handle({**query, 'operation': 'read-topic'})
-                    port['context'] = latest['workflow_control']
-                    require(port['context'] is not None, 'authority_missing', 'original archive checkpoint unavailable')
-                    port['discussion'].update(expected_ledger_revision=latest['ledger_revision'], expected_topic_revision=latest['record_revision'], idempotency_key=str(uuid.uuid4()))
+                    if archive_route is None:
+                        latest = dispatch.discussion_protocol.handle({**query, 'operation': 'read-topic'})
+                        port['store_ref'] = latest['workflow_control_ref']
+                        port['discussion'].update(expected_ledger_revision=latest['ledger_revision'],
+                            expected_topic_revision=latest['record_revision'], idempotency_key=str(uuid.uuid4()))
+                        port['context'] = read_archive_context(port, handoff_id)
                 else:
                     port, saved = copy.deepcopy(s['control']), copy.deepcopy(s['handoff'])
                 authoritative = port['context'].get('retired_handoffs', {}).get(handoff_id)
                 require(authoritative is not None and all(authoritative[key] == retired[key] for key in ('controller_ref', 'topic_ref', 'carrier', 'plan', 'delivery', 'delivery_digest', 'successor')), 'identity_mismatch', 'original frozen handoff changed')
-                transactions[identity] = {'request': copy.deepcopy(data), 'port': port, 'handoff': saved,
+                # Archive has no Git execution lease. Retain only its original
+                # authentication route and exact ledger CAS pointer, never a
+                # second current context or a complete stage input.
+                archive_port = {'discussion': copy.deepcopy(port['discussion'])}
+                archive_handoff = {'controller_ref': saved['controller_ref']}
+                if port['discussion'] is not None:
+                    archive_port['store_ref'] = copy.deepcopy(port['store_ref'])
+                    source_entry = handoff.attached_source_entry(saved) or saved['expected_entry']
+                    archive_handoff['expected_entry'] = {
+                        'discussion_project': copy.deepcopy(source_entry['discussion_project']),
+                        'requirement': {'attachment': copy.deepcopy(source_entry['requirement']['attachment'])},
+                        'repository': {key: copy.deepcopy(value) for key, value in source_entry['repository'].items()
+                                       if key in {'kind', 'root', 'git_common_dir'}}}
+                transactions[identity] = {'request': copy.deepcopy(data), 'port': archive_port,
+                    'handoff': archive_handoff, 'base_revision': s['revision'],
+                    'base_control_digest': entry.digest(s['control']),
                     'scope': 'archive', 'handoff_id': handoff_id, 'operation_id': data['evidence'].get('operation_id'),
                     'handoff_completed': True, 'intent_persisted': data['action'] == 'archive-result' and
                         any(op['operation_id'] == data['evidence'].get('operation_id') for op in authoritative['operations']), 'result': None}
@@ -6274,22 +6340,32 @@ class Progress:
         execution_port = copy.deepcopy(transaction['port'])
         if execution_port['discussion'] is None:
             execution_port['context'] = copy.deepcopy(current)
+        else:
+            execution_port['context'] = read_archive_context(execution_port, handoff_id)
         result, applied = dispatch.checkpoint(execution_port, transaction['handoff'], data['action'], data['evidence'])
-        updated = result['context']['retired_handoffs'][handoff_id]
-        if transaction['port']['discussion'] is not None:
-            query = {key: value for key, value in transaction['port']['discussion'].items()
-                     if key not in {'expected_ledger_revision', 'expected_topic_revision', 'idempotency_key'}}
-            latest = dispatch.discussion_protocol.handle({**query, 'operation': 'read-topic'})
-            updated = latest['workflow_control']['retired_handoffs'][handoff_id]
+        if transaction['port']['discussion'] is None:
+            updated = result['context']['retired_handoffs'][handoff_id]
+        else:
+            updated = read_archive_context({**transaction['port'], 'store_ref': result['store_ref']},
+                handoff_id)['retired_handoffs'][handoff_id]
+            if s['control'].get('store_ref') == transaction['port']['store_ref']:
+                require(result['context'] == current, 'control_context_changed',
+                        'archive cannot replace current ledger execution facts')
+                self.next_envelope(applied)
         # A retired business port can never replace current execution authority.
-        current.setdefault('retired_handoffs', {})[handoff_id] = copy.deepcopy(updated)
-        transaction['result'] = {**result, 'context': copy.deepcopy(current)}
-        transaction['applied'] = applied
-        transaction['intent_persisted'] = True
-        if result['effects']:
-            transaction['operation_id'] = result['effects'][0]['operation_id']
+        # Ledger mirrors retain only their exact authoritative current pointer.
+        if s['control']['discussion'] is None:
+            current.setdefault('retired_handoffs', {})[handoff_id] = copy.deepcopy(updated)
+        frozen_result = {key: value for key, value in result.items() if key != 'context'}
+        invocation = (data['receipt'].get('reference') or data['receipt'].get('call_ref') or
+                      data['receipt'].get('operation_id') or entry.digest(data['receipt']))
+        store, receipt_current, key = self.receipt_store('control:' + data['action'], handoff_id, invocation)
+        self._commit_receipts.append(store.prepare_receipt(receipt_current, key, data, frozen_result))
+        # The exact request/result and receipt membership are committed with
+        # this current projection. Completed routes do not occupy active memory.
+        del transactions[identity]
         self.save()
-        return _view(s, {'operation': 'control-effects', 'result': transaction['result']})
+        return _view(s, {'operation': 'control-effects', 'result': {**frozen_result, 'context': current}})
 
     def recovery_view(self, *, issued=False, acknowledged=False):
         recovery = self.state['control']['context']['handoff_progress']['recovery']
