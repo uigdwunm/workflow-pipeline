@@ -13,6 +13,429 @@ from test_workflow_progress import ProgressTests, progress, transfer, runner
 
 
 class BoundedProgressTests(ProgressTests):
+    def public_review_candidate(self):
+        accepted = self.finish_design('continuous')
+        self.context = self.context_for(3)
+        successor = self.input_for(3, self.state()['accepted'])
+        scope = accepted['readiness']['scope_authority']['scope']
+        for key in ('downstream', 'implementation_paths', 'closure_paths'):
+            successor['scope'][key] = copy.deepcopy(scope[key])
+        successor['scope']['owned_paths'] = copy.deepcopy(scope['implementation_paths'])
+        successor['authorization']['scope_digest'] = transfer.entry.digest(successor['scope'])
+        self.begin('continuous', successor)
+        self.invoke('observe', self.observation(ref='native:dispatcher'))
+        execution = self.execution_input()
+        self.invoke('allocation', {'allocation_id': 'review-slice', 'operation': 'prepare', 'handoff': execution})
+        slot = self.allocation_slot('review-slice')
+        bound = self.invoke('allocation', {'allocation_id': 'review-slice', 'operation': 'bind',
+            'receipt': self.receipt(slot['record'], ref='native:review-executor')})
+        content = b"print('review boundary')\n"
+        (self.flow / 'impl.py').write_bytes(content)
+        slot = self.allocation_slot('review-slice')
+        self.invoke('allocation', {'allocation_id': 'review-slice', 'operation': 'receive',
+            'receipt': self.receipt(slot['record'], 'stopped', 'result', ref='native:review-executor'),
+            'result': {'delivery_id': 'review-slice-result', 'status': 'completed', 'payload': {
+                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(content).hexdigest()},
+                'tests': ['review boundary passed'], 'write_release': bound['next_action']['result']['write_release'],
+                'plan_refs': execution['semantic']['plan_refs'],
+                'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
+        self.invoke('allocation', {'allocation_id': 'review-slice', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:review-slice'}})
+        self.flow_git('add', 'impl.py')
+        self.flow_git('commit', '-qm', 'public review candidate')
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        self.settings['thread_id'] = self.state()['handoff']['expected_entry']['actor']['thread_id']
+        verification = self.mark_reviewable(candidate, fixture_execution=False)
+        return {'operation': 'prepare', 'axis': 'standards', 'candidate': candidate,
+                'actor_ref': self.settings['thread_id'], 'verification': verification}
+
+    def public_review_response(self, prepare, action, status, *, response='review-response', call='review-call', ref=None, raw=None):
+        return {key: prepare[key] for key in ('axis', 'candidate', 'actor_ref')} | {
+            'operation': 'observe', 'action_id': action['action_id'], 'receipt': {
+                'adapter': 'fixture', 'call_ref': call, 'response_ref': response,
+                'status': status, 'ref': ref, 'raw': raw or {'status': status, 'ref': ref}}}
+
+    def test_public_review_raw_proof_corruption_fails_before_authority_change(self):
+        prepare = self.public_review_candidate()
+        action = self.invoke('review-activity', prepare)['next_action']
+        response = self.public_review_response(prepare, action, 'stopped', ref='native:standards',
+            raw={'status': 'completed', 'output': 'x' * (65 * 1024)})
+        self.invoke('review-activity', response)
+        saved = self.state()['review_activity']['standards']['receipts'][-1]
+        store = progress.state_store.StateStore(self.checkpoint)
+        digest = saved['raw']['evidence_ref']['sha256']
+        (store.directory / 'objects' / digest[:2] / digest[2:4] / digest).write_bytes(b'corrupt review proof')
+        authority = self.checkpoint.read_bytes()
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('inspect')
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+
+    def test_public_review_oversized_raw_retains_truncated_unknown(self):
+        prepare = self.public_review_candidate()
+        action = self.invoke('review-activity', prepare)['next_action']
+        response = self.public_review_response(prepare, action, 'stopped', ref='native:standards',
+            raw={'status': 'completed', 'output': 'x' * (16 * 1024**2 + 4096)})
+        self.invoke('review-activity', response)
+        slot = self.state()['review_activity']['standards']
+        self.assertFalse(slot['stopped'], 'incomplete raw cannot prove a stopped review')
+        saved = slot['receipts'][-1]
+        self.assertEqual(saved['status'], 'unknown')
+        self.assertTrue(saved['raw']['truncated'])
+        self.assertEqual(slot['action_id'], action['action_id'])
+        store = progress.state_store.StateStore(self.checkpoint)
+        manifest = store.read_raw_manifest(saved['raw']['evidence_ref'], run_id=store.open_current().run_id)
+        self.assertEqual(manifest['native_receipt']['action_id'], action['action_id'])
+        self.assertEqual(manifest['native_receipt']['response_ref'], response['receipt']['response_ref'])
+        self.assertLessEqual(self.checkpoint.stat().st_size, progress.state_store.ROOT_LIMIT)
+        current = store.open_current()
+        self.assertLessEqual(current.reference['size'], progress.state_store.ROOT_LIMIT)
+        self.assertLessEqual(current.root['subjects'][current.root['metadata']['stage_subject']]['size'],
+                             progress.state_store.SUBJECT_LIMIT)
+        business = store.directory / 'reserves' / 'business' / hashlib.sha256(action['action_id'].encode()).hexdigest()
+        self.assertTrue(business.exists())
+        authority = self.checkpoint.read_bytes()
+        objects = len(list((store.directory / 'objects').glob('*/*/*')))
+        self.assertTrue(self.invoke('review-activity', response)['acknowledged'])
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+        self.assertEqual(len(list((store.directory / 'objects').glob('*/*/*'))), objects)
+        lookup = self.invoke('review-activity', prepare)['next_action']
+        self.assertEqual(lookup['action_id'], action['action_id'])
+        stopped = self.public_review_response(prepare, action, 'stopped', response='complete-review-proof',
+            call='exact-review-lookup', ref='native:standards')
+        self.invoke('review-activity', stopped)
+        self.assertTrue(self.state()['review_activity']['standards']['stopped'])
+        self.assertFalse(business.exists())
+
+    def test_public_review_lookup_during_pause_preserves_original_call(self):
+        prepare = self.public_review_candidate()
+        action = self.invoke('review-activity', prepare)['next_action']
+        self.invoke('review-activity', self.public_review_response(prepare, action, 'unknown'))
+        self.invoke('pause')
+        control_before = copy.deepcopy(self.state()['control'])
+        lookup = self.invoke('review-activity', prepare)['next_action']
+        self.assertEqual(lookup['operation'], 'lookup-exact-review')
+        self.assertEqual(lookup['action_id'], action['action_id'])
+        self.assertEqual(self.state()['control'], control_before)
+        authority = self.checkpoint.read_bytes()
+        repeated = self.invoke('review-activity', prepare)
+        self.assertTrue(repeated['acknowledged'])
+        self.assertEqual(repeated['next_action'], lookup)
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+
+    def test_public_review_unresolved_lookup_keeps_stop_barrier_open(self):
+        prepare = self.public_review_candidate()
+        action = self.invoke('review-activity', prepare)['next_action']
+        stopped = self.public_review_response(prepare, action, 'stopped', ref='native:standards')
+        self.invoke('review-activity', stopped)
+        query = self.invoke('review-activity', prepare)['next_action']
+        self.invoke('pause')
+        paused = self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
+        self.assertEqual(paused['status'], 'pausing', 'original stop cannot settle a later unknown native lookup')
+        unknown = self.public_review_response(prepare, query, 'unknown', response='lookup-unknown',
+            call='later-review-lookup', ref='native:standards')
+        self.invoke('review-activity', unknown)
+        self.assertEqual(self.invoke('review-activity', stopped)['status'], 'pausing')
+        fresh = self.public_review_response(prepare, query, 'stopped', response='lookup-stopped',
+            call='later-review-lookup', ref='native:standards')
+        self.assertEqual(self.invoke('review-activity', fresh)['status'], 'paused')
+
+    def test_public_review_lost_creation_cannot_bind_another_native_call(self):
+        prepare = self.public_review_candidate()
+        action = self.invoke('review-activity', prepare)['next_action']
+        self.invoke('review-activity', self.public_review_response(prepare, action, 'unknown', call='original-create'))
+        authority = self.checkpoint.read_bytes()
+        other = self.public_review_response(prepare, action, 'running', response='other-create-result',
+            call='another-create', ref='native:other-reviewer')
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('review-activity', other)
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+        self.assertIsNone(self.state()['review_activity']['standards']['ref'])
+        original = self.public_review_response(prepare, action, 'running', response='original-create-result',
+            call='original-create', ref='native:standards')
+        self.invoke('review-activity', original)
+        self.assertEqual(self.state()['review_activity']['standards']['ref'], 'native:standards')
+
+    def test_public_review_unknown_lookup_stop_uses_independent_recovery(self):
+        prepare = self.public_review_candidate()
+        action = self.invoke('review-activity', prepare)['next_action']
+        unknown = self.public_review_response(prepare, action, 'unknown')
+        self.invoke('review-activity', unknown)
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        business = directory / 'reserves' / 'business' / hashlib.sha256(action['action_id'].encode()).hexdigest()
+        self.assertTrue(business.exists())
+        original_size = business.stat().st_size
+        lookup = self.invoke('review-activity', prepare)['next_action']
+        self.assertEqual(lookup['operation'], 'lookup-exact-review')
+        self.assertEqual(lookup['action_id'], action['action_id'])
+        recovery = list((directory / 'reserves' / 'recovery').glob('*'))
+        self.assertEqual(len(recovery), 1, 'lookup must protect its own authenticated receipt')
+        self.assertNotEqual(recovery[0].name, business.name)
+        (directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        stopped = self.public_review_response(prepare, action, 'stopped', response='review-stop',
+            call='review-lookup', ref='native:standards')
+        before_size = []
+        replace = os.replace
+        def authority_commit(source, target):
+            if Path(target) == self.checkpoint:
+                before_size.append(business.stat().st_size)
+            return replace(source, target)
+        with patch.object(os, 'replace', authority_commit):
+            result = self.invoke('review-activity', stopped)
+        self.assertTrue(self.state()['review_activity']['standards']['stopped'], result)
+        self.assertEqual(before_size, [original_size], 'lookup cannot consume original business capacity')
+        self.assertFalse(business.exists())
+        self.assertFalse(recovery[0].exists())
+        authority = self.checkpoint.read_bytes()
+        count = len(list((directory / 'objects').glob('*/*/*')))
+        repeated = self.invoke('review-activity', stopped)
+        self.assertTrue(repeated['acknowledged'])
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+        self.assertEqual(len(list((directory / 'objects').glob('*/*/*'))), count)
+        self.assertTrue(self.invoke('review-activity', unknown)['acknowledged'])
+        self.assertTrue(self.state()['review_activity']['standards']['stopped'])
+        changed = copy.deepcopy(stopped); changed['receipt']['raw']['changed'] = True
+        with self.assertRaises(transfer.entry.PreparationError):
+            self.invoke('review-activity', changed)
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+
+    def test_public_review_worst_result_schema_is_checked_before_effect(self):
+        prepare = self.public_review_candidate()
+        self.save_transport(instance='fixture-host', state='live', native_event_sequence=0)
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        subject_size = current.root['subjects'][current.root['metadata']['stage_subject']]['size']
+        # Leave 16KiB in the public subject budget, less than the worst native outcome.
+        event = {'method': 'item/completed', 'params': {'threadId': self.settings['thread_id'],
+            'item': {'type': 'subAgentActivity', 'id': 'x' * (240 * 1024 - subject_size), 'kind': 'started',
+                     'agentPath': 'native:review-executor', 'agentThreadId': 'native:review-executor'}}}
+        self.invoke('host-event', {'instance': 'fixture-host', 'event': event})
+        authority = self.checkpoint.read_bytes()
+        with self.assertRaises(transfer.entry.PreparationError) as error:
+            self.invoke('review-activity', prepare)
+        self.assertEqual(error.exception.code, 'state_capacity')
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'reviewable')
+        self.assertFalse(list((store.directory / 'reserves' / 'business').glob('*')))
+
+    def test_public_review_ordinary_capacity_is_checked_before_reserving(self):
+        prepare = self.public_review_candidate()
+        store = progress.state_store.StateStore(self.checkpoint)
+        (store.directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        authority = self.checkpoint.read_bytes()
+        with self.assertRaises(transfer.entry.PreparationError) as error:
+            self.invoke('review-activity', prepare)
+        self.assertEqual(error.exception.code, 'state_capacity')
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+        self.assertEqual(list((store.directory / 'reserves' / 'business').glob('*')), [],
+                         'admission must reject before creating an orphan business identity')
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'reviewable')
+
+    def test_public_review_complete_raw_still_converges_through_original_control(self):
+        prepare = self.public_review_candidate()
+        for axis in ('standards', 'spec'):
+            request = {**prepare, 'axis': axis}
+            action = self.invoke('review-activity', request)['next_action']
+            self.invoke('review-activity', self.public_review_response(request, action, 'stopped',
+                call='complete-' + axis, response='complete-result-' + axis, ref='native:' + axis,
+                raw={'status': 'completed', 'output': 'x' * (50 * 1024)}))
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        review = {axis: {'candidate': prepare['candidate'],
+            'expected_target_head': checkpoint['expected_target_head'], 'plan_digest': checkpoint['plan_digest'],
+            'plan_authority': checkpoint['plan_authority'], 'reviewer_ref': 'native:' + axis,
+            'status': 'accepted', 'result_ref': 'complete-result-' + axis} for axis in ('standards', 'spec')}
+        result = self.invoke('control', {'action': 'review-converged',
+            'evidence': {'candidate': prepare['candidate'], 'review': review, 'reference': 'controller:complete-review'},
+            'receipt': {'adapter': 'fixture', 'call_ref': 'complete-review-decision',
+                'response_ref': 'complete-review-decision-result', 'raw': {'review': review}}})
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'final-validation-pending', result)
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        self.assertLessEqual(current.reference['size'], progress.state_store.ROOT_LIMIT)
+        self.assertLessEqual(current.root['subjects'][current.root['metadata']['stage_subject']]['size'],
+                             progress.state_store.SUBJECT_LIMIT)
+
+    def public_review_receipt_commit_crash(self, after_root):
+        prepare = self.public_review_candidate()
+        action = self.invoke('review-activity', prepare)['next_action']
+        self.invoke('review-activity', prepare)
+        revision = self.state()['revision']
+        store = progress.state_store.StateStore(self.checkpoint)
+        business = store.directory / 'reserves' / 'business' / hashlib.sha256(action['action_id'].encode()).hexdigest()
+        (store.directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        response = self.public_review_response(prepare, action, 'stopped', response='fault-stop',
+            call='fault-lookup', ref='native:standards')
+        replace = os.replace
+        def lost(source, target):
+            target = Path(target)
+            if target == self.checkpoint and not after_root:
+                envelope = json.loads(Path(source).read_bytes())
+                digest = envelope['current']['sha256']
+                root = json.loads((store.directory / 'objects' / digest[:2] / digest[2:4] / digest).read_bytes())['value']
+                if root.get('receipts'):
+                    raise KeyboardInterrupt('receipt prepared before root CAS')
+            elif target.parent == store.directory / 'commits' and after_root:
+                if json.loads(Path(source).read_bytes()).get('receipts'):
+                    raise KeyboardInterrupt('receipt root committed before marker')
+            return replace(source, target)
+        with patch.object(os, 'replace', lost):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('review-activity', response)
+        self.assertTrue(business.exists(), 'interrupted operation cannot release its original business capacity')
+        self.assertEqual(self.state()['review_activity']['standards']['stopped'], after_root)
+        recovered = self.invoke('review-activity', response, revision=revision)
+        self.assertEqual(recovered['acknowledged'], after_root)
+        self.assertTrue(self.state()['review_activity']['standards']['stopped'])
+        self.assertFalse(business.exists())
+        authority = self.checkpoint.read_bytes()
+        self.assertTrue(self.invoke('review-activity', response, revision=revision)['acknowledged'])
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+
+    def test_public_review_receipt_commit_before_root_preserves_original_reserve(self):
+        self.public_review_receipt_commit_crash(False)
+
+    def test_public_review_receipt_commit_after_root_acks_original_proof(self):
+        self.public_review_receipt_commit_crash(True)
+
+    def test_public_review_partial_raw_keeps_original_business_reserve(self):
+        prepare = self.public_review_candidate()
+        action = self.invoke('review-activity', prepare)['next_action']
+        self.invoke('review-activity', prepare)
+        store = progress.state_store.StateStore(self.checkpoint)
+        query = self.state()['review_activity']['standards']['query']
+        recovery = store.directory / 'reserves' / 'recovery' / hashlib.sha256(query['action_id'].encode()).hexdigest()
+        with recovery.open('r+b') as stream:
+            stream.truncate(2 * 1024**2)
+        (store.directory / 'usage.json').write_text(json.dumps({'allocated': 2 * 1024**3 - 128 * 1024**2}))
+        business = store.directory / 'reserves' / 'business' / hashlib.sha256(action['action_id'].encode()).hexdigest()
+        original_size = business.stat().st_size
+        response = self.public_review_response(prepare, action, 'stopped', call='partial-query', ref='native:standards',
+            raw={'output': ''.join(chr(65 + number) * 1024**2 for number in range(3)), 'status': 'completed'})
+        self.invoke('review-activity', response)
+        saved = self.state()['review_activity']['standards']
+        self.assertFalse(saved['stopped'])
+        self.assertFalse(saved['query']['resolved'])
+        self.assertEqual(saved['action_id'], action['action_id'])
+        self.assertEqual(business.stat().st_size, original_size)
+        manifest = store.read_raw_manifest(saved['receipts'][-1]['raw']['evidence_ref'], run_id=store.open_current().run_id)
+        self.assertFalse(manifest['complete'])
+        self.assertEqual(manifest['reason'], 'state_capacity')
+        self.assertGreater(manifest['retained_size'], 0)
+        self.assertLess(manifest['retained_size'], manifest['size'])
+        lookup = self.invoke('review-activity', prepare)['next_action']
+        self.assertEqual(lookup['action_id'], action['action_id'])
+        self.assertEqual(lookup['query_call_ref'], 'partial-query')
+        fresh = self.public_review_response(prepare, action, 'stopped', call='partial-query',
+            response='complete-partial-query', ref='native:standards')
+        self.invoke('review-activity', fresh)
+        self.assertTrue(self.state()['review_activity']['standards']['stopped'])
+        self.assertFalse(business.exists())
+
+    def public_review_prepare_crash(self, after_root):
+        prepare = self.public_review_candidate()
+        revision = self.state()['revision']
+        store = progress.state_store.StateStore(self.checkpoint)
+        replace = os.replace
+        interrupted = []
+        def lost(source, target):
+            target = Path(target)
+            proof = None
+            if not after_root and target == self.checkpoint:
+                envelope = json.loads(Path(source).read_bytes())
+                digest = envelope['current']['sha256']
+                proof = json.loads((store.directory / 'objects' / digest[:2] / digest[2:4] / digest).read_bytes())['value']
+            elif after_root and target.parent == store.directory / 'commits':
+                proof = json.loads(Path(source).read_bytes())
+            if proof is not None and proof.get('receipts'):
+                interrupted.append(proof)
+                raise KeyboardInterrupt('review start committed before return' if after_root else 'before review start authority commit')
+            return replace(source, target)
+        with patch.object(os, 'replace', lost):
+            with self.assertRaises(KeyboardInterrupt):
+                self.invoke('review-activity', prepare)
+        self.assertEqual(len(interrupted), 1)
+        slot = self.state()['review_activity']['standards']
+        identity = slot['action_id']
+        self.assertEqual(slot['start']['applied'], after_root)
+        control = copy.deepcopy(self.state()['control'])
+        replay = self.invoke('review-activity', prepare, revision=revision)
+        self.assertTrue(replay['acknowledged'])
+        self.assertEqual(replay['next_action']['operation'], 'lookup-exact-review')
+        self.assertEqual(replay['next_action']['action_id'], identity)
+        self.assertEqual(self.state()['control'], control, 'lookup cannot replay C review-start')
+        authority = self.checkpoint.read_bytes()
+        self.assertEqual(self.invoke('review-activity', prepare, revision=revision)['next_action'], replay['next_action'])
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+        response = self.public_review_response(prepare, replay['next_action'], 'not-created',
+            response='original-review-not-created', call='original-review-lookup')
+        self.invoke('review-activity', response)
+        reserve = store.directory / 'reserves' / 'business' / hashlib.sha256(identity.encode()).hexdigest()
+        self.assertFalse(reserve.exists())
+        committed = self.checkpoint.read_bytes()
+        self.assertTrue(self.invoke('review-activity', response, revision=revision)['acknowledged'])
+        self.assertEqual(self.checkpoint.read_bytes(), committed)
+
+    def test_public_review_prepare_root_before_retains_original_intent(self):
+        self.public_review_prepare_crash(False)
+
+    def test_public_review_prepare_root_after_repairs_original_proof(self):
+        self.public_review_prepare_crash(True)
+
+    def test_public_review_enospc_cannot_change_authority_or_publish_action(self):
+        import errno
+        prepare = self.public_review_candidate()
+        store = progress.state_store.StateStore(self.checkpoint)
+        before = self.checkpoint.read_bytes()
+        replace = os.replace
+        def full(source, target):
+            if Path(target).parent == store.directory / 'reserves' / 'business':
+                raise OSError(errno.ENOSPC, 'no physical space for original review result')
+            return replace(source, target)
+        with patch.object(os, 'replace', full):
+            with self.assertRaises(OSError):
+                self.invoke('review-activity', prepare)
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'reviewable')
+        self.assertFalse(self.state().get('review_activity'))
+        self.assertFalse(list((store.directory / 'reserves' / 'business').glob('*')))
+
+    def test_public_review_capacity_failure_has_no_authority_effect(self):
+        prepare = self.public_review_candidate()
+        store = progress.state_store.StateStore(self.checkpoint)
+        for number in range(4):
+            store.reserve('occupied-review-business-' + str(number))
+        before = self.checkpoint.read_bytes()
+        try:
+            result = self.invoke('review-activity', prepare)
+        except transfer.entry.PreparationError as error:
+            self.assertEqual(error.code, 'state_capacity')
+        else:
+            self.assertNotEqual((result.get('next_action') or {}).get('operation'), 'invoke-review')
+        self.assertEqual(self.checkpoint.read_bytes(), before, 'rejected preparation cannot publish C or an unreserved intent')
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'reviewable')
+        self.assertFalse(self.state().get('review_activity'))
+
+    def test_public_review_prepare_reserves_physical_capacity_before_effect(self):
+        prepare = self.public_review_candidate()
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        replaced = []
+        original_replace = os.replace
+        def observe_reserve(source, target):
+            target = Path(target)
+            if target.parent == directory / 'reserves' / 'business':
+                self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'reviewable')
+                replaced.append(target)
+            return original_replace(source, target)
+        with patch.object(os, 'replace', observe_reserve):
+            result = self.invoke('review-activity', prepare)
+        action = result['next_action']
+        self.assertEqual(action['operation'], 'invoke-review', result)
+        reserve = directory / 'reserves' / 'business' / hashlib.sha256(action['action_id'].encode()).hexdigest()
+        self.assertTrue(reserve.exists(), 'public native review needs its original durable physical receipt capacity')
+        self.assertEqual(reserve.stat().st_size, 16 * 1024**2)
+        self.assertGreaterEqual(reserve.stat().st_blocks * 512, 16 * 1024**2)
+        self.assertEqual(replaced, [reserve])
+        self.assertEqual(self.state()['review_activity']['standards']['action_id'], action['action_id'])
+
     def recover_implementation_with_closure(self, *, standalone=False, rejected=None, continue_dispatcher=True):
         implementation = self.accepted_implementation_for_closure(standalone=standalone)
         self.old_implementation_footer = json.loads(implementation['completion']['stage_result']['handoff_json'])['accepted_transfer']

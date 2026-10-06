@@ -254,6 +254,15 @@ class StateStore:
         usage['allocated'] += size
         atomic_write(path, encode(usage))
 
+    def require_ordinary_capacity(self, size):
+        """Check a measured new intent before creating its physical call reserve."""
+        require(type(size) is int and size > 0, 'invalid intent capacity estimate')
+        path = self._safe('usage.json')
+        usage = json.loads(self._read(path, 16 * 1024)) if path.exists() else {'allocated': 0}
+        require(type(usage.get('allocated')) is int and usage['allocated'] >= 0, 'invalid capacity account')
+        require(usage['allocated'] + size <= RUN_LIMIT - BUSINESS_RESERVE - RECOVERY_RESERVE,
+                'new intent exceeds ordinary capacity; retain existing invocations', 'state_capacity')
+
     def reserve(self, action_id, *, recovery=False):
         require(self._measured_writes is None, 'commit measurement cannot reserve capacity')
         digest = hashlib.sha256(action_id.encode()).hexdigest()

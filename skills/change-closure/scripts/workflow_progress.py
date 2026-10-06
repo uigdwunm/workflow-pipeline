@@ -38,6 +38,7 @@ import workflow_state_store as state_store
 PROTOCOL = "workflow-progress-v20"
 KEY = "workflow_progress"
 CHECKPOINT_LOCK_TIMEOUT = 5.0
+REVIEW_INLINE_RAW_LIMIT = 4 * 1024
 NATIVE_SOURCE_KINDS = ('cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
                        'subAgentCompact', 'subAgentThreadSpawn', 'subAgentOther', 'unknown')
 require = entry.require
@@ -1673,6 +1674,58 @@ def read_stage_transaction_result(state):
     return proof['result']
 
 
+def validate_saved_reviews(state):
+    store = state_store.open_store(state['checkpoint_path'])
+    current = store.open_current()
+    identities = set()
+    for group in [state.get('review_activity', {}), *state.get('review_history', [])]:
+        require(isinstance(group, dict) and set(group) <= {'standards', 'spec'},
+                'invalid_checkpoint', 'retain the two original review axes')
+        for axis, slot in group.items():
+            require(isinstance(slot, dict) and isinstance(slot.get('action_id'), str) and slot['action_id'] and
+                    slot['action_id'] not in identities and isinstance(slot.get('prepare'), dict) and
+                    slot['prepare'].get('axis') == axis and slot['prepare'].get('candidate') == slot.get('candidate') and
+                    slot['prepare'].get('actor_ref') == slot.get('originating_ref') and
+                    type(slot.get('stopped')) is bool and isinstance(slot.get('receipts'), list),
+                    'invalid_checkpoint', 'review must retain its original request and native identity')
+            identities.add(slot['action_id'])
+            start = slot.get('start')
+            require(isinstance(start, dict) and type(start.get('applied')) is bool and
+                    isinstance(start.get('control_digest'), str) and re.fullmatch(r'[0-9a-f]{64}', start['control_digest']),
+                    'invalid_checkpoint', 'review must retain its original C intent')
+            if start['applied']:
+                require(isinstance(start.get('result_digest'), str) and
+                        re.fullmatch(r'[0-9a-f]{64}', start['result_digest']) and
+                        'result_ref' in start and (start['result_ref'] is None or isinstance(start['result_ref'], dict)),
+                        'invalid_checkpoint', 'applied review must retain its original C result proof')
+            query = slot.get('query')
+            if query is not None:
+                require(isinstance(query, dict) and isinstance(query.get('action_id'), str) and query['action_id'] and
+                        query['action_id'] != slot['action_id'] and query.get('original_action_id') == slot['action_id'] and
+                        type(query.get('resolved')) is bool and
+                        (query.get('call_ref') is None or isinstance(query['call_ref'], str) and query['call_ref']),
+                        'invalid_checkpoint', 'review lookup must retain its original call')
+            for receipt in slot['receipts']:
+                require(isinstance(receipt, dict) and set(receipt) == {
+                        'adapter', 'call_ref', 'response_ref', 'status', 'ref', 'raw'} and
+                        receipt['status'] in {'running', 'stopped', 'unknown', 'not-created'} and
+                        all(isinstance(receipt[key], str) and receipt[key] for key in ('adapter', 'call_ref', 'response_ref')) and
+                        isinstance(receipt['raw'], dict) and receipt['raw'],
+                        'invalid_checkpoint', 'review receipt fields changed')
+                raw = receipt['raw']
+                if raw.get('format') == 'review-raw-reference-v1':
+                    manifest = store.read_raw_manifest(raw['evidence_ref'], run_id=current.run_id)
+                    binding = {key: receipt[key] for key in ('adapter', 'call_ref', 'response_ref', 'ref')}
+                    binding.update(status=raw['reported_status'], action_id=slot['action_id'],
+                        candidate=slot['candidate'], originating_ref=slot['originating_ref'])
+                    truncated = manifest['size'] > state_store.EVIDENCE_LIMIT or not manifest['complete']
+                    require(manifest['native_receipt'] == binding and raw['size'] == manifest['size'] and
+                            raw['sha256'] == manifest['sha256'] and raw['truncated'] is truncated and
+                            receipt['status'] == ('unknown' if truncated else raw['reported_status']),
+                            'state_object_corrupt', 'review raw proof changed its original binding or outcome')
+    require(store.bytes_read <= state_store.READ_LIMIT, 'state_capacity', 'review proof exceeds current read budget')
+
+
 def validate_state(state):
     require(isinstance(state, dict) and state.get("protocol") == PROTOCOL,
             "legacy_run_requires_original_runtime", "use original " + str(state.get("protocol") if isinstance(state,dict) else None) + "; package digests " + str({k:v.get("bundle_digest") for k,v in (state.get("packages",{}) if isinstance(state,dict) else {}).items()}))
@@ -1732,6 +1785,7 @@ def validate_state(state):
             "invalid_checkpoint", "retained host actions must be an ordered list")
     records = state.get('native_finalizations', [])
     validate_saved_host_raw(state)
+    validate_saved_reviews(state)
     require(isinstance(records, list), 'invalid_checkpoint', 'native lifecycle receipts must be an ordered list')
     refs, actions = set(), set()
     for record in records:
@@ -2614,6 +2668,14 @@ class Progress:
         query = self.state['host'].get('query')
         if query and not query.get('resolved'):
             pending.add(query['action_id'])
+        for group in [self.state.get('review_activity', {}), *self.state.get('review_history', [])]:
+            for slot in group.values():
+                if not slot.get('business_settled'):
+                    pending.add(slot['action_id'])
+                if slot.get('raw_ingress'):
+                    pending.add(slot['raw_ingress']['receipt_action'])
+                if slot.get('query') and not slot['query'].get('resolved'):
+                    pending.add(slot['query']['action_id'])
         pending.update(transaction['reserve_action'] for transaction in self.state.get('control_transactions', {}).values()
             if transaction.get('reserve_action') and transaction.get('result') is None)
         state_store.open_store(self.path).release_settled_reserves(pending)
@@ -2664,6 +2726,9 @@ class Progress:
             for axis, slot in group.items():
                 if slot is not None and not slot.get('stopped'):
                     pending.append({'kind':'reviewer', 'axis':axis, 'ref':slot.get('ref'), 'action_id':slot['action_id']})
+                if slot is not None and slot.get('query') and not slot['query'].get('resolved'):
+                    pending.append({'kind': 'review-lookup', 'axis': axis, 'ref': slot.get('ref'),
+                                    'action_id': slot['query']['action_id'], 'original_action_id': slot['action_id']})
         if s.get('stage', 0) >= 2 and s.get('dispatch') and self.bound_ref() is not None:
             if s.get('native_host', {}).get('adapter') == 'collaboration':
                 return pending + self.collaboration_pending()
@@ -4814,6 +4879,9 @@ class Progress:
     def require_business_ready(self, *, control_replay=False):
         if not control_replay:
             self.require_controls_reconciled()
+        require(not any(not slot['start']['applied'] and not slot.get('business_settled')
+                        for slot in self.state.get('review_activity', {}).values()),
+                'control_outcome_unknown', 'look up the original pending review start before new business work')
         require(not self.state.get('prior_carrier_activity'), 'host_recovery_required', 'reconcile activity through the original prior-stage carrier')
         require(self.state.get('transport_loss') is None, 'host_recovery_required', 'original host identity and calls require current recovery evidence')
         require(self.state.get("business_block") is None, "business_recovery_required",
@@ -6269,7 +6337,9 @@ class Progress:
                 native = {}
                 for axis, slot in slots.items():
                     review = data['evidence']['review'][axis]
-                    require(slot['stopped'] and slot['ref'] == review['reviewer_ref'] and slot['candidate'] == data['evidence']['candidate'], 'review_incomplete', 'native reviews must stop at exact candidate')
+                    require(slot['stopped'] and (not slot.get('query') or slot['query']['resolved']) and
+                            slot['ref'] == review['reviewer_ref'] and slot['candidate'] == data['evidence']['candidate'],
+                            'review_incomplete', 'native reviews and their exact lookups must stop at exact candidate')
                     receipts = [r for r in slot['receipts'] if r['response_ref'] == review['result_ref'] and r['status'] == 'stopped']
                     require(len(receipts) == 1, 'review_incomplete', 'semantic result must name original stopped response')
                     native[axis] = receipts[0]
@@ -7002,6 +7072,167 @@ class Progress:
         self.require_not_stopping()
         self.require_finalizations_released()
 
+    def commit_review_start(self, slot, result, applied):
+        self.state['control']['context'] = result['context']
+        self.next_envelope(applied)
+        slot['start'].update(applied=True, result_digest=entry.digest(result['context']),
+                             result_ref=copy.deepcopy(result.get('store_ref')))
+        store, current, key = self.receipt_store('review:prepare', self.state['stage_subject'], slot['action_id'])
+        self._commit_receipts.append(store.prepare_receipt(current, key, slot['prepare'], {
+            'action_id': slot['action_id'], 'control_digest': slot['start']['result_digest'],
+            'control_ref': slot['start']['result_ref']}))
+        self.save()
+
+    def recover_review_start(self, slot):
+        """Read the original ledger transaction proof, never invoke review-start again."""
+        start = slot['start']
+        if start['applied'] or start['discussion'] is None:
+            return
+        require(entry.digest(self.state['control']) == start['control_digest'],
+                'control_context_changed', 'pending review start cannot replace a newer authority')
+        envelope = start['discussion']
+        query = {key: value for key, value in envelope.items()
+                 if key not in {'expected_ledger_revision', 'expected_topic_revision', 'idempotency_key'}}
+        latest = dispatch.discussion_protocol.handle({**query, 'operation': 'read-topic'})
+        pointer = latest['workflow_control_ref']
+        require(pointer is not None, 'authority_missing', 'original review ledger is unavailable')
+        ledger = state_store.StateStore(pointer['ledger_path'])
+        request = {**envelope, 'operation': 'workflow-control', 'action': 'review-start',
+                   'evidence': {'candidate': slot['candidate']}}
+        if start['store_ref'] is not None:
+            request['expected_control_ref'] = start['store_ref']
+        fingerprint = hashlib.sha256(dispatch.discussion_protocol._canonical_json(
+            {key: value for key, value in request.items() if key != 'idempotency_key'}).encode('utf-8')).hexdigest()
+        recovered = ledger.read_ledger_receipt(envelope['actor_topic_id'], envelope['idempotency_key'], fingerprint)
+        if recovered is None:
+            # The actual read-topic pointer proves this generation committed,
+            # including a crash between ledger CAS and receipt certification.
+            context, body = ledger.read_ledger_control(pointer)
+            proof = body['receipt']
+            if proof is None or proof['key'] != envelope['idempotency_key']:
+                return
+            require(proof['fingerprint'] == fingerprint,
+                    'review_conflict', 'original ledger review intent changed')
+            recovered = {**proof['result'], 'control': {**proof['result']['control'],
+                                                        'context': context, 'store_ref': pointer}}
+        else:
+            require(recovered['control']['store_ref'] == pointer,
+                    'control_context_changed', 'later ledger authority cannot be replaced by an old review proof')
+            context, _ = ledger.read_ledger_control(pointer)
+            recovered['control']['context'] = context
+        result = recovered['control']
+        require(result['context']['controller_ref'] == self.state['control']['context']['controller_ref'] and
+                result['context']['handoff_progress']['candidate'] == slot['candidate'] and
+                result['context']['handoff_progress']['state'] == 'reviewing',
+                'review_conflict', 'original ledger proof does not apply this candidate review')
+        self._receipt_action = slot['query']['action_id']
+        self.commit_review_start(slot, result, recovered)
+
+    def review_lookup(self, axis, slot):
+        """Protect the exact original call lookup independently of business space."""
+        store = state_store.open_store(self.path)
+        query = slot.get('query')
+        if query is None or query.get('resolved'):
+            query = {'action_id': str(uuid.uuid4()), 'resolved': False,
+                     'original_action_id': slot['action_id'], 'call_ref': None}
+            store.reserve(query['action_id'], recovery=True)
+            slot['query'] = query
+            self._receipt_action = query['action_id']
+            self.save()
+        else:
+            store.require_reserve(query['action_id'], recovery=True)
+        return {'operation': 'lookup-exact-review', 'axis': axis,
+                'action_id': slot['action_id'], 'ref': slot.get('ref'),
+                'call_ref': slot.get('call_ref') or (slot.get('raw_ingress') or {}).get('call_ref'),
+                'query_action_id': query['action_id'],
+                'query_call_ref': query.get('call_ref')}
+
+    def review_receipt_request(self, data):
+        size, digest = state_store.raw_measure(data['receipt']['raw'])
+        return {**data, 'receipt': {**data['receipt'], 'raw': {'size': size, 'sha256': digest}}}
+
+    def apply_review_receipt(self, slot, receipt, original, key, current, *, proof=True):
+        query = slot.get('query')
+        if 'call_ref' not in slot:
+            slot['call_ref'] = receipt['call_ref']
+        if query and not query.get('resolved'):
+            query['call_ref'] = receipt['call_ref']
+            query['resolved'] = receipt['status'] != 'unknown'
+        slot['receipts'].append(copy.deepcopy(receipt))
+        slot['stopped'] = receipt['status'] in {'stopped', 'not-created'}
+        if slot['stopped']:
+            slot['business_settled'] = True
+            self.state.get('native_adverse', {}).pop(slot['ref'], None)
+        if proof:
+            store = state_store.open_store(self.path, receipt_action=self._receipt_action)
+            self._commit_receipts.append(store.prepare_receipt(current, key, original,
+                {'action_id': slot['action_id'], 'response_ref': receipt['response_ref']}))
+        self.save()
+
+    def review_raw_projection(self, receipt, reference, manifest, measurement):
+        size, digest = measurement
+        truncated = size > state_store.EVIDENCE_LIMIT or not manifest['complete']
+        return {**receipt, 'status': 'unknown' if truncated else receipt['status'], 'raw': {
+            'format': 'review-raw-reference-v1', 'evidence_ref': reference, 'size': size,
+            'sha256': digest, 'truncated': truncated, 'reported_status': receipt['status'],
+            'reason': 'atomic_limit_exceeded' if size > state_store.EVIDENCE_LIMIT else manifest['reason']}}
+
+    def retain_review_receipt(self, slot, data, original, key, current):
+        receipt = data['receipt']
+        measurement = (original['receipt']['raw']['size'], original['receipt']['raw']['sha256'])
+        if measurement[0] <= REVIEW_INLINE_RAW_LIMIT:
+            slot.pop('raw_ingress', None)
+            return copy.deepcopy(receipt)
+        binding = {key: receipt[key] for key in ('adapter', 'call_ref', 'response_ref', 'ref', 'status')}
+        binding.update(action_id=slot['action_id'], candidate=slot['candidate'],
+                       originating_ref=slot['originating_ref'])
+        slot['raw_ingress'] = {**binding, 'size': measurement[0], 'sha256': measurement[1],
+                               'receipt_action': self._receipt_action}
+        # A crash before/during spooling retains the authenticated original
+        # response identity. It cannot be mistaken for a completed stop.
+        slot['stopped'] = False
+        self.save()
+        store = state_store.open_store(self.path, receipt_action=self._receipt_action)
+        current = store.open_current()
+        size, digest = measurement
+        chunks = [{'run_id': current.run_id, 'kind': 'raw-chunk', 'sha256': '0' * 64,
+                   'size': min(1024 * 1024, size - offset)}
+                  for offset in range(0, min(size, state_store.EVIDENCE_LIMIT), 1024 * 1024)]
+        measured = []
+        for reason in (None, 'state_capacity', 'interrupted'):
+            manifest = {'format': 'raw-evidence-v1', 'complete': reason is None, 'size': size,
+                'retained_size': min(size, state_store.EVIDENCE_LIMIT), 'sha256': digest,
+                'chunks': chunks, 'reason': reason, 'native_receipt': binding}
+            with store.measure_writes(sequence=True) as writes:
+                reference = store.write_object(current.run_id, 'evidence', manifest)
+                candidate = Progress(self.path, copy.deepcopy(self.outer))
+                candidate._authority_revision = self._authority_revision
+                candidate._receipt_action = self._receipt_action
+                saved = next(value for group in [candidate.state.get('review_activity', {}),
+                    *candidate.state.get('review_history', [])] for value in group.values()
+                    if value['action_id'] == slot['action_id'])
+                projected = self.review_raw_projection(receipt, reference, manifest, measurement)
+                if reason != 'interrupted':
+                    saved.pop('raw_ingress', None)
+                candidate.apply_review_receipt(saved, projected, original, key, current, proof=False)
+                store.prepare_receipt(current, key, original,
+                    {'action_id': slot['action_id'], 'response_ref': receipt['response_ref']})
+                measured.append(sum(writes.values()) + 2 * state_store.ROOT_LIMIT)
+        commit_bytes = max(measured)
+        require(commit_bytes <= state_store.EVIDENCE_LIMIT,
+                'state_capacity', 'review receipt exceeds its bounded commit reserve')
+        try:
+            reference, manifest = store.write_raw_evidence(current.run_id, receipt['raw'],
+                measurement=measurement, commit_bytes=commit_bytes, native_receipt=binding)
+        except state_store.RawEvidenceInterrupted as error:
+            slot['raw_ingress']['evidence_ref'] = error.reference
+            manifest = store.read_raw_manifest(error.reference, run_id=current.run_id)
+            self.apply_review_receipt(slot, self.review_raw_projection(receipt, error.reference, manifest, measurement),
+                                      original, key, current)
+            raise
+        slot.pop('raw_ingress', None)
+        return self.review_raw_projection(receipt, reference, manifest, measurement)
+
     def review_activity(self, data):
         """Two fixed review slots; allocation and candidate acceptance stay in B."""
         entry.fields(data, {'operation','axis','candidate','actor_ref'}, {'verification','action_id','receipt'})
@@ -7022,6 +7253,17 @@ class Progress:
             slot = matches[0]
         if data['operation'] == 'prepare':
             entry.fields(data, {'operation','axis','candidate','actor_ref','verification'})
+            if slot is not None and slot['candidate'] == data['candidate']:
+                require(slot['prepare'] == data, 'review_conflict', 'retain the original review intent')
+                if slot['start']['applied']:
+                    store, receipt_current, key = self.receipt_store('review:prepare', s['stage_subject'], slot['action_id'])
+                    proof = store.read_receipt(receipt_current, key, data)
+                    require(proof == {'action_id': slot['action_id'],
+                            'control_digest': slot['start']['result_digest'], 'control_ref': slot['start']['result_ref']},
+                            'review_conflict', 'review start lacks its committed original receipt')
+                lookup = self.review_lookup(data['axis'], slot)
+                self.recover_review_start(slot)
+                return _view(s, lookup, acknowledged=True)
             self.require_not_stopping()
             self.require_business_ready()
             if slot is None or slot['candidate'] != data['candidate']:
@@ -7045,16 +7287,46 @@ class Progress:
                 s.setdefault('review_history', []).append(copy.deepcopy(slots))
                 s['review_activity'] = slots = {}
                 slot = None
-            if slot is not None:
-                require(slot['prepare'] == data, 'review_conflict', 'retain the original review intent')
-                return _view(s, {'operation':'lookup-exact-review','axis':data['axis'], 'action_id':slot['action_id'], 'ref':slot.get('ref')}, acknowledged=True)
-            result, applied = dispatch.checkpoint(s['control'], s['handoff'], 'review-start', {'candidate':data['candidate']})
-            s['control']['context'] = result['context']
-            self.next_envelope(applied)
             slot = {'candidate':data['candidate'], 'originating_ref':data['actor_ref'], 'prepare':copy.deepcopy(data),
-                    'action_id':str(uuid.uuid4()), 'ref':None, 'stopped':False, 'receipts':[]}
+                    'action_id':str(uuid.uuid4()), 'ref':None, 'stopped':False, 'receipts':[],
+                    'start': {'control_digest': entry.digest(s['control']),
+                              'discussion': copy.deepcopy(s['control']['discussion']),
+                              'store_ref': copy.deepcopy(s['control'].get('store_ref')), 'applied': False}}
             slots[data['axis']] = slot
+            store = state_store.open_store(self.path)
+            # Reject every bounded candidate before reserve allocation or C's
+            # review-start. No external call can escape this durable intent.
+            with store.measure_writes(sequence=True) as writes:
+                candidate = Progress(self.path, copy.deepcopy(self.outer))
+                candidate._authority_revision = self._authority_revision
+                candidate.save()
+                intent_bytes = sum(writes.values())
+                if candidate.state['control']['discussion'] is None:
+                    candidate.state['control']['context']['handoff_progress']['state'] = 'reviewing'
+                target = candidate.state['review_activity'][data['axis']]
+                target['start']['applied'] = True
+                candidate.save()
+                # Bound the largest inline native outcome, including its own
+                # identities. Larger raw bodies use finite manifest references.
+                worst_receipt = {name: 'x' * 4096 for name in ('adapter', 'call_ref', 'response_ref', 'ref')}
+                worst_receipt.update(status='unknown', raw={'output': 'x' * (REVIEW_INLINE_RAW_LIMIT - 16)})
+                target['ref'] = worst_receipt['ref']
+                target['receipts'].append(worst_receipt)
+                target['query'] = {'action_id': 'x' * 36, 'original_action_id': slot['action_id'],
+                                   'resolved': False, 'call_ref': worst_receipt['call_ref']}
+                candidate.save()
+                measured_current = store.open_current()
+                key = store.receipt_key(measured_current, actor=data['actor_ref'], kind='review:prepare',
+                    subject=s['stage_subject'], invocation=slot['action_id'])
+                store.prepare_receipt(measured_current, key, data, {'action_id': slot['action_id']})
+                require(sum(writes.values()) + 2 * state_store.ROOT_LIMIT <= state_store.EVIDENCE_LIMIT,
+                        'state_capacity', 'review completion exceeds its original receipt reserve')
+            store.require_ordinary_capacity(intent_bytes)
+            store.reserve(slot['action_id'])
             self.save()
+            result, applied = dispatch.checkpoint(s['control'], s['handoff'], 'review-start', {'candidate':data['candidate']})
+            self._receipt_action = slot['action_id']
+            self.commit_review_start(slot, result, applied)
             return _view(s, {'operation':'invoke-review','axis':data['axis'],
                 'candidate':data['candidate'], 'verification':copy.deepcopy(data['verification']),
                 'action_id':slot['action_id']})
@@ -7065,12 +7337,47 @@ class Progress:
         entry.fields(receipt, {'adapter','call_ref','response_ref','status','ref','raw'})
         for key in ('adapter','call_ref','response_ref'):
             entry.nonempty(receipt[key])
-        require(isinstance(receipt['raw'], dict) and receipt['raw'], 'host_evidence_missing', 'raw authenticated native receipt required')
+            require(len(receipt[key].encode('utf-8')) <= 4096,
+                    'state_capacity', 'review native identity exceeds its fixed budget')
+        require(receipt['ref'] is None or isinstance(receipt['ref'], str) and
+                0 < len(receipt['ref'].encode('utf-8')) <= 4096,
+                'identity_mismatch', 'reviewer reference must be a bounded native identity')
+        require(isinstance(receipt['raw'], dict) and receipt['raw'] and
+                receipt['raw'].get('format') != 'review-raw-reference-v1',
+                'host_evidence_missing', 'raw authenticated native receipt required')
         require(receipt['status'] in {'running','stopped','unknown','not-created'}, 'invalid_result', 'invalid native review state')
-        previous = next((value for value in slot['receipts'] if value['response_ref'] == receipt['response_ref']), None)
-        require(previous is None or previous == receipt, 'review_conflict', 'response identity cannot change')
-        if previous is not None:
+        original = self.review_receipt_request(data)
+        store, receipt_current, key = self.receipt_store('review:observe', s['stage_subject'], receipt['response_ref'])
+        if store.read_receipt(receipt_current, key, original) is not None:
+            self.release_settled_reserves()
             return _view(s, acknowledged=True)
+        for group in [s.get('review_activity', {}), *s.get('review_history', [])]:
+            for other in group.values():
+                for previous in other['receipts']:
+                    if previous['call_ref'] == receipt['call_ref'] or previous['response_ref'] == receipt['response_ref']:
+                        require(other['action_id'] == slot['action_id'] and previous['adapter'] == receipt['adapter'],
+                                'review_conflict', 'native review invocation cannot be rebound')
+                    require(previous['response_ref'] != receipt['response_ref'],
+                            'review_conflict', 'review response lacks its committed receipt proof')
+        query = slot.get('query')
+        original_call = slot.get('call_ref') or (slot.get('raw_ingress') or {}).get('call_ref')
+        require(slot['ref'] is not None or original_call is None or receipt['call_ref'] == original_call or
+                query is not None and not query.get('resolved'),
+                'review_conflict', 'lost creation permits only the original invocation or its protected exact lookup')
+        if query and not query.get('resolved'):
+            store.require_reserve(query['action_id'], recovery=True)
+            require(query['call_ref'] in {None, receipt['call_ref']},
+                    'review_conflict', 'unknown lookup retains its exact invocation')
+            self._receipt_action = query['action_id']
+        elif receipt['status'] in {'stopped', 'not-created'} or slot.get('business_settled'):
+            recovery = store.receipt_key(receipt_current, actor=data['actor_ref'], kind='review:reconcile',
+                subject=slot['action_id'], invocation=receipt['call_ref'])
+            store.reserve(recovery, recovery=True)
+            self._receipt_action = recovery
+        else:
+            store.require_reserve(slot['action_id'])
+            self._receipt_action = slot['action_id']
+        store = state_store.open_store(self.path, receipt_action=self._receipt_action)
         if receipt['status'] == 'not-created':
             require(slot['ref'] is None and receipt['ref'] is None, 'identity_mismatch', 'bound reviewer cannot become not-created')
         elif receipt['ref'] is not None:
@@ -7081,11 +7388,8 @@ class Progress:
                     'identity_mismatch', 'review axes require separate identities')
             slot['ref'] = receipt['ref']
         require(receipt['status'] != 'stopped' or slot['ref'] is not None, 'host_evidence_missing', 'stopped review needs an actual ref')
-        slot['receipts'].append(copy.deepcopy(receipt))
-        slot['stopped'] = receipt['status'] in {'stopped','not-created'}
-        if slot['stopped']:
-            s.get('native_adverse', {}).pop(slot['ref'], None)
-        self.save()
+        retained = self.retain_review_receipt(slot, data, original, key, receipt_current)
+        self.apply_review_receipt(slot, retained, original, key, receipt_current)
         return self.advance_stop(self.stop_intent()) if self.stop_intent() else _view(s)
 
     def suspend(self, cancel=False):
@@ -7573,7 +7877,12 @@ def handle(path, request):
             require(isinstance(data, dict) and isinstance(data.get("revision_id"), str) and
                     bool(data["revision_id"].strip()), "invalid_request",
                     "revision_id requires a nonempty string")
-        duplicate = owner.state is not None and ((operation == 'native-finalize' and any(
+        review_duplicate = owner.state is not None and operation == 'review-activity' and isinstance(data, dict) and any(
+            slot.get('prepare') == data or any(receipt['response_ref'] == (data.get('receipt') if isinstance(data.get('receipt'), dict) else {}).get('response_ref')
+                                              for receipt in slot['receipts'])
+            for group in [owner.state.get('review_activity', {}), *owner.state.get('review_history', [])]
+            for slot in group.values())
+        duplicate = review_duplicate or owner.state is not None and ((operation == 'native-finalize' and any(
             record.get('prepare') == data or any(native_receipt_matches(saved, data) for saved in record['receipts']) for record in owner.state.get('native_finalizations', []))) or (operation == "observe" and
             owner.state["events"].get(data.get("event_id"), {}).get("applied")) or
             (operation == "scope-propose" and data.get("proposal_id") in owner.state.get("scope_proposals", {})) or
@@ -7644,7 +7953,9 @@ def handle(path, request):
         except entry.ERROR_TYPES + (control.ControlError,) as error:
             if error is owner._save_error:
                 raise
-            if operation == 'native-finalize':
+            if operation in {'native-finalize', 'review-activity'}:
+                # Admission/conflicting evidence cannot publish an unreserved
+                # review intent through the generic error-block save.
                 raise
             if (isinstance(error, _RejectedPlanRevision) or
                     operation in {"scope-propose", "scope-seal", "scope-revise",
