@@ -2148,8 +2148,169 @@ class BoundedProgressTests(ProgressTests):
     def test_prepared_receipt_is_not_a_committed_ack(self):
         self.receipt_commit_crash(False)
 
+    def test_save_failure_before_root_preserves_primary_error_and_original_receipt(self):
+        self.prepare_execution()
+        slot = self.allocation_slot('slice-one')
+        request = {'allocation_id': 'slice-one', 'operation': 'bind',
+            'receipt': self.receipt(slot['record'], ref='native:executor')}
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        replace = os.replace
+        failed = []
+        def rejected(source, target):
+            if Path(target) == self.checkpoint:
+                envelope = json.loads(Path(source).read_bytes())
+                digest = envelope['current']['sha256']
+                root = json.loads((directory / 'objects' / digest[:2] / digest[2:4] / digest).read_bytes())['value']
+                if root.get('receipts') and not failed:
+                    failed.append((self.checkpoint.read_bytes(), root['receipts']))
+                    raise transfer.entry.PreparationError('state_capacity', 'original receipt root rejected')
+            return replace(source, target)
+        with patch.object(os, 'replace', rejected):
+            with self.assertRaises(transfer.entry.PreparationError) as error:
+                self.invoke('allocation', request)
+        self.assertEqual(error.exception.code, 'state_capacity')
+        self.assertEqual(str(error.exception), 'original receipt root rejected')
+        self.assertEqual(self.checkpoint.read_bytes(), failed[0][0])
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        receipt = failed[0][1][0]
+        self.assertIsNone(store.read_receipt(current, receipt['key'], request))
+        self.assertEqual(self.allocation_slot('slice-one')['transaction']['operation'], 'bind')
+        original_action = copy.deepcopy(self.allocation_slot('slice-one')['action'])
+        original_request = copy.deepcopy(self.allocation_slot('slice-one')['record']['request'])
+        recovered = self.invoke('allocation', request)
+        self.assertEqual(recovered['next_action']['result']['status'], 'bound')
+        self.assertFalse(recovered['acknowledged'])
+        revision = recovered['revision']
+        replayed = self.invoke('allocation', request)
+        self.assertTrue(replayed['acknowledged'])
+        self.assertEqual(replayed['revision'], revision)
+        self.assertEqual(self.allocation_slot('slice-one')['action'], original_action)
+        self.assertEqual(self.allocation_slot('slice-one')['record']['request'], original_request)
+
     def test_committed_receipt_repairs_marker_without_reapplying(self):
         self.receipt_commit_crash(True)
+
+    def test_save_failure_after_root_keeps_applied_receipt_and_exact_ack(self):
+        self.prepare_execution()
+        slot = self.allocation_slot('slice-one')
+        request = {'allocation_id': 'slice-one', 'operation': 'bind',
+            'receipt': self.receipt(slot['record'], ref='native:executor')}
+        replace = os.replace
+        failed = []
+        def lost(source, target):
+            if Path(target).parent.name == 'commits':
+                proof = json.loads(Path(source).read_bytes())
+                if proof.get('receipts') and not failed:
+                    failed.append(proof)
+                    raise transfer.entry.PreparationError('state_capacity', 'original committed receipt response lost')
+            return replace(source, target)
+        with patch.object(os, 'replace', lost):
+            with self.assertRaises(transfer.entry.PreparationError) as error:
+                self.invoke('allocation', request)
+        self.assertEqual(error.exception.code, 'state_capacity')
+        self.assertEqual(str(error.exception), 'original committed receipt response lost')
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        self.assertEqual(current.reference['sha256'], failed[0]['root'])
+        self.assertEqual(current.root['receipts'], failed[0]['receipts'])
+        authority = self.checkpoint.read_bytes()
+        original_action = copy.deepcopy(self.allocation_slot('slice-one')['action'])
+        recovered = self.invoke('allocation', request)
+        self.assertTrue(recovered['acknowledged'])
+        self.assertEqual(recovered['next_action']['result']['status'], 'bound')
+        self.assertEqual(self.checkpoint.read_bytes(), authority)
+        self.assertEqual(self.allocation_slot('slice-one')['action'], original_action)
+        self.assertEqual(json.loads((store.directory / 'commits' / str(current.revision)).read_bytes()), failed[0])
+        self.assertEqual(self.invoke('allocation', request)['revision'], recovered['revision'])
+
+    def pending_stage_bind_result(self):
+        self.context = self.context_for(3)
+        self.begin('continuous', self.input_for(3))
+        observed = self.observation(ref='native:dispatcher')
+        replace = os.replace
+        failed = []
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        def lost(source, target):
+            if Path(target).parent.name == 'commits' and not failed:
+                envelope = json.loads(self.checkpoint.read_bytes())
+                digest = envelope['current']['sha256']
+                root = json.loads((directory / 'objects' / digest[:2] / digest[2:4] / digest).read_bytes())['value']
+                digest = root['subjects'][root['metadata']['stage_subject']]['sha256']
+                state = json.loads((directory / 'objects' / digest[:2] / digest[2:4] / digest).read_bytes())['value']
+                if state.get('transaction_result'):
+                    failed.append(state)
+                    raise transfer.entry.PreparationError('state_capacity', 'original B result return lost')
+            return replace(source, target)
+        with patch.object(os, 'replace', lost):
+            with self.assertRaises(transfer.entry.PreparationError) as error:
+                self.invoke('observe', observed)
+        self.assertEqual(error.exception.code, 'state_capacity')
+        saved = self.state()
+        self.assertEqual(saved['transaction']['operation'], 'bind')
+        self.assertEqual(saved['transaction_source'], observed)
+        self.assertFalse(saved['events'][observed['event_id']]['applied'])
+        self.assertEqual(saved['transaction_result']['kind'], 'stage-transaction-result-ref-v1')
+        return observed, saved
+
+    def test_corrupt_original_stage_result_fails_closed_before_replay(self):
+        observed, saved = self.pending_stage_bind_result()
+        reference = saved['transaction_result']['reference']
+        store = progress.state_store.StateStore(self.checkpoint)
+        path = store.directory / 'objects' / reference['sha256'][:2] / reference['sha256'][2:4] / reference['sha256']
+        original = path.read_bytes()
+        authority = self.checkpoint.read_bytes()
+        for corruption in ('bytes', 'missing'):
+            with self.subTest(corruption=corruption):
+                if corruption == 'bytes':
+                    path.write_bytes(original + b' ')
+                else:
+                    path.unlink()
+                with self.assertRaises(transfer.entry.PreparationError) as error:
+                    self.invoke('advance')
+                self.assertEqual(error.exception.code,
+                    'state_object_corrupt' if corruption == 'bytes' else 'state_object_missing')
+                self.assertEqual(self.checkpoint.read_bytes(), authority)
+                path.write_bytes(original)
+        recovered = self.invoke('observe', observed)
+        self.assertFalse(recovered['acknowledged'])
+        self.assertEqual(self.state()['dispatch']['status'], 'bound')
+        self.assertEqual(self.state()['dispatch']['request'], saved['dispatch']['request'])
+        self.assertEqual(self.state()['host_action']['action_id'], saved['host_action']['action_id'])
+        self.assertIsNone(self.state()['transaction_result'])
+        self.assertTrue(self.invoke('observe', observed)['acknowledged'])
+
+    def test_original_stage_result_reference_schema_and_binding_fail_closed(self):
+        observed, saved = self.pending_stage_bind_result()
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        metadata, outer = current.root['metadata'], current.root['outer']
+        for field, value, code in (
+                ('kind', 'foreign-result', 'invalid_checkpoint'),
+                ('request_digest', '0' * 64, 'invalid_checkpoint'),
+                ('result_digest', '0' * 64, 'state_object_corrupt'),
+                ('status', 'accepted', 'state_object_corrupt'),
+                ('reference', {**saved['transaction_result']['reference'], 'size': progress.state_store.SUBJECT_LIMIT + 1}, 'invalid_checkpoint'),
+                ('reference', {**saved['transaction_result']['reference'], 'run_id': 'foreign-run'}, 'invalid_state_store')):
+            with self.subTest(field=field, value=value):
+                corrupted = copy.deepcopy(saved)
+                corrupted['transaction_result'][field] = value
+                current = store.commit_current(expected_revision=current.revision,
+                    revision=current.revision + 1,
+                    subjects={saved['stage_subject']: progress.stage_subject_value(corrupted)},
+                    metadata=metadata, outer=outer)
+                authority = self.checkpoint.read_bytes()
+                with self.assertRaises(transfer.entry.PreparationError) as error:
+                    self.invoke('inspect')
+                self.assertEqual(error.exception.code, code)
+                self.assertEqual(self.checkpoint.read_bytes(), authority)
+                current = store.commit_current(expected_revision=current.revision,
+                    revision=current.revision + 1,
+                    subjects={saved['stage_subject']: progress.stage_subject_value(saved)},
+                    metadata=metadata, outer=outer)
+        recovered = self.invoke('observe', observed)
+        self.assertFalse(recovered['acknowledged'])
+        self.assertTrue(self.invoke('observe', observed)['acknowledged'])
 
     def test_root_commit_faults_preserve_authority_and_repair_proof(self):
         self.begin_dispatcher()
@@ -3187,7 +3348,7 @@ class BoundedProgressTests(ProgressTests):
                 event = self.state()['events'].get(incomplete['event_id'], {})
                 if event.get('host_applied') and not event.get('applied'):
                     raise interruption('receipt committed before the remaining observation state')
-        expected_error = KeyboardInterrupt if interruption is KeyboardInterrupt else transfer.entry.PreparationError
+        expected_error = interruption
         with patch.object(os, 'replace', interrupt_after_host_receipt), self.assertRaises(expected_error):
             self.invoke('observe', incomplete)
         self.assertTrue(self.state()['host']['query']['resolved'])

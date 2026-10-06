@@ -1653,6 +1653,26 @@ def workspace_evidence(binding, controller_ref, supplied):
     return copy.deepcopy(supplied)
 
 
+def read_stage_transaction_result(state):
+    """Read only the immutable proof named by the original pending B request."""
+    saved = state['transaction_result']
+    require(saved is not None and saved['request_digest'] == entry.digest(state['transaction']),
+            'transaction_pending', 'retain the result bound to the original B request')
+    store = state_store.open_store(state['checkpoint_path'])
+    current = store.open_current()
+    proof = store.read_evidence(saved['reference'], run_id=current.run_id,
+                               maximum=state_store.SUBJECT_LIMIT)['value']
+    require(isinstance(proof, dict) and set(proof) == {'request_digest', 'result'} and
+            proof['request_digest'] == saved['request_digest'] and
+            isinstance(proof['result'], dict) and
+            entry.digest(proof['result']) == saved['result_digest'] and
+            proof['result'].get('status') == saved['status'],
+            'state_object_corrupt', 'original B result proof changed')
+    require(store.bytes_read <= state_store.READ_LIMIT,
+            'state_capacity', 'original B result exceeds the operation read budget')
+    return proof['result']
+
+
 def validate_state(state):
     require(isinstance(state, dict) and state.get("protocol") == PROTOCOL,
             "legacy_run_requires_original_runtime", "use original " + str(state.get("protocol") if isinstance(state,dict) else None) + "; package digests " + str({k:v.get("bundle_digest") for k,v in (state.get("packages",{}) if isinstance(state,dict) else {}).items()}))
@@ -1689,6 +1709,25 @@ def validate_state(state):
     require(all(key in state for key in ("transaction", "transaction_source", "transaction_result")) and
             (state["transaction"] is not None or state["transaction_source"] is None and state["transaction_result"] is None),
             "invalid_checkpoint", "v4 transaction journal is inconsistent")
+    result = state['transaction_result']
+    if result is not None:
+        require(isinstance(result, dict) and set(result) == {
+                'kind', 'request_digest', 'result_digest', 'reference', 'status'} and
+                result['kind'] == 'stage-transaction-result-ref-v1' and
+                result['request_digest'] == entry.digest(state['transaction']) and
+                isinstance(result['result_digest'], str) and re.fullmatch(r'[0-9a-f]{64}', result['result_digest']) and
+                isinstance(result['status'], str) and isinstance(result['reference'], dict) and
+                set(result['reference']) == {'run_id', 'kind', 'sha256', 'size'} and
+                result['reference']['kind'] == 'evidence' and
+                isinstance(result['reference']['run_id'], str) and
+                isinstance(result['reference']['sha256'], str) and
+                re.fullmatch(r'[0-9a-f]{64}', result['reference']['sha256']) and
+                type(result['reference']['size']) is int and
+                0 < result['reference']['size'] <= state_store.SUBJECT_LIMIT,
+                'invalid_checkpoint', 'original B result reference changed')
+        # Validate the one named pending proof before public mutation/error
+        # handling. Corrupt evidence must not generate a replacement Root.
+        read_stage_transaction_result(state)
     require(isinstance(state.get("retained_host_actions", []), list),
             "invalid_checkpoint", "retained host actions must be an ordered list")
     records = state.get('native_finalizations', [])
@@ -2517,6 +2556,7 @@ class Progress:
         self._receipt_action = None
         self._commit_receipts = []
         self._authority_revision = getattr(outer, 'authority_revision', 0)
+        self._save_error = None
 
     def host_stopped(self):
         # Compatibility projection, never a business-replay liveness input.
@@ -2537,12 +2577,29 @@ class Progress:
         previous_revision = self.state["revision"]
         self.state["revision"] += 1
         self.outer[KEY] = self.state
-        committed = save_current_record(self.path, self.outer, previous_revision,
-            expected_authority_revision=self._authority_revision, receipt_action=self._receipt_action,
-            receipts=self._commit_receipts)
-        self._authority_revision = committed.revision
-        self._commit_receipts = []
-        self.release_settled_reserves()
+        try:
+            committed = save_current_record(self.path, self.outer, previous_revision,
+                expected_authority_revision=self._authority_revision, receipt_action=self._receipt_action,
+                receipts=self._commit_receipts)
+            self._authority_revision = committed.revision
+            self._commit_receipts = []
+            self.release_settled_reserves()
+        except entry.ERROR_TYPES + (control.ControlError,) as error:
+            # A failed return does not tell us whether the original Root CAS
+            # applied. Reconcile only its validated pointer, then exit this
+            # operation with the primary error. An error-block save could turn
+            # uncommitted receipt membership into a false business ACK.
+            self._save_error = error
+            try:
+                current = state_store.open_store(self.path).open_current()
+                self._authority_revision = current.revision if current else 0
+                self.state['revision'] = current.root['metadata']['revision'] if current else previous_revision
+                if current and all(receipt in current.root.get('receipts', [])
+                                   for receipt in self._commit_receipts):
+                    self._commit_receipts = []
+            except entry.ERROR_TYPES + (control.ControlError,) as reconciliation_error:
+                raise error from reconciliation_error
+            raise
 
     def release_settled_reserves(self):
         pending = {action['action_id'] for action in self.unresolved_host_actions()}
@@ -3770,24 +3827,33 @@ class Progress:
             request = {key: value for key, value in s['transaction'].items()
                        if key not in {'base_control_digest', 'base_revision'}}
             self.apply(dispatch.handle({**request, 'control': copy.deepcopy(s['control'])}))
-        result = copy.deepcopy(s["transaction_result"])
-        self.consume_transaction()
+        result = read_stage_transaction_result(s)
+        self.consume_transaction(result)
         return result
 
     def apply(self, result):
         # Save the result independently. Recovery can consume it without calling
         # B again; the original request/envelope remains until atomic consumption.
+        value = {key: value for key, value in result.items() if key != 'checkpoint'}
+        request_digest = entry.digest(self.state['transaction'])
+        store = state_store.open_store(self.path, receipt_action=self._receipt_action)
+        current = store.open_current()
+        proof = {'request_digest': request_digest, 'result': value}
+        require(len(state_store.encode({'format': state_store.FORMAT, 'run_id': current.run_id,
+                'kind': 'evidence', 'value': proof})) <= state_store.SUBJECT_LIMIT,
+                'state_capacity', 'original B result exceeds its fixed proof budget')
+        self.state['transaction_result'] = {'kind': 'stage-transaction-result-ref-v1',
+            'request_digest': request_digest, 'result_digest': entry.digest(value),
+            'reference': store.write_object(current.run_id, 'evidence', proof), 'status': value['status']}
         if 'checkpoint' in result:
             self.state['control']['context'] = result['checkpoint']['context']
             self.state['control_receipt'] = result['checkpoint'].get('discussion_receipt')
             self.next_envelope(self.state['control_receipt'])
-        self.state["transaction_result"] = copy.deepcopy({key: value for key, value in result.items()
-            if key != 'checkpoint'})
         self.save()
 
-    def consume_transaction(self):
+    def consume_transaction(self, result):
         s = self.state
-        request, result, source = s["transaction"], s["transaction_result"], s["transaction_source"]
+        request, source = s["transaction"], s["transaction_source"]
         require(request is not None and result is not None, "transaction_pending", "original B result required")
         if request["operation"] == "prepare" and "record" not in result:
             self.block(entry.PreparationError("outcome_unknown", "recover the original reserved launch from its checkpoint owner"))
@@ -7576,6 +7642,8 @@ def handle(path, request):
             if operation == "resume": return owner.resume()
             raise entry.PreparationError("invalid_operation", "unknown progression operation")
         except entry.ERROR_TYPES + (control.ControlError,) as error:
+            if error is owner._save_error:
+                raise
             if operation == 'native-finalize':
                 raise
             if (isinstance(error, _RejectedPlanRevision) or

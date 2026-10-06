@@ -826,7 +826,37 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.attached_publication_chain()
 
     def test_attached_final_recovery_keeps_completed_phase_and_active_closure(self):
-        self.attached_publication_chain(recover=True)
+        metrics = []
+        replace = os.replace
+        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
+        def tracked_commit(source, target):
+            if Path(target) == self.checkpoint:
+                envelope = json.loads(Path(source).read_bytes())
+                if envelope.get('store_format') == progress.state_store.FORMAT:
+                    digest = envelope['current']['sha256']
+                    root = json.loads((directory / 'objects' / digest[:2] / digest[2:4] / digest).read_bytes())['value']
+                    subject_ref = root['subjects'][root['metadata']['stage_subject']]
+                    digest = subject_ref['sha256']
+                    state = json.loads((directory / 'objects' / digest[:2] / digest[2:4] / digest).read_bytes())['value']
+                    result = state.get('transaction_result')
+                    if state['stage'] == 3 and (state.get('transaction') or {}).get('operation') == 'accept' and result:
+                        self.assertEqual(result['kind'], 'stage-transaction-result-ref-v1')
+                        self.assertEqual(result['request_digest'], entry.digest(state['transaction']))
+                        self.assertLessEqual(len(progress.state_store.encode(result)), 1024)
+                        self.assertLessEqual(subject_ref['size'], progress.state_store.SUBJECT_LIMIT)
+                        store = progress.state_store.open_store(self.checkpoint)
+                        self.assertLessEqual(store.bytes_read, progress.state_store.READ_LIMIT)
+                        metrics.append({'root_bytes': len(Path(source).read_bytes()),
+                            'subject_bytes': subject_ref['size'], 'result_ref_bytes': len(progress.state_store.encode(result)),
+                            'result_proof_bytes': result['reference']['size'],
+                            'store_read_files': store.files_read, 'store_read_bytes': store.bytes_read})
+            return replace(source, target)
+        with patch.object(os, 'replace', tracked_commit):
+            self.attached_publication_chain(recover=True)
+        self.assertEqual(len(metrics), 2, 'both original and recovered acceptance save one exact B proof')
+        print('recovery-result-capacity metrics:', json.dumps(metrics, sort_keys=True))
+        if os.environ.get('T01_RECOVERY_RESULT_METRICS_PATH'):
+            Path(os.environ['T01_RECOVERY_RESULT_METRICS_PATH']).write_text(json.dumps(metrics, indent=2) + '\n')
 
     def attached_publication_chain(self, recover=False):
         self.begin('stepwise')
