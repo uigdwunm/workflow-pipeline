@@ -2070,12 +2070,17 @@ class ProgressTests(transfer.StageTransferTests):
         state = runner._new_state(confirmed)
         runner._atomic_save(self.checkpoint, state)
         calls = []
+        original_publication = None
 
         def carrier(state, path, answer, continuing, host=None):
+            nonlocal original_publication
             stage = int(state["current_stage"][-1])
             calls.append(stage)
             response = self.finish_next(stage, mode)
             self.assertEqual(response["status"], "accepted", response)
+            if stage == 2:
+                original_publication = copy.deepcopy(self.state()["publication"])
+                self.assertEqual(original_publication["result"]["state"], "planning_published")
             result = runner._stage_projection(path, "stage" + str(stage), self.state())
             return {**result, "handoff": json.loads(result["handoff_json"])}
 
@@ -2091,7 +2096,13 @@ class ProgressTests(transfer.StageTransferTests):
                     state.pop("pending_input")
         self.assertEqual(calls, [2, 3, 4])
         self.assertEqual(state["status"], "completed")
-        self.assertEqual(self.state()["history"][0]["publication"]["result"]["state"], "planning_published")
+        implementation, _, _ = progress.read_implementation_delivery(
+            self.checkpoint, self.state()["implementation_predecessor"])
+        planning = progress.read_design_predecessor(implementation["design_predecessor"], self.checkpoint)
+        self.assertEqual(planning["readiness"]["publication"], {
+            "planning_commit": original_publication["request"]["planning_commit"],
+            "planning_merge_commit": original_publication["result"]["merge_commit"],
+            "publication_request_digest": transfer.entry.digest(original_publication["request"])})
         self.assertEqual(set(state["stage_results"]), {"stage2", "stage3", "stage4"})
         self.assertFalse(self.flow.exists())
 
@@ -3025,17 +3036,20 @@ class AttachedProgressTests(transfer.AttachedTransferTests):
             payload_sha256=self.original['payload_sha256'],
             source_reference_sha256=self.original['authoritative_references_sha256'], turn_number=1)
         path = self.input['scope']['owned_paths'][0]
-        self.git('add', '-f', path)
-        self.git('commit', '-qm', 'accepted dedicated topic')
+        if not self.NON_GIT:
+            self.git('add', '-f', path)
+            self.git('commit', '-qm', 'accepted dedicated topic')
         old = self.read()['workflow_control']
         received = self.mutate('workflow-control', action='receive', evidence={
             'delivery_id': 'dedicated-result', 'source_ref': 'task:dedicated',
-            'attempt': old['carrier']['attempt'], 'commit': self.git('rev-parse', 'HEAD'),
+            'attempt': old['carrier']['attempt'],
+            'commit': None if self.NON_GIT else self.git('rev-parse', 'HEAD'),
             'requirement_identity': old['requirement_identity'],
             'verified_commit_hash': old['requirement_identity']['sha256']})['control']
         self.mutate('workflow-control', action='accept', evidence={'delivery_digest': received['delivery_digest']})
         checkpoint = carrier('prepare-checkpoint', purpose='stage-entry', base_ref='HEAD')
-        published = carrier('publish-git-checkpoint', checkpoint_id=checkpoint['checkpoint_id'],
+        published = carrier('publish-non-git-checkpoint' if self.NON_GIT else 'publish-git-checkpoint',
+            checkpoint_id=checkpoint['checkpoint_id'],
             expected_checkpoint_revision=checkpoint['checkpoint_record_revision'])
         phase = self.mutate('prepare-wrapper-phase-run', from_phase=0, to_phase=1, route='0->1',
             carrier_kind='current-problem-framing', source_checkpoint_id=checkpoint['checkpoint_id'],
@@ -3043,7 +3057,8 @@ class AttachedProgressTests(transfer.AttachedTransferTests):
         identity = {'phase_run_id': phase['phase_run_id'], 'attempt_id': phase['attempt_id']}
         self.mutate('authorize-phase-carrier', **identity, carrier_ref='task')
         self.mutate('claim-phase-carrier', **identity, carrier_ref='task',
-            source_checkpoint_id=checkpoint['checkpoint_id'], source_checkpoint_identity=published['commit_id'])
+            source_checkpoint_id=checkpoint['checkpoint_id'],
+            source_checkpoint_identity=published['snapshot_digest' if self.NON_GIT else 'commit_id'])
         self.mutate('phase-ready', **identity, carrier_ref='task', evidence=phase['evidence'])
         self.mutate('phase-activate', **identity, evidence=phase['evidence'])
         retired = self.mutate('workflow-control', action='successor-ready', evidence={
@@ -3250,46 +3265,41 @@ class PhaseProgressTests(DiscussionProtocolScenarioFixture, DiscussionProtocolTe
         self.assertEqual(mutate('finalize-phase-run', **binding, evidence=phase['evidence'])['state'], 'completed')
 
     def test_source_activation_uses_exact_real_phase_and_idempotent_envelope(self):
-        project = self.make_project("source-activation", git=False)
-        topic = self.bootstrap_topic(project)
-        prepared = self.prepare_phase_run(topic, to_phase=2, carrier_kind="current-topic")
-        for revision, operation, fields in (
-            (2, "authorize-phase-carrier", {"carrier_ref": "discussion-task"}),
-            (3, "phase-ready", {"carrier_ref": "discussion-task", "evidence": prepared["evidence"]}),
-        ):
-            code, result, stderr = self.run_cli(self.phase_request(topic, operation, revision,
-                phase_run_id=prepared["phase_run_id"], attempt_id=prepared["attempt_id"], **fields))
-            self.assertEqual(code, 0, (result, stderr))
-        attachment = {"project_id": topic["project_id"], "tree_id": topic["tree_id"],
-                      "actor_topic_id": topic["topic_id"], "actor_conversation_ref": "discussion-task"}
-        facts = transfer.entry.repository_facts(str(project))
-        discussion_project, _ = transfer.entry.resolve_discussion_project(facts, attachment)
-        # A port-level test of C's source adapter. Phase and ledger are real;
-        # full stage acceptance is exercised separately through A/B/Git above.
-        state = {"protocol": progress.PROTOCOL, "revision": 0, "mode": "stepwise", "stage": 2,
-            "status": "active", "step": "bound", "packages": {}, "accepted": None, "phase_complete": False,
-            "host": {"generation": 0, "status": "unknown", "proof": None, "query": None, "seen": {}, "calls": {}, "last_stop": None},
-            "transaction": None, "transaction_source": None, "transaction_result": None,
-            "action": None, "handoff": {"stage": 2, "binding": None,
-                "authorization": {"phase": {"run_id": prepared["phase_run_id"], "attempt_id": prepared["attempt_id"]}},
-                "entry": {"source": {"kind": "discussion", "attachment": attachment}},
-                "expected_entry": {"repository": facts, "discussion_project": discussion_project,
-                                   "requirement": {"kind": "discussion", "attachment": attachment}}}}
-        checkpoint = self.root / "source-record.json"
-        owner = progress.Progress(checkpoint, {progress.KEY: state})
+        # Reuse the supported caller-controlled Stage-2+ attached initializer.
+        # Its topic_ref is real; discussion=None keeps the Controller owner here.
+        from test_attached_flow_progress import AttachedFlowTests
+        fixture = AttachedFlowTests('test_lifecycle_new_outer_activates_but_inline_controller_is_rejected')
+        self.addCleanup(fixture.doCleanups)
+        fixture.setUp()
+        fixture.begin('stepwise')
+        fixture.invoke('observe', fixture.observation())
+        prepared = fixture.phases[2]
+        identity = {'phase_run_id': prepared['phase_run_id'], 'attempt_id': prepared['attempt_id']}
+        checkpoint = fixture.frozen['checkpoint']
+        fixture.mutate('claim-phase-carrier', **identity, actor_conversation_ref='native:designer',
+            carrier_ref='native:designer', source_checkpoint_id=checkpoint['checkpoint_id'],
+            source_checkpoint_identity=checkpoint['published_identity'])
+        fixture.mutate('phase-ready', **identity, actor_conversation_ref='native:designer',
+            carrier_ref='native:designer', evidence=prepared['evidence'])
+        outer = progress.read_active_owner(fixture.checkpoint)
+        self.assertIsNotNone(outer[progress.KEY]['control']['context']['topic_ref'])
+        self.assertIsNone(outer[progress.KEY]['control']['discussion'])
+        owner = progress.Progress(fixture.checkpoint, outer)
         emitted = owner.phase_action()
-        self.assertEqual(emitted["next_action"]["operation"], "source-lifecycle")
-        request = emitted["next_action"]["payload"]["request"]
-        self.assertEqual(request["operation"], "phase-activate")
-        self.assertEqual(request["evidence"], prepared["evidence"])
-        outer = progress.read_record(checkpoint)
-        observed = progress.lifecycle(checkpoint, outer, {"request": request})
-        self.assertEqual(observed["result"]["result"]["state"], "active")
-        ledger = Path(topic["ledger_path"])
-        before = ledger.read_bytes()
-        progress.lifecycle(checkpoint, progress.read_record(checkpoint), {"request": request})
-        self.assertEqual(ledger.read_bytes(), before)
-        self.assertIsNone(progress.Progress(checkpoint, progress.read_record(checkpoint)).phase_action())
+        self.assertEqual(emitted['next_action']['operation'], 'source-lifecycle')
+        request = emitted['next_action']['payload']['request']
+        self.assertEqual(request['operation'], 'phase-activate')
+        self.assertEqual(request['phase_run_id'], prepared['phase_run_id'])
+        self.assertEqual(request['attempt_id'], prepared['attempt_id'])
+        self.assertEqual(request['evidence'], prepared['evidence'])
+        observed = progress.lifecycle(fixture.checkpoint, progress.read_active_owner(fixture.checkpoint),
+                                      {'request': request})
+        self.assertEqual(observed['result']['result']['state'], 'active')
+        before = fixture.ledger.read_bytes()
+        progress.lifecycle(fixture.checkpoint, progress.read_active_owner(fixture.checkpoint), {'request': request})
+        self.assertEqual(fixture.ledger.read_bytes(), before)
+        self.assertIsNone(progress.Progress(fixture.checkpoint,
+            progress.read_active_owner(fixture.checkpoint)).phase_action())
 
 
 class RunnerCheckpointMutationTests(unittest.TestCase):
@@ -3299,6 +3309,23 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
         self.checkpoint = Path(temporary.name) / 'run.json'
         self.state = runner._new_state({})
         runner._atomic_save(self.checkpoint, self.state)
+
+    def save_routing_subject(self, routing):
+        """Simulated Controller routing facts, not a real stage initializer.
+
+        The runner reads this finite current identity/delivery projection through
+        the production store and CAS. No legacy inline state or write lease is
+        exposed; execution authority and scope readiness are not manufactured.
+        """
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current() if progress.read_record(self.checkpoint).get('store_format') == progress.state_store.FORMAT else None
+        outer = (current.root['outer'] if current else progress.read_record(self.checkpoint))
+        stage_id = 'stage:runner-routing'
+        metadata = {'protocol': progress.PROTOCOL, 'revision': (current.root['metadata']['revision'] + 1 if current else 1),
+                    'stage_subject': stage_id, **copy.deepcopy(routing)}
+        store.commit_current(expected_revision=current.revision if current else 0,
+            revision=current.revision + 1 if current else 1, subjects={stage_id: metadata},
+            metadata=metadata, outer=outer, initial_outer=None if current else outer)
 
     def test_prior_transfer_runtime_cannot_mutate_checkpoint(self):
         records = []
@@ -3616,14 +3643,12 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
                    'question': 'Choose again'}
         self.state['controller_decision'] = old_decision
         runner._atomic_save(self.checkpoint, self.state)
-        saved = progress.read_record(self.checkpoint)
-        saved[progress.KEY] = {'stage': 2, 'status': 'needs_input', 'pending': pending,
-                               'decisions': {'old': old_decision}, 'history': []}
-        progress.atomic_save(self.checkpoint, saved)
+        self.save_routing_subject({'stage': 2, 'status': 'needs_input', 'pending': pending,
+                               'decisions': {'old': old_decision}, 'history': []})
         with patch.object(runner, '_invoke', side_effect=AssertionError('new question needs an answer')), \
                 redirect_stdout(io.StringIO()):
             self.assertEqual(runner._advance_in_host(self.state, self.checkpoint, None, object()), 0)
-        latest = progress.read_record(self.checkpoint)
+        latest = progress.read_projection(self.checkpoint, projection='identity').record
         self.assertEqual(latest['pending_input'], pending)
         self.assertNotIn('controller_decision', latest)
 
@@ -3698,9 +3723,7 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
 
         def queue_before_issue(*args, **kwargs):
             with progress.record_lock(self.checkpoint):
-                newer = progress.read_record(self.checkpoint)
-                newer[progress.KEY] = {'stage': 2, 'status': 'needs_input', 'pending': pending}
-                progress.atomic_save(self.checkpoint, newer)
+                self.save_routing_subject({'stage': 2, 'status': 'needs_input', 'pending': pending})
             return original_invoke(*args, **kwargs)
 
         class Host:
@@ -3714,7 +3737,7 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
                 patch.object(runner, '_stage_prompt', return_value='prompt'), \
                 patch.object(runner, '_invoke', side_effect=queue_before_issue), redirect_stdout(io.StringIO()):
             self.assertEqual(runner._advance_in_host(self.state, self.checkpoint, None, Host()), 0)
-        self.assertEqual(progress.read_record(self.checkpoint)['pending_input'], pending)
+        self.assertEqual(progress.read_projection(self.checkpoint, projection='identity').record['pending_input'], pending)
 
     def test_normal_turn_rechecks_acceptance_after_progress_read(self):
         self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
@@ -3724,10 +3747,8 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
 
         def accept_before_issue(*args, **kwargs):
             with progress.record_lock(self.checkpoint):
-                newer = progress.read_record(self.checkpoint)
-                newer[progress.KEY] = {'stage': 2, 'status': 'accepted', 'phase_complete': True,
-                                       'accepted': {'digest': 'accepted'}}
-                progress.atomic_save(self.checkpoint, newer)
+                self.save_routing_subject({'stage': 2, 'status': 'accepted', 'phase_complete': True,
+                                       'accepted': {'digest': 'accepted'}})
             return original_invoke(*args, **kwargs)
 
         class Host:
@@ -3737,9 +3758,12 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
             def start_carrier(self, stage, settings):
                 raise AssertionError('accepted stage must not issue another turn')
 
+        # This routing seam has no design scope; simulate its explicit not-ready
+        # response while retaining the runner's acceptance recheck and rejection.
         with patch.object(runner, '_check_current_registry'), patch.object(runner, 'verify_identity'), \
                 patch.object(runner, '_stage_prompt', return_value='prompt'), \
-                patch.object(runner, '_invoke', side_effect=accept_before_issue):
+                patch.object(runner, '_invoke', side_effect=accept_before_issue), \
+                patch.object(progress, 'scope_readiness', return_value=None):
             with self.assertRaisesRegex(runner.WorkflowError, 'scope_incomplete'):
                 runner._advance_in_host(self.state, self.checkpoint, None, Host())
 
@@ -3751,10 +3775,8 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
 
         def block_before_issue(*args, **kwargs):
             with progress.record_lock(self.checkpoint):
-                newer = progress.read_record(self.checkpoint)
-                newer[progress.KEY] = {'stage': 2, 'status': 'active',
-                                       'business_block': {'id': 'original-block'}}
-                progress.atomic_save(self.checkpoint, newer)
+                self.save_routing_subject({'stage': 2, 'status': 'active',
+                                       'business_block': {'id': 'original-block'}})
             return original_invoke(*args, **kwargs)
 
         class Host:
@@ -3768,7 +3790,7 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
                 patch.object(runner, '_stage_prompt', return_value='prompt'), \
                 patch.object(runner, '_invoke', side_effect=block_before_issue), redirect_stdout(io.StringIO()):
             self.assertEqual(runner._advance_in_host(self.state, self.checkpoint, None, Host()), 1)
-        latest = progress.read_record(self.checkpoint)
+        latest = progress.read_projection(self.checkpoint, projection='identity').record
         self.assertEqual(latest['status'], 'failed')
         self.assertEqual(latest['error']['business_block_id'], 'original-block')
 
@@ -3778,9 +3800,7 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
         self.state['confirmed'] = {'packages': {'runner': {}, 'stage3': {}},
                                    'stages': {'stage3': {}}}
         runner._atomic_save(self.checkpoint, self.state)
-        saved = progress.read_record(self.checkpoint)
-        saved[progress.KEY] = {'stage': 2, 'status': 'accepted', 'stop_requested': 'pausing'}
-        progress.atomic_save(self.checkpoint, saved)
+        self.save_routing_subject({'stage': 2, 'status': 'accepted', 'stop_requested': 'pausing'})
 
         class Host:
             instance = 'original-host'
@@ -3798,9 +3818,7 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
         self.state['confirmed'] = {'packages': {'runner': {}, 'stage2': {}},
                                    'stages': {'stage2': {}}}
         runner._atomic_save(self.checkpoint, self.state)
-        saved = progress.read_record(self.checkpoint)
-        saved[progress.KEY] = {'stage': 2, 'status': 'cancelled', 'stopped': True}
-        progress.atomic_save(self.checkpoint, saved)
+        self.save_routing_subject({'stage': 2, 'status': 'cancelled', 'stopped': True})
 
         class Host:
             instance = 'original-host'
@@ -3821,9 +3839,7 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
         self.state['launch'] = {'stage': 'stage2', 'state': 'completed_turn', 'turn': 1}
         self.state['resume_progression'] = True
         runner._atomic_save(self.checkpoint, self.state)
-        saved = progress.read_record(self.checkpoint)
-        saved[progress.KEY] = {'stage': 2, 'status': 'paused', 'stop_requested': 'pausing'}
-        progress.atomic_save(self.checkpoint, saved)
+        self.save_routing_subject({'stage': 2, 'status': 'paused', 'stop_requested': 'pausing'})
 
         class Host:
             instance = 'original-host'
@@ -3842,26 +3858,22 @@ class RunnerCheckpointMutationTests(unittest.TestCase):
         self.state['launch'] = {'stage': 'stage2', 'state': 'completed_turn', 'turn': 1}
         self.state['resume_progression'] = True
         runner._atomic_save(self.checkpoint, self.state)
-        saved = progress.read_record(self.checkpoint)
-        saved[progress.KEY] = {'stage': 2, 'status': 'pausing', 'stop_requested': 'pausing'}
-        progress.atomic_save(self.checkpoint, saved)
+        self.save_routing_subject({'stage': 2, 'status': 'pausing', 'stop_requested': 'pausing'})
         with patch.object(runner, '_invoke', side_effect=AssertionError('normal turn must not start')), \
                 redirect_stdout(io.StringIO()):
             self.assertEqual(runner._advance_in_host(self.state, self.checkpoint, None, object()), 0)
-        self.assertEqual(progress.read_record(self.checkpoint)['status'], 'pausing')
+        self.assertEqual(progress.read_projection(self.checkpoint, projection='identity').record['status'], 'pausing')
 
     def test_cancellation_upgrades_saved_pause_resume(self):
         self.state['sessions']['stage2'] = 'original-carrier'
         self.state['launch'] = {'stage': 'stage2', 'state': 'completed_turn', 'turn': 1}
         self.state['resume_progression'] = True
         runner._atomic_save(self.checkpoint, self.state)
-        saved = progress.read_record(self.checkpoint)
-        saved[progress.KEY] = {'stage': 2, 'status': 'paused', 'stop_requested': 'cancelling'}
-        progress.atomic_save(self.checkpoint, saved)
+        self.save_routing_subject({'stage': 2, 'status': 'paused', 'stop_requested': 'cancelling'})
         with patch.object(runner, '_invoke', side_effect=AssertionError('normal turn must not start')), \
                 redirect_stdout(io.StringIO()):
             self.assertEqual(runner._advance_in_host(self.state, self.checkpoint, None, object()), 0)
-        self.assertEqual(progress.read_record(self.checkpoint)['status'], 'cancelling')
+        self.assertEqual(progress.read_projection(self.checkpoint, projection='identity').record['status'], 'cancelling')
 
     def test_unhandled_launch_deferral_does_not_spin(self):
         blocked = runner.LaunchDeferred('launch_deferred')
