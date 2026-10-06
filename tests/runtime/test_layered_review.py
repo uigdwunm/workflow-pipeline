@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -100,7 +101,7 @@ class LayeredReviewTests(fixture.ProgressTests):
         source = {'adapter': 'fixture-command', 'call_ref': 'regression-call:' + slice_id,
             'response_ref': 'regression-stopped:' + slice_id,
             'raw': {'checks': copy.deepcopy(checks), 'source_unchanged': True,
-                'stopped': True, 'dispatcher_ref': 'native:dispatcher', 'candidate': candidate,
+                'stopped': True, 'dispatcher_ref': self.state()['control']['context']['carrier']['ref'], 'candidate': candidate,
                 'run_id': progress.read_record(self.checkpoint)['current']['run_id'],
                 'package_digest': fixture.transfer.entry.digest(self.state()['packages']),
                 'plan_authority': copy.deepcopy(checkpoint['plan_authority']),
@@ -205,7 +206,7 @@ class LayeredReviewTests(fixture.ProgressTests):
         self.assertEqual(claim['layer'], 'local')
         self.assertEqual(claim['ticket_id'], 'A')
 
-    def ticket_review(self, candidate, ticket):
+    def ticket_review(self, candidate, ticket, *, unknown_first=False):
         first = self.local_verification(candidate, ticket, ticket + '1')
         second = self.local_verification(candidate, ticket, ticket + '2')
         first['checks'].extend(second['checks'])
@@ -224,6 +225,17 @@ class LayeredReviewTests(fixture.ProgressTests):
                 'ac_refs': [ticket + ':AC-1', ticket + ':AC-2'], 'checks': first['checks'],
                 'dependency_claim_ids': scope['dependency_claim_ids'],
                 'requirement_refs': scope['requirement_refs'], 'review_scope': scope}}}
+        if unknown_first:
+            previous = copy.deepcopy(self.state()['control']['context']['handoff_progress']['review_claims'][axis])
+            unknown = {**receipt, 'response_ref': receipt['response_ref'] + ':unknown',
+                'status': 'unknown', 'ref': None, 'raw': {'status': 'unknown'}}
+            self.invoke('review-activity', {'operation': 'observe', 'axis': axis, 'candidate': candidate,
+                'actor_ref': 'task', 'action_id': prepared['next_action']['action_id'], 'receipt': unknown})
+            denied = self.invoke('control', {'action': 'ticket-accept', 'evidence': {
+                'axis': axis, 'candidate': candidate, 'result_ref': unknown['response_ref']},
+                'receipt': {'controller_ref': 'task', 'reference': 'controller:unknown-ticket:' + candidate}})
+            self.assertEqual(denied['status'], 'blocked', denied)
+            self.assertEqual(self.state()['control']['context']['handoff_progress']['review_claims'][axis], previous)
         self.invoke('review-activity', {'operation': 'observe', 'axis': axis, 'candidate': candidate,
             'actor_ref': 'task', 'action_id': prepared['next_action']['action_id'], 'receipt': receipt})
         accepted = self.invoke('control', {'action': 'ticket-accept', 'evidence': {
@@ -300,15 +312,163 @@ class LayeredReviewTests(fixture.ProgressTests):
         reviews = self.delivery_reviews(target)
         self.inherit_empty_candidate(target, reviews)
 
+    def test_layered_coverage_git_cli_consumes_original_proofs(self):
+        candidate = self.layered_flow()
+        for ticket in ('A', 'B'):
+            for number in (1, 2):
+                self.local_review(candidate, ticket, ticket + str(number))
+            self.ticket_review(candidate, ticket)
+        original = progress.control_git.verified_transition
+        envelopes = []
+        executable = Path(progress.control_git.__file__)
+
+        def actual_cli(envelope):
+            if envelope['request']['action'] not in {'candidate-ready', 'review-converged'}:
+                return original(envelope)
+            envelopes.append(copy.deepcopy(envelope))
+            result = subprocess.run([sys.executable, str(executable)], input=json.dumps(envelope),
+                text=True, capture_output=True, cwd=self.flow)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+
+        with fixture.patch.object(progress.control_git, 'verified_transition', side_effect=actual_cli):
+            self.delivery_reviews(candidate)
+        self.assertEqual([item['request']['action'] for item in envelopes], ['candidate-ready', 'review-converged'])
+        self.assertTrue(self.state()['control']['context']['handoff_progress']['coverage']['delivery'])
+        bad = copy.deepcopy(envelopes[-1])
+        bad['request']['evidence']['coverage']['certificate_digest'] = '0' * 64
+        before = self.checkpoint.read_bytes()
+        rejected = subprocess.run([sys.executable, str(executable)], input=json.dumps(bad),
+            text=True, capture_output=True, cwd=self.flow)
+        self.assertEqual(rejected.returncode, 1, rejected.stdout + rejected.stderr)
+        self.assertFalse(json.loads(rejected.stdout)['ok'])
+        self.assertNotIn('Traceback', rejected.stderr)
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        store = progress.state_store.StateStore(self.checkpoint)
+        view = envelopes[-1]['request']['evidence']['claims']['standards']
+        claim = store.read_evidence(view['claim_ref'], run_id=view['claim_ref']['run_id'])['value']['review_claim']
+        for forged_issuer, expected_error in ((False, 'original review issuer differs'),
+                                            (True, 'original review issuer differs')):
+            forged = copy.deepcopy(claim)
+            source = store.read_evidence(claim['verification']['source_ref'],
+                run_id=claim['run_id'])['value']['local_check_source']
+            source['raw']['dispatcher_ref'] = 'native:forged-dispatcher'
+            authority = store.read_evidence(claim['verification']['source_authority_ref'],
+                run_id=claim['run_id'])['value']['review_source_authority']
+            if forged_issuer:
+                authority['dispatcher_ref'] = 'native:forged-dispatcher'
+            forged['verification']['source_ref'] = store.write_object(claim['run_id'], 'evidence', {'local_check_source': source})
+            forged['verification']['source_digest'] = fixture.transfer.entry.digest(source)
+            authority.update(source_ref=forged['verification']['source_ref'],
+                source_digest=forged['verification']['source_digest'])
+            forged['verification']['source_authority_ref'] = store.write_object(claim['run_id'], 'evidence',
+                {'review_source_authority': authority})
+            forged['verification']['source_authority_digest'] = fixture.transfer.entry.digest(authority)
+            forged['claim_id'] = fixture.transfer.entry.digest({key: value for key, value in forged.items() if key != 'claim_id'})
+            claim_ref = store.write_object(claim['run_id'], 'evidence', {'review_claim': forged})
+            hostile = copy.deepcopy(envelopes[-1])
+            hostile['request']['evidence']['claims']['standards'] = progress.review_evidence.claim_view(forged, claim_ref)
+            blocked = subprocess.run([sys.executable, str(executable)], input=json.dumps(hostile),
+                text=True, capture_output=True, cwd=self.flow)
+            self.assertEqual(blocked.returncode, 1, blocked.stdout + blocked.stderr)
+            self.assertIn(expected_error, json.loads(blocked.stdout)['error'])
+            self.assertNotIn('Traceback', blocked.stderr)
+            self.assertEqual(self.checkpoint.read_bytes(), before)
+
+    def test_recovered_dispatcher_consumes_original_layered_claims(self):
+        candidate = self.layered_flow()
+        for ticket in ('A', 'B'):
+            for number in (1, 2):
+                self.local_review(candidate, ticket, ticket + str(number))
+            self.ticket_review(candidate, ticket)
+        self.delivery_reviews(candidate)
+        before = copy.deepcopy(self.state()['control']['context']['handoff_progress']['review_claims'])
+        self.recover_layered_dispatcher()
+        self.assertEqual(self.state()['control']['context']['carrier']['ref'], 'native:dispatcher-D2')
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['review_claims'], before)
+        applicable = self.invoke('control', {'action': 'review-applicability', 'evidence': {
+            'candidate': candidate, 'reference': 'controller:recovered-applicability'},
+            'receipt': {'controller_ref': 'task', 'reference': 'controller:recovered-applicability'}})
+        self.assertNotEqual(applicable['status'], 'blocked', applicable)
+        self.assertEqual(set(applicable['next_action']['result']['applicability']['retained']),
+            {view['claim_id'] for view in before.values()})
+        store = progress.state_store.StateStore(self.checkpoint)
+        old_claim = store.read_evidence(before['ticket:B']['claim_ref'],
+            run_id=before['ticket:B']['claim_ref']['run_id'])['value']['review_claim']
+        authority = store.read_evidence(old_claim['verification']['source_authority_ref'],
+            run_id=old_claim['run_id'])['value']['review_source_authority']
+        self.assertEqual(authority['dispatcher_ref'], 'native:dispatcher')
+        self.assertNotEqual(authority['carrier_attempt'], self.state()['control']['context']['carrier']['attempt'])
+        digest = old_claim['verification']['source_ref']['sha256']
+        original_source_file = store.directory / 'objects' / digest[:2] / digest[2:4] / digest
+        original_source = original_source_file.read_bytes()
+        try:
+            original_source_file.write_bytes(b'corrupt original stopped command source')
+            damaged = self.invoke('control', {'action': 'review-applicability', 'evidence': {
+                'candidate': candidate, 'reference': 'controller:damaged-old-source'},
+                'receipt': {'controller_ref': 'task', 'reference': 'controller:damaged-old-source'}})
+            self.assertEqual(damaged['status'], 'blocked', damaged)
+        finally:
+            original_source_file.write_bytes(original_source)
+        self.flow_git('commit', '--allow-empty', '-qm', 'recovered target candidate')
+        target = self.flow_git('rev-parse', 'HEAD')
+        verification = self.local_verification(target, 'A', 'A1')
+        verification['checks'].extend(self.local_verification(target, 'A', 'A2')['checks'])
+        verification['source']['raw']['checks'] = copy.deepcopy(verification['checks'])
+        old_actor = copy.deepcopy(verification)
+        old_actor['source']['raw']['dispatcher_ref'] = 'native:dispatcher'
+        with self.assertRaises(fixture.transfer.entry.PreparationError):
+            self.invoke('review-activity', {'operation': 'prepare', 'axis': 'ticket:A',
+                'candidate': target, 'actor_ref': 'task', 'verification': old_actor})
+        accepted_a = self.ticket_review(target, 'A', unknown_first=True)
+        self.assertEqual(accepted_a['source_candidate'], target)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['review_claims']['ticket:B'], before['ticket:B'])
+        reviews = self.delivery_reviews(target)
+        self.finish_certificate_delivery(target, reviews)
+
+    def recover_layered_dispatcher(self):
+        stopped = self.observation('stopped', 'result', ref='native:dispatcher')
+        stopped['receipt']['raw'].update(resumable=False, dispatch_available=True)
+        self.invoke('observe', stopped)
+        context = self.state()['control']['context']
+        owner = {'controller_ref': 'task', 'reference': 'controller:layered-recovery'}
+        evidence = {'dispatcher_ref': 'native:dispatcher', 'attempt': context['carrier']['attempt'],
+            'reference': owner['reference'], 'reason': 'original Dispatcher cannot resume',
+            'stop_receipts': [stopped['receipt']['receipt_ref']] +
+                [slot['record']['receipts'][-1]['receipt_ref'] for slot in self.state()['allocations'].values()],
+            'call_receipts': [stopped['provenance']['response_ref']]}
+        prepared = self.invoke('control', {'action': 'prepare-dispatch-recovery', 'evidence': evidence,
+            'receipt': owner})['next_action']['result']['recovery']
+        decision = {'reference': owner['reference'], 'authority_digest': prepared['authority_digest'],
+            'attempt': prepared['attempt'], 'remaining_paths': prepared['remaining_paths'],
+            'assume_paths': prepared['ownership']['dispatcher']}
+        identity = {'recovery_id': prepared['recovery_id'], 'snapshot_digest': prepared['snapshot_digest'],
+            'decision': decision}
+        intent = self.invoke('control', {'action': 'dispatch-recovery-intent', 'evidence': identity,
+            'receipt': owner})['next_action']['request']
+        receipt = {'adapter': 'fixture-native', 'call_ref': 'layered-replacement-call',
+            'response_ref': 'layered-replacement-response', 'intent_id': intent['intent_id'],
+            'status': 'ready', 'ref': 'native:dispatcher-D2', 'raw': {'write_authority': False}}
+        self.invoke('control', {'action': 'dispatch-recovery-result', 'evidence': {
+            'recovery_id': prepared['recovery_id'], 'receipt': receipt}, 'receipt': receipt})
+        inventory = self.observation('stopped', 'result', ref='native:dispatcher')['lifecycle']
+        inventory['pages'][0]['response']['data'].append({'id': 'native:dispatcher-D2', 'status': {'type': 'idle'}})
+        self.invoke('lifecycle-state', inventory)
+        activated = self.invoke('control', {'action': 'recover-dispatch', 'evidence': {
+            **identity, 'replacement_ref': 'native:dispatcher-D2'}, 'receipt': owner})
+        self.assertTrue(activated['next_action']['result']['ok'], activated)
+
     def candidate_ready(self, candidate):
         checkpoint = self.state()['control']['context']['handoff_progress']
         checks = fixture.transfer.checks_for(checkpoint['validation_plan']['review_required'], candidate)
         ready = self.invoke('control', {'action': 'candidate-ready', 'evidence': {
-            'dispatcher_ref': 'native:dispatcher', 'attempt': self.state()['control']['context']['carrier']['attempt'],
+            'dispatcher_ref': self.state()['control']['context']['carrier']['ref'], 'attempt': self.state()['control']['context']['carrier']['attempt'],
             'commit': candidate, 'expected_target_head': checkpoint['git_baseline_commit'], 'binding': self.binding,
             'plan_digest': checkpoint['plan_digest'], 'checks': checks},
             'receipt': {'adapter': 'fixture-command', 'call_ref': 'early:' + candidate, 'response_ref': 'early-stop:' + candidate,
-                'raw': {'checks': checks, 'source_unchanged': True, 'stopped': True, 'dispatcher_ref': 'native:dispatcher'}}})
+                'raw': {'checks': checks, 'source_unchanged': True, 'stopped': True,
+                    'dispatcher_ref': self.state()['control']['context']['carrier']['ref']}}})
+        self.assertIsNotNone(ready['next_action'], ready)
         self.assertTrue(ready['next_action']['result']['ok'], ready)
         return checks
 
@@ -387,7 +547,8 @@ class LayeredReviewTests(fixture.ProgressTests):
 
     def finish_certificate_delivery(self, candidate, reviews):
         checkpoint = self.state()['control']['context']['handoff_progress']
-        start = {'attempt_id': 'second-final', 'dispatcher_ref': 'native:dispatcher',
+        dispatcher = self.state()['control']['context']['carrier']['ref']
+        start = {'attempt_id': 'second-final', 'dispatcher_ref': dispatcher,
             'carrier_attempt': self.state()['control']['context']['carrier']['attempt'],
             **{key: checkpoint[key] for key in ('candidate', 'expected_target_head', 'plan_digest', 'plan_authority', 'review_digest')}}
         self.invoke('control', {'action': 'validation-start', 'evidence': start,
@@ -396,13 +557,13 @@ class LayeredReviewTests(fixture.ProgressTests):
         complete = self.invoke('control', {'action': 'validation-result', 'evidence': {'attempt_id': 'second-final', 'checks': checks},
             'receipt': {'adapter': 'fixture-command', 'call_ref': 'final-call', 'response_ref': 'final-stop',
                 'raw': {'attempt_id': 'second-final', 'checks': checks, 'source_unchanged': True,
-                    'stopped': True, 'dispatcher_ref': 'native:dispatcher'}}})
+                    'stopped': True, 'dispatcher_ref': dispatcher}}})
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'deliverable', complete)
-        verification = progress.control.delivery_verification(self.state()['control']['context']['handoff_progress'], 'native:dispatcher')
+        verification = progress.control.delivery_verification(self.state()['control']['context']['handoff_progress'], dispatcher)
         payload = {'candidate_commit': candidate, 'artifacts': self.implementation_paths, 'checks': ['complete candidate'],
             'review': reviews, 'verification': verification}
         observed = self.invoke('observe', self.observation('stopped', 'result', {
-            'delivery_id': 'second-delivery', 'status': 'completed', 'payload': payload}, ref='native:dispatcher'))
+            'delivery_id': 'second-delivery', 'status': 'completed', 'payload': payload}, ref=dispatcher))
         self.assertEqual(observed['status'], 'needs_input', observed)
         pending = observed['pending']
         accepted = self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],

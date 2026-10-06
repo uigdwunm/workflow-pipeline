@@ -7191,7 +7191,13 @@ class Progress:
             require(entry.digest(source) == claim['verification']['source_digest'] and
                     source['raw'].get('checks') == claim['verification']['checks'],
                     'review_incomplete', 'original stopped regression source changed')
-            control.validate_result_source(source, claim['verification']['checks'], self.bound_ref())
+            authority = store.read_evidence(claim['verification']['source_authority_ref'],
+                run_id=current.run_id)['value']['review_source_authority']
+            issuer = store.read_evidence(authority['issuer_ref'], run_id=current.run_id)['value']['review_issuer']
+            identity = review_evidence.validate_original_source(claim, source, authority, issuer)
+            context = self.state['control']['context']
+            require(identity in review_evidence.source_dispatchers(context['carrier'], context['handoff_progress']),
+                    'review_incomplete', 'original command source has no authenticated Dispatcher lineage')
             claims[axis] = claim
         return claims
 
@@ -7315,6 +7321,7 @@ class Progress:
             'reviewer_ref': receipt['ref'], 'native_stop': {**{key: receipt[key] for key in ('adapter', 'call_ref', 'response_ref', 'status', 'ref')},
                 'action_id': slot['action_id']}, 'native_stop_ref': store.write_object(current.run_id, 'evidence', {'native_review_stop': receipt}),
             'findings': [], 'status': 'accepted'}
+        self.freeze_review_source_authority(claim, slot, store, current)
         claim['claim_id'] = entry.digest(claim)
         reference = store.write_object(current.run_id, 'evidence', {'review_claim': claim})
         return review_evidence.claim_view(claim, reference)
@@ -7432,10 +7439,27 @@ class Progress:
             'reviewer_ref': slot['ref'], 'native_stop': {**{k: receipt[k] for k in
                 ('adapter', 'call_ref', 'response_ref', 'status', 'ref')}, 'action_id': slot['action_id']},
             'native_stop_ref': stop_ref, 'findings': [], 'status': 'accepted'}
+        self.freeze_review_source_authority(claim, slot, store, current)
         claim['claim_id'] = entry.digest(claim)
         review_evidence.validate_claim(claim)
         reference = store.write_object(current.run_id, 'evidence', {'review_claim': claim})
         return review_evidence.claim_view(claim, reference)
+
+    def freeze_review_source_authority(self, claim, slot, store, current):
+        carrier = self.state['control']['context']['carrier']
+        verification = claim['verification']
+        issuer = store.read_evidence(slot['issuer_ref'], run_id=current.run_id)['value']['review_issuer']
+        require((issuer['dispatcher_ref'], issuer['carrier_attempt']) == (carrier['ref'], carrier['attempt']),
+                'review_incomplete', 'only the original current Dispatcher can mint its review claim')
+        authority = {'dispatcher_ref': carrier['ref'], 'carrier_attempt': carrier['attempt'],
+            'request_digest': entry.digest(slot['prepare']), 'source_ref': verification['source_ref'],
+            'source_digest': verification['source_digest'], 'native_action_id': slot['action_id'],
+            'native_stop_ref': claim['native_stop_ref'], 'candidate': claim['source_candidate'],
+            'plan_authority': claim['plan_authority'], 'run_id': current.run_id,
+            'package_digest': claim['package_digest'], 'issuer_ref': slot['issuer_ref'], 'issuer_digest': entry.digest(issuer)}
+        verification['source_authority_ref'] = store.write_object(current.run_id, 'evidence',
+            {'review_source_authority': authority})
+        verification['source_authority_digest'] = entry.digest(authority)
 
     def commit_review_start(self, slot, result, applied):
         self.state['control']['context'] = result['context']
@@ -7698,6 +7722,15 @@ class Progress:
                 slot['subject'] = self.local_review_subject(data)
             slots[data['axis']] = slot
             store = state_store.open_store(self.path)
+            issuer_current = store.open_current()
+            carrier = s['control']['context']['carrier']
+            command_source = (data['verification']['source'] if local else checkpoint['candidate_evidence']['source'])
+            slot['issuer_ref'] = store.write_object(issuer_current.run_id, 'evidence', {'review_issuer': {
+                'dispatcher_ref': carrier['ref'], 'carrier_attempt': carrier['attempt'],
+                'request_digest': entry.digest(data), 'native_action_id': slot['action_id'],
+                'run_id': issuer_current.run_id, 'package_digest': entry.digest(s['packages']),
+                'plan_authority': checkpoint['plan_authority'], 'source_digest': entry.digest(command_source),
+                'source_ref': store.write_object(issuer_current.run_id, 'evidence', {'local_check_source': command_source})}})
             # Reject every bounded candidate before reserve allocation or C's
             # review-start. No external call can escape this durable intent.
             ledger_review = None

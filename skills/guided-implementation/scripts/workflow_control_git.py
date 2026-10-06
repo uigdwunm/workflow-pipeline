@@ -707,6 +707,14 @@ def verified_transition(payload):
                 store_module.entry.digest(source['raw']['fixture']) == claim['verification']['fixture_digest'] and
                 claim['verification']['required'] == required,
                 'local claim changed its original command, environment or fixture proof')
+        source_authority = store.read_evidence(claim['verification']['source_authority_ref'],
+            run_id=current.run_id)['value']['review_source_authority']
+        issuer = store.read_evidence(source_authority['issuer_ref'], run_id=current.run_id)['value']['review_issuer']
+        original_dispatcher = review_evidence.validate_original_source(claim, source, source_authority, issuer)
+        require(original_dispatcher == (context['carrier']['ref'], context['carrier']['attempt']) and
+                source_authority['issuer_ref'] == slot['issuer_ref'] and
+                source_authority['request_digest'] == store_module.entry.digest(slot['prepare']),
+                'local claim changed its original C Dispatcher or prepared request')
         require(all(claim[key] == value for key, value in projection.items() if key != 'verification_refs') and
                 claim['verification']['ids'] == projection['verification_refs'] and
                 claim['verification']['checks'] == slot['prepare']['verification']['checks'],
@@ -985,10 +993,6 @@ def main():
     print(json.dumps(result, sort_keys=True))
     return 0
 
-if __name__ == '__main__':
-    sys.exit(main())
-
-
 def verify_review_coverage(view, progress, *, delivery, extra=None):
     """Recompute finite original-claim coverage against actual target Git bytes."""
     import workflow_progress as progression
@@ -1053,6 +1057,10 @@ def verify_stored_review_coverage(view, progress, packages, run_id):
         control_source = source['raw']
         require(control_source.get('stopped') is True and control_source.get('source_unchanged') is True and
                 control_source.get('checks') == claim['verification']['checks'], 'accepted regression lacks original stopped checks')
+        source_authority = store.read_evidence(claim['verification']['source_authority_ref'],
+            run_id=run_id)['value']['review_source_authority']
+        issuer = store.read_evidence(source_authority['issuer_ref'], run_id=run_id)['value']['review_issuer']
+        review_evidence.validate_original_source(claim, source, source_authority, issuer)
         app_ref = certificate['applications'][axis]['applicability_ref']
         app = store.read_evidence(app_ref, run_id=run_id)['value']['review_applicability']
         compared = app['compared']
@@ -1068,3 +1076,7 @@ def verify_stored_review_coverage(view, progress, packages, run_id):
     computed = review_evidence.coverage_certificate(progress['execution_authority']['execution_plan']['catalog'],
         claims, applications, view['candidate'], progress['plan_authority'], progress['allowed_paths'], delivery=True)
     require(computed == certificate, 'accepted coverage has missing requirement/AC/file/native proof')
+
+
+if __name__ == '__main__':
+    sys.exit(main())

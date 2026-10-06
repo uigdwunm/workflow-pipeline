@@ -484,6 +484,18 @@ the exact target candidate. Stage-3 acceptance and the real Stage-4 caller retai
 and verify the immutable certificate, original claim/stop/check sources and
 target proofs; damaged or stale coverage refuses the handoff.
 
+Each prepared review also freezes an immutable issuer evidence reference derived
+from C's actual Dispatcher ref/attempt, exact prepared request/action, run,
+package, plan authority and original command-source ref/digest. Claim acceptance
+binds that issuer to the original stopped native receipt and retains only typed
+source-authority references and digests in its verification. Consumers authenticate
+the original command source against that prepared identity, never a ref selected
+by its raw assertion. A live successor may retain old claims only through the
+existing validated activated recovery chain. New preparation and claim minting
+still require the current Dispatcher and its original source. The accepted
+certificate retains these exact source/issuer/stop proofs for Stage4 consumption
+without reconstructing an old control root or rewriting old reports.
+
 ## Controlled Stage-3 recovery
 
 Use C's `control` operation; retain its transaction journal and `handoff_progress.recovery`.

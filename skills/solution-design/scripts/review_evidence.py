@@ -92,11 +92,14 @@ def validate_claim(claim):
     verification = claim['verification']
     require(isinstance(verification, dict) and set(verification) == {
         'ids', 'required', 'checks', 'source_results', 'source_ref', 'source_digest',
-        'environment_digest', 'fixture_digest'} and isinstance(verification['source_ref'], dict) and
+        'environment_digest', 'fixture_digest', 'source_authority_ref', 'source_authority_digest'} and
+        isinstance(verification['source_authority_ref'], dict) and
+        verification['source_authority_ref'].get('run_id') == claim['run_id'] and
+        verification['source_authority_ref'].get('kind') == 'evidence' and isinstance(verification['source_ref'], dict) and
         verification['source_ref'].get('run_id') == claim['run_id'] and
         verification['source_ref'].get('kind') == 'evidence' and
         all(isinstance(verification[key], str) and re.fullmatch(r'[0-9a-f]{64}', verification[key])
-            for key in ('source_digest', 'environment_digest', 'fixture_digest')),
+            for key in ('source_digest', 'environment_digest', 'fixture_digest', 'source_authority_digest')),
         'review_incomplete', 'claim lacks its immutable original local command source')
     try:
         control.validate_checks(verification['required'], verification['checks'], claim['source_candidate'])
@@ -109,6 +112,51 @@ def validate_claim(claim):
             isinstance(claim['native_stop_ref'], dict),
             'review_incomplete', 'claim lacks its original stopped native receipt')
     return copy.deepcopy(claim)
+
+
+def validate_original_source(claim, source, authority, issuer):
+    """The original C-minted identity, never the source's own assertion, selects the validator."""
+    verification = claim['verification']
+    require(isinstance(authority, dict) and set(authority) == {
+        'dispatcher_ref', 'carrier_attempt', 'request_digest', 'source_ref', 'source_digest',
+        'native_action_id', 'native_stop_ref', 'candidate', 'plan_authority', 'run_id', 'package_digest',
+        'issuer_ref', 'issuer_digest'},
+        'review_incomplete', 'original command source authority is incomplete')
+    require(isinstance(issuer, dict) and set(issuer) == {'dispatcher_ref', 'carrier_attempt',
+        'request_digest', 'native_action_id', 'run_id', 'package_digest', 'plan_authority',
+        'source_ref', 'source_digest'} and
+        entry.digest(issuer) == authority['issuer_digest'] and
+        all(issuer[key] == authority[key] for key in issuer),
+        'review_incomplete', 'original review issuer differs from its prepared C authority')
+    require(entry.digest(authority) == verification['source_authority_digest'] and
+        authority['source_ref'] == verification['source_ref'] and
+        authority['source_digest'] == verification['source_digest'] == entry.digest(source) and
+        authority['native_action_id'] == claim['native_stop']['action_id'] and
+        authority['native_stop_ref'] == claim['native_stop_ref'] and
+        authority['candidate'] == claim['source_candidate'] and
+        all(authority[key] == claim[key] for key in ('plan_authority', 'run_id', 'package_digest')) and
+        all(isinstance(authority[key], str) and authority[key] for key in ('dispatcher_ref', 'carrier_attempt')) and
+        isinstance(authority['request_digest'], str) and re.fullmatch('[0-9a-f]{64}', authority['request_digest']),
+        'review_incomplete', 'original source differs from its immutable C/native request authority')
+    control.validate_result_source(source, verification['checks'], authority['dispatcher_ref'])
+    return authority['dispatcher_ref'], authority['carrier_attempt']
+
+
+def source_dispatchers(carrier, progress):
+    """Walk only the existing validated, activated replacement chain backwards."""
+    identity = carrier['ref'], carrier['attempt']
+    accepted = {identity}
+    recoveries = [*progress.get('recovery_history', []), *([progress['recovery']] if 'recovery' in progress else [])]
+    for recovery in reversed(recoveries):
+        control.validate_recovery(recovery, progress)
+        if recovery['state'] != 'activated':
+            continue
+        successor = recovery['activation']['replacement_ref']
+        if identity != (successor, entry.digest([recovery['recovery_id'], successor])):
+            continue
+        identity = recovery['dispatcher_ref'], recovery['attempt']
+        accepted.add(identity)
+    return accepted
 
 
 def claim_view(claim, reference):
