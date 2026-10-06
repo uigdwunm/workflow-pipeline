@@ -484,7 +484,11 @@ class AttachedFlowTests(fixtures.ProgressTests):
             ledger_control._write_ledger_transaction(ledger_path, frontmatter, records, seed_request,
                 ledger_revision=revision + 1, event_type='fixture-original-control', result={'store_ref': pointer})
         topic = entry.topic_read(str(self.root), self.attachment)
-        outer[progress.KEY]['control'].update(store_ref=pointer, discussion={**self.base,
+        stored_context, _ = progress.state_store.StateStore(ledger_path).read_ledger_control(pointer)
+        self.assertFalse(current_context.get('retired_handoffs'))
+        self.assertEqual(stored_context, {key: value for key, value in current_context.items()
+                                          if key != 'retired_handoffs'})
+        outer[progress.KEY]['control'].update(context=stored_context, store_ref=pointer, discussion={**self.base,
             'expected_ledger_revision': topic['ledger_revision'],
             'expected_topic_revision': topic['record_revision'],
             'idempotency_key': str(uuid.uuid4())})
@@ -513,7 +517,8 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.flow_git('add', 'docs/spec.md')
         self.flow_git('commit', '--only', '-qm', 'attached private revision', '--', 'docs/spec.md')
         with patch.object(ledger_control._git, 'verified_transition',
-                          wraps=ledger_control._git.verified_transition) as verified:
+                          wraps=ledger_control._git.verified_transition) as verified, \
+                patch.object(protocol, 'handle', wraps=protocol.handle) as ledger_calls:
             result = self.invoke('commit-plan-revision', {'revision_id': report['revision_id'],
                 'controller_ref': 'task', 'write_release': stopped['next_action']['write_release'],
                 'planning_commit': self.flow_git('rev-parse', 'HEAD')})
@@ -525,11 +530,15 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.assertEqual(current['controller_ref'], 'task')
         self.assertEqual(current['topic_ref'], self.attachment['actor_topic_id'])
         self.assertEqual(len(current['handoff_progress']['plan_revisions']), 1)
-        transaction = next(value for value in self.state()['control_transactions'].values()
-            if value['request']['action'] == 'plan-revision-activate')
-        original_ledger_request = {**transaction['port']['discussion'],
-            'operation': 'workflow-control', 'action': 'plan-revision-activate',
-            'evidence': transaction['request']['evidence']}
+        # Completed control intents leave the active roster. Replay the exact
+        # original public RPC, including its pointer, CAS and idempotency key.
+        original_calls = [call.args[0] for call in ledger_calls.call_args_list
+            if call.args[0].get('operation') == 'workflow-control'
+            and call.args[0].get('action') == 'plan-revision-activate']
+        self.assertEqual(len(original_calls), 1)
+        original_ledger_request = copy.deepcopy(original_calls[0])
+        self.assertFalse(any(value['request']['action'] == 'plan-revision-activate'
+            for value in self.state()['control_transactions'].values()))
         before_replay = self.ledger.read_bytes()
         repeated = protocol.handle(original_ledger_request)
         self.assertEqual(repeated['control']['context'], current)
@@ -621,7 +630,7 @@ class AttachedFlowTests(fixtures.ProgressTests):
                 'action': 'review-start', 'evidence': {'candidate': candidate}})
         self.assertEqual(self.ledger.read_bytes(), ledger_before)
         (self.flow / 'impl.py').write_bytes(implementation)
-        self.mark_reviewable = lambda _candidate, fixture_execution=False: {
+        self.mark_reviewable = lambda _candidate, fixture_execution=False, evidence_suffix='': {
             'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
             'plan_authority': checkpoint['plan_authority'], 'checks': checks}
         payload = {'artifacts': ['impl.py'], 'checks': ['attached behavior passed'],
@@ -687,6 +696,11 @@ class AttachedFlowTests(fixtures.ProgressTests):
                 'record_revision': 1, 'state': 'active', 'data_json': protocol._canonical_json(pointer)})
             ledger_control._write_ledger_transaction(ledger_path, frontmatter, records, seed_request,
                 ledger_revision=revision + 1, event_type='fixture-original-control', result={'store_ref': pointer})
+        stored_context, _ = progress.state_store.StateStore(ledger_path).read_ledger_control(pointer)
+        self.assertFalse(current_context.get('retired_handoffs'))
+        self.assertEqual(stored_context, {key: value for key, value in current_context.items()
+                                          if key != 'retired_handoffs'})
+        self.context = stored_context
         value = self.input_for(3, self.state()['accepted'])
         topic = entry.topic_read(str(self.root), self.attachment)
         envelope = {**self.base, 'expected_ledger_revision': topic['ledger_revision'],
@@ -700,12 +714,15 @@ class AttachedFlowTests(fixtures.ProgressTests):
                 self.flow_git('add', 'impl.py')
                 self.flow_git('commit', '-qm', 'head advanced after B preparation')
             return original(request)
+        ledger_before_race = self.ledger.read_bytes()
         with patch.object(protocol, 'handle', side_effect=after_b_preparation), \
                 patch.object(ledger_control, '_start_git_authority',
                              wraps=ledger_control._start_git_authority) as checked:
             with self.assertRaises(Exception) as raised:
                 self.invoke('start', {'handoff': value,
                     'control': {'context': self.context, 'discussion': envelope, 'store_ref': pointer}})
+        self.assertEqual(getattr(raised.exception, 'code', None), 'source_changed')
+        self.assertEqual(self.ledger.read_bytes(), ledger_before_race)
         self.assertEqual(raced, [True], str(raised.exception))
         self.assertEqual(checked.call_count, 1)
         latest = protocol.handle({**self.base, 'operation': 'read-topic'})['workflow_control']
