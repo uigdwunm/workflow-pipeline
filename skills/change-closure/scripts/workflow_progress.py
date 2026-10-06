@@ -4582,8 +4582,6 @@ class Progress:
                     observation['git_snapshot'] = control_git.recovery_snapshot(Path(checkpoint['binding']['worktree']), checkpoint)[0]
                 except control.ControlError as error:
                     observation['snapshot_error'] = str(error)
-        if receipt["status"] == "stopped":
-            host["last_stop"] = copy.deepcopy(observation)
         if status in {"stopped", "unknown"} or conflict:
             was_stopped = host["status"] == "stopped"
             self.revoke_host()
@@ -4599,6 +4597,8 @@ class Progress:
             action["resolved"] = True
         host["status"] = status
         observation["generation"] = host["generation"]
+        if receipt["status"] == "stopped":
+            host["last_stop"] = copy.deepcopy(observation)
         # Unordered stops retain an existing barrier, never replace causal proof.
         if causal or status != "stopped":
             host["observation"] = observation

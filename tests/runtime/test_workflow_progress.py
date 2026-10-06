@@ -331,25 +331,105 @@ class ProgressTests(transfer.StageTransferTests):
         self.checkpoint = self.checkpoint.with_name('unknown-business.json')
         self.begin()
         self.invoke('observe', self.observation())
-        self.invoke('pause')
-        self.invoke('observe', self.observation('stopped', 'result'))
+        paused = self.invoke('pause')
+        stop_action = copy.deepcopy(self.state()['host_action'])
+        self.assertEqual(paused['next_action']['action_id'], stop_action['action_id'])
+        self.assertEqual(stop_action['operation'], 'stop-host')
+        stopped = self.observation('stopped', 'result')
+        self.assertEqual(self.invoke('observe', stopped)['status'], 'paused')
+        original = copy.deepcopy(self.state())
+        self.assertEqual(original['host']['last_stop'], original['host']['observation'])
+        self.assertEqual(original['host']['last_stop']['generation'], original['host']['generation'])
+        self.assertEqual(original['host']['last_stop']['action_id'], stop_action['action_id'])
+        self.assertEqual(original['host']['last_stop']['provenance'], stopped['provenance'])
+        self.assertEqual(original['lifecycle_snapshot']['instance'], stopped['lifecycle']['instance'])
+        self.assertEqual(original['lifecycle_snapshot']['sequence'], stopped['lifecycle']['sequence'])
+        # An exact response replay ACKs without replacing current stop authority.
+        replay = self.invoke('observe', stopped)
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertEqual(self.state()['host'], original['host'])
         request = {'action': 'successor-ready', 'evidence': {},
                    'receipt': {'controller_ref': 'task'}}
-        with patch.object(progress.dispatch, 'checkpoint', side_effect=KeyboardInterrupt):
+        with patch.object(progress.dispatch, 'checkpoint', side_effect=KeyboardInterrupt) as dispatched:
             try:
                 response = self.invoke('control', request)
             except KeyboardInterrupt:
                 pass
             else:
                 self.fail('control intent did not reach its authority: ' + str(response))
+        self.assertEqual(dispatched.call_count, 1)
+        port, handoff, action, evidence = dispatched.call_args.args
+        self.assertEqual(port['context']['controller_ref'], 'task')
+        self.assertEqual(handoff['digest'], original['handoff']['digest'])
+        self.assertEqual(action, 'successor-ready')
+        proof = evidence['takeover_proof']
+        self.assertEqual(proof['stop_receipt'], original['host']['last_stop'])
+        self.assertEqual(proof['ref'], stopped['receipt']['ref'])
+        self.assertEqual(proof['attempt'], original['control']['context']['carrier']['attempt'])
+        self.assertEqual(proof['host_ref'], original['handoff']['expected_entry']['actor']['thread_id'])
+        self.assertEqual(proof['invocation_id'], stopped['provenance']['call_ref'])
+        self.assertEqual(proof['response_id'], stopped['provenance']['response_ref'])
+        self.assertEqual(proof['business_calls']['unresolved'], [])
         pending = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint)).unresolved_control_transactions()
         self.assertEqual(len(pending), 1)
         transaction = next(iter(pending.values()))
         self.assertEqual(transaction['takeover_input'], request)
         self.assertIsNone(transaction['result'])
-        with self.assertRaises(transfer.entry.PreparationError) as error:
-            self.invoke('start', {'handoff': self.input})
+        with patch.object(progress.dispatch, 'checkpoint', side_effect=AssertionError('new control call')) as dispatched:
+            with self.assertRaises(transfer.entry.PreparationError) as error:
+                self.invoke('start', {'handoff': self.input})
         self.assertEqual(error.exception.code, 'control_outcome_unknown')
+        self.assertEqual(dispatched.call_count, 0)
+        self.assertEqual(self.state()['host'], original['host'])
+        self.assertEqual(self.state()['lifecycle_snapshot'], original['lifecycle_snapshot'])
+        self.assertEqual(progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint)).unresolved_control_transactions(), pending)
+
+    def test_successor_ready_rejects_noncausal_and_revoked_stop_observations(self):
+        checkpoint = self.checkpoint
+        for later in ('noncausal-stopped', 'running', 'unknown', 'old-stopped'):
+            with self.subTest(later=later):
+                self.checkpoint = checkpoint.with_name(later + '.json')
+                self.begin()
+                self.invoke('observe', self.observation())
+                self.invoke('pause')
+                stopped = self.observation('stopped', 'result')
+                self.assertEqual(self.invoke('observe', stopped)['status'], 'paused')
+                original = copy.deepcopy(self.state())
+                if later == 'old-stopped':
+                    resumed = self.invoke('resume')
+                    self.assertEqual(resumed['next_action']['operation'], 'inspect-host-state')
+                changed = self.observation('stopped' if later.endswith('stopped') else later, 'result')
+                if later.endswith('stopped'):
+                    # A fresh response attributed to an ended/old action is
+                    # valid host evidence, but cannot become current causal proof.
+                    changed['action_id'] = stopped['action_id']
+                    changed['provenance']['action_id'] = stopped['action_id']
+                self.invoke('observe', changed)
+                after = copy.deepcopy(self.state())
+                self.assertGreater(after['host']['generation'], original['host']['generation'])
+                self.assertIsNone(after['host']['proof'])
+                if later.endswith('stopped'):
+                    self.assertEqual(after['host']['status'], 'stopped')
+                    self.assertEqual(after['host']['observation'], original['host']['observation'])
+                    self.assertNotEqual(after['host']['last_stop'], after['host']['observation'])
+                else:
+                    self.assertNotEqual(after['host']['status'], 'stopped')
+                # Neither replay shape can refresh the old causal observation.
+                self.assertTrue(self.invoke('observe', stopped)['acknowledged'])
+                duplicate = copy.deepcopy(stopped)
+                duplicate['event_id'] = 'old-stop-new-event'
+                replayed = self.invoke('observe', duplicate)
+                for field in ('status', 'generation', 'proof', 'observation', 'last_stop', 'calls', 'seen'):
+                    self.assertEqual(self.state()['host'][field], after['host'][field], field)
+                self.assertNotEqual((replayed.get('next_action') or {}).get('operation'), 'continue-host', replayed)
+                request = {'action': 'successor-ready', 'evidence': {},
+                           'receipt': {'controller_ref': 'task'}}
+                with patch.object(progress.dispatch, 'checkpoint', side_effect=AssertionError('stale stop dispatched')) as dispatched:
+                    rejected = self.invoke('control', request)
+                self.assertEqual(rejected['error']['code'], 'host_evidence_missing', rejected)
+                self.assertEqual(dispatched.call_count, 0)
+                recovered = self.invoke('resume')
+                self.assertNotEqual((recovered.get('next_action') or {}).get('operation'), 'continue-host', recovered)
 
     def invoke(self, operation, data=None, revision=None):
         if operation == 'start' and data['handoff'].get('stage', 0) >= 2 and 'native_host' not in data:
