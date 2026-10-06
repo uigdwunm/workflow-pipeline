@@ -1,6 +1,7 @@
 # 02 — 三层审查和可证明的证据继承
 
 Status: ready-for-agent
+Lifecycle: completed
 Design status: accepted — 普通本地连续实现已授权
 Blocked by: 01
 Spec: ../PRD.md
@@ -12,12 +13,12 @@ Scope inventory: ../manifest.json（T02）
 
 ## 合同和验收
 
-- [ ] 实现者不能审查自己任何版本的片；reviewer可复用，Ticket验收不强制新Agent。
-- [ ] 三层报告明确不同范围；交付不重复整个diff，且每个需求/AC/变更文件有可达证明。
-- [ ] 跨commit继承包含原claim及目标候选的指纹/依赖比较；不能重标旧报告commit伪造新审查。
-- [ ] 同文件修改、公共接口/共享夹具改变、漏报读取、未知共享影响均按PRD扩大；未受影响另一Ticket保留。
-- [ ] 旧lease、缺失原生停止回执、未解决finding、旧验证摘要不能通过门禁。
-- [ ] 无集成delta仍首次核对覆盖与共享状态，重复inspect不新派reviewer。
+- [x] 实现者不能审查自己任何版本的片；reviewer可复用，Ticket验收不强制新Agent。
+- [x] 三层报告明确不同范围；交付不重复整个diff，且每个需求/AC/变更文件有可达证明。
+- [x] 跨commit继承包含原claim及目标候选的指纹/依赖比较；不能重标旧报告commit伪造新审查。
+- [x] 同文件修改、公共接口/共享夹具改变、漏报读取、未知共享影响均按PRD扩大；未受影响另一Ticket保留。
+- [x] 旧lease、缺失原生停止回执、未解决finding、旧验证摘要不能通过门禁。
+- [x] 无集成delta仍首次核对覆盖与共享状态，重复inspect不新派reviewer。
 
 ## Function Execution Plan（草案）
 
@@ -42,3 +43,12 @@ V02：`test_review_first_validation.py`、`test_plan_driven_dispatch.py`、`test
 ## Comments
 
 用户已统一接受并选择连续实现；此为普通本地授权，非正式Stage3 handoff。
+
+
+## 验收结果
+
+独立 reviewer 于固定 `375476289417ce5ec081051dcf48eaf2a66ee4b6` 接受六项 AC；容量 P2 closed，Standards 与局部合同均 0 finding。完整来源和目标适用性见本次运行的 `implementation/t02-independent-six-ac-review-3754762.md`，首片 `58a9617`、第二片 `efdd69e`、后续 `b4dfb72`/`0962999` 各报告保留原 source 与日志，未重标。
+
+实际证据包括同 C 两 Ticket 各两片、独立原生局部/Ticket/交付指令的完整消费、A 修复/B 原 claim 与停止证明保留、空新提交继承、CLI 原入口、Dispatcher 更换恢复、最终接收/Stage4；整组合法引用但未准备的停止证据被拒绝。八份完整 8 MiB 报告通过有限原 observe CAS 语义事实消费；普通元数据峰值 1,106,350 B，immutable Root 样本 2,611 B、当前 Stage4 Subject 42,576 B。原始分块和原调用各保一次，未扩大预算。
+
+AC4 已有同文件相邻函数、跨 Ticket 真实读取、未知共享、缺依赖、各自原停止报告漏/增读取的公开反证。mode/symlink/absence、uncovered-new-file 和编号需求分支包含静态核验，未冒称专门运行。原生命令/宿主响应为 adapter doubles；全六 Ticket 完整验证、真实宿主现场、效果测量和本地 main 集成仍待后续完成。

@@ -1277,13 +1277,15 @@
       "path": "tests/runtime/test_review_first_validation.py",
       "operation": "modify",
       "tickets": [
-        "T02"
+        "T02",
+        "T03"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "implementation_note": "T03 issue V01/V03 既定真实行为：公共 fixture 的提前 Ticket/affected 检查、修复后旧完整 pass 失效；原 native ref 的新 invocation/lease、64KiB 摘要/有界展开、原 Slice ID 与首次提交记录。仅这些相关回归，不预晋升其余 verify 文件。"
     },
     {
       "path": "tests/runtime/test_plan_driven_dispatch.py",
@@ -1380,13 +1382,15 @@
       "path": "tests/runtime/test_layered_review.py",
       "operation": "add",
       "tickets": [
-        "T02"
+        "T02",
+        "T03"
       ],
       "kind": "test",
       "reason": "新增真实生产边界行为回归",
       "exists_at_design": false,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "implementation_note": "T03 issue V01/V03 既定真实行为：公共 fixture 的提前 Ticket/affected 检查、修复后旧完整 pass 失效；原 native ref 的新 invocation/lease、64KiB 摘要/有界展开、原 Slice ID 与首次提交记录。仅这些相关回归，不预晋升其余 verify 文件。"
     },
     {
       "path": "tests/runtime/test_state_archive.py",
