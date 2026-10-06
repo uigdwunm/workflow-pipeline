@@ -533,7 +533,8 @@
         "skills/guided-implementation/scripts/discussion_core/workflow_control.py",
         "skills/problem-framing/scripts/discussion_core/workflow_control.py",
         "skills/solution-design/scripts/discussion_core/workflow_control.py"
-      ]
+      ],
+      "implementation_note": "T01 ledger B 准备读取：原 stage subject 的 prepare intent、scope/基线、原 ledger pointer/revision 有限读取及 HEAD 漂移拒绝。正常邻居仅证明 B 守卫与 ledger start-dispatch；baseline 已有 full-topic entry equality 导致后续 verify_launch entry_changed，保持明确拒绝，不宣称完整 ledger Stage3 launch 受支持。不得忽略 topic 权威字段、重采 expected 或扩展延期初始化。"
     },
     {
       "path": "src/stages/guided-implementation/scripts/workflow.py",
@@ -1182,13 +1183,15 @@
       "path": "tests/runtime/test_workflow_progress.py",
       "operation": "modify",
       "tickets": [
-        "T01"
+        "T01",
+        "T02"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "implementation_note": "T02 execution-plan-v2 的真实 Stage2 冻结与后续分层审查夹具依赖 planning_spec；保留 Stage2 两轴原权限，不将执行 accepted 当作局部审查。"
     },
     {
       "path": "tests/runtime/test_workflow.py",
@@ -1206,13 +1209,15 @@
       "path": "tests/runtime/test_stage_transfer.py",
       "operation": "modify",
       "tickets": [
-        "T01"
+        "T01",
+        "T02"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "implementation_note": "T02 三层交付证据、plan-v2 与同 C Stage3→4 消费契约的必经 fixture 适配；保持原身份、停止及交付门禁反例。"
     },
     {
       "path": "tests/runtime/test_unified_recovery.py",
@@ -1407,7 +1412,8 @@
           "status": "existing-verified"
         }
       ],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "implementation_note": "T01 ledger B 准备读取：原 stage subject 的 prepare intent、scope/基线、原 ledger pointer/revision 有限读取及 HEAD 漂移拒绝。正常邻居仅证明 B 守卫与 ledger start-dispatch；baseline 已有 full-topic entry equality 导致后续 verify_launch entry_changed，保持明确拒绝，不宣称完整 ledger Stage3 launch 受支持。不得忽略 topic 权威字段、重采 expected 或扩展延期初始化。"
     },
     {
       "path": "tests/runtime/test_business_recovery.py",
