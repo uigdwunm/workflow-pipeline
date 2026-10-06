@@ -1455,7 +1455,7 @@
         "T06"
       ],
       "kind": "test",
-      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改 T01累计原08完整18项中的两ProblemFramingEntry调用在EntrySupport.commit_takeover手写inline progress-v21/缺stage_subject与store_ref处失败，原ledger C0/1已存在；晋升该helper及test_accepted_stage_zero_successor_advances_before_archive、test_archive_failure_does_not_block_stage_one_completion，使用当前PROTOCOL/原ledger CAS pointer与合法有限subject。保不完整stop不写ledger、原响应丢失恢复、Stage1唯一authority、精确无effect重放与archive失败不阻完成，不改legacy拒绝/Stage2桥。",
+      "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改 T01累计原08完整18项中的两ProblemFramingEntry调用在EntrySupport.commit_takeover手写inline progress-v21/缺stage_subject与store_ref处失败，原ledger C0/1已存在；晋升该helper及test_accepted_stage_zero_successor_advances_before_archive、test_archive_failure_does_not_block_stage_one_completion，使用当前PROTOCOL/原ledger CAS pointer与合法有限subject。保不完整stop不写ledger、原响应丢失恢复、Stage1唯一authority、精确无effect重放与archive失败不阻完成，不改legacy拒绝/Stage2桥。 原两caller继续触达EntrySupport.recover_attached_archive（06c/06d实证：helper手写Stage2 inline，handle在第二save丢响应期待前以legacy_run_requires_original_runtime拒绝）。仅将该必经archive恢复helper改为真实既存dedicated C0/1 ledger pointer与合法当前owner/有限subject，保原第二save KeyboardInterrupt、原operation/query身份、ledger不重复写及完成断言；不创建Stage2/Phase0初始化或新增支持面。上述原两目标caller必经的既有测试取数/helper依赖可按实际失败证据适配，同文件符号inventory用于定位，不将机械字段/helper拆成额外任务。",
       "exists_at_design": true,
       "symbols": [
         {
@@ -1468,6 +1468,10 @@
         },
         {
           "name": "ProblemFramingEntryTests.test_archive_failure_does_not_block_stage_one_completion",
+          "status": "existing-verified"
+        },
+        {
+          "name": "EntrySupport.recover_attached_archive",
           "status": "existing-verified"
         }
       ],
