@@ -496,6 +496,17 @@ still require the current Dispatcher and its original source. The accepted
 certificate retains these exact source/issuer/stop proofs for Stage4 consumption
 without reconstructing an old control root or rewriting old reports.
 
+An artifact's existence and known Dispatcher identity do not prove native work.
+Every live claim, including external delivery extras, must match one exact
+current/retained axis/action slot, its prepared issuer/request, original stopped
+response and settled query. The original prepare CAS receipt binds issuer_ref;
+the observe CAS receipt binds native_stop_ref. Claims keep bounded original
+request references plus actor/stage-subject identities. Consumers verify the
+original receipt-index entry and commit-marker membership/result references.
+Retired accepted certificate reads use those same exact committed prepare/stop
+proofs and original reported scope. Missing slots, unknown calls or uncommitted
+receipts cannot supply an acknowledgement or grant convergence.
+
 ## Controlled Stage-3 recovery
 
 Use C's `control` operation; retain its transaction journal and `handoff_progress.recovery`.

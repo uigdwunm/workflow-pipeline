@@ -715,6 +715,7 @@ def verified_transition(payload):
                 source_authority['issuer_ref'] == slot['issuer_ref'] and
                 source_authority['request_digest'] == store_module.entry.digest(slot['prepare']),
                 'local claim changed its original C Dispatcher or prepared request')
+        verify_review_native_anchor(store, current, claim, source_authority, stop, slot=slot)
         require(all(claim[key] == value for key, value in projection.items() if key != 'verification_refs') and
                 claim['verification']['ids'] == projection['verification_refs'] and
                 claim['verification']['checks'] == slot['prepare']['verification']['checks'],
@@ -1026,6 +1027,63 @@ def verify_review_coverage(view, progress, *, delivery, extra=None):
             'coverage certificate has missing, stale or altered requirement/AC/file/native proof')
 
 
+def verify_review_native_anchor(store, current, claim, authority, stop, *, slot=None):
+    """Bind immutable objects to the original C CAS receipts, not merely each other."""
+    import review_evidence
+    import workflow_state_store as state_store
+    axis = review_evidence.axis_for(claim)
+    prepared = store.read_evidence(authority['prepare_request_ref'], run_id=current.run_id)['value']
+    require(isinstance(prepared, dict) and prepared.get('operation') == 'prepare' and prepared.get('axis') == axis and
+            prepared.get('candidate') == claim['source_candidate'] and
+            prepared.get('actor_ref') == authority['originating_ref'] == current.root['metadata']['controller_ref'] and
+            state_store.entry.digest(prepared) == authority['request_digest'] and
+            prepared['verification']['checks'] == claim['verification']['checks'],
+            'original native prepared request changed')
+    if slot is not None:
+        require(slot['action_id'] == claim['native_stop']['action_id'] and slot['issuer_ref'] == authority['issuer_ref'] and
+                slot['prepare'] == prepared and slot['candidate'] == claim['source_candidate'] and
+                slot['ref'] == claim['reviewer_ref'] and slot['stopped'] and slot['start']['applied'] and
+                (not slot.get('query') or slot['query']['resolved']) and stop in slot['receipts'],
+                'original native slot/action/issuer/stop differs from claim')
+    key = store.receipt_key(current, actor=authority['originating_ref'], kind='review:prepare',
+        subject=authority['stage_subject'], invocation=claim['native_stop']['action_id'])
+    preparation = store.read_receipt(current, key, prepared)
+    require(preparation is not None and preparation['action_id'] == claim['native_stop']['action_id'] and
+            preparation['issuer_ref'] == authority['issuer_ref'],
+            'review issuer lacks its original committed prepare receipt')
+    observed = store.read_evidence(authority['stop_request_ref'], run_id=current.run_id)['value']
+    raw_proof = ({key: stop['raw'][key] for key in ('size', 'sha256')}
+        if stop['raw'].get('format') == 'review-raw-reference-v1' else
+        dict(zip(('size', 'sha256'), state_store.raw_measure(stop['raw']))))
+    require(observed == {'operation': 'observe', 'axis': axis, 'candidate': claim['source_candidate'],
+        'actor_ref': authority['originating_ref'], 'action_id': claim['native_stop']['action_id'],
+        'receipt': {**stop, 'raw': raw_proof}}, 'original native stopped request changed')
+    key = store.receipt_key(current, actor=authority['originating_ref'], kind='review:observe',
+        subject=authority['stage_subject'], invocation=claim['native_stop']['response_ref'])
+    observation = store.read_receipt(current, key, observed)
+    require(observation == {'action_id': claim['native_stop']['action_id'],
+        'response_ref': claim['native_stop']['response_ref'], 'native_stop_ref': claim['native_stop_ref']},
+        'native stop lacks its original committed observation receipt')
+    raw = stop['raw']
+    if raw.get('format') == 'review-raw-reference-v1':
+        require(not raw['truncated'], 'truncated native review cannot grant coverage')
+        raw = store.read_raw_evidence(raw['evidence_ref'], run_id=current.run_id)
+    report = raw.get('review')
+    require(isinstance(report, dict) and report.get('status') == 'accepted' and report.get('findings') == [] and
+            set(report.get('ac_refs', [])) == set(claim['ac_refs']) and
+            report.get('dependency_claim_ids', []) == claim['dependency_claim_ids'] and
+            report.get('requirement_refs', []) == claim['requirement_refs'],
+            'original stopped reviewer did not accept the claimed scope')
+    if claim['layer'] != 'delivery':
+        require(report.get('checks') == claim['verification']['checks'] and
+                set(report.get('read_paths', [])) == set(claim['read_fingerprints']),
+                'original stopped local reviewer did not accept these reads/checks')
+    else:
+        scope = report.get('review_scope', {})
+        require(isinstance(scope, dict) and scope.get('layer') == 'delivery' and scope.get('mode') == 'cross-ticket-and-coverage' and
+                scope.get('shared_state') == claim['shared_state'], 'original delivery scope changed')
+
+
 def verify_stored_review_coverage(view, progress, packages, run_id):
     """Read accepted immutable proof after its active Stage-3 subjects have retired."""
     import workflow_state_store as state_store
@@ -1061,6 +1119,7 @@ def verify_stored_review_coverage(view, progress, packages, run_id):
             run_id=run_id)['value']['review_source_authority']
         issuer = store.read_evidence(source_authority['issuer_ref'], run_id=run_id)['value']['review_issuer']
         review_evidence.validate_original_source(claim, source, source_authority, issuer)
+        verify_review_native_anchor(store, current, claim, source_authority, stop)
         app_ref = certificate['applications'][axis]['applicability_ref']
         app = store.read_evidence(app_ref, run_id=run_id)['value']['review_applicability']
         compared = app['compared']

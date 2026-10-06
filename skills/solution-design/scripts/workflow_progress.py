@@ -7195,6 +7195,11 @@ class Progress:
                 run_id=current.run_id)['value']['review_source_authority']
             issuer = store.read_evidence(authority['issuer_ref'], run_id=current.run_id)['value']['review_issuer']
             identity = review_evidence.validate_original_source(claim, source, authority, issuer)
+            slots = [group[axis] for group in [self.state.get('review_activity', {}),
+                *self.state.get('review_history', [])] if axis in group and
+                group[axis]['action_id'] == claim['native_stop']['action_id']]
+            require(len(slots) == 1, 'review_incomplete', 'claim has no exact original prepared native review action')
+            control_git.verify_review_native_anchor(store, current, claim, authority, stop, slot=slots[0])
             context = self.state['control']['context']
             require(identity in review_evidence.source_dispatchers(context['carrier'], context['handoff_progress']),
                     'review_incomplete', 'original command source has no authenticated Dispatcher lineage')
@@ -7456,7 +7461,17 @@ class Progress:
             'source_digest': verification['source_digest'], 'native_action_id': slot['action_id'],
             'native_stop_ref': claim['native_stop_ref'], 'candidate': claim['source_candidate'],
             'plan_authority': claim['plan_authority'], 'run_id': current.run_id,
-            'package_digest': claim['package_digest'], 'issuer_ref': slot['issuer_ref'], 'issuer_digest': entry.digest(issuer)}
+            'package_digest': claim['package_digest'], 'issuer_ref': slot['issuer_ref'], 'issuer_digest': entry.digest(issuer),
+            'originating_ref': slot['originating_ref'], 'stage_subject': self.state['stage_subject'],
+            'prepare_request_ref': store.write_object(current.run_id, 'evidence', slot['prepare'])}
+        stop = store.read_evidence(claim['native_stop_ref'], run_id=current.run_id)['value']['native_review_stop']
+        observation = {'operation': 'observe', 'axis': slot['prepare']['axis'], 'candidate': slot['candidate'],
+            'actor_ref': slot['originating_ref'], 'action_id': slot['action_id'], 'receipt': copy.deepcopy(stop)}
+        if stop['raw'].get('format') == 'review-raw-reference-v1':
+            observation['receipt']['raw'] = {key: stop['raw'][key] for key in ('size', 'sha256')}
+        else:
+            observation = self.review_receipt_request(observation)
+        authority['stop_request_ref'] = store.write_object(current.run_id, 'evidence', observation)
         verification['source_authority_ref'] = store.write_object(current.run_id, 'evidence',
             {'review_source_authority': authority})
         verification['source_authority_digest'] = entry.digest(authority)
@@ -7469,7 +7484,7 @@ class Progress:
         store, current, key = self.receipt_store('review:prepare', self.state['stage_subject'], slot['action_id'])
         self._commit_receipts.append(store.prepare_receipt(current, key, slot['prepare'], {
             'action_id': slot['action_id'], 'control_digest': slot['start']['result_digest'],
-            'control_ref': slot['start']['result_ref']}))
+            'control_ref': slot['start']['result_ref'], 'issuer_ref': slot['issuer_ref']}))
         self.save()
 
     def read_review_start_result(self, slot):
@@ -7579,7 +7594,8 @@ class Progress:
         if proof:
             store = state_store.open_store(self.path, receipt_action=self._receipt_action)
             self._commit_receipts.append(store.prepare_receipt(current, key, original,
-                {'action_id': slot['action_id'], 'response_ref': receipt['response_ref']}))
+                {'action_id': slot['action_id'], 'response_ref': receipt['response_ref'],
+                 'native_stop_ref': store.write_object(current.run_id, 'evidence', {'native_review_stop': receipt})}))
         self.save()
 
     def review_raw_projection(self, receipt, reference, manifest, measurement):
@@ -7672,7 +7688,8 @@ class Progress:
                     store, receipt_current, key = self.receipt_store('review:prepare', s['stage_subject'], slot['action_id'])
                     proof = store.read_receipt(receipt_current, key, data)
                     require(proof == {'action_id': slot['action_id'],
-                            'control_digest': slot['start']['result_digest'], 'control_ref': slot['start']['result_ref']},
+                            'control_digest': slot['start']['result_digest'], 'control_ref': slot['start']['result_ref'],
+                            'issuer_ref': slot['issuer_ref']},
                             'review_conflict', 'review start lacks its committed original receipt')
                 recovered = self.read_review_start_result(slot)
                 lookup = self.review_lookup(data['axis'], slot)

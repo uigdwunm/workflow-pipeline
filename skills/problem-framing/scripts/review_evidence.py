@@ -120,7 +120,7 @@ def validate_original_source(claim, source, authority, issuer):
     require(isinstance(authority, dict) and set(authority) == {
         'dispatcher_ref', 'carrier_attempt', 'request_digest', 'source_ref', 'source_digest',
         'native_action_id', 'native_stop_ref', 'candidate', 'plan_authority', 'run_id', 'package_digest',
-        'issuer_ref', 'issuer_digest'},
+        'issuer_ref', 'issuer_digest', 'originating_ref', 'stage_subject', 'prepare_request_ref', 'stop_request_ref'},
         'review_incomplete', 'original command source authority is incomplete')
     require(isinstance(issuer, dict) and set(issuer) == {'dispatcher_ref', 'carrier_attempt',
         'request_digest', 'native_action_id', 'run_id', 'package_digest', 'plan_authority',

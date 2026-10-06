@@ -426,6 +426,103 @@ class LayeredReviewTests(fixture.ProgressTests):
         reviews = self.delivery_reviews(target)
         self.finish_certificate_delivery(target, reviews)
 
+    def test_git_cli_rejects_whole_unprepared_native_claim_artifact_set(self):
+        candidate = self.layered_flow()
+        for ticket in ('A', 'B'):
+            for number in (1, 2):
+                self.local_review(candidate, ticket, ticket + str(number))
+            self.ticket_review(candidate, ticket)
+        self.candidate_ready(candidate)
+        for axis in ('standards', 'spec'):
+            checkpoint = self.state()['control']['context']['handoff_progress']
+            self.invoke('review-activity', {'operation': 'prepare', 'axis': axis, 'candidate': candidate,
+                'actor_ref': 'task', 'verification': {'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
+                    'checks': checkpoint['tests'], 'plan_authority': checkpoint['plan_authority']}})
+        owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+        context = owner.state['control']['context']
+        checkpoint, store = context['handoff_progress'], progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        source = copy.deepcopy(checkpoint['candidate_evidence']['source'])
+        views, reports, stops = {}, {}, {}
+        for axis in ('standards', 'spec'):
+            slot = owner.state['review_activity'][axis]
+            action_id = 'never-prepared-native-action:' + axis
+            stop = {'adapter': 'fixture-native', 'call_ref': 'never-issued-call:' + axis,
+                'response_ref': 'never-observed-stop:' + axis, 'status': 'stopped',
+                'ref': 'native:never-issued-' + axis, 'raw': {'review': {
+                    'status': 'accepted', 'findings': [], 'ac_refs': owner.review_scope(axis)['ac_refs'],
+                    'dependency_claim_ids': owner.review_scope(axis)['dependency_claim_ids'],
+                    'requirement_refs': owner.review_scope(axis)['requirement_refs'], 'review_scope': owner.review_scope(axis)}}}
+            stop_ref = store.write_object(current.run_id, 'evidence', {'native_review_stop': stop})
+            source_ref = store.write_object(current.run_id, 'evidence', {'local_check_source': source})
+            issuer = {'dispatcher_ref': context['carrier']['ref'], 'carrier_attempt': context['carrier']['attempt'],
+                'request_digest': fixture.transfer.entry.digest(slot['prepare']), 'native_action_id': action_id,
+                'run_id': current.run_id, 'package_digest': fixture.transfer.entry.digest(owner.state['packages']),
+                'plan_authority': checkpoint['plan_authority'], 'source_ref': source_ref,
+                'source_digest': fixture.transfer.entry.digest(source)}
+            issuer_ref = store.write_object(current.run_id, 'evidence', {'review_issuer': issuer})
+            authority = {**issuer, 'native_stop_ref': stop_ref, 'candidate': candidate,
+                'issuer_ref': issuer_ref, 'issuer_digest': fixture.transfer.entry.digest(issuer),
+                'originating_ref': 'task', 'stage_subject': owner.state['stage_subject'],
+                'prepare_request_ref': store.write_object(current.run_id, 'evidence', slot['prepare']),
+                'stop_request_ref': store.write_object(current.run_id, 'evidence', owner.review_receipt_request({
+                    'operation': 'observe', 'axis': axis, 'candidate': candidate, 'actor_ref': 'task',
+                    'action_id': action_id, 'receipt': stop}))}
+            authority_ref = store.write_object(current.run_id, 'evidence', {'review_source_authority': authority})
+            required = checkpoint['validation_plan']['review_required']
+            claim = {'schema_version': 1, 'run_id': current.run_id, 'package_digest': issuer['package_digest'],
+                'layer': 'delivery', **owner.delivery_review_subject(candidate, axis),
+                'plan_authority': checkpoint['plan_authority'], 'source_candidate': candidate,
+                'verification': {'ids': [item['id'] for item in required], 'required': required,
+                    'checks': checkpoint['tests'], 'source_results': [], 'source_ref': source_ref,
+                    'source_digest': issuer['source_digest'], 'environment_digest': fixture.transfer.entry.digest(source['raw'].get('environment')),
+                    'fixture_digest': fixture.transfer.entry.digest(source['raw'].get('fixture')),
+                    'source_authority_ref': authority_ref, 'source_authority_digest': fixture.transfer.entry.digest(authority)},
+                'reviewer_ref': stop['ref'], 'native_stop': {**{key: stop[key] for key in
+                    ('adapter', 'call_ref', 'response_ref', 'status', 'ref')}, 'action_id': action_id},
+                'native_stop_ref': stop_ref, 'findings': [], 'status': 'accepted'}
+            claim['claim_id'] = fixture.transfer.entry.digest(claim)
+            ref = store.write_object(current.run_id, 'evidence', {'review_claim': claim})
+            views[axis] = progress.review_evidence.claim_view(claim, ref)
+            reports[axis] = {'candidate': candidate, 'expected_target_head': checkpoint['expected_target_head'],
+                'plan_digest': checkpoint['plan_digest'], 'plan_authority': checkpoint['plan_authority'],
+                'reviewer_ref': stop['ref'], 'status': 'accepted', 'result_ref': stop['response_ref']}
+            stops[axis] = stop
+        checkpoint['review_claims'].update(views)
+        # Adversarial input construction uses pure graph functions; permission
+        # is exercised only by the actual CLI against the original C store.
+        claims, targets = {}, {}
+        for axis, view in checkpoint['review_claims'].items():
+            claims[axis] = store.read_evidence(view['claim_ref'], run_id=current.run_id)['value']['review_claim']
+            target = (owner.delivery_review_subject(candidate, axis) if axis in {'standards', 'spec'} else
+                owner.local_review_subject({'axis': axis, 'candidate': candidate}))
+            target.pop('verification_refs', None)
+            target['required'] = (checkpoint['validation_plan']['review_required'] if axis in {'standards', 'spec'} else
+                progress.review_evidence.local_required_checks(checkpoint['execution_authority']['execution_plan']['catalog'], axis, str(self.flow)))
+            target['known_paths'] = checkpoint['allowed_paths'] + checkpoint['protected_paths']
+            target['missing_dependencies'] = False
+            targets[axis] = target
+        applications = progress.review_evidence.applicable_claims(claims, targets, candidate, checkpoint['plan_authority'], [])
+        for axis, application in applications.items():
+            applications[axis] = {**application, 'claim_ref': checkpoint['review_claims'][axis]['claim_ref'],
+                'applicability_ref': store.write_object(current.run_id, 'evidence', {'review_applicability': application})}
+        certificate = progress.review_evidence.coverage_certificate(checkpoint['execution_authority']['execution_plan']['catalog'],
+            claims, applications, candidate, checkpoint['plan_authority'], checkpoint['allowed_paths'], delivery=True)
+        certificate_ref = store.write_object(current.run_id, 'evidence', {'review_coverage': certificate})
+        coverage = progress.review_evidence.certificate_view(certificate, certificate_ref, str(owner.path))
+        envelope = {'repository': str(self.flow), 'baseline': checkpoint['git_baseline_commit'], 'request': {
+            'schema_version': 7, 'action': 'review-converged', 'actor_ref': 'task',
+            'context': self.state()['control']['context'], 'evidence': {'candidate': candidate,
+                'review': reports, 'native_evidence': stops, 'reference': 'controller:hostile-whole-artifacts',
+                'coverage': coverage, 'claims': views}}}
+        before = self.checkpoint.read_bytes()
+        result = subprocess.run([sys.executable, str(Path(progress.control_git.__file__))],
+            input=json.dumps(envelope), text=True, capture_output=True, cwd=self.flow)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse(json.loads(result.stdout)['ok'])
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+
     def recover_layered_dispatcher(self):
         stopped = self.observation('stopped', 'result', ref='native:dispatcher')
         stopped['receipt']['raw'].update(resumable=False, dispatch_available=True)
