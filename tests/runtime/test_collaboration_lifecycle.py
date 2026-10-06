@@ -384,7 +384,8 @@ class CollaborationLifecycleTests(unittest.TestCase):
         result = f.invoke('allocation', {'allocation_id': 'next-slice', 'operation': 'prepare', 'handoff': self.execution_handoff()})
         self.assertEqual((result['next_action'] or {}).get('operation'), 'invoke-host', result)
 
-    def final_recovery_with_native_retirement(self, *, pending_execution=False, retire_dispatcher=False):
+    def final_recovery_with_native_retirement(self, *, pending_execution=False, retire_dispatcher=False,
+                                            verify_current_dispatcher=None):
         f = self.f
         agents = {}
         invoke = f.invoke
@@ -405,7 +406,9 @@ class CollaborationLifecycleTests(unittest.TestCase):
                 status = 'running' if receipt.get('status') in {'ready', 'running'} else {'completed': 'host turn completed'}
                 agents[receipt['ref']] = status
                 invoke('lifecycle-state', self.snapshot(inventory()))
-                if operation != 'allocation':
+                # Preserve a newly issued invocation; an immediate inspect
+                # correctly looks it up, but cannot replace its first delivery.
+                if operation != 'allocation' and (result.get('next_action') or {}).get('operation') != 'continue-host':
                     result = invoke('inspect')
             elif operation == 'native-finalize' and data.get('operation') == 'observe':
                 record = next(record for record in f.state()['native_finalizations'] if record['ref'] == data['ref'])
@@ -506,6 +509,22 @@ class CollaborationLifecycleTests(unittest.TestCase):
             f.invoke('observe', f.observation('stopped', 'result', ref='/root/dispatcher'))
             f.invoke('control', {'action': 'capture-integration', 'evidence': {'reference': 'controller:merged'},
                 'receipt': {'controller_ref': 'task', 'reference': 'controller:merged'}})
+            if verify_current_dispatcher == 'unaccepted':
+                self.assertIsNone(f.state()['accepted'])
+                self.assertEqual(f.state()['host']['status'], 'stopped')
+                f.invoke('lifecycle-state', self.snapshot(inventory()))
+                before = f.checkpoint.read_bytes()
+                before_root = copy.deepcopy(store.open_current().root)
+                reserves = {str(path.relative_to(store.directory)): path.stat().st_size
+                            for path in (store.directory / 'reserves').rglob('*') if path.is_file()}
+                with self.assertRaises(progress.entry.PreparationError) as error:
+                    f.invoke('native-finalize', self.finalization('/root/dispatcher', 'dispatcher-thread'))
+                self.assertEqual(error.exception.code, 'result_incomplete')
+                self.assertEqual(f.checkpoint.read_bytes(), before)
+                self.assertEqual(store.open_current().root, before_root)
+                self.assertEqual({str(path.relative_to(store.directory)): path.stat().st_size
+                                  for path in (store.directory / 'reserves').rglob('*') if path.is_file()}, reserves)
+                return
             if pending_execution:
                 f.invoke('lifecycle-state', self.snapshot(inventory()))
                 before = f.checkpoint.read_bytes()
@@ -569,6 +588,31 @@ class CollaborationLifecycleTests(unittest.TestCase):
             self.assertNotIn('/root/dispatcher/executor', agents)
             self.assertEqual(f.state()['control']['context']['carrier']['ref'], '/root/dispatcher')
             self.assertEqual(f.state()['allocations']['integrated-execution']['record']['status'], 'accepted')
+            if verify_current_dispatcher == 'accepted':
+                executor = '/root/dispatcher/integrated_executor'
+                request = self.finalization(executor, 'integrated-executor-thread')
+                request['actor_ref'] = '/root/dispatcher'
+                retire(request)
+                candidate = f.flow_git('rev-parse', 'HEAD')
+                latest = f.accept_current({'candidate_commit': candidate, 'artifacts': ['impl.py'], 'checks': ['verified'],
+                    'review': {axis: {'candidate': candidate, 'reviewer_ref': '/root/recovered_' + axis,
+                                     'status': 'accepted'} for axis in ('standards', 'spec')},
+                    'verification': {'candidate': candidate}}, '/root/dispatcher', fixture_execution=False,
+                    evidence_suffix='-recovered-owner')
+                self.assertEqual(latest['status'], 'accepted', latest)
+                self.assertNotEqual(f.state()['accepted']['digest'], predecessor['digest'])
+                current_digest = f.state()['accepted']['digest']
+                f.invoke('lifecycle-state', self.snapshot(inventory()))
+                finish = f.invoke('native-finalize', self.finalization('/root/dispatcher', 'dispatcher-thread'))['next_action']
+                self.assertEqual(finish['operation'], 'finish-native')
+                record = next(item for item in f.state()['native_finalizations'] if item['ref'] == '/root/dispatcher')
+                self.assertEqual(record['delivery_digest'], current_digest)
+
+    def test_final_recovery_current_dispatcher_unaccepted_cannot_retire(self):
+        self.final_recovery_with_native_retirement(verify_current_dispatcher='unaccepted')
+
+    def test_final_recovery_current_dispatcher_uses_latest_acceptance(self):
+        self.final_recovery_with_native_retirement(verify_current_dispatcher='accepted')
 
     def test_final_recovery_allocates_after_verified_execution_retirement(self):
         self.final_recovery_with_native_retirement()

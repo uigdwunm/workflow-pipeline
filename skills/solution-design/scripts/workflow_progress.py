@@ -2798,6 +2798,38 @@ class Progress:
         """Acceptance stays in B/control; lifecycle evidence grants no role."""
         require(ref in self.native_refs() or any(ref in self.native_refs(old) for old in self.state.get('history', [])),
                 'identity_mismatch', 'finalize only a registered workflow native identity')
+        for saved in [self.state, *reversed(self.state.get('history', []))]:
+            accepted = saved.get('accepted')
+            if accepted and accepted['role_ref'] == ref and saved.get('host', {}).get('status') == 'stopped':
+                return saved['handoff']['controller_ref'], accepted['digest'], saved['handoff']['expected_entry']['actor']['thread_id']
+            if saved is self.state and saved.get('dispatch') and saved['dispatch'].get('request'):
+                selected = control.selected_control(saved['control']['context'],
+                    {'attempt': saved['dispatch']['request']['attempt']})
+                carrier = selected.get('carrier')
+                current_ref = (dispatch.matching(saved['dispatch'], saved['control']['context'])[0]
+                    if saved['handoff']['role'] == 'execution-agent' else (carrier or {}).get('ref'))
+                require(ref != current_ref, 'result_incomplete',
+                        'current native business work must be stopped and accepted before finalization')
+            slots = list(saved.get('allocations', {}).values())
+            active_count = len(slots)
+            slots.extend(slot for history in saved.get('plan_revision_allocation_history', [])
+                         for slot in history['allocations'].values())
+            for index, slot in enumerate(slots):
+                record = handoff.unseal(slot['record']) if slot.get('record') else {}
+                accepted = record.get('acceptance')
+                if accepted and accepted['role_ref'] == ref and record['status'] == 'accepted':
+                    return slot['owner_ref'], accepted['digest'], handoff.resolve_allocation(slot['handoff'])['expected_entry']['actor']['thread_id']
+                require(not (saved is self.state and index < active_count and
+                            any(receipt.get('ref') == ref for receipt in record.get('receipts', []))),
+                        'result_incomplete', 'current allocation must be accepted before native finalization')
+            checkpoint = saved.get('control', {}).get('context', {}).get('handoff_progress') or {}
+            for index, group in enumerate([saved.get('review_activity', {}), *saved.get('review_history', [])]):
+                for slot in group.values():
+                    if slot and slot.get('ref') == ref and slot.get('stopped') and checkpoint.get('state') in {
+                            'final-validation-pending', 'validating', 'final-validation-failed', 'deliverable', 'completed'}:
+                        return slot['originating_ref'], entry.digest(slot['receipts']), slot['originating_ref']
+                    require(not (saved is self.state and index == 0 and slot and slot.get('ref') == ref),
+                            'result_incomplete', 'current review must stop and converge before native finalization')
         if self.state.get('design_predecessor') is not None:
             prior = read_design_predecessor(self.state['design_predecessor'], self.path)
             if prior['accepted']['role_ref'] == ref:
@@ -2815,24 +2847,6 @@ class Progress:
                         'result_incomplete', 'original native business acceptance or stop proof changed')
                 entry.nonempty(facts['owner_ref']); entry.nonempty(facts['parent_thread'])
                 return facts['owner_ref'], facts['delivery_digest'], facts['parent_thread']
-        for saved in [self.state, *reversed(self.state.get('history', []))]:
-            accepted = saved.get('accepted')
-            if accepted and accepted['role_ref'] == ref and saved.get('host', {}).get('status') == 'stopped':
-                return saved['handoff']['controller_ref'], accepted['digest'], saved['handoff']['expected_entry']['actor']['thread_id']
-            slots = list(saved.get('allocations', {}).values())
-            slots.extend(slot for history in saved.get('plan_revision_allocation_history', [])
-                         for slot in history['allocations'].values())
-            for slot in slots:
-                record = handoff.unseal(slot['record']) if slot.get('record') else {}
-                accepted = record.get('acceptance')
-                if accepted and accepted['role_ref'] == ref and record['status'] == 'accepted':
-                    return slot['owner_ref'], accepted['digest'], handoff.resolve_allocation(slot['handoff'])['expected_entry']['actor']['thread_id']
-            checkpoint = saved.get('control', {}).get('context', {}).get('handoff_progress') or {}
-            for group in [saved.get('review_activity', {}), *saved.get('review_history', [])]:
-                for slot in group.values():
-                    if slot and slot.get('ref') == ref and slot.get('stopped') and checkpoint.get('state') in {
-                            'final-validation-pending', 'validating', 'final-validation-failed', 'deliverable', 'completed'}:
-                        return slot['originating_ref'], entry.digest(slot['receipts']), slot['originating_ref']
         raise entry.PreparationError('result_incomplete', 'native finalization requires authoritative stopped and accepted business work')
 
     def finalization_snapshot(self):
