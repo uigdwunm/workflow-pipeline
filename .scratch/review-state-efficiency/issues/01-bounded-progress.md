@@ -1,6 +1,7 @@
 # 01 — 一个执行片的有界保存与真实恢复
 
 Status: ready-for-agent
+Lifecycle: completed
 Design status: accepted — 普通本地连续实现已授权
 Blocked by: None
 Spec: ../PRD.md
@@ -12,12 +13,12 @@ Scope inventory: ../manifest.json（T01）
 
 ## 合同和验收
 
-- [ ] 当前root≤256KiB；相同1000次poll不增加原始证据对象/历史项，count/last_seen变化不改变权限。
-- [ ] start→allocation prepare/bind/receive/accept→pause/resume使用真实Git及存储；失去响应只查询原调用。
-- [ ] 副作用调用前已有fsync intent与容量预留；root提交前/后崩溃分别保留旧状态/幂等ACK。
-- [ ] `inspect`、恢复、readiness、Stage3接收不会扫描全部history或hydrate全部对象；测试以读取计数/字节证明。
-- [ ] ledger-backed控制只以原ledger CAS指针为权威，runner镜像丢失可恢复；legacy包/记录不转换。
-- [ ] Current Root、Subject Record、receipt和blob的schema/大小/引用在提交前验证；损坏对象fail closed。
+- [x] 当前root≤256KiB；相同1000次poll不增加原始证据对象/历史项，count/last_seen变化不改变权限。
+- [x] start→allocation prepare/bind/receive/accept→pause/resume使用真实Git及存储；失去响应只查询原调用。
+- [x] 副作用调用前已有fsync intent与容量预留；root提交前/后崩溃分别保留旧状态/幂等ACK。
+- [x] `inspect`、恢复、readiness、Stage3接收不会扫描全部history或hydrate全部对象；测试以读取计数/字节证明。
+- [x] ledger-backed控制只以原ledger CAS指针为权威，runner镜像丢失可恢复；legacy包/记录不转换。
+- [x] Current Root、Subject Record、receipt和blob的schema/大小/引用在提交前验证；损坏对象fail closed。
 
 ## Function Execution Plan（草案）
 
@@ -79,3 +80,12 @@ V04：真实 finish_design→原 C start Stage3→bind→inspect 首先复现 hi
 ## Comments
 
 用户已统一接受并选择连续实现；此为普通本地授权，非正式Stage3 handoff。
+
+
+## 验收结果
+
+T01 六项 AC 于固定 target `2db280986df071464e3c37346c076f24d233c952` 独立组合验收通过；runtime 与 `46aa4ed0ede354852a922b8b1ae38f6ac21f0de9` 同树。原 reviewer 关闭 public-review 容量预检 P2，Standards 与局部合同均无 remaining finding，再逐项接受六 AC。各局部 claim 保留原 source/base，未重标旧报告。
+
+证据包括原 `82d1ba0` 固定 core 246 PASS、原 19 项失败的逐项修复 GREEN、`9916785` 完整 attached 恢复链，以及 `46aa4ed` 九项受影响检查和五包执行/build check。独立报告及源点适用性索引位于本次运行的 `implementation/t01-independent-six-ac-review-2db2809.md` 与 `t01-six-ac-final-target-2db2809.md`；原累计失败和诊断日志保留，不宣称最新候选重新跑过全部 core。
+
+验收限于列明现有调用路线；T05 物理增长、归档及 GC 仍待完成。延期 ledger 初始化/normal launch 继续拒绝，adapter 证据不替代实际宿主现场；全六 Ticket 完整验证、交付审查和本地 main 集成仍未完成。
