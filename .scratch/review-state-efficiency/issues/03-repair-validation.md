@@ -1,6 +1,7 @@
 # 03 — 原上下文修复与提前集成验证
 
 Status: ready-for-agent
+Lifecycle: completed
 Design status: accepted — 普通本地连续实现已授权
 Plan revision: 2026-10-07 — 用户确认执行规则调整；实现保持暂停
 Blocked by: 02
@@ -14,14 +15,14 @@ Execution rules: ../execution-policy.md（开工前预检、验证/审查分层�
 
 ## 合同和验收
 
-- [ ] 原native ref停稳可继续时复用，repair有新invocation/lease，旧回执不能满足新修复。
-- [ ] 默认模型输入包合计≤64KiB，一次展开合计≤256KiB；交接/恢复计入管理状态、合同和展开证据的总读取；失效host才替换，未知原调用阻止换人重做。
-- [ ] 局部regression/affected先跑；两个片整合或共享fixture变化后立即做Ticket检查，不能拖至所有review结束。
-- [ ] 最终完整测试失败后只重新派受影响片和对应review；最终完整测试必须针对新候选重跑。
-- [ ] 原完整验证过程pause/结果未知保留attempt；新候选不能掩盖运行中命令。
-- [ ] 从首片记录首次提交、原命令耗时、审查轮数、返工类别和等待来源；片ID/提交序号保留，TDD RED/测试准备错误单列，缺失计时为unknown。
-- [ ] 派发前完成读写耦合/生产消费者/快反馈命令预检及AC首次检查层分配；缺项先补计划，不因函数数量派Agent。
-- [ ] 达到执行规则的返工条件先短诊断；同片/原调用/有效证据保留，处理原因可验证后继续，不以新片ID或放宽检查绕过。
+- [x] 原native ref停稳可继续时复用，repair有新invocation/lease，旧回执不能满足新修复。
+- [x] 默认模型输入包合计≤64KiB，一次展开合计≤256KiB；交接/恢复计入管理状态、合同和展开证据的总读取；失效host才替换，未知原调用阻止换人重做。
+- [x] 局部regression/affected先跑；两个片整合或共享fixture变化后立即做Ticket检查，不能拖至所有review结束。
+- [x] 最终完整测试失败后只重新派受影响片和对应review；最终完整测试必须针对新候选重跑。
+- [x] 原完整验证过程pause/结果未知保留attempt；新候选不能掩盖运行中命令。
+- [x] 从首片记录首次提交、原命令耗时、审查轮数、返工类别和等待来源；片ID/提交序号保留，TDD RED/测试准备错误单列，缺失计时为unknown。
+- [x] 派发前完成读写耦合/生产消费者/快反馈命令预检及AC首次检查层分配；缺项先补计划，不因函数数量派Agent。
+- [x] 达到执行规则的返工条件先短诊断；同片/原调用/有效证据保留，处理原因可验证后继续，不以新片ID或放宽检查绕过。
 
 ## Function Execution Plan（草案）
 
@@ -63,3 +64,11 @@ V04：在已列 `test_execution_plans.py` / `test_layered_review.py` / `test_rev
 ## Comments
 
 用户已统一接受并选择连续实现；此为普通本地授权，非正式Stage3 handoff。
+
+## 本地工程验收（2026-10-07）
+
+候选 `5a2de9bbf12b5a39d1e4da92913aef176a7429ed` 经同一独立 reviewer 的局部增量复查与八 AC Ticket 覆盖验收通过，Standards / Spec 均无开放 finding。原 ref 修复、有限输入、提前 Ticket 检查、固定 full attempt、原调用恢复和诊断事实归并均有原模块/handle/Git/Store 证据；未变证明保留原来源。
+
+验收索引：本任务 implementation 的 `t03-first-accepted-7d0f341.json`、`t03-second-and-ticket-review-e1e810d.md`、`t03-diagnostic-closure-and-ticket-review-577979b.md` 与最终 `t03-original-call-closure-and-ticket-review-5a2de9b.md`。诊断以原调用身份、首次 base_revision、原 committed receipt 及已消费来源为准；完整回执保留，当前索引固定有限。
+
+本结论限于已验证工程路线；原生/ledger 现场、全仓最终验证和效率对照仍由 T06 / 交付核验，不以 adapter fixture 或局部通过替代。

@@ -60,3 +60,7 @@ V03：`test_publication_recovery.py`、`test_business_recovery.py`、`test_accep
 ## Comments
 
 用户已统一接受并选择连续实现；此为普通本地授权，非正式Stage3 handoff。
+
+## 已核依赖范围（2026-10-07）
+
+只读预检确认 `workflow_control.py` 的有限 executions/history 校验、candidate-ready 接受结果/steps/claims，以及 `workflow_control_git.py` 的恢复/执行快照和 review coverage 都消费当前完整集合。仅归档 allocations 无法闭合第 33 片与分页交付；manifest 已将两 source 和对应五包输出加入 T05。适配须保持原 owner、原 receipt/claim 与 Git 指纹证明，不能把摘要授为新权威。现有 verify 测试保持只读，新 `test_state_archive.py` 承载相关故障/规模回归；其他模块按实际依赖再核定，不预先扩大。

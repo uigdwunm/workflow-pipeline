@@ -211,6 +211,7 @@
         "T02",
         "T03",
         "T04",
+        "T05",
         "T06"
       ],
       "kind": "source",
@@ -276,7 +277,8 @@
         "skills/guided-implementation/scripts/workflow_control.py",
         "skills/problem-framing/scripts/workflow_control.py",
         "skills/solution-design/scripts/workflow_control.py"
-      ]
+      ],
+      "implementation_note": " T05实际依赖晋升：有限当前execution/history和candidate/恢复/coverage消费者仍要求完整内嵌历史；须与归档产生者接线，读取原owner验证的有限引用并分页核验原claims/receipt/fingerprints，不扩大authority或固定容量。"
     },
     {
       "path": "src/shared/scripts/workflow_control_git.py",
@@ -285,7 +287,8 @@
         "T01",
         "T02",
         "T03",
-        "T04"
+        "T04",
+        "T05"
       ],
       "kind": "source",
       "reason": "指纹证据/短停Git分区一致性；T03原repair invocation的当前执行快照",
@@ -331,7 +334,7 @@
         "skills/problem-framing/scripts/workflow_control_git.py",
         "skills/solution-design/scripts/workflow_control_git.py"
       ],
-      "implementation_note": "T01 Stage4 typed delivery 精确引用在现有 Git adapter 验证；pure control仅有限事实机械校验，不引入FS或progress依赖。 T03在verified_transition中将repair-execution纳入原scope/overlap/verify_execution_start及新invocation Git snapshot，assign仍核其当前快照；只补原修复闭环，不扩展入口。"
+      "implementation_note": "T01 Stage4 typed delivery 精确引用在现有 Git adapter 验证；pure control仅有限事实机械校验，不引入FS或progress依赖。 T03在verified_transition中将repair-execution纳入原scope/overlap/verify_execution_start及新invocation Git snapshot，assign仍核其当前快照；只补原修复闭环，不扩展入口。 T05实际依赖晋升：有限当前execution/history和candidate/恢复/coverage消费者仍要求完整内嵌历史；须与归档产生者接线，读取原owner验证的有限引用并分页核验原claims/receipt/fingerprints，不扩大authority或固定容量。"
     },
     {
       "path": "src/shared/scripts/execution_plan.py",
@@ -2148,6 +2151,7 @@
         "T02",
         "T03",
         "T04",
+        "T05",
         "T06"
       ]
     },
@@ -2160,6 +2164,7 @@
         "T02",
         "T03",
         "T04",
+        "T05",
         "T06"
       ]
     },
@@ -2172,6 +2177,7 @@
         "T02",
         "T03",
         "T04",
+        "T05",
         "T06"
       ]
     },
@@ -2184,6 +2190,7 @@
         "T02",
         "T03",
         "T04",
+        "T05",
         "T06"
       ]
     },
@@ -2196,6 +2203,7 @@
         "T02",
         "T03",
         "T04",
+        "T05",
         "T06"
       ]
     },
@@ -2207,7 +2215,8 @@
         "T01",
         "T02",
         "T03",
-        "T04"
+        "T04",
+        "T05"
       ]
     },
     {
@@ -2218,7 +2227,8 @@
         "T01",
         "T02",
         "T03",
-        "T04"
+        "T04",
+        "T05"
       ]
     },
     {
@@ -2229,7 +2239,8 @@
         "T01",
         "T02",
         "T03",
-        "T04"
+        "T04",
+        "T05"
       ]
     },
     {
@@ -2240,7 +2251,8 @@
         "T01",
         "T02",
         "T03",
-        "T04"
+        "T04",
+        "T05"
       ]
     },
     {
@@ -2251,7 +2263,8 @@
         "T01",
         "T02",
         "T03",
-        "T04"
+        "T04",
+        "T05"
       ]
     },
     {
