@@ -2,6 +2,7 @@
 
 Status: ready-for-agent
 Design status: accepted — 用户于当前对话选择连续模式，授权全部六张Ticket实现、审查、验证和本地收尾
+Plan revision: 2026-10-07 — 用户确认执行成本与早期发现规则调整；T03–T06 实现仍暂停
 Source requirement: docs/requirements/2026-10-05-review-state-efficiency.md
 Frozen requirement commit: 61f105f1d8bdb3ebc1b574e3104332621dc31ec8
 Frozen requirement SHA256: dcc2adf2141dd49a9d383fc30a62388d267fb35e58fdddbdad1824d367c2dd77
@@ -15,6 +16,12 @@ Frozen requirement SHA256: dcc2adf2141dd49a9d383fc30a62388d267fb35e58fdddbdad182
 这一兼容更新不改变分层审查、局部修复、共享 Git 短屏障、固定预算或六 Ticket 依赖；T01/T02 原验收仍保原 source/report，追加兼容增量验证，不重标旧证据。T06 的领域文档目标改为 main 已提供的 `GLOSSARY.md`。main 的登记/入口回读/十项 action preflight 记录仅说明其当时包和宿主；不能冒作本分支新包完整流程、原生交接或效率改善的证据，T06 仍核实际注册的 Matt 入口及本分支 exact package identities。
 
 冻结需求文件及 hash 保持不变。T03–T06 连续实现继续暂停，待用户明确恢复；此次仅基础兼容同步与方案校准，不部署、不迁移旧运行。
+
+## 执行成本修订（2026-10-07）
+
+T01/T02 原验收和 source/report 保留；本次只改剩余方案与管理约定，不恢复实现。剩余实施统一遵循 [执行规则](execution-policy.md)：开工前核对完整行为与读写耦合、按 AC 分配三层审查职责、用真实模块公开边界快反馈与少量真实流程组合验证、按确认的返工触发短诊断、维护唯一有界当前入口、从 T03 开始采集效率数据。新增机制均待实现，必要 T02 协议增量若受影响须明确复验，不重标既有通过证据。
+
+本次普通本地改造由主控直接协调实现者及独立 reviewer，只有文件/依赖可隔离且确有收益时并行，减少串行转交；产品内既有 Controller/Dispatcher 权限和停止证明照常核验。Function Execution Plan 是实现说明，不直接决定 Agent/审查/提交数量。内部工程修订沿既有权限流程执行，不另建 Ticket、审批层或服务。
 
 ## 问题与目标
 
@@ -59,7 +66,7 @@ Frozen requirement SHA256: dcc2adf2141dd49a9d383fc30a62388d267fb35e58fdddbdad182
 
 ### 行为片、角色和最少上下文
 
-一个行为片选取一个 Ticket 的一组紧密相关 plan_refs，拥有精确写文件分配、合同摘要、相关只读依赖、verification_refs、公共边界和失败行为。它不是每函数一个 Agent。执行片通常 1–4 个相关步骤；超过上下文预算就沿可验证行为拆片，不按行数机械拆分。
+一个行为片选取一个 Ticket 的一组紧密相关 plan_refs，拥有精确写文件分配、合同摘要、相关只读依赖、verification_refs、公共边界和失败行为。派发前按 [开工和划片](execution-policy.md#开工和划片) 核验独立验收、后片改写和完整生产消费者；强耦合步骤优先合片，超过上下文预算时沿可验证行为串行拆分并明确累计补审点，不按函数/行数机械增加 Agent。
 
 每个行为片默认一个新的 Execution Agent 上下文，只在该片内修复时复用原上下文；一组紧密相关步骤可作为一个行为片，不把整个多片Ticket塞入一个执行对话。每个活跃Ticket默认一个独立 reviewer，按有限摘要复用；摘要超预算或独立性失效时轮换，禁止累计全项目历史。同一 Ticket 并行片确有独立收益时可分配多个执行者；文件分配必须不交叠，reviewer 按片读取。reviewer 不得是该片任何版本的实现者，也不得写实现字节。同一个 reviewer 可在完成全部局部审查后做 Ticket 验收，不再额外新建验收 Agent。交付保留两个独立轴 reviewer，均不可为本次实现者；可复用已有独立 reviewer，不强制每次新建。无工作变化时不重复派任何 reviewer。
 
@@ -70,6 +77,8 @@ Frozen requirement SHA256: dcc2adf2141dd49a9d383fc30a62388d267fb35e58fdddbdad182
 | 局部 | 每个行为片回归通过后，一个独立 reviewer | 当前变更的 Standards、局部合同/失败分支、相关读写范围和回归证据；findings 可定位到步骤/路径/AC | 整个 Ticket 或整个候选全部 diff |
 | Ticket | 全部片有效后，同一独立 reviewer | 完整 AC、组合/顺序/共享夹具、公共输出、依赖 Ticket 合同；运行 Ticket 行为验证 | 已有效覆盖片的逐行规范复审 |
 | 交付 | 全部 Ticket 有效后，Standards/Spec 两轴 | Standards 查跨 Ticket 一致性/共享状态/未覆盖文件；Spec 查所有需求→AC→证据覆盖、跨 Ticket 场景和影响扩大 | 重新扫描已证明未变的局部实现 |
+
+每个 AC/必要失败分支在首次提交前指定首次检查层与 verification_ref；再次检查记录触发原因及影响范围，具体规则见 [审查职责](execution-policy.md#审查职责)。同 reviewer 可连续处理单片 Ticket 的局部与组合验收，结论仍保持各自 scope/原生动作/停止回执，不能重标报告或省掉 Ticket AC。
 
 交付集成 delta 为空也必须首次执行需求覆盖核对、共享状态和目标分支一致性检查；可以产生“无新代码审查范围”的明确证据。后续候选只含无关已证明不影响的变化时继承既有交付结论；最终完整测试仍绑定最终候选。不能凭空生成空 review 或用 Dispatcher 自我验收替代独立审查。
 
@@ -87,7 +96,7 @@ Frozen requirement SHA256: dcc2adf2141dd49a9d383fc30a62388d267fb35e58fdddbdad182
 
 ### 测试提前、修复和候选生命周期
 
-`allocated → implementing → local-checks → local-review → local-accepted → ticket-checks → ticket-accepted`；有 finding 返回同一 executor 的 repair invocation。局部改动重跑对应 regression + affected checks 并复查增量；原 reviewer明确关闭 finding且刷新适用证明。局部首次通过率的分母是**所有第一次提交的片**，修复不能重建片ID改善指标。
+`allocated → implementing → local-checks → local-review → local-accepted → ticket-checks → ticket-accepted`；有 finding 返回同一 executor 的 repair invocation。局部改动重跑对应 regression + affected checks 并复查增量；原 reviewer明确关闭 finding且刷新适用证明。达到 [返工触发条件](execution-policy.md#返工触发短诊断) 时先处理测试基线、合同或划片问题，再继续当前片，不增加补丁片或削弱门禁。局部首次通过率的分母是**所有第一次提交的片**，修复不能重建片ID改善指标；计划内 RED 与测试准备错误单列。
 
 共享夹具、公共接口或整合两个以上片时立即跑 Ticket/affected integration checks，最迟在 Ticket 验收前完成；不等待所有 review 收敛。初次可评审候选必须已有这些检查结果。最终完整验证仍在交付覆盖收敛后运行；失败后只修复受影响片，保留可证明未影响的 review，完整验证在新最终候选重跑，不继承旧完整 pass。
 
@@ -130,12 +139,15 @@ standalone由原 checkpoint root CAS提交；ledger-backed控制由原 ledger锁
 | 活跃窗口 | ≤8 Tickets/stage subjects，≤32 allocations，≤64 pending receipts；超出排队；closed subject退出窗口 |
 | 每个 subject | ≤256 KiB current；每批≤32行为片或256有意义事件，任一达到即封段；Ticket可多批继续 |
 | 日常恢复读取 | root+最多当前8 subjects≤2.25 MiB；按具体未决操作追加最多一个≤16 MiB原证据；不隐式读取archive |
-| Agent上下文 | 默认摘要≤64 KiB UTF-8，一次展开≤256 KiB；原证据按段≤64 KiB，并明确截断/下一游标；结构化权威验证不依赖模型摘要 |
+| Agent上下文 | 默认模型输入包（管理状态/摘要/必要合同）合计≤64 KiB UTF-8，一次按需展开合计≤256 KiB；原证据按段≤64 KiB，并明确截断/下一游标；结构化权威验证不依赖模型摘要 |
+| 管理当前入口 | 一个 canonical UTF-8 ≤16 KiB 的当前记录，仅存目标/进度/阻塞/活动调用/下一步/证据引用；完成历史移出，必要当前事实仍超限则诊断并阻止新派发 |
 | Evidence对象/事件段 | 单对象≤16 MiB，超大日志流式拆成≤1 MiB chunks及≤256 KiB manifest；每事件段≤1 MiB |
 | 本run物理预算 | 2 GiB；75%整理、90%暂停新分配并整理、达到上限拒绝新工作；不是可随运行人工调大的参数 |
 | 副作用回执预留 | 从上述预算预留64 MiB给至多4个未决外部业务调用，每个16 MiB；另64 MiB用于停止/查询/未知状态恢复，业务不能消费 |
 
 输入在执行副作用前验证大小、schema和下一次可读取性；原始结果由有界stream/spool接收。无法预知的超大响应记录有界摘要、已接收分块引用、truncated标记和unknown结果；保留原调用ID查询，未得到完整可验证结果前不能accept或重发。宿主仅返回原子字符串时先限制adapter接受上限，超限也走unknown，不虚构完整证据。
+
+读取预算按一次实际交接/恢复累计核验，包含展开的依赖和证据，模型输入与结构化读取分列；拆文件不等于满足预算。管理当前入口的字段替换、旧下一步退出及历史按需读取见 [当前记录与读取预算](execution-policy.md#当前记录与读取预算)，历史索引不另存一份当前状态。
 
 幂等查找不用随历史增长的内存字典：operation key绑定run+actor+kind+subject+invocation ID，直接hash路径查单个≤16 KiB receipt索引，索引引用原request/result和已应用authority revision。相同key不同digest报冲突。索引与结果对象在root提交前准备，只有已被提交revision证明的receipt可ACK；准备但未提交的索引不能当成功。已完成旧subject的陌生调用拒绝，新调用只能用当前epoch/lease；旧精确重放按原key查receipt，最多读取一个索引和一个必要结果。根不存全部索引，目录按两级hash固定分片；不为查一个receipt扫描整个run。
 
@@ -163,26 +175,28 @@ receipt索引不常驻且仍消耗磁盘；不承诺无限工作。可达历史�
 - 新格式使用拟定 1.4.0 / progress-v20 / transfer-v15 / control key12、schema7 / runner11 / execution-plan-v2。store-format1单独标识。实际分配时若版本被其他交付占用，只整体提升到下一未用版本，不能复用已有语义key。
 - 新运行从创建时固定新包和格式；旧运行遇新运行时明确 `legacy_run_requires_original_runtime`，由原固定包读取原格式，不自动转换、不重新注册/安装旧任务包。
 - 改写 execution/originating-task/workflow-control 协议及 Stage 3/4 模板：替换完整候选两轴重审循环；更新 review-first 测试为“早期行为检查 + 最终完整验证”；不能同时保留互斥规则。
-- ADR-0013 的全writer短停保留，结果/审查选择性继承由 Proposed ADR-0014说明；单权威外置证据由 Proposed ADR-0015说明。CONTEXT只在实施时添加 Evidence Claim、Current Root、Review Coverage术语，不改成实现说明书。
+- ADR-0013 的全writer短停保留，结果/审查选择性继承由 Accepted ADR-0014说明；单权威外置证据由 Accepted ADR-0015说明。领域术语只在实施时按 main 约定写入 `GLOSSARY.md`，不改成实现说明书。
 - 当前已支持的 standalone、continuous/stepwise、app-server/collaboration及已有attached调用方路径保持一致的状态读取和证据验证；其中某路线不支持计划修订就继续明确拒绝，不把拒绝当成功。
 - 无A/无Ticket修订初始化桥、foreground Controller ingress、attached真实Stage2/Phase0初始化冲突均继续延期。既有guard回归必须保持；本方案不要求修通这些入口，不借一致性扩充权限。
 - 不新增通用调度服务、SQLite服务、每Agent独立Git工作树或全历史自动迁移。避免新存储依赖，用已有POSIX文件锁/fsync/replace能力；Windows支持不属于现有部署目标扩展。
 
-## 验证与首个生产边界 TDD 切片
+## 分层验证与效果验收
 
-最高共同seam选择 `workflow_progress.handle` →真实Progress/dispatch/control/Git→临时文件系统与原生宿主adapter。宿主工具响应可确定性fixture，但不mock控制转移、存储或Git。runner再用其公开start/resume确认同一路径，已有 `test_workflow_progress`、`test_plan_driven_dispatch`、`test_review_first_validation`、`test_plan_revision_progress`、`test_unified_recovery`为先例。
+快反馈采用真实模块的公开边界，只构造当前反例需要的合法输入；组合边界为 `workflow_progress.handle` →真实Progress/dispatch/control/Git→临时文件系统与宿主adapter，并以实际CLI、runner start/resume及支持的ledger路线确认接线。不要求每个字段反例都重建完整阶段链。权限/CAS/停止等模块仍真实核验，宿主响应可确定性fixture；不得用模拟权限或自报pass替代业务消费者。命令选择、首跑耗时、组合触发与规模构造见 [验证分层](execution-policy.md#验证分层)。
 
-运行器补充验证：公开start/pause/resume及已有需求准备的首次初始化保持为主seam。Stage 2当前动作集没有无需额外退役历史便可生成exact receipt的控制动作，因此另以真实Stage 3 handle分配→运行器实际调用的save_outer_record系统写边界→handle原回执重放，验证outer/C交错、storage CAS与C业务revision分离、原提交证明保留和过期owner写拒绝。这是公开链路之外的补充集成测试，不mock内部业务、不伪造历史，也不替代最高seam。
+运行器组合验证：公开start/pause/resume及已有需求准备的首次初始化保持。Stage 2当前动作集没有无需额外退役历史便可生成exact receipt的控制动作，因此另以真实Stage 3 handle分配→运行器实际调用的save_outer_record系统写边界→handle原回执重放，验证outer/C交错、storage CAS与C业务revision分离、原提交证明保留和过期owner写拒绝。这是补充集成测试，不mock内部业务、不伪造历史，也不替代公开接线证明。
 
-首个红灯：真实临时Git中的一个Ticket、两个行为片，经过start→allocation prepare/bind/receive/accept→暂停/恢复；注入1000次相同poll，当前文件不能随次数增长，重复副作用调用只一次，恢复只读有限subject而不碰归档。第01 Ticket先证明不改变业务语义的完整切片；后续Ticket逐步启用新审查契约，集成分支在最终Ticket之前不声明可发布。
+T01 原首个红灯及验收保留：真实临时Git中的一个Ticket、两个行为片，经过start→allocation prepare/bind/receive/accept→暂停/恢复；1000次相同poll保持当前文件有界，重复副作用调用只一次，恢复只读有限subject。T01/T02 已验收不因本次文档修订重跑；后续协议增量只核实际影响。集成分支在最终Ticket之前不声明可发布。
 
 必要反例：单文件内相邻函数变动、公共合同/共享fixture变动、漏报读取、原reviewer消失、旧lease回执、相同key不同结果、停止证据撤销、命令运行中pause、空集成delta、写root前/后崩溃、ledger提交后runner崩溃、损坏/缺失/跨run引用、16MiB边界、10000已完成片、2GiB预算、GC扫描中新增pin。每个反例应断言下一可执行动作/权限/验收与调用次数，不测私有函数调用顺序。
 
-对比基准：先在同一机器、同一冻结需求/任务集/模型与测试环境采集旧v19至少10个行为片、3个Ticket的真实任务日志；新规则至少同规模，任务难度分层，记录失败和中断，不只成功样本。自动压力测试用1/10/100/1000/10000历史项和1000/10000 poll，固定活跃窗口。病理旧样本仅用于字节分解。少于30片的首次通过率只报分子分母，不作可靠改善结论。
+从 T03 第一片开始采集，T06 汇总。先固定独立文件、连续修改共享文件和暂停恢复三类场景，用小样本发现明显退化；正式对照目标仍为同机器、冻结需求/任务集、模型和环境的旧v19至少10片/3Tickets，新规则至少同规模，失败/中断全保留。已有旧日志满足条件时只读复用，缺失不可补造；小样本可推进内部功能验收，不能充作正式效果证明。少于30片只报首次通过分子/分母，达到该数也须说明可比性与统计限制。自动压力测试仍用1/10/100/1000/10000历史项和1000/10000 poll，固定窗口；病理旧样本只作字节分解。
 
 报告首次局部通过率、集成新增缺陷（局部通过后才暴露且按严重度列出）、每片返工轮数、总墙钟、协调/停机/验证墙钟与CPU时间、活跃root+subject字节、恢复实际读取字节/文件数、peak RSS、历史磁盘量。并行耗时不可相加冒充墙钟。通过门槛：无权限/证据回归、所有必测失败分支通过、固定活跃窗口下current和普通恢复满足上述预算、重复poll不新增原始证据、10000历史片恢复读取相对10片不超过10%浮动；总物理对象字节须近似O(有意义变化+唯一外部原证据)：固定大小每片的100/1000/10000规模，扣除固定开销后每新增片字节不得随既有历史规模增长超过10%，同样输入总字节不得因保存内部全快照而出现二次增长；时间/通过率改善报告置信限制，若没有改善不得宣称提效成功，分析成本后再决定发布。
 
-全部仓库测试只经 `scripts/run_tests.py`；完整实现验收经 `scripts/validate.sh`。本次仅规划，不运行全量实现测试、不宣称实现通过。实现时生成包 source/output一起提交、build --check、五包资源闭包与原版本拒绝检查必须通过。
+工程验收与效果结论分别报告：权限/支持路线/故障行为及固定空间和读取门槛必须通过，原生现场是否执行单列；效率结果为“改善 / 未改善 / 证据不足”。证据不足不等于已提效。计量来源、unknown及并行区间纪律见 [前置采集与效果判断](execution-policy.md#前置采集与效果判断)。
+
+全部仓库测试只经 `scripts/run_tests.py`；完整实现验收经 `scripts/validate.sh`。本次仅方案修订，不运行完整实现验证。实际实现时生成包 source/output一起提交、build --check、五包资源闭包与原版本拒绝检查必须通过。
 
 ## 实施顺序与统一审阅
 
@@ -196,6 +210,8 @@ receipt索引不常驻且仍消耗磁盘；不承诺无限工作。可达历史�
 | 04 | 合同内修订短屏障并选择性保留结果 | 02 |
 | 05 | 批次归档、幂等索引、GC及容量边界恢复 | 01 |
 | 06 | 当前支持路线一致性、生成包、旧版本拒绝和可比测量 | 03、04、05 |
+
+剩余顺序为 T03→T04→T05→T06：T03 先建立预检、快反馈与计量，再闭合原上下文修复/验证；T04 先计算耦合和失效，再做短停提交/激活；T05 先做归档—回执重放—分页读取，再补 GC/背压/规模；T06 汇总已有数据并完成支持路线及最终验证。以上是各 Ticket 内的验收检查点，不强制一个检查点一个 Agent/报告，开工预检决定合片或串行累计审查。逻辑依赖 DAG 保留，不为共享文件上名义独立的 Ticket 引入并行 writer。
 
 统一审阅已接受：三层角色与独立性、共享Git短停及局部失效、保守GC与固定预算、真实handle/runner测试seam、六张Ticket及其依赖。用户随后明确选择连续模式；按原普通本地执行方式实施，不补造正式阶段交接。工程预算仍必须通过实现验证，不能以本次接受冒充性能达标。
 

@@ -2,6 +2,7 @@
 
 Status: Accepted
 Review: accepted — 当前对话用户接受方案并选择连续模式
+Revision: 2026-10-07 — 用户确认唯一管理入口、生命周期整理与总读取预算；本次只修订方案
 Scope: 新运行；不迁移旧记录，不替换旧Pinned Package Identity
 
 ## Context
@@ -15,6 +16,8 @@ Scope: 新运行；不迁移旧记录，不替换旧Pinned Package Identity
 独立内部store模块封装有限读取、CAS提交、引用验证、归档与容量规则，不提供全hydrate默认接口，不引入后台服务。standalone原checkpoint指针、ledger-backed原ledger指针分别为唯一当前权威；runner只更新镜像。对象先持久化，最后原子切换权威指针。root只保留当前/上一有效代及明确未决/交付pin，不递归持有历史root链。
 
 副作用前保存原intent并预留回执/停止空间；调用结果未知不重发。幂等receipt按hash路径直接查找，历史索引不常驻。归档和删除分开：完成subject退出活跃root，默认保留已提交事件、receipt与最终claims；GC仅删满足年龄、完整可达性、无pin及两代标记的孤立/重复证据。容量预算耗尽拒绝新工作，维持原动作恢复能力，不靠运行中增容或删除有效恢复证据。
+
+任务管理只维护一个有界当前入口，阶段完成后替换状态并移出旧下一步；连续性文档与历史报告只作引用，不维护第二份当前指令。模型输入和结构化权威核验分别计算一次交接/恢复的实际总读取，包括展开的依赖和证据；文件拆小不豁免总读取预算。字段、固定限额与整理触发见 [执行规则](../../.scratch/review-state-efficiency/execution-policy.md#当前记录与读取预算)，运行时原提交权威及原证据保留规则不变。
 
 ## Alternatives and consequences
 

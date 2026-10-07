@@ -7,7 +7,8 @@
     "modify": "implementation requires this file change",
     "add": "proposed new path/symbol, not claimed existing",
     "verify": "explicit read/test inventory; no automatic file-write permission. Promote only when actual fixture dependency is documented within confirmed behavior scope.",
-    "generated": "single canonical output inventory; never hand edit generated copies"
+    "generated": "single canonical output inventory; never hand edit generated copies",
+    "execution_rules": "execution-policy.md is the single execution-policy reference for T03–T06; this approved planning revision does not resume implementation or create a runtime lease."
   },
   "entries": [
     {
@@ -283,10 +284,11 @@
       "tickets": [
         "T01",
         "T02",
+        "T03",
         "T04"
       ],
       "kind": "source",
-      "reason": "指纹证据/短停Git分区一致性",
+      "reason": "指纹证据/短停Git分区一致性；T03原repair invocation的当前执行快照",
       "exists_at_design": true,
       "symbols": [
         {
@@ -316,6 +318,10 @@
         {
           "name": "verify_closure_delivery",
           "status": "existing-verified"
+        },
+        {
+          "name": "verify_execution_start",
+          "status": "existing-verified"
         }
       ],
       "generated_outputs": [
@@ -325,17 +331,18 @@
         "skills/problem-framing/scripts/workflow_control_git.py",
         "skills/solution-design/scripts/workflow_control_git.py"
       ],
-      "implementation_note": "T01 Stage4 typed delivery 精确引用在现有 Git adapter 验证；pure control仅有限事实机械校验，不引入FS或progress依赖。"
+      "implementation_note": "T01 Stage4 typed delivery 精确引用在现有 Git adapter 验证；pure control仅有限事实机械校验，不引入FS或progress依赖。 T03在verified_transition中将repair-execution纳入原scope/overlap/verify_execution_start及新invocation Git snapshot，assign仍核其当前快照；只补原修复闭环，不扩展入口。"
     },
     {
       "path": "src/shared/scripts/execution_plan.py",
       "operation": "modify",
       "tickets": [
         "T02",
+        "T03",
         "T04"
       ],
       "kind": "source",
-      "reason": "v2行为片、依赖与验证映射、影响闭包",
+      "reason": "v2行为片/依赖/验证映射、T03派发前耦合与审查归属预检、T04影响闭包",
       "exists_at_design": true,
       "symbols": [
         {
@@ -1016,10 +1023,11 @@
       "path": "scripts/measure_review_state.py",
       "operation": "add",
       "tickets": [
+        "T03",
         "T06"
       ],
       "kind": "tooling",
-      "reason": "只读计量/匿名导出指标与字节放大",
+      "reason": "T03首片起的原事件/命令只读计量，T06匿名汇总/效果对比；unknown和重叠区间分列",
       "exists_at_design": false,
       "symbols": [
         {
@@ -1307,10 +1315,11 @@
       "path": "tests/runtime/test_execution_plans.py",
       "operation": "modify",
       "tickets": [
-        "T02"
+        "T02",
+        "T03"
       ],
       "kind": "test",
-      "reason": "修改新协议核心行为断言及相关fixture",
+      "reason": "修改新协议核心行为断言及相关fixture；T03完整行为/读写耦合/AC验证归属预检的真实模块边界",
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": []
@@ -2179,6 +2188,7 @@
       "tickets": [
         "T01",
         "T02",
+        "T03",
         "T04"
       ]
     },
@@ -2189,6 +2199,7 @@
       "tickets": [
         "T01",
         "T02",
+        "T03",
         "T04"
       ]
     },
@@ -2199,6 +2210,7 @@
       "tickets": [
         "T01",
         "T02",
+        "T03",
         "T04"
       ]
     },
@@ -2209,6 +2221,7 @@
       "tickets": [
         "T01",
         "T02",
+        "T03",
         "T04"
       ]
     },
@@ -2219,6 +2232,7 @@
       "tickets": [
         "T01",
         "T02",
+        "T03",
         "T04"
       ]
     },
@@ -2228,6 +2242,7 @@
       "source": "src/shared/scripts/execution_plan.py",
       "tickets": [
         "T02",
+        "T03",
         "T04"
       ]
     },
@@ -2237,6 +2252,7 @@
       "source": "src/shared/scripts/execution_plan.py",
       "tickets": [
         "T02",
+        "T03",
         "T04"
       ]
     },
@@ -2246,6 +2262,7 @@
       "source": "src/shared/scripts/execution_plan.py",
       "tickets": [
         "T02",
+        "T03",
         "T04"
       ]
     },
@@ -2255,6 +2272,7 @@
       "source": "src/shared/scripts/execution_plan.py",
       "tickets": [
         "T02",
+        "T03",
         "T04"
       ]
     },
@@ -2264,6 +2282,7 @@
       "source": "src/shared/scripts/execution_plan.py",
       "tickets": [
         "T02",
+        "T03",
         "T04"
       ]
     },
@@ -2974,6 +2993,16 @@
         "guided-implementation",
         "change-closure"
       ]
+    }
+  },
+  "plan_revision": {
+    "approved_date": "2026-10-07",
+    "basis_commit": "6a4f24f2712e9859e40021707b8545f03ab7368b",
+    "scope": "T03–T06 planning and execution policy; implementation remains paused",
+    "policy_ref": "execution-policy.md",
+    "preserved_acceptance": {
+      "T01": "2db280986df071464e3c37346c076f24d233c952",
+      "T02": "375476289417ce5ec081051dcf48eaf2a66ee4b6"
     }
   }
 }

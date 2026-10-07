@@ -2,33 +2,49 @@
 
 Status: ready-for-agent
 Design status: accepted — 普通本地连续实现已授权
+Plan revision: 2026-10-07 — 用户确认执行规则调整；实现保持暂停
 Blocked by: 02
 Spec: ../PRD.md
 Scope inventory: ../manifest.json（T03）
+Execution rules: ../execution-policy.md（开工前预检、验证/审查分层、返工触发与前置采集）
 
 ## What to build
 
-局部review发现缺陷后回到原Execution Agent的新invocation修复，用相同独立reviewer复查增量；相关片/共享夹具变化时尽早跑集成检查。最终交付只在三层证据有效且当前完整验证通过时完成。
+局部review发现缺陷后回到原Execution Agent的新invocation修复，用相同独立reviewer复查增量。派发前检查划片/消费者/验证归属；从首片采集成本，局部先走真实模块快反馈，共享变化立即做组合检查，返工触发短诊断。最终交付只在三层证据有效且当前完整验证通过时完成。
 
 ## 合同和验收
 
 - [ ] 原native ref停稳可继续时复用，repair有新invocation/lease，旧回执不能满足新修复。
-- [ ] 上下文只含64KiB摘要及引用；超限按段展开，失效host才替换；未知原调用阻止换人重做。
+- [ ] 默认模型输入包合计≤64KiB，一次展开合计≤256KiB；交接/恢复计入管理状态、合同和展开证据的总读取；失效host才替换，未知原调用阻止换人重做。
 - [ ] 局部regression/affected先跑；两个片整合或共享fixture变化后立即做Ticket检查，不能拖至所有review结束。
 - [ ] 最终完整测试失败后只重新派受影响片和对应review；最终完整测试必须针对新候选重跑。
 - [ ] 原完整验证过程pause/结果未知保留attempt；新候选不能掩盖运行中命令。
-- [ ] 第一次片ID/提交序号保留，重试不美化首次验收通过率。
+- [ ] 从首片记录首次提交、原命令耗时、审查轮数、返工类别和等待来源；片ID/提交序号保留，TDD RED/测试准备错误单列，缺失计时为unknown。
+- [ ] 派发前完成读写耦合/生产消费者/快反馈命令预检及AC首次检查层分配；缺项先补计划，不因函数数量派Agent。
+- [ ] 达到执行规则的返工条件先短诊断；同片/原调用/有效证据保留，处理原因可验证后继续，不以新片ID或放宽检查绕过。
 
 ## Function Execution Plan（草案）
 
 | Step | 目标符号 | 能力、输入→输出、失败行为 | 前置 |
 | --- | --- | --- | --- |
-| S01 | `Progress.allocation/issue_allocation/require_allocation_active/review_activity`、`stage_dispatch.record_for/matching/bound/received` | findings+原ref+已停止证据→新repair调用；预算/身份/未知状态阻止调用，原不可用则按同subject有证据替换 | 无 |
+| S00 | `execution_plan.validate_ticket_plan/validate_plan_refs`、`Progress.allocation/review_activity` | 现有计划/路径/依赖/verification refs→完整行为与审查职责预检；耦合或缺消费者返回规划调整，不新增权限权威 | 无 |
+| S01 | `Progress.allocation/issue_allocation/require_allocation_active/review_activity`、`stage_dispatch.record_for/matching/bound/received`、`workflow_control_git.verified_transition/verify_execution_start` | findings+原ref+已停止证据→新repair invocation/lease及当前Git快照；旧回执/过期快照/预算/未知状态拒绝，原不可用则有证据替换 | S00 |
 | S02 | `stage_handoff.prepare/_prepare/render`、`workflow.py._stage_prompt` | 当前合同/片/依赖摘要→有限executor/reviewer上下文，scope仍精确；遗漏必要合同拒绝派发 | S01 |
-| S03 | `workflow_control.validate_validation_plan/validate_checks/validate_result_source/_transition_single` | verification refs及触发影响→local/Ticket/early-integration/final计划；validation-start保留固定候选；失败/unknown不能pass | S01 |
-| S04 | `Progress.control_action/observe/suspend/resume`、`workflow.py._invoke/_advance_in_host` | 验证attempt与host结果→同身份回执、暂停恢复/局部失效；修复后保留无关claim且final pass必须重跑 | S02、S03 |
+| S03 | `workflow_control.validate_validation_plan/validate_checks/validate_result_source/_transition_single` | verification refs及触发影响→快反馈/局部/Ticket/集成/final计划；固定候选，缺必跑检查/失败/unknown不能pass | S01 |
+| S04 | `Progress.control_action/observe/suspend/resume/review_activity`、`workflow.py._invoke/_advance_in_host` | 原attempt/命令/审查结果→有限成本事件、短诊断及同身份暂停恢复；新候选不继承旧final pass，不重发未知调用 | S02、S03 |
+| S05 | 新 `scripts/measure_review_state.py.main` | 原事件/命令日志/环境身份→只读计量及明确unknown；保留首次片身份、失败和中断，拒绝混组或相加重叠区间 | S00（从首片起采集，不等待T06） |
 
 不另造后台测试调度器，使用现有Dispatcher调用和命令身份。必跑check的集合由计划与影响声明确定，遗漏check在Ticket或final门禁拒绝，不能由执行者任意缩小。
+
+先确定快反馈命令和计量来源，再完成“停稳原ref→新repair→有限交接→局部审查”闭环，最后闭合验证attempt/返工诊断/最终候选行为。这是验收顺序，不固定每个step一个Agent；共享 `workflow_progress.py` 的步骤按预检合片或串行累计复审，不声称可独立并行。
+
+## 审查归属
+
+| 验收项（按上列顺序） | 首次检查层/证据 | 上层责任 |
+| --- | --- | --- |
+| 1、2、5 | 局部：V02的原ref/新lease/暂停；V03的完整交接读取 | Ticket查修复到恢复组合 |
+| 3、4 | Ticket：V01的提前集成与新候选final | 交付查当前完整验证及跨Ticket保留 |
+| 6、7、8 | 局部：V03/V04的计量、预检和返工触发 | Ticket查规则实际阻止错误派发/无限补丁；T06汇总效果 |
 
 ## Verification references
 
@@ -36,7 +52,9 @@ V01：`test_review_first_validation.py` 场景先引入公共fixture失配，在
 
 V02：`test_pending_host_actions.py`、`test_lifecycle_snapshot_retry.py`、`test_collaboration_lifecycle.py`、`test_foreground_host.py` 验证原调用继续/宿主失效替换/暂停时结果未知。两种native adapter保留各自身份和停止证明。
 
-V03：`test_layered_review.py` 统计实际新派Agent数、复用ref、摘要读取字节；检查不依赖模型生成的时间估计。
+V03：`test_layered_review.py` 统计实际新派Agent数、复用ref和模型输入/结构化恢复总读取，含展开的共享依赖；用原事件/日志验证计量来源、重叠区间及unknown，测试尝试不冒作模型提交。
+
+V04：在已列 `test_execution_plans.py` / `test_layered_review.py` / `test_review_first_validation.py` 中验证后片同文件耦合的预检、缺AC验证归属拒绝，以及三类返工触发保留片身份/权限。先用真实模块公开边界验证反例，再用一条真实handle/CLI链验证接线；不为每个字段重建两Ticket四分配。
 
 所有测试经 `scripts/run_tests.py --test-file`。现有CLI支持路线只同步新状态/上下文；本Ticket不新增foreground Controller ingress。
 
