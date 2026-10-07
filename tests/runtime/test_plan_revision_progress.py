@@ -11,10 +11,212 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import test_stage_scope_progress as fixture
 import workflow_progress as progress
+import test_layered_review as layered_fixture
 from unittest.mock import patch
 
 
+class T04Flow(layered_fixture.LayeredReviewTests):
+    def propose_design_scope(self, candidate, section='approved design'):
+        saved = self.state()
+        basis = {'commit': candidate, 'path': 'docs/spec.md', 'section': section}
+        manifest = [{'path': path, 'owner': 'implementation', 'kind': 'source',
+                     'operation': 'add', 'basis': basis} for path in self.implementation_paths]
+        manifest += [{'path': path, 'owner': 'closure', 'kind': 'document',
+                      'operation': 'add', 'basis': basis} for path in self.planning_documents]
+        proposal = {'proposal_id': 'proposal-1', 'expected_revision': 0,
+            'candidate_commit': candidate, 'manifest': sorted(manifest, key=lambda item: item['path']),
+            'implementation_required': True, 'requirement_identity': saved['handoff']['requirement_identity'],
+            'binding': saved['handoff']['binding'], 'previous_scope_revision': 0}
+        proposed = self.invoke('scope-propose', proposal)
+        self.assertEqual(proposed['next_action']['operation'], 'scope-proposed', proposed)
+        return proposed['next_action']['proposal']['digest']
+
+
 class PlanRevisionProgressTests(unittest.TestCase):
+    def t04_inline_authority(self, *, shared=None, same_file=False, read=False):
+        plan = {'schema_version': 2, 'ticket_id': 'PRIVATE', 'plan_version': 1,
+            'spec_ref': {'path': 'inline', 'section': 'brief'},
+            'contract_refs': ['PRIVATE:AC-1', 'PRIVATE:AC-2'],
+            'blocked_by': [], 'artifact_steps': [], 'steps': [], 'verifications': [], 'behavior_slices': []}
+        for number in (1, 2):
+            identity, path, verify = 'S' + str(number), 'private' + str(number) + '.py', 'V' + str(number)
+            plan['steps'].append({'id': identity, 'target': {'path': path, 'symbol': 'run', 'operation': 'add'},
+                'capability': 'approved behavior', 'approach': ['implement private helper'],
+                'inputs': ['input'], 'outputs': ['result'], 'failures': ['invalid input'],
+                'depends_on': [], 'read_only': [], 'verification_refs': [verify]})
+            plan['verifications'].append({'id': verify, 'behavior': 'approved behavior',
+                'seam': 'public module', 'commands': ['focused check']})
+            plan['behavior_slices'].append({'id': identity, 'step_ids': [identity],
+                'ac_refs': ['PRIVATE:AC-' + str(number)], 'verification_refs': [verify],
+                'read_only': [], 'shared_state': [shared] if number == 2 and shared else []})
+        if same_file:
+            plan['steps'][1]['target'].update(path='private1.py', symbol='neighbor')
+        if read:
+            plan['steps'][1]['read_only'] = ['private1.py']
+            plan['behavior_slices'][1]['read_only'] = ['private1.py']
+        paths = ['private1.py'] if same_file else ['private1.py', 'private2.py']
+        scope = {'baseline': 'a' * 40, 'implementation_paths': paths,
+            'protected_paths': [], 'downstream': {'revision': 1, 'manifest': [
+                {'path': path, 'owner': 'implementation', 'kind': 'source', 'operation': 'add'}
+                for path in paths]}}
+        semantic = {'objective': 'approved behavior', 'testing_basis': 'public module',
+            'completion_criteria': ['results match'], 'constraints': ['private implementation']}
+        return progress.execution_plan.inline_authority(plan, scope, semantic,
+            {'sha256': 'b' * 64}, input_digest='c' * 64)
+
+    def test_t04_private_revision_closes_over_slice_shared_state_and_unknown(self):
+        for variant, expected in (({}, ['S1']), ({'shared': 'private1.py'}, ['S1', 'S2']),
+                ({'shared': 'unmapped-registry'}, ['S1', 'S2']), ({'same_file': True}, ['S1', 'S2']),
+                ({'read': True}, ['S1', 'S2']), ({'verification': True}, ['S1', 'S2'])):
+            with self.subTest(variant=variant):
+                old = self.t04_inline_authority(**{key: value for key, value in variant.items() if key != 'verification'})
+                plan = copy.deepcopy(progress.execution_plan.current_catalog(old)['tickets'][0]['plan'])
+                plan['plan_version'] = 2
+                plan['steps'][0]['approach'].append('split the private helper')
+                if variant.get('verification'):
+                    plan['verifications'][1]['commands'] = ['changed focused check']
+                new_scope = copy.deepcopy(old['scope'])
+                new_scope['downstream']['revision'] = 2
+                new = progress.execution_plan.inline_authority(plan, new_scope,
+                    {'objective': 'approved behavior', 'testing_basis': 'public module',
+                     'completion_criteria': ['results match'], 'constraints': ['private implementation']},
+                    {'sha256': 'b' * 64}, input_digest='c' * 64)
+                impact = progress.execution_plan.affected_plan_closure(old, new, [])
+                self.assertEqual(impact['impacted_step_ids'], expected)
+
+    def test_t04_revision_preserves_original_unaffected_claims_and_one_cas(self):
+        flow = T04Flow(methodName='runTest')
+        flow.setUp()
+        self.addCleanup(flow.doCleanups)
+        candidate = flow.layered_flow()
+        flow.local_review(candidate)
+        for number in (1, 2):
+            flow.local_review(candidate, 'B', 'B' + str(number))
+        flow.ticket_review(candidate, 'B')
+        before = flow.state()
+        checkpoint = before['control']['context']['handoff_progress']
+        views = copy.deepcopy(checkpoint['review_claims'])
+        store = progress.state_store.StateStore(flow.checkpoint)
+        originals = {axis: store.read_evidence(view['claim_ref'], run_id=store.open_current().run_id)['value']
+                     for axis, view in views.items()}
+        old_slot = flow.allocation_slot('B1', 'B')
+        (flow.flow / 'unrelated.txt').write_text('existing staged note\n')
+        flow.flow_git('add', 'unrelated.txt')
+        index = flow.flow_git('ls-files', '--stage', 'unrelated.txt')
+        authority = before['scope_authority']
+        path = '.scratch/layered/issues/A.md'
+        report = {'revision_id': 't04-private', 'expected_authority_revision': authority['revision'],
+            'expected_authority_digest': progress.entry.digest(authority), 'controller_ref': 'task',
+            'classification': {'kind': 'internal', 'reference': 'controller:t04-private'},
+            'planning_paths': [path], 'report': {'ticket_ids': ['A'], 'step_ids': ['A1'],
+                'reason': 'split a private helper', 'production_facts': 'same approved module output',
+                'contract_before': authority['execution_plan']['contract_digest'],
+                'contract_after': authority['execution_plan']['contract_digest'],
+                'dependency_impact': ['A1'], 'verification_impact': ['V-A1'], 'carry_forward': ['B1', 'B2']}}
+        public = copy.deepcopy(report)
+        public['classification']['kind'] = 'public'
+        pointer = flow.checkpoint.read_bytes()
+        with self.assertRaises(progress.entry.PreparationError) as error:
+            flow.invoke('prepare-plan-revision', public)
+        self.assertEqual(error.exception.code, 'user_decision_required')
+        self.assertEqual(flow.checkpoint.read_bytes(), pointer)
+        stopping = flow.invoke('prepare-plan-revision', report)
+        self.assertEqual(stopping['next_action']['operation'], 'stop-host', stopping)
+        unknown = flow.invoke('observe', flow.observation('unknown', 'result', ref='native:dispatcher'))
+        self.assertNotIn('write_release', unknown.get('next_action') or {})
+        self.assertEqual(flow.state()['plan_revision_transaction']['state'], 'stopping')
+        lookup = flow.invoke('advance')
+        self.assertIn(lookup['next_action']['operation'], {'inspect-host-state', 'await-host-recovery', 'lookup-exact-action'})
+        prepared = flow.invoke('observe', flow.observation('stopped', 'result', ref='native:dispatcher'))
+        self.assertEqual(prepared['next_action']['operation'], 'plan-revision-prepared', prepared)
+        body = (flow.flow / path).read_text()
+        match = re.search(r'```execution-plan-v2\n(.*?)\n```', body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan['plan_version'] = 2
+        plan['steps'][0]['approach'].append('split the private helper')
+        (flow.flow / path).write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                                    .replace('Plan Version: 1', 'Plan Version: 2'))
+        flow.flow_git('add', path)
+        flow.flow_git('commit', '--only', '-qm', 't04 private plan revision', '--', path)
+        revised = flow.flow_git('rev-parse', 'HEAD')
+        request = {'revision_id': report['revision_id'], 'controller_ref': 'task',
+            'write_release': prepared['next_action']['write_release'], 'planning_commit': revised}
+        original_bytes = (flow.flow / 'a1.py').read_bytes()
+        (flow.flow / 'a1.py').write_bytes(b'unapproved implementation drift\n')
+        pointer = flow.checkpoint.read_bytes()
+        with self.assertRaisesRegex(progress.control.ControlError, 'implementation or protected bytes changed'):
+            flow.invoke('commit-plan-revision', request)
+        self.assertEqual(flow.checkpoint.read_bytes(), pointer)
+        (flow.flow / 'a1.py').write_bytes(original_bytes)
+        original_replace = progress.state_store.os.replace
+        lost = []
+        def lost_after_activation(source, target, *args, **kwargs):
+            losing = False
+            if Path(target) == flow.checkpoint and not lost:
+                envelope = json.loads(Path(source).read_bytes())
+                root = store.read_evidence(envelope['current'], run_id=envelope['run_id'], kind='root')['value']
+                subject = store.read_evidence(root['subjects'][root['metadata']['stage_subject']],
+                    run_id=envelope['run_id'], kind='subject')['value']
+                losing = (subject.get('plan_revision_transaction') or {}).get('state') == 'activated'
+            result = original_replace(source, target, *args, **kwargs)
+            if losing:
+                lost.append(True)
+                raise OSError('lost return after activation CAS')
+            return result
+        with patch.object(progress.state_store.os, 'replace', lost_after_activation):
+            with self.assertRaisesRegex(OSError, 'lost return after activation CAS'):
+                flow.invoke('commit-plan-revision', request)
+        self.assertEqual(lost, [True])
+        after = flow.state()['control']['context']['handoff_progress']
+        self.assertNotIn('local:A:A1', after['review_claims'])
+        for axis in ('local:B:B1', 'local:B:B2', 'ticket:B'):
+            self.assertEqual(after['review_claims'][axis], views[axis])
+            self.assertEqual(store.read_evidence(views[axis]['claim_ref'], run_id=store.open_current().run_id)['value'], originals[axis])
+        self.assertEqual(after['plan_revision_sources'][-1]['review_claims'], views)
+        self.assertEqual(flow.state().get('rework_receipts'), before.get('rework_receipts'))
+        self.assertEqual(flow.flow_git('ls-files', '--stage', 'unrelated.txt'), index)
+        carried = next(item for item in after['carried_results'] if item['agent_ref'] == 'native:executor-B1')
+        self.assertEqual(carried['agent_ref'], 'native:executor-B1')
+        self.assertEqual(carried['plan_authority'], after['plan_authority'])
+        self.assertNotEqual(carried['plan_authority'], checkpoint['plan_authority'])
+        proof = after['review_applicability']
+        self.assertEqual(proof['candidate'], revised)
+        self.assertEqual(proof['affected'], [views['local:A:A1']['claim_id']])
+        self.assertEqual(proof['retained'], sorted(views[axis]['claim_id'] for axis in ('local:B:B1', 'local:B:B2', 'ticket:B')))
+        replay = flow.invoke('commit-plan-revision', request, revision=0)
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertTrue(flow.invoke('reconcile-plan-revision', {'revision_id': report['revision_id']}, revision=0)['acknowledged'])
+        self.assertEqual(len(flow.state()['control']['context']['handoff_progress']['plan_revisions']), 1)
+        with self.assertRaises(progress.entry.PreparationError):
+            progress.dispatch.matching(progress.handoff.unseal(old_slot['record']), flow.state()['control']['context'])
+        # The original stopped executor continues with current authority. An
+        # inherited accepted result is evidence, not its old writer lease.
+        flow.flow_git('reset', '--', 'unrelated.txt')
+        (flow.flow / 'unrelated.txt').unlink()
+        flow.early_ticket_check(revised, 'B')
+        current = flow.execution_input()
+        ticket = next(item for item in flow.state()['scope_authority']['execution_plan']['catalog']['tickets']
+                      if item['ticket_id'] == 'B')
+        current['scope']['owned_paths'] = ['b1.py']
+        current['authorization']['scope_digest'] = progress.entry.digest(current['scope'])
+        current['semantic']['plan_refs'] = [progress.execution_plan.step_ref(ticket, ticket['plan']['steps'][0])]
+        continued = flow.invoke('allocation', {'allocation_id': 'B1', 'operation': 'repair',
+            'invocation_id': 't04-current-B1', 'handoff': current})
+        self.assertIsNotNone(continued['next_action'], continued)
+        self.assertEqual(continued['next_action']['operation'], 'invoke-host', continued)
+        self.assertEqual(continued['next_action']['payload']['payload']['execution_invocation']['ref'], 'native:executor-B1')
+        new_slot = flow.allocation_slot('B1', 'B')
+        old_receipt = flow.receipt(old_slot['record'], ref='native:executor-B1')
+        with self.assertRaises(progress.entry.PreparationError):
+            progress.dispatch.validate_allocation_receipt(new_slot['record'], 'bind', old_receipt,
+                flow.state()['control']['context'])
+        receipt = flow.receipt(new_slot['record'], ref='native:executor-B1')
+        receipt['receipt_ref'] = 't04-current-B1:ready'
+        bound = flow.invoke('allocation', {'allocation_id': 'B1', 'operation': 'bind', 'receipt': receipt})
+        self.assertNotEqual(bound['next_action']['result']['write_release'],
+            progress.dispatch.execution_release_token(progress.handoff.unseal(old_slot['record'])))
+        self.assertEqual(new_slot['metrics']['first_submission'], old_slot['metrics']['first_submission'])
+
     def new_active_flow(self, *, generated=False, read_dependency=False, grouped_reads=False,
                         artifact_mode=None, retained_note=False, ticket=False):
         case = fixture.ScopeProgressTests(methodName="runTest")

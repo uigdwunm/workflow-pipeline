@@ -148,6 +148,10 @@ blocks the affected write. After Stage-3 preparation, the original Controller
 uses the bounded internal plan-revision transaction for contract-preserving
 changes; ordinary scope correction stays closed. A standalone Stage-3 brief
 supplies its own complete sealed manifest and one inline function plan.
+For internal revisions, preserve the shared HEAD/index stop barrier and exact
+planning paths. Carry only proven unaffected original claims/results; new target
+applicability and writer leases name the new authority without relabeling old
+native receipts. Resume an interrupted revision through its saved transaction.
 If that standalone manifest includes generated files, supply B's top-level
 `generated_outputs` source-to-outputs map before sealing the handoff; inherited
 flows use their saved authority map and cannot replace it at entry.

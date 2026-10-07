@@ -99,6 +99,14 @@ Before review, verify that every implementation byte comes from accepted real
 Execution Agent deliveries under the current plan refs and authority. An empty
 allocation list is not stopped-writer evidence. The original Controller alone
 classifies and commits an internal plan revision after the full stop barrier.
+Before its planning write, redo complete-slice coupling and AC/verification
+ownership checks. The shared HEAD/index barrier covers every writer, unknown
+host call and validation command, including unrelated Tickets. After one
+activation, keep original unaffected claims/results and native contexts through
+verified target applicability; affected scopes require renewed acceptance.
+Continue stopped carried executors only through a new original-ref repair
+invocation under the current authority. Recover the saved revision transaction
+after interruption; a changed commit label alone cannot rewrite old sources.
 
 This three-layer review contract is authoritative. Each behavior slice has one
 independent local Standards/contract review after its exact frozen regression

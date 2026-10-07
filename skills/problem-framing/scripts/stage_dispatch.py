@@ -298,7 +298,7 @@ def prepared(request, *, validate_only=False):
             if saved['semantic'].get('repair') is not None:
                 action = 'repair-execution'
                 evidence['repair'] = copy.deepcopy(saved['semantic']['repair'])
-                original = control.execution_record(progress, evidence['repair']['agent_ref'])
+                original = control.repair_execution_record(progress, evidence['repair']['agent_ref'])
                 evidence['task_id'] = original['task_id']
         else:
             action = "start-closure"

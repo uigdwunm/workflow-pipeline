@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "eb179f0474bff276cf199f94ddfa35638cf805c250cfe33cd6c9510cedd4e914",
+  "bundle_digest": "d34c7e5fbb4fec4543761dda7c26277320fe06192348a2c5f196c5e0ea79023b",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 12,
@@ -40,7 +40,7 @@
     },
     "SKILL.md": {
       "mode": "0644",
-      "sha256": "31a682b3e608932f9222a74655ccfa6302cf735cc23b6993486326daddf442de"
+      "sha256": "0e3e5515daff2b53d1337a7729472e6a95b27e65d2038c5ff3b7c3b484250159"
     },
     "agents/openai.yaml": {
       "mode": "0644",
@@ -68,7 +68,7 @@
     },
     "references/shared/guided-implementation/originating-task-protocol.md": {
       "mode": "0644",
-      "sha256": "c59bff2757d0f0c8269bb4e23929ddca5a732f2d3cf7320afd915c4fed499663"
+      "sha256": "8127fec98893fc2890462454940810eff2c7d7d2b557af8ba8cc9c0cccc0c609"
     },
     "references/shared/guided-implementation/thread-settings-protocol.md": {
       "mode": "0644",
@@ -76,7 +76,7 @@
     },
     "references/shared/guided-implementation/workflow-control-protocol.md": {
       "mode": "0644",
-      "sha256": "59cbedc93538a637c81af7bf7a13aa70eab1d98970d720a4c74cb265fa88cb11"
+      "sha256": "a99fa9e5bb67153a36088442bed626c76b9564735aa8d0d38d9b5b7a516df007"
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
@@ -176,7 +176,7 @@
     },
     "scripts/execution_plan.py": {
       "mode": "0644",
-      "sha256": "0e7fd65b1e5ba2f8f4f6196c89201aa94f8477b68d6e5a51ac0a8b77c5f13c73"
+      "sha256": "38c89a5f62f7d66b3414c4fad0e7bca433a64c4dfac6423510e345fad73d9d94"
     },
     "scripts/foreground_host.py": {
       "mode": "0644",
@@ -208,7 +208,7 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "dbf457583c213bb4d0f2591d351fd69d93d64579d89a3ff5c29715e6b9fe5efc"
+      "sha256": "8420a2cf332eef5bfad59901015e778cc1aad3c049fefc45b683e4eeba07b7d8"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
@@ -240,15 +240,15 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "1a0fc04d36c9d9d2abada19409ee255b38487eb051d7852e6c05eec934bb60e0"
+      "sha256": "74181266e347ea3b4f24b7e553af9eaf3ce981d8edfd2fa3ebf00f0353322afc"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "1974c93b67fcc67bf0036d76d463fcaf6bb1cf34b20ffe68c4b1eb0025a83f3c"
+      "sha256": "64b5a24603a20ea9be8590cfe2512b2d7e4bb4b32c8a78a2a52907976406d4f8"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "a17aa62be975aaf722e31359354832071c1422199b1625e20ea1b4da752a9ae5"
+      "sha256": "72328b74b74078ca5a9723d47c8ca6a889fa9eb2163d0b3e5ea3d9dc22187ea8"
     },
     "scripts/workflow_stage_result.schema.json": {
       "mode": "0644",

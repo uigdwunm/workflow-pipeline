@@ -199,9 +199,18 @@ The Controller commits only those planning paths. C and the Git adapter verify
 the candidate's sole parent, exact changed paths, index partition, all frozen
 implementation/protected presence/content/modes, unchanged functional contract,
 monotonic Ticket plan versions and complete plan/manifest closure. A journaled
-planning commit activates one new Scope Authority and control plan revision;
-old allocations and candidate/review/validation attempts become historical
-sources for current-revision revalidation. An interrupted commit remains at
+planning commit activates one new Scope Authority and control plan revision,
+revoking every old writer lease. Before activation, C compares original claims
+with the proposed plan, owned/read fingerprints, slice/shared-state dependencies
+and frozen verification commands. The Git adapter authenticates their original
+C/native source anchors and recomputes the exact retained/affected partition.
+Unchanged claims keep their original bytes, source candidate and native refs;
+only a new target-applicability record names the current authority. Affected
+claims and earlier candidate/coverage/final validation remain historical.
+Unknown shared-state impact expands conservatively across Tickets.
+An original stopped carried executor may use the existing repair invocation to
+continue its native ref with current plan refs and a new lease; its old allocation
+receipts and first-submission identity remain unchanged. An interrupted commit remains at
 `planning-committed` until the same revision is reconciled. Repeated activated
 prepare/commit/reconcile requests only acknowledge; they never grant another
 planning release. Pause and cancellation take priority, and fresh host activity
@@ -351,7 +360,9 @@ with `id`, `category`, `command`, bound absolute `cwd`, `pass_condition`,
 categories are full/environment, including at least one full check. An environment
 check names its required fingerprint; otherwise record an explicit
 `environment_not_applicable` basis. Plan digests identify approved bytes, not
-execution or semantic authority. A plan revision follows the original Controller-only transaction and makes earlier candidate review and validation historical.
+execution or semantic authority. A plan revision follows the original
+Controller-only transaction, retaining only mechanically applicable claims;
+earlier coverage and final validation remain historical.
 
 C's bounded `control` channel accepts local-review, ticket-accept,
 review-applicability, candidate-ready, review-converged,

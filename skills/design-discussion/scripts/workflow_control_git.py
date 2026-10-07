@@ -758,6 +758,8 @@ def verified_transition(payload):
                 {relative: committed_fingerprint(repository, progress['git_baseline_commit'], relative)
                  for relative in evidence['new_scope']['implementation_paths']},
                 'plan revision baseline fingerprints differ from original implementation baseline')
+        if progress.get('review_claims'):
+            verify_plan_revision_reviews(evidence, progress)
     if action == 'capture-integration':
         require(progress is not None and 'integration_target_head' in progress,
                 'final integration recovery is missing')
@@ -999,6 +1001,36 @@ def main():
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0
+
+def verify_plan_revision_reviews(evidence, progress):
+    """Recompute plan applicability from the original C/native sources."""
+    import workflow_progress as progression
+    import workflow_state_store as state_store
+    from workflow_control import digest
+    proof = evidence.get('review_retention')
+    require(isinstance(proof, dict), 'plan revision claim applicability is missing')
+    path = Path(proof['checkpoint_path'])
+    require(path.is_absolute() and str(path.resolve()) == str(path), 'claim checkpoint must be canonical')
+    owner = progression.Progress(path, progression.read_active_owner(path))
+    checkpoint = owner.state['control']['context']['handoff_progress']
+    transaction = owner.state.get('plan_revision_transaction')
+    require(checkpoint == progress and transaction and transaction['state'] == 'planning-committed' and
+            transaction['proposed_authority'] == evidence['new_execution_authority'] and
+            transaction['old_authority'] == progress['execution_authority'] and
+            transaction['commit_input']['planning_commit'] == evidence['planning_commit'] and
+            transaction['input']['revision_id'] == evidence['revision_id'],
+            'claim applicability differs from the exact prepared revision')
+    _, applications = owner.plan_revision_reviews(transaction)
+    store = state_store.open_store(path)
+    current = store.open_current()
+    value = store.read_evidence(proof['reference'], run_id=current.run_id)['value']
+    expected = {'kind': 'review-applicability-set-v1', 'candidate': evidence['planning_commit'],
+        'plan_authority': evidence['new_authority'], 'applications': applications}
+    require(value == expected and proof['digest'] == digest(expected) and
+            proof['retained'] == sorted(app['claim_id'] for app in applications.values() if app['applicable']) and
+            proof['affected'] == sorted(app['claim_id'] for app in applications.values() if not app['applicable']),
+            'plan revision claim applicability differs from actual plan/fingerprints/dependencies')
+
 
 def verify_review_coverage(view, progress, *, delivery, extra=None):
     """Recompute finite original-claim coverage against actual target Git bytes."""

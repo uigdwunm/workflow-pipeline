@@ -4508,12 +4508,17 @@ class Progress:
         require(not s.get("scope_revision_transaction") and not s.get("final_integration_recovery") and
                 not s.get("publication_transaction"), "plan_revision_unavailable",
                 "another publication or revision recovery has priority")
+        selected = {identity for ticket in catalog['tickets'] for group in ticket['plan']['behavior_slices']
+            if set(group['step_ids']) & set(data['report']['step_ids'] + data['report']['dependency_impact'])
+            for identity in group['step_ids']}
+        preflight = execution_plan.dispatch_preflight(catalog, selected)
         if prior is not None:
             s.setdefault("plan_revision_history", {})[prior["input"]["revision_id"]] = copy.deepcopy(prior)
         if retry is not None:
             s["plan_revision_history"].pop(data["revision_id"])
         s["plan_revision_transaction"] = {"state": "stopping", "input": copy.deepcopy(data),
             "input_digest": entry.digest(data), "old_authority": copy.deepcopy(authority),
+            "preflight": preflight,
             **({"prior_rejections": copy.deepcopy([*retry.get("prior_rejections", []),
                 retry["rejection"]])} if retry is not None else {})}
         self.save()
@@ -4727,6 +4732,11 @@ class Progress:
                 "scope_changed", "inline authority projection changed")
         transaction.update(state="planning-committed", commit_input=copy.deepcopy(data),
                            git_facts=facts, proposed_authority=proposed)
+        impact = execution_plan.affected_plan_closure(old_authority, proposed, facts['changed_paths'])
+        selected = {identity for ticket in catalog['tickets'] for group in ticket['plan']['behavior_slices']
+            if set(group['step_ids']) & set(impact['impacted_step_ids']) for identity in group['step_ids']}
+        if selected:
+            transaction['proposed_preflight'] = execution_plan.dispatch_preflight(catalog, selected)
         self.save()
         return self.activate_plan_revision()
 
@@ -4774,6 +4784,8 @@ class Progress:
             "git_facts": transaction["git_facts"]}
         if "validation_plan" in transaction["input"]:
             evidence["validation_plan"] = copy.deepcopy(transaction["input"]["validation_plan"])
+        if checkpoint.get('review_claims'):
+            evidence['review_retention'] = self.persist_plan_revision_reviews(transaction)
         result = self.control_action({"action": "plan-revision-activate", "evidence": evidence,
             "receipt": {"controller_ref": data["controller_ref"],
                         "reference": evidence["classification"]["reference"]}})
@@ -7062,6 +7074,16 @@ class Progress:
         require(operation in {"prepare", "repair", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown allocation operation")
         s = self.state
         prior_slot = s.get('allocations', {}).get(identity)
+        inherited_slot = False
+        if operation == 'repair' and prior_slot is None:
+            checkpoint = s['control']['context']['handoff_progress']
+            carried = {item['allocation_digest']: item for item in checkpoint.get('carried_results', [])}
+            candidates = [group['allocations'][identity] for group in s.get('plan_revision_allocation_history', [])
+                if identity in group['allocations'] and
+                (group['allocations'][identity].get('record') or {}).get('request', {}).get('attempt') in carried]
+            require(len(candidates) == 1, 'allocation_missing', 'repair requires one original carried allocation')
+            prior_slot = copy.deepcopy(candidates[0])
+            inherited_slot = True
         proposal = prior_slot.get('repair_proposal') if prior_slot else None
         require(proposal is None or operation in {'repair', 'prepare'}, 'outcome_unknown',
                 'reconcile the original repair preparation before another allocation operation')
@@ -7097,8 +7119,19 @@ class Progress:
                 require(prior_slot.get('transaction') is None and prior_slot.get('record') is not None and
                         prior_slot['record']['status'] in {'received', 'accepted'},
                         'outcome_unknown', 'settle the original execution before repair')
-                original_record = dispatch.record_for({'record': prior_slot['record'], 'control': copy.deepcopy(s['control'])})
-                ref, state, original = dispatch.matching(original_record, s['control']['context'])
+                if inherited_slot:
+                    original_record = handoff.unseal(prior_slot['record'])
+                    dispatch.verified_launch(original_record)
+                    dispatch.verify_allocation_receipts(original_record)
+                    carry = carried[original_record['request']['attempt']]
+                    original = control.repair_execution_record(checkpoint, carry['agent_ref'])
+                    require(original['allocation_digest'] == original_record['request']['attempt'] and
+                            original['task_id'] == carry['task_id'],
+                            'identity_mismatch', 'carried allocation differs from its original native request')
+                    ref, state = original['agent_ref'], original['state']
+                else:
+                    original_record = dispatch.record_for({'record': prior_slot['record'], 'control': copy.deepcopy(s['control'])})
+                    ref, state, original = dispatch.matching(original_record, s['control']['context'])
                 stops = [receipt for receipt in original_record['receipts']
                          if receipt['status'] == 'stopped' and receipt['ref'] == ref]
                 require(ref is not None and original['stopped'] is True and state in {'received', 'accepted'} and stops,
@@ -7135,6 +7168,8 @@ class Progress:
                     'observations': [], 'result': None, 'invocation_history': history,
                     'metrics': copy.deepcopy(prior_slot.get('metrics', {'slice_id': identity, 'submissions': 0}))}
                 prior_slot['repair_proposal'] = {'phase': 'validating', 'slot': proposed}
+                if inherited_slot:
+                    s.setdefault('allocations', {})[identity] = prior_slot
             data = {'allocation_id': identity, 'operation': 'prepare', 'handoff': request}
             operation = 'prepare'
         invocation = ((data.get('receipt') or {}).get('receipt_ref') or
@@ -7510,13 +7545,26 @@ class Progress:
             claims[axis] = claim
         return claims
 
-    def review_applications(self, candidate):
-        claims = self.read_review_claims()
+    def review_applications(self, candidate, *, claims=None, changed_paths=(), planning_paths=(), invalid_ids=()):
+        claims = self.read_review_claims() if claims is None else claims
         catalog = execution_plan.current_catalog(self.state['scope_authority'])
         checkpoint = self.state['control']['context']['handoff_progress']
-        targets, changed, invalid = {}, set(), set()
+        targets, changed, invalid = {}, set(changed_paths), set(invalid_ids)
+        axes = {'ticket:' + ticket['ticket_id'] for ticket in catalog['tickets']} | {
+            'local:' + ticket['ticket_id'] + ':' + group['id'] for ticket in catalog['tickets']
+            for group in ticket['plan']['behavior_slices']} | {'standards', 'spec'}
         repository = Path(self.state['handoff']['binding']['worktree'])
         for axis, claim in claims.items():
+            if axis not in axes:
+                # A retired slice still has an immutable source. Its target is
+                # explicitly missing, never reinterpreted as a replacement slice.
+                targets[axis] = {key: copy.deepcopy(claim[key]) for key in (
+                    'contract_digest', 'plan_refs', 'owned_fingerprints', 'read_fingerprints',
+                    'shared_state', 'dependency_claim_ids', 'ac_refs', 'requirement_refs')}
+                targets[axis].update(required=claim['verification']['required'],
+                    known_paths=checkpoint['allowed_paths'] + checkpoint['protected_paths'], missing_dependencies=True)
+                invalid.add(claim['claim_id'])
+                continue
             if axis in {'standards', 'spec'}:
                 target = self.delivery_review_subject(candidate, axis)
                 target['required'] = checkpoint['validation_plan']['review_required']
@@ -7528,7 +7576,7 @@ class Progress:
             _, target['missing_dependencies'] = self.review_dependencies(axis)
             targets[axis] = target
             changed.update(set(control_git.git(repository, 'diff', '--name-only', claim['source_candidate'], candidate).decode().splitlines()) -
-                           control_git.verified_planning_paths(repository, checkpoint))
+                           (set(control_git.verified_planning_paths(repository, checkpoint)) | set(planning_paths)))
             if claim['reviewer_ref'] in self.state.get('native_adverse', {}):
                 invalid.add(claim['claim_id'])
             for group in [self.state.get('review_activity', {}), *self.state.get('review_history', [])]:
@@ -7545,6 +7593,41 @@ class Progress:
                     if isinstance(report, dict) and (report.get('findings') or report.get('status') != 'accepted'):
                         invalid.add(claim['claim_id'])
         return claims, review_evidence.applicable_claims(claims, targets, candidate, checkpoint['plan_authority'], changed, invalid_ids=invalid)
+
+    def plan_revision_reviews(self, transaction):
+        """Compare authenticated original claims to the verified proposed plan."""
+        claims = self.read_review_claims()
+        target = copy.copy(self)
+        target.state = copy.deepcopy(self.state)
+        authority = transaction['proposed_authority']
+        target.state['scope_authority'] = copy.deepcopy(authority)
+        checkpoint = target.state['control']['context']['handoff_progress']
+        checkpoint.update(execution_authority=copy.deepcopy(authority),
+            plan_authority={'revision': authority['revision'], 'authority_digest': entry.digest(authority),
+                'plan_digest': authority['execution_plan']['plan_digest'],
+                'contract_digest': authority['execution_plan']['contract_digest']},
+            allowed_paths=authority['scope']['implementation_paths'])
+        checkpoint['validation_plan'] = copy.deepcopy(transaction['input'].get('validation_plan', checkpoint['validation_plan']))
+        impact = execution_plan.affected_plan_closure(transaction['old_authority'], authority,
+            transaction['git_facts']['changed_paths'])
+        invalid = [claim['claim_id'] for claim in claims.values()
+            if any(ref['step_id'] in impact['impacted_step_ids'] for ref in claim['plan_refs'])]
+        return target.review_applications(transaction['commit_input']['planning_commit'], claims=claims,
+            changed_paths=impact['paths'], planning_paths=transaction['git_facts']['changed_paths'], invalid_ids=invalid)
+
+    def persist_plan_revision_reviews(self, transaction):
+        _, applications = self.plan_revision_reviews(transaction)
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        value = {'kind': 'review-applicability-set-v1',
+            'candidate': transaction['commit_input']['planning_commit'],
+            'plan_authority': next(iter(applications.values()))['target_plan_authority'],
+            'applications': applications}
+        reference = store.write_object(current.run_id, 'evidence', value)
+        return {'candidate': value['candidate'], 'reference': reference, 'digest': entry.digest(value),
+            'retained': sorted(app['claim_id'] for app in applications.values() if app['applicable']),
+            'affected': sorted(app['claim_id'] for app in applications.values() if not app['applicable']),
+            'checkpoint_path': str(self.path)}
 
     def persist_review_applicability(self, candidate):
         repository = Path(self.state['handoff']['binding']['worktree'])

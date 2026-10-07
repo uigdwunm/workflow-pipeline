@@ -148,6 +148,34 @@ def execution_record(progress, ref):
     return matches[0]
 
 
+def repair_execution_record(progress, ref):
+    """Current repair provenance may come from one unchanged accepted carry.
+
+    This is a read-only projection, never a revival of an old writer lease.
+    Ordinary result/assign consumers still require the current execution roster.
+    """
+    text(ref)
+    current = [item for item in progress['executions']
+               if item.get('agent_ref') == ref or item.get('repair', {}).get('agent_ref') == ref]
+    if current:
+        require(len(current) == 1, 'ambiguous original repair identity')
+        return current[0]
+    carried = [item for item in progress.get('carried_results', []) if item['agent_ref'] == ref]
+    require(len(carried) == 1 and carried[0]['plan_authority'] == progress['plan_authority'],
+            'unknown current carried execution identity')
+    carry = carried[0]
+    originals = [item for source in progress.get('plan_revision_sources', []) for item in source['executions']
+                 if digest(item) == carry['source_result_digest']]
+    from execution_plan import original_carried_fingerprints
+    require(len(originals) == 1 and original_carried_fingerprints(carry, originals) is not None,
+            'carried repair lacks its original accepted invocation')
+    original = copy.deepcopy(originals[0])
+    original.update(plan_refs=copy.deepcopy(carry['plan_refs']), plan_authority=copy.deepcopy(carry['plan_authority']),
+        group_digest=digest([carry['plan_authority'], carry['plan_refs']]))
+    original.pop('write_release', None)
+    return original
+
+
 def validate_validation_plan(plan, binding=None):
     keys(plan, {'review_required', 'final_required', 'environment_not_applicable'})
     seen = set()
@@ -687,7 +715,8 @@ def validate_progress(progress):
         if 'plan_revision_sources' in progress:
             require(isinstance(progress['plan_revision_sources'], list) and
                     len(progress['plan_revision_sources']) <= 32 and
-                    all(isinstance(source, dict) and set(source) ==
+                    all(isinstance(source, dict) and set(source) -
+                        {'review_claims', 'review_applicability', 'coverage', 'ticket_checks'} ==
                         {'revision_id', 'executions', 'carried_results', 'revalidation_source',
                          'validation_plan', 'plan_digest', 'candidate', 'candidate_evidence',
                          'review_decision', 'review_digest', 'attempts'}
@@ -1208,7 +1237,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         keys(evidence, {'revision_id', 'old_authority', 'new_authority', 'new_scope',
                         'planning_commit', 'planning_paths', 'snapshot', 'classification', 'git_facts',
                         'new_execution_authority', 'baseline_fingerprints', 'retention'} |
-             ({'validation_plan'} if 'validation_plan' in evidence else set()))
+             ({'validation_plan'} if 'validation_plan' in evidence else set()) |
+             ({'review_retention'} if 'review_retention' in evidence else set()))
         require(context['stage'] == 3 and progress is not None and 'executions' in progress and
                 progress['state'] not in {'cancelled', 'validating'} and
                 progress.get('accepted_delivery') is None,
@@ -1266,6 +1296,19 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             raise ControlError('plan revision result classification failed: ' + str(error)) from error
         require(evidence['retention'] == retention,
                 'plan revision carry-forward or revalidation differs from current evidence')
+        claims = progress.get('review_claims', {})
+        require(bool(claims) == ('review_retention' in evidence),
+                'plan revision requires exact original claim applicability')
+        if claims:
+            proof = evidence['review_retention']
+            keys(proof, {'candidate', 'reference', 'digest', 'retained', 'affected', 'checkpoint_path'})
+            identities = {claim['claim_id'] for claim in claims.values()}
+            require(proof['candidate'] == evidence['planning_commit'] and
+                    all(isinstance(proof[field], list) and proof[field] == sorted(set(proof[field]))
+                        for field in ('retained', 'affected')) and
+                    set(proof['retained']).isdisjoint(proof['affected']) and
+                    set(proof['retained'] + proof['affected']) == identities,
+                    'plan revision claim applicability is incomplete')
         if 'validation_plan' in evidence:
             validate_revision_validation_plan(progress['validation_plan'],
                                               evidence['validation_plan'], progress['binding'])
@@ -1280,7 +1323,9 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             'candidate_evidence': copy.deepcopy(progress.get('candidate_evidence')),
             'review_decision': copy.deepcopy(progress.get('review_decision')),
             'review_digest': progress.get('review_digest'),
-            'attempts': copy.deepcopy(progress.get('attempts', []))})
+            'attempts': copy.deepcopy(progress.get('attempts', [])),
+            **{key: copy.deepcopy(progress[key]) for key in
+               ('review_claims', 'review_applicability', 'coverage', 'ticket_checks') if key in progress}})
         progress['executions'] = []
         progress['carried_results'] = retention['carried_results']
         progress['revalidation_source'] = {'revision_id': evidence['revision_id'],
@@ -1295,6 +1340,12 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         progress['protected_paths'] = new_protected
         progress.setdefault('plan_revisions', []).append(record)
         progress.pop('ticket_checks', None)
+        progress.pop('coverage', None)
+        progress.pop('review_applicability', None)
+        if claims:
+            progress['review_claims'] = {axis: copy.deepcopy(claim) for axis, claim in claims.items()
+                if claim['claim_id'] in evidence['review_retention']['retained']}
+            progress['review_applicability'] = copy.deepcopy(evidence['review_retention'])
         progress['plan_authority'] = copy.deepcopy(new)
         progress['execution_authority'] = copy.deepcopy(current_authority)
         progress.pop('candidate', None)
@@ -1506,7 +1557,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             keys(repair, {'agent_ref', 'allocation_digest', 'stop_ref', 'invocation_id'})
             for key in repair:
                 text(repair[key])
-            original = execution_record(progress, repair['agent_ref'])
+            original = repair_execution_record(progress, repair['agent_ref'])
             require(original['stopped'] is True and original['state'] in {'received', 'accepted'} and
                     original['allocation_digest'] == repair['allocation_digest'] and
                     original['task_id'] == evidence['task_id'], 'repair requires the stopped original invocation')
@@ -1530,7 +1581,9 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         allocation_digest = digest({'binding': progress['binding'], 'envelope': evidence})
         allocation = {**evidence, 'agent_ref': None, 'state': 'dispatch-pending', 'stopped': False,
                       'file_hashes': {}, 'allocation_digest': allocation_digest}
-        if original is None:
+        if original is None or not any(original is item for item in progress['executions']):
+            if original is not None:
+                allocation['repair_count'] = original.get('repair_count', 0) + 1
             progress['executions'].append(allocation)
         else:
             allocation['repair_count'] = original.get('repair_count', 0) + 1

@@ -175,6 +175,29 @@ class WorkflowGitTests(unittest.TestCase):
         with self.assertRaisesRegex(control.ControlError, 'index stages or flags changed'):
             control_git.verify_plan_revision(self.repo, stopped, candidate)
 
+    def test_t04_plan_revision_commit_keeps_sole_parent_and_protected_partition(self):
+        (self.repo / 'docs/plan.md').write_text('private plan v1\n')
+        self.git('add', 'docs/plan.md')
+        self.git('commit', '-qm', 'sealed planning source')
+        sealed = self.git('rev-parse', 'HEAD')
+        authority = {'candidate_commit': sealed, 'scope': {
+            'implementation_paths': ['impl.py'], 'closure_paths': ['docs/plan.md']}}
+        stopped = control_git.plan_revision_snapshot(self.repo, authority,
+            ['docs/draft.md', 'docs/plan.md'], ['docs/plan.md'])
+        (self.repo / 'docs/plan.md').write_text('private plan v2\n')
+        self.git('add', 'docs/plan.md')
+        self.git('commit', '--only', '-qm', 'private revision', '--', 'docs/plan.md')
+        candidate = self.git('rev-parse', 'HEAD')
+        original = (self.repo / 'docs/draft.md').read_bytes()
+        (self.repo / 'docs/draft.md').write_text('unapproved protected requirement\n')
+        with self.assertRaisesRegex(control.ControlError, 'protected bytes changed'):
+            control_git.verify_plan_revision(self.repo, stopped, candidate)
+        (self.repo / 'docs/draft.md').write_bytes(original)
+        self.assertEqual(control_git.verify_plan_revision(self.repo, stopped, candidate)['parent'], sealed)
+        self.git('commit', '--allow-empty', '-qm', 'second commit is outside the release')
+        with self.assertRaisesRegex(control.ControlError, 'only parent'):
+            control_git.verify_plan_revision(self.repo, stopped, self.git('rev-parse', 'HEAD'))
+
     def test_changed_requirement_is_received_and_archived_after_takeover(self):
         helper = test_workflow_control.WorkflowControlTests()
         ctx = helper.bound()

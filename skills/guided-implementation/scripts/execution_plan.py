@@ -1010,6 +1010,18 @@ def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
     affected_paths = {path for path in set(old_manifest) | set(new_manifest)
                       if ownership(old_manifest.get(path)) != ownership(new_manifest.get(path))}
     affected_verifications = set()
+    groups = []
+    for ticket_id in old_tickets:
+        before = {group['id']: group for group in old_tickets[ticket_id]['plan']['behavior_slices']}
+        after = {group['id']: group for group in new_tickets[ticket_id]['plan']['behavior_slices']}
+        for identity in set(before) | set(after):
+            if before.get(identity) != after.get(identity):
+                for group in (before.get(identity), after.get(identity)):
+                    if group:
+                        impacted.update(group['step_ids'])
+                        affected_verifications.update(group['verification_refs'])
+        groups.extend(before.values())
+        groups.extend(after.values())
     for step_id in set(old_steps) & set(new_steps):
         old_ticket, old_step = old_steps[step_id]
         new_ticket, new_step = new_steps[step_id]
@@ -1053,6 +1065,22 @@ def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
         expanded.update(step_id for mapping in (old_steps, new_steps)
                         for step_id, (_, step) in mapping.items()
                         if affected_paths.intersection(step.get('read_only', [])))
+        known_paths = set(old_authority['scope']['implementation_paths'] +
+                          old_authority['scope']['protected_paths'] +
+                          new_authority['scope']['implementation_paths'] +
+                          new_authority['scope']['protected_paths'])
+        # Slice reads/shared state are dependencies even when individual helper
+        # declarations do not repeat them. Unknown shared state has no bounded
+        # consumer set, so a real revision conservatively affects every Ticket.
+        if expanded or affected_paths:
+            if any(set(group['shared_state']) - known_paths for group in groups):
+                expanded.update(dependents)
+            else:
+                for group in groups:
+                    if (expanded.intersection(group['step_ids']) or
+                            affected_paths.intersection(group['read_only'] + group['shared_state'])):
+                        expanded.update(group['step_ids'])
+                        affected_paths.update(group['shared_state'])
         if expanded == impacted:
             break
         impacted = expanded
