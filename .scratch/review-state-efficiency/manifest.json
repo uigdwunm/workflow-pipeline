@@ -391,7 +391,8 @@
       "tickets": [
         "T01",
         "T02",
-        "T03"
+        "T03",
+        "T04"
       ],
       "kind": "source",
       "reason": "typed控制/计划投影与repair identity",
@@ -436,7 +437,8 @@
         "skills/guided-implementation/scripts/stage_dispatch.py",
         "skills/problem-framing/scripts/stage_dispatch.py",
         "skills/solution-design/scripts/stage_dispatch.py"
-      ]
+      ],
+      "implementation_note": " T04实际依赖：prepared repair目前仅从当前executions取原task，修订激活将合法无关B置于carried并历史化原slot后无法同ref续行。仅repair分支消费Controller验证的原carry/revision source lookup；保持原receipt/nonce/stop身份，以新authority/new invocation发放lease，不复活旧lease或新增宿主入口。"
     },
     {
       "path": "src/shared/scripts/stage_handoff.py",
@@ -2324,7 +2326,8 @@
       "tickets": [
         "T01",
         "T02",
-        "T03"
+        "T03",
+        "T04"
       ]
     },
     {
@@ -2334,7 +2337,8 @@
       "tickets": [
         "T01",
         "T02",
-        "T03"
+        "T03",
+        "T04"
       ]
     },
     {
@@ -2344,7 +2348,8 @@
       "tickets": [
         "T01",
         "T02",
-        "T03"
+        "T03",
+        "T04"
       ]
     },
     {
@@ -2354,7 +2359,8 @@
       "tickets": [
         "T01",
         "T02",
-        "T03"
+        "T03",
+        "T04"
       ]
     },
     {
@@ -2364,7 +2370,8 @@
       "tickets": [
         "T01",
         "T02",
-        "T03"
+        "T03",
+        "T04"
       ]
     },
     {

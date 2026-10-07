@@ -54,3 +54,7 @@ V01 先在真实计划/指纹模块边界验证同文件、共享依赖与unknow
 ## Comments
 
 用户已统一接受并选择连续实现；此为普通本地授权，非正式Stage3 handoff。
+
+## 已核续调依赖（2026-10-07）
+
+真实修订链已核：激活将无关片接受结果转入 carried，原 allocation slot 移入 history；现有 B `prepared()` 的 repair 分支仅查询当前 executions，无法取得原 task_id 继续。manifest 将 `stage_dispatch.py` 与五包输出加入 T04，仅接入原 Controller 校验的 repair-only carry/source lookup。原 native ref、nonce、停止回执和原结果不改；新 plan refs/authority、invocation 与 lease 必须重新验证，旧 slot/lease不能复活，不增加宿主入口或修改 stage_handoff。验证仍在 T04-owned 两测试文件。
