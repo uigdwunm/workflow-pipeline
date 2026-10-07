@@ -1007,7 +1007,7 @@ def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
                                            if key != 'basis'}
     changed_sources = set(changed_planning_paths)
     impacted = set(old_steps) ^ set(new_steps)
-    affected_paths = {path for path in set(old_manifest) | set(new_manifest)
+    affected_paths = changed_sources | {path for path in set(old_manifest) | set(new_manifest)
                       if ownership(old_manifest.get(path)) != ownership(new_manifest.get(path))}
     affected_verifications = set()
     groups = []
@@ -1055,7 +1055,14 @@ def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
             _incomplete(dependencies <= set(steps), 'unknown function dependency in plan revision: ' + step_id)
             for dependency in dependencies:
                 dependents[dependency].add(step_id)
+    known_paths = set(old_authority['scope']['implementation_paths'] +
+                      old_authority['scope']['protected_paths'] +
+                      new_authority['scope']['implementation_paths'] +
+                      new_authority['scope']['protected_paths'])
+    known_paths.update(source['path'] for authority in (old_authority, new_authority)
+                       for source in authority['execution_plan']['sources'] if 'path' in source)
     while True:
+        previous_paths = set(affected_paths)
         expanded = impacted | {dependent for identity in impacted for dependent in dependents[identity]}
         affected_paths.update(_step_path(step) for step_id in expanded
                               for mapping in (old_steps, new_steps) if step_id in mapping
@@ -1065,10 +1072,6 @@ def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
         expanded.update(step_id for mapping in (old_steps, new_steps)
                         for step_id, (_, step) in mapping.items()
                         if affected_paths.intersection(step.get('read_only', [])))
-        known_paths = set(old_authority['scope']['implementation_paths'] +
-                          old_authority['scope']['protected_paths'] +
-                          new_authority['scope']['implementation_paths'] +
-                          new_authority['scope']['protected_paths'])
         # Slice reads/shared state are dependencies even when individual helper
         # declarations do not repeat them. Unknown shared state has no bounded
         # consumer set, so a real revision conservatively affects every Ticket.
@@ -1081,7 +1084,7 @@ def affected_plan_closure(old_authority, new_authority, changed_planning_paths):
                             affected_paths.intersection(group['read_only'] + group['shared_state'])):
                         expanded.update(group['step_ids'])
                         affected_paths.update(group['shared_state'])
-        if expanded == impacted:
+        if expanded == impacted and affected_paths == previous_paths:
             break
         impacted = expanded
     affected_verifications.update(reference for step_id in impacted

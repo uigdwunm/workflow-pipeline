@@ -741,6 +741,23 @@ def freeze_native_source_index(state, store, current, inherited=()):
     return store.write_object(current.run_id, 'native-source-index', index)
 
 
+def plan_revision_allocation_slot(state, value, *, store=None, current=None):
+    """Read one original invocation without re-embedding its history in C."""
+    require(isinstance(value, dict), 'invalid_checkpoint', 'original revision allocation reference required')
+    if value.get('kind') != 'plan-revision-allocation-ref':
+        return value
+    entry.fields(value, {'kind', 'allocation_digest', 'reference'})
+    store = store or state_store.open_store(state['checkpoint_path'])
+    current = current or store.open_current()
+    body = store.read_evidence(value['reference'], run_id=current.run_id,
+        maximum=state_store.SUBJECT_LIMIT)['value']
+    entry.fields(body, {'plan_revision_allocation'})
+    slot = body['plan_revision_allocation']
+    require(isinstance(slot, dict) and (slot.get('record') or {}).get('request', {}).get('attempt') ==
+            value['allocation_digest'], 'invalid_checkpoint', 'original revision allocation identity changed')
+    return slot
+
+
 def freeze_implementation_native_owners(state, store, current, prior):
     """Keep accepted owner facts after allocations leave the active read set."""
     references = copy.deepcopy(prior['native_owner_refs']) if prior else {}
@@ -755,7 +772,8 @@ def freeze_implementation_native_owners(state, store, current, prior):
     accepted_owner(state['accepted']['role_ref'], state['handoff']['controller_ref'],
         state['handoff']['expected_entry']['actor']['thread_id'], state['accepted']['digest'],
         state['host']['status'] == 'stopped')
-    slots = [slot for history in reversed(state.get('plan_revision_allocation_history', []))
+    slots = [plan_revision_allocation_slot(state, slot, store=store, current=current)
+             for history in reversed(state.get('plan_revision_allocation_history', []))
              for slot in history['allocations'].values()]
     slots.extend(state.get('allocations', {}).values())
     for slot in slots:
@@ -3008,7 +3026,8 @@ class Progress:
                         'current native business work must be stopped and accepted before finalization')
             slots = list(saved.get('allocations', {}).values())
             active_count = len(slots)
-            slots.extend(slot for history in saved.get('plan_revision_allocation_history', [])
+            slots.extend(plan_revision_allocation_slot(saved, slot)
+                         for history in saved.get('plan_revision_allocation_history', [])
                          for slot in history['allocations'].values())
             for index, slot in enumerate(slots):
                 record = handoff.unseal(slot['record']) if slot.get('record') else {}
@@ -6695,9 +6714,14 @@ class Progress:
             transaction["control_result"] = copy.deepcopy(result["plan_revision"])
             s["scope_authority"] = copy.deepcopy(transaction["proposed_authority"])
             transaction["state"] = "activated"
+            store = state_store.open_store(self.path)
+            current = store.open_current()
             s.setdefault("plan_revision_allocation_history", []).append({
                 "revision_id": transaction["input"]["revision_id"],
-                "allocations": copy.deepcopy(s.pop("allocations", {}))})
+                "allocations": {identity: {'kind': 'plan-revision-allocation-ref',
+                    'allocation_digest': slot['record']['request']['attempt'],
+                    'reference': store.write_object(current.run_id, 'evidence', {'plan_revision_allocation': slot})}
+                    for identity, slot in s.pop('allocations', {}).items()}})
             if s.get("review_activity"):
                 s.setdefault("review_history", []).append(copy.deepcopy(s.pop("review_activity")))
             s["status"] = "active"
@@ -7080,9 +7104,11 @@ class Progress:
             carried = {item['allocation_digest']: item for item in checkpoint.get('carried_results', [])}
             candidates = [group['allocations'][identity] for group in s.get('plan_revision_allocation_history', [])
                 if identity in group['allocations'] and
-                (group['allocations'][identity].get('record') or {}).get('request', {}).get('attempt') in carried]
+                (group['allocations'][identity].get('allocation_digest')
+                 if group['allocations'][identity].get('kind') == 'plan-revision-allocation-ref' else
+                 (group['allocations'][identity].get('record') or {}).get('request', {}).get('attempt')) in carried]
             require(len(candidates) == 1, 'allocation_missing', 'repair requires one original carried allocation')
-            prior_slot = copy.deepcopy(candidates[0])
+            prior_slot = copy.deepcopy(plan_revision_allocation_slot(s, candidates[0]))
             inherited_slot = True
         proposal = prior_slot.get('repair_proposal') if prior_slot else None
         require(proposal is None or operation in {'repair', 'prepare'}, 'outcome_unknown',
@@ -7612,8 +7638,14 @@ class Progress:
             transaction['git_facts']['changed_paths'])
         invalid = [claim['claim_id'] for claim in claims.values()
             if any(ref['step_id'] in impact['impacted_step_ids'] for ref in claim['plan_refs'])]
+        implementation_paths = set(transaction['old_authority']['scope']['implementation_paths'] +
+                                   authority['scope']['implementation_paths'])
+        # Verified planning/shared paths seed the step closure and exact read
+        # comparisons. They are not unknown implementation changes that retire
+        # every otherwise independent claim.
         return target.review_applications(transaction['commit_input']['planning_commit'], claims=claims,
-            changed_paths=impact['paths'], planning_paths=transaction['git_facts']['changed_paths'], invalid_ids=invalid)
+            changed_paths=implementation_paths.intersection(impact['paths']),
+            planning_paths=transaction['git_facts']['changed_paths'], invalid_ids=invalid)
 
     def persist_plan_revision_reviews(self, transaction):
         _, applications = self.plan_revision_reviews(transaction)
@@ -7722,7 +7754,7 @@ class Progress:
             if item['owner'] == 'implementation' and item['kind'] == 'generated' and owned & set(item['source_paths']):
                 owned.add(item['path'])
         read = set(group['read_only']) | (set(group['shared_state']) &
-            set(self.state['scope_authority']['scope']['implementation_paths'] + self.state['scope_authority']['scope']['protected_paths']))
+            set(checkpoint['allowed_paths'] + checkpoint['protected_paths']))
         read -= owned
         fingerprints = control_git.review_fingerprints(Path(self.state['handoff']['binding']['worktree']),
             data['candidate'], owned | read)

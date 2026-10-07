@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "55048512525d0f8694a0194c6fde156a4c2f01963b5612b7c9654b9d0cad34ff",
+  "bundle_digest": "03121f25e78294e362edac512d0cc76c66b14bb3420a44c6b218b94afe9ddc2b",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 12,
@@ -180,7 +180,7 @@
     },
     "scripts/execution_plan.py": {
       "mode": "0644",
-      "sha256": "38c89a5f62f7d66b3414c4fad0e7bca433a64c4dfac6423510e345fad73d9d94"
+      "sha256": "a85afe21a575316770cc56c32eb7489580b6ee3ff5b744245b5ae2287a449a39"
     },
     "scripts/host_skill_registry.py": {
       "mode": "0644",
@@ -244,7 +244,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "72328b74b74078ca5a9723d47c8ca6a889fa9eb2163d0b3e5ea3d9dc22187ea8"
+      "sha256": "923717586920be0b8cde8caf922ce8021a55e80bbfa517939a4fcab97d62c052"
     },
     "scripts/workflow_state_store.py": {
       "mode": "0644",

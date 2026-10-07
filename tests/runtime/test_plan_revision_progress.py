@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -16,6 +17,56 @@ from unittest.mock import patch
 
 
 class T04Flow(layered_fixture.LayeredReviewTests):
+    def finish_design(self, mode):
+        if getattr(self, 'revision_shared_graph', False):
+            larger = getattr(self, 'revision_capacity_diagnostic', False)
+            self.planning_documents['docs/spec.md'] = (
+                'approved design\n## Implementation Decisions\n### D1 — Plan\n'
+                'Declared shared and prerequisite relationships across Tickets.\n')
+            for ticket in ('A', 'B'):
+                path = '.scratch/layered/issues/' + ticket + '.md'
+                body = self.planning_documents[path]
+                match = re.search(r'```execution-plan-v2\n(.*?)\n```', body, re.DOTALL)
+                plan = json.loads(match.group(1))
+                if ticket == 'A':
+                    plan['behavior_slices'][0]['shared_state'] = ['b1.py']
+                    if not larger:
+                        plan['blocked_by'] = ['B']
+                        plan['steps'][1]['depends_on'] = ['B1']
+                        body = body.replace('**Blocked by:** None', '**Blocked by:** B')
+                        match = re.search(r'```execution-plan-v2\n(.*?)\n```', body, re.DOTALL)
+                else:
+                    if larger:
+                        plan['steps'][1]['depends_on'] = ['B1']
+                    else:
+                        plan['behavior_slices'][1]['shared_state'] = ['.scratch/layered/issues/A.md']
+                self.planning_documents[path] = body[:match.start(1)] + json.dumps(plan) + body[match.end(1):]
+            for ticket in (('C', 'D', 'E') if larger else ('C',)):
+                path = ticket.lower() + '1.py'
+                self.implementation_paths.append(path)
+                plan = {'schema_version': 2, 'ticket_id': ticket, 'plan_version': 1,
+                    'spec_ref': {'path': 'docs/spec.md', 'section': 'Implementation Decisions'},
+                    'contract_refs': [ticket + ':What to build', ticket + ':AC-1', 'PRD:D1:Plan'],
+                    'blocked_by': ['C'] if larger and ticket == 'D' else [], 'artifact_steps': [],
+                    'verifications': [{'id': 'V-' + ticket + '1', 'behavior': ticket + ':AC-1',
+                        'seam': 'original workflow_progress.handle',
+                        'commands': ['python3 scripts/run_tests.py --test-file tests/runtime/test_layered_review.py']}],
+                    'steps': [{'id': ticket + '1', 'target': {'path': path, 'symbol': 'run', 'operation': 'add'},
+                        'capability': ticket + ':AC-1', 'approach': ['implement run'],
+                        'inputs': ['frozen requirement'], 'outputs': ['observed result'], 'failures': ['invalid input fails'],
+                        'depends_on': ['C1'] if larger and ticket == 'D' else [],
+                        'verification_refs': ['V-' + ticket + '1'], 'read_only': []}],
+                    'behavior_slices': [{'id': ticket + '1', 'step_ids': [ticket + '1'], 'ac_refs': [ticket + ':AC-1'],
+                        'verification_refs': ['V-' + ticket + '1'], 'read_only': [],
+                        'shared_state': ['.scratch/layered/issues/A.md'] if larger and ticket == 'C' else []}]}
+                self.planning_documents['.scratch/layered/issues/' + ticket + '.md'] = (
+                    'Ticket ID: ' + ticket + '\nPlan Version: 1\n**What to build:** approved shared behavior\n'
+                    '**Blocked by:** ' + ('C' if larger and ticket == 'D' else 'None') +
+                    '\nAC-1: observed result\n```execution-plan-v2\n' + json.dumps(plan) + '\n```\n')
+            self.input['scope']['owned_paths'] = sorted(self.planning_documents)
+            self.input['authorization']['scope_digest'] = progress.entry.digest(self.input['scope'])
+        return super().finish_design(mode)
+
     def propose_design_scope(self, candidate, section='approved design'):
         saved = self.state()
         basis = {'commit': candidate, 'path': 'docs/spec.md', 'section': section}
@@ -33,12 +84,14 @@ class T04Flow(layered_fixture.LayeredReviewTests):
 
 
 class PlanRevisionProgressTests(unittest.TestCase):
-    def t04_inline_authority(self, *, shared=None, same_file=False, read=False):
+    def t04_inline_authority(self, *, shared=None, same_file=False, read=False,
+                             reverse_shared=False, planning_shared=False):
+        count = 4 if reverse_shared or planning_shared else 2
         plan = {'schema_version': 2, 'ticket_id': 'PRIVATE', 'plan_version': 1,
             'spec_ref': {'path': 'inline', 'section': 'brief'},
-            'contract_refs': ['PRIVATE:AC-1', 'PRIVATE:AC-2'],
+            'contract_refs': ['PRIVATE:AC-' + str(number) for number in range(1, count + 1)],
             'blocked_by': [], 'artifact_steps': [], 'steps': [], 'verifications': [], 'behavior_slices': []}
-        for number in (1, 2):
+        for number in range(1, count + 1):
             identity, path, verify = 'S' + str(number), 'private' + str(number) + '.py', 'V' + str(number)
             plan['steps'].append({'id': identity, 'target': {'path': path, 'symbol': 'run', 'operation': 'add'},
                 'capability': 'approved behavior', 'approach': ['implement private helper'],
@@ -54,15 +107,41 @@ class PlanRevisionProgressTests(unittest.TestCase):
         if read:
             plan['steps'][1]['read_only'] = ['private1.py']
             plan['behavior_slices'][1]['read_only'] = ['private1.py']
-        paths = ['private1.py'] if same_file else ['private1.py', 'private2.py']
+        if reverse_shared:
+            plan['behavior_slices'][0]['shared_state'] = ['private2.py']
+        if planning_shared:
+            plan['behavior_slices'][1]['shared_state'] = ['docs/private-plan.md']
+        if reverse_shared or planning_shared:
+            plan['steps'][2]['depends_on'] = ['S2']
+        paths = ['private1.py'] if same_file else ['private' + str(number) + '.py' for number in range(1, count + 1)]
         scope = {'baseline': 'a' * 40, 'implementation_paths': paths,
-            'protected_paths': [], 'downstream': {'revision': 1, 'manifest': [
+            'protected_paths': ['docs/private-plan.md'] if planning_shared else [],
+            'downstream': {'revision': 1, 'manifest': [
                 {'path': path, 'owner': 'implementation', 'kind': 'source', 'operation': 'add'}
                 for path in paths]}}
         semantic = {'objective': 'approved behavior', 'testing_basis': 'public module',
             'completion_criteria': ['results match'], 'constraints': ['private implementation']}
         return progress.execution_plan.inline_authority(plan, scope, semantic,
             {'sha256': 'b' * 64}, input_digest='c' * 64)
+
+    def test_t04_shared_closure_waits_for_paths_and_protected_planning_consumers(self):
+        for variant, changes in (({'reverse_shared': True}, []),
+                                 ({'planning_shared': True}, ['docs/private-plan.md'])):
+            with self.subTest(variant=variant):
+                old = self.t04_inline_authority(**variant)
+                plan = copy.deepcopy(progress.execution_plan.current_catalog(old)['tickets'][0]['plan'])
+                plan['plan_version'] = 2
+                plan['steps'][0]['approach'].append('change the private helper')
+                scope = copy.deepcopy(old['scope'])
+                scope['downstream']['revision'] = 2
+                new = progress.execution_plan.inline_authority(plan, scope,
+                    {'objective': 'approved behavior', 'testing_basis': 'public module',
+                     'completion_criteria': ['results match'], 'constraints': ['private implementation']},
+                    {'sha256': 'b' * 64}, input_digest='c' * 64)
+                impact = progress.execution_plan.affected_plan_closure(old, new, changes)
+                self.assertEqual(impact['impacted_step_ids'], ['S1', 'S2', 'S3'])
+                self.assertEqual(impact['verification_ids'], ['V1', 'V2', 'V3'])
+                self.assertNotIn('private4.py', impact['paths'])
 
     def test_t04_private_revision_closes_over_slice_shared_state_and_unknown(self):
         for variant, expected in (({}, ['S1']), ({'shared': 'private1.py'}, ['S1', 'S2']),
@@ -83,6 +162,138 @@ class PlanRevisionProgressTests(unittest.TestCase):
                     {'sha256': 'b' * 64}, input_digest='c' * 64)
                 impact = progress.execution_plan.affected_plan_closure(old, new, [])
                 self.assertEqual(impact['impacted_step_ids'], expected)
+
+    def test_t04_shared_revision_retires_results_and_claims_through_both_graphs(self):
+        self.t04_shared_revision()
+
+    def test_t04_shared_revision_keeps_five_tickets_and_seven_allocations_within_capacity(self):
+        self.t04_shared_revision(larger=True)
+
+    def t04_shared_revision(self, *, larger=False):
+        flow = T04Flow(methodName='runTest')
+        flow.setUp()
+        self.addCleanup(flow.doCleanups)
+        flow.revision_shared_graph = True
+        flow.revision_capacity_diagnostic = larger
+        candidate = flow.layered_flow()
+        if larger:
+            for ticket, slice_id in (('A', 'A1'), ('B', 'B1'), ('B', 'B2'), ('C', 'C1')):
+                flow.local_review(candidate, ticket, slice_id)
+            verification = flow.local_verification(candidate, 'C', 'C1')
+            verification['source'].update(call_ref='ticket-C-checks', response_ref='ticket-C-checks-stopped')
+            prepared = flow.invoke('review-activity', {'operation': 'prepare', 'axis': 'ticket:C',
+                'candidate': candidate, 'actor_ref': 'task', 'verification': verification})
+            self.assertEqual(prepared['next_action']['operation'], 'invoke-review', prepared)
+            scope = prepared['next_action']['review_scope']
+            receipt = {'adapter': 'fixture-native', 'call_ref': 'ticket-C-review',
+                'response_ref': 'ticket-C-review-stopped', 'status': 'stopped', 'ref': 'native:reviewer-C',
+                'raw': {'review': {'status': 'accepted', 'findings': [], 'read_paths': scope['read_paths'],
+                    'ac_refs': scope['ac_refs'], 'checks': verification['checks'],
+                    'dependency_claim_ids': scope['dependency_claim_ids'],
+                    'requirement_refs': scope['requirement_refs'], 'review_scope': scope}}}
+            flow.invoke('review-activity', {'operation': 'observe', 'axis': 'ticket:C', 'candidate': candidate,
+                'actor_ref': 'task', 'action_id': prepared['next_action']['action_id'], 'receipt': receipt})
+            accepted = flow.invoke('control', {'action': 'ticket-accept', 'evidence': {
+                'axis': 'ticket:C', 'candidate': candidate, 'result_ref': receipt['response_ref']},
+                'receipt': {'controller_ref': 'task', 'reference': 'controller:ticket-C'}})
+            self.assertTrue(accepted['next_action']['result']['ok'], accepted)
+            for ticket in ('D', 'E'):
+                flow.local_review(candidate, ticket, ticket + '1')
+        else:
+            for number in (1, 2):
+                flow.local_review(candidate, 'B', 'B' + str(number))
+            flow.ticket_review(candidate, 'B')
+            for ticket, slice_id in (('A', 'A1'), ('A', 'A2'), ('C', 'C1')):
+                flow.local_review(candidate, ticket, slice_id)
+        before = flow.state()
+        checkpoint = before['control']['context']['handoff_progress']
+        views = copy.deepcopy(checkpoint['review_claims'])
+        store = progress.state_store.StateStore(flow.checkpoint)
+        current = store.open_current()
+        sharing_axis = 'local:C:C1' if larger else 'local:B:B2'
+        shared_claim = store.read_evidence(views[sharing_axis]['claim_ref'], run_id=current.run_id)['value']['review_claim']
+        self.assertIn('.scratch/layered/issues/A.md', shared_claim['read_fingerprints'])
+        unaffected = 'E' if larger else 'C'
+        axis = 'local:' + unaffected + ':' + unaffected + '1'
+        original = store.read_evidence(views[axis]['claim_ref'], run_id=current.run_id)['value']
+        original_result = next(item for item in checkpoint['executions'] if item['agent_ref'] == 'native:executor-' + unaffected + '1')
+        authority = before['scope_authority']
+        path = '.scratch/layered/issues/A.md'
+        report = {'revision_id': 't04-shared', 'expected_authority_revision': authority['revision'],
+            'expected_authority_digest': progress.entry.digest(authority), 'controller_ref': 'task',
+            'classification': {'kind': 'internal', 'reference': 'controller:t04-shared'}, 'planning_paths': [path],
+            'report': {'ticket_ids': ['A'], 'step_ids': ['A1'], 'reason': 'private helper adjustment',
+                'production_facts': 'shared implementation and planning consumers stay in the approved scope',
+                'contract_before': authority['execution_plan']['contract_digest'],
+                'contract_after': authority['execution_plan']['contract_digest'], 'dependency_impact': ['A1'],
+                'verification_impact': ['V-A1'], 'carry_forward': ['A2', 'E1'] if larger else ['C1']}}
+        flow.invoke('prepare-plan-revision', report)
+        prepared = flow.invoke('observe', flow.observation('stopped', 'result', ref='native:dispatcher'))
+        self.assertEqual(prepared['next_action']['operation'], 'plan-revision-prepared', prepared)
+        body = (flow.flow / path).read_text()
+        match = re.search(r'```execution-plan-v2\n(.*?)\n```', body, re.DOTALL)
+        plan = json.loads(match.group(1))
+        plan['plan_version'] = 2
+        plan['steps'][0]['approach'].append('adjust the private helper')
+        (flow.flow / path).write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
+                                    .replace('Plan Version: 1', 'Plan Version: 2'))
+        flow.flow_git('add', path)
+        flow.flow_git('commit', '--only', '-qm', 'private shared plan revision', '--', path)
+        commit = {'revision_id': report['revision_id'], 'controller_ref': 'task',
+            'write_release': prepared['next_action']['write_release'], 'planning_commit': flow.flow_git('rev-parse', 'HEAD')}
+        original_commit = progress.state_store.StateStore.commit_current
+        measured = []
+        def observe_capacity(owner, **kwargs):
+            current = owner.open_current()
+            run_id = current.run_id
+            for name, value in kwargs['subjects'].items():
+                size = len(progress.state_store.encode({'format': progress.state_store.FORMAT,
+                    'run_id': run_id, 'kind': 'subject', 'subject_id': name, 'value': value}))
+                if name == kwargs['metadata']['stage_subject'] and not measured and (
+                        size > progress.state_store.SUBJECT_LIMIT or
+                        (value.get('plan_revision_transaction') or {}).get('state') == 'activated'):
+                    previous = owner.read_subject(current, name).value
+                    fields = lambda item: {key: len(progress.state_store.encode(body)) for key, body in item.items()}
+                    row = {'subject': name, 'limit': progress.state_store.SUBJECT_LIMIT,
+                        'before_bytes': current.root['subjects'][name]['size'], 'candidate_bytes': size,
+                        'before_fields': fields(previous), 'candidate_fields': fields(value),
+                        'before_progress_fields': fields(previous['control']['context']['handoff_progress']),
+                        'candidate_progress_fields': fields(value['control']['context']['handoff_progress'])}
+                    measured.append(row)
+                    print('T04_CAPACITY_ACTUAL ' + json.dumps(row, sort_keys=True))
+            return original_commit(owner, **kwargs)
+        with patch.object(progress.state_store.StateStore, 'commit_current', observe_capacity):
+            result = flow.invoke('commit-plan-revision', commit)
+        self.assertEqual(result['next_action']['operation'], 'plan-revision-activated', result)
+        self.assertEqual(len(measured), 1)
+        self.assertLessEqual(measured[0]['candidate_bytes'], progress.state_store.SUBJECT_LIMIT)
+        destination = os.environ.get('T04_REVISION_CAPACITY_METRICS_PATH')
+        if destination and larger:
+            with Path(destination).open('x') as output:
+                json.dump(measured[0], output, sort_keys=True)
+                output.write('\n')
+        after = flow.state()['control']['context']['handoff_progress']
+        impact = after['plan_revisions'][-1]['evidence']['retention']['impact']
+        self.assertEqual(impact['impacted_step_ids'], ['A1', 'B1', 'B2', 'C1', 'D1'] if larger else ['B1', 'B2', 'A1', 'A2'])
+        self.assertEqual(impact['verification_ids'], ['V-A1', 'V-B1', 'V-B2', 'V-C1', 'V-D1'] if larger else ['V-A1', 'V-A2', 'V-B1', 'V-B2'])
+        self.assertEqual({ref['step_id'] for item in after['carried_results'] for ref in item['plan_refs']}, {'A2', 'E1'} if larger else {'C1'})
+        self.assertEqual(set(after['review_claims']), {axis})
+        self.assertEqual(after['review_applicability']['affected'], sorted(view['claim_id']
+            for name, view in views.items() if name != axis))
+        application = store.read_evidence(after['review_applicability']['reference'], run_id=current.run_id)['value']['applications'][sharing_axis]
+        self.assertNotEqual(application['compared']['read_fingerprints']['.scratch/layered/issues/A.md'],
+                            shared_claim['read_fingerprints']['.scratch/layered/issues/A.md'])
+        self.assertEqual(after['review_claims'][axis], views[axis])
+        self.assertEqual(store.read_evidence(views[axis]['claim_ref'], run_id=current.run_id)['value'], original)
+        carried = next(item for item in after['carried_results'] if item['agent_ref'] == 'native:executor-' + unaffected + '1')
+        self.assertEqual(carried['source_result_digest'], progress.entry.digest(original_result))
+        self.assertEqual(carried['owned_final_fingerprints'], progress.execution_plan.accepted_owned_fingerprints(original_result))
+        self.assertEqual(after['plan_revision_sources'][-1]['executions'], checkpoint['executions'])
+        history = flow.state()['plan_revision_allocation_history'][-1]['allocations']
+        self.assertEqual(len(history), 7 if larger else 5)
+        for identity, reference in history.items():
+            slot = store.read_evidence(reference['reference'], run_id=current.run_id)['value']['plan_revision_allocation']
+            self.assertEqual(slot, before['allocations'][identity])
 
     def test_t04_revision_preserves_original_unaffected_claims_and_one_cas(self):
         flow = T04Flow(methodName='runTest')
