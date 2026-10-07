@@ -2865,8 +2865,12 @@
       "tickets": [
         "T01",
         "T02",
+        "T03",
+        "T04",
+        "T05",
         "T06"
-      ]
+      ],
+      "reason": "Canonical builder recomputes emitted-resource hashes after any owned source/protocol delta; mandatory generated collateral only, never hand edit."
     },
     {
       "path": "skills/problem-framing/package.json",
@@ -2875,8 +2879,12 @@
       "tickets": [
         "T01",
         "T02",
+        "T03",
+        "T04",
+        "T05",
         "T06"
-      ]
+      ],
+      "reason": "Canonical builder recomputes emitted-resource hashes after any owned source/protocol delta; mandatory generated collateral only, never hand edit."
     },
     {
       "path": "skills/solution-design/package.json",
@@ -2885,8 +2893,12 @@
       "tickets": [
         "T01",
         "T02",
+        "T03",
+        "T04",
+        "T05",
         "T06"
-      ]
+      ],
+      "reason": "Canonical builder recomputes emitted-resource hashes after any owned source/protocol delta; mandatory generated collateral only, never hand edit."
     },
     {
       "path": "skills/guided-implementation/package.json",
@@ -2895,8 +2907,12 @@
       "tickets": [
         "T01",
         "T02",
+        "T03",
+        "T04",
+        "T05",
         "T06"
-      ]
+      ],
+      "reason": "Canonical builder recomputes emitted-resource hashes after any owned source/protocol delta; mandatory generated collateral only, never hand edit."
     },
     {
       "path": "skills/change-closure/package.json",
@@ -2905,8 +2921,12 @@
       "tickets": [
         "T01",
         "T02",
+        "T03",
+        "T04",
+        "T05",
         "T06"
-      ]
+      ],
+      "reason": "Canonical builder recomputes emitted-resource hashes after any owned source/protocol delta; mandatory generated collateral only, never hand edit."
     },
     {
       "path": "skills/change-closure/scripts/discussion_core/phase_runs.py",
