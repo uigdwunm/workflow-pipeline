@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "cbbe3bd75de1ae8e007021b19512f2ca1e8e8abd349e3af9a6a24785514dd99c",
+  "bundle_digest": "600d75d1eddd9fc0dcb406e4595e98cb0e044b2955c219db8273a3d8513d13d8",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 12,
@@ -189,7 +189,7 @@
     },
     "scripts/execution_plan.py": {
       "mode": "0644",
-      "sha256": "70a07db0d15a71df5840edde3bf7d51d8cccf89e235aceeb19d6355414b2f031"
+      "sha256": "206fe29e8694464f0b882201a9b0fbf5beeab2c6c67e115af3df9712a8169b48"
     },
     "scripts/host_skill_registry.py": {
       "mode": "0644",
@@ -217,11 +217,11 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "35e09375724366a32a2b86cfc033b1a34835635fb4e52e69b3118e30fabb4acf"
+      "sha256": "77b399199844ff2230ba058db49f30836674598b945b84e704844a318b08a8ef"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
-      "sha256": "045447aa7689a11ec996a57f384f7735f84a14b2dd9946e47fed558327a33e12"
+      "sha256": "a97efaa51315af47f3a2dd20ef3ccd6145f6f62770ecaf487848ccf48176d4ce"
     },
     "scripts/stage_scope.py": {
       "mode": "0644",
@@ -245,19 +245,19 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "203154f4090548e01bbe47da1faf54f1dbc8e74714e3ce3ef1ce73701cf20792"
+      "sha256": "1ec104edf94585be335d74bec831b1824cc0fbbe3d87dde26132e0c5b397b246"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "df5868aee2b54aabb2a6e5fee3a71a1c5c83ba90b3add191bb850d9823d73588"
+      "sha256": "f8326126440f60ec9b73ccba2211e5ec58cb4b89f791233a3840274257fb14bc"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "aca4c29cf92e843ec31891ef7b343441c33c54166fa211aca003ebee9d1bfbd6"
+      "sha256": "9394e364d1ad1262983c31091132cf0b892922b73671bef108c96ec24bf18b92"
     },
     "scripts/workflow_state_store.py": {
       "mode": "0644",
-      "sha256": "c4f5c1eac466a19b872de383bc2bc2cde03d6f2a3a6bd1b7a024d12ffd6f2c6a"
+      "sha256": "e8c1aab219da64d8300cf25905891a4572bbc4d24a8a702183bb97f4a8dbe86c"
     }
   },
   "format_version": 1,

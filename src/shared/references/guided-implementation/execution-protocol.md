@@ -37,19 +37,53 @@ same-identity finish turn and correlated terminal result; record it without
 another acknowledgement. Keep business acceptance and lifecycle receipts
 separate. A carrier required for later recovery remains available.
 
+For findings in an existing slice, request `allocation` with `operation: repair`,
+the original `allocation_id`, a new `invocation_id`, and the current `handoff`
+with exactly the original files, read inputs, plan refs and configuration. C
+derives provenance from that slot's original authenticated stopped B result;
+received/accepted business status alone is insufficient. The next `invoke-host`
+payload's `execution_invocation` requires a same-ref native continuation, not a
+spawn. Retain its new attempt and distinct native receipt IDs, bind the new
+ready receipt, then send only its newly returned `write_release`. Old receipts
+or leases cannot satisfy this invocation. An unknown original call must be
+reconciled first; an unavailable host requires the existing evidenced recovery
+route. Never silently replace it with a new implementation owner.
+
+Before dispatch, C's catalog preflight rejects a partial behavior slice or a
+missing public check boundary and reports later same-file/read-write/shared
+coupling. Keep those groups serial or combine the complete behavior. The
+original Controller and accepted design review still determine whether the
+behavior covers its producers, consumers, rejection and pause/resume paths;
+structural catalog checks do not prove semantic completeness. Each AC has its
+first local check, verification refs, public seams and commands in the preflight
+projection; Ticket and delivery review retain their existing composition duties.
+
 Before this role acts, execute [Package execution preflight]({{resource:shared/references/package-execution.md}}) using the inherited registration_input fields from the verified handoff. Pass them unchanged to entry_prepare.py with this role’s actual host identity and cwd; keep registration_identity as the frozen source identity. File evidence is reread by the adapter, while inline registry/context remain paired. Missing evidence stops before work. Inherit and verify the controller’s fixed package identity and check each selected action before its side effects.
 
 Read C's current Scope Authority and full function-plan catalog before each
 allocation. Bind one ordered group of exact Ticket/step refs, source/version,
 step digests, files, read-only inputs and behavior verification. A dependency
 must be accepted under the current authority or earlier in the same group;
-same-file edits stay serial. Give the native child the full plan block and
-current generated map, then wait for its exact bound release. A revision
+same-file edits stay serial. Give the native child its complete selected behavior
+plan, contract locators and current generated map, then wait for its exact bound release. A revision
 invalidates old refs and releases; obtain a new allocation instead of asking
 the old Agent to continue. Run any generated-output build inside an Agent
 allocation that owns every exact output; the Dispatcher runs check-only
 validation before integrating accepted bytes. Historical direct runs use their
 pinned runtime.
+
+Model handoffs contain one catalog for the Dispatcher and only the selected
+behavior contract for an Execution Agent. Their exact UTF-8 model text is
+limited to 64 KiB in total; an explicit expansion is limited to 256 KiB total
+with original source segments no larger than 64 KiB. Required context that
+does not fit blocks dispatch rather than raising the budget. The original B
+contract and scope remain intact for authority verification. Allocation actions
+report model bytes and actual Store bytes/files, including other checkpoint and
+ledger reads within the operation. This coverage is `state-store-only`;
+registry, Git and other host reads without independent measurement remain
+`unknown`. Do not report the Store subset as all host reading. Slice identity,
+first submission sequence/source receipt and submission count survive repair;
+test attempts are separate and missing duration sources remain `unknown`.
 
 The dispatcher accepts the verified Flow Worktree binding inherited from
 Stage 2 or created by a qualified standalone Stage-3 entry. It must run

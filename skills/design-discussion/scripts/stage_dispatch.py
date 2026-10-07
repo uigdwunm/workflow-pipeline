@@ -292,6 +292,11 @@ def prepared(request):
             if saved['semantic'].get('adopt_paths'):
                 evidence.update(adopt_paths=saved['semantic']['adopt_paths'],
                     adoption_snapshot_digest=saved['semantic']['adoption_snapshot_digest'])
+            if saved['semantic'].get('repair') is not None:
+                action = 'repair-execution'
+                evidence['repair'] = copy.deepcopy(saved['semantic']['repair'])
+                original = control.execution_record(progress, evidence['repair']['agent_ref'])
+                evidence['task_id'] = original['task_id']
         else:
             action = "start-closure"
             prior = handoff.predecessor_facts(saved["predecessor"])

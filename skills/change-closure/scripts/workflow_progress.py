@@ -6867,11 +6867,65 @@ class Progress:
 
     def allocation(self, data):
         """B transport records share the dispatcher's existing control roster."""
-        entry.fields(data, {"allocation_id", "operation"}, {"handoff", "receipt", "result", "decision"})
+        entry.fields(data, {"allocation_id", "operation"}, {"handoff", "receipt", "result", "decision", "invocation_id"})
         identity = entry.nonempty(data["allocation_id"])
         operation = data["operation"]
-        require(operation in {"prepare", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown allocation operation")
+        require(operation in {"prepare", "repair", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown allocation operation")
         s = self.state
+        prior_slot = s.get('allocations', {}).get(identity)
+        if operation in {'bind', 'reconcile', 'receive'} and prior_slot and prior_slot.get('record'):
+            launch = prior_slot['record']['request']
+            require(data['receipt'].get('attempt') == launch['attempt'] and
+                    data['receipt'].get('request_digest') == launch['digest'],
+                    'attempt_mismatch', 'receipt belongs to a previous execution invocation')
+        if operation == 'repair':
+            entry.fields(data, {'allocation_id', 'operation', 'handoff', 'invocation_id'})
+            self.require_allocation_active()
+            invocation_id = entry.nonempty(data['invocation_id'])
+            require(len(invocation_id.encode()) <= 4096 and prior_slot is not None,
+                    'allocation_missing', 'repair requires a bounded invocation and original allocation')
+            previous_repair = prior_slot['handoff']['semantic'].get('repair')
+            request = copy.deepcopy(data['handoff'])
+            require('repair' not in request['semantic'], 'invalid_request', 'Controller derives repair provenance')
+            if previous_repair is not None and previous_repair['invocation_id'] == invocation_id:
+                request['semantic']['repair'] = copy.deepcopy(previous_repair)
+            else:
+                require(prior_slot.get('transaction') is None and prior_slot.get('record') is not None and
+                        prior_slot['record']['status'] in {'received', 'accepted'},
+                        'outcome_unknown', 'settle the original execution before repair')
+                original_record = dispatch.record_for({'record': prior_slot['record'], 'control': copy.deepcopy(s['control'])})
+                ref, state, original = dispatch.matching(original_record, s['control']['context'])
+                stops = [receipt for receipt in original_record['receipts']
+                         if receipt['status'] == 'stopped' and receipt['ref'] == ref]
+                require(ref is not None and original['stopped'] is True and state in {'received', 'accepted'} and stops,
+                        'host_evidence_missing', 'repair requires the original authenticated stopped result')
+                repair = {'agent_ref': ref, 'allocation_digest': original['allocation_digest'],
+                    'stop_ref': stops[-1]['receipt_ref'], 'invocation_id': invocation_id}
+                request['semantic']['repair'] = repair
+                require(request['scope']['owned_paths'] == original['paths'] and
+                        request['scope']['protected_paths'] == original['read_only'] and
+                        request['semantic']['plan_refs'] == original['plan_refs'],
+                        'scope_changed', 'repair keeps the original slice, reads and plan refs')
+                store = state_store.open_store(self.path)
+                current = store.open_current()
+                history = list(prior_slot.get('invocation_history', []))
+                require(len(history) < 32, 'state_capacity', 'execution invocation history window is full')
+                for reference in history:
+                    historical = store.read_evidence(reference, run_id=current.run_id,
+                        maximum=state_store.SUBJECT_LIMIT)['value']['execution_invocation']
+                    require(historical['handoff']['semantic'].get('repair', {}).get('invocation_id') != invocation_id,
+                            'allocation_conflict', 'repair invocation identity was already used')
+                history.append(store.write_object(current.run_id, 'evidence', {'execution_invocation': prior_slot}))
+                # The original invocation remains immutable evidence. Its current
+                # slot is replaced only after B has verified this new input.
+                saved = handoff.prepare(request, allocation_store=(store, current, identity))
+                s['allocations'][identity] = {'input_digest': entry.digest(request), 'handoff': saved,
+                    'record': None, 'owner_ref': self.bound_ref(), 'transaction': None,
+                    'observations': [], 'result': None, 'invocation_history': history,
+                    'metrics': copy.deepcopy(prior_slot.get('metrics', {'slice_id': identity, 'submissions': 0}))}
+                self.save()
+            data = {'allocation_id': identity, 'operation': 'prepare', 'handoff': request}
+            operation = 'prepare'
         invocation = ((data.get('receipt') or {}).get('receipt_ref') or
                       (data.get('decision') or {}).get('reference'))
         if invocation is not None:
@@ -6988,7 +7042,8 @@ class Progress:
                         "scope_changed", "allocation must retain parent scope and protections")
                 handoff.ancestor(resolved['expected_entry']['repository']['root'], parent_scope['baseline'], scope['baseline'])
                 slot = {"input_digest": entry.digest(data["handoff"]), "handoff": saved, "record": None, "owner_ref": self.bound_ref(),
-                        "transaction": None, "observations": [], "result": None}
+                        "transaction": None, "observations": [], "result": None,
+                        'metrics': {'slice_id': identity, 'submissions': 0}}
                 slots[identity] = slot
                 self.save()
         else:
@@ -7073,6 +7128,7 @@ class Progress:
             require(slot['transaction']['request_digest'] == entry.digest(request) and
                     slot['transaction']['base_control_digest'] == entry.digest(s['control']),
                     'allocation_conflict', 'reconcile the original allocation intent before another request')
+        previous_status = slot['record']['status'] if slot.get('record') is not None else None
         result = dispatch.handle({**request, 'control': copy.deepcopy(s['control']),
             **({'allocation_intent': slot['transaction']['intent_id']}
                if slot['handoff'].get('kind') == 'allocation-input' else {})})
@@ -7087,6 +7143,13 @@ class Progress:
             s["control_receipt"] = result["checkpoint"].get("discussion_receipt")
             self.next_envelope(s["control_receipt"])
         slot["record"] = result.get("record", slot["record"])
+        if operation == 'receive' and result.get('status') == 'received' and previous_status not in {'received', 'accepted'}:
+            metrics = slot.setdefault('metrics', {'slice_id': identity, 'submissions': 0})
+            metrics['submissions'] += 1
+            execution = control.execution_record(s['control']['context']['handoff_progress'], data['receipt']['ref'])
+            metrics.setdefault('first_submission', {'sequence': 1, 'attempt': slot['record']['request']['attempt'],
+                'source_commit': execution['git_snapshot']['head'],
+                'receipt_ref': data['receipt']['receipt_ref'], 'duration_seconds': 'unknown'})
         if operation == 'reconcile' and slot.get('raw_ingress') and result['status'] in {'bound', 'not-created'}:
             slot['raw_ingress']['resolved'] = True
         # The slot owns its input once; the record pins the immutable digest/refs.
@@ -7130,7 +7193,9 @@ class Progress:
         state_store.open_store(self.path).reserve(action['action_id'])
         slot["action"] = action
         self.save()
-        return _view(self.state, {**action, 'payload': launch})
+        reading = handoff.model_input(launch['payload'],
+            read_totals=state_store.open_store(self.path).read_totals)['reading']
+        return _view(self.state, {**action, 'payload': launch, 'reading': reading})
 
     def require_allocation_active(self):
         self.require_not_stopping()
@@ -8325,6 +8390,24 @@ def lifecycle(path, outer, data):
 
 
 def handle(path, request):
+    entry.fields(request, {"protocol", "operation", "expected_revision"}, {"data"})
+    if request.get('operation') == 'host-preflight':
+        return _handle(path, request)
+    # Keep counting through owner cleanup. Returning from inside the inner
+    # lock must not omit a dependency/ledger or reserve-release read.
+    with state_store.operation_store(path) as store:
+        result = _handle(path, request)
+    totals = store.read_totals
+    reading = {'structured_bytes': totals['bytes'], 'structured_files': totals['files'],
+        'coverage': totals['coverage'], 'external_read_bytes': 'unknown', 'external_read_files': 'unknown'}
+    result['reading'] = reading
+    action = result.get('next_action') or {}
+    if 'reading' in action:
+        action['reading'].update(reading)
+    return result
+
+
+def _handle(path, request):
     entry.fields(request, {"protocol", "operation", "expected_revision"}, {"data"})
     require(request["protocol"] == PROTOCOL, "legacy_run_requires_original_runtime", "retain original progression runtime " + str(request.get("protocol")))
     require(type(request["expected_revision"]) is int, "invalid_request", "exact revision required")

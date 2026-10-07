@@ -462,6 +462,48 @@ def validate_behavior_slices(plan, source):
                 "behavior slices must cover all steps and ACs exactly: " + source)
 
 
+def dispatch_preflight(catalog, selected_step_ids):
+    """Describe structural coupling/check ownership; semantic review stays with C."""
+    selected = set(selected_step_ids)
+    groups, selected_groups, first_checks = [], [], []
+    for ticket in catalog['tickets']:
+        plan = ticket['plan']
+        validate_behavior_slices(plan, plan['ticket_id'])
+        steps = {step['id']: step for step in plan['steps'] + plan['artifact_steps']}
+        verifications = {item['id']: item for item in plan['verifications']}
+        for group in plan['behavior_slices']:
+            ids = set(group['step_ids'])
+            writes = {steps[identity].get('target', steps[identity])['path'] for identity in ids}
+            item = {'id': plan['ticket_id'] + ':' + group['id'], 'steps': ids,
+                'writes': writes, 'reads': set(group['read_only']), 'shared': set(group['shared_state'])}
+            groups.append(item)
+            if not selected & ids:
+                continue
+            _incomplete(ids <= selected, 'dispatch splits a complete behavior slice: ' + item['id'])
+            selected_groups.append(item)
+            checks = [verifications.get(identity) for identity in group['verification_refs']]
+            _incomplete(checks and all(check and check.get('seam') and check.get('commands') for check in checks),
+                        'dispatch lacks a public verification boundary: ' + item['id'])
+            for ac in group['ac_refs']:
+                if ac.startswith(plan['ticket_id'] + ':AC-'):
+                    first_checks.append({'ac_ref': ac, 'layer': 'local',
+                        'verification_refs': group['verification_refs'][:],
+                        'seams': sorted({check['seam'] for check in checks}),
+                        'commands': sorted({command for check in checks for command in check['commands']})})
+    _incomplete(bool(selected_groups), 'dispatch has no complete behavior slice')
+    known_paths = {relative for group in groups for relative in group['writes'] | group['reads']}
+    coupled = {other['id'] for chosen in selected_groups for other in groups if other != chosen and
+        (chosen['writes'] & (other['writes'] | other['reads']) or
+         other['writes'] & chosen['reads'] or
+         chosen['shared'] & (other['writes'] | other['reads'] | other['shared']) or
+         other['shared'] & (chosen['writes'] | chosen['reads']) or
+         chosen['shared'] - known_paths or other['shared'] - known_paths)}
+    unknown_shared = any(group['shared'] - known_paths for group in selected_groups)
+    return {'slice_ids': [item['id'] for item in selected_groups],
+        'coupled_slices': sorted(coupled), 'execution': 'serial' if coupled or unknown_shared else 'independent',
+        'first_checks': first_checks, 'semantic_review': 'original-controller'}
+
+
 def collect_execution_plan(repository, commit, planning_paths, scope, requirement_identity,
                            *, retained_record_baseline=None):
     """Build one deterministic catalog from committed Ticket or inline Spec plans."""
@@ -731,7 +773,8 @@ def validate_plan_refs(catalog, plan_refs, assigned_paths, read_only, completed_
     return {"plan_refs": copy_plan_refs(plan_refs), "plan_authority": expected_authority,
             "ordered_step_ids": selected, "verification_commands": sorted(verification_commands),
             "required_read_only": sorted(required_read), "read_only_fingerprints": read_fingerprints,
-            "group_digest": entry.digest([expected_authority, plan_refs])}
+            "group_digest": entry.digest([expected_authority, plan_refs]),
+            "preflight": dispatch_preflight(catalog, selected)}
 
 
 def selected_owned_paths(steps, selected, manifest):

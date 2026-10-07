@@ -720,12 +720,21 @@ def validate_progress(progress):
         require(isinstance(progress['executions'], list), 'executions must be a list')
         for execution in progress['executions']:
             required = {'task_id', 'paths', 'read_only', 'behavior', 'tests', 'git_operations', 'configuration', 'agent_ref', 'state', 'stopped', 'file_hashes', 'allocation_digest'}
-            require(isinstance(execution, dict) and required <= set(execution) <= required | {'git_snapshot', 'git_result_snapshot', 'adopt_paths', 'adoption_snapshot_digest', 'adoption_fingerprints', 'changed_paths', 'adopted_paths', 'plan_refs', 'plan_authority', 'group_digest', 'write_release'}, 'invalid execution envelope fields')
+            require(isinstance(execution, dict) and required <= set(execution) <= required | {'git_snapshot', 'git_result_snapshot', 'adopt_paths', 'adoption_snapshot_digest', 'adoption_fingerprints', 'changed_paths', 'adopted_paths', 'plan_refs', 'plan_authority', 'group_digest', 'write_release', 'repair', 'repair_count'}, 'invalid execution envelope fields')
             if 'plan_refs' in execution:
                 require(isinstance(execution['plan_refs'], list) and execution['plan_refs'] and
                         execution.get('plan_authority') == progress.get('plan_authority') and
                         execution.get('group_digest') == digest([execution['plan_authority'], execution['plan_refs']]),
                         'invalid execution plan group')
+            if 'repair' in execution:
+                keys(execution['repair'], {'agent_ref', 'allocation_digest', 'stop_ref', 'invocation_id'})
+                for value in execution['repair'].values():
+                    text(value)
+                require(type(execution.get('repair_count')) is int and 1 <= execution['repair_count'] <= 32 and
+                        execution['agent_ref'] in {None, execution['repair']['agent_ref']},
+                        'invalid original repair invocation')
+            else:
+                require('repair_count' not in execution, 'repair count requires original invocation evidence')
             require(execution['state'] in {'dispatch-pending', 'assigned', 'received', 'accepted', 'cancelled'} and type(execution['stopped']) is bool, 'invalid execution state')
             validate_selection(execution['configuration'])
             text(execution['task_id']); text(execution['behavior']); text(execution['allocation_digest'])
@@ -1038,9 +1047,9 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     action, evidence = request['action'], copy.deepcopy(request['evidence'])
     require(isinstance(action, str), 'action must be a string')
     require(isinstance(evidence, dict), 'evidence must be an object')
-    if action in {'prepare', 'start-design', 'start-dispatch', 'start-closure', 'plan-execution'} and 'configuration' in evidence:
+    if action in {'prepare', 'start-design', 'start-dispatch', 'start-closure', 'plan-execution', 'repair-execution'} and 'configuration' in evidence:
         expected_role = {'prepare': 'dedicated-discussion' if context['stage'] == 0 else 'dedicated-problem-framing',
-                         'start-design': 'solution-designer', 'start-dispatch': 'implementation-dispatcher', 'start-closure': 'closure-agent', 'plan-execution': 'execution-agent'}[action]
+                         'start-design': 'solution-designer', 'start-dispatch': 'implementation-dispatcher', 'start-closure': 'closure-agent', 'plan-execution': 'execution-agent', 'repair-execution': 'execution-agent'}[action]
         require(isinstance(evidence['configuration'], dict), 'configuration selection input must be an object')
         require(evidence['configuration'].get('role') == expected_role, 'configuration role mismatch')
         evidence['configuration'] = select_configuration(evidence['configuration'])
@@ -1048,7 +1057,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
     progress = context['handoff_progress']
     effects = []
     if progress and progress.get('recovery') and progress['recovery']['state'] != 'activated':
-        require(action not in {'plan-execution', 'candidate-ready', 'validation-start'}, 'dispatcher recovery preparation has no write authority')
+        require(action not in {'plan-execution', 'repair-execution', 'candidate-ready', 'validation-start'}, 'dispatcher recovery preparation has no write authority')
     if action == 'select-configuration':
         return {'ok': True, 'context': context, 'effects': [], 'selection': select_configuration(evidence)}
     if action == 'prepare':
@@ -1411,10 +1420,10 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             progress.pop(field, None)
         for execution in progress['executions']:
             execution['state'] = 'cancelled'
-    elif action == 'plan-execution':
+    elif action in {'plan-execution', 'repair-execution'}:
         keys(evidence, {'task_id', 'paths', 'read_only', 'behavior', 'tests', 'git_operations', 'configuration'} |
              (set(evidence) & {'adopt_paths', 'adoption_snapshot_digest', 'adoption_fingerprints',
-                               'plan_refs', 'plan_authority', 'group_digest'}))
+                               'plan_refs', 'plan_authority', 'group_digest', 'repair'}))
         require(progress and progress['state'] == 'implementing', 'dispatcher is not accepting assignments')
         require(not direct_implementation(progress), 'direct implementation must escalate before execution allocation')
         text(evidence['task_id']); text(evidence['behavior'])
@@ -1447,7 +1456,23 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                     'execution_plan_stale: allocation differs from current plan or verification')
         else:
             raise ControlError('execution_plan_stale: current plan refs required')
-        require(all(e['task_id'] != evidence['task_id'] for e in progress['executions']), 'execution identity reused')
+        original = None
+        if action == 'repair-execution':
+            repair = evidence.get('repair')
+            keys(repair, {'agent_ref', 'allocation_digest', 'stop_ref', 'invocation_id'})
+            for key in repair:
+                text(repair[key])
+            original = execution_record(progress, repair['agent_ref'])
+            require(original['stopped'] is True and original['state'] in {'received', 'accepted'} and
+                    original['allocation_digest'] == repair['allocation_digest'] and
+                    original['task_id'] == evidence['task_id'], 'repair requires the stopped original invocation')
+            for key in ('paths', 'read_only', 'plan_refs', 'plan_authority', 'configuration'):
+                require(original[key] == evidence[key], 'repair changed original ' + key)
+            require(repair['invocation_id'] != original.get('repair', {}).get('invocation_id'),
+                    'repair invocation identity reused')
+        else:
+            require('repair' not in evidence and all(e['task_id'] != evidence['task_id'] for e in progress['executions']),
+                    'execution identity reused')
         require(all(e.get('stopped') is True or not set(e['paths']) & set(assigned) for e in progress['executions']), 'concurrent file assignment overlap')
         require(all(e.get('stopped') is True or
                     (not set(e['paths']) & set(evidence['read_only']) and
@@ -1459,10 +1484,17 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                         not set(e['paths']) & set(assigned) for e in progress['executions']),
                     'historical recovery allocation must be accepted or explicitly released, never redispatched')
         allocation_digest = digest({'binding': progress['binding'], 'envelope': evidence})
-        progress['executions'].append({**evidence, 'agent_ref': None, 'state': 'dispatch-pending', 'stopped': False,
-                                       'file_hashes': {}, 'allocation_digest': allocation_digest})
+        allocation = {**evidence, 'agent_ref': None, 'state': 'dispatch-pending', 'stopped': False,
+                      'file_hashes': {}, 'allocation_digest': allocation_digest}
+        if original is None:
+            progress['executions'].append(allocation)
+        else:
+            allocation['repair_count'] = original.get('repair_count', 0) + 1
+            original.clear()
+            original.update(allocation)
         return {'ok': True, 'context': context, 'allocation_digest': allocation_digest,
-                'effects': [{'operation': 'spawn_native', 'role': 'execution-agent', 'envelope': evidence}]}
+                'effects': [{'operation': 'continue_native' if original is not None else 'spawn_native',
+                             'role': 'execution-agent', 'envelope': evidence}]}
     elif action == 'execution-dispatch-result':
         keys(evidence, {'task_id', 'allocation_digest', 'status'})
         require(progress and progress['state'] in {'implementing', 'cancelled'}, 'no native allocation to reconcile')
@@ -1480,6 +1512,8 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         matches = [e for e in progress['executions'] if e['task_id'] == evidence['task_id'] and e['allocation_digest'] == evidence['allocation_digest']]
         require(len(matches) == 1 and matches[0]['state'] == 'dispatch-pending', 'allocation not prepared or already bound')
         ref = text(evidence['agent_ref'])
+        if 'repair' in matches[0]:
+            require(ref == matches[0]['repair']['agent_ref'], 'repair must continue the original native reference')
         require(ref != context['carrier']['ref'] and all(e['agent_ref'] != ref for e in progress['executions']), 'native identity reused')
         matches[0].update(agent_ref=ref, state='assigned')
         if 'plan_refs' in matches[0]:

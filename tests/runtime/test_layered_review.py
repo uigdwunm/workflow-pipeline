@@ -4,6 +4,9 @@ import hashlib
 import json
 import subprocess
 import sys
+import tempfile
+import unittest
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -12,7 +15,119 @@ import execution_plan
 import workflow_progress as progress
 
 
+class DispatchInputTests(unittest.TestCase):
+    def test_t03_model_input_counts_utf8_and_limits_total_expansion(self):
+        normal = progress.handoff.model_input({'contract': 'é' * 100})
+        self.assertEqual(normal['reading']['model_bytes'], len(normal['text'].encode('utf-8')))
+        with self.assertRaises(progress.entry.PreparationError):
+            progress.handoff.model_input({'contract': 'é' * 32768})
+        expanded = progress.handoff.model_input({'segments': ['x' * 60000] * 4}, expanded=True)
+        self.assertGreater(expanded['reading']['model_bytes'], 65536)
+        with self.assertRaises(progress.entry.PreparationError):
+            progress.handoff.model_input({'segments': ['x' * 60000] * 5}, expanded=True)
+        with self.assertRaises(progress.entry.PreparationError):
+            progress.handoff.model_input({'segments': ['x' * 70000]}, expanded=True)
+
+    def test_t03_reads_count_actual_cross_checkpoint_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / 'first.json'
+            second = Path(directory) / 'second.json'
+            run_id = str(uuid.uuid4())
+            refs = [progress.state_store.StateStore(path).write_object(run_id, 'evidence', {'proof': text})
+                    for path, text in ((first, 'source'), (second, 'dependency'))]
+            with progress.state_store.operation_store(first):
+                owner = progress.state_store.open_store(first)
+                owner.read_evidence(refs[0], run_id=run_id)
+                progress.state_store.open_store(second).read_evidence(refs[1], run_id=run_id)
+                self.assertEqual(owner.read_totals['files'], 2)
+                self.assertEqual(owner.read_totals['bytes'], sum(ref['size'] for ref in refs))
+                self.assertEqual(owner.read_totals['coverage'], 'state-store-only')
+
+
 class LayeredReviewTests(fixture.ProgressTests):
+    def test_repair_continues_stopped_executor_with_fresh_release_and_snapshot(self):
+        candidate = self.layered_flow()
+        original = self.allocation_slot('A1', 'A')
+        original_context = copy.deepcopy(self.state()['control']['context'])
+        old_record = original['record']
+        old_launch = progress.dispatch.allocation_launch(old_record)
+        old_receipt = self.receipt(old_record, ref='native:executor-A1')
+        request = self.execution_input()
+        ticket = self.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
+        request['scope']['owned_paths'] = ['a1.py']
+        request['authorization']['scope_digest'] = fixture.transfer.entry.digest(request['scope'])
+        request['semantic']['plan_refs'] = [execution_plan.step_ref(ticket, ticket['plan']['steps'][0])]
+        prepared = self.invoke('allocation', {'allocation_id': 'A1', 'operation': 'repair',
+            'invocation_id': 'repair-A1-first', 'handoff': request})
+        self.assertIsNotNone(prepared['next_action'], prepared)
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+        launch = prepared['next_action']['payload']
+        self.assertEqual(launch['payload']['execution_invocation']['ref'], 'native:executor-A1')
+        self.assertEqual(launch['payload']['execution_invocation']['operation'], 'continue')
+        self.assertNotEqual(launch['attempt'], old_launch['attempt'])
+        self.assertLessEqual(prepared['next_action']['reading']['model_bytes'], 65536)
+        self.assertGreater(prepared['next_action']['reading']['structured_bytes'], 0)
+        record = self.allocation_slot('A1', 'A')['record']
+        pending_context = copy.deepcopy(self.state()['control']['context'])
+        pending = pending_context['handoff_progress']['executions'][0]
+        with self.assertRaises(progress.control.ControlError):
+            progress.control.transition({'schema_version': 7, 'actor_ref': 'task', 'context': pending_context,
+                'action': 'assign', 'evidence': {'agent_ref': 'native:replacement', 'task_id': pending['task_id'],
+                    'allocation_digest': pending['allocation_digest'], 'write_release': 'new-release'}})
+        with self.assertRaises(progress.entry.PreparationError):
+            progress.dispatch.validate_allocation_receipt(record, 'bind', old_receipt, pending_context)
+        original_execution = original_context['handoff_progress']['executions'][0]
+        repair_evidence = {key: original_execution[key] for key in ('task_id', 'paths', 'read_only', 'behavior',
+            'tests', 'git_operations', 'plan_refs', 'plan_authority', 'group_digest')}
+        repair_evidence.update(configuration=request['configuration'], repair={
+            'agent_ref': 'native:executor-A1', 'allocation_digest': original_execution['allocation_digest'],
+            'stop_ref': 'host:result:stopped', 'invocation_id': 'control-negative'})
+        original_execution.update(state='assigned', stopped=False)
+        with self.assertRaises(progress.control.ControlError):
+            progress.control.transition({'schema_version': 7, 'actor_ref': 'task', 'context': original_context,
+                'action': 'repair-execution', 'evidence': repair_evidence})
+        rejected = self.invoke('allocation', {'allocation_id': 'A1', 'operation': 'bind', 'receipt': old_receipt})
+        self.assertEqual(rejected['status'], 'blocked', rejected)
+        slot = self.allocation_slot('A1', 'A')
+        continuation = self.receipt(slot['record'], ref='native:executor-A1')
+        continuation['receipt_ref'] = 'host:create:repair-A1-first'
+        bound = self.invoke('allocation', {'allocation_id': 'A1', 'operation': 'bind',
+            'receipt': continuation})
+        self.assertIsNotNone(bound['next_action'], bound)
+        release = bound['next_action']['result']['write_release']
+        self.assertNotEqual(release, progress.dispatch.execution_release_token(progress.handoff.unseal(old_record)))
+        execution = self.state()['control']['context']['handoff_progress']['executions'][0]
+        with self.assertRaisesRegex(progress.control.ControlError, 'result authority or release changed'):
+            progress.control.transition({'schema_version': 7, 'actor_ref': 'task',
+                'context': self.state()['control']['context'], 'action': 'execution-result', 'evidence': {
+                    'agent_ref': 'native:executor-A1', 'stopped': True, 'git_unchanged': True,
+                    'changed_paths': ['a1.py'], 'file_hashes': {'a1.py': 'a' * 64}, 'tests': ['repair check'],
+                    'plan_refs': execution['plan_refs'], 'plan_authority': execution['plan_authority'],
+                    'write_release': progress.dispatch.execution_release_token(progress.handoff.unseal(old_record))}})
+        self.assertEqual(execution['git_snapshot']['head'], candidate)
+        body = b'def run():\n    return 2\n'
+        (self.flow / 'a1.py').write_bytes(body)
+        slot = self.allocation_slot('A1', 'A')
+        stopped = self.receipt(slot['record'], 'stopped', 'result', ref='native:executor-A1')
+        stopped['receipt_ref'] = 'host:result:repair-A1-first'
+        received = self.invoke('allocation', {'allocation_id': 'A1', 'operation': 'receive',
+            'receipt': stopped,
+            'result': {'delivery_id': 'A1-repair-result', 'status': 'completed', 'payload': {
+                'changed_paths': ['a1.py'], 'file_hashes': {'a1.py': hashlib.sha256(body).hexdigest()},
+                'tests': ['repair behavior passed'], 'write_release': release,
+                'plan_refs': request['semantic']['plan_refs'], 'plan_authority': execution['plan_authority']}}})
+        self.assertEqual(received['next_action']['result']['status'], 'received', received)
+        accepted = self.invoke('allocation', {'allocation_id': 'A1', 'operation': 'accept',
+            'decision': {'reference': 'dispatcher:accept-A1-repair'}})
+        self.assertEqual(accepted['next_action']['result']['status'], 'accepted', accepted)
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['executions'][0]['task_id'],
+                         execution['task_id'])
+        metrics = self.allocation_slot('A1', 'A')['metrics']
+        self.assertEqual(metrics['slice_id'], 'A1')
+        self.assertEqual(metrics['submissions'], 2)
+        self.assertEqual(metrics['first_submission']['sequence'], 1)
+        self.assertEqual(metrics['first_submission']['receipt_ref'], 'host:result:stopped')
+
     def layered_flow(self, *, shared_verification=False, same_file=False, shared_read=False, unknown_shared=False):
         self.shared_verification = shared_verification
         self.same_file = same_file

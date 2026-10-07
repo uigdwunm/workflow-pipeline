@@ -884,7 +884,7 @@ def _prepare(request, *, checkpoint_path=None, allocation_store=None):
     semantic = request["semantic"]
     entry.fields(semantic, {"objective", "testing_basis", "completion_criteria", "constraints"},
                  {"validation_plan", "implementation_policy", "adopt_paths", "adoption_snapshot_digest",
-                  "execution_plan", "inline_plan", "plan_refs", "authority_revision", "authority_digest", "plan_digest"})
+                  "execution_plan", "inline_plan", "plan_refs", "authority_revision", "authority_digest", "plan_digest", "repair"})
     if stage == 3 and request["role"] == "implementation-dispatcher":
         control.validate_validation_plan(semantic.get("validation_plan"), request["binding"])
     if 'adopt_paths' in semantic or 'adoption_snapshot_digest' in semantic:
@@ -1230,12 +1230,33 @@ def render_implementation_delivery(checkpoint_path):
     return rendered
 
 
+def model_input(payload, *, expanded=False, read_totals=None):
+    """Measure the exact model text separately from authority verification reads."""
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+    size = len(text.encode('utf-8'))
+    if expanded:
+        segments = payload.get('segments')
+        require(isinstance(segments, list) and segments and all(isinstance(segment, str) and
+                len(segment.encode('utf-8')) <= 64 * 1024 for segment in segments),
+                'model_input_capacity', 'expanded original sources require bounded UTF-8 segments')
+    require(size <= (256 if expanded else 64) * 1024,
+            'model_input_capacity', 'model input exceeds its fixed total UTF-8 budget')
+    reading = {'model_bytes': size, 'model_limit': (256 if expanded else 64) * 1024,
+        'structured_bytes': read_totals['bytes'] if read_totals is not None else 'unknown',
+        'structured_files': read_totals['files'] if read_totals is not None else 'unknown',
+        'coverage': 'state-store-only' if read_totals is not None else 'unknown',
+        'external_read_bytes': 'unknown', 'external_read_files': 'unknown'}
+    return {'payload': payload, 'text': text, 'reading': reading, 'downstream_ready': False}
+
+
 def render(saved, *, readiness=None, checkpoint_path=None):
     if saved.get('kind') == 'allocation-input':
-        payload = render(resolve_allocation(saved), readiness=readiness, checkpoint_path=checkpoint_path)
-        payload['payload']['input_digest'] = saved['digest']
-        payload['text'] = json.dumps(payload['payload'], ensure_ascii=False, sort_keys=True, indent=2)
-        return payload
+        import workflow_state_store
+        with workflow_state_store.operation_store(saved['checkpoint']):
+            payload = render(resolve_allocation(saved), readiness=readiness, checkpoint_path=checkpoint_path)
+            payload['payload']['input_digest'] = saved['digest']
+            return model_input(payload['payload'],
+                read_totals=workflow_state_store.open_store(saved['checkpoint']).read_totals)
     body = unseal(saved)
     require_current_protocol(body)
     if body.get("status") == "accepted":
@@ -1286,10 +1307,39 @@ def render(saved, *, readiness=None, checkpoint_path=None):
         payload["generated_outputs"] = copy.deepcopy(body["generated_outputs"])
     if "manifest_baseline" in body:
         payload["manifest_baseline"] = body["manifest_baseline"]
+    if body['stage'] == 3:
+        authority = (body['readiness']['scope_authority'] if body.get('readiness') is not None
+                     else body['inline_authority'])
+        payload['current_scope_authority'] = body['semantic']['execution_plan']
+        payload['execution_plan'] = execution_plan.current_catalog(authority)
+        payload['semantic'] = {key: value for key, value in payload['semantic'].items() if key != 'inline_plan'}
+        if 'readiness' in payload:
+            payload['readiness'] = {key: value for key, value in payload['readiness'].items()
+                                    if key not in {'scope_authority', 'execution_plan'}}
     if body['role'] == 'execution-agent':
         payload['write_authority'] = 'await-bound-release'
-    return {"payload": payload, "text": json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
-            "downstream_ready": False}
+        authority = (body['readiness']['scope_authority'] if body.get('readiness') is not None
+                     else body['inline_authority'])
+        catalog = execution_plan.current_catalog(authority)
+        selected = {ref['step_id'] for ref in body['semantic']['plan_refs']}
+        payload['execution_plan'] = {'identity': body['semantic']['execution_plan'], 'tickets': []}
+        for ticket in catalog['tickets']:
+            plan = ticket['plan']
+            steps = [step for step in plan['steps'] + plan['artifact_steps'] if step['id'] in selected]
+            if not steps:
+                continue
+            verifications = {identity for step in steps for identity in step['verification_refs']}
+            payload['execution_plan']['tickets'].append({'ticket_id': plan['ticket_id'], 'source': ticket['source'],
+                'contract_refs': plan['contract_refs'], 'steps': steps,
+                'behavior_slices': [group for group in plan['behavior_slices'] if set(group['step_ids']) & selected],
+                'verifications': [item for item in plan['verifications'] if item['id'] in verifications]})
+        payload['current_scope_authority'] = body['semantic']['execution_plan']
+        payload['dispatch_preflight'] = execution_plan.dispatch_preflight(catalog, selected)
+        if body['semantic'].get('repair') is not None:
+            payload['execution_invocation'] = {'operation': 'continue',
+                'ref': body['semantic']['repair']['agent_ref'],
+                'invocation_id': body['semantic']['repair']['invocation_id']}
+    return model_input(payload)
 
 
 def handle(request):

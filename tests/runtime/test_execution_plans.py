@@ -12,6 +12,45 @@ import test_stage_scope_transfer as git_fixture
 import execution_plan
 
 
+class DispatchPreflightTests(unittest.TestCase):
+    def plan(self):
+        return {'ticket_id': 'A', 'contract_refs': ['A:AC-1', 'A:AC-2'],
+            'steps': [{'id': 'S1', 'target': {'path': 'shared.py'}, 'read_only': [], 'verification_refs': ['V1']},
+                      {'id': 'S2', 'target': {'path': 'shared.py'}, 'read_only': [], 'verification_refs': ['V2']}],
+            'artifact_steps': [], 'verifications': [
+                {'id': 'V1', 'seam': 'public producer', 'commands': ['producer check']},
+                {'id': 'V2', 'seam': 'public consumer', 'commands': ['consumer check']}],
+            'behavior_slices': [
+                {'id': 'B1', 'step_ids': ['S1'], 'ac_refs': ['A:AC-1'], 'verification_refs': ['V1'], 'read_only': [], 'shared_state': []},
+                {'id': 'B2', 'step_ids': ['S2'], 'ac_refs': ['A:AC-2'], 'verification_refs': ['V2'], 'read_only': [], 'shared_state': []}]}
+
+    def test_t03_dispatch_preflight_reports_coupled_successor_and_check_ownership(self):
+        report = execution_plan.dispatch_preflight({'tickets': [{'plan': self.plan()}]}, ['S1'])
+        self.assertEqual(report['coupled_slices'], ['A:B2'])
+        self.assertEqual(report['execution'], 'serial')
+        self.assertEqual(report['first_checks'], [{'ac_ref': 'A:AC-1', 'layer': 'local',
+            'verification_refs': ['V1'], 'seams': ['public producer'], 'commands': ['producer check']}])
+
+    def test_t03_dispatch_preflight_rejects_partial_behavior_and_missing_ac_check(self):
+        plan = self.plan()
+        plan['behavior_slices'] = [{'id': 'whole', 'step_ids': ['S1', 'S2'],
+            'ac_refs': ['A:AC-1', 'A:AC-2'], 'verification_refs': ['V1', 'V2'], 'read_only': [], 'shared_state': []}]
+        with self.assertRaises(execution_plan.entry.PreparationError):
+            execution_plan.dispatch_preflight({'tickets': [{'plan': plan}]}, ['S1'])
+        plan = self.plan()
+        plan['verifications'][0]['commands'] = []
+        with self.assertRaises(execution_plan.entry.PreparationError):
+            execution_plan.dispatch_preflight({'tickets': [{'plan': plan}]}, ['S1'])
+
+    def test_t03_dispatch_preflight_does_not_claim_independence_for_unknown_shared_state(self):
+        plan = self.plan()
+        plan['steps'][1]['target']['path'] = 'other.py'
+        plan['behavior_slices'][0]['shared_state'] = ['unmapped-registry']
+        report = execution_plan.dispatch_preflight({'tickets': [{'plan': plan}]}, ['S1'])
+        self.assertEqual(report['execution'], 'serial')
+        self.assertEqual(report['coupled_slices'], ['A:B2'])
+
+
 class ExecutionPlanAdmissionTests(unittest.TestCase):
     def test_inline_plan_reports_malformed_arrays_with_field_context(self):
         flow = fixture.fixture.ProgressTests(methodName="runTest")

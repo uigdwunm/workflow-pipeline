@@ -29,18 +29,27 @@ MAX_SUBJECTS = 8
 BUSINESS_RESERVE = 4 * EVIDENCE_LIMIT
 RECOVERY_RESERVE = 4 * EVIDENCE_LIMIT
 _operation_store = ContextVar('workflow_operation_store', default=None)
+_operation_read_totals = ContextVar('workflow_operation_read_totals', default=None)
 _measurement_stores = ContextVar('workflow_measurement_stores', default={})
 
 
 @contextmanager
 def operation_store(checkpoint):
     """Share verified immutable reads only inside one locked owner operation."""
+    existing = _operation_store.get()
+    if existing is not None and existing.checkpoint == Path(checkpoint):
+        yield existing
+        return
+    totals = _operation_read_totals.get()
+    read_token = _operation_read_totals.set(totals if totals is not None else
+        {'files': 0, 'bytes': 0, 'coverage': 'state-store-only'})
     store = StateStore(checkpoint)
     token = _operation_store.set(store)
     try:
-        yield
+        yield store
     finally:
         _operation_store.reset(token)
+        _operation_read_totals.reset(read_token)
     if store._pending_reserves is not None:
         store.release_settled_reserves(store._pending_reserves)
 
@@ -204,6 +213,9 @@ class StateStore:
         self.directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
         self.files_read = 0
         self.bytes_read = 0
+        self._read_totals = _operation_read_totals.get()
+        if self._read_totals is None:
+            self._read_totals = {'files': 0, 'bytes': 0, 'coverage': 'state-store-only'}
         self.receipt_action = receipt_action
         self._verified_objects = {}
         self._verified_raw_chunks = {}
@@ -364,9 +376,22 @@ class StateStore:
         require(len(data) <= maximum, 'state object exceeds its fixed budget', 'state_capacity')
         self.files_read += 1
         self.bytes_read += len(data)
+        totals = _operation_read_totals.get()
+        if totals is None:
+            totals = self._read_totals
+        totals['files'] += 1
+        totals['bytes'] += len(data)
+        require(totals['bytes'] <= READ_LIMIT + EVIDENCE_LIMIT,
+                'combined operation exceeded its read budget', 'state_capacity')
         require(self.bytes_read <= READ_LIMIT + EVIDENCE_LIMIT,
                 'operation exceeded its read budget', 'state_capacity')
         return data
+
+    @property
+    def read_totals(self):
+        """Actual physical Store reads, including dependency/ledger stores."""
+        totals = _operation_read_totals.get()
+        return dict(self._read_totals if totals is None else totals)
 
     def _path(self, digest):
         require(isinstance(digest, str) and len(digest) == 64 and

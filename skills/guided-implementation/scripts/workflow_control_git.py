@@ -815,7 +815,7 @@ def verified_transition(payload):
                 require(set(assessment['implementation_paths'] + assessment['test_paths']) <= set(evidence['allowed_paths']),
                         'direct assessment paths escape implementation scope')
             evidence['binding_verified'] = True
-    if action in {'plan-execution', 'assign', 'execution-result', 'accept-execution', 'prepare-dispatch-recovery', 'recover-dispatch', 'candidate-ready', 'escalate-implementation'}:
+    if action in {'plan-execution', 'repair-execution', 'assign', 'execution-result', 'accept-execution', 'prepare-dispatch-recovery', 'recover-dispatch', 'candidate-ready', 'escalate-implementation'}:
         require(progress is not None, 'missing dispatcher checkpoint')
         verify_binding(repository, progress['binding'])
         scope_base = git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip()
@@ -831,7 +831,7 @@ def verified_transition(payload):
     if action == 'prepare-dispatch-recovery':
         actual, ownership, revalidate = recovery_snapshot(repository, progress)
         evidence.update(snapshot=actual, ownership=ownership, revalidate=revalidate)
-    if action == 'plan-execution':
+    if action in {'plan-execution', 'repair-execution'}:
         require('integration_target_head' not in progress or progress.get('integration_source') is not None,
                 'capture final integration before revalidation allocations')
         if evidence.get('adopt_paths'):
@@ -972,8 +972,10 @@ def verified_transition(payload):
         recorded = execution_record(result['context']['handoff_progress'], evidence['agent_ref'])
         recorded['git_result_snapshot'] = result_snapshot
         result['pending_peer_refs'] = pending_peers
-    if action == 'plan-execution':
-        result['context']['handoff_progress']['executions'][-1]['git_snapshot'] = before
+    if action in {'plan-execution', 'repair-execution'}:
+        allocated = next(item for item in result['context']['handoff_progress']['executions']
+                         if item['allocation_digest'] == result['allocation_digest'])
+        allocated['git_snapshot'] = before
     # Git evidence is attached after the pure transition. Keep the original
     # checkpoint inside its bound capacity before any caller persists it.
     validate_context(result['context'])
