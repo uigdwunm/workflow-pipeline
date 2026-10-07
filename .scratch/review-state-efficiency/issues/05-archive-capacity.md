@@ -68,3 +68,7 @@ V03：`test_publication_recovery.py`、`test_business_recovery.py`、`test_accep
 ## 账本归档接线依赖（2026-10-07）
 
 只读预检确认 ledger-backed stage 当前 context 必须与原 ledger generation 匹配。`discussion_core/workflow_control.py` 的原投影读取、公开结果和有锁提交入口需要接入有限归档引用，并经原 transition、record_revision 和 pointer CAS 提交，纯 C 摘要不能替换原账本权威。manifest 仅晋升该 source 与五包对应输出；原 generation、receipt、nonce 和未知事务仍保留精确引用，既有延期初始化及 foreground 门禁不放宽。`stage_dispatch.checkpoint` 已原样转发通用 action 与 expected_control_ref，无需为便利扩大其写范围。
+
+## 序列化 B 消费者依赖（2026-10-07）
+
+真实 C 归档／冷恢复组合已核验原接受事实与 Git ownership；B 的 JSON/CLI 传输会失去 Store 验证投影的内存类型。`stage_dispatch.verify_allocation_intent` 先核原 C transaction、请求摘要和 base_control_digest，随后 handle/checkpoint 必须从原 checkpoint 或精确 ledger pointer 重新解开有限事实，并比对原摘要／expected pointer。不能把发送者自报 JSON 包装成已验权限。manifest 将该 source 与五包输出加入 T05，原 nonce、intent、scope、lease 与 CAS 门禁保持。
