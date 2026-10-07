@@ -615,6 +615,7 @@
       "operation": "add",
       "tickets": [
         "T01",
+        "T03",
         "T05"
       ],
       "kind": "source",
@@ -644,6 +645,22 @@
         {
           "name": "read_predecessor",
           "status": "proposed"
+        },
+        {
+          "name": "operation_store",
+          "status": "existing-verified"
+        },
+        {
+          "name": "open_store",
+          "status": "existing-verified"
+        },
+        {
+          "name": "StateStore",
+          "status": "existing-verified"
+        },
+        {
+          "name": "StateStore._read",
+          "status": "existing-verified"
         }
       ],
       "generated_outputs": [
@@ -653,7 +670,7 @@
         "skills/problem-framing/scripts/workflow_state_store.py",
         "skills/solution-design/scripts/workflow_state_store.py"
       ],
-      "implementation_note": "T01 精确前驱构造/读取，不 pin 整个旧 stage 或递归祖先；通用 compact/GC 属 T05。"
+      "implementation_note": "T01 精确前驱构造/读取，不 pin 整个旧 stage 或递归祖先；通用 compact/GC 属 T05。 T03已确认跨checkpoint/ledger的Store读取需在原operation_store/open_store/_read入口汇总；仅计量，保持容量、权威、CAS和预留规则。原模块由T01创建，T03在当前基线上modify，不重建。"
     },
     {
       "path": "src/shared/scripts/review_evidence.py",
@@ -2453,6 +2470,7 @@
       "source": "src/shared/scripts/workflow_state_store.py",
       "tickets": [
         "T01",
+        "T03",
         "T05"
       ]
     },
@@ -2462,6 +2480,7 @@
       "source": "src/shared/scripts/workflow_state_store.py",
       "tickets": [
         "T01",
+        "T03",
         "T05"
       ]
     },
@@ -2471,6 +2490,7 @@
       "source": "src/shared/scripts/workflow_state_store.py",
       "tickets": [
         "T01",
+        "T03",
         "T05"
       ]
     },
@@ -2480,6 +2500,7 @@
       "source": "src/shared/scripts/workflow_state_store.py",
       "tickets": [
         "T01",
+        "T03",
         "T05"
       ]
     },
@@ -2489,6 +2510,7 @@
       "source": "src/shared/scripts/workflow_state_store.py",
       "tickets": [
         "T01",
+        "T03",
         "T05"
       ]
     },
