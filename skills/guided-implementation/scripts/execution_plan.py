@@ -462,25 +462,34 @@ def validate_behavior_slices(plan, source):
                 "behavior slices must cover all steps and ACs exactly: " + source)
 
 
-def rework_diagnosis(events):
-    """Classify confirmed original events; RED/unknown never imply a defect."""
+def rework_diagnosis(events, *, consumed=()):
+    """Classify ordered original facts beyond exact diagnosed source boundaries."""
     instructions = {'fixture-error': 'input-and-result-channel',
         'review-repair-defect': 'producer-consumer-and-rejection',
         'accepted-slice-invalidated': 'slice-coupling'}
-    groups, triggers = {}, []
+    handled = {}
+    for trigger in consumed:
+        key = (trigger['slice_id'], trigger['boundary'], trigger['kind'])
+        handled.setdefault(key, set()).update(trigger['source_refs'])
+    groups, seen, triggers = {}, {}, []
     for event in events:
         kind = event['kind']
         key = (event['slice_id'], event['boundary'], kind)
+        if event['source_ref'] in seen.setdefault(key, set()):
+            continue
+        seen[key].add(event['source_ref'])
         if kind not in instructions:
-            # Planned RED and unknown observations break a consecutive fixture streak.
+            # Planned RED, success and unknown break a consecutive fixture streak.
             groups.pop((event['slice_id'], event['boundary'], 'fixture-error'), None)
             continue
+        if event['source_ref'] in handled.get(key, set()):
+            groups.pop(key, None)
+            continue
         sources = groups.setdefault(key, [])
-        if event['source_ref'] not in sources:
-            sources.append(event['source_ref'])
-        if len(sources) == 2:
+        sources.append(event['source_ref'])
+        if len(sources) % 2 == 0:
             triggers.append({'slice_id': event['slice_id'], 'boundary': event['boundary'],
-                'kind': kind, 'source_refs': sources[:], 'diagnosis': instructions[kind]})
+                'kind': kind, 'source_refs': sources[-2:], 'diagnosis': instructions[kind]})
     return triggers
 
 

@@ -1935,7 +1935,16 @@ def validate_state(state):
                     'invalid_checkpoint', 'a baseline response cannot belong to multiple queries')
             call_refs.add(query['result']['call_ref']); response_refs.add(query['result']['response_ref'])
     control.validate_current_context(state["control"]["context"])
+    indexes = state.get('rework_receipts', {})
+    require(isinstance(indexes, dict) and len(indexes) <= 64, 'invalid_checkpoint', 'bounded diagnosis receipt window required')
+    for saved in indexes.values():
+        entry.fields(saved, {'base_revision', 'receipt'})
+        require(type(saved['base_revision']) is int and 0 <= saved['base_revision'] < state['revision'],
+                'invalid_checkpoint', 'diagnosis receipt must retain original owner revision')
+        entry.fields(saved['receipt'], {'key', 'request_digest', 'request', 'result'})
     for identity, transaction in state.get('control_transactions', {}).items():
+        require(type(transaction.get('base_revision')) is int and 0 <= transaction['base_revision'] < state['revision'],
+                'invalid_checkpoint', 'control transaction must retain its original revision')
         require(entry.digest(transaction['request']) == identity, 'invalid_checkpoint', 'control transaction identity changed')
         if transaction.get('scope') == 'archive':
             port = transaction.get('port')
@@ -4916,29 +4925,101 @@ class Progress:
         require(not (set(self.unresolved_control_transactions()) - {replay_identity}),
                 'control_outcome_unknown', 'reconcile the exact original control transaction before another state change')
 
+    def consumed_rework_sources(self):
+        consumed = []
+        decisions = self.state.get('recovery_decisions', {})
+        for history in self.state.get('business_history', []):
+            block, decision = history['block'], history['decision']
+            if (block['code'] == 'rework_diagnosis_required' and
+                    history['kind'] == 'recover-business' and decision['subject'] == block['subject'] and
+                    decisions.get(decision['decision_id']) == decision):
+                consumed.extend(block['evidence']['triggers'])
+        return consumed
+
+    def command_rework_event(self, request, revision):
+        receipt = request.get('receipt', {})
+        raw = receipt.get('raw', {})
+        if not isinstance(raw, dict) or not raw.get('checks'):
+            return None
+        classification = raw.get('classification', 'unknown')
+        if not isinstance(classification, str) or classification not in {
+                'fixture-error', 'assertion-error', 'tdd-red', 'unknown', 'implementation-defect'}:
+            classification = 'unknown'
+        try:
+            control.validate_result_source(receipt, raw['checks'], self.bound_ref(), require_stopped=False)
+        except control.ControlError:
+            classification = 'unknown'
+        checks = raw['checks']
+        if (raw.get('stopped') is not True or not isinstance(checks, list) or
+                not all(isinstance(check, dict) for check in checks) or
+                any(check.get('status') == 'unknown' for check in checks) or
+                all(check.get('status') == 'passed' for check in checks)):
+            classification = 'unknown'
+        slice_id = raw.get('slice_id', request.get('evidence', {}).get('ticket_id', 'unknown'))
+        if not isinstance(slice_id, str) or not slice_id or len(slice_id.encode()) > 4096:
+            slice_id, classification = 'unknown', 'unknown'
+        return {'kind': 'fixture-error' if classification == 'assertion-error' else classification,
+            'slice_id': slice_id, 'boundary': 'checks', 'source_ref': entry.digest(receipt), 'revision': revision}
+
+    def rework_receipt_records(self):
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        records = {}
+        for identity, saved in self.state.get('rework_receipts', {}).items():
+            entry.fields(saved, {'base_revision', 'receipt'})
+            membership = saved['receipt']
+            request = store.read_evidence(membership['request'], run_id=current.run_id)['value']
+            result = store.read_receipt(current, membership['key'], request)
+            require(result is not None and membership['request_digest'] == state_store.raw_measure(request)[1] and
+                    store.read_evidence(membership['result'], run_id=current.run_id)['value'] == result,
+                    'invalid_checkpoint', 'diagnosis source requires original receipt commit proof')
+            records[identity] = {'base_revision': saved['base_revision'], 'request': request, 'result': result}
+        return records
+
+    def remember_rework_receipt(self, transaction, membership):
+        event = self.command_rework_event(transaction['request'], transaction['base_revision'])
+        application = (transaction.get('result') or {}).get('applicability')
+        if event is None and not application:
+            return
+        indexes = self.state.setdefault('rework_receipts', {})
+        consumed = {source for trigger in self.consumed_rework_sources() for source in trigger['source_refs']}
+        # Only diagnosed facts leave the active index; immutable original receipts remain.
+        for identity, record in self.rework_receipt_records().items():
+            original = self.command_rework_event(record['request'], record['base_revision'])
+            proof = (record.get('result') or {}).get('applicability', {})
+            sources = set(proof.get('affected', []))
+            if sources:
+                sources = {entry.digest([claim, proof['candidate']]) for claim in sources}
+            if original and original['kind'] == 'fixture-error':
+                sources.add(original['source_ref'])
+            if sources and sources <= consumed:
+                indexes.pop(identity)
+        # The latest committed interval supersedes older intervals for this slice.
+        # Admission has already refused every unconsumed pair before this result.
+        identity = ('interval:' + entry.digest([event['slice_id'], event['boundary']])
+            if event and event['kind'] != 'fixture-error' else membership['key'])
+        if identity in indexes and indexes[identity]['base_revision'] > transaction['base_revision']:
+            return
+        require(identity in indexes or len(indexes) < 64, 'state_capacity',
+                'diagnosis receipt window is full; retain original facts and resolve diagnosis before continuing')
+        indexes[identity] = {'base_revision': transaction['base_revision'], 'receipt': membership}
+
     def rework_diagnostics(self):
-        """Read bounded existing receipt/review histories; never infer unknown causes."""
+        """Read original receipt proofs and order them by their owner revisions."""
         events = []
-        for transaction in self.state.get('control_transactions', {}).values():
+        retained = self.rework_receipt_records()
+        records = [*retained.values(), *self.state.get('control_transactions', {}).values()]
+        intervals = {}
+        for identity, record in retained.items():
+            if identity.startswith('interval:'):
+                event = self.command_rework_event(record['request'], record['base_revision'])
+                intervals[(event['slice_id'], event['boundary'])] = record['base_revision']
+        for transaction in sorted(records, key=lambda value: value['base_revision']):
             request = transaction['request']
-            receipt = request.get('receipt', {})
-            raw = receipt.get('raw', {})
-            if not isinstance(raw, dict):
-                raw = {}
-            classification = raw.get('classification', 'unknown')
-            if not isinstance(classification, str) or classification not in {'fixture-error', 'assertion-error', 'tdd-red', 'unknown', 'implementation-defect'}:
-                classification = 'unknown'
-            if raw.get('checks'):
-                try:
-                    control.validate_result_source(receipt, raw['checks'], self.bound_ref())
-                except control.ControlError:
-                    classification = 'unknown'
-                slice_id = raw.get('slice_id', request.get('evidence', {}).get('ticket_id', 'unknown'))
-                if not isinstance(slice_id, str) or not slice_id or len(slice_id.encode()) > 4096:
-                    slice_id, classification = 'unknown', 'unknown'
-                events.append({'kind': 'fixture-error' if classification == 'assertion-error' else classification,
-                    'slice_id': slice_id,
-                    'boundary': 'checks', 'source_ref': entry.digest(receipt)})
+            event = self.command_rework_event(request, transaction['base_revision'])
+            if event and (event['kind'] != 'fixture-error' or
+                    event['revision'] > intervals.get((event['slice_id'], event['boundary']), -1)):
+                events.append(event)
             proof = (transaction.get('result') or {}).get('applicability', {})
             if proof.get('affected'):
                 store = state_store.open_store(self.path)
@@ -4958,16 +5039,13 @@ class Progress:
                     events.append({'kind': 'review-repair-defect', 'slice_id': axis, 'boundary': axis,
                         'source_ref': slot['action_id']})
                 observed_axes.add(axis)
-        return execution_plan.rework_diagnosis(events)
+        return execution_plan.rework_diagnosis(events, consumed=self.consumed_rework_sources())
 
     def require_rework_diagnosis(self):
         triggers = self.rework_diagnostics()
         if not triggers:
             return
         evidence = {'triggers': triggers}
-        block_id = entry.digest({'subject': self.subject(), 'code': 'rework_diagnosis_required', 'evidence': evidence})
-        if any(decision['subject'].get('block_id') == block_id for decision in self.state.get('recovery_decisions', {}).values()):
-            return
         error = entry.PreparationError('rework_diagnosis_required',
             'original Controller must diagnose the confirmed rework sources before continuing')
         self.block(error)
@@ -6658,8 +6736,10 @@ class Progress:
                                     'reason':s['transport_loss']['reason']}
         receipt_store, receipt_current, receipt_key = self.receipt_store(
             'control:' + data['action'], control_subject, invocation)
-        self._commit_receipts.append(receipt_store.prepare_receipt(receipt_current, receipt_key,
-            original_input, {key: value for key, value in result.items() if key != 'context'}))
+        membership = receipt_store.prepare_receipt(receipt_current, receipt_key,
+            original_input, {key: value for key, value in result.items() if key != 'context'})
+        self._commit_receipts.append(membership)
+        self.remember_rework_receipt(transactions[identity], membership)
         del transactions[identity]
         self.save()
         if data['action'] == 'dispatch-recovery-result' and s.get('transport_loss'):

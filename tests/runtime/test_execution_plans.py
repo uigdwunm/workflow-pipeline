@@ -39,6 +39,19 @@ class DispatchPreflightTests(unittest.TestCase):
             {'kind': kind, 'slice_id': 'A:B1', 'source_ref': kind, 'boundary': 'shared.py'}
             for kind in ('fixture-error', 'tdd-red', 'fixture-error', 'unknown')]), [])
 
+    def test_rework_consumes_only_diagnosed_sources_and_new_pairs_trigger_again(self):
+        for kind in ('fixture-error', 'review-repair-defect', 'accepted-slice-invalidated'):
+            events = [{'kind': kind, 'slice_id': 'A:B1', 'boundary': 'shared.py',
+                'source_ref': 'source:' + str(number)} for number in range(1, 5)]
+            first = execution_plan.rework_diagnosis(events[:2])
+            self.assertEqual(execution_plan.rework_diagnosis(events[:2], consumed=first), [])
+            self.assertEqual(execution_plan.rework_diagnosis(events[:3], consumed=first), [])
+            again = execution_plan.rework_diagnosis(events + [events[-1]], consumed=first)
+            self.assertEqual(len(again), 1)
+            self.assertEqual(again[0]['source_refs'], ['source:3', 'source:4'])
+            self.assertEqual(again[0]['slice_id'], 'A:B1')
+            self.assertEqual(execution_plan.rework_diagnosis(events, consumed=first + again), [])
+
     def plan(self):
         return {'ticket_id': 'A', 'contract_refs': ['A:AC-1', 'A:AC-2'],
             'steps': [{'id': 'S1', 'target': {'path': 'shared.py'}, 'read_only': [], 'verification_refs': ['V1']},

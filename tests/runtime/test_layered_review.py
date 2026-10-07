@@ -83,6 +83,28 @@ class DispatchInputTests(unittest.TestCase):
         self.assertEqual(len([source for source in measured['command_sources']
             if source['classification'] == 'fixture-error']), 2)
         self.assertEqual(flow.checkpoint.read_bytes(), before)
+        for number in (3, 4):
+            next_failure = flow.invoke('control', {'action': 'ticket-check', 'evidence': {'ticket_id': ticket,
+                'candidate': candidate, 'plan_authority': checkpoint['plan_authority'], 'checks': checks},
+                'receipt': {'adapter': 'fixture-command', 'call_ref': 'fixture-failure:' + str(number),
+                    'response_ref': 'fixture-stop:' + str(number), 'raw': {'checks': checks, 'source_unchanged': True,
+                    'stopped': True, 'dispatcher_ref': 'native:dispatcher', 'classification': 'fixture-error',
+                    'slice_id': 'original'}}})
+            self.assertEqual(next_failure['status'], 'blocked', next_failure)
+        again = flow.invoke('allocation', {'allocation_id': 'original', 'operation': 'repair',
+            'handoff': request, 'invocation_id': 'diagnosed-repair'})
+        self.assertEqual(again['error']['code'], 'rework_diagnosis_required', again)
+        next_block = flow.state()['business_block']
+        self.assertNotEqual(next_block['id'], block['id'])
+        self.assertTrue(set(next_block['evidence']['triggers'][0]['source_refs']).isdisjoint(
+            block['evidence']['triggers'][0]['source_refs']))
+        self.assertEqual(flow.allocation_slot('original')['metrics'], original['metrics'])
+        self.assertEqual(flow.allocation_slot('original')['record'], original['record'])
+        flow.invoke('recover-business', {'decision_id': 'second-short-diagnosis', 'subject': next_block['subject'],
+            'reference': 'controller:second-fixture-channel', 'diagnosis': 'new original receipts require a new diagnosis',
+            'instruction': 'retain same slice, original ref and all checks', 'expected_progress': 'original repair can proceed'})
+        self.assertIn('original-short-diagnosis', flow.state()['recovery_decisions'])
+        self.assertEqual(len(flow.state()['business_history']), 2)
         request = flow.execution_input()
         request['manifest_baseline'] = context['handoff_progress']['git_baseline_commit']
         request['semantic'].pop('validation_plan', None)
@@ -91,6 +113,64 @@ class DispatchInputTests(unittest.TestCase):
         self.assertIsNotNone(prepared['next_action'], prepared)
         self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
         self.assertIn('ticket', prepared['next_action']['payload']['payload']['validation_responsibilities'])
+
+    def test_rework_saved_transactions_use_original_revision_order(self):
+        flow, _, original, _, _, _ = self.accepted_repair_flow()
+        flow.flow_git('add', 'impl.py')
+        flow.flow_git('commit', '-qm', 'original accepted slice')
+        candidate = flow.flow_git('rev-parse', 'HEAD')
+        flow.settings['thread_id'] = 'task'
+        flow.request['host'].update(thread_id='task', role='controller', source_ref=None, actor_ref=None)
+        checkpoint = flow.state()['control']['context']['handoff_progress']
+        ticket = checkpoint['execution_authority']['execution_plan']['catalog']['tickets'][0]['ticket_id']
+        required = [item for item in checkpoint['validation_plan']['review_required'] if item['category'] == 'affected']
+        def command(identity, kind, status):
+            checks = fixture.transfer.checks_for(required, candidate)
+            for check in checks:
+                check.update(status=status, exit_code=0 if status == 'passed' else None if status == 'unknown' else 1)
+            receipt = {'adapter': 'fixture-command', 'call_ref': identity, 'response_ref': identity + ':response',
+                'raw': {'checks': checks, 'source_unchanged': True, 'stopped': status != 'unknown',
+                    'dispatcher_ref': 'native:dispatcher', 'classification': kind, 'slice_id': 'original'}}
+            return {'action': 'ticket-check', 'evidence': {'ticket_id': ticket, 'candidate': candidate,
+                'plan_authority': checkpoint['plan_authority'], 'checks': checks}, 'receipt': receipt}
+        def canonical_key(data):
+            derived = copy.deepcopy(data)
+            derived['evidence'].update(source=derived['receipt'], source_snapshot={})
+            return progress.entry.digest(derived)
+        def observed():
+            return progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint)).rework_diagnostics()
+        for interval_kind, interval_status in [('unknown', 'passed'), ('unknown', 'unknown'), ('tdd-red', 'failed')]:
+            with self.subTest(interval=interval_status + interval_kind):
+                prefix = interval_status + ':' + interval_kind
+                failures = sorted([command(prefix + ':failure:' + str(number), 'fixture-error', 'failed')
+                    for number in range(20)], key=canonical_key)
+                intervals = sorted([command(prefix + ':interval:' + str(number), interval_kind, interval_status)
+                    for number in range(20)], key=canonical_key)
+                first, last, interval = failures[0], failures[1], intervals[-1]
+                self.assertLess(canonical_key(last), canonical_key(interval))
+                for data in (first, interval, last):
+                    result = flow.invoke('control', data)
+                    requests = [transaction['request'] for transaction in flow.state().get('control_transactions', {}).values()]
+                    if data is not interval or interval_status != 'passed':
+                        self.assertTrue(any(saved['receipt'].get('call_ref') == data['receipt']['call_ref'] for saved in requests), result)
+                    else:
+                        self.assertTrue(result['next_action']['result']['ok'], result)
+                chronology = [(value['base_revision'], value['request']['receipt'].get('call_ref'),
+                    value['request']['receipt'].get('raw', {}).get('classification'),
+                    value['request']['receipt'].get('raw', {}).get('slice_id'))
+                    for value in sorted(flow.state()['control_transactions'].values(), key=lambda value: value['base_revision'])]
+                self.assertEqual(observed(), [], chronology)
+                flow.invoke('control', command(prefix + ':reset', 'unknown', 'passed'))
+        first = command('consecutive-final-1', 'fixture-error', 'failed')
+        flow.invoke('control', first)
+        self.assertEqual(observed(), [])
+        flow.invoke('control', first)
+        self.assertEqual(observed(), [])
+        flow.invoke('control', command('consecutive-final-2', 'fixture-error', 'failed'))
+        triggers = observed()
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(triggers[0]['slice_id'], 'original')
+        self.assertEqual(flow.allocation_slot('original')['metrics'], original['metrics'])
 
     def accepted_repair_flow(self):
         flow = fixture.ProgressTests(methodName='runTest')
