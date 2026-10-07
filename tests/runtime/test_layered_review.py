@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import test_workflow_progress as fixture
@@ -16,6 +17,126 @@ import workflow_progress as progress
 
 
 class DispatchInputTests(unittest.TestCase):
+    def test_t03_rejected_repair_configuration_preserves_original_slot_and_can_continue(self):
+        flow = fixture.ProgressTests(methodName='runTest')
+        flow.setUp()
+        self.addCleanup(flow.doCleanups)
+        value = flow.input_for(3)
+        plan = value['semantic']['inline_plan']
+        plan['schema_version'] = 2
+        step = plan['steps'][0]
+        plan['behavior_slices'] = [{'id': 'whole', 'step_ids': [step['id']],
+            'ac_refs': plan['contract_refs'][:], 'verification_refs': step['verification_refs'][:],
+            'read_only': step['read_only'][:], 'shared_state': []}]
+        flow.context = flow.context_for(3)
+        flow.begin('continuous', value)
+        flow.invoke('observe', flow.observation(ref='native:dispatcher'))
+        request = flow.execution_input()
+        prepared = flow.invoke('allocation', {'allocation_id': 'original', 'operation': 'prepare', 'handoff': request})
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
+        slot = flow.allocation_slot('original')
+        bound = flow.invoke('allocation', {'allocation_id': 'original', 'operation': 'bind',
+            'receipt': flow.receipt(slot['record'], ref='native:executor')})
+        original_release = bound['next_action']['result']['write_release']
+        body = b'def run():\n    return True\n'
+        (flow.flow / 'impl.py').write_bytes(body)
+        slot = flow.allocation_slot('original')
+        flow.invoke('allocation', {'allocation_id': 'original', 'operation': 'receive',
+            'receipt': flow.receipt(slot['record'], 'stopped', 'result', ref='native:executor'),
+            'result': {'delivery_id': 'original-result', 'status': 'completed', 'payload': {
+                'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(body).hexdigest()},
+                'tests': ['focused passed'], 'write_release': original_release,
+                'plan_refs': request['semantic']['plan_refs'],
+                'plan_authority': flow.state()['control']['context']['handoff_progress']['plan_authority']}}})
+        accepted = flow.invoke('allocation', {'allocation_id': 'original', 'operation': 'accept',
+            'decision': {'reference': 'accept-original'}})
+        self.assertEqual(accepted['next_action']['result']['status'], 'accepted', accepted)
+        original = flow.allocation_slot('original')
+        context = copy.deepcopy(flow.state()['control']['context'])
+        request = flow.execution_input()
+        rejected = copy.deepcopy(request)
+        rejected['configuration']['receipt'] = 'other-valid-receipt'
+        repair = {'allocation_id': 'original', 'operation': 'repair', 'invocation_id': 'retry-after-rejection'}
+        execution = context['handoff_progress']['executions'][0]
+        evidence = {key: copy.deepcopy(execution[key]) for key in ('task_id', 'paths', 'read_only', 'behavior',
+            'tests', 'git_operations', 'plan_refs', 'plan_authority', 'group_digest')}
+        authority = context['handoff_progress']['execution_authority']
+        evidence['tests'] = execution_plan.validate_plan_refs(execution_plan.current_catalog(authority),
+            execution['plan_refs'], execution['paths'], execution['read_only'],
+            context['handoff_progress']['executions'], authority)['verification_commands']
+        evidence.update(configuration=rejected['configuration'], repair={'agent_ref': 'native:executor',
+            'allocation_digest': execution['allocation_digest'], 'stop_ref': 'host:result:stopped',
+            'invocation_id': repair['invocation_id']})
+        with self.assertRaisesRegex(progress.control.ControlError, 'original configuration'):
+            progress.control.transition({'schema_version': 7, 'actor_ref': 'task', 'context': context,
+                'action': 'repair-execution', 'evidence': evidence})
+        with self.assertRaisesRegex(ValueError, 'configuration'):
+            with progress.record_lock(flow.checkpoint), progress.state_store.operation_store(flow.checkpoint):
+                progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint)).allocation(
+                    {**repair, 'handoff': rejected})
+        self.assertEqual(flow.allocation_slot('original')['record'], original['record'])
+        self.assertEqual(flow.allocation_slot('original'), original)
+        self.assertEqual(flow.state()['control']['context'], context)
+        resumed = flow.invoke('allocation', {**repair, 'handoff': request})
+        self.assertEqual(resumed['next_action']['operation'], 'invoke-host', resumed)
+        slot = flow.allocation_slot('original')
+        self.assertEqual(resumed['next_action']['payload']['payload']['execution_invocation']['ref'], 'native:executor')
+        with self.assertRaises(progress.entry.PreparationError):
+            progress.dispatch.validate_allocation_receipt(slot['record'], 'bind',
+                flow.receipt(original['record'], ref='native:executor'), flow.state()['control']['context'])
+        receipt = flow.receipt(slot['record'], ref='native:executor')
+        receipt['receipt_ref'] = 'repair-ready-after-rejection'
+        rebound = flow.invoke('allocation', {'allocation_id': 'original', 'operation': 'bind', 'receipt': receipt})
+        new_release = rebound['next_action']['result']['write_release']
+        self.assertNotEqual(new_release, original_release)
+        with self.assertRaisesRegex(progress.control.ControlError, 'result authority or release changed'):
+            progress.control.transition({'schema_version': 7, 'actor_ref': 'task',
+                'context': flow.state()['control']['context'], 'action': 'execution-result', 'evidence': {
+                    'agent_ref': 'native:executor', 'stopped': True, 'git_unchanged': True,
+                    'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(body).hexdigest()},
+                    'tests': ['focused passed'], 'plan_refs': request['semantic']['plan_refs'],
+                    'plan_authority': execution['plan_authority'], 'write_release': original_release}})
+
+    def test_t03_handle_cleanup_excludes_competing_owner_and_preserves_unknown_reserve(self):
+        flow = fixture.ProgressTests(methodName='runTest')
+        flow.setUp()
+        self.addCleanup(flow.doCleanups)
+        launched = flow.begin('continuous')
+        original_action = launched['next_action']['action_id']
+        store = progress.state_store.StateStore(flow.checkpoint)
+        settled = store.reserve('settled-earlier-invocation')
+        settled_path = store.directory / 'reserves' / 'business' / settled
+        contender = 'next-owner-invocation'
+        observations = []
+        original_unlink = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path == settled_path:
+                try:
+                    with progress.record_lock(flow.checkpoint, timeout=0):
+                        progress.state_store.StateStore(flow.checkpoint).reserve(contender, recovery=True)
+                    observations.append('acquired')
+                except progress.entry.PreparationError as error:
+                    observations.append(error.code)
+            return original_unlink(path, *args, **kwargs)
+
+        with patch.object(Path, 'unlink', unlink):
+            paused = flow.invoke('pause')
+        store.require_reserve(original_action)
+        survived = None
+        if observations == ['acquired']:
+            try:
+                store.require_reserve(contender, recovery=True)
+                survived = True
+            except progress.entry.PreparationError:
+                survived = False
+        self.assertEqual((observations, survived), (['checkpoint_busy'], None),
+                         'cleanup must exclude a real competing owner; stale cleanup can remove its recovery reserve')
+        self.assertGreater(paused['reading']['structured_bytes'], 0)
+        with progress.record_lock(flow.checkpoint, timeout=0):
+            store.reserve(contender, recovery=True)
+        store.require_reserve(contender, recovery=True)
+
     def test_t03_model_input_counts_utf8_and_limits_total_expansion(self):
         normal = progress.handoff.model_input({'contract': 'é' * 100})
         self.assertEqual(normal['reading']['model_bytes'], len(normal['text'].encode('utf-8')))

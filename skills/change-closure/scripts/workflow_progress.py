@@ -6906,6 +6906,13 @@ class Progress:
                         request['scope']['protected_paths'] == original['read_only'] and
                         request['semantic']['plan_refs'] == original['plan_refs'],
                         'scope_changed', 'repair keeps the original slice, reads and plan refs')
+                try:
+                    selection = control.select_configuration(request['configuration'])
+                except control.ControlError as error:
+                    raise entry.PreparationError('configuration_changed',
+                        'repair configuration selection is invalid; retain the original invocation') from error
+                require(selection == original['configuration'], 'configuration_changed',
+                        'repair must retain the original normalized configuration')
                 store = state_store.open_store(self.path)
                 current = store.open_current()
                 history = list(prior_slot.get('invocation_history', []))
@@ -8395,9 +8402,8 @@ def handle(path, request):
         return _handle(path, request)
     # Keep counting through owner cleanup. Returning from inside the inner
     # lock must not omit a dependency/ledger or reserve-release read.
-    with state_store.operation_store(path) as store:
+    with state_store.measure_reads() as totals:
         result = _handle(path, request)
-    totals = store.read_totals
     reading = {'structured_bytes': totals['bytes'], 'structured_files': totals['files'],
         'coverage': totals['coverage'], 'external_read_bytes': 'unknown', 'external_read_files': 'unknown'}
     result['reading'] = reading

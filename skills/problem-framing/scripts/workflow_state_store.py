@@ -34,24 +34,34 @@ _measurement_stores = ContextVar('workflow_measurement_stores', default={})
 
 
 @contextmanager
+def measure_reads():
+    """Share telemetry without extending a mutation Store's owner lifetime."""
+    totals = _operation_read_totals.get()
+    if totals is None:
+        totals = {'files': 0, 'bytes': 0, 'coverage': 'state-store-only'}
+    token = _operation_read_totals.set(totals)
+    try:
+        yield totals
+    finally:
+        _operation_read_totals.reset(token)
+
+
+@contextmanager
 def operation_store(checkpoint):
     """Share verified immutable reads only inside one locked owner operation."""
     existing = _operation_store.get()
     if existing is not None and existing.checkpoint == Path(checkpoint):
         yield existing
         return
-    totals = _operation_read_totals.get()
-    read_token = _operation_read_totals.set(totals if totals is not None else
-        {'files': 0, 'bytes': 0, 'coverage': 'state-store-only'})
-    store = StateStore(checkpoint)
-    token = _operation_store.set(store)
-    try:
-        yield store
-    finally:
-        _operation_store.reset(token)
-        _operation_read_totals.reset(read_token)
-    if store._pending_reserves is not None:
-        store.release_settled_reserves(store._pending_reserves)
+    with measure_reads():
+        store = StateStore(checkpoint)
+        token = _operation_store.set(store)
+        try:
+            yield store
+        finally:
+            _operation_store.reset(token)
+        if store._pending_reserves is not None:
+            store.release_settled_reserves(store._pending_reserves)
 
 
 def open_store(checkpoint, *, receipt_action=None):
