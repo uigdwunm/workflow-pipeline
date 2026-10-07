@@ -6682,6 +6682,17 @@ class Progress:
         if data['action'] == 'escalate-implementation':
             transactions[identity]['escalation_input'] = escalation_input
         self.save()
+        revision_allocations = None
+        if data['action'] == 'plan-revision-activate':
+            store = state_store.open_store(self.path)
+            current = store.open_current()
+            # Stage every original source while the saved control intent and
+            # leases still name the old authority. Failed writes leave only
+            # immutable orphans; resume reuses this exact original transaction.
+            revision_allocations = {allocation_id: {'kind': 'plan-revision-allocation-ref',
+                'allocation_digest': slot['record']['request']['attempt'],
+                'reference': store.write_object(current.run_id, 'evidence', {'plan_revision_allocation': slot})}
+                for allocation_id, slot in s.get('allocations', {}).items()}
         # Retain exact ledger envelope on a lost response; never promote slots by hand.
         try:
             if data["action"] == "plan-revision-activate" and s["control"]["discussion"] is None:
@@ -6701,6 +6712,15 @@ class Progress:
                 transactions[identity]['rejection'] = str(error)
                 self.save()
             raise
+        revision_membership = None
+        if data['action'] == 'plan-revision-activate':
+            # The external ledger may already have applied. Keep its original
+            # pending envelope until all fallible receipt preparation completes;
+            # query/replay it after failure instead of publishing a partial C.
+            receipt_store, receipt_current, receipt_key = self.receipt_store(
+                'control:' + data['action'], control_subject, invocation)
+            revision_membership = receipt_store.prepare_receipt(receipt_current, receipt_key,
+                original_input, {key: value for key, value in result.items() if key != 'context'})
         s["control"]["context"], s["control_receipt"] = result["context"], applied
         self.next_envelope(applied)
         transactions[identity]["result"] = {key: value for key, value in result.items() if key != 'context'}
@@ -6714,14 +6734,10 @@ class Progress:
             transaction["control_result"] = copy.deepcopy(result["plan_revision"])
             s["scope_authority"] = copy.deepcopy(transaction["proposed_authority"])
             transaction["state"] = "activated"
-            store = state_store.open_store(self.path)
-            current = store.open_current()
             s.setdefault("plan_revision_allocation_history", []).append({
                 "revision_id": transaction["input"]["revision_id"],
-                "allocations": {identity: {'kind': 'plan-revision-allocation-ref',
-                    'allocation_digest': slot['record']['request']['attempt'],
-                    'reference': store.write_object(current.run_id, 'evidence', {'plan_revision_allocation': slot})}
-                    for identity, slot in s.pop('allocations', {}).items()}})
+                "allocations": revision_allocations})
+            s.pop('allocations', None)
             if s.get("review_activity"):
                 s.setdefault("review_history", []).append(copy.deepcopy(s.pop("review_activity")))
             s["status"] = "active"
@@ -6785,10 +6801,13 @@ class Progress:
             s['status'] = self.stop_intent() or 'blocked'
             s['recovery_action'] = {'operation':'await-host-recovery', **self.recovery_requirements(),
                                     'reason':s['transport_loss']['reason']}
-        receipt_store, receipt_current, receipt_key = self.receipt_store(
-            'control:' + data['action'], control_subject, invocation)
-        membership = receipt_store.prepare_receipt(receipt_current, receipt_key,
-            original_input, {key: value for key, value in result.items() if key != 'context'})
+        if revision_membership is not None:
+            membership = revision_membership
+        else:
+            receipt_store, receipt_current, receipt_key = self.receipt_store(
+                'control:' + data['action'], control_subject, invocation)
+            membership = receipt_store.prepare_receipt(receipt_current, receipt_key,
+                original_input, {key: value for key, value in result.items() if key != 'context'})
         self._commit_receipts.append(membership)
         self.remember_rework_receipt(transactions[identity], membership)
         del transactions[identity]

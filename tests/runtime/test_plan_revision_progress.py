@@ -29,7 +29,7 @@ class T04Flow(layered_fixture.LayeredReviewTests):
                 match = re.search(r'```execution-plan-v2\n(.*?)\n```', body, re.DOTALL)
                 plan = json.loads(match.group(1))
                 if ticket == 'A':
-                    plan['behavior_slices'][0]['shared_state'] = ['b1.py']
+                    plan['behavior_slices'][0]['shared_state'] = ([] if getattr(self, 'revision_reference_fault', False) else ['b1.py'])
                     if not larger:
                         plan['blocked_by'] = ['B']
                         plan['steps'][1]['depends_on'] = ['B1']
@@ -169,12 +169,19 @@ class PlanRevisionProgressTests(unittest.TestCase):
     def test_t04_shared_revision_keeps_five_tickets_and_seven_allocations_within_capacity(self):
         self.t04_shared_revision(larger=True)
 
-    def t04_shared_revision(self, *, larger=False):
+    def test_t04_resume_reference_failure_keeps_original_slots(self):
+        self.t04_shared_revision(reference_fault=True)
+
+    def test_t04_resume_reference_failure_preserves_seven_original_slots(self):
+        self.t04_shared_revision(larger=True, reference_fault=True)
+
+    def t04_shared_revision(self, *, larger=False, reference_fault=False):
         flow = T04Flow(methodName='runTest')
         flow.setUp()
         self.addCleanup(flow.doCleanups)
         flow.revision_shared_graph = True
         flow.revision_capacity_diagnostic = larger
+        flow.revision_reference_fault = reference_fault
         candidate = flow.layered_flow()
         if larger:
             for ticket, slice_id in (('A', 'A1'), ('B', 'B1'), ('B', 'B2'), ('C', 'C1')):
@@ -263,8 +270,75 @@ class PlanRevisionProgressTests(unittest.TestCase):
                     print('T04_CAPACITY_ACTUAL ' + json.dumps(row, sort_keys=True))
             return original_commit(owner, **kwargs)
         with patch.object(progress.state_store.StateStore, 'commit_current', observe_capacity):
-            result = flow.invoke('commit-plan-revision', commit)
-        self.assertEqual(result['next_action']['operation'], 'plan-revision-activated', result)
+            if reference_fault:
+                original_atomic = progress.state_store.atomic_write
+                def fail_reference(number):
+                    seen = []
+                    def write(path, data):
+                        body = json.loads(data)
+                        if isinstance(body.get('value'), dict) and 'plan_revision_allocation' in body['value']:
+                            seen.append(path)
+                            if len(seen) == number:
+                                raise OSError('reference write interrupted at ' + str(number))
+                        return original_atomic(path, data)
+                    return seen, write
+                seen, write = fail_reference(1)
+                with patch.object(progress.state_store, 'atomic_write', write):
+                    with self.assertRaisesRegex(OSError, 'reference write interrupted'):
+                        flow.invoke('commit-plan-revision', commit)
+                self.assertEqual(len(seen), 1)
+                pending = flow.state()
+                self.assertEqual(pending['scope_authority'], before['scope_authority'])
+                self.assertEqual(pending['allocations'], before['allocations'])
+                self.assertEqual(pending['plan_revision_transaction']['state'], 'planning-committed')
+                intent = next(value['request'] for value in pending['control_transactions'].values()
+                              if value['request']['action'] == 'plan-revision-activate')
+                seen, write = fail_reference(3)
+                with patch.object(progress.state_store, 'atomic_write', write):
+                    resumed = flow.invoke('resume')
+                self.assertEqual(len(seen), 3)
+                self.assertEqual(resumed['status'], 'blocked', resumed)
+                stopped = flow.state()
+                self.assertEqual(stopped['scope_authority'], before['scope_authority'])
+                self.assertEqual(stopped['allocations'], before['allocations'])
+                self.assertEqual(stopped['plan_revision_transaction']['state'], 'planning-committed')
+                self.assertEqual(stopped.get('plan_revision_allocation_history', []), [])
+                self.assertTrue(any(value['request'] == intent and value['result'] is None
+                                    for value in stopped['control_transactions'].values()))
+                original_write = progress.state_store.StateStore.write_object
+                original_charge = progress.state_store.StateStore._charge
+                active, charged = [0], []
+                def mark_reference(owner, run_id, kind, value, **kwargs):
+                    previous = active[0]
+                    if kind == 'evidence' and isinstance(value, dict) and 'plan_revision_allocation' in value:
+                        active[0] = len(charged) + 1
+                        charged.append(value)
+                    try:
+                        return original_write(owner, run_id, kind, value, **kwargs)
+                    finally:
+                        active[0] = previous
+                failed_charge = []
+                def fail_charge(owner, size, **kwargs):
+                    if active[0] == 4 and not failed_charge:
+                        failed_charge.append(True)
+                        raise progress.entry.PreparationError('state_capacity', 'reference charge interrupted')
+                    return original_charge(owner, size, **kwargs)
+                with patch.object(progress.state_store.StateStore, 'write_object', mark_reference), \
+                     patch.object(progress.state_store.StateStore, '_charge', fail_charge):
+                    charged_result = flow.invoke('resume')
+                self.assertEqual(failed_charge, [True])
+                self.assertEqual(charged_result['status'], 'blocked', charged_result)
+                stopped = flow.state()
+                self.assertEqual(stopped['scope_authority'], before['scope_authority'])
+                self.assertEqual(stopped['allocations'], before['allocations'])
+                self.assertEqual(stopped['plan_revision_transaction']['state'], 'planning-committed')
+                self.assertEqual(stopped.get('plan_revision_allocation_history', []), [])
+                self.assertTrue(any(value['request'] == intent and value['result'] is None
+                                    for value in stopped['control_transactions'].values()))
+                result = flow.invoke('resume')
+            else:
+                result = flow.invoke('commit-plan-revision', commit)
+        self.assertIn(result['next_action']['operation'], {'plan-revision-activated', 'control-effects'}, result)
         self.assertEqual(len(measured), 1)
         self.assertLessEqual(measured[0]['candidate_bytes'], progress.state_store.SUBJECT_LIMIT)
         destination = os.environ.get('T04_REVISION_CAPACITY_METRICS_PATH')
@@ -274,12 +348,17 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 output.write('\n')
         after = flow.state()['control']['context']['handoff_progress']
         impact = after['plan_revisions'][-1]['evidence']['retention']['impact']
-        self.assertEqual(impact['impacted_step_ids'], ['A1', 'B1', 'B2', 'C1', 'D1'] if larger else ['B1', 'B2', 'A1', 'A2'])
-        self.assertEqual(impact['verification_ids'], ['V-A1', 'V-B1', 'V-B2', 'V-C1', 'V-D1'] if larger else ['V-A1', 'V-A2', 'V-B1', 'V-B2'])
-        self.assertEqual({ref['step_id'] for item in after['carried_results'] for ref in item['plan_refs']}, {'A2', 'E1'} if larger else {'C1'})
-        self.assertEqual(set(after['review_claims']), {axis})
+        expected_steps = (['A1', 'C1', 'D1'] if larger else ['B2', 'A1', 'A2']) if reference_fault else (
+            ['A1', 'B1', 'B2', 'C1', 'D1'] if larger else ['B1', 'B2', 'A1', 'A2'])
+        self.assertEqual(impact['impacted_step_ids'], expected_steps)
+        self.assertEqual(impact['verification_ids'], sorted('V-' + item for item in expected_steps))
+        carried_steps = {'A2', 'B1', 'B2', 'E1'} if larger else {'B1', 'C1'}
+        self.assertEqual({ref['step_id'] for item in after['carried_results'] for ref in item['plan_refs']},
+                         carried_steps if reference_fault else {'A2', 'E1'} if larger else {'C1'})
+        retained_axes = {axis, 'local:B:B1'} | ({'local:B:B2'} if larger else set()) if reference_fault else {axis}
+        self.assertEqual(set(after['review_claims']), retained_axes)
         self.assertEqual(after['review_applicability']['affected'], sorted(view['claim_id']
-            for name, view in views.items() if name != axis))
+            for name, view in views.items() if name not in retained_axes))
         application = store.read_evidence(after['review_applicability']['reference'], run_id=current.run_id)['value']['applications'][sharing_axis]
         self.assertNotEqual(application['compared']['read_fingerprints']['.scratch/layered/issues/A.md'],
                             shared_claim['read_fingerprints']['.scratch/layered/issues/A.md'])
@@ -294,6 +373,34 @@ class PlanRevisionProgressTests(unittest.TestCase):
         for identity, reference in history.items():
             slot = store.read_evidence(reference['reference'], run_id=current.run_id)['value']['plan_revision_allocation']
             self.assertEqual(slot, before['allocations'][identity])
+        if reference_fault:
+            replay = flow.invoke('commit-plan-revision', commit, revision=0)
+            self.assertTrue(replay['acknowledged'], replay)
+            self.assertEqual(len(flow.state()['control']['context']['handoff_progress']['plan_revisions']), 1)
+            candidate = flow.flow_git('rev-parse', 'HEAD')
+            flow.early_ticket_check(candidate, 'B')
+            request = flow.execution_input()
+            ticket = next(item for item in flow.state()['scope_authority']['execution_plan']['catalog']['tickets']
+                          if item['ticket_id'] == 'B')
+            request['scope']['owned_paths'] = ['b1.py']
+            request['authorization']['scope_digest'] = progress.entry.digest(request['scope'])
+            request['semantic']['plan_refs'] = [progress.execution_plan.step_ref(ticket, ticket['plan']['steps'][0])]
+            continued = flow.invoke('allocation', {'allocation_id': 'B1', 'operation': 'repair',
+                'invocation_id': 'B1-after-reference-failure', 'handoff': request})
+            self.assertIsNotNone(continued['next_action'], continued)
+            self.assertEqual(continued['next_action']['operation'], 'invoke-host', continued)
+            self.assertEqual(continued['next_action']['payload']['payload']['execution_invocation']['ref'], 'native:executor-B1')
+            old_slot = before['allocations']['B1']
+            slot = flow.allocation_slot('B1', 'B')
+            with self.assertRaises(progress.entry.PreparationError):
+                progress.dispatch.validate_allocation_receipt(slot['record'], 'bind',
+                    flow.receipt(old_slot['record'], ref='native:executor-B1'), flow.state()['control']['context'])
+            receipt = flow.receipt(slot['record'], ref='native:executor-B1')
+            receipt['receipt_ref'] = 'B1-after-reference-failure:ready'
+            bound = flow.invoke('allocation', {'allocation_id': 'B1', 'operation': 'bind', 'receipt': receipt})
+            self.assertNotEqual(bound['next_action']['result']['write_release'],
+                progress.dispatch.execution_release_token(progress.handoff.unseal(old_slot['record'])))
+            self.assertEqual(flow.allocation_slot('B1', 'B')['metrics']['first_submission'], old_slot['metrics']['first_submission'])
 
     def test_t04_revision_preserves_original_unaffected_claims_and_one_cas(self):
         flow = T04Flow(methodName='runTest')
