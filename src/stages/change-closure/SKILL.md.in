@@ -77,7 +77,7 @@ never proves closure complete.
 For an inherited flow, read closure-owned documents in the verified Flow
 Worktree after the accepted implementation candidate. Update only
 the declared closure-owned files using their approved add, modify or delete
-operations. These include ordinary documentation such as Spec/Ticket/ADR/CONTEXT,
+operations. These include ordinary documentation such as Spec/Ticket/ADR/glossary,
 tracker files, READMEs, CHANGELOGs and usage or technical guides; the sealed paths
 define the boundary. A new requirement requires a separate planning decision.
 

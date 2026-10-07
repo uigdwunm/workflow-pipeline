@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "90346c9aff9a601838f17ab7f899abf8dfe49e5c6e60883aa4a0d4a2cda0fef0",
+  "bundle_digest": "40ccaae4fc7b77c50aef562c0af85e33025331d318804ce10e49f471a5100032",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 12,
@@ -76,7 +76,7 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "90dbee7497b2ada643c9bd9bd6b6238d087543d6f0be92e0b271ea631432aac2"
+      "sha256": "1e6dace2c5cae94e686be693e4ee655e290c5deb197fcabd50bae005823f50eb"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",
@@ -104,11 +104,11 @@
     },
     "references/solution-design/subagent-protocol.md": {
       "mode": "0644",
-      "sha256": "2ad8d1731f1e63d5f78470c80bab845171df29b86efdb69fa55a3d190d3ffb26"
+      "sha256": "77039f41998c76f9ef09a7e7e71173954128e2c86330e898400a12a11afa5eee"
     },
     "references/solution-design/templates.md": {
       "mode": "0644",
-      "sha256": "19de2866426b5a40b363f558b36bda5ae0c7a44932b79817baf296288cb3da45"
+      "sha256": "6db09203a872a00a140fbdbbddf39d934aee885d50e5860b1c14bb167e109599"
     },
     "scripts/discussion_core/__init__.py": {
       "mode": "0644",

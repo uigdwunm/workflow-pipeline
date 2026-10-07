@@ -1,6 +1,6 @@
 # Workflow Pipeline
 
-This context describes a Codex engineering workflow whose ordinary Stages may
+This glossary describes a Codex engineering workflow whose ordinary Stages may
 run independently or attach to a durable design discussion. This glossary owns
 shared terminology; executable rules remain in the Skills and architectural
 decisions remain under `docs/adr/`.

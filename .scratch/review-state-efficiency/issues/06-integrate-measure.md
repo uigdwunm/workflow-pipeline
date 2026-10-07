@@ -42,3 +42,10 @@ V03：真实host按PRD两个Ticket/四片样例：一处局部bug、一处共享
 ## Comments
 
 用户已统一接受并选择连续实现；此为普通本地授权，非正式Stage3 handoff。
+
+
+## Matt 1.3.1 基础兼容校准（2026-10-07）
+
+先继承 main `70822bc` 的路径与外部依赖约定。本项目新增领域术语只写 `GLOSSARY.md`；消费项目既有 canonical `CONTEXT.md` 仍有效，阶段提示与文档索引传递选定路径。上游静态兼容基线为 `dd400c3ad65e57c06f05e832e0aac92c7992f34d` / `1.3.1`，动作名称和六 Ticket 合同不变。
+
+V02/V03 必须区分 main 历史宿主 preflight 与本分支新包：核真实安装的宿主适配入口及 exact package identity，main 的十项 action preflight 不替代新 control12/schema7/v2 计划下的原生交接或完整端到端样例。仅更换词汇表路径无需重跑 T01/T02 全套，也不重标其原审查源点；此兼容增量的构建、静态和包回归单独记证。原完整 validate.sh 和未验证原生现场仍按本 Ticket 执行。

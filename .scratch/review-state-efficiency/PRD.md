@@ -8,6 +8,14 @@ Frozen requirement SHA256: dcc2adf2141dd49a9d383fc30a62388d267fb35e58fdddbdad182
 
 本文件已由用户统一接受，当前对话选择普通本地连续执行，授权六张Ticket实现、必要审查/验证、文档收尾和本地main合并；不授权安装、部署、远程发布或旧运行迁移。这是普通本地授权，不是正式 B/C Stage Handoff。此前冻结需求中的“本轮只做方案”记录当时阶段边界，本次后续授权不改写冻结来源。需求保持唯一且冻结。逐文件实施范围及生成映射见 [manifest.json](manifest.json)，函数级计划见各 Ticket。本文中的数值除现状测量外均为**待验证设计预算**。
 
+## Matt 基础兼容更新（2026-10-07）
+
+在原六 Ticket 实现暂停期间，先同步 main 的 `70822bc`：静态上游基线为 Matt `1.3.1` / `dd400c3ad65e57c06f05e832e0aac92c7992f34d`，本项目词汇表改用 `GLOSSARY.md`；消费项目按其约定选择词汇表，已有 legacy `CONTEXT.md`/`CONTEXT-MAP.md` 不因升级被重命名或产生第二份词汇表。生成包采用同一 canonical 来源，保留本分支 execution-plan-v2、control12/schema7、progress-v20/transfer-v15/runner11。
+
+这一兼容更新不改变分层审查、局部修复、共享 Git 短屏障、固定预算或六 Ticket 依赖；T01/T02 原验收仍保原 source/report，追加兼容增量验证，不重标旧证据。T06 的领域文档目标改为 main 已提供的 `GLOSSARY.md`。main 的登记/入口回读/十项 action preflight 记录仅说明其当时包和宿主；不能冒作本分支新包完整流程、原生交接或效率改善的证据，T06 仍核实际注册的 Matt 入口及本分支 exact package identities。
+
+冻结需求文件及 hash 保持不变。T03–T06 连续实现继续暂停，待用户明确恢复；此次仅基础兼容同步与方案校准，不部署、不迁移旧运行。
+
 ## 问题与目标
 
 函数级计划本身不是失败根因。现有流程把独立审查集中到完整候选，替换候选又重跑两轴；正式计划修订虽能保留部分结果，仍同时退役候选、审查和验证。检查点又把控制上下文重复放入每个 transaction、allocation 和历史项。结果是局部修复引发广泛协调，恢复和模型阅读随着累计历史膨胀。

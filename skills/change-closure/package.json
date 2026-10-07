@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "d48c333a1e4a63763d74d5ae207d2c3b8fa79263930cc2013b28ccb8a0801e0a",
+  "bundle_digest": "0b5866368ea2a8492f49fa2b60c3aa84e1bf8dfbb7ffa4f462a1ea26cb32b492",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 12,
@@ -35,7 +35,7 @@
     },
     "SKILL.md": {
       "mode": "0644",
-      "sha256": "fbbde5016a7109530ded680a4d43c72750f7284119398025bd43a08cd52e75a3"
+      "sha256": "ab0f03e6f5cdc739953fd6c5b4ede597b1dab8342a890408c67cc9b4d61a0091"
     },
     "agents/openai.yaml": {
       "mode": "0644",
@@ -75,7 +75,7 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "90dbee7497b2ada643c9bd9bd6b6238d087543d6f0be92e0b271ea631432aac2"
+      "sha256": "1e6dace2c5cae94e686be693e4ee655e290c5deb197fcabd50bae005823f50eb"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",

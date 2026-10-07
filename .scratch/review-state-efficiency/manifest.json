@@ -918,16 +918,20 @@
       ]
     },
     {
-      "path": "CONTEXT.md",
+      "path": "GLOSSARY.md",
       "operation": "modify",
       "tickets": [
         "T06"
       ],
       "kind": "documentation",
       "reason": "增加已审阅的新领域术语，保留既有角色和边界",
-      "exists_at_design": true,
+      "exists_at_design": false,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "exists_at_current_baseline": true,
+      "renamed_from_at_design": "CONTEXT.md",
+      "compatibility_basis_commit": "70822bc",
+      "implementation_note": "2026-10-07 同步 main Matt 1.3.1 约定：本项目 canonical glossary 已由 main 重命名为 GLOSSARY.md；T06 修改该现有文件，不再创建 CONTEXT.md，不迁移消费项目既有词汇表。原设计时旧路径事实通过 renamed_from_at_design 保留。"
     },
     {
       "path": "build/skill-packages.json",
