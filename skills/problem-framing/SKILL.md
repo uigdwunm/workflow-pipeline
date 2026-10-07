@@ -191,7 +191,7 @@ question. The goal is the best attainable current-state document, not a
 verbatim transcript or decision archive. Keep these document authorities distinct:
 
 - the draft is the complete target-specific narrative and cross-task handoff;
-- `CONTEXT.md` is the canonical domain terminology source;
+- the project's canonical domain glossary is the terminology source;
 - ADRs own hard-to-reverse architectural decisions; and
 - stage-2 Specs and Tickets are the formal planning artifacts.
 

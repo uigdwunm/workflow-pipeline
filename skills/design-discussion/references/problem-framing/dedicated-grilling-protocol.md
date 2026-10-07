@@ -130,8 +130,8 @@ After that first sentence:
 7. After every material answer or conclusion, update the draft at its recorded
    storage path. Ask one
    material question at a time and make the best safe progress between answers.
-8. Preserve `CONTEXT.md` as canonical terminology and ADRs as canonical
-   hard-to-reverse decisions. Edit only stage-owned repository documents. When
+8. Preserve the project's selected glossary as canonical terminology and ADRs
+   as canonical hard-to-reverse decisions. Edit only stage-owned repository documents. When
    a shared file contains changes whose ownership is
    unclear, record the proposal in the requirement-specific draft instead of
    staging the shared file. Keep the draft semantically complete by summarizing

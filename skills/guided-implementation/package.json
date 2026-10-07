@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "2a9d78452c1718c91bc113d9c98537a2202874b0c3e101d1fbabe3834311e998",
+  "bundle_digest": "e89a89ade47fcff33c078bf0d3e808ae1cb9f4d72eed9e6909bcdd2dc1533588",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 11,
@@ -83,7 +83,7 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "d6aa5dace112c9c4cb067a0ed843875e5b25b4da305bd16901eeee00ec587741"
+      "sha256": "01d88e45dd66ab36925a8ec0ccb2545ded4cd0723009c127bcfb83fe97b6c1f3"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",

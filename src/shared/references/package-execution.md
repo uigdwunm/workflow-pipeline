@@ -114,6 +114,13 @@ scope: choosing a capability does not authorize another stage. Read the project'
 existing tracker, triage and domain conventions first; only if first-time setup is
 actually needed use `action:"setup"` to check setup-matt-pocock-skills.
 
+The project's domain conventions select its canonical glossary paths. Without
+an explicit convention, use existing `GLOSSARY.md` / `GLOSSARY-MAP.md`; if only
+legacy `CONTEXT.md` / `CONTEXT-MAP.md` exists, continue using it. New glossaries
+follow the installed Matt convention. Carry the selected paths through stage
+prompts and document indexes. A Skill upgrade alone does not authorize renaming
+a consumer project's domain files or creating a second canonical glossary.
+
 For a single stage, omit `target_stages`. Complete its existing commits and
 acceptance even when its successor is absent. Report the real completed stage,
 real handoff and retained recovery evidence; name the unavailable successor and

@@ -25,7 +25,9 @@ Use the host's exact registered name, entry and source. Preflight can query the 
 | selected review/document/other legitimate route | exact capabilities named by that installed Skill |
 | first-time setup, only when needed | `setup-matt-pocock-skills` |
 
-Unused branches do not become entry gates. Stage 4 with clear existing document representation does not invoke `ask-matt`. Read existing project conventions before setup. Matt Skills remain external and are neither bundled nor automatically installed. The manually reviewed compatibility baseline is [mattpocock/skills](https://github.com/mattpocock/skills) commit `84fdeffd12f2ee307994d1eb6feb48173b6e0502` (`1.2.3`, MIT); package integrity checks do not prove an installed Matt version matches this baseline. Read the actual registered Skill and revalidate affected routes after upstream changes.
+Unused branches do not become entry gates. Stage 4 with clear existing document representation does not invoke `ask-matt`. Read existing project conventions before setup. Matt Skills remain external and are neither bundled nor automatically installed. The statically reviewed upstream baseline is [mattpocock/skills](https://github.com/mattpocock/skills/tree/dd400c3ad65e57c06f05e832e0aac92c7992f34d) commit `dd400c3ad65e57c06f05e832e0aac92c7992f34d` (`1.3.1`, MIT); package integrity checks do not prove an installed Matt version matches this baseline. Host-adapted entries may differ from upstream source. Read the actual registered Skill and revalidate affected routes after upstream changes.
+
+Domain paths follow the project's existing conventions under the [package execution contract](../src/shared/references/package-execution.md). This repository uses `GLOSSARY.md`; a consumer project's existing canonical `CONTEXT.md` remains valid. The compatibility update retains the same stage actions and dependency names.
 
 ## Fixed identities and recovery
 
@@ -63,3 +65,18 @@ Worktrees remain defined and enforced by this repository's protocols.
 `./scripts/check-dependencies.sh --stage <name-or-number> --action <action> --project <project>` reports filesystem candidates only. Optional repeated `--root` bounds diagnostic roots and `--required-skill` names selected capabilities. Default roots include configured `CODEX_HOME/skills` and conventional user roots; `--project` adds project `.agents/skills` and `.codex/skills`. Legitimate links are resolved and identical real entries deduplicated. Multiple disk candidates do not override a unique current registry selection. Filesystem availability never means Agent activation or compatibility.
 
 The v1.2.0 repository check ran 820 tests: 819 passed and one existing conditional skip remained. The local-only deployer separately passed 23 isolated tests. The temporary `skills@1.6.0` installation checks belong to v1.1.0 and are not fresh v1.2.0 evidence. Real nested host integration remains pending an external dependency; real single-layer host evidence from an earlier candidate does not validate the exact current candidate. Generate the field worksheet with `python3 scripts/field_acceptance.py`. Local installation synchronization is a separate authorized action, not part of validation or closure.
+
+## Matt 1.3.1 compatibility evidence
+
+On 2026-10-07, the upstream changes from the previous `1.2.3` baseline were
+statically reviewed against the existing stage contracts and Codex-adapted
+entries. The current host registry uniquely resolved all nine Matt capabilities
+used by the normal stage actions, and their complete entries were read back.
+In a disposable project, the real host registered the five newly generated
+packages; all ten existing stage-action preflights passed against those exact
+package entries and the registered Matt dependencies.
+The optional `setup-matt-pocock-skills` was not registered on that host; this
+repository already provides tracker, triage and domain conventions, so no setup
+action was needed. Registration, entry readback and action preflight do not
+verify complete Matt flows or native Agent handoffs. Fresh end-to-end host
+execution evidence for this compatibility update remains unverified.

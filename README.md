@@ -94,7 +94,7 @@ $problem-framing 帮我明确这次需求
 
 - **把它声明为外部运行时依赖。** Skill 之间通过名称调用；在实际调用前检查必要能力，缺失时保留当前恢复点。
 - **让使用者分别安装。** 这是最容易更新、也最清晰的版权边界；本项目不锁死或重新发布 Matt 的文件。
-- **记录兼容基线。** 本版本按 `mattpocock/skills` 的提交 `84fdeffd12f2ee307994d1eb6feb48173b6e0502`（仓库版本 `1.2.3`）核对。上游升级后应重新验证阶段调用和输出协议。
+- **记录兼容基线。** 本次静态核对按 `mattpocock/skills` 的提交 `dd400c3ad65e57c06f05e832e0aac92c7992f34d`（上游版本 `1.3.1`）。实际安装的宿主适配入口仍须核验；登记与文件回读不等同于完整阶段执行验证，见 [兼容证据](docs/dependencies.md#matt-131-compatibility-evidence)。
 - **遵守许可证。** Matt 的仓库使用 MIT License。由于这里仅引用和依赖、没有打包其源码，通常无需把其许可证合并进本项目的 LICENSE；仍在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 中保留来源与许可证说明。
 - **避免同名重复安装。** 如果同一个 Matt Skill 被多个插件或目录同时暴露，Codex 可能无法确定使用哪一个版本。请只保留一个可解析来源。
 

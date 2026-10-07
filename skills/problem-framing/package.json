@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "41a4f816c0299a9906a52c34eed7b1b5e806691316a3b68cfa42b0b384be81af",
+  "bundle_digest": "d6b63c0b5437285efba23a5a582a208696274a87fd4ce94c920ec00185ff7d59",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 11,
@@ -39,7 +39,7 @@
     },
     "SKILL.md": {
       "mode": "0644",
-      "sha256": "8064c6bde812eb04beccadb52f6997f5805e44b0af90db7d7c2c0f42b537a9cc"
+      "sha256": "aa7b41fa762924f86c228f48f8aac3ab1ca37ec1b516a7a2327a28b364e38c28"
     },
     "agents/openai.yaml": {
       "mode": "0644",
@@ -47,7 +47,7 @@
     },
     "references/problem-framing/dedicated-grilling-protocol.md": {
       "mode": "0644",
-      "sha256": "02a3bdb0307e537d57816f04296cdfd5bbbf74bf562bd62ccc605ac8ba52c231"
+      "sha256": "8a2260045e29ecf4ff2c8c400d33e10c96959fc0b8ee1bd55ac8c64c2891a687"
     },
     "references/problem-framing/repository-and-recovery.md": {
       "mode": "0644",
@@ -55,7 +55,7 @@
     },
     "references/problem-framing/templates.md": {
       "mode": "0644",
-      "sha256": "8fbd1ed7a00f5fbfb1fb5cd6ad30f76fb6ba370b7a0c86303c6b24f2cdabf701"
+      "sha256": "b27b064a59147846616f404a8b19072d3838fc92d4bcbd053ed8dc6ae0256fd4"
     },
     "references/shared/design-discussion/confirmation-contract.md": {
       "mode": "0644",
@@ -91,7 +91,7 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "d6aa5dace112c9c4cb067a0ed843875e5b25b4da305bd16901eeee00ec587741"
+      "sha256": "01d88e45dd66ab36925a8ec0ccb2545ded4cd0723009c127bcfb83fe97b6c1f3"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",

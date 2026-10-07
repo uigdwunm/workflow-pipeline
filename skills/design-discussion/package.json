@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "f477e4802369b54bddb5bae6e7eca1ade099c14203598540e9bf21c17ca364d3",
+  "bundle_digest": "7ca0322e7abd330206614899b82ad50cd5545061a04a5f6efabc1d66a6cd039c",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 11,
@@ -40,11 +40,11 @@
     },
     "references/problem-framing/dedicated-grilling-protocol.md": {
       "mode": "0644",
-      "sha256": "02a3bdb0307e537d57816f04296cdfd5bbbf74bf562bd62ccc605ac8ba52c231"
+      "sha256": "8a2260045e29ecf4ff2c8c400d33e10c96959fc0b8ee1bd55ac8c64c2891a687"
     },
     "references/problem-framing/templates.md": {
       "mode": "0644",
-      "sha256": "8fbd1ed7a00f5fbfb1fb5cd6ad30f76fb6ba370b7a0c86303c6b24f2cdabf701"
+      "sha256": "b27b064a59147846616f404a8b19072d3838fc92d4bcbd053ed8dc6ae0256fd4"
     },
     "references/shared/design-discussion/checkpoint-protocol.md": {
       "mode": "0644",
@@ -96,7 +96,7 @@
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
-      "sha256": "d6aa5dace112c9c4cb067a0ed843875e5b25b4da305bd16901eeee00ec587741"
+      "sha256": "01d88e45dd66ab36925a8ec0ccb2545ded4cd0723009c127bcfb83fe97b6c1f3"
     },
     "references/shared/requirement-delivery.md": {
       "mode": "0644",

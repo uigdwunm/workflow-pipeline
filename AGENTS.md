@@ -58,4 +58,4 @@ Use the default Matt Pocock triage vocabulary: `needs-triage`, `needs-info`, `re
 
 ### Domain docs
 
-Use the single-context layout: `CONTEXT.md` at the repository root and architectural decisions under `docs/adr/`. See `docs/agents/domain.md`.
+Use the single-context layout: `GLOSSARY.md` at the repository root and architectural decisions under `docs/adr/`. See `docs/agents/domain.md`.

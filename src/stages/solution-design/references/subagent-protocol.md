@@ -195,7 +195,7 @@ Document authority is fixed:
 
 - the frozen requirement document owns requirements, scope, constraints, and
   acceptance conditions and remains immutable;
-- `CONTEXT.md` owns canonical terminology;
+- the project's canonical domain glossary owns terminology;
 - ADRs own hard-to-reverse architectural decisions;
 - the Spec owns the implementation design and testing decisions; and
 - Tickets own implementation slices, order, and blocking relationships.
