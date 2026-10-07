@@ -815,7 +815,7 @@ def verified_transition(payload):
                 require(set(assessment['implementation_paths'] + assessment['test_paths']) <= set(evidence['allowed_paths']),
                         'direct assessment paths escape implementation scope')
             evidence['binding_verified'] = True
-    if action in {'plan-execution', 'repair-execution', 'assign', 'execution-result', 'accept-execution', 'prepare-dispatch-recovery', 'recover-dispatch', 'candidate-ready', 'escalate-implementation'}:
+    if action in {'plan-execution', 'repair-execution', 'assign', 'execution-result', 'accept-execution', 'prepare-dispatch-recovery', 'recover-dispatch', 'candidate-ready', 'ticket-check', 'escalate-implementation'}:
         require(progress is not None, 'missing dispatcher checkpoint')
         verify_binding(repository, progress['binding'])
         scope_base = git(repository, 'rev-parse', progress['binding']['target_branch']).decode().strip()
@@ -828,6 +828,13 @@ def verified_transition(payload):
         verify_stopped_snapshot(repository, evidence['snapshot'], actual)
         evidence['pending_paths'] = sorted(p for p in progress['allowed_paths'] if actual['files'][p] !=
             committed_fingerprint(repository, progress['git_baseline_commit'], p))
+    if action == 'ticket-check':
+        from execution_plan import current_catalog, ticket_check_paths
+        selected = ticket_check_paths(current_catalog(progress['execution_authority']), evidence['ticket_id'],
+            progress['allowed_paths'], progress['protected_paths'], progress['execution_authority'])
+        require(snapshot(repository)['head'] == evidence['candidate'] and not git(repository, 'status', '--porcelain'),
+                'early Ticket checks require the clean actual checked candidate')
+        evidence['source_snapshot'] = {relative: file_fingerprint(repository, relative) for relative in selected}
     if action == 'prepare-dispatch-recovery':
         actual, ownership, revalidate = recovery_snapshot(repository, progress)
         evidence.update(snapshot=actual, ownership=ownership, revalidate=revalidate)

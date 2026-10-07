@@ -1255,6 +1255,15 @@ def render(saved, *, readiness=None, checkpoint_path=None):
         with workflow_state_store.operation_store(saved['checkpoint']):
             payload = render(resolve_allocation(saved), readiness=readiness, checkpoint_path=checkpoint_path)
             payload['payload']['input_digest'] = saved['digest']
+            store = workflow_state_store.open_store(saved['checkpoint'])
+            current = store.open_current()
+            port = store.read_subject(current, current.root['metadata']['stage_subject']).value['control']
+            context = port.get('context')
+            if port.get('store_ref') is not None:
+                context, _ = workflow_state_store.open_store(port['store_ref']['ledger_path']).read_ledger_control(port['store_ref'])
+            progress = context['handoff_progress']
+            payload['payload']['validation_responsibilities'] = execution_plan.validation_responsibilities(
+                execution_plan.current_catalog(progress['execution_authority']), progress['validation_plan'])
             return model_input(payload['payload'],
                 read_totals=workflow_state_store.open_store(saved['checkpoint']).read_totals)
     body = unseal(saved)
@@ -1335,6 +1344,8 @@ def render(saved, *, readiness=None, checkpoint_path=None):
                 'verifications': [item for item in plan['verifications'] if item['id'] in verifications]})
         payload['current_scope_authority'] = body['semantic']['execution_plan']
         payload['dispatch_preflight'] = execution_plan.dispatch_preflight(catalog, selected)
+        payload['validation_responsibilities'] = execution_plan.validation_responsibilities(
+            catalog, body['semantic'].get('validation_plan'))
         if body['semantic'].get('repair') is not None:
             payload['execution_invocation'] = {'operation': 'continue',
                 'ref': body['semantic']['repair']['agent_ref'],

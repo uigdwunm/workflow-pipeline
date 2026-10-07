@@ -1720,6 +1720,14 @@ def validate_saved_reviews(state):
                     type(slot.get('stopped')) is bool and isinstance(slot.get('receipts'), list),
                     'invalid_checkpoint', 'review must retain its original request and native identity')
             identities.add(slot['action_id'])
+            if 'cost' in slot:
+                cost = slot['cost']
+                entry.fields(cost, {'classification', 'source_ref', 'waiting_seconds'})
+                require(isinstance(cost['classification'], str) and cost['classification'] in {'accepted', 'review-defect', 'unknown'} and
+                        cost['waiting_seconds'] == 'unknown' and any(
+                            cost['source_ref'] == entry.digest({key: receipt[key] for key in ('adapter', 'call_ref', 'response_ref')})
+                            for receipt in slot['receipts'] if receipt['status'] in {'stopped', 'not-created'}),
+                        'invalid_checkpoint', 'cost hint must retain its original stopped receipt identity')
             start = slot.get('start')
             require(isinstance(start, dict) and type(start.get('applied')) is bool and
                     isinstance(start.get('control_digest'), str) and re.fullmatch(r'[0-9a-f]{64}', start['control_digest']),
@@ -4908,7 +4916,88 @@ class Progress:
         require(not (set(self.unresolved_control_transactions()) - {replay_identity}),
                 'control_outcome_unknown', 'reconcile the exact original control transaction before another state change')
 
+    def rework_diagnostics(self):
+        """Read bounded existing receipt/review histories; never infer unknown causes."""
+        events = []
+        for transaction in self.state.get('control_transactions', {}).values():
+            request = transaction['request']
+            receipt = request.get('receipt', {})
+            raw = receipt.get('raw', {})
+            if not isinstance(raw, dict):
+                raw = {}
+            classification = raw.get('classification', 'unknown')
+            if not isinstance(classification, str) or classification not in {'fixture-error', 'assertion-error', 'tdd-red', 'unknown', 'implementation-defect'}:
+                classification = 'unknown'
+            if raw.get('checks'):
+                try:
+                    control.validate_result_source(receipt, raw['checks'], self.bound_ref())
+                except control.ControlError:
+                    classification = 'unknown'
+                slice_id = raw.get('slice_id', request.get('evidence', {}).get('ticket_id', 'unknown'))
+                if not isinstance(slice_id, str) or not slice_id or len(slice_id.encode()) > 4096:
+                    slice_id, classification = 'unknown', 'unknown'
+                events.append({'kind': 'fixture-error' if classification == 'assertion-error' else classification,
+                    'slice_id': slice_id,
+                    'boundary': 'checks', 'source_ref': entry.digest(receipt)})
+            proof = (transaction.get('result') or {}).get('applicability', {})
+            if proof.get('affected'):
+                store = state_store.open_store(self.path)
+                value = store.read_evidence(proof['reference'], run_id=store.open_current().run_id)['value']
+                for axis, application in value['applications'].items():
+                    if not application['applicable']:
+                        events.append({'kind': 'accepted-slice-invalidated', 'slice_id': axis,
+                            'boundary': axis, 'source_ref': entry.digest([application['claim_id'], proof['candidate']])})
+        observed_axes = set()
+        for group in [*self.state.get('review_history', []), self.state.get('review_activity', {})]:
+            for axis, slot in group.items():
+                report = next((receipt['raw'].get('review') for receipt in reversed(slot['receipts'])
+                    if receipt['status'] == 'stopped' and receipt['raw'].get('review')), None)
+                defect = (slot.get('cost', {}).get('classification') == 'review-defect' or
+                    isinstance(report, dict) and isinstance(report.get('findings'), list) and bool(report['findings']))
+                if slot['stopped'] and defect and axis in observed_axes:
+                    events.append({'kind': 'review-repair-defect', 'slice_id': axis, 'boundary': axis,
+                        'source_ref': slot['action_id']})
+                observed_axes.add(axis)
+        return execution_plan.rework_diagnosis(events)
+
+    def require_rework_diagnosis(self):
+        triggers = self.rework_diagnostics()
+        if not triggers:
+            return
+        evidence = {'triggers': triggers}
+        block_id = entry.digest({'subject': self.subject(), 'code': 'rework_diagnosis_required', 'evidence': evidence})
+        if any(decision['subject'].get('block_id') == block_id for decision in self.state.get('recovery_decisions', {}).values()):
+            return
+        error = entry.PreparationError('rework_diagnosis_required',
+            'original Controller must diagnose the confirmed rework sources before continuing')
+        self.block(error)
+        if self.state.get('business_block') is None:
+            self.set_business_block(error.code, evidence)
+            self.save()
+        raise error
+
+    def ticket_checks_due(self):
+        checkpoint = self.state['control']['context'].get('handoff_progress') or {}
+        if checkpoint.get('state') != 'implementing':
+            return []
+        catalog = execution_plan.current_catalog(self.state['scope_authority'])
+        completed = execution_plan.current_accepted_steps(catalog, control.current_accepted_results(checkpoint),
+            self.state['scope_authority'])
+        due = []
+        for ticket in catalog['tickets']:
+            accepted = [group for group in ticket['plan']['behavior_slices'] if set(group['step_ids']) <= completed]
+            if len(accepted) < 2 and not any(group['shared_state'] for group in accepted):
+                continue
+            checked = checkpoint.get('ticket_checks', {}).get(ticket['ticket_id'])
+            selected = execution_plan.ticket_check_paths(catalog, ticket['ticket_id'],
+                checkpoint['allowed_paths'], checkpoint['protected_paths'], self.state['scope_authority'])
+            if not checked or checked['plan_authority'] != checkpoint['plan_authority'] or checked['source_snapshot'] != {
+                    path: control_git.file_fingerprint(Path(checkpoint['binding']['worktree']), path) for path in selected}:
+                due.append(ticket['ticket_id'])
+        return due
+
     def require_business_ready(self, *, control_replay=False):
+        self.require_rework_diagnosis()
         if not control_replay:
             self.require_controls_reconciled()
         require(not any(not slot['start']['applied'] and not slot.get('business_settled')
@@ -6147,7 +6236,8 @@ class Progress:
         original_input = copy.deepcopy(data)
         require(isinstance(data['receipt'], dict) and data['receipt'],
                 'host_evidence_missing', 'original authenticated host/controller evidence required')
-        invocation = (data['receipt'].get('reference') or data['receipt'].get('call_ref') or
+        invocation = ((data['receipt'].get('response_ref') if data['action'] == 'validation-result' else None) or
+                      data['receipt'].get('reference') or data['receipt'].get('call_ref') or
                       data['receipt'].get('operation_id') or entry.digest(data['receipt']))
         control_subject = self.control_receipt_subject(data)
         receipt_store, receipt_current, receipt_key = self.receipt_store(
@@ -6166,7 +6256,7 @@ class Progress:
         entry.fields(data, {"action", "evidence", "receipt"})
         entry.nonempty(data["action"])
         require(data["action"] in {"successor-ready", "archive", "archive-result",
-                    "scope-seal", "scope-revise", "plan-revision-activate", "escalate-implementation", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "capture-integration", "local-review", "ticket-accept", "review-applicability", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
+                    "scope-seal", "scope-revise", "plan-revision-activate", "escalate-implementation", "prepare-dispatch-recovery", "dispatch-recovery-intent", "dispatch-recovery-result", "recover-dispatch", "release-recovery-allocation", "capture-integration", "local-review", "ticket-accept", "ticket-check", "review-applicability", "candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"},
                 "invalid_operation", "use the original bounded control recovery/closure operation")
         require(isinstance(data["receipt"], dict) and data["receipt"], "host_evidence_missing", "original authenticated host/controller evidence required")
         s = self.state
@@ -6355,7 +6445,7 @@ class Progress:
             s['deferred_validation'] = copy.deepcopy(data)
             self.save()
             return _view(s, {'operation':'reconcile-validation-result','disposition':'stopped','attempt_id':data['evidence']['attempt_id']})
-        if data["action"] in {"candidate-ready", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"}:
+        if data["action"] in {"candidate-ready", "ticket-check", "review-converged", "validation-start", "validation-result", "validation-retry", "invalidate-candidate"}:
             self.require_business_ready(control_replay=True)
             self.require_not_stopping()
             current = handoff.refresh(s['handoff']['entry'], s['handoff']['expected_entry'], after_work=True)
@@ -6400,8 +6490,10 @@ class Progress:
                 finally:
                     checkpoint['review_claims'] = original
                 data['evidence']['claims'] = claims
-            if data['action'] in {'candidate-ready', 'validation-result'}:
+            if data['action'] in {'candidate-ready', 'validation-result', 'ticket-check'}:
                 data['evidence']['source'] = copy.deepcopy(data['receipt'])
+                if data['action'] == 'ticket-check':
+                    data['evidence']['source_snapshot'] = {}
                 if data['action'] == 'candidate-ready' and control.direct_implementation(s['control']['context']['handoff_progress']):
                     stop = s['host'].get('last_stop')
                     require(s['host']['status'] == 'stopped' and stop is not None and stop.get('provenance') and
@@ -6878,11 +6970,16 @@ class Progress:
         proposal = prior_slot.get('repair_proposal') if prior_slot else None
         require(proposal is None or operation in {'repair', 'prepare'}, 'outcome_unknown',
                 'reconcile the original repair preparation before another allocation operation')
+        if operation == 'prepare' and prior_slot is None:
+            require(not self.ticket_checks_due(), 'ticket_check_required',
+                'run current affected/Ticket checks before another execution dispatch')
         if operation in {'bind', 'reconcile', 'receive'} and prior_slot and prior_slot.get('record'):
             launch = prior_slot['record']['request']
             require(data['receipt'].get('attempt') == launch['attempt'] and
                     data['receipt'].get('request_digest') == launch['digest'],
                     'attempt_mismatch', 'receipt belongs to a previous execution invocation')
+        if operation in {'prepare', 'repair'}:
+            self.require_business_ready()
         if operation == 'repair':
             entry.fields(data, {'allocation_id', 'operation', 'handoff', 'invocation_id'})
             self.require_allocation_active()
@@ -7223,6 +7320,8 @@ class Progress:
         else:
             action = {"operation": "allocation-result", "allocation_id": identity, "result": result,
                       "checkpoint": str(self.path)}
+            if operation == "accept":
+                action["required_ticket_checks"] = self.ticket_checks_due()
         return _view(s, action, acknowledged=result.get("acknowledged", False))
 
     def issue_allocation(self, identity, slot):
@@ -7470,6 +7569,15 @@ class Progress:
             data['candidate'], checkpoint['plan_authority'], self.state['handoff']['binding']['worktree'],
             current.run_id, entry.digest(self.state['packages']), self.bound_ref())
         ticket, group, steps = review_evidence.subject(catalog, data['axis'])
+        groups = ticket['plan']['behavior_slices']
+        if ticket['ticket_id'] in self.ticket_checks_due():
+            checked = checkpoint.get('ticket_checks', {}).get(ticket['ticket_id'])
+            selected = execution_plan.ticket_check_paths(catalog, ticket['ticket_id'],
+                checkpoint['allowed_paths'], checkpoint['protected_paths'], self.state['scope_authority'])
+            require(checked is not None and checked['plan_authority'] == checkpoint['plan_authority'] and
+                    checked['source_snapshot'] == {relative: control_git.file_fingerprint(
+                        Path(checkpoint['binding']['worktree']), relative) for relative in selected},
+                    'ticket_check_required', 'run the current affected/Ticket checks before local or Ticket review')
         results = control.current_accepted_results(checkpoint)
         completed = execution_plan.current_accepted_steps(execution_plan.current_catalog(self.state['scope_authority']),
             results, self.state['scope_authority'])
@@ -7723,6 +7831,13 @@ class Progress:
         slot['receipts'].append(copy.deepcopy(receipt))
         slot['stopped'] = receipt['status'] in {'stopped', 'not-created'}
         if slot['stopped']:
+            report = (receipt['raw'] if semantic_raw is None else semantic_raw).get('review')
+            classification = 'unknown'
+            if isinstance(report, dict) and isinstance(report.get('findings'), list):
+                classification = 'review-defect' if report['findings'] else 'accepted' if report.get('status') == 'accepted' else 'unknown'
+            slot['cost'] = {'classification': classification,
+                'source_ref': entry.digest({key: receipt[key] for key in ('adapter', 'call_ref', 'response_ref')}),
+                'waiting_seconds': 'unknown'}
             slot['business_settled'] = True
             self.state.get('native_adverse', {}).pop(slot['ref'], None)
         if proof:

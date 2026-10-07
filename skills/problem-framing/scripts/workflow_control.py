@@ -324,7 +324,7 @@ def validate_review(candidate, review, verification, dispatcher_ref):
     validate_result_source(latest['source'], latest['checks'], dispatcher_ref, latest['attempt_id'])
 
 
-def validate_result_source(source, checks, dispatcher_ref, attempt_id=None):
+def validate_result_source(source, checks, dispatcher_ref, attempt_id=None, *, require_stopped=True):
     keys(source, {'adapter', 'call_ref', 'response_ref', 'raw'})
     for field in ('adapter', 'call_ref', 'response_ref'):
         text(source[field])
@@ -332,7 +332,28 @@ def validate_result_source(source, checks, dispatcher_ref, attempt_id=None):
     if attempt_id is not None:
         require(isinstance(raw,dict) and raw.get('attempt_id') == attempt_id, 'command result belongs to another validation attempt')
     require(isinstance(raw, dict) and raw.get('checks') == checks and raw.get('source_unchanged') is True and
-            raw.get('dispatcher_ref') == dispatcher_ref and raw.get('stopped') is True, 'trusted original stopped command observations required')
+            raw.get('dispatcher_ref') == dispatcher_ref and
+            (raw.get('stopped') is True or not require_stopped and raw.get('stopped') is False),
+            'trusted original command observations and required stop proof needed')
+
+
+def validate_attempt_observation(attempt, evidence, dispatcher_ref):
+    """Classify one original command; unknown observations grant no completion."""
+    keys(evidence, {'attempt_id', 'checks', 'source', 'source_snapshot'})
+    require(evidence['attempt_id'] == attempt['attempt_id'], 'result belongs to another attempt')
+    validate_checks(attempt['required'], evidence['checks'], attempt['candidate'], passed=False, complete=False)
+    unknown = (any(check['status'] == 'unknown' for check in evidence['checks']) or
+        evidence['source'].get('raw', {}).get('stopped') is not True)
+    validate_result_source(evidence['source'], evidence['checks'], dispatcher_ref, attempt['attempt_id'],
+                           require_stopped=not unknown)
+    if attempt.get('source') is not None and attempt['state'] == 'unknown':
+        require(all(attempt['source'][key] == evidence['source'][key] for key in ('adapter', 'call_ref')),
+                'unknown command must reconcile its original call')
+    if unknown:
+        return 'unknown'
+    passed = (len(evidence['checks']) == len(attempt['required']) and
+        evidence['source_snapshot'] == attempt['source_snapshot'] and all(check_passed(check) for check in evidence['checks']))
+    return 'passed' if passed else 'failed'
 
 
 def delivery_verification(progress, dispatcher_ref):
@@ -572,7 +593,7 @@ def validate_progress(progress):
             validate_scope_seal_evidence(seal['evidence'],
                                          {'requirement_identity': seal['evidence']['requirement_identity']}, progress)
     elif 'executions' in progress:
-        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'integration_target_head', 'integration_candidate', 'integration_source', 'integration_retained', 'plan_authority', 'execution_authority', 'plan_revisions', 'plan_revision_sources', 'carried_results', 'revalidation_source', 'review_claims', 'review_applicability', 'coverage'}
+        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'integration_target_head', 'integration_candidate', 'integration_source', 'integration_retained', 'plan_authority', 'execution_authority', 'plan_revisions', 'plan_revision_sources', 'carried_results', 'revalidation_source', 'review_claims', 'review_applicability', 'coverage', 'ticket_checks'}
         if 'integration_target_head' in progress:
             for field in ('integration_target_head', 'integration_candidate'):
                 require(re.fullmatch('[0-9a-f]{40}', progress.get(field, '')), 'invalid final integration identity')
@@ -634,6 +655,28 @@ def validate_progress(progress):
                     catalog['plan_digest'] == authority_digest({k: v for k, v in catalog.items()
                         if k != 'plan_digest'}),
                     'current execution authority changed')
+        if 'ticket_checks' in progress:
+            require('execution_authority' in progress, 'Ticket checks require an execution catalog')
+            from execution_plan import current_catalog
+            catalog = current_catalog(progress['execution_authority'])
+            checked = progress['ticket_checks']
+            require(isinstance(checked, dict) and len(checked) <= len(catalog['tickets']),
+                    'bounded Ticket checks required')
+            for ticket_id, observation in checked.items():
+                keys(observation, {'ticket_id', 'candidate', 'plan_authority', 'checks', 'source', 'source_snapshot'})
+                require(ticket_id == observation['ticket_id'] and ticket_id in {ticket['ticket_id'] for ticket in catalog['tickets']} and
+                        isinstance(observation['candidate'], str) and re.fullmatch('[0-9a-f]{40}', observation['candidate']),
+                        'Ticket check identity changed')
+                require(isinstance(observation['source_snapshot'], dict) and all(
+                    value is None or isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value)
+                    for value in observation['source_snapshot'].values()), 'Ticket check fingerprints required')
+                paths(list(observation['source_snapshot']), empty=True)
+                validate_checks([item for item in progress['validation_plan']['review_required'] if item['category'] == 'affected'],
+                    observation['checks'], observation['candidate'])
+                require(isinstance(observation['source'], dict) and isinstance(observation['source'].get('raw'), dict),
+                        'original Ticket command source required')
+                text(observation['source']['raw'].get('dispatcher_ref'))
+                validate_result_source(observation['source'], observation['checks'], observation['source']['raw']['dispatcher_ref'])
         if 'plan_revisions' in progress:
             require('plan_authority' in progress and isinstance(progress['plan_revisions'], list) and
                     len(progress['plan_revisions']) <= 32, 'invalid plan revision history')
@@ -1251,6 +1294,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         progress['allowed_paths'] = new_paths
         progress['protected_paths'] = new_protected
         progress.setdefault('plan_revisions', []).append(record)
+        progress.pop('ticket_checks', None)
         progress['plan_authority'] = copy.deepcopy(new)
         progress['execution_authority'] = copy.deepcopy(current_authority)
         progress.pop('candidate', None)
@@ -1684,6 +1728,18 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                         execution['stopped'] = True
         return {'ok': True, 'context': context, 'effects': effects, 'recovery': recovery,
                 'remaining_paths': recovery['remaining_paths'], 'revalidate': recovery['revalidate']}
+    elif action == 'ticket-check':
+        keys(evidence, {'ticket_id', 'candidate', 'plan_authority', 'checks', 'source', 'source_snapshot'})
+        require(progress and progress['state'] == 'implementing' and evidence['plan_authority'] == progress['plan_authority'],
+                'early Ticket checks require the current implementation plan')
+        from execution_plan import current_catalog, ticket_check_paths
+        paths_to_check = ticket_check_paths(current_catalog(progress['execution_authority']), evidence['ticket_id'],
+            progress['allowed_paths'], progress['protected_paths'], progress['execution_authority'])
+        require(set(evidence['source_snapshot']) == set(paths_to_check), 'Ticket check snapshot scope differs')
+        required = [check for check in progress['validation_plan']['review_required'] if check['category'] == 'affected']
+        validate_checks(required, evidence['checks'], evidence['candidate'])
+        validate_result_source(evidence['source'], evidence['checks'], context['carrier']['ref'])
+        progress.setdefault('ticket_checks', {})[evidence['ticket_id']] = copy.deepcopy(evidence)
     elif action in {'local-review', 'ticket-accept'}:
         keys(evidence, {'axis', 'candidate', 'result_ref', 'claim', 'claim_checkpoint'})
         require(progress and progress['state'] == 'implementing', 'local review requires current implementation')
@@ -1824,16 +1880,14 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         require(progress and progress.get('attempts'), 'no final validation attempt')
         attempt = progress['attempts'][-1]
         require(evidence['attempt_id'] == attempt['attempt_id'], 'result belongs to another attempt')
-        if attempt['state'] != 'running':
+        if attempt['state'] not in {'running', 'unknown'}:
             require(attempt.get('result') == evidence, 'validation result identity cannot change')
             return {'ok':True, 'context':context, 'effects':[], 'acknowledged':True}
         require(progress['state'] == 'validating', 'validation is not active')
-        validate_checks(attempt['required'], evidence['checks'], progress['candidate'], passed=False, complete=False)
-        validate_result_source(evidence['source'], evidence['checks'], context['carrier']['ref'], attempt['attempt_id'])
+        outcome = validate_attempt_observation(attempt, evidence, context['carrier']['ref'])
         require(all(not old.get('source') or old['source']['response_ref'] != evidence['source']['response_ref'] for old in progress['attempts'][:-1]), 'command result response reused across attempts')
-        passed = len(evidence['checks']) == len(attempt['required']) and evidence['source_snapshot'] == attempt['source_snapshot'] and all(check_passed(v) for v in evidence['checks'])
-        attempt.update(state='passed' if passed else 'failed', checks=evidence['checks'], source=evidence['source'], result=evidence)
-        progress['state'] = 'deliverable' if passed else 'final-validation-failed'
+        attempt.update(state=outcome, checks=evidence['checks'], source=evidence['source'], result=evidence)
+        progress['state'] = {'passed': 'deliverable', 'failed': 'final-validation-failed', 'unknown': 'validating'}[outcome]
     elif action == 'validation-retry':
         keys(evidence, {'attempt_id', 'reference'})
         require(progress and progress['state'] == 'final-validation-failed' and progress['attempts'][-1]['attempt_id'] == evidence['attempt_id'], 'retry must name latest failed attempt')
@@ -1845,8 +1899,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         require(progress and progress.get('candidate') == evidence['candidate'] and not progress.get('accepted_delivery'), 'accepted delivery cannot be replaced')
         require(progress['state'] != 'cancelled', 'cancelled validation cannot be invalidated')
         if progress['state'] == 'validating':
-            require(evidence.get('stopped') is True, 'reconcile active validation before invalidation')
-            progress['attempts'][-1].update(state='unknown', invalidated=True)
+            raise ControlError('reconcile the original validation attempt before invalidation')
         text(evidence['reference']); text(evidence['reason'])
         progress.setdefault('validation_history', []).append({k:copy.deepcopy(progress[k]) for k in
             ('candidate','expected_target_head','candidate_evidence','tests','review_decision','review_digest','attempts') if k in progress} | {'invalidation':evidence})

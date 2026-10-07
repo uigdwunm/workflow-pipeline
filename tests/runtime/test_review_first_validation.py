@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import sys
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
@@ -10,6 +11,38 @@ import workflow_control as control
 import workflow_control_git as control_git
 import execution_plan
 import test_stage_transfer as transfer
+
+
+class ValidationObservationTests(unittest.TestCase):
+    def test_unknown_command_preserves_attempt_until_same_call_definitively_stops(self):
+        candidate = 'a' * 40
+        required = [{'id': 'full', 'category': 'full', 'command': './scripts/validate.sh',
+            'cwd': str(Path(__file__).resolve().parents[2]), 'pass_condition': 'exit 0',
+            'allowed_skips': [], 'environment': None}]
+        checks = [dict(required[0], status='unknown', exit_code=None,
+            start_commit=candidate, end_commit=candidate, environment_fingerprint=None,
+            output_ref='adapter:pending-output', output_digest='b' * 64)]
+        attempt = {'attempt_id': 'final-original', 'candidate': candidate, 'required': required,
+            'source_snapshot': {'impl.py': 'c' * 64}, 'state': 'running', 'source': None}
+        source = {'adapter': 'deterministic-command', 'call_ref': 'command-original',
+            'response_ref': 'command-pending', 'raw': {'attempt_id': attempt['attempt_id'],
+                'checks': checks, 'source_unchanged': True, 'stopped': False, 'dispatcher_ref': 'native:dispatcher'}}
+        evidence = {'attempt_id': attempt['attempt_id'], 'checks': checks, 'source': source,
+            'source_snapshot': attempt['source_snapshot']}
+        self.assertEqual(control.validate_attempt_observation(attempt, evidence, 'native:dispatcher'), 'unknown')
+        attempt.update(state='unknown', source=source)
+        final = copy.deepcopy(evidence)
+        final['checks'][0].update(status='passed', exit_code=0)
+        final['source']['response_ref'] = 'command-definitive'
+        final['source']['raw'].update(checks=final['checks'], stopped=True)
+        self.assertEqual(control.validate_attempt_observation(attempt, final, 'native:dispatcher'), 'passed')
+        foreign = copy.deepcopy(final)
+        foreign['source']['call_ref'] = 'another-command'
+        with self.assertRaises(control.ControlError):
+            control.validate_attempt_observation(attempt, foreign, 'native:dispatcher')
+        changed = copy.deepcopy(final)
+        changed['source_snapshot'] = {'impl.py': 'd' * 64}
+        self.assertEqual(control.validate_attempt_observation(attempt, changed, 'native:dispatcher'), 'failed')
 
 
 class ReviewFirstTests(fixture.ProgressTests):

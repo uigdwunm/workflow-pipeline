@@ -13,6 +13,32 @@ import execution_plan
 
 
 class DispatchPreflightTests(unittest.TestCase):
+    def test_validation_responsibilities_separate_local_ticket_integration_and_final(self):
+        plan = self.plan()
+        checks = {'review_required': [{'id': 'focused', 'category': 'focused', 'command': 'local regression'},
+            {'id': 'affected', 'category': 'affected', 'command': 'combined regression'}],
+            'final_required': [{'id': 'full', 'category': 'full', 'command': './scripts/validate.sh'}]}
+        roles = execution_plan.validation_responsibilities({'tickets': [{'plan': plan}]}, checks)
+        self.assertEqual(roles['local']['A:B1']['verification_refs'], ['V1'])
+        self.assertEqual(roles['ticket']['A']['ac_refs'], ['A:AC-1', 'A:AC-2'])
+        self.assertEqual(roles['early_integration'], checks['review_required'][1:])
+        self.assertEqual(roles['final'], checks['final_required'])
+
+    def test_rework_diagnosis_requires_two_confirmed_events_and_keeps_identity(self):
+        for kind, expected in [('fixture-error', 'input-and-result-channel'),
+                               ('review-repair-defect', 'producer-consumer-and-rejection'),
+                               ('accepted-slice-invalidated', 'slice-coupling')]:
+            first = {'kind': kind, 'slice_id': 'A:B1', 'source_ref': 'original:1', 'boundary': 'shared.py'}
+            second = {**first, 'source_ref': 'original:2'}
+            self.assertEqual(execution_plan.rework_diagnosis([first]), [])
+            triggers = execution_plan.rework_diagnosis([first, second])
+            self.assertEqual(triggers[0]['slice_id'], 'A:B1')
+            self.assertEqual(triggers[0]['diagnosis'], expected)
+            self.assertEqual(triggers[0]['source_refs'], ['original:1', 'original:2'])
+        self.assertEqual(execution_plan.rework_diagnosis([
+            {'kind': kind, 'slice_id': 'A:B1', 'source_ref': kind, 'boundary': 'shared.py'}
+            for kind in ('fixture-error', 'tdd-red', 'fixture-error', 'unknown')]), [])
+
     def plan(self):
         return {'ticket_id': 'A', 'contract_refs': ['A:AC-1', 'A:AC-2'],
             'steps': [{'id': 'S1', 'target': {'path': 'shared.py'}, 'read_only': [], 'verification_refs': ['V1']},

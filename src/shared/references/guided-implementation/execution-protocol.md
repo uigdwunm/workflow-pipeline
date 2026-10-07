@@ -254,3 +254,40 @@ the verified final coverage certificate. Then run every `final_required` item
 on the exact final candidate through C's original validation attempt. A changed
 candidate always needs new complete final validation; an old full pass cannot
 be inherited. Unknown calls retain their original exact lookup and stop barriers.
+
+
+## Early checks, diagnosis and measurement
+
+The handoff's `validation_responsibilities` separates first local AC checks from
+complete Ticket AC/consumer composition, early affected checks and final full
+checks. After two accepted slices combine, or an accepted shared fixture changes,
+C returns `required_ticket_checks`. Run the frozen affected checks on a clean
+candidate immediately and record `control: ticket-check` with the Ticket ID,
+candidate, plan authority and original stopped command receipt. C snapshots all
+Ticket targets, generated outputs and read/shared dependencies; unknown shared
+scope uses the full frozen scope. New execution dispatch and local/Ticket review
+wait for these current checks. Preserve applicable original claims.
+
+A final command with unknown checks or no definite stop remains the same
+validation attempt through pause/resume. Reconcile its original adapter/call;
+a new response may report completion. Retire it only after a definite result.
+A changed candidate always requires fresh frozen full checks.
+
+Before continuing after two consecutive confirmed fixture/assertion failures,
+two review repair rounds with new defects at the same boundary, or two accepted
+slice invalidations at the same shared boundary, C requires the original
+Controller's `recover-business` short diagnosis. Keep the original slice, first
+submission, invocation history, authority and mandatory checks. Name the original
+sources and address the input/result channel, producer-consumer/rejection path,
+or slicing/cumulative review point respectively. Classify planned TDD RED
+separately; missing or unconfirmed causes remain unknown.
+
+For repository development, the read-only `measure_review_state.py` tool lives
+in the repository's scripts directory, outside the installable packages. Run it
+with Python and `--checkpoint <original-current-checkpoint>` and/or repeated
+`--command-log <original-log>` for samples. It consumes
+original Store subjects/ledger receipts and runner or `/usr/bin/time -p` output,
+retaining command and review identities, submissions and classification sources.
+Duration samples without absolute intervals are never summed into wall time.
+Unmeasured waits, CPU, RSS, environment and external reads remain unknown; these
+samples alone do not establish an efficiency improvement or a native field run.

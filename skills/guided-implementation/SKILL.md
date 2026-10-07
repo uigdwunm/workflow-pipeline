@@ -26,6 +26,8 @@ Read [Workflow Control Protocol](references/shared/guided-implementation/workflo
 
 An authenticated non-root native implementation-dispatcher with the complete bound Stage-3 envelope follows references/shared/guided-implementation/execution-protocol.md directly. It never creates another dispatcher or a visible implementation task. Only the Workflow Controller performs the launch and independent review portions below. New Stage-3 runs use `full`: real Execution Agents own every implementation and repair edit under exact plan refs and file allocation. The Dispatcher arranges work, integrates accepted bytes, checks and commits; the Controller never becomes an implementation writer. Historical direct runs continue under their original pinned package.
 
+Follow the protocol’s early Ticket checks, original-attempt unknown/pause recovery, three short-diagnosis triggers and read-only cost sampling. Keep local AC checks distinct from complete Ticket and final verification.
+
 Before each allocation, select a complete behavior and inspect the catalog's dispatch preflight for same-file/read-write/shared coupling and each AC's first public check. Keep coupled work serial or combine it; the original Controller and design review determine semantic completeness. Repair a stopped original Execution Agent through the same allocation ID with a new invocation ID and bound release, retaining its authenticated stop and first-submission identity. Follow the protocol's 64 KiB total model input and 256 KiB explicit expansion budgets; report actual Store reads separately and mark other unmeasured host reads unknown.
 
 ## Native capacity at Stage 3

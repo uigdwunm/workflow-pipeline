@@ -462,6 +462,62 @@ def validate_behavior_slices(plan, source):
                 "behavior slices must cover all steps and ACs exactly: " + source)
 
 
+def rework_diagnosis(events):
+    """Classify confirmed original events; RED/unknown never imply a defect."""
+    instructions = {'fixture-error': 'input-and-result-channel',
+        'review-repair-defect': 'producer-consumer-and-rejection',
+        'accepted-slice-invalidated': 'slice-coupling'}
+    groups, triggers = {}, []
+    for event in events:
+        kind = event['kind']
+        key = (event['slice_id'], event['boundary'], kind)
+        if kind not in instructions:
+            # Planned RED and unknown observations break a consecutive fixture streak.
+            groups.pop((event['slice_id'], event['boundary'], 'fixture-error'), None)
+            continue
+        sources = groups.setdefault(key, [])
+        if event['source_ref'] not in sources:
+            sources.append(event['source_ref'])
+        if len(sources) == 2:
+            triggers.append({'slice_id': event['slice_id'], 'boundary': event['boundary'],
+                'kind': kind, 'source_refs': sources[:], 'diagnosis': instructions[kind]})
+    return triggers
+
+
+def validation_responsibilities(catalog, validation_plan):
+    """Keep slice verification, whole-Ticket composition and final gates distinct."""
+    local, tickets = {}, {}
+    for ticket in catalog['tickets']:
+        plan = ticket['plan']
+        for group in plan['behavior_slices']:
+            local[plan['ticket_id'] + ':' + group['id']] = {
+                'ac_refs': group['ac_refs'][:], 'verification_refs': group['verification_refs'][:],
+                'meaning': 'first local behavior check; does not accept the whole Ticket'}
+        tickets[plan['ticket_id']] = {'ac_refs': sorted({ac for group in plan['behavior_slices'] for ac in group['ac_refs']}),
+            'verification_refs': [check['id'] for check in plan['verifications']],
+            'meaning': 'complete Ticket ACs, consumers, composition and shared fixtures'}
+    return {'local': local, 'ticket': tickets,
+        'early_integration': copy.deepcopy([check for check in validation_plan['review_required'] if check['category'] == 'affected']) if validation_plan else 'unknown',
+        'final': copy.deepcopy(validation_plan['final_required']) if validation_plan else 'unknown'}
+
+
+def ticket_check_paths(catalog, ticket_id, allowed_paths, protected_paths, authority=None):
+    tickets = [ticket for ticket in catalog['tickets'] if ticket['ticket_id'] == ticket_id]
+    _incomplete(len(tickets) == 1, 'unknown Ticket validation subject')
+    plan = tickets[0]['plan']
+    known = set(allowed_paths) | set(protected_paths)
+    selected = {step.get('target', step)['path'] for step in plan['steps'] + plan['artifact_steps']}
+    if authority is not None:
+        steps = {step['id']: (tickets[0], step) for step in plan['steps'] + plan['artifact_steps']}
+        selected.update(selected_owned_paths(steps, list(steps), authority['scope']['downstream']['manifest']))
+    shared = {path for group in plan['behavior_slices'] for path in group['shared_state']}
+    if shared - known:
+        return sorted(known)
+    selected.update(shared)
+    selected.update(path for group in plan['behavior_slices'] for path in group['read_only'])
+    return sorted(selected)
+
+
 def dispatch_preflight(catalog, selected_step_ids):
     """Describe structural coupling/check ownership; semantic review stays with C."""
     selected = set(selected_step_ids)
