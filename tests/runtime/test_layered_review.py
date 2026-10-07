@@ -172,6 +172,48 @@ class DispatchInputTests(unittest.TestCase):
         self.assertEqual(triggers[0]['slice_id'], 'original')
         self.assertEqual(flow.allocation_slot('original')['metrics'], original['metrics'])
 
+    def test_rework_command_observations_keep_original_call_identity_and_order(self):
+        flow, _, original, _, _, _ = self.accepted_repair_flow()
+        flow.flow_git('add', 'impl.py')
+        flow.flow_git('commit', '-qm', 'one original accepted slice')
+        candidate = flow.flow_git('rev-parse', 'HEAD')
+        flow.settings['thread_id'] = 'task'
+        flow.request['host'].update(thread_id='task', role='controller', source_ref=None, actor_ref=None)
+        checkpoint = flow.state()['control']['context']['handoff_progress']
+        ticket = checkpoint['execution_authority']['execution_plan']['catalog']['tickets'][0]['ticket_id']
+        required = [item for item in checkpoint['validation_plan']['review_required'] if item['category'] == 'affected']
+        def observe(call, response, status='failed'):
+            checks = fixture.transfer.checks_for(required, candidate)
+            for check in checks:
+                check.update(status=status, exit_code=0 if status == 'passed' else None if status == 'unknown' else 1)
+            return flow.invoke('control', {'action': 'ticket-check', 'evidence': {'ticket_id': ticket,
+                'candidate': candidate, 'plan_authority': checkpoint['plan_authority'], 'checks': checks},
+                'receipt': {'adapter': 'fixture-command', 'call_ref': call, 'response_ref': response,
+                    'raw': {'checks': checks, 'source_unchanged': True, 'stopped': status != 'unknown',
+                        'dispatcher_ref': 'native:dispatcher', 'classification': 'fixture-error', 'slice_id': 'original'}}})
+        def diagnostics():
+            return progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint)).rework_diagnostics()
+        observe('before-success', 'first-stop')
+        passed = observe('success-interval', 'success-stop', 'passed')
+        self.assertTrue(passed['next_action']['result']['ok'], passed)
+        observe('before-success', 'second-stop')
+        observe('after-success', 'independent-stop')
+        self.assertEqual(diagnostics(), [])
+        observe('next-interval', 'next-success', 'passed')
+        observe('same-call', 'unknown-observation', 'unknown')
+        self.assertEqual(diagnostics(), [])
+        observe('same-call', 'first-definitive-stop')
+        self.assertEqual(diagnostics(), [])
+        observe('same-call', 'second-definitive-stop')
+        self.assertEqual(diagnostics(), [])
+        receipts = [transaction['request']['receipt'] for transaction in flow.state()['control_transactions'].values()]
+        self.assertEqual({receipt['response_ref'] for receipt in receipts if receipt['call_ref'] == 'same-call'},
+            {'unknown-observation', 'first-definitive-stop', 'second-definitive-stop'})
+        observe('another-call', 'another-definitive-stop')
+        self.assertEqual(len(diagnostics()), 1)
+        self.assertEqual(flow.allocation_slot('original')['metrics'], original['metrics'])
+        self.assertEqual(flow.allocation_slot('original')['record'], original['record'])
+
     def accepted_repair_flow(self):
         flow = fixture.ProgressTests(methodName='runTest')
         flow.setUp()

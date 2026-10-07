@@ -4959,7 +4959,8 @@ class Progress:
         if not isinstance(slice_id, str) or not slice_id or len(slice_id.encode()) > 4096:
             slice_id, classification = 'unknown', 'unknown'
         return {'kind': 'fixture-error' if classification == 'assertion-error' else classification,
-            'slice_id': slice_id, 'boundary': 'checks', 'source_ref': entry.digest(receipt), 'revision': revision}
+            'slice_id': slice_id, 'boundary': 'checks', 'source_ref': entry.digest([self.state['stage_subject'], receipt.get('adapter'),
+                receipt.get('call_ref'), raw.get('dispatcher_ref')]), 'revision': revision}
 
     def rework_receipt_records(self):
         store = state_store.open_store(self.path)
@@ -5009,17 +5010,31 @@ class Progress:
         events = []
         retained = self.rework_receipt_records()
         records = [*retained.values(), *self.state.get('control_transactions', {}).values()]
+        ordered = sorted(records, key=lambda value: value['base_revision'])
+        commands = {}
+        for transaction in ordered:
+            event = self.command_rework_event(transaction['request'], transaction['base_revision'])
+            if event is None:
+                continue
+            original = commands.get(event['source_ref'])
+            if original is None:
+                commands[event['source_ref']] = event
+            elif original['kind'] == 'unknown' and event['kind'] != 'unknown':
+                # A new observation may resolve this call; it cannot move its
+                # original place in the command sequence or become a new call.
+                event['revision'] = original['revision']
+                commands[event['source_ref']] = event
         intervals = {}
         for identity, record in retained.items():
             if identity.startswith('interval:'):
-                event = self.command_rework_event(record['request'], record['base_revision'])
-                intervals[(event['slice_id'], event['boundary'])] = record['base_revision']
-        for transaction in sorted(records, key=lambda value: value['base_revision']):
-            request = transaction['request']
-            event = self.command_rework_event(request, transaction['base_revision'])
-            if event and (event['kind'] != 'fixture-error' or
-                    event['revision'] > intervals.get((event['slice_id'], event['boundary']), -1)):
-                events.append(event)
+                observed = self.command_rework_event(record['request'], record['base_revision'])
+                event = commands[observed['source_ref']]
+                if event['kind'] != 'fixture-error':
+                    key = (event['slice_id'], event['boundary'])
+                    intervals[key] = max(intervals.get(key, -1), event['revision'])
+        events.extend(event for event in commands.values() if event['kind'] != 'fixture-error' or
+            event['revision'] > intervals.get((event['slice_id'], event['boundary']), -1))
+        for transaction in ordered:
             proof = (transaction.get('result') or {}).get('applicability', {})
             if proof.get('affected'):
                 store = state_store.open_store(self.path)
