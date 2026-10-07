@@ -1269,14 +1269,15 @@
       "operation": "modify",
       "tickets": [
         "T01",
-        "T02"
+        "T02",
+        "T06"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": [],
-      "implementation_note": "T02 三层交付证据、plan-v2 与同 C Stage3→4 消费契约的必经 fixture 适配；保持原身份、停止及交付门禁反例。"
+      "implementation_note": "T02 三层交付证据、plan-v2 与同 C Stage3→4 消费契约的必经 fixture 适配；保持原身份、停止及交付门禁反例。 T06实证依赖t03-21：179–192 input_for(3)仍固定inline schema_version1且缺behavior_slices，现行v2 catalog在新T03逻辑前拒绝；只适配新运行fixture生产者，原legacy拒绝回归保留。"
     },
     {
       "path": "tests/runtime/test_unified_recovery.py",
