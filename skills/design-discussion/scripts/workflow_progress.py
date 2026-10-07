@@ -502,6 +502,8 @@ def read_projection(path, *, projection, stage=None, subject_id=None, allocation
         transaction = slot.get('transaction') or {}
         require(intent in {action.get('action_id'), transaction.get('intent_id')},
                 'intent_mismatch', 'transaction does not name the original allocation intent')
+        if transaction.get('operation') == 'prepare' and slot.get('repair_proposal') is not None:
+            slot = slot['repair_proposal']['slot']
         saved = slot['handoff']
         require(saved.get('allocation_id') == allocation_id and saved.get('subject_id') == subject_id,
                 'identity_mismatch', 'allocation subject identity changed')
@@ -6873,6 +6875,9 @@ class Progress:
         require(operation in {"prepare", "repair", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown allocation operation")
         s = self.state
         prior_slot = s.get('allocations', {}).get(identity)
+        proposal = prior_slot.get('repair_proposal') if prior_slot else None
+        require(proposal is None or operation in {'repair', 'prepare'}, 'outcome_unknown',
+                'reconcile the original repair preparation before another allocation operation')
         if operation in {'bind', 'reconcile', 'receive'} and prior_slot and prior_slot.get('record'):
             launch = prior_slot['record']['request']
             require(data['receipt'].get('attempt') == launch['attempt'] and
@@ -6887,7 +6892,14 @@ class Progress:
             previous_repair = prior_slot['handoff']['semantic'].get('repair')
             request = copy.deepcopy(data['handoff'])
             require('repair' not in request['semantic'], 'invalid_request', 'Controller derives repair provenance')
-            if previous_repair is not None and previous_repair['invocation_id'] == invocation_id:
+            if proposal is not None:
+                proposed = proposal['slot']
+                require(proposed['handoff']['semantic']['repair']['invocation_id'] == invocation_id,
+                        'outcome_unknown', 'retain the original proposed repair invocation')
+                request['semantic']['repair'] = copy.deepcopy(proposed['handoff']['semantic']['repair'])
+                require(entry.digest(request) == proposed['input_digest'], 'allocation_conflict',
+                        'reconcile the exact proposed repair before changing its input')
+            elif previous_repair is not None and previous_repair['invocation_id'] == invocation_id:
                 request['semantic']['repair'] = copy.deepcopy(previous_repair)
             else:
                 require(prior_slot.get('transaction') is None and prior_slot.get('record') is not None and
@@ -6923,14 +6935,14 @@ class Progress:
                     require(historical['handoff']['semantic'].get('repair', {}).get('invocation_id') != invocation_id,
                             'allocation_conflict', 'repair invocation identity was already used')
                 history.append(store.write_object(current.run_id, 'evidence', {'execution_invocation': prior_slot}))
-                # The original invocation remains immutable evidence. Its current
-                # slot is replaced only after B has verified this new input.
+                # Keep the accepted current slot until full B/Git admission and
+                # authority intake complete. A proposed input carries no release.
                 saved = handoff.prepare(request, allocation_store=(store, current, identity))
-                s['allocations'][identity] = {'input_digest': entry.digest(request), 'handoff': saved,
+                proposed = {'input_digest': entry.digest(request), 'handoff': saved,
                     'record': None, 'owner_ref': self.bound_ref(), 'transaction': None,
                     'observations': [], 'result': None, 'invocation_history': history,
                     'metrics': copy.deepcopy(prior_slot.get('metrics', {'slice_id': identity, 'submissions': 0}))}
-                self.save()
+                prior_slot['repair_proposal'] = {'phase': 'validating', 'slot': proposed}
             data = {'allocation_id': identity, 'operation': 'prepare', 'handoff': request}
             operation = 'prepare'
         invocation = ((data.get('receipt') or {}).get('receipt_ref') or
@@ -6957,12 +6969,16 @@ class Progress:
         self.require_controls_reconciled()
         slots = s.setdefault("allocations", {})
         slot = slots.get(identity)
+        intent_slot = slot
+        proposal = slot.get('repair_proposal') if slot else None
+        if proposal is not None:
+            slot = proposal['slot']
         observation_ref = None
         if operation == "prepare":
             entry.fields(data, {"allocation_id", "operation", "handoff"})
             if slot is not None:
                 require(slot["input_digest"] == entry.digest(data["handoff"]) or
-                        slot.get('transaction') is not None and data['handoff'] == slot['handoff'],
+                        intent_slot.get('transaction') is not None and data['handoff'] == slot['handoff'],
                         "allocation_conflict", "retain the original allocation intent")
                 if slot["record"] is not None:
                     if slot.get("action") is None:
@@ -7125,20 +7141,40 @@ class Progress:
                 require(slot["record"]["delivery"] is not None, "result_incomplete", "receive this allocation's result first")
                 request["decision"] = {"delivery_digest": slot["record"]["delivery"]["digest"], **data["decision"]}
         # These are the same B operations/authority, not an alternate allocator.
-        if slot['transaction'] is None:
-            slot["transaction"] = {"operation": operation, "intent_id": entry.digest([identity, operation, data]),
+        if intent_slot is None:
+            intent_slot = slot
+        if intent_slot['transaction'] is None:
+            intent_slot["transaction"] = {"operation": operation, "intent_id": entry.digest([identity, operation, data]),
                 'request_digest': entry.digest(request),
                 'observation_ref': observation_ref,
                 'base_control_digest': entry.digest(s['control']), 'base_revision': s['revision']}
             self.save()
         else:
-            require(slot['transaction']['request_digest'] == entry.digest(request) and
-                    slot['transaction']['base_control_digest'] == entry.digest(s['control']),
+            require(intent_slot['transaction']['request_digest'] == entry.digest(request) and
+                    intent_slot['transaction']['base_control_digest'] == entry.digest(s['control']),
                     'allocation_conflict', 'reconcile the original allocation intent before another request')
+        transaction = intent_slot['transaction']
+        prepared_request = {**request, 'control': copy.deepcopy(s['control']),
+            **({'allocation_intent': transaction['intent_id']}
+               if slot['handoff'].get('kind') == 'allocation-input' else {})}
+        if proposal is not None and proposal['phase'] == 'validating':
+            try:
+                preview = dispatch.handle(prepared_request, validate_only=True)
+                if 'allocation' in preview['record']:
+                    dispatch.allocation_launch(preview['record'])
+            except entry.ERROR_TYPES + (control.ControlError,):
+                # This phase performs no B/ledger authority mutation. A known
+                # validation failure can discard only its proposed C input.
+                intent_slot.pop('repair_proposal')
+                intent_slot['transaction'] = None
+                self.save()
+                raise
+            proposal['phase'] = 'applying'
+            self.save()
         previous_status = slot['record']['status'] if slot.get('record') is not None else None
-        result = dispatch.handle({**request, 'control': copy.deepcopy(s['control']),
-            **({'allocation_intent': slot['transaction']['intent_id']}
-               if slot['handoff'].get('kind') == 'allocation-input' else {})})
+        # After this call starts, an exception may hide an applied ledger result.
+        # Retain the original transaction/proposal and reconcile it exactly.
+        result = dispatch.handle(prepared_request)
         if plan_state == "stopping":
             # B still authenticates the outstanding original native bind/result,
             # but its ordinary ready receipt cannot release an old executor
@@ -7167,6 +7203,8 @@ class Progress:
             key: value for key, value in result.items() if key not in {'checkpoint', 'record', 'observation', 'result'}}
         if 'observation' in result or 'result' in result:
             slot['result']['observation_ref'] = observation_ref
+        if proposal is not None:
+            slots[identity] = slot
         if (data.get('receipt') or {}).get('status') == 'stopped':
             s.get('native_adverse', {}).pop(data['receipt']['ref'], None)
         if s.get("stop_requested") == "cancelling" and s["stopped"]:
@@ -8052,7 +8090,7 @@ class Progress:
                 operation = request["operation"]
                 data = {"allocation_id": identity, "operation": operation}
                 if operation == 'prepare':
-                    data['handoff'] = slot['handoff']
+                    data['handoff'] = (slot.get('repair_proposal') or {}).get('slot', slot)['handoff']
                 else:
                     store = state_store.open_store(self.path)
                     current = store.open_current()

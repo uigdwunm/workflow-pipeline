@@ -17,7 +17,7 @@ import workflow_progress as progress
 
 
 class DispatchInputTests(unittest.TestCase):
-    def test_t03_rejected_repair_configuration_preserves_original_slot_and_can_continue(self):
+    def accepted_repair_flow(self):
         flow = fixture.ProgressTests(methodName='runTest')
         flow.setUp()
         self.addCleanup(flow.doCleanups)
@@ -54,6 +54,58 @@ class DispatchInputTests(unittest.TestCase):
         original = flow.allocation_slot('original')
         context = copy.deepcopy(flow.state()['control']['context'])
         request = flow.execution_input()
+        return flow, request, original, context, original_release, body
+
+    def test_t03_repair_prepare_return_loss_retains_original_intent_and_reuses_result(self):
+        flow, request, original, context, _, _ = self.accepted_repair_flow()
+        repair = {'allocation_id': 'original', 'operation': 'repair',
+            'invocation_id': 'return-lost', 'handoff': request}
+        store = progress.state_store.StateStore(flow.checkpoint)
+        original_replace = progress.state_store.os.replace
+        lost = []
+
+        def replace(source, target, *args, **kwargs):
+            if Path(target) == flow.checkpoint and not lost:
+                envelope = json.loads(Path(source).read_bytes())
+                root = store.read_evidence(envelope['current'], run_id=envelope['run_id'], kind='root')['value']
+                for reference in root['subjects'].values():
+                    subject = store.read_evidence(reference, run_id=envelope['run_id'], kind='subject')['value']
+                    slot = subject.get('allocations', {}).get('original')
+                    if slot and (slot.get('record') or {}).get('status') == 'prepared' and not slot.get('repair_proposal'):
+                        lost.append(True)
+                        raise OSError('prepared result lost before original C pointer installation')
+            return original_replace(source, target, *args, **kwargs)
+
+        with patch.object(progress.state_store.os, 'replace', replace):
+            with self.assertRaises(OSError):
+                flow.invoke('allocation', repair)
+        self.assertEqual(lost, [True])
+        pending = flow.allocation_slot('original')
+        self.assertEqual(pending['record'], original['record'])
+        self.assertEqual(flow.state()['control']['context'], context)
+        self.assertEqual(pending['repair_proposal']['phase'], 'applying')
+        intent = pending['transaction']['intent_id']
+        changed = copy.deepcopy(repair)
+        changed['handoff']['configuration']['receipt'] = 'changed-while-unknown'
+        rejected = flow.invoke('allocation', changed)
+        self.assertEqual(rejected['status'], 'blocked', rejected)
+        self.assertEqual(flow.allocation_slot('original')['transaction']['intent_id'], intent)
+        self.assertEqual(flow.allocation_slot('original')['record'], original['record'])
+        recovery = flow.invoke('resume')
+        self.assertEqual(recovery['next_action']['operation'], 'allocation-recovery', recovery)
+        resumed = flow.invoke('allocation', recovery['next_action']['data'])
+        self.assertIsNotNone(resumed['next_action'], resumed)
+        self.assertEqual(resumed['next_action']['operation'], 'invoke-host', resumed)
+        self.assertEqual(resumed['next_action']['payload']['payload']['execution_invocation']['ref'], 'native:executor')
+        action_id = resumed['next_action']['action_id']
+        repeated = flow.invoke('allocation', repair)
+        self.assertEqual(repeated['next_action']['operation'], 'lookup-exact-allocation', repeated)
+        self.assertEqual(flow.allocation_slot('original')['action']['action_id'], action_id)
+        self.assertNotIn('repair_proposal', flow.allocation_slot('original'))
+        self.assertEqual(flow.allocation_slot('original')['metrics']['first_submission'], original['metrics']['first_submission'])
+
+    def test_t03_repair_admission_preserves_original_for_config_adoption_and_git_rejection(self):
+        flow, request, original, context, original_release, body = self.accepted_repair_flow()
         rejected = copy.deepcopy(request)
         rejected['configuration']['receipt'] = 'other-valid-receipt'
         repair = {'allocation_id': 'original', 'operation': 'repair', 'invocation_id': 'retry-after-rejection'}
@@ -77,6 +129,24 @@ class DispatchInputTests(unittest.TestCase):
         self.assertEqual(flow.allocation_slot('original')['record'], original['record'])
         self.assertEqual(flow.allocation_slot('original'), original)
         self.assertEqual(flow.state()['control']['context'], context)
+        rejected_adoption = copy.deepcopy(request)
+        rejected_adoption['semantic'].update(adopt_paths=['impl.py'], adoption_snapshot_digest='a' * 64)
+        with self.assertRaises(ValueError):
+            with progress.record_lock(flow.checkpoint), progress.state_store.operation_store(flow.checkpoint):
+                progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint)).allocation(
+                    {**repair, 'handoff': rejected_adoption})
+        self.assertEqual(flow.allocation_slot('original'), original)
+        self.assertEqual(flow.state()['control']['context'], context)
+        (flow.flow / 'impl.py').write_bytes(b'def run():\n    return "unaccepted"\n')
+        try:
+            with self.assertRaises(ValueError):
+                with progress.record_lock(flow.checkpoint), progress.state_store.operation_store(flow.checkpoint):
+                    progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint)).allocation(
+                        {**repair, 'handoff': request})
+            self.assertEqual(flow.allocation_slot('original'), original)
+            self.assertEqual(flow.state()['control']['context'], context)
+        finally:
+            (flow.flow / 'impl.py').write_bytes(body)
         resumed = flow.invoke('allocation', {**repair, 'handoff': request})
         self.assertEqual(resumed['next_action']['operation'], 'invoke-host', resumed)
         slot = flow.allocation_slot('original')

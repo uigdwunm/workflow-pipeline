@@ -44,7 +44,7 @@ def protected_index_matches_head(repository, relative):
             index == b'H ' + fields[0] + b' ' + fields[2] + b' 0\t' + name)
 
 
-def checkpoint(port, request, action, evidence, *, checkpoint_path=None):
+def checkpoint(port, request, action, evidence, *, checkpoint_path=None, validate_only=False):
     """Apply the existing authority, never a transport-record shadow ledger.
 
 Discussion mutation envelopes are supplied from the controller's saved intent;
@@ -66,12 +66,13 @@ their exact idempotency key and revisions must be retained on an unknown result.
             require(context == current['workflow_control'], 'control_context_changed',
                     'new control mutation requires the current ledger projection')
             port = {**port, 'store_ref': current['workflow_control_ref']}
-        actual = discussion_protocol.handle({**envelope, "operation": "workflow-control", "action": action,
-            "evidence": evidence,
-            **({'expected_control_ref': port['store_ref']} if port.get('store_ref') is not None else {}),
-            **({'scope_checkpoint_path': checkpoint_path} if checkpoint_path is not None else {})})
-        control_result = actual['control']
-        return control_result, {**actual, 'control': {key: value for key, value in control_result.items() if key != 'context'}}
+        if not validate_only:
+            actual = discussion_protocol.handle({**envelope, "operation": "workflow-control", "action": action,
+                "evidence": evidence,
+                **({'expected_control_ref': port['store_ref']} if port.get('store_ref') is not None else {}),
+                **({'scope_checkpoint_path': checkpoint_path} if checkpoint_path is not None else {})})
+            control_result = actual['control']
+            return control_result, {**actual, 'control': {key: value for key, value in control_result.items() if key != 'context'}}
     # Downstream Phase Runs own lifecycle, while execution control stays in the
     # caller checkpoint. Attached dedicated-stage mutations must use the ledger.
     require(context["topic_ref"] is None or context["stage"] >= 2, "authority_missing", "attached dedicated control requires its ledger adapter")
@@ -197,7 +198,7 @@ def inline_recovery_allocation(request, saved):
                 'authority_missing', 'inline readback requires its exact C-owned record')
 
 
-def prepared(request):
+def prepared(request, *, validate_only=False):
     entry.fields(request, {"protocol", "operation", "handoff", "control"}, {"scope_checkpoint_path", "allocation_intent"})
     saved = handoff.verify(request["handoff"],
                            checkpoint_path=request.get("scope_checkpoint_path"))
@@ -234,6 +235,8 @@ def prepared(request):
     elif saved['role'] == 'execution-agent' and 'integration_recovery' in saved['authorization']:
         inline_recovery_allocation(request, saved)
     role, scope = saved["role"], saved["scope"]
+    require(not validate_only or role == 'execution-agent' and saved['semantic'].get('repair') is not None,
+            'invalid_operation', 'read-only preparation is limited to a retained repair proposal')
     if saved["stage"] < 2:
         # User choice and attached entry authority are prepared/decided by the
         # existing controller UI before this mechanical launch boundary.
@@ -308,7 +311,7 @@ def prepared(request):
                             review=prior["payload"]["review"], verification=verification, binding=saved["binding"],
                             implementation_paths=scope["implementation_paths"], closure_paths=scope["closure_paths"], protected_paths=scope["protected_paths"])
         result, applied = checkpoint(request["control"], saved, action, evidence,
-                                     checkpoint_path=checkpoint_path)
+                                     checkpoint_path=checkpoint_path, validate_only=validate_only)
         attempt = result.get("allocation_digest", result["context"]["carrier"]["attempt"])
     if compact is not None:
         # Payload materialization belongs to C's persisted issue boundary.
@@ -994,12 +997,15 @@ def verify_allocation_intent(request):
             'authority_changed', 'allocation request differs from the original Controller intent')
 
 
-def handle(request):
+def handle(request, *, validate_only=False):
     request = copy.deepcopy(request)
     require(request.get("protocol") == PROTOCOL, "legacy_run_requires_original_runtime", "retain original stage-transfer runtime: " + str(request.get("protocol")))
     operation = request.get("operation")
     require(operation in {"prepare", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown dispatch operation")
+    require(not validate_only or operation == 'prepare', 'invalid_operation', 'only preparation can be validated without mutation')
     verify_allocation_intent(request)
+    if operation == 'prepare':
+        return prepared(request, validate_only=validate_only)
     return {"prepare": prepared, "bind": bound, "reconcile": bound, "receive": received, "accept": accepted}[operation](request)
 
 
