@@ -64,3 +64,7 @@ V03：`test_publication_recovery.py`、`test_business_recovery.py`、`test_accep
 ## 已核依赖范围（2026-10-07）
 
 只读预检确认 `workflow_control.py` 的有限 executions/history 校验、candidate-ready 接受结果/steps/claims，以及 `workflow_control_git.py` 的恢复/执行快照和 review coverage 都消费当前完整集合。仅归档 allocations 无法闭合第 33 片与分页交付；manifest 已将两 source 和对应五包输出加入 T05。适配须保持原 owner、原 receipt/claim 与 Git 指纹证明，不能把摘要授为新权威。现有 verify 测试保持只读，新 `test_state_archive.py` 承载相关故障/规模回归；其他模块按实际依赖再核定，不预先扩大。
+
+## 账本归档接线依赖（2026-10-07）
+
+只读预检确认 ledger-backed stage 当前 context 必须与原 ledger generation 匹配。`discussion_core/workflow_control.py` 的原投影读取、公开结果和有锁提交入口需要接入有限归档引用，并经原 transition、record_revision 和 pointer CAS 提交，纯 C 摘要不能替换原账本权威。manifest 仅晋升该 source 与五包对应输出；原 generation、receipt、nonce 和未知事务仍保留精确引用，既有延期初始化及 foreground 门禁不放宽。`stage_dispatch.checkpoint` 已原样转发通用 action 与 expected_control_ref，无需为便利扩大其写范围。
