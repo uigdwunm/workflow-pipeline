@@ -39,6 +39,8 @@ class WorkflowGitTests(unittest.TestCase):
         return subprocess.run(['git', '-C', str(self.repo), *args], text=True, capture_output=True, check=True).stdout.strip()
 
     def call(self, action, evidence, context):
+        if getattr(self, "coverage_flow", None) is not None:
+            return self.public_coverage_call(action, evidence, context)
         evidence = dict(evidence)
         if action in {'assign', 'execution-result', 'accept-execution'} and context is not None:
             executions = (context.get('handoff_progress') or {}).get('executions', [])
@@ -52,11 +54,205 @@ class WorkflowGitTests(unittest.TestCase):
                     evidence.update(plan_refs=execution['plan_refs'],
                         plan_authority=execution['plan_authority'],
                         write_release=execution['write_release'])
+        return self.git_call(action, evidence, context)
+
+    def git_call(self, action, evidence, context):
         result = subprocess.run([sys.executable, str(CLI)], text=True, capture_output=True,
             input=json.dumps({'repository': str(self.repo), 'baseline': self.base,
-                'request': {'schema_version': context['schema_version'], 'action': action, 'actor_ref': 'controller', 'context': context, 'evidence': evidence}}))
+                'request': {'schema_version': context['schema_version'], 'action': action, 'actor_ref': context['controller_ref'], 'context': context, 'evidence': evidence}}))
         self.assertTrue(result.stdout, result.stderr)
         return json.loads(result.stdout)
+
+    def start_public_coverage_flow(self, paths=('a.py', 'b.py'), *, accepted_read_only=False):
+        """Real A/B/C/Git producer for cases that consume original review coverage."""
+        import test_workflow_progress as progress_fixture
+        flow = progress_fixture.ProgressTests(methodName='runTest')
+        preflight = progress_fixture.transfer.entry.skill_preflight
+        real_verify_identity = preflight.verify_identity
+        package_root = Path(__file__).resolve().parents[2] / 'skills'
+        names = ('design-discussion', 'problem-framing', 'solution-design',
+                 'guided-implementation', 'change-closure')
+        identities = {name: preflight.package_identity(str(package_root / name / 'SKILL.md'), name)
+                      for name in names}
+        base_setup = progress_fixture.transfer.test_entry_prepare.EntrySupport.setUp
+        def canonical_setup(case):
+            base_setup(case)
+            case.package.clear()
+            case.package.update(identities['problem-framing'])
+            preflight.preflight.return_value = {'packages': identities, 'external': {}}
+            registry = {'source': 'host-current-skills', 'entries': [
+                {'name': name, 'entry': identities[name]['entry'],
+                 'source': 'fixture-host', 'enabled': True} for name in names]}
+            case.request = case.with_registration({**case.request, 'registry': registry},
+                project=case.root, receipt='host:canonical-fixture')
+            identity_check = patch.object(preflight, 'verify_identity', side_effect=real_verify_identity)
+            identity_check.start()
+            case.addCleanup(identity_check.stop)
+        with patch.object(progress_fixture.transfer.test_entry_prepare.EntrySupport,
+                          'setUp', canonical_setup):
+            flow.setUp()
+        self.addCleanup(flow.doCleanups)
+        self.repo = flow.flow
+        (self.repo / 'docs/draft.md').write_text('initial requirement\n')
+        flow.flow_git('add', 'docs/draft.md')
+        flow.flow_git('commit', '-qm', 'protected caller document')
+        self.base = flow.flow_git('rev-parse', 'HEAD')
+        flow.git('merge', '--ff-only', self.base)
+        request = flow.input_for(3)
+        scope = request['scope']
+        scope.update(owned_paths=list(paths), implementation_paths=list(paths), closure_paths=['README.md'])
+        scope['protected_paths'] = sorted(set(scope['protected_paths'] + ['docs/draft.md']))
+        original = scope['downstream']['manifest']
+        implementation = next(item for item in original if item['owner'] == 'implementation')
+        closure = next(item for item in original if item['owner'] == 'closure')
+        scope['downstream']['manifest'] = sorted([
+            *[{**copy.deepcopy(implementation), 'path': path} for path in paths],
+            {**copy.deepcopy(closure), 'path': 'README.md'}], key=lambda item: item['path'])
+        context = flow.context_for(3)
+        plan = self.plan_evidence(context, list(paths), accepted_read_only=accepted_read_only)
+        request['semantic']['inline_plan'] = copy.deepcopy(
+            plan['execution_authority']['execution_plan']['catalog']['tickets'][0]['plan'])
+        request['authorization']['scope_digest'] = control.digest(scope)
+        changed = control_git.changed_paths(self.repo, flow.git('rev-parse', 'main'))
+        baseline = {'source_commit': flow.frozen['commit'], 'requirement_sha256': flow.frozen['sha256'],
+            'binding_base': flow.binding['base_commit'], 'baseline': self.base,
+            'current': flow.flow_git('rev-parse', 'HEAD'), 'target': flow.git('rev-parse', 'main'),
+            'owned': scope['implementation_paths'], 'protected': scope['protected_paths'],
+            'changed_paths': sorted(changed)}
+        self.assertEqual(changed, [], baseline)
+        request.pop('inline_authority', None)
+        flow.context = context
+        flow.begin('continuous', request)
+        flow.invoke('observe', flow.observation(ref='native:dispatcher'))
+        self.coverage_flow = flow
+        self.public_tasks, self.public_agents = {}, {}
+        return flow.state()['control']['context']
+
+    def public_coverage_call(self, action, evidence, context):
+        """Retain original test actions while C owns every allocation and proof."""
+        import test_workflow_progress as progress_fixture
+        flow = self.coverage_flow
+        original_settings = flow.settings['thread_id']
+        original_host = copy.deepcopy(flow.request['host'])
+        if action in {'assign', 'execution-result', 'accept-execution'}:
+            flow.settings['thread_id'] = 'dispatcher-runtime'
+            flow.request['host'].update(thread_id='dispatcher-runtime', role='implementation-dispatcher',
+                source_ref=flow.state()['handoff']['controller_ref'],
+                actor_ref=flow.state()['control']['context']['carrier']['ref'])
+        try:
+            if action == 'plan-execution':
+                import test_layered_review as layered_fixture
+                owner = progress_fixture.progress.Progress(flow.checkpoint,
+                    progress_fixture.progress.read_active_owner(flow.checkpoint))
+                due = owner.ticket_checks_due()
+                if due:
+                    checkpoint = owner.state['control']['context']['handoff_progress']
+                    expected = {}
+                    for accepted in control.current_accepted_results(checkpoint):
+                        expected.update(execution_plan.accepted_owned_fingerprints(accepted))
+                    changed = control_git.changed_paths(self.repo, self.git('rev-parse', 'HEAD'))
+                    self.assertLessEqual(set(changed), set(expected), 'only original accepted bytes precede Ticket checks')
+                    for path in changed:
+                        self.assertEqual(control_git.file_fingerprint(self.repo, path), expected[path])
+                    if changed:
+                        self.git('add', '--', *changed)
+                        self.git('commit', '-qm', 'accepted source for required Ticket checks')
+                    for ticket in due:
+                        checked = layered_fixture.LayeredReviewTests.early_ticket_check(
+                            flow, self.git('rev-parse', 'HEAD'), ticket)
+                        self.assertTrue((checked.get('next_action') or {}).get('result', {}).get('ok'), checked)
+                flow.settings['thread_id'] = 'dispatcher-runtime'
+                flow.request['host'].update(thread_id='dispatcher-runtime', role='implementation-dispatcher',
+                    source_ref=flow.state()['handoff']['controller_ref'],
+                    actor_ref=flow.state()['control']['context']['carrier']['ref'])
+                task = evidence['task_id']
+                previous_settings = flow.settings['thread_id']
+                previous_host = copy.deepcopy(flow.request['host'])
+                try:
+                    request = (flow.inherited_execution_input() if flow.state().get('final_integration_recovery')
+                               else flow.execution_input())
+                    dispatcher = flow.state()['control']['context']['carrier']['ref']
+                    flow.request['host']['actor_ref'] = dispatcher
+                    request['entry']['host']['actor_ref'] = dispatcher
+                    request['expected_entry'] = progress_fixture.transfer.entry.resolve(request['entry'])
+                    request['scope']['owned_paths'] = list(evidence['paths'])
+                    request['scope']['protected_paths'] = sorted(set(
+                        request['scope']['protected_paths'] + evidence.get('read_only', [])))
+                    request['authorization']['scope_digest'] = control.digest(request['scope'])
+                    request['semantic']['plan_refs'] = copy.deepcopy(evidence['plan_refs'])
+                    for field in ('adopt_paths', 'adoption_snapshot_digest'):
+                        if field in evidence:
+                            request['semantic'][field] = copy.deepcopy(evidence[field])
+                    view = flow.invoke('allocation', {'allocation_id': task,
+                        'operation': 'prepare', 'handoff': request})
+                finally:
+                    flow.settings['thread_id'] = previous_settings
+                    flow.request['host'] = previous_host
+                self.public_tasks[task] = task
+            elif action == 'assign':
+                task = self.public_tasks[evidence['task_id']]
+                slot = flow.allocation_slot(task)
+                descriptor = progress_fixture.transfer.dispatch.allocation_descriptor(slot['record'])
+                if evidence['allocation_digest'] != descriptor['digest']:
+                    return {'ok': False, 'error': 'allocation digest differs from the original C input'}
+                view = flow.invoke('allocation', {'allocation_id': task, 'operation': 'bind',
+                    'receipt': flow.receipt(slot['record'], ref=evidence['agent_ref'])})
+                self.public_agents[evidence['agent_ref']] = task
+            elif action in {'execution-result', 'accept-execution'}:
+                task = self.public_agents[evidence['agent_ref']]
+                slot = flow.allocation_slot(task)
+                if action == 'execution-result':
+                    original_input = progress_fixture.transfer.dispatch.dispatch_input(slot['record'])
+                    payload = {key: copy.deepcopy(evidence[key]) for key in
+                        ('changed_paths', 'file_hashes', 'tests', 'adopted_paths') if key in evidence}
+                    payload.update(write_release=progress_fixture.transfer.dispatch.execution_release_token(slot['record']),
+                        plan_refs=original_input['semantic']['plan_refs'],
+                        plan_authority=flow.state()['control']['context']['handoff_progress']['plan_authority'])
+                    view = flow.invoke('allocation', {'allocation_id': task, 'operation': 'receive',
+                        'receipt': flow.receipt(slot['record'], 'stopped', 'result', ref=evidence['agent_ref']),
+                        'result': {'delivery_id': task + '-result', 'status': 'completed', 'payload': payload}})
+                else:
+                    view = flow.invoke('allocation', {'allocation_id': task, 'operation': 'accept',
+                        'decision': {'reference': 'dispatcher:accepted:' + task}})
+            elif action == 'candidate-ready':
+                if not hasattr(self, 'original_ticket_coverage'):
+                    flow.complete_fixture_local_reviews(evidence['commit'], '-git-candidate')
+                    owner = progress_fixture.progress.Progress(flow.checkpoint,
+                        progress_fixture.progress.read_active_owner(flow.checkpoint))
+                    self.original_ticket_coverage = owner.build_review_coverage(evidence['commit'], delivery=False)
+                selected = copy.deepcopy(evidence)
+                dispatcher = flow.state()['control']['context']['carrier']['ref']
+                selected['dispatcher_ref'] = dispatcher
+                selected['source']['raw']['dispatcher_ref'] = dispatcher
+                selected['ticket_coverage'] = copy.deepcopy(self.original_ticket_coverage)
+                return self.git_call(action, selected, flow.state()['control']['context'])
+            else:
+                view = flow.invoke('control', {'action': action, 'evidence': evidence,
+                    'receipt': {'controller_ref': flow.state()['control']['context']['controller_ref'],
+                        'reference': evidence.get('reference', 'controller:' + action)}})
+        except (progress_fixture.transfer.entry.PreparationError, control.ControlError) as error:
+            return {'ok': False, 'error': str(error)}
+        finally:
+            flow.settings['thread_id'] = original_settings
+            flow.request['host'] = original_host
+        outcome = (view.get('next_action') or {}).get('result') or {}
+        result = {**outcome, 'ok': view['status'] != 'blocked' and outcome.get('ok', True),
+            'context': flow.state()['control']['context']}
+        if action == 'plan-execution' and result['ok']:
+            slot = flow.allocation_slot(evidence['task_id'])
+            result['allocation_digest'] = progress_fixture.transfer.dispatch.allocation_descriptor(slot['record'])['digest']
+        if view.get('error'):
+            result['error'] = view['error']
+        return result
+
+    def public_start_allocations(self):
+        context = self.start_public_coverage_flow()
+        planned = self.call('plan-execution', self.execution_envelope(context, 'a', ['a.py']), context)
+        self.assertTrue(planned['ok'], planned)
+        bound = self.call('assign', {'task_id': 'a', 'agent_ref': 'a',
+            'allocation_digest': planned['allocation_digest']}, planned['context'])
+        self.assertTrue(bound['ok'], bound)
+        return bound['context']
 
     def plan_evidence(self, context, paths, *, accepted_read_only=False, declared_dependency=True):
         scope = {'baseline': self.base, 'owned_paths': paths,
@@ -527,21 +723,46 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertFalse(self.call('plan-execution', envelope, accepted['context'])['ok'])
 
     def test_final_integration_conflict_is_revalidated_in_original_scope(self):
-        context = self.start_allocations()
+        context = self.public_start_allocations()
         (self.repo / 'a.py').write_text('task version\n')
         received = self.call('execution-result', self.result_evidence('a', ['a.py']), context)
         context = self.call('accept-execution', {'agent_ref':'a', 'file_hashes':{}}, received['context'])['context']
         context = self.accept_second_plan_step(context)
         self.git('add', 'a.py', 'b.py'); self.git('commit', '-qm', 'accepted implementation')
         accepted = self.git('rev-parse', 'HEAD')
-        primary = self.root / 'repository'
+        flow = self.coverage_flow
+        delivered = flow.accept_current({'artifacts': ['a.py', 'b.py'], 'checks': ['CLI passed'],
+            'candidate_commit': accepted, 'review': {axis: {'reviewer_ref': axis}
+                for axis in ('standards', 'spec')}}, 'native:dispatcher', fixture_execution=False)
+        self.assertEqual(delivered['status'], 'accepted', delivered)
+        original = copy.deepcopy(flow.state())
+        primary = Path(flow.binding['repository'])
         (primary / 'a.py').write_text('parallel version\n')
         subprocess.run(['git', '-C', str(primary), 'add', 'a.py'], check=True)
         subprocess.run(['git', '-C', str(primary), 'commit', '-qm', 'parallel task'], check=True)
         target = self.git('rev-parse', context['handoff_progress']['binding']['target_branch'])
-        context['handoff_progress'].update(integration_candidate=accepted, integration_target_head=target)
+        flow.context = flow.context_for(4)
+        closure_input = flow.input_for(4, original['accepted'])
+        closure_input['scope']['protected_paths'] = sorted(set(
+            closure_input['scope']['protected_paths'] + original['handoff']['scope']['protected_paths']))
+        closure_input['authorization']['scope_digest'] = control.digest(closure_input['scope'])
+        flow.begin('continuous', closure_input)
+        flow.invoke('observe', flow.observation(ref='native:closure'))
+        stopped = flow.observation('stopped', 'result', ref='native:closure')
+        stopped['closure'] = {'ref': 'native:closure', 'candidate': accepted, 'merge': None,
+            'ancestor_verified': False, 'changed_paths': [], 'binding': flow.binding, 'checks': [],
+            'worktree_removed': False, 'branch_removed': False, 'disposition': 'deleted',
+            'disposition_verified': False, 'implementation_problem': 'target advanced at final publication'}
+        rejected = flow.invoke('observe', stopped)
+        self.assertEqual(rejected['next_action']['operation'], 'implementation-recovery', rejected)
+        recovery = {'reference': 'controller:original-integration', 'closure_digest': flow.state()['handoff']['digest']}
+        flow.recover_final_integration(original, recovery)
+        continued = flow.invoke('observe', flow.observation('idle', 'result', ref='native:dispatcher'))
+        self.assertEqual(continued['next_action']['operation'], 'continue-host', continued)
+        context = flow.state()['control']['context']
         merged = subprocess.run(['git', '-C', str(self.repo), 'merge', '--no-edit', target], capture_output=True)
         self.assertNotEqual(merged.returncode, 0)
+        flow.invoke('observe', flow.observation('stopped', 'result', ref='native:dispatcher'))
         captured = self.call('capture-integration', {'reference':'controller:conflict'}, context)
         self.assertTrue(captured['ok'], captured)
         source = captured['context']['handoff_progress']['integration_source']
@@ -621,9 +842,10 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertEqual(revalidate, [])
 
     def test_candidate_rejects_mode_changed_after_execution_acceptance(self):
-        context = self.start_allocations()
+        context = self.public_start_allocations()
         (self.repo/'a.py').write_text('agent bytes\n')
         received = self.call('execution-result', self.result_evidence('a', ['a.py']), context)
+        self.assertTrue(received['ok'], received)
         accepted = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
         self.assertTrue(accepted['ok'], accepted)
         current = self.accept_second_plan_step(accepted['context'])
@@ -640,8 +862,8 @@ class WorkflowGitTests(unittest.TestCase):
                     'source': {'adapter': 'fixture', 'call_ref': 'focused', 'response_ref': 'focused-result',
                                'raw': {'checks': checks, 'source_unchanged': True,
                                        'stopped': True, 'dispatcher_ref': 'dispatcher'}}}
-        self.assertTrue(self.call('candidate-ready', evidence(self.git('rev-parse', 'HEAD')),
-                                  current)['ok'])
+        ready = self.call('candidate-ready', evidence(self.git('rev-parse', 'HEAD')), current)
+        self.assertTrue(ready['ok'], ready)
         target_file = self.repo/'a.py'
         target_file.chmod((target_file.stat().st_mode & 0o777) | 0o111)
         self.git('add', 'a.py'); self.git('commit', '-qm', 'dispatcher mode change')
@@ -649,7 +871,7 @@ class WorkflowGitTests(unittest.TestCase):
                                    current)['ok'])
 
     def candidate_reader_after_input_change(self, input_change):
-        context = self.start_dispatcher(accepted_read_only=True)
+        context = self.start_public_coverage_flow(accepted_read_only=True)
         def accept(current, task, relative, body, read_only=(), executable=False):
             planned = self.call('plan-execution', self.execution_envelope(
                 current, task, [relative], read_only), current)
@@ -714,12 +936,14 @@ class WorkflowGitTests(unittest.TestCase):
         self.candidate_reader_after_input_change('absence')
 
     def test_candidate_rejects_reverted_out_of_scope_history(self):
-        context = self.start_allocations()
+        context = self.public_start_allocations()
         (self.repo/'a.py').write_text('accepted bytes\n')
         received = self.call('execution-result', self.result_evidence('a', ['a.py']), context)
         accepted = self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])
         self.assertTrue(accepted['ok'], accepted)
-        self.git('add', 'a.py'); self.git('commit', '-qm', 'accepted implementation')
+        accepted['context'] = self.accept_second_plan_step(accepted['context'])
+        self.git('add', 'a.py', 'b.py'); self.git('commit', '-qm', 'accepted implementation')
+        self.coverage_flow.mark_reviewable(self.git('rev-parse', 'HEAD'), fixture_execution=False)
         (self.repo/'outside.py').write_text('private bytes\n')
         self.git('add', 'outside.py'); self.git('commit', '-qm', 'outside scope')
         self.git('rm', 'outside.py'); self.git('commit', '-qm', 'hide outside change')
@@ -729,7 +953,8 @@ class WorkflowGitTests(unittest.TestCase):
         checks = test_workflow_control.checks_for(progress['validation_plan']['review_required'], candidate)
         evidence = {'dispatcher_ref': 'dispatcher', 'attempt': accepted['context']['carrier']['attempt'],
                     'commit': candidate, 'expected_target_head': target, 'binding': progress['binding'],
-                    'plan_digest': control.digest(progress['validation_plan']), 'checks': checks,
+                    'plan_digest': control.digest(progress['validation_plan']),
+                    'plan_authority': progress['plan_authority'], 'checks': checks,
                     'source': {'adapter': 'fixture', 'call_ref': 'focused', 'response_ref': 'focused-result',
                                'raw': {'checks': checks, 'source_unchanged': True,
                                        'stopped': True, 'dispatcher_ref': 'dispatcher'}}}
@@ -755,31 +980,56 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertFalse(self.call('accept-execution', {'agent_ref': 'a', 'file_hashes': {}}, received['context'])['ok'])
 
     def test_closure_verifies_supervision_publication_and_actual_cleanup(self, cleanup_failure=False):
+        import test_workflow_progress as progress_fixture
         helper = test_workflow_control.WorkflowControlTests()
-        primary = self.repo
-        target = self.git('branch', '--show-current')
-        start = subprocess.run([sys.executable, str(CLI.with_name('supervision_protocol.py')), 'start-worktree'],
-            input=json.dumps({'repository': str(primary), 'worktree': str(self.root / 'flow'), 'branch': 'codex/flow', 'target_branch': target}),
-            text=True, capture_output=True, check=True)
-        binding = json.loads(start.stdout)['binding']
-        self.repo = self.root / 'flow'
+        context = self.start_public_coverage_flow(('code.py',))
+        flow = self.coverage_flow
+        primary = Path(flow.binding['repository'])
+        planned = self.call('plan-execution', self.execution_envelope(context,
+            'closure-code', ['code.py']), context)
+        self.assertTrue(planned['ok'], planned)
+        bound_code = self.call('assign', {'task_id': 'closure-code', 'agent_ref': 'executor',
+            'allocation_digest': planned['allocation_digest']}, planned['context'])
+        self.assertTrue(bound_code['ok'], bound_code)
         (self.repo / 'code.py').write_text('print(1)\n')
-        self.git('add', '.'); self.git('commit', '-qm', 'implementation')
+        received_code = self.call('execution-result', self.result_evidence('executor', ['code.py']),
+            bound_code['context'])
+        self.assertTrue(received_code['ok'], received_code)
+        accepted_code = self.call('accept-execution', {'agent_ref': 'executor', 'file_hashes': {}},
+            received_code['context'])
+        self.assertTrue(accepted_code['ok'], accepted_code)
+        self.git('add', 'code.py'); self.git('commit', '-qm', 'implementation')
         candidate = self.git('rev-parse', 'HEAD')
-        ctx = helper.context(); ctx['stage'] = 4
-        evidence = {'candidate': candidate, 'dispatcher_ref': 'dispatcher',
-            'review': {axis: {'candidate': candidate, 'reviewer_ref': axis, 'status': 'accepted'} for axis in ('standards', 'spec')},
-            'verification': {'candidate': candidate, 'checks': ['full suite']}, 'binding': binding,
-            'implementation_paths': ['code.py'], 'closure_paths': ['README.md'], 'protected_paths': ['docs/draft.md'],
+        acceptance = flow.accept_current({'artifacts': ['code.py'], 'checks': ['CLI passed'],
+            'candidate_commit': candidate, 'review': {axis: {'reviewer_ref': axis}
+                for axis in ('standards', 'spec')}}, 'native:dispatcher', fixture_execution=False)
+        self.assertEqual(acceptance['status'], 'accepted', acceptance)
+        accepted = flow.state()['accepted']
+        stage4_input = flow.input_for(4, accepted)
+        stage4_input['predecessor'] = progress_fixture.progress.implementation_predecessor(flow.checkpoint)
+        inherited = flow.state()['handoff']['scope']
+        stage4_input['scope']['protected_paths'] = sorted(set(
+            stage4_input['scope']['protected_paths'] + inherited['protected_paths']))
+        stage4_input['authorization']['scope_digest'] = control.digest(stage4_input['scope'])
+        stage4 = progress_fixture.transfer.handoff.handle(stage4_input)
+        reference = progress_fixture.transfer.handoff.unseal(stage4)['predecessor']
+        verification = progress_fixture.progress.closure_delivery_view(reference)
+        binding = flow.binding
+        ctx = flow.context_for(4)
+        evidence = {'candidate': candidate, 'dispatcher_ref': accepted['role_ref'],
+            'review': copy.deepcopy(accepted['payload']['review']), 'verification': verification,
+            'binding': binding, 'implementation_paths': ['code.py'], 'closure_paths': ['README.md'],
+            'protected_paths': verification['view']['protected_paths'],
             'configuration': helper.configuration('closure-agent')}
-        evidence['review'], evidence['verification'] = __import__('test_workflow_control').verification_fixture(candidate, 'dispatcher', binding['worktree'], self.git('rev-parse', 'main'))
-        started = self.call('start-closure', evidence, ctx)
+        # C's accepted implementation stays immutable. Stage-4 CLI validates
+        # its real predecessor/source refs; no CLI result is copied back into C.
+        started = self.git_call('start-closure', evidence, ctx)
         self.assertTrue(started['ok'], started)
-        bound = self.call('closure-bound', {'ref': 'closure', 'attempt': started['attempt']}, started['context'])
+        bound = self.git_call('closure-bound', {'ref': 'closure', 'attempt': started['attempt']}, started['context'])
         result = {'ref': 'closure', 'candidate': candidate, 'merge': candidate, 'ancestor_verified': True,
             'changed_paths': ['code.py'], 'binding': binding, 'checks': ['full suite'],
             'worktree_removed': True, 'branch_removed': True, 'disposition': 'deleted', 'disposition_verified': True, 'implementation_problem': None}
-        premature = self.call('closure-result', result, bound['context'])
+        premature = self.git_call('closure-result', result, bound['context'])
         self.assertFalse(premature['ok'], premature)
         (self.repo / 'README.md').write_text('Document the behavior\n')
         self.git('add', '.'); self.git('commit', '-qm', 'closure documentation')
@@ -804,14 +1054,14 @@ class WorkflowGitTests(unittest.TestCase):
         self.assertEqual(complete.returncode, 2 if cleanup_failure else 0, published)
         self.repo = primary
         result['merge'] = published['error']['context']['merge_commit'] if cleanup_failure else published['merge_commit']
-        verified = self.call('closure-result', result, bound['context'])
+        verified = self.git_call('closure-result', result, bound['context'])
         self.assertTrue(verified['ok'], verified)
         if cleanup_failure:
             self.assertEqual(verified['context']['handoff_progress']['state'], 'cleanup-pending')
             self.assertEqual(verified['effects'][0]['operation'], 'cleanup-only')
             self.git('worktree', 'remove', binding['worktree'])
             self.git('branch', '-d', binding['branch'])
-            verified = self.call('closure-result', result, verified['context'])
+            verified = self.git_call('closure-result', result, verified['context'])
         self.assertEqual(verified['context']['handoff_progress']['state'], 'completed')
 
     def test_cleanup_failure_reconciles_git_without_republishing(self):

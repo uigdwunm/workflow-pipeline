@@ -73,6 +73,8 @@ G4 后续实际原因：24 closed-docs 原公开全恢复85.61s通过，原actor
 
 ## 验证顺序与交付
 
+G4 固定 `91c5a54` 原审查者已关闭恢复链 P2，Standards 0、localSpec 新发现 0；预留前写入修复的 `2bd9943` 增量结论保持。后续两测试文件的原 Git 29 项、pure 23 项和 peers 用例通过，原 test IDs 保留；冻结 patch SHA256 `0e4dd983dfa4434157f9a7cf22ce93021d0af53992c9a65e8fc513f014900db5`。真实初始包 pin、A/规划基线、bound dispatcher 接收及原 Task Ticket 检查、原 predecessor/保护路径均经已有产生者接线，生产代码和包未再改变。当前待该测试增量独立审查、固定候选完整验证和最终两轴交付覆盖，不能标记 T06 或原生现场完成。
+
 G4 原 69 两次真实恢复、11 类拒绝和旧角色无验收权限断言通过；70 原单次、71 最大报告、72 生成一致性及 73 diff 检查通过，冻结增量待原 reviewer 关闭 P2。下一位唯一作者只修 `test_workflow_control.py` 与 `test_workflow_control_git.py` 的已确认 Ticket/coverage 前置：纯 control 数据结构夹具明确只证明 schema，真实 Git 消费者使用原公开临时 C 分配/接受/局部与 Ticket 证明及原 closure delivery 引用；保留原正反目标和监督清理，不改变生产 guard 或支持路线。G4 停稳后交接，审查读取固定 Git 对象与 G1 实现并行。
 
 G4 原 56 公开 prepare/容量拒绝及 57 两条 ledger CAS 真正目标通过，原 51 RED 保留。固定 `1ddbdbe` 早审 Standards 0、localSpec P2 OPEN：原直接替换者判断不支持已有同配置 `D1→D2→D3` 恢复链。只在原 `freeze_implementation_native_owners` 按有界原 `(ref, attempt)` 激活链、原旧 dispatch/ready receipt 和完整未撤销 stop/host 证明到当前真正验收角色；不授予旧角色业务验收权限。原 Layered helper/公开恢复用例补两次恢复及断链/循环/失效证明拒绝。该修复及独立增量复查、最终全量仍待完成。

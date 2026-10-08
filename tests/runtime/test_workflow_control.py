@@ -47,8 +47,19 @@ def checks_for(required, candidate, status='passed'):
                  output_ref='fixture:output:'+item['id'], output_digest='a'*64) for item in required]
 
 
+def schema_only_coverage(candidate, plan_authority, requirement_identity, *, delivery):
+    """Pure Control JSON shape only; these refs are not public C evidence."""
+    projection = {'kind': 'review-coverage-v1', 'candidate': candidate,
+        'plan_authority': copy.deepcopy(plan_authority),
+        'requirement_identity': copy.deepcopy(requirement_identity), 'delivery': delivery}
+    return {**projection, 'certificate_digest': control.digest(projection),
+        'certificate_ref': {'schema_only_fixture': 'pure-control-json'},
+        'checkpoint_path': '/fixture/pure-control-json.json'}
+
+
 def verification_fixture(candidate, dispatcher, cwd, target):
-    # Only external command/reviewer observations are synthetic; consumers still validate them.
+    # Pure Control JSON fixture, including schema-only coverage. Git consumers
+    # must use the original public C delivery instead of these synthetic refs.
     import hashlib
     def digest(value):
         return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
@@ -60,13 +71,16 @@ def verification_fixture(candidate, dispatcher, cwd, target):
               'result_ref':'terminal-'+axis} for axis in ('standards','spec')}
     native = {axis:{'adapter':'fixture','call_ref':'review-'+axis,'response_ref':'terminal-'+axis,
                     'status':'stopped','ref':axis,'raw':{'result':'accepted'}} for axis in review}
-    decision = {'controller_ref':'controller','reference':'fixture:convergence','review':review,'native_evidence':native}
+    coverage = schema_only_coverage(candidate, current_plan,
+        {'path': 'docs/draft.md', 'sha256': 'a' * 64, 'version': 1}, delivery=True)
+    decision = {'controller_ref':'controller','reference':'fixture:convergence','review':review,
+                'native_evidence':native, 'coverage': coverage}
     checks = checks_for(plan['final_required'],candidate)
     source = {'adapter':'fixture','call_ref':'command','response_ref':'command-result',
               'raw':{'attempt_id':'fixture-final','checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':dispatcher}}
     verification = {'candidate':candidate,'expected_target_head':target,'validation_plan':plan,'plan_digest':digest(plan),
                     'review_digest':digest(decision),'review_decision':decision,'dispatcher_ref':dispatcher,
-                    'plan_authority':current_plan}
+                    'plan_authority':current_plan, 'coverage': coverage}
     verification['attempts'] = [{k:verification[k] for k in ('candidate','expected_target_head','plan_digest',
         'plan_authority','review_digest','dispatcher_ref')} |
         {'attempt_id':'fixture-final','carrier_attempt':'fixture-carrier','required':plan['final_required'],
@@ -523,6 +537,21 @@ class WorkflowControlTests(unittest.TestCase):
             'configuration': self.configuration('implementation-dispatcher')}, ctx)
         bound = self.call('dispatcher-bound', {'ref': 'dispatcher', 'attempt': started['attempt']}, started['context'])
         candidate = 'b' * 40
+        # Only pure Control claim-summary admission is exercised here. The Git
+        # integration tests separately authenticate original C/source objects.
+        for axis, action, layer, slice_id in (
+            ('local:INLINE-TEST:slice-a', 'local-review', 'local', 'slice-a'),
+            ('ticket:INLINE-TEST', 'ticket-accept', 'ticket', 'ticket')):
+            claim = {'claim_id': control.digest([candidate, axis]), 'layer': layer,
+                'ticket_id': 'INLINE-TEST', 'slice_id': slice_id,
+                'source_candidate': candidate, 'plan_authority': current_plan,
+                'claim_ref': {'schema_only_fixture': axis}, 'result_ref': 'fixture:' + axis,
+                'reviewer_ref': 'reviewer:' + axis}
+            result = self.call(action, {'axis': axis, 'candidate': candidate,
+                'result_ref': claim['result_ref'], 'claim': claim,
+                'claim_checkpoint': '/fixture/pure-control-json.json'}, bound['context'])
+            self.assertTrue(result['ok'], result)
+            bound['context'] = result['context']
         checks = checks_for(plan['review_required'], candidate)
         evidence = {'dispatcher_ref': 'dispatcher', 'attempt': started['attempt'],
             'commit': candidate, 'expected_target_head': 'a' * 40,
@@ -532,6 +561,8 @@ class WorkflowControlTests(unittest.TestCase):
             'checks': checks, 'source': {'adapter': 'fixture', 'call_ref': 'focused',
                 'response_ref': 'focused-result', 'raw': {'checks': checks,
                 'source_unchanged': True, 'stopped': True, 'dispatcher_ref': 'dispatcher'}},
+            'ticket_coverage': schema_only_coverage(candidate, current_plan,
+                ctx['requirement_identity'], delivery=False),
             'clean': True, 'changed_paths': ['src/a.py'], 'file_hashes': {'src/a.py': 'd' * 64}}
         self.assertFalse(self.call('candidate-ready', evidence, bound['context'])['ok'])
         allocation = self.call('plan-execution', {'task_id': 'slice', 'paths': ['src/a.py'],

@@ -3357,7 +3357,7 @@
           "t06-g1-compat/summary.json"
         ],
         "known": "ordinary archive intent precheck and explicit raw/metadata accounting; original maximum report stays required",
-        "unknown": "source repair regressions passed; original reviewer immutable recovery-chain increment and final whole-candidate gate pending.",
+        "unknown": "local original-reviewer fixed91c closure Std0/localSpecnew0 and P2closed; final whole-candidate full gate and delivery coverage pending.",
         "generated": "five existing Store/progress canonical paths unchanged; T06 added to original five Store output ownership rows; existing package digests regenerate only",
         "rule": "sole source/runner writer, no new Ticket/ADR/platform or cap/guard relaxation; exact further source seams documented from real cause",
         "actor_source_evidence": [
@@ -3374,7 +3374,8 @@
         "frozen_source_ref": "t06-g4/candidate-source.json; HEAD63943ff plus33 exact WIP paths, candidate.patch SHA2560a73831c62eab26ad82531e4b0d03d7d0dbef0fd4047d19d80b66b2f3c8eff75; still one known unresolved producer defect.",
         "issuer_closure_evidence": "55 canonical build,56 real prepare/capacity no-pre-reserve writes,57 two original ledger CAS targets PASS315.40s; original51RED retained, frozen12path delta issuer-preflight-source.json/patch, SHA256fb426f89280a96f4874926d0094f0dd74598d472d5c20f4e7f68fda2c3667f0e.",
         "native_chain_source_evidence": "independent-review-1ddbdbe.md P2 workflow_progress:836 direct historical replacement equality rejects valid D1->D2->D3. Existing control recovery history <=32 and original dispatch history support this same-configuration route. Verify bounded original(ref,attempt) edges/activated receipts/stop-host proofs to truly accepted current endpoint; disconnected/cyclic/duplicate/revoked facts fail, old roles receive no business grant.",
-        "native_chain_closure_evidence": "69 real D1->D2->D3 accepted endpoint/11 refusals/old explicit finalize/Stage4 PASS80.04s;70 originalsingle77.81s;71 max8reports8MiB69.46s with fresh independent peak bytes;72canonical/73diffpass. 66 authentic D2 no-business-turn sealed record assertions; old60/61/62/65RED retained. Frozen12path recovery-chain-source.json/patch SHA25636f46740405a645e73879d446ec53ad6fd2ab78f61ccf9fd21eca8ea989fb2a7."
+        "native_chain_closure_evidence": "69 real D1->D2->D3 accepted endpoint/11 refusals/old explicit finalize/Stage4 PASS80.04s;70 originalsingle77.81s;71 max8reports8MiB69.46s with fresh independent peak bytes;72canonical/73diffpass. 66 authentic D2 no-business-turn sealed record assertions; old60/61/62/65RED retained. Frozen12path recovery-chain-source.json/patch SHA25636f46740405a645e73879d446ec53ad6fd2ab78f61ccf9fd21eca8ea989fb2a7.",
+        "review_closure_ref": "t06-g4/independent-chain-91c5a54.md11281B; issuer2bd independent closure7732B remains applicable; no full/native/security PASS."
       },
       "g1_coverage_confirmed_dependency": {
         "basis": "2bd9943 plus frozen G4 recovery-chain repair; actual source candidate commit follows",
@@ -3386,7 +3387,8 @@
           "t06-g1-compat original16pure-control21of23 with missing Ticket/coverage",
           "t06_g1 readonly63943ff producer-consumer diagnosis: actual Git candidate-ready/closure consumers, not all verify files"
         ],
-        "scope": "Original pure-control schema-only coverage via original pure transitions; original Git/publicC allocation, acceptance, local/Ticket source-backed coverage and closure predecessor view. Preserve original positive/negative targets; no runtime/guard/routes/schema changes. G4 sole writer stops before G1 starts; module aliases avoid imported TestCase inventory expansion."
+        "scope": "Original pure-control schema-only coverage via original pure transitions; original Git/publicC allocation, acceptance, local/Ticket source-backed coverage and closure predecessor view. Preserve original positive/negative targets; no runtime/guard/routes/schema changes. G4 sole writer stops before G1 starts; module aliases avoid imported TestCase inventory expansion.",
+        "completion_source": "t06-g1-coverage/source-snapshot.json: two originaltests frozen at91c plusWIP, patch SHA2560e4dd983dfa4434157f9a7cf22ce93021d0af53992c9a65e8fc513f014900db5; final27Git29PASS233.44s/28pure23PASS9.08s/26peersPASS5.27s, original IDs unchanged. Runtime/packages unchanged; independentincrement and fullgate pending."
       }
     }
   }
