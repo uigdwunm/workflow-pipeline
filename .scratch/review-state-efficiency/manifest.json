@@ -9,7 +9,7 @@
     "verify": "explicit read/test inventory; no automatic file-write permission. Promote only when actual fixture dependency is documented within confirmed behavior scope.",
     "generated": "single canonical output inventory; never hand edit generated copies",
     "execution_rules": "execution-policy.md defines current remaining T05/T06 scope; historical entries do not authorize deferred work or resume implementation.",
-    "remaining_scope": "Preserve accepted T01–T04/T05-A source and reports. Isolate uncommitted T05-B before core validation; only required core compatibility, canonical output, final validation and delivery remain. Deferred mechanisms require separate authorization."
+    "remaining_scope": "Preserve accepted T01–T04 and reduced T05/T05-A reports with original sources. Deferred B is already preserved and isolated. Remaining T06 uses its G1–G4 repair index, necessary compatibility/canonical checks, final full validation and delivery only; no implementation resume or deferred mechanism authorization from this planning update."
   },
   "entries": [
     {
@@ -3165,9 +3165,9 @@
       "T05-A-local-only": "526c55cfe7f265a3ef2f39770f4315fc7883475f"
     },
     "remaining": [
-      "preserve/isolate six-file T05-B WIP; revised T05 core coverage using applicable A evidence",
-      "T06 confirmed fixture compatibility, supported core integration, protocol/canonical packages, final full validation and two-axis delivery review",
-      "report existing measurements, native unverified and efficiency insufficient without new evaluation tooling"
+      "T06 diagnose original interrupted full-gate failures by shared producer/consumer through G1–G4; confirm exact repair scope before implementation",
+      "necessary affected compatibility/canonical checks, fixed-candidate full validation and two-axis delivery coverage",
+      "report available original measurements, native unverified and efficiency insufficient without new evaluation tooling"
     ],
     "deferred": [
       "automatic GC/two-pass reachability deletion",
@@ -3176,7 +3176,7 @@
       "full native lifecycle field campaign/final installed host admission",
       "formal old/new efficiency comparison and new measurement/worksheet functionality"
     ],
-    "deferred_wip_status": "preserved uncommitted and unaccepted; excluded before core build/review; this planning revision does not alter runtime files",
+    "deferred_wip_status": "six-file unaccepted WIP preserved at t05-b/deferred-wip-7b7b459/receipt.json and excluded from current core candidate; this planning update changes no runtime files",
     "historical_inventory": "entries/tickets record original ownership; remaining_scope and this revision constrain remaining work; frozen requirement unchanged",
     "confirmed_fixture_dependency": {
       "path": "tests/runtime/test_workflow_progress.py",
@@ -3224,6 +3224,25 @@
       ],
       "evidence": "attempt23 original stage_handoff.current_readiness rejects legal current authority because finite scope projection lacks fullowner Control/history",
       "scope": "original finite producer/consumer consistency only; five existing source mappings unchanged; preserve pending/no-new-dispatch guard"
+    },
+    "execution_revision": {
+      "approved_date": "2026-10-08",
+      "authorization": "human confirmed proposed three planning files plus unique dispatcher update only; implementation remains paused",
+      "basis_candidate": "d2c15eb56bef923e0f15afa01171430dd5e06177",
+      "repair_index_ref": "issues/06-integrate-measure.md#剩余工作的分组与入口2026-10-08",
+      "groups": [
+        "G1 plan inputs/shared fixtures",
+        "G2 current/archive reads and original CAS writes",
+        "G3 review/affected checks/stop wiring",
+        "G4 existing capacity/read-budget/recovery defects"
+      ],
+      "classification": "diagnostic routing, not confirmed root causes or bulk file-write permission; unknowns remain unknown",
+      "write_rule": "once per group confirm real dependency, exact paths and authorization; verify entries unchanged; one writer for overlapping files",
+      "verification": "fast valid baseline and reachable original assertions, affected real consumers, then stable-candidate complete validate.sh; no skipped failing modules or relaxed guards/caps",
+      "review": "same author and independent reviewer within group; reuse applicable evidence with original source, final Ticket/cross-Ticket incremental coverage and two delivery axes",
+      "evidence": "forward command/source/result binding only; old missing fields unknown; original paused full-gate evidence remains bound to d2c15eb",
+      "management": "one current dispatcher <=16KiB; references T06 repair index; no repeated poll snapshots, capacity increase or historical evidence deletion",
+      "scope": "execution arrangement only; no new Ticket/ADR/runtime/runner/evaluation feature; deferred scope and frozen requirement unchanged"
     }
   }
 }
