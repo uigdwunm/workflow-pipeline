@@ -141,12 +141,14 @@ permits cleanup-only; this recovery never rolls back or republishes it.
 Send one bounded strict JSON object on stdin:
 
 ```json
-{"protocol":"workflow-progress-v19","operation":"inspect","expected_revision":0}
+{"protocol":"workflow-progress-v20","operation":"inspect","expected_revision":0}
 ```
 
 `inspect` returns the current revision/status/pending matter without advancing.
-Mutations require that exact revision. Full raw responses and complete A/B
-objects remain in the checkpoint; output provides the unique next action.
+Mutations require that exact revision. The current checkpoint retains bounded
+facts and references. Original committed raw responses and A/B evidence remain
+in the original Store's verifiable reference closure; output provides the unique
+next action.
 The caller authenticates controller decisions and host receipts. JSON strings,
 digests, child assertions, names and timestamps are not authentication.
 

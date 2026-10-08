@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "7c92e17c502698bda25e44c7697febba42c028cc03244a7c6dafeeda6b214374",
+  "bundle_digest": "0a139afed9981a5393112b0d10fa9b61e6c2d1e5c3ba9d229608e939c520dd56",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 12,
@@ -80,7 +80,7 @@
     },
     "references/shared/guided-implementation/worktree-execution.md": {
       "mode": "0644",
-      "sha256": "ac9e181dc50a602fa268ef95f1344459d409065417c4a9d1ecf82329cbd775d5"
+      "sha256": "c60c1c7cc38534131b3d32a3d5be763e49f6c752778a281d179cbb1d5beb8bf4"
     },
     "references/shared/package-execution.md": {
       "mode": "0644",
@@ -96,11 +96,11 @@
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
-      "sha256": "ff63102b142674e453c10a9cde1892c8e06755511e8c3b4a7cbd0c64827a9e7f"
+      "sha256": "e87384382113925c8ea8134d1d20521f8e3eaee728e3667cdccabe0dba8d43c0"
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "7cd07170d97e7b3ef74a9ae01df9c864de145de674376c34dcaf19a74508c712"
+      "sha256": "5da832a910f8a16c2c054e0e03998c1ecdc6dfac27571a6f9ab36747df598927"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",

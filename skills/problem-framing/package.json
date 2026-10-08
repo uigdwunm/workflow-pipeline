@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "01a8f90f5a30e4d048b8a39d7dbe54b4610c1a5e6b88316a22adacb2b42bdda7",
+  "bundle_digest": "a742dad891ba64f88701d059caa04c0a5953e0447e4d10d1fc94aee7e1b86e0f",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 12,
@@ -104,11 +104,11 @@
     },
     "references/shared/stage-transfer.md": {
       "mode": "0644",
-      "sha256": "ff63102b142674e453c10a9cde1892c8e06755511e8c3b4a7cbd0c64827a9e7f"
+      "sha256": "e87384382113925c8ea8134d1d20521f8e3eaee728e3667cdccabe0dba8d43c0"
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "7cd07170d97e7b3ef74a9ae01df9c864de145de674376c34dcaf19a74508c712"
+      "sha256": "5da832a910f8a16c2c054e0e03998c1ecdc6dfac27571a6f9ab36747df598927"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
