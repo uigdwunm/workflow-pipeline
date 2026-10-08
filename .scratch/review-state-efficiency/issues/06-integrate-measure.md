@@ -73,6 +73,8 @@ G4 后续实际原因：24 closed-docs 原公开全恢复85.61s通过，原actor
 
 ## 验证顺序与交付
 
+G4 原 56 公开 prepare/容量拒绝及 57 两条 ledger CAS 真正目标通过，原 51 RED 保留。固定 `1ddbdbe` 早审 Standards 0、localSpec P2 OPEN：原直接替换者判断不支持已有同配置 `D1→D2→D3` 恢复链。只在原 `freeze_implementation_native_owners` 按有界原 `(ref, attempt)` 激活链、原旧 dispatch/ready receipt 和完整未撤销 stop/host 证明到当前真正验收角色；不授予旧角色业务验收权限。原 Layered helper/公开恢复用例补两次恢复及断链/循环/失效证明拒绝。该修复及独立增量复查、最终全量仍待完成。
+
 G4 原 45 完整带修订恢复、48 发布竞态及原恢复对象缺失/坏哈希拒绝、49 最大八份 8MiB 报告通过；53 生成一致性通过，原输出保其命令/源码来源。原 51 两条 ledger CAS 用例仍未到目标：`review_activity` 在容量测量和预留之前物理写入 issuer/source 对象。只将这两个原对象纳入已有模拟测量和普通 intent 字节，通过容量校验及预留后再落盘相同引用；不改变原外部调用、身份、回执或 CAS 合同。此组及最终全量仍未验收。
 
 G4 恢复链的已确认增量：原命令 32 暴露只读 Git 计划投影被当作完整可写 C 记录；37 证明 Stage3 没有自动归档定位，归档读取假设不成立。只在现有 `implementation_delivery` 的 `recovery_ref` 保存恢复必需的原真实计划记录、来源及 carried/revalidation 事实，由 `implementation_recovery` 核验原 CAS 引用、身份、权限和当前 schema 后恢复。保留普通 Git 投影、固定读取预算及无修订恢复路线；不扫描历史或构造缺失记录。原 31 attached ledger、33 actor/prepare/closure、35 D2/native owner 回归已通过，完整恢复及最终全量仍未完成。

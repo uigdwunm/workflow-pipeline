@@ -2662,6 +2662,48 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(result["next_action"]["ref"], "native:dispatcher")
         self.assertEqual(self.invoke("resume")["next_action"], result["next_action"])
 
+    def test_review_prepare_checks_capacity_and_storage_before_reserve(self):
+        from test_bounded_progress import BoundedProgressTests
+        prepare = BoundedProgressTests.public_review_candidate(self)
+        store = progress.state_store.StateStore(self.checkpoint)
+        usage = store.directory / 'usage.json'
+        original_usage = usage.read_bytes()
+        control_before = copy.deepcopy(self.state()['control'])
+        def stored_files():
+            paths = [self.checkpoint, *(path for path in store.directory.rglob('*') if path.is_file())]
+            return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+        try:
+            usage.write_text(json.dumps({'allocated': progress.state_store.RUN_LIMIT -
+                progress.state_store.BUSINESS_RESERVE - progress.state_store.RECOVERY_RESERVE}))
+            before = stored_files()
+            with self.assertRaises(progress.entry.PreparationError) as denied:
+                self.invoke('review-activity', prepare)
+            self.assertEqual(denied.exception.code, 'state_capacity')
+            self.assertEqual(stored_files(), before)
+            self.assertEqual(self.state()['control'], control_before)
+        finally:
+            usage.write_bytes(original_usage)
+        before, checked = stored_files(), []
+        original_reserve = progress.state_store.StateStore.reserve
+        def reserve_after_measurement(actual_store, action_id, **kwargs):
+            if actual_store._measured_writes is None and not kwargs.get('recovery', False):
+                self.assertEqual(stored_files(), before)
+                self.assertEqual(self.state()['control'], control_before)
+                checked.append(action_id)
+            return original_reserve(actual_store, action_id, **kwargs)
+        with patch.object(progress.state_store.StateStore, 'reserve', reserve_after_measurement):
+            prepared = self.invoke('review-activity', prepare)
+        self.assertEqual(prepared['next_action']['operation'], 'invoke-review')
+        slot = self.state()['review_activity'][prepare['axis']]
+        self.assertEqual(checked, [slot['action_id']])
+        current = store.open_current()
+        issuer = store.read_evidence(slot['issuer_ref'], run_id=current.run_id)['value']['review_issuer']
+        self.assertEqual(issuer['native_action_id'], slot['action_id'])
+        self.assertEqual(issuer['request_digest'], progress.entry.digest(prepare))
+        source = store.read_evidence(issuer['source_ref'], run_id=current.run_id)['value']['local_check_source']
+        self.assertEqual(issuer['source_digest'], progress.entry.digest(source))
+        self.assertEqual(source, self.state()['control']['context']['handoff_progress']['candidate_evidence']['source'])
+
     def test_final_recovery_preserves_acceptance_and_revalidates_replacement(self):
         original_invoke = self.invoke
         checked = [False]

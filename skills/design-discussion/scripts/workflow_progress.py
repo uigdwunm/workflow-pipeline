@@ -8679,12 +8679,12 @@ class Progress:
             issuer_current = store.open_current()
             carrier = s['control']['context']['carrier']
             command_source = (data['verification']['source'] if local else checkpoint['candidate_evidence']['source'])
-            slot['issuer_ref'] = store.write_object(issuer_current.run_id, 'evidence', {'review_issuer': {
+            issuer_source = {'local_check_source': command_source}
+            issuer_body = {'review_issuer': {
                 'dispatcher_ref': carrier['ref'], 'carrier_attempt': carrier['attempt'],
                 'request_digest': entry.digest(data), 'native_action_id': slot['action_id'],
                 'run_id': issuer_current.run_id, 'package_digest': entry.digest(s['packages']),
-                'plan_authority': checkpoint['plan_authority'], 'source_digest': entry.digest(command_source),
-                'source_ref': store.write_object(issuer_current.run_id, 'evidence', {'local_check_source': command_source})}})
+                'plan_authority': checkpoint['plan_authority'], 'source_digest': entry.digest(command_source)}}
             # Reject every bounded candidate before reserve allocation or C's
             # review-start. No external call can escape this durable intent.
             ledger_review = None
@@ -8695,6 +8695,9 @@ class Progress:
             intent_bytes = 0
             for status in ('unknown', 'running', 'stopped', 'not-created'):
                 with store.measure_writes(sequence=True, ledger_review=ledger_review) as writes:
+                    issuer_body['review_issuer']['source_ref'] = store.write_object(
+                        issuer_current.run_id, 'evidence', issuer_source)
+                    slot['issuer_ref'] = store.write_object(issuer_current.run_id, 'evidence', issuer_body)
                     candidate = Progress(self.path, copy.deepcopy(self.outer))
                     candidate._authority_revision = self._authority_revision
                     candidate.save()
@@ -8740,6 +8743,9 @@ class Progress:
                             'state_capacity', 'review completion exceeds its original receipt reserve')
             store.require_ordinary_capacity(intent_bytes)
             store.reserve(slot['action_id'])
+            issuer_body['review_issuer']['source_ref'] = store.write_object(
+                issuer_current.run_id, 'evidence', issuer_source)
+            slot['issuer_ref'] = store.write_object(issuer_current.run_id, 'evidence', issuer_body)
             self.save()
             if local:
                 result, applied = {'context': copy.deepcopy(s['control']['context'])}, None
