@@ -1,78 +1,43 @@
-# 05 — 长运行归档、固定容量与恢复证据保护
+# 05 — 批次归档与精确恢复闭合（收缩修订）
 
-Status: ready-for-agent
-Design status: accepted — 普通本地连续实现已授权
-Plan revision: 2026-10-07 — 用户确认执行规则调整；实现保持暂停
+Status: paused
+Design status: accepted with scope amendment — 用户明确要求收缩，未恢复实现
+Plan revision: 2026-10-07
 Blocked by: 01
 Spec: ../PRD.md
 Scope inventory: ../manifest.json（T05）
-Execution rules: ../execution-policy.md（唯一当前入口、总读取及规模验证边界）
+Execution rules: ../execution-policy.md
 
-## What to build
+## 当前交付
 
-Ticket/工作批次完成后历史退出活跃读取，同一事实和原证据只保存一次；10000个已完成片与10000次重复poll仍保持有限当前root和恢复读取。容量不足拒新动作，但原副作用回执、停止与未知调用恢复有预留路径。
+只闭合批次归档、精确原回执/调用恢复、分页交付和固定当前/普通恢复读取预算。T05-A 在 `526c55cfe7f265a3ef2f39770f4315fc7883475f` 已有独立局部验收；保留原报告，不将它重标为整张旧 Ticket 通过。
 
-## 合同和验收
+恢复后的第一步是保存并隔离未提交 T05-B 六文件 WIP，确认核心候选未带入 GC、物理配额、双预留、账本物理归属和宿主 log spool。当前只改规划，不操作 WIP。
 
-- [ ] 每32片或256事件封批，事件段≤1MiB；完成且停稳subject出活跃窗口；root不存累计ID列表。
-- [ ] 归档前后next_action、权限、claims有效性、原调用重放结果完全相同；日常恢复不读archive，计入一次恢复展开的全部依赖/原证据而非只报单文件尺寸。
-- [ ] receipt通过hash精确路径查，不扫描历史或加载累积索引；相同key不同digest拒绝。
-- [ ] 临时24小时/孤立30天GC规则满足全部pin和两代标记；已提交event/receipt/最终claim默认保留。
-- [ ] 扫描中新增引用、缺失引用、unknown、未完成事务均阻止不安全删除；取消也不意味着可删证据。
-- [ ] 75%整理/90%拒新分配/硬上限拒新工作，停止恢复预留不被业务消耗；真实ENOSPC保留原intent不重发。
-- [ ] 新格式幂等receipt累计磁盘受2GiB预算制约，明确背压而非无限历史承诺；单片边际物理字节在100/1000/10000片规模不得增长超过10%，不只是root变小。
-- [ ] 生命周期整理同步移出已完成管理历史及过期下一步；管理当前入口≤16KiB且不授予运行时控制权限，必要当前事实超限先诊断，不复制一份当前指令或自动扩容。
+## 修订验收
 
-## Function Execution Plan（草案）
+以下替代旧八项本轮 AC；旧方案见 Git `35d5a57876badce5a4beb01c99ac2a5db62c404e`。全部尚待修订 Ticket 覆盖核对，不因 A 局部通过自动勾选。
 
-| Step | 目标符号 | 能力、输入→输出、失败行为 | 前置 |
-| --- | --- | --- | --- |
-| S01 | 新 `workflow_state_store.compact`及内部分段/receipt定位/mark-sweep helpers | 已提交root+subject生命周期→归档manifest/新root；完整引用检查、256项分页、当前authority CAS；中断仅遗留可回收未提交对象 | 无 |
-| S02 | `Progress.save/consume_transaction/native_finalize/finish_lifecycle/archive_action/receive_publication` | 批次/Ticket/stage/delivery里程碑→整理请求；unknown/停止撤销钉住subject，不能因“completed文本”直接归档 | S01 |
-| S03 | `workflow_progress.handle`、`Progress.control_action/allocation/observe/decide` | 用store exact-key lookup替换遍历历史的duplicate判断；旧subject陌生请求拒绝；ACK需要已提交revision证明 | S01 |
-| S04 | `workflow.py._atomic_save/_stage_projection/_advance_in_host`、`workflow_progress.verify_completion` | runner history/predecessor只存引用；交付核验分页读取证据链，不把全链塞回状态；容量失败保留已提交结果 | S01、S02 |
+- [ ] 32片/256事件封批、完成且停稳 subject 退出当前窗口；root 不保存累计ID，固定 root/subject/事件段预算保持。
+- [ ] 归档前后 next_action、权限、claim 适用性与原调用恢复一致；未知/未停稳不能借归档获得权限。归档后的 C/序列化 B/ledger 消费者核原 source、pointer、digest 和 CAS，不信发送者自报投影。
+- [ ] 原 receipt 按 exact key/hash 直接定位，只能证明已提交的原结果；同 key 不同 digest 拒绝，提交前准备项不能 ACK，提交后响应丢失不能重发。
+- [ ] 普通恢复总读取符合 PRD 当前预算；分页交付能核全部必要 claims 与原 native/stop 证明。缺失/损坏/跨run 证据 fail closed，第33片/归档后 repair 由已有代表流程证据核验。
+- [ ] 管理当前入口≤16KiB，关闭历史及旧下一步退出当前；原报告和恢复证据保留。未审查 B 明确排除，已有证据实际失效才补受影响检查。
 
-S04 的前提是 T01 已完成同一 C 的最小阶段前驱引用与生产读取；此处只扩展通用分页交付目录、批次归档和规模验证，不把 T01 生产衔接留待本 Ticket，也不重新内嵌完整历史。
+## 执行步骤与验证
 
-实施符号以manifest核验列表为准。S01–S04共同完成归档到恢复的纵向行为，不新建独立“垃圾回收服务”。
-
-验收顺序为“封批/归档→精确回执重放→分页交付读取”，该闭环通过后再补GC/容量背压与10000历史规模。S01 的 GC 子行为按此顺序实施，步骤不是每函数一片；按开工预检决定强耦合步骤合片或串行累计补审。
-
-## 审查归属
-
-| 验收项 | 首次检查层/证据 | 上层责任 |
+| 步骤 | 行为与边界 | 证据及审查 |
 | --- | --- | --- |
-| 1、3、4、5 | 局部：V01的分页/receipt，V02的pin/原子性，V03的删/保留 | Ticket查归档/恢复与GC跨批组合 |
-| 2、6、7、8 | Ticket：V01/V02/V03的投影等价、完整读取、预留和物理规模；管理入口按执行规则检查 | 交付查未知原调用、最终证据及容量组合；T06汇总测量 |
+| S01 | 保存/隔离 B，确认已审查 A 核心候选与源指纹 | WIP 可恢复、候选不混 B；不新建实现机制 |
+| S02 | 核对已完成 store.compact、Progress 生命周期与 exact replay、runner/ledger/dispatch/控制消费者 | 复用 A 独立报告与原日志；只补缺口/实际变化的公开边界回归 |
+| S03 | 汇总修订 AC、普通读取与分页交付覆盖，移交 T06 | 同独立 reviewer 做 Ticket 组合/覆盖核对，上层复用有效局部证据 |
 
-## Verification references
+V01：已接受 A 的 `tests/runtime/test_state_archive.py` 及原归档/marker/native proof/CLI/ledger/repair/final completion 日志；原报告 `t05-a-finding-closure-review-526c55c.md`。数据通过真实存储提交和公开流程取得，不手写 JSON 权限。
 
-V01：新 `tests/runtime/test_state_archive.py`，以真实存储提交/引用生产接口及临时磁盘预算构造1/10/100/1000/10000合规历史subject；终态/停止/receipt均有可核提交证明。小规模另经真实handle核验接线，规模不逐项重跑Stage2到交付链。断言完整当前/恢复读取、每片物理字节、精确旧回执replay和冲突拒绝。
+V02：原 `test_bounded_progress.py`、publication/business/query recovery 的适用证据，核原调用、unknown、停止与 CAS。受影响检查只经 `scripts/run_tests.py`，完整候选由 T06 经 `scripts/validate.sh`；本次规划不运行。
 
-V02：`test_bounded_progress.py`在对象写/目录fsync/root replace/ledger提交/receipt回传各点故障；断言原外部调用一次、unknown可查、旧有效root未被半写覆盖。
+A 已核必要消费者为 `workflow_control.py`、`workflow_control_git.py`、`discussion_core/workflow_control.py` 和 `stage_dispatch.py`；保留其历史范围与五包映射，不能恢复旧内嵌权威或弱化权限。原始夹具适配由 T06 完成。
 
-V03：`test_publication_recovery.py`、`test_business_recovery.py`、`test_accepted_query_retry.py`覆盖completed/暂停/未知历史归档。GC测试用可控时钟推进资格，只测试删/保留行为，不断言私有扫描函数调用数。
+## 延期且未验收
 
-管理入口检查只针对本任务当前/历史职责和预算，不改旧运行、删除原证据或制造控制授权。固定容量/GC边界先在真实存储公开接口验证，完整handle/ledger接线保留必要代表用例。
-
-经统一runner运行，不将真实旧325MB/39MB任务作为可写fixture；规模数据由新协议合成。
-
-## Comments
-
-用户已统一接受并选择连续实现；此为普通本地授权，非正式Stage3 handoff。
-
-## 已核依赖范围（2026-10-07）
-
-只读预检确认 `workflow_control.py` 的有限 executions/history 校验、candidate-ready 接受结果/steps/claims，以及 `workflow_control_git.py` 的恢复/执行快照和 review coverage 都消费当前完整集合。仅归档 allocations 无法闭合第 33 片与分页交付；manifest 已将两 source 和对应五包输出加入 T05。适配须保持原 owner、原 receipt/claim 与 Git 指纹证明，不能把摘要授为新权威。现有 verify 测试保持只读，新 `test_state_archive.py` 承载相关故障/规模回归；其他模块按实际依赖再核定，不预先扩大。
-
-## 账本归档接线依赖（2026-10-07）
-
-只读预检确认 ledger-backed stage 当前 context 必须与原 ledger generation 匹配。`discussion_core/workflow_control.py` 的原投影读取、公开结果和有锁提交入口需要接入有限归档引用，并经原 transition、record_revision 和 pointer CAS 提交，纯 C 摘要不能替换原账本权威。manifest 仅晋升该 source 与五包对应输出；原 generation、receipt、nonce 和未知事务仍保留精确引用，既有延期初始化及 foreground 门禁不放宽。`stage_dispatch.checkpoint` 已原样转发通用 action 与 expected_control_ref，无需为便利扩大其写范围。
-
-## 序列化 B 消费者依赖（2026-10-07）
-
-真实 C 归档／冷恢复组合已核验原接受事实与 Git ownership；B 的 JSON/CLI 传输会失去 Store 验证投影的内存类型。`stage_dispatch.verify_allocation_intent` 先核原 C transaction、请求摘要和 base_control_digest，随后 handle/checkpoint 必须从原 checkpoint 或精确 ledger pointer 重新解开有限事实，并比对原摘要／expected pointer。不能把发送者自报 JSON 包装成已验权限。manifest 将该 source 与五包输出加入 T05，原 nonce、intent、scope、lease 与 CAS 门禁保持。
-
-## B diagnostic output capacity dependency (2026-10-08)
-
-Read-only inspection of `foreground_host.py:103-121` confirmed direct unbounded native stderr writes. The manifest now binds that source and its guided package output to T05. B must spool diagnostics through the same fixed owned-run physical capacity while preserving original intent/stop/unknown recovery; this does not authorize installation or a new service. T05-A remains accepted only at `526c55c`, with B and whole Ticket acceptance pending.
+T05-B 自动 GC/24小时/30天/两代扫描、整个 run 2GiB 物理配额、75/90%背压、64MiB双预留、log spool 与账本物理归属、真实 ENOSPC 专项、10000历史/轮询及100/1000/10000物理边际增长门槛全部移出本轮。B 局部日志不是整体通过证明，未提交源码不参与交付。默认不自动删临时/孤立/已提交证据，历史磁盘增长仍是已知限制；不能宣称无限运行或整个 run 物理用量已受保证。后续须另行确认范围。

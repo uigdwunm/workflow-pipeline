@@ -1,6 +1,6 @@
 {
-  "status": "accepted-local-continuous",
-  "authority": "user-approved ordinary local implementation scope; not a synthetic B/C sealed scope",
+  "status": "accepted-reduced-scope-implementation-paused",
+  "authority": "user-requested scope reduction; planning only now, explicit resume required for implementation",
   "basis_commit": "61f105f1d8bdb3ebc1b574e3104332621dc31ec8",
   "requirement_sha256": "dcc2adf2141dd49a9d383fc30a62388d267fb35e58fdddbdad1824d367c2dd77",
   "policy": {
@@ -8,7 +8,8 @@
     "add": "proposed new path/symbol, not claimed existing",
     "verify": "explicit read/test inventory; no automatic file-write permission. Promote only when actual fixture dependency is documented within confirmed behavior scope.",
     "generated": "single canonical output inventory; never hand edit generated copies",
-    "execution_rules": "execution-policy.md is the single execution-policy reference for T03–T06; this approved planning revision does not resume implementation or create a runtime lease."
+    "execution_rules": "execution-policy.md defines current remaining T05/T06 scope; historical entries do not authorize deferred work or resume implementation.",
+    "remaining_scope": "Preserve accepted T01–T04/T05-A source and reports. Isolate uncommitted T05-B before core validation; only required core compatibility, canonical output, final validation and delivery remain. Deferred mechanisms require separate authorization."
   },
   "entries": [
     {
@@ -201,7 +202,8 @@
         "skills/problem-framing/scripts/workflow_progress.py",
         "skills/solution-design/scripts/workflow_progress.py"
       ],
-      "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。"
+      "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。",
+      "remaining_scope": "Preserve accepted core source; isolate deferred uncommitted T05-B before build/review. No GC, whole-run quota/reserve/log-spool/physical ledger-accounting or extreme-scale additions in this delivery."
     },
     {
       "path": "src/shared/scripts/workflow_control.py",
@@ -553,7 +555,8 @@
         "skills/problem-framing/scripts/discussion_core/workflow_control.py",
         "skills/solution-design/scripts/discussion_core/workflow_control.py"
       ],
-      "implementation_note": "T01 ledger B 准备读取：原 stage subject 的 prepare intent、scope/基线、原 ledger pointer/revision 有限读取及 HEAD 漂移拒绝。正常邻居仅证明 B 守卫与 ledger start-dispatch；baseline 已有 full-topic entry equality 导致后续 verify_launch entry_changed，保持明确拒绝，不宣称完整 ledger Stage3 launch 受支持。不得忽略 topic 权威字段、重采 expected 或扩展延期初始化。 T02：现有 _bounded_workflow_control 的无记录 context schema6 默认值须同步 schema7；保持原受支持 default/CAS/身份守卫，不扩展 Stage2/Phase0 初始化或正常 Stage3 launch。 T05 required ledger archive-current consumer: retain original generation and receipts; verify bounded references on original read/projection paths and commit only through existing ledger lock, transition, record revision and pointer CAS. No deferred initialization or foreground ingress expansion."
+      "implementation_note": "T01 ledger B 准备读取：原 stage subject 的 prepare intent、scope/基线、原 ledger pointer/revision 有限读取及 HEAD 漂移拒绝。正常邻居仅证明 B 守卫与 ledger start-dispatch；baseline 已有 full-topic entry equality 导致后续 verify_launch entry_changed，保持明确拒绝，不宣称完整 ledger Stage3 launch 受支持。不得忽略 topic 权威字段、重采 expected 或扩展延期初始化。 T02：现有 _bounded_workflow_control 的无记录 context schema6 默认值须同步 schema7；保持原受支持 default/CAS/身份守卫，不扩展 Stage2/Phase0 初始化或正常 Stage3 launch。 T05 required ledger archive-current consumer: retain original generation and receipts; verify bounded references on original read/projection paths and commit only through existing ledger lock, transition, record revision and pointer CAS. No deferred initialization or foreground ingress expansion.",
+      "remaining_scope": "Preserve accepted core source; isolate deferred uncommitted T05-B before build/review. No GC, whole-run quota/reserve/log-spool/physical ledger-accounting or extreme-scale additions in this delivery."
     },
     {
       "path": "src/stages/guided-implementation/scripts/workflow.py",
@@ -615,7 +618,8 @@
       ],
       "generated_outputs": [
         "skills/guided-implementation/scripts/workflow.py"
-      ]
+      ],
+      "remaining_scope": "Preserve accepted core source; isolate deferred uncommitted T05-B before build/review. No GC, whole-run quota/reserve/log-spool/physical ledger-accounting or extreme-scale additions in this delivery."
     },
     {
       "path": "src/shared/scripts/workflow_state_store.py",
@@ -677,7 +681,8 @@
         "skills/problem-framing/scripts/workflow_state_store.py",
         "skills/solution-design/scripts/workflow_state_store.py"
       ],
-      "implementation_note": "T01 精确前驱构造/读取，不 pin 整个旧 stage 或递归祖先；通用 compact/GC 属 T05。 T03已确认跨checkpoint/ledger的Store读取需在原operation_store/open_store/_read入口汇总；仅计量，保持容量、权威、CAS和预留规则。原模块由T01创建，T03在当前基线上modify，不重建。"
+      "implementation_note": "T01 精确前驱构造/读取，不 pin 整个旧 stage 或递归祖先；通用 compact 属 T05-A；旧 GC 计划随本次收缩延期。 T03已确认跨checkpoint/ledger的Store读取需在原operation_store/open_store/_read入口汇总；仅计量，保持既有当前容量、权威和 CAS；新增物理预留延期。原模块由T01创建，T03在当前基线上modify，不重建。",
+      "remaining_scope": "Preserve accepted core source; isolate deferred uncommitted T05-B before build/review. No GC, whole-run quota/reserve/log-spool/physical ledger-accounting or extreme-scale additions in this delivery."
     },
     {
       "path": "src/shared/scripts/review_evidence.py",
@@ -992,12 +997,12 @@
     },
     {
       "path": "scripts/field_acceptance.py",
-      "operation": "modify",
+      "operation": "verify",
       "tickets": [
         "T06"
       ],
       "kind": "tooling",
-      "reason": "真实host案例worksheet和测量字段",
+      "reason": "本轮只读保留现有工具；新现场worksheet/测量字段延期",
       "exists_at_design": true,
       "symbols": [
         {
@@ -1005,7 +1010,8 @@
           "status": "existing-verified"
         }
       ],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "remaining_scope": "read-only; native campaign deferred"
     },
     {
       "path": "docs/adr/0013-revise-function-plans-within-contract.md",
@@ -1051,7 +1057,7 @@
         "T06"
       ],
       "kind": "tooling",
-      "reason": "T03首片起的原事件/命令只读计量，T06匿名汇总/效果对比；unknown和重叠区间分列",
+      "reason": "保留已接受 T03 只读计量；T06仅复用既有输出，不新增正式对照/Markdown/场景功能",
       "exists_at_design": false,
       "symbols": [
         {
@@ -1059,7 +1065,8 @@
           "status": "proposed-new"
         }
       ],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "remaining_scope": "accepted T03 source unchanged; readonly T06 summary"
     },
     {
       "path": "scripts/build_skills.py",
@@ -1076,20 +1083,18 @@
     },
     {
       "path": "src/stages/guided-implementation/scripts/foreground_host.py",
-      "operation": "modify",
+      "operation": "verify",
       "tickets": [
         "T01",
-        "T06",
-        "T05"
+        "T06"
       ],
       "kind": "source",
       "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": [
-        "skills/guided-implementation/scripts/foreground_host.py"
-      ],
-      "implementation_note": "T05-B confirmed dependency: start() sends owned checkpoint.host.stderr directly to Popen without a bound. Add bounded diagnostic spooling through the original run capacity boundary; no new service, installation or protocol relaxation."
+      "generated_outputs": [],
+      "implementation_note": "35d5a5 historical T05-B log-spool promotion is deferred by user scope reduction. Preserve uncommitted WIP, exclude before core delivery; no remaining source-write authorization for that mechanism.",
+      "remaining_scope": "verify original supported adapter only; bounded log spool deferred"
     },
     {
       "path": "src/shared/scripts/discussion_core/state.py",
@@ -1447,7 +1452,8 @@
       "reason": "新增真实生产边界行为回归",
       "exists_at_design": false,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "remaining_scope": "Preserve accepted core source; isolate deferred uncommitted T05-B before build/review. No GC, whole-run quota/reserve/log-spool/physical ledger-accounting or extreme-scale additions in this delivery."
     },
     {
       "path": "tests/runtime/test_accepted_query_retry.py",
@@ -2052,7 +2058,7 @@
         "T06"
       ],
       "kind": "test",
-      "reason": "核验真实宿主取证格式与新worksheet一致",
+      "reason": "现有现场取证工具只读保留；本轮完整原生现场与新worksheet延期",
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": []
@@ -2064,7 +2070,7 @@
         "T06"
       ],
       "kind": "test",
-      "reason": "核验真实宿主取证格式与新worksheet一致",
+      "reason": "现有现场取证工具只读保留；本轮完整原生现场与新worksheet延期",
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": []
@@ -3032,14 +3038,6 @@
       "tickets": [
         "T01"
       ]
-    },
-    {
-      "path": "skills/guided-implementation/scripts/foreground_host.py",
-      "operation": "generate",
-      "source": "src/stages/guided-implementation/scripts/foreground_host.py",
-      "tickets": [
-        "T05"
-      ]
     }
   ],
   "ticket_dag": {
@@ -3088,12 +3086,29 @@
   },
   "plan_revision": {
     "approved_date": "2026-10-07",
-    "basis_commit": "6a4f24f2712e9859e40021707b8545f03ab7368b",
-    "scope": "T03–T06 planning and execution policy; implementation remains paused",
+    "basis_commit": "35d5a57876badce5a4beb01c99ac2a5db62c404e",
+    "scope": "user requested reduction; revised T05 core closure and T06 necessary integration only; implementation paused",
     "policy_ref": "execution-policy.md",
     "preserved_acceptance": {
       "T01": "2db280986df071464e3c37346c076f24d233c952",
-      "T02": "375476289417ce5ec081051dcf48eaf2a66ee4b6"
-    }
+      "T02": "375476289417ce5ec081051dcf48eaf2a66ee4b6",
+      "T03": "5a2de9bbf12b5a39d1e4da92913aef176a7429ed",
+      "T04": "28e67527efb5dfeaa98aa44ecc12ea9aa158c152",
+      "T05-A-local-only": "526c55cfe7f265a3ef2f39770f4315fc7883475f"
+    },
+    "remaining": [
+      "preserve/isolate six-file T05-B WIP; revised T05 core coverage using applicable A evidence",
+      "T06 confirmed fixture compatibility, supported core integration, protocol/canonical packages, final full validation and two-axis delivery review",
+      "report existing measurements, native unverified and efficiency insufficient without new evaluation tooling"
+    ],
+    "deferred": [
+      "automatic GC/two-pass reachability deletion",
+      "whole-run 2GiB physical quota, dual reserves, ledger accounting and diagnostic spooling",
+      "real quota/ENOSPC campaign and 10000-history/poll/marginal-growth benchmarks",
+      "full native lifecycle field campaign/final installed host admission",
+      "formal old/new efficiency comparison and new measurement/worksheet functionality"
+    ],
+    "deferred_wip_status": "preserved uncommitted and unaccepted; excluded before core build/review; this planning revision does not alter runtime files",
+    "historical_inventory": "entries/tickets record original ownership; remaining_scope and this revision constrain remaining work; frozen requirement unchanged"
   }
 }
