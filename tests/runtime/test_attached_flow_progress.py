@@ -508,7 +508,7 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.invoke('prepare-plan-revision', report)
         stopped = self.invoke('observe', self.observation('stopped', 'result', ref='native:dispatcher'))
         spec = self.flow / 'docs/spec.md'
-        match = re.search(r'```execution-plan-v1\n(.*?)\n```', content, re.DOTALL)
+        match = re.search(r'```execution-plan-v2\n(.*?)\n```', content, re.DOTALL)
         updated = copy.deepcopy(plan)
         updated['plan_version'] = 2
         updated['steps'][0]['approach'].append('move private helper')
