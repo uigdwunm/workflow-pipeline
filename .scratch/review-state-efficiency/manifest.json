@@ -1459,14 +1459,21 @@
       "path": "tests/runtime/test_state_archive.py",
       "operation": "add",
       "tickets": [
-        "T05"
+        "T05",
+        "T06"
       ],
       "kind": "test",
       "reason": "新增真实生产边界行为回归",
       "exists_at_design": false,
-      "symbols": [],
+      "symbols": [
+        {
+          "name": "ArchiveAffectedTests.test_archive_affected_cli_original_proof_rejections",
+          "status": "existing-verified"
+        }
+      ],
       "generated_outputs": [],
-      "remaining_scope": "Preserve accepted core source; isolate deferred uncommitted T05-B before build/review. No GC, whole-run quota/reserve/log-spool/physical ledger-accounting or extreme-scale additions in this delivery."
+      "remaining_scope": "Preserve accepted core tests; isolate deferred B. T06 only removes the duplicate CLI subprocess context rewrite so the repaired original Layered method exercises its stale/issuer/source/certificate and no-write assertions. No GC/physical/10000 additions.",
+      "implementation_note": "T06 actual affected attempt13 fails: duplicate subprocess wrapper rewrites intentionally stale C to current, bypassing the original stale-context assertion. Directly reuse repaired original Layered test, retain all original refusal assertions; no new wrapper."
     },
     {
       "path": "tests/runtime/test_accepted_query_retry.py",
@@ -3143,6 +3150,12 @@
       "path": "tests/packages/test_build.py",
       "evidence": "4faa63b:test_build.py:17–35 literal prior compatibility/release expectations; direct producer-consumer of approved1.4.0 manifest",
       "scope": "no package runtime feature change or broad test rewrite"
+    },
+    "archive_fixture_dependency": {
+      "path": "tests/runtime/test_state_archive.py",
+      "symbol": "ArchiveAffectedTests.test_archive_affected_cli_original_proof_rejections",
+      "evidence": "T06 attempt13, real54.18s, expected original stale proof rejection replaced by wrapper with review-has-not-started; current Layered test already verifies original refusals",
+      "scope": "only remove obsolete duplicate fixture rewrite; A runtime evidence unchanged"
     }
   }
 }
