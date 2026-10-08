@@ -73,6 +73,10 @@ G4 后续实际原因：24 closed-docs 原公开全恢复85.61s通过，原actor
 
 ## 验证顺序与交付
 
+最终原完整验证 `81e61f0` 已正常结束：60 模块 39 PASS／21 FAIL，1423 项、46 failures／67 errors／1 skip，exit 1，6845.043 秒；625 tracked 输入前后完全一致。失败不是验收，原日志和字节保持。按已保存的原失败共同产生者继续修复，不新增 Ticket 或延期功能，也不能用局部绿替代最终全量。
+
+首个修复批次只涉及三条基础路径：原 `workflow_control_git.verify_stored_review_coverage` 的 committed Git 对象源选择；`workflow_progress.prepare_review_archive/native_refs` 先经一次旧 reviewer 原 action/archive/census/pending 探针确认的身份保留；原 `ProgressTests.invoke/observation/complete_fixture_local_reviews` 对有限身份、真实连接和 admitted adapter 的构造。保原保护范围、已注册角色、原停止／查询／CAS／来源证明、固定预算与实际拒绝。原作者唯一写入与 runner；其他失败测试先只读，后按已证明依赖登记必要适配。同源生成副本仅按原映射同步，完整候选必须重新通过 `validate.sh`。
+
 G4 固定 `91c5a54` 原审查者已关闭恢复链 P2，Standards 0、localSpec 新发现 0；预留前写入修复的 `2bd9943` 增量结论保持。后续两测试文件的原 Git 29 项、pure 23 项和 peers 用例通过，原 test IDs 保留；冻结 patch SHA256 `0e4dd983dfa4434157f9a7cf22ce93021d0af53992c9a65e8fc513f014900db5`。真实初始包 pin、A/规划基线、bound dispatcher 接收及原 Task Ticket 检查、原 predecessor/保护路径均经已有产生者接线，生产代码和包未再改变。当前待该测试增量独立审查、固定候选完整验证和最终两轴交付覆盖，不能标记 T06 或原生现场完成。
 
 G4 原 69 两次真实恢复、11 类拒绝和旧角色无验收权限断言通过；70 原单次、71 最大报告、72 生成一致性及 73 diff 检查通过，冻结增量待原 reviewer 关闭 P2。下一位唯一作者只修 `test_workflow_control.py` 与 `test_workflow_control_git.py` 的已确认 Ticket/coverage 前置：纯 control 数据结构夹具明确只证明 schema，真实 Git 消费者使用原公开临时 C 分配/接受/局部与 Ticket 证明及原 closure delivery 引用；保留原正反目标和监督清理，不改变生产 guard 或支持路线。G4 停稳后交接，审查读取固定 Git 对象与 G1 实现并行。
