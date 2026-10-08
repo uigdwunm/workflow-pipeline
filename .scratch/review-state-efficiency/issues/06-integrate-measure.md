@@ -106,6 +106,16 @@ ordinary／raw／physical 独立峰值为 1,110,259／2,097,152／2,393,053B，�
 
 本批精确路径及条件见manifest `final_runtime_repair_scope`：workflow_progress、stage_dispatch、stage_handoff的上述原seams及三个必要原测试消费者。stage_handoff目前只新增原source关系诊断，不据纯counterfactual假定产品风险；不触及Store/runner或额外支持。原五包映射只同步实际变化源，所有原证据和固定预算保持。只读review可检查已冻结七测试Git对象，另一源码writer不得并行。该批及剩余owner/native fixtures、完整validate与最终交付仍未完成。
 
+上述运行时批次已冻结：26路径精确SHA/patch/modes核对，三原脚本及15 canonical、5包digest、三原测试；201个原test methods保留，仅新增一个真实旧globals首次delivery组合。source snapshot SHA256 `59ebb018de7f2978f99f633f4d5235828cce6900c5517565e1a12dc55585cf63`，patch `31deae1a3e44f472c90e80234e93b13cbd3e43af53c360424f66a92682e80383`，原29条命令由 `t06-final-runtime/index.json`（2,805B）及两命令页（11,492/11,246B）定位，不重标原RED。累计独立增量待审，原完整full02仍FAIL。
+
+实证：23原旧globals→pending record/source读与missing/corrupt/foreign/adverse拒绝、accepted B结果已存未consume恢复→scalar转换→first delivery/Stage4 PASS29.28s；22原late binding/no write_release/activepeer及pending新prepare/伪造intent拒绝PASS20.98s；15真实saved idle→continue/running保原pending→完成group后原call settle→local/Ticket/final/Stage4 PASS63.63s。原21缺证明只读诊断已由实际causal gate和原支持的idle producer闭合，不新增foreground机制或伪造resumable/transport。
+
+实际09 capacity探针复现receive subject264520B且仅该09采到checkpoint前后同SHA，旧31未采仍unknown。同一16462B原observation在transaction_source重复，只复用既有observation引用。随后accept intent新原16/17边界279420B：dispatch与transaction.record同16818B收到B record，last_result.record为同received record来源；仅这两份复用同ordinary evidence引用，dispatch正文保持。原intent/result未consume与consume后scalar落点均由真实公开23验证，源缺失/腐坏拒绝不写checkpoint；无新type/schema/cap、无审计/stop/claims删除。20原丢accepted响应故障确在accepted之后触发，同completion恢复、rejected-ID审计、四illegal history最早save/inspect拒绝与published条件CAS补偿、真实Stage4 PASS115.72s，原G1测试P2作者修复建议已整合，独立闭合尚待。
+
+21原inline完整PASS44.62s：仅原nonempty adopt_paths比较原capture snapshot与已有semantic adoption hash；实际公共wrong semantic和checkpoint不变、四readonly pin/source、foreign/nointent/protected/revalidate/第二accepted/newdigest保留。只读counterfactual不冒作publishedC漏洞。24原fresh stop/old ACK不清撤销19.65s、25暂停处理原allocation5.98s、26ended/notcreated不被late ready复活3.54s通过。27最大八份8MiB报告PASS64.04s，独立ordinary/raw/physical峰值1116706/2097152/2393053B分别低于原限额；Root2990B和该样本Subject44160B，非所有历史规模保证，峰值不相加。28canonical5.09s、29diff0.081s通过，observer已清。
+
+当前继续原已登记G2八owner/CAS测试、G4四native consumer夹具，源只读增量审查用固定Git，与下一独立测试writer可并行；不添加新Ticket或延期功能。所有必需夹具/累计findings闭合后冻结最终candidate，完整validate仍必跑。本段报告实际来源结果，不签whole T06/native/efficiency。
+
 下列段落保留先前候选的检查时点；其中“待补”“下一位”属于该时点，不覆盖本批范围或唯一管理记录。
 
 G4 固定 `91c5a54` 原审查者已关闭恢复链 P2，Standards 0、localSpec 新发现 0；预留前写入修复的 `2bd9943` 增量结论保持。后续两测试文件的原 Git 29 项、pure 23 项和 peers 用例通过，原 test IDs 保留；冻结 patch SHA256 `0e4dd983dfa4434157f9a7cf22ce93021d0af53992c9a65e8fc513f014900db5`。真实初始包 pin、A/规划基线、bound dispatcher 接收及原 Task Ticket 检查、原 predecessor/保护路径均经已有产生者接线，生产代码和包未再改变。当前待该测试增量独立审查、固定候选完整验证和最终两轴交付覆盖，不能标记 T06 或原生现场完成。

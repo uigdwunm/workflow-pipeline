@@ -1933,7 +1933,21 @@ class PlanRevisionProgressTests(unittest.TestCase):
             "handoff": execution})
         self.assertEqual(prepared["next_action"]["operation"], "invoke-host")
         flow.invoke("prepare-plan-revision", self.report(flow))
-        slot = flow.state()["allocations"]["late-native"]
+        slot = flow.allocation_slot('late-native')
+        checkpoint_bytes = flow.checkpoint.read_bytes()
+        with self.assertRaises(progress.entry.PreparationError) as new_prepare:
+            progress.handoff.prepare(copy.deepcopy(execution))
+        self.assertEqual(new_prepare.exception.code, 'handoff_not_ready')
+        self.assertEqual(flow.checkpoint.read_bytes(), checkpoint_bytes)
+        for intent in (None, 'forged-original-intent'):
+            request = {'protocol': progress.handoff.PROTOCOL, 'operation': 'bind', 'record': slot['record'],
+                'control': copy.deepcopy(flow.state()['control']),
+                'receipt': flow.receipt(slot['record'], ref='native:late-executor')}
+            if intent is not None:
+                request['allocation_intent'] = intent
+            with self.subTest(intent=intent), self.assertRaises(progress.entry.PreparationError):
+                progress.dispatch.handle(request)
+            self.assertEqual(flow.checkpoint.read_bytes(), checkpoint_bytes)
         late = flow.invoke("allocation", {"allocation_id": "late-native", "operation": "bind",
             "receipt": flow.receipt(slot["record"], ref="native:late-executor")})
         current = flow.state()
@@ -2289,15 +2303,23 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(current['continuation_intent'],
             {'kind': 'plan-revision', 'revision_id': report['revision_id']})
         self.assertEqual(inspected['next_action']['action_id'], current['host']['query']['action_id'])
-        stopped = flow.observation('stopped', 'result', ref='native:dispatcher')
-        self.assertEqual(stopped['action_id'], inspected['next_action']['action_id'])
-        continued = flow.invoke('observe', stopped)
+        original_stop = copy.deepcopy(flow.state()['host']['last_stop'])
+        # The original deterministic host answers this saved read-only query
+        # with its current idle identity. Retain the prior planning stop receipt;
+        # an unqualified stopped response alone grants no resumability.
+        idle = flow.observation('idle', 'result', ref='native:dispatcher')
+        self.assertEqual(idle['action_id'], inspected['next_action']['action_id'])
+        continued = flow.invoke('observe', idle)
+        self.assertEqual(flow.state()['host']['last_stop'], original_stop)
         self.assertEqual((continued.get('next_action') or {}).get('operation'), 'continue-host', continued)
         running = flow.observation('running', 'result', ref='native:dispatcher')
         self.assertEqual(running['action_id'], continued['next_action']['action_id'])
         flow.invoke('observe', running)
         resumed_owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
-        self.assertFalse(resumed_owner.unresolved_host_actions())
+        outstanding = resumed_owner.unresolved_host_actions()
+        self.assertEqual(len(outstanding), 1)
+        self.assertEqual(outstanding[0]['action_id'], continued['next_action']['action_id'])
+        self.assertEqual(outstanding[0]['operation'], 'continue-host')
         self.assertEqual(resumed_owner.state['host']['status'], 'running')
         controller_request = copy.deepcopy(flow.request)
         controller_settings = copy.deepcopy(flow.settings)
@@ -2313,8 +2335,11 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.flow_git('add', 'impl.py', 'helper.py', 'generated/helper_copy.py')
         flow.flow_git('commit', '-qm', 'implement staged private helper')
         candidate = flow.flow_git('rev-parse', 'HEAD')
-        self.complete_candidate_fixture_reviews(flow, candidate, '-staged-helper')
+        # Consume the original call's completed idle result before local/Ticket
+        # acceptance; the preceding running response deliberately kept it pending.
         flow.invoke('observe', flow.observation('idle', 'result', ref='native:dispatcher'))
+        self.assertFalse(progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint)).unresolved_host_actions())
+        self.complete_candidate_fixture_reviews(flow, candidate, '-staged-helper')
         checkpoint = flow.state()['control']['context']['handoff_progress']
         checks = fixture.fixture.transfer.checks_for(
             checkpoint['validation_plan']['review_required'], candidate)
@@ -2863,12 +2888,19 @@ class PlanRevisionProgressTests(unittest.TestCase):
                         'retired_paths': rejected_entry['rejection']['result']['retired_paths']})
                 elif mutation == 'wrong-rejection-evidence':
                     rejected_entry['rejection']['result']['message'] = 'forged rejection'
-                changed_owner.save()
-                with self.subTest(mutation=mutation), self.assertRaises(progress.entry.PreparationError):
-                    flow.invoke('inspect')
-                restored_owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
-                restored_owner.state['plan_revision_history'] = copy.deepcopy(original_history)
-                restored_owner.save()
+                before_checkpoint, published = flow.checkpoint.read_bytes(), False
+                try:
+                    with self.subTest(mutation=mutation), self.assertRaises(progress.entry.PreparationError):
+                        changed_owner.save()
+                        published = True
+                        flow.invoke('inspect')
+                    if not published:
+                        self.assertEqual(flow.checkpoint.read_bytes(), before_checkpoint)
+                finally:
+                    if published:
+                        restored_owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+                        restored_owner.state['plan_revision_history'] = copy.deepcopy(original_history)
+                        restored_owner.save()
         prepared_closure = progress.handoff.prepare(closure, checkpoint_path=str(flow.checkpoint))
         self.assertEqual(progress.handoff.verify(prepared_closure,
             checkpoint_path=str(flow.checkpoint)), prepared_closure)

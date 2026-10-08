@@ -539,6 +539,29 @@ def read_active_owner(path):
     current = store.open_current()
     state = store.read_subject(current, current.root['metadata']['stage_subject']).value
     outer = state_store.ProjectedRecord({**current.root['outer'], KEY: state}, current.revision)
+    source = state.get('transaction_source')
+    if isinstance(source, dict) and source.get('kind') == 'current-observation-ref-v1':
+        entry.fields(source, {'kind', 'event_id', 'reference', 'observation_digest'})
+        original = store.read_evidence(source['reference'], run_id=current.run_id,
+            maximum=state_store.SUBJECT_LIMIT)['value']
+        require(isinstance(original, dict) and original.get('event_id') == source['event_id'] and
+                entry.digest(original) == source['observation_digest'] and
+                (state.get('transaction') or {}).get('operation') == 'receive' and
+                any(observation == original for observation in state.get('observations', [])),
+                'state_object_corrupt', 'pending transaction changed its exact original observation source')
+        state['transaction_source'] = original
+    for key in ('transaction', 'last_result'):
+        holder = state.get(key)
+        record = holder.get('record') if isinstance(holder, dict) else None
+        if isinstance(record, dict) and set(record) == {'run_id', 'kind', 'sha256', 'size'}:
+            original = store.read_evidence(record, run_id=current.run_id,
+                maximum=state_store.SUBJECT_LIMIT)['value']
+            handoff.unseal(original)
+            require(state.get('stage') == 3 and (state.get('dispatch') or {}).get('status') == 'received' and
+                    original == state['dispatch'] and
+                    (holder.get('operation') == 'accept' if key == 'transaction' else holder.get('status') == 'received'),
+                    'state_object_corrupt', 'pending acceptance changed its original received B record')
+            holder['record'] = original
     accepted = state.get('accepted')
     dispatch_acceptance = (state.get('dispatch') or {}).get('acceptance')
     compact_dispatch = (isinstance(dispatch_acceptance, dict) and
@@ -587,6 +610,28 @@ def stage_subject_value(state):
     value = {key: value for key, value in state.items() if key != 'allocations'}
     value['review_history'] = []
     value['review_activity'] = {}
+    source = state.get('transaction_source')
+    if (state.get('stage') == 3 and (state.get('transaction') or {}).get('operation') == 'receive' and
+            isinstance(source, dict) and source.get('event_id') and
+            any(observation == source for observation in state.get('observations', []))):
+        # Preserve the complete pending source once, using the original current
+        # observation representation; the raw observation itself stays intact.
+        store = state_store.open_store(state['checkpoint_path'])
+        current = store.open_current()
+        value['transaction_source'] = {'kind': 'current-observation-ref-v1', 'event_id': source['event_id'],
+            'reference': store.write_object(current.run_id, 'evidence', source),
+            'observation_digest': entry.digest(source)}
+    if state.get('stage') == 3 and (state.get('dispatch') or {}).get('status') == 'received':
+        reference = None
+        for key in ('transaction', 'last_result'):
+            holder = state.get(key)
+            if (isinstance(holder, dict) and holder.get('record') == state['dispatch'] and
+                    (holder.get('operation') == 'accept' if key == 'transaction' else holder.get('status') == 'received')):
+                if reference is None:
+                    store = state_store.open_store(state['checkpoint_path'])
+                    current = store.open_current()
+                    reference = store.write_object(current.run_id, 'evidence', state['dispatch'])
+                value[key] = {**holder, 'record': reference}
     if state.get('stage') == 3 and state.get('accepted') is not None:
         store = state_store.open_store(state['checkpoint_path'])
         current = store.open_current()
@@ -3492,6 +3537,24 @@ class Progress:
                         require(ref not in self.state.get('native_adverse', {}),
                                 'result_incomplete', 'original review stop was revoked')
                         return original['originating_ref'], entry.digest(original['receipts']), original['originating_ref']
+        if archived is not None and archived.subject_id.startswith('review:'):
+            slot = archived.value['slot']
+            checkpoint = self.state['control']['context'].get('handoff_progress') or {}
+            require(archived.value.get('status') == 'completed' and archived.value.get('stopped') is True and
+                    slot.get('ref') == ref and slot.get('stopped') is True and slot.get('business_settled') is True and
+                    slot.get('start', {}).get('applied') is True and
+                    slot.get('prepare', {}).get('axis') == archived.value.get('axis') and
+                    slot['prepare'].get('candidate') == slot.get('candidate') and
+                    slot['prepare'].get('actor_ref') == slot.get('originating_ref') and
+                    slot.get('receipts') and slot['receipts'][-1]['status'] == 'stopped' and
+                    slot['receipts'][-1]['ref'] == ref and
+                    checkpoint.get('state') in {'final-validation-pending', 'validating',
+                        'final-validation-failed', 'deliverable', 'completed'} and
+                    ref not in self.state.get('native_adverse', {}) and not self.stop_barrier_pending(),
+                    'result_incomplete', 'original retired review must remain completed, stopped and reconciled')
+            # This is the original closed review's lifecycle owner, not a claim
+            # for the replacement candidate or an Execution Agent write lease.
+            return slot['originating_ref'], entry.digest(slot['receipts']), slot['originating_ref']
         if archived is not None and archived.subject_id.startswith('allocation:'):
             slot = archived.value['slot']
             record = handoff.unseal(slot['record'])

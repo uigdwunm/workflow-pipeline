@@ -3633,6 +3633,14 @@
           "t06-final-plan-fixtures/43-original-inline-integrated-receipt-identity.log"
         ],
         "rule": "One original runtime writer/runner for coupled original source and necessary fixtures. Root planning/Git only at source freeze. First minimum actual public feedback, then demonstrated source repair; unknown boundaries not speculated as vulnerabilities. Same existing canonical outputs/digests regenerated; no newmapping/Ticket/ADR/cap/runner/route/deferred platform. Full final gate mandatory."
+      },
+      "final_runtime_repair_result": {
+        "source_base": "ec1233f8f4bf9040b2124a89e5dd6c0f8c85aefe",
+        "source_snapshot": "t06-final-runtime/source-snapshot.json",
+        "source_snapshot_sha256": "59ebb018de7f2978f99f633f4d5235828cce6900c5517565e1a12dc55585cf63",
+        "patch_sha256": "31deae1a3e44f472c90e80234e93b13cbd3e43af53c360424f66a92682e80383",
+        "evidence": "t06-final-runtime/index.json",
+        "result": "26paths,201 original testmethods preserved+one genuine public oldglobals delivery regression. Original owner/latebinding/staged/subjectlostresponse/inline source positive and negative targets PASS, fixed limits retained; cumulative original reviewer pending, full02 remains failed. Remaining owner/native fixture scope unchanged."
       }
     }
   }

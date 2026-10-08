@@ -934,6 +934,14 @@ class PlanDrivenDispatchTests(unittest.TestCase):
             self.assertIn('scope identity differs from current root', str(error.exception))
             original_projection = progress.read_projection
             checkpoint_bytes = case.checkpoint.read_bytes()
+            wrong_snapshot = copy.deepcopy(direct)
+            wrong_snapshot['semantic']['adoption_snapshot_digest'] = entry.digest('different actual captured source')
+            with self.assertRaises(entry.PreparationError) as wrong_source:
+                handoff.prepare(wrong_snapshot, checkpoint_path=str(case.checkpoint.resolve()))
+            self.assertEqual(wrong_source.exception.code, 'authority_missing')
+            self.assertEqual(case.checkpoint.read_bytes(), checkpoint_bytes)
+            # These scoped readonly counterfactuals test consumer correspondence;
+            # they are not evidence that a corrupt C source was publicly issued.
             for field in ('attempt', 'binding', 'authority', 'snapshot'):
                 def stale_scope(path, *, projection, **kwargs):
                     value = original_projection(path, projection=projection, **kwargs)

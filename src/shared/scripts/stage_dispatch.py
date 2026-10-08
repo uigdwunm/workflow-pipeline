@@ -527,7 +527,20 @@ def record_for(request):
     handoff.require_current_protocol(handoff.unseal(dispatch_input(record)))
     if dispatch_input(record)["stage"] == 3 and "readiness" in dispatch_input(record) and \
             dispatch_input(record)["role"] == "execution-agent":
-        handoff.current_readiness(dispatch_input(record)["readiness"])
+        saved = dispatch_input(record)
+        if 'allocation' in record and request.get('operation') in {'bind', 'reconcile', 'receive', 'accept'}:
+            # Resolve only a call already authorized by the exact persisted C
+            # transaction. Pending planning may prohibit new preparation while
+            # the original host response still needs to settle without a lease.
+            verify_allocation_intent(request)
+            import workflow_progress
+            checkpoint = allocation_descriptor(record)['checkpoint']
+            state = workflow_progress.read_projection(checkpoint, projection='scope').record[workflow_progress.KEY]
+            actual = workflow_progress.consumed_scope_readiness(state, checkpoint)
+            require(actual is not None and actual == saved['readiness'],
+                    'handoff_not_ready', 'original allocation readiness is stale or changed')
+        else:
+            handoff.current_readiness(saved['readiness'])
     require(launch["input_digest"] == (allocation_descriptor(record) if "allocation" in record else dispatch_input(record))["digest"], "identity_mismatch", "request belongs to another input")
     control.validate_context(request["control"]["context"])
     require(request["control"]["context"]["controller_ref"] == launch["controller_ref"], "identity_mismatch", "checkpoint owner changed")

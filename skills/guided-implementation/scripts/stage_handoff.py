@@ -510,6 +510,7 @@ def verify_inline_recovery_pin(request, controller_ref, identity, checkpoint_pat
     state = progress.read_projection(checkpoint, projection='scope').record[progress.KEY]
     progress.validate_stage3_scope(state)
     recovery = request['authorization']['integration_recovery']
+    require(isinstance(request.get('semantic'), dict), 'invalid_request', 'Execution Agent semantic must be an object')
     current = state.get('integration_recovery')
     require(isinstance(current, dict), 'authority_missing', 'current recovery authority is missing')
     facts, _, _ = progress.read_implementation_delivery(checkpoint, current['predecessor'])
@@ -534,6 +535,8 @@ def verify_inline_recovery_pin(request, controller_ref, identity, checkpoint_pat
                               request['expected_entry']['actor'].get('actor_ref'),
                               'codex-thread:' + request['expected_entry']['actor'].get('thread_id', '')} and
             current['source_digest'] is not None and
+            (not request.get('semantic', {}).get('adopt_paths') or
+             current['source_digest'] == request['semantic'].get('adoption_snapshot_digest')) and
             current['retained'] == {'commit': recovery['retained_commit'], 'paths': recovery['retained_paths']},
             'authority_missing', 'inline allocation must retain the original captured C recovery')
     return state

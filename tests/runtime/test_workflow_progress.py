@@ -1808,6 +1808,175 @@ class ProgressTests(transfer.StageTransferTests):
         stopped['receipt'].update(call_ref='fresh-old-stop',response_ref='fresh-old-stopped')
         self.assertEqual(self.invoke('review-activity',stopped)['status'],'paused')
 
+    def test_retired_original_global_reviewers_reach_first_delivery_owner_freeze(self):
+        self.begin_dispatcher()
+        (self.flow / 'impl.py').write_text('implemented = 1\n')
+        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'original candidate')
+        candidate = self.flow_git('rev-parse', 'HEAD')
+        verification = self.mark_reviewable(candidate, evidence_suffix='-original-globals')
+        old = {}
+        for axis in ('standards', 'spec'):
+            actor = self.state()['handoff']['expected_entry']['actor']['thread_id']
+            prepared = self.invoke('review-activity', {'operation': 'prepare', 'axis': axis,
+                'candidate': candidate, 'actor_ref': actor, 'verification': verification})
+            request = {'operation': 'observe', 'axis': axis, 'candidate': candidate,
+                'actor_ref': actor, 'action_id': prepared['next_action']['action_id'],
+                'receipt': {'adapter': 'fixture', 'call_ref': 'old-call-' + axis,
+                    'response_ref': 'old-stopped-' + axis, 'ref': 'native:' + axis + '-original',
+                    'status': 'stopped', 'raw': {'task_name': axis, 'status': 'completed'}}}
+            observed = self.invoke('review-activity', request)
+            self.assertNotEqual(observed['status'], 'blocked', observed)
+            old[axis] = request
+        # mark_reviewable invalidates the original C candidate and consumes a
+        # genuine stopped/accepted B allocation for these replacement bytes.
+        (self.flow / 'impl.py').write_text('implemented = 2\n')
+        self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'repaired candidate')
+        replacement = self.flow_git('rev-parse', 'HEAD')
+        payload = {'artifacts': ['impl.py'], 'checks': ['behavior tested'], 'candidate_commit': replacement,
+            'review': {axis: {'candidate': replacement, 'reviewer_ref': 'native:' + axis + '-replacement',
+                'status': 'accepted'} for axis in ('standards', 'spec')},
+            'verification': {'candidate': replacement, 'checks': ['behavior tested']}}
+        original_dispatch = progress.dispatch.handle
+        checked_source = []
+        def consume_original_pending_source(request, **kwargs):
+            if request.get('operation') == 'receive' and request['record']['request']['role'] == 'implementation-dispatcher':
+                measured = progress.state_store.open_store(self.checkpoint)
+                current = measured.open_current()
+                persisted = measured.read_evidence(current.root['subjects'][current.root['metadata']['stage_subject']],
+                    run_id=current.run_id, kind='subject')['value']['transaction_source']
+                self.assertEqual(persisted['kind'], 'current-observation-ref-v1')
+                pending = progress.read_active_owner(self.checkpoint)[progress.KEY]
+                self.assertEqual(pending['transaction_source']['receipt'], request['receipt'])
+                self.assertEqual(pending['transaction_source']['result'], request['result'])
+                source_path = measured._path(persisted['reference']['sha256'])
+                original, checkpoint_bytes = source_path.read_bytes(), self.checkpoint.read_bytes()
+                for content in (None, b'corrupt original pending source'):
+                    try:
+                        measured._verified_objects.pop(persisted['reference']['sha256'], None)
+                        if content is None:
+                            source_path.unlink()
+                        else:
+                            source_path.write_bytes(content)
+                        with self.assertRaises(progress.entry.PreparationError) as denied:
+                            progress.read_active_owner(self.checkpoint)
+                        self.assertEqual(denied.exception.code,
+                            'state_object_missing' if content is None else 'state_object_corrupt')
+                        self.assertEqual(self.checkpoint.read_bytes(), checkpoint_bytes)
+                    finally:
+                        source_path.write_bytes(original)
+                        measured._verified_objects.pop(persisted['reference']['sha256'], None)
+                original_subject = progress.state_store.StateStore.read_subject
+                def foreign_pending_source(actual_store, actual_current, subject_id):
+                    subject = original_subject(actual_store, actual_current, subject_id)
+                    if subject_id == actual_current.root['metadata']['stage_subject']:
+                        subject.value['transaction_source']['reference']['run_id'] = 'foreign-run'
+                    return subject
+                with patch.object(progress.state_store.StateStore, 'read_subject', new=foreign_pending_source):
+                    with self.assertRaises(progress.entry.PreparationError):
+                        progress.read_active_owner(self.checkpoint)
+                self.assertEqual(self.checkpoint.read_bytes(), checkpoint_bytes)
+                checked_source.append(persisted['event_id'])
+            if request.get('operation') == 'accept' and request['record']['request']['role'] == 'implementation-dispatcher':
+                measured = progress.state_store.open_store(self.checkpoint)
+                current = measured.open_current()
+                persisted = measured.read_evidence(current.root['subjects'][current.root['metadata']['stage_subject']],
+                    run_id=current.run_id, kind='subject')['value']
+                reference = persisted['transaction']['record']
+                self.assertEqual(reference, persisted['last_result']['record'])
+                pending = progress.read_active_owner(self.checkpoint)[progress.KEY]
+                self.assertEqual(pending['transaction']['record'], request['record'])
+                self.assertEqual(pending['last_result']['record'], request['record'])
+                source_path = measured._path(reference['sha256'])
+                original, checkpoint_bytes = source_path.read_bytes(), self.checkpoint.read_bytes()
+                for content in (None, b'corrupt original received B record'):
+                    try:
+                        measured._verified_objects.pop(reference['sha256'], None)
+                        if content is None:
+                            source_path.unlink()
+                        else:
+                            source_path.write_bytes(content)
+                        with self.assertRaises(progress.entry.PreparationError) as denied:
+                            progress.read_active_owner(self.checkpoint)
+                        self.assertEqual(denied.exception.code,
+                            'state_object_missing' if content is None else 'state_object_corrupt')
+                        self.assertEqual(self.checkpoint.read_bytes(), checkpoint_bytes)
+                    finally:
+                        source_path.write_bytes(original)
+                        measured._verified_objects.pop(reference['sha256'], None)
+                original_subject = progress.state_store.StateStore.read_subject
+                def foreign_received_record(actual_store, actual_current, subject_id):
+                    subject = original_subject(actual_store, actual_current, subject_id)
+                    if subject_id == actual_current.root['metadata']['stage_subject']:
+                        subject.value['transaction']['record']['run_id'] = 'foreign-run'
+                    return subject
+                with patch.object(progress.state_store.StateStore, 'read_subject', new=foreign_received_record):
+                    with self.assertRaises(progress.entry.PreparationError):
+                        progress.read_active_owner(self.checkpoint)
+                self.assertEqual(self.checkpoint.read_bytes(), checkpoint_bytes)
+            return original_dispatch(request, **kwargs)
+        original_consume = progress.Progress.consume_transaction
+        saved_acceptance = []
+        def lose_saved_accepted_result(current_owner, result):
+            if (current_owner.state.get('transaction') or {}).get('operation') == 'accept':
+                persisted = progress.read_active_owner(self.checkpoint)[progress.KEY]
+                self.assertEqual(persisted['dispatch']['status'], 'received')
+                self.assertEqual(persisted['transaction']['record'], persisted['dispatch'])
+                self.assertEqual(persisted['last_result']['record'], persisted['dispatch'])
+                self.assertEqual(persisted['transaction_result']['status'], 'accepted')
+                self.assertEqual(progress.read_stage_transaction_result(persisted)['record'], result['record'])
+                saved_acceptance.append(result['record']['digest'])
+                raise RuntimeError('original accepted B result saved before consumption')
+            return original_consume(current_owner, result)
+        with patch.object(progress.dispatch, 'handle', side_effect=consume_original_pending_source), \
+                patch.object(progress.Progress, 'consume_transaction', new=lose_saved_accepted_result):
+            with self.assertRaisesRegex(RuntimeError, 'original accepted B result saved before consumption'):
+                self.accept_current(payload, 'native:dispatcher', evidence_suffix='-replacement-globals')
+        self.assertEqual(len(checked_source), 1)
+        self.assertEqual(len(saved_acceptance), 1)
+        accepted = self.invoke('resume')
+        self.assertEqual(accepted['status'], 'accepted', accepted)
+        self.assertEqual(self.state()['last_result']['record_digest'], saved_acceptance[0])
+        self.assertNotIn('record', self.state()['last_result'])
+        self.assertIsNone(self.state()['transaction'])
+        owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+        store = progress.state_store.StateStore(self.checkpoint)
+        current = store.open_current()
+        for axis, request in old.items():
+            ref = request['receipt']['ref']
+            self.assertIn(ref, owner.native_refs())
+            archived = store.read_native_archive(current, ref)
+            self.assertEqual(archived.value['slot']['action_id'], request['action_id'])
+            self.assertEqual(owner.finalization_owner(ref), (request['actor_ref'],
+                transfer.entry.digest(archived.value['slot']['receipts']), request['actor_ref']))
+            self.assertNotEqual(owner.read_review_claims()[axis]['reviewer_ref'], ref)
+            compact = store.read_evidence(archived.value['review_slot_ref'], run_id=current.run_id)['value']['review_slot']
+            source_path = store._path(compact['prepare_ref']['sha256'])
+            original, checkpoint_bytes = source_path.read_bytes(), self.checkpoint.read_bytes()
+            for content in (None, b'corrupt original retired review prepare'):
+                try:
+                    if content is None:
+                        source_path.unlink()
+                    else:
+                        source_path.write_bytes(content)
+                    with progress.record_lock(self.checkpoint), progress.state_store.operation_store(self.checkpoint):
+                        current_owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+                        with self.assertRaises(progress.entry.PreparationError):
+                            current_owner.finalization_owner(ref)
+                    self.assertEqual(self.checkpoint.read_bytes(), checkpoint_bytes)
+                finally:
+                    source_path.write_bytes(original)
+            with progress.record_lock(self.checkpoint), progress.state_store.operation_store(self.checkpoint):
+                current_owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+                current_owner.state.setdefault('native_adverse', {})[ref] = {'event_id': 'unreconciled-original-activity'}
+                with self.assertRaises(progress.entry.PreparationError) as denied:
+                    current_owner.finalization_owner(ref)
+                self.assertEqual(denied.exception.code, 'result_incomplete')
+                self.assertEqual(self.checkpoint.read_bytes(), checkpoint_bytes)
+        predecessor = self.state()['accepted']
+        self.context = self.context_for(4)
+        next_stage = self.begin('continuous', self.input_for(4, predecessor))
+        self.assertEqual(next_stage['next_action']['operation'], 'invoke-host', next_stage)
+
     def test_descendant_lookup_rejects_incomplete_archive_or_source_coverage(self):
         self.begin()
         self.invoke('observe',self.observation())
