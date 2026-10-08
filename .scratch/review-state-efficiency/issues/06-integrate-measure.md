@@ -51,6 +51,8 @@ G2/G3：原 3.log/9.log/25.log/59.log 加 G1 两条原失败，已确认 finite 
 
 G4：原容量耗尽用例已在 e503b46 经项目 runner 单例复现（3.2 秒、exit1），见 implementation 外部 `t06-g4/01-capacity-red.receipt.json` / `.log`。无新业务 dispatch；错误发生在原 archive intent 保存阶段。容量预检/错误返回路径继续诊断，保留 checkpoint 不变、无派发及固定预算断言，尚未修改源码。
 
+G1 审查 P2：attached 原私有修订消费者残留 v1 regex，原作者仅改该一字符并固定 `4368bcc`。`t06-g1/21-attached-revision-red` 与 `22-attached-revision-fixed` 保留原时间/源码；后者已越过 ledger/CAS、激活/replay、scope/执行断言，但在 candidate-ready 缺 Ticket acceptance，整用例未通过。原 reviewer 只复查 P2 增量。G2/G3 精确追加同文件 `test_attached_plan_revision_uses_original_ledger_record` 的真实 local/Ticket/early-check 接线，manifest 已登记；不扩展 attached 初始化或接受假 pass。
+
 ## 验证顺序与交付
 
 1. 每组先选择通过项目 runner 的最小反馈命令，证明合法输入和目标失败确实可达；准备失败先修合法基线，避免反复跑长模块寻找同一输入错误。
