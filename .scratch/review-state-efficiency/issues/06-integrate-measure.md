@@ -95,6 +95,17 @@ ordinary／raw／physical 独立峰值为 1,110,259／2,097,152／2,393,053B，�
 
 原只读原因与selectors引用 `t06-final-diagnosis` 的各共同入口报告，manifest `final_repair_fixture_scope` 绑定精确路径。基础命令11已越过审查者namespace，在collaboration第474行读取退出current的first-slice失败：只能通过原精确归档slot/proof取数，不重标该用例PASS。每组先落实已确认的最小修改再跑原失败短反馈；下游未知按实际返回值定位，新增生产路径或公共合同另行诊断。共用入口仍唯一writer/runner，原reviewer可只读固定Git增量，整合后的完整gate必重跑。
 
+七测试批次已经冻结：205+/104−，patch SHA256 `973dd7294e865b65385d3376283beef3d8a09f0ae13f6354dc4a768a9ea5bb23`，snapshot `76e7b407aa726ab7636d72cb980b45f37dd28d5b0c51f8d75c0e7b7a3ab2173f`；七路径原test IDs和13依赖字节未变。索引 `t06-final-plan-fixtures/index.json` 为6,158B，四命令分页均小于16KiB；42次实际命令20PASS/22RED不是模型样本，旧输出不重标。真实local/Ticket/directGit、partial/carry/witness、current7/legacy5、独立slice、T04原引用故障/七allocation、zero-delta和StageTransfer保护边界有定向PASS。未跑完整46项或Recovery13，不能签该组/最终全量PASS。
+
+下一有界运行时批次复用原G4，先取得实际最小源反馈，再连贯修复以下缺口：
+
+- `dd11e5c`独立审查Standards0/localSpec P2 OPEN：旧globals已精确归档并注册，首次交付owner freeze却只消费current claim/活跃history/allocation archive，缺旧review archive的原actor/receipt/parent业务来源。复用现有CAS验证的read_native_archive恢复历史finalization语义，保freshstop/adverse，不授当前候选或新lease；新增原真实repair→不同新globals→first delivery/Stage4组合先RED。
+- 原命令02：已有原C intent的late bind被pending new-preparation readiness拒绝。只在stage_dispatch.record_for核真实原intent/receipt及current scope后区分原调用settlement；newprepare门禁和attempt/ref/digest/matching/ended/unknown/peerstop拒绝不变，不改通用read_scope_readiness支持范围。
+- 原命令31：真实dispatcher result receive→C.save的stage subject264,520B超过固定262,144B，丢失accepted response目标未触发；失败时checkpoint是否不变未采集，保持unknown。先捕一次真实字段尺寸/原对象来源，只有已证明冗余projection或必要引用producer才修改，不增cap、不删rejected audit/stop/history/claims。
+- 原19–21：许可intent已有，但合法original-host identity/resumability producer未证明；只沿现有支持的真实fixture/admission与原saved动作核边界，不新增foreground路线或任意补身份。原43只剩readonly source_digest零值反例不拒，后续公共revalidate、第二accepted和new digest断言到达；该projection不是发布C，不能据此宣称权限漏洞。先核verify_inline_recovery_pin原已捕获源的对应关系，必要比较须绑定既有原proof；保原四字段和真实source拒绝目标，不扩expected集合或放宽authority。
+
+本批精确路径及条件见manifest `final_runtime_repair_scope`：workflow_progress、stage_dispatch、stage_handoff的上述原seams及三个必要原测试消费者。stage_handoff目前只新增原source关系诊断，不据纯counterfactual假定产品风险；不触及Store/runner或额外支持。原五包映射只同步实际变化源，所有原证据和固定预算保持。只读review可检查已冻结七测试Git对象，另一源码writer不得并行。该批及剩余owner/native fixtures、完整validate与最终交付仍未完成。
+
 下列段落保留先前候选的检查时点；其中“待补”“下一位”属于该时点，不覆盖本批范围或唯一管理记录。
 
 G4 固定 `91c5a54` 原审查者已关闭恢复链 P2，Standards 0、localSpec 新发现 0；预留前写入修复的 `2bd9943` 增量结论保持。后续两测试文件的原 Git 29 项、pure 23 项和 peers 用例通过，原 test IDs 保留；冻结 patch SHA256 `0e4dd983dfa4434157f9a7cf22ce93021d0af53992c9a65e8fc513f014900db5`。真实初始包 pin、A/规划基线、bound dispatcher 接收及原 Task Ticket 检查、原 predecessor/保护路径均经已有产生者接线，生产代码和包未再改变。当前待该测试增量独立审查、固定候选完整验证和最终两轴交付覆盖，不能标记 T06 或原生现场完成。

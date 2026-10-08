@@ -389,8 +389,18 @@ class PlanDrivenDispatchTests(unittest.TestCase):
             {'FP1-01', 'FP1-03'})
 
     def test_unowned_accepted_ref_cannot_unlock_a_dependent_group(self):
-        flow = revision_fixture.PlanRevisionProgressTests.new_active_flow(
-            self, read_dependency=True, grouped_reads=True)
+        original_slices = revision_fixture.PlanRevisionProgressTests.refresh_fixture_slices
+        def separate_prerequisite_owners(plan):
+            # Each accepted owner is a complete slice; downstream still needs both.
+            steps = {step['id']: step for step in plan['steps']}
+            steps['FP1-02']['read_only'] = []
+            steps['FP1-03']['read_only'] = ['impl.py']
+            steps['FP1-04']['depends_on'] = ['FP1-02', 'FP1-03']
+            original_slices(plan)
+        with patch.object(revision_fixture.PlanRevisionProgressTests, 'refresh_fixture_slices',
+                          side_effect=separate_prerequisite_owners):
+            flow = revision_fixture.PlanRevisionProgressTests.new_active_flow(
+                self, read_dependency=True)
         authority = flow.state()['scope_authority']
         catalog = authority['execution_plan']['catalog']
         ticket = catalog['tickets'][0]
@@ -674,8 +684,12 @@ class PlanDrivenDispatchTests(unittest.TestCase):
             "handoff": request})
         self.assertIsNotNone(current.get("next_action"), current)
         self.assertEqual(current["next_action"]["operation"], "invoke-host", current)
-        payload = flow.state()["allocations"]["current-group"]["record"]["request"]["payload"]
-        self.assertEqual(payload["current_scope_authority"]["revision"], 2)
+        slot = flow.state()["allocations"]["current-group"]
+        record = dispatch.record_for({"record": slot["record"], "control": flow.state()["control"]})
+        payload = handoff.unseal(dispatch.allocation_launch(record))["payload"]
+        self.assertEqual(payload["current_scope_authority"]["authority_revision"], 2)
+        self.assertEqual(payload["current_scope_authority"]["authority_digest"],
+                         entry.digest(flow.state()["scope_authority"]))
         self.assertEqual(payload["generated_outputs"]["impl.py"],
                          ["generated/impl_copy.py", "generated/second.py"])
         self.assertIn("generated/second.py", payload["scope"]["implementation_paths"])
@@ -718,26 +732,6 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         flow.flow_git('commit', '-qm', 'revised staged implementation')
         candidate = flow.flow_git('rev-parse', 'HEAD')
 
-        def mark_current_reviewable(_candidate, fixture_execution=False):
-            flow.invoke('observe', flow.observation('idle', 'result', ref='native:dispatcher'))
-            checkpoint = flow.state()['control']['context']['handoff_progress']
-            checks = transfer_fixture.checks_for(checkpoint['validation_plan']['review_required'], candidate)
-            result = flow.invoke('control', {'action': 'candidate-ready', 'evidence': {
-                'dispatcher_ref': 'native:dispatcher',
-                'attempt': flow.state()['control']['context']['carrier']['attempt'],
-                'commit': candidate, 'expected_target_head': flow.git('rev-parse', 'main'),
-                'binding': flow.binding, 'plan_digest': checkpoint['plan_digest'],
-                'plan_authority': checkpoint['plan_authority'], 'checks': checks},
-                'receipt': {'adapter': 'fixture', 'call_ref': 'focused-staged',
-                    'response_ref': 'focused-staged-result', 'raw': {'checks': checks,
-                        'source_unchanged': True, 'stopped': True,
-                        'dispatcher_ref': 'native:dispatcher'}}})
-            self.assertEqual(flow.state()['control']['context']['handoff_progress']['state'],
-                             'reviewable', result)
-            return {'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
-                    'plan_authority': checkpoint['plan_authority'], 'checks': checks}
-
-        flow.mark_reviewable = mark_current_reviewable
         payload = {'artifacts': ['impl.py'], 'checks': ['revised behavior passed'],
             'candidate_commit': candidate,
             'review': {axis: {'candidate': candidate, 'reviewer_ref': axis,
@@ -890,16 +884,22 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         self.assertEqual(len(inline_catalog["tickets"]), 1)
         requirement = case.flow / case.requirement_path
         original_requirement = requirement.read_bytes()
-        checkpoint = case.checkpoint.read_bytes()
+        before_rejection = copy.deepcopy(case.state())
         requirement.write_bytes(original_requirement + b"unauthorized inline source change\n")
         try:
             rejected = case.invoke("control", {"action": "capture-integration",
-                "evidence": {"reference": "controller:inline-race"},
-                "receipt": {"controller_ref": "task", "reference": "controller:inline-race"}})
+                "evidence": {"reference": "controller:inline-protected-negative"},
+                "receipt": {"controller_ref": "task", "reference": "controller:inline-protected-negative"}})
             self.assertEqual(rejected["status"], "blocked", rejected)
         finally:
             requirement.write_bytes(original_requirement)
-            case.checkpoint.write_bytes(checkpoint)
+            restored = progress.Progress(case.checkpoint, progress.read_active_owner(case.checkpoint))
+            for field in ("status", "error", "blocked_from"):
+                if field in before_rejection:
+                    restored.state[field] = copy.deepcopy(before_rejection[field])
+                else:
+                    restored.state.pop(field, None)
+            restored.save()
         captured = case.invoke("control", {"action": "capture-integration",
             "evidence": {"reference": "controller:inline-race"},
             "receipt": {"controller_ref": "task", "reference": "controller:inline-race"}})
@@ -925,27 +925,34 @@ class PlanDrivenDispatchTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 'authority_missing')
             forged = case.checkpoint.with_name('forged-inline-recovery.json')
             forged.write_bytes(case.checkpoint.read_bytes())
+            import shutil
+            shutil.copytree(progress.state_store.open_store(case.checkpoint).directory,
+                            progress.state_store.open_store(forged).directory)
             with self.assertRaises(entry.PreparationError) as error:
                 handoff.prepare(direct, checkpoint_path=str(forged.resolve()))
-            self.assertEqual(error.exception.code, 'authority_missing')
+            self.assertEqual(error.exception.code, 'invalid_checkpoint')
+            self.assertIn('scope identity differs from current root', str(error.exception))
+            original_projection = progress.read_projection
             checkpoint_bytes = case.checkpoint.read_bytes()
             for field in ('attempt', 'binding', 'authority', 'snapshot'):
-                outer = progress.read_record(case.checkpoint)
-                state = outer[progress.KEY]
-                if field == 'attempt':
-                    state['control']['context']['carrier']['attempt'] = '0' * 64
-                elif field == 'binding':
-                    state['handoff']['binding']['branch'] = 'codex/other-flow'
-                elif field == 'authority':
-                    state['scope_authority']['revision'] += 1
-                else:
-                    state['control']['context']['handoff_progress']['integration_source']['snapshot_digest'] = '0' * 64
-                progress.atomic_save(case.checkpoint, outer)
-                try:
+                def stale_scope(path, *, projection, **kwargs):
+                    value = original_projection(path, projection=projection, **kwargs)
+                    if Path(path) == case.checkpoint and projection == 'scope':
+                        value = copy.deepcopy(value)
+                        state = value.record[progress.KEY]
+                        if field == 'attempt':
+                            state['integration_recovery']['carrier']['attempt'] = '0' * 64
+                        elif field == 'binding':
+                            state['handoff']['binding']['branch'] = 'codex/other-flow'
+                        elif field == 'authority':
+                            state['scope_authority']['revision'] += 1
+                        else:
+                            state['integration_recovery']['source_digest'] = '0' * 64
+                    return value
+                with patch.object(progress, 'read_projection', side_effect=stale_scope):
                     with self.subTest(stale_pin=field), self.assertRaises((entry.PreparationError, control.ControlError)):
                         handoff.prepare(direct, checkpoint_path=str(case.checkpoint.resolve()))
-                finally:
-                    case.checkpoint.write_bytes(checkpoint_bytes)
+                self.assertEqual(case.checkpoint.read_bytes(), checkpoint_bytes)
         with patch.dict(case.settings, thread_id="dispatcher-runtime"), patch.dict(case.request["host"]):
             execution = case.inherited_execution_input()
             execution["scope"]["owned_paths"] = copy.deepcopy(current["integration_source"]["pending_paths"])
@@ -955,7 +962,7 @@ class PlanDrivenDispatchTests(unittest.TestCase):
             self.assertIsNone(execution.get("readiness"))
             requirement = case.flow / case.requirement_path
             original_requirement = requirement.read_bytes()
-            checkpoint = case.checkpoint.read_bytes()
+            before_rejection = copy.deepcopy(case.state())
             requirement.write_bytes(original_requirement + b"unauthorized inline source change\n")
             try:
                 rejected = case.invoke("allocation", {"allocation_id": "tampered-inline",
@@ -964,13 +971,26 @@ class PlanDrivenDispatchTests(unittest.TestCase):
                 self.assertNotIn("write_release", rejected.get("next_action") or {})
             finally:
                 requirement.write_bytes(original_requirement)
-                case.checkpoint.write_bytes(checkpoint)
-        case.revalidate_integrated_execution()
+                restored = progress.Progress(case.checkpoint, progress.read_active_owner(case.checkpoint))
+                for field in ("status", "error", "blocked_from"):
+                    if field in before_rejection:
+                        restored.state[field] = copy.deepcopy(before_rejection[field])
+                    else:
+                        restored.state.pop(field, None)
+                restored.save()
+        original_record_for = dispatch.record_for
+        def original_checkpoint_reader(request):
+            if request.get('operation') is None and request.get('record') is not None:
+                request = {**request, 'scope_checkpoint_path': str(case.checkpoint.resolve())}
+            return original_record_for(request)
+        with patch.object(dispatch, 'record_for', side_effect=original_checkpoint_reader):
+            case.revalidate_integrated_execution()
         payload["candidate_commit"] = integrated
         payload["review"] = {axis: {"candidate": integrated,
             "reviewer_ref": "integrated-" + axis, "status": "accepted"}
             for axis in ("standards", "spec")}
-        replaced = case.accept_current(payload, "native:dispatcher", fixture_execution=False)
+        replaced = case.accept_current(payload, "native:dispatcher", fixture_execution=False,
+                                       evidence_suffix="inline-integrated")
         self.assertEqual(replaced["status"], "accepted", replaced)
         self.assertNotEqual(case.state()["accepted"]["digest"], predecessor["digest"])
 
@@ -1049,7 +1069,13 @@ class PlanDrivenDispatchTests(unittest.TestCase):
                 "control": {"context": case.state()["control"]["context"], "discussion": None},
                 "receipt": case.receipt(old_record, "stopped", "result", ref="native:inline-v1"),
                 "result": {"delivery_id": "late-inline-v1", "status": "completed", "payload": old_payload}})
-        self.assertIn(old_error.exception.code, {"attempt_mismatch", "execution_plan_stale"})
+        self.assertEqual(old_error.exception.code, 'authority_missing')
+        with self.assertRaises(entry.PreparationError) as old_attempt:
+            dispatch.validate_allocation_receipt(old_record, 'receive',
+                case.receipt(old_record, 'stopped', 'result', ref='native:inline-v1'),
+                case.state()['control']['context'],
+                {'delivery_id': 'late-inline-v1', 'status': 'completed', 'payload': old_payload})
+        self.assertIn(old_attempt.exception.code, {'attempt_mismatch', 'execution_plan_stale'})
         execution = case.execution_input()
         execution["scope"] = copy.deepcopy(case.state()["handoff"]["scope"])
         execution["scope"]["downstream"] = copy.deepcopy(current["scope"]["downstream"])

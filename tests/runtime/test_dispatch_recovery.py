@@ -31,6 +31,10 @@ class RecoveryFixture(ProgressTests):
                 extra.update(id='inline-extra', target={'path': 'extra.py', 'symbol': 'run',
                                                         'operation': 'add'})
                 plan['steps'].append(extra)
+                group = copy.deepcopy(plan['behavior_slices'][0])
+                group.update(id='inline-extra', step_ids=['inline-extra'],
+                    verification_refs=extra['verification_refs'], read_only=extra['read_only'])
+                plan['behavior_slices'].append(group)
         return value
 
     def execution_input(self):
@@ -87,7 +91,7 @@ class DispatchRecoveryTests(unittest.TestCase):
             'result':{'delivery_id':'slice','status':'completed','payload':{'changed_paths':['impl.py'],
                 'file_hashes':{'impl.py':hashlib.sha256(data).hexdigest()},'tests':['focused passed'],
                 'write_release':dispatch.execution_release_token(slot['record']),
-                'plan_refs':slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_refs':dispatch.dispatch_input(slot['record'])['semantic']['plan_refs'],
                 'plan_authority':f.state()['control']['context']['handoff_progress']['plan_authority']}}})
         if accept:
             f.invoke('allocation', {'allocation_id':'slice-one','operation':'accept','decision':{'reference':'dispatcher:accepted'}})
@@ -113,7 +117,7 @@ class DispatchRecoveryTests(unittest.TestCase):
                     'changed_paths':['extra.py'], 'file_hashes':{'extra.py':hashlib.sha256(extra).hexdigest()},
                     'tests':['second agent stopped after focused check'],
                     'write_release':dispatch.execution_release_token(slot['record']),
-                    'plan_refs':slot['record']['handoff']['semantic']['plan_refs'],
+                    'plan_refs':dispatch.dispatch_input(slot['record'])['semantic']['plan_refs'],
                     'plan_authority':f.state()['control']['context']['handoff_progress']['plan_authority']}}})
             self.assertEqual(received['next_action']['result']['status'], 'received', received)
         f.settings['thread_id'] = 'task'
@@ -300,7 +304,7 @@ class DispatchRecoveryTests(unittest.TestCase):
             'result':{'delivery_id':'new-slice','status':'completed','payload':{'changed_paths':['impl.py'],
                 'file_hashes':{'impl.py':hashlib.sha256(data).hexdigest()},'tests':['successor focused check passed'],
                 'write_release':dispatch.execution_release_token(slot['record']),
-                'plan_refs':slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_refs':dispatch.dispatch_input(slot['record'])['semantic']['plan_refs'],
                 'plan_authority':f.state()['control']['context']['handoff_progress']['plan_authority']}}})
         self.assertEqual((received.get('next_action') or {}).get('result', {}).get('status'), 'received', received.get('error'))
         accepted = f.invoke('allocation', {'allocation_id':'replacement-slice','operation':'accept',

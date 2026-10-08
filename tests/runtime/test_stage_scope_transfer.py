@@ -274,7 +274,8 @@ class StageScopeTransferTests(unittest.TestCase):
                                                   "operation": "prepare", "handoff": allocation})
             self.assertEqual(prepared["next_action"]["operation"], "invoke-host", prepared)
             saved = flow.state()["allocations"]["inherited-slice"]["handoff"]
-            self.assertEqual(saved["manifest_baseline"],
+            resolved = handoff.resolve_allocation(saved)
+            self.assertEqual(resolved["manifest_baseline"],
                              flow.state()["scope_authority"]["scope"]["baseline"])
         finally:
             scenario.doCleanups()

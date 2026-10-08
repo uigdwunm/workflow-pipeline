@@ -1180,7 +1180,7 @@ class DiscussionProtocolEvolutionTests(DiscussionProtocolScenarioFixture, Discus
             action="choose-dedicated", evidence={"intent": "explicit-dedicated"})
         code, created, stderr = source_control(request)
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(created["control"]["context"]["schema_version"], 6)
+        self.assertEqual(created["control"]["context"]["schema_version"], 7)
 
         ledger = Path(str(topic["ledger_path"]))
         frontmatter, records = PROTOCOL._load_records(ledger)

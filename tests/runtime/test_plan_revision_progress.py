@@ -245,7 +245,12 @@ class PlanRevisionProgressTests(unittest.TestCase):
         unaffected = 'E' if larger else 'C'
         axis = 'local:' + unaffected + ':' + unaffected + '1'
         original = store.read_evidence(views[axis]['claim_ref'], run_id=current.run_id)['value']
-        original_result = next(item for item in checkpoint['executions'] if item['agent_ref'] == 'native:executor-' + unaffected + '1')
+        original_executions = progress.control.all_execution_results(checkpoint)
+        original_result = next(item for item in original_executions
+            if item['agent_ref'] == 'native:executor-' + unaffected + '1')
+        allocation_ids = ['A1', 'A2', 'B1', 'B2', 'C1'] + (['D1', 'E1'] if larger else [])
+        original_allocations = {identity: copy.deepcopy(flow.allocation_slot(identity, identity[0]))
+            for identity in allocation_ids}
         authority = before['scope_authority']
         path = '.scratch/layered/issues/A.md'
         report = {'revision_id': 't04-shared', 'expected_authority_revision': authority['revision'],
@@ -389,12 +394,12 @@ class PlanRevisionProgressTests(unittest.TestCase):
         carried = next(item for item in after['carried_results'] if item['agent_ref'] == 'native:executor-' + unaffected + '1')
         self.assertEqual(carried['source_result_digest'], progress.entry.digest(original_result))
         self.assertEqual(carried['owned_final_fingerprints'], progress.execution_plan.accepted_owned_fingerprints(original_result))
-        self.assertEqual(after['plan_revision_sources'][-1]['executions'], checkpoint['executions'])
+        self.assertEqual(after['plan_revision_sources'][-1]['executions'], original_executions)
         history = flow.state()['plan_revision_allocation_history'][-1]['allocations']
         self.assertEqual(len(history), 7 if larger else 5)
         for identity, reference in history.items():
             slot = store.read_evidence(reference['reference'], run_id=current.run_id)['value']['plan_revision_allocation']
-            self.assertEqual(slot, before['allocations'][identity])
+            self.assertEqual(slot, original_allocations[identity])
         if reference_fault:
             replay = flow.invoke('commit-plan-revision', commit, revision=0)
             self.assertTrue(replay['acknowledged'], replay)
@@ -412,7 +417,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
             self.assertIsNotNone(continued['next_action'], continued)
             self.assertEqual(continued['next_action']['operation'], 'invoke-host', continued)
             self.assertEqual(continued['next_action']['payload']['payload']['execution_invocation']['ref'], 'native:executor-B1')
-            old_slot = before['allocations']['B1']
+            old_slot = original_allocations['B1']
             slot = flow.allocation_slot('B1', 'B')
             with self.assertRaises(progress.entry.PreparationError):
                 progress.dispatch.validate_allocation_receipt(slot['record'], 'bind',
@@ -663,6 +668,9 @@ class PlanRevisionProgressTests(unittest.TestCase):
                         'id': 'mixed-group', 'step_ids': ['FP1-02', 'FP1-03'],
                         'ac_refs': ['FEP-01:AC-1'], 'shared_state': []}]
                     PlanRevisionProgressTests.refresh_fixture_slices(plan)
+                    step_order = {step['id']: index for index, step in enumerate(plan['steps'])}
+                    plan['behavior_slices'].sort(key=lambda group: min(
+                        step_order[identity] for identity in group['step_ids']))
                 path.write_text(text[:match.start(1)] + json.dumps(plan) + text[match.end(1):])
                 case.flow.flow_git("add", "docs/spec.md")
                 case.flow.flow_git("commit", "-qm", "planned accepted implementation read")
@@ -802,7 +810,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
 
     def accept_planned_step(self, flow, ticket, identity, relative, content, allocation_id,
                             *, accept=True):
-        self.check_due_fixture_tickets(flow)
+        PlanRevisionProgressTests.check_due_fixture_tickets(self, flow)
         execution = flow.execution_input()
         execution["scope"]["owned_paths"] = [relative]
         step = next(item for item in ticket["plan"]["steps"] if item["id"] == identity)
@@ -839,7 +847,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
 
     def accept_planned_group(self, flow, ticket, identities, contents, allocation_id,
                              read_only=(), owned_paths=None):
-        self.check_due_fixture_tickets(flow)
+        PlanRevisionProgressTests.check_due_fixture_tickets(self, flow)
         execution = flow.execution_input()
         execution["scope"]["owned_paths"] = sorted(contents if owned_paths is None else owned_paths)
         execution["scope"]["protected_paths"] += list(read_only)
@@ -884,6 +892,13 @@ class PlanRevisionProgressTests(unittest.TestCase):
         changed = set(filter(None, flow.flow_git('diff', '--name-only', 'HEAD').splitlines()))
         changed.update(filter(None, flow.flow_git('ls-files', '--others', '--exclude-standard').splitlines()))
         self.assertLessEqual(changed, allowed, 'fixture integration must preserve planning and unrelated bytes')
+        accepted_fingerprints = {}
+        for result in progress.control.current_accepted_results(checkpoint):
+            accepted_fingerprints.update(progress.execution_plan.accepted_owned_fingerprints(result))
+        self.assertLessEqual(changed, set(accepted_fingerprints), 'only accepted bytes may precede Ticket checks')
+        for relative in changed:
+            self.assertEqual(progress.control_git.file_fingerprint(flow.flow, relative),
+                accepted_fingerprints[relative], 'Ticket checks must retain original accepted bytes')
         previous_thread = flow.settings['thread_id']
         previous_host = copy.deepcopy(flow.request['host'])
         flow.settings['thread_id'] = 'task'
@@ -896,6 +911,19 @@ class PlanRevisionProgressTests(unittest.TestCase):
             for ticket in due:
                 checked = layered_fixture.LayeredReviewTests.early_ticket_check(flow, candidate, ticket)
                 self.assertTrue(checked['next_action']['result']['ok'], checked)
+        finally:
+            flow.settings['thread_id'] = previous_thread
+            flow.request['host'] = previous_host
+
+    def complete_candidate_fixture_reviews(self, flow, candidate, evidence_suffix):
+        # Preserve the original Task actor while C authenticates local/Ticket proofs.
+        previous_thread = flow.settings['thread_id']
+        previous_host = copy.deepcopy(flow.request['host'])
+        flow.settings['thread_id'] = flow.state()['handoff']['expected_entry']['actor']['thread_id']
+        flow.request['host'].update(thread_id=flow.settings['thread_id'], role='controller',
+                                   source_ref=None, actor_ref=None)
+        try:
+            fixture.fixture.ProgressTests.complete_fixture_local_reviews(flow, candidate, evidence_suffix)
         finally:
             flow.settings['thread_id'] = previous_thread
             flow.request['host'] = previous_host
@@ -1023,6 +1051,9 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.flow_git("add", "impl.py", "later.py", "independent.py", "downstream.py", "reader.py")
         flow.flow_git("commit", "-qm", "accepted partial delta implementation")
         candidate = flow.flow_git("rev-parse", "HEAD")
+        self.complete_candidate_fixture_reviews(flow, candidate, "-partial-delta")
+        owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+        coverage = owner.build_review_coverage(candidate, delivery=False)
         checkpoint = flow.state()["control"]["context"]["handoff_progress"]
         checks = fixture.fixture.transfer.checks_for(
             checkpoint["validation_plan"]["review_required"], candidate)
@@ -1031,14 +1062,15 @@ class PlanRevisionProgressTests(unittest.TestCase):
             "attempt": flow.state()["control"]["context"]["carrier"]["attempt"],
             "commit": candidate, "expected_target_head": flow.git("rev-parse", "main"),
             "binding": flow.binding, "plan_digest": checkpoint["plan_digest"],
-            "plan_authority": checkpoint["plan_authority"], "checks": checks,
+            "plan_authority": checkpoint["plan_authority"], "checks": checks, "ticket_coverage": coverage,
             "source": {"adapter": "fixture", "call_ref": "focused-partial-group",
                 "response_ref": "focused-partial-group-result", "raw": {"checks": checks,
                     "source_unchanged": True, "stopped": True,
                     "dispatcher_ref": "native:dispatcher"}}}
         ready = progress.control_git.verified_transition({"repository": str(flow.flow),
             "baseline": checkpoint["git_baseline_commit"], "request": {
-                "schema_version": 6, "action": "candidate-ready", "actor_ref": "task",
+                "schema_version": flow.state()["control"]["context"]["schema_version"],
+                "action": "candidate-ready", "actor_ref": flow.state()["control"]["context"]["controller_ref"],
                 "context": flow.state()["control"]["context"], "evidence": evidence}})
         self.assertEqual(ready["context"]["handoff_progress"]["state"], "reviewable")
 
@@ -1161,6 +1193,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.flow_git("add", "impl.py", "later.py", "independent.py", "downstream.py", "reader.py")
         flow.flow_git("commit", "-qm", "accepted mixed read implementation")
         candidate = flow.flow_git("rev-parse", "HEAD")
+        self.complete_candidate_fixture_reviews(flow, candidate, '-mixed-read')
         flow.request = controller_request
         flow.settings = controller_settings
         flow.invoke("observe", flow.observation("idle", "result", ref="native:dispatcher"))
@@ -1225,9 +1258,11 @@ class PlanRevisionProgressTests(unittest.TestCase):
             flow.invoke("prepare-plan-revision", report)
             stopped = flow.observation("stopped", "result", ref="native:dispatcher")
             if number > 1:
-                stopped["lifecycle"]["pages"][0]["response"]["data"].extend(
-                    {"id": ref, "status": {"type": "idle"}} for ref in ("first-b", "old-a"))
+                identities = [item['id'] for item in stopped['lifecycle']['pages'][0]['response']['data']]
+                self.assertEqual(len(identities), len(set(identities)))
+                self.assertLessEqual({'first-b', 'old-a'}, set(identities))
             prepared = flow.invoke("observe", stopped)
+            self.assertIsNotNone(prepared["next_action"], prepared)
             self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared", prepared)
             source = flow.flow / "docs/spec.md"
             body = source.read_text()
@@ -1274,6 +1309,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
                                    ("FP1-03", "independent.py"),
                                    ("FP1-04", "downstream.py"),
                                    ("FP1-05", "reader.py")):
+            self.check_due_fixture_tickets(flow)
             execution = flow.execution_input()
             execution["scope"]["owned_paths"] = [relative]
             step = next(item for item in ticket["plan"]["steps"] if item["id"] == identity)
@@ -1900,7 +1936,15 @@ class PlanRevisionProgressTests(unittest.TestCase):
         slot = flow.state()["allocations"]["late-native"]
         late = flow.invoke("allocation", {"allocation_id": "late-native", "operation": "bind",
             "receipt": flow.receipt(slot["record"], ref="native:late-executor")})
-        self.assertEqual(late["next_action"]["operation"], "allocation-result")
+        current = flow.state()
+        original_slot = flow.allocation_slot('late-native')
+        self.assertEqual((late.get('next_action') or {}).get('operation'), 'allocation-result',
+            {'response': late, 'revision_state': current.get('plan_revision_transaction', {}).get('state'),
+             'record': {key: original_slot['record']['request'].get(key) for key in ('attempt', 'digest')},
+             'action': original_slot.get('action'),
+             'transaction': {key: (original_slot.get('transaction') or {}).get(key)
+                 for key in ('operation', 'intent_id', 'request_digest')},
+             'host_action': current.get('host_action'), 'host_query': current.get('host', {}).get('query')})
         self.assertNotIn("write_release", late["next_action"]["result"])
         self.assertNotIn("write_release", flow.state()["allocations"]["late-native"]["result"])
         replay = flow.invoke("allocation", {"allocation_id": "late-native", "operation": "reconcile",
@@ -2240,6 +2284,21 @@ class PlanRevisionProgressTests(unittest.TestCase):
             'planning_commit': flow.flow_git('rev-parse', 'HEAD')})
         self.assertEqual(activated['next_action']['operation'], 'plan-revision-activated',
                          activated)
+        inspected = flow.invoke('advance')
+        current = flow.state()
+        self.assertEqual(current['continuation_intent'],
+            {'kind': 'plan-revision', 'revision_id': report['revision_id']})
+        self.assertEqual(inspected['next_action']['action_id'], current['host']['query']['action_id'])
+        stopped = flow.observation('stopped', 'result', ref='native:dispatcher')
+        self.assertEqual(stopped['action_id'], inspected['next_action']['action_id'])
+        continued = flow.invoke('observe', stopped)
+        self.assertEqual((continued.get('next_action') or {}).get('operation'), 'continue-host', continued)
+        running = flow.observation('running', 'result', ref='native:dispatcher')
+        self.assertEqual(running['action_id'], continued['next_action']['action_id'])
+        flow.invoke('observe', running)
+        resumed_owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+        self.assertFalse(resumed_owner.unresolved_host_actions())
+        self.assertEqual(resumed_owner.state['host']['status'], 'running')
         controller_request = copy.deepcopy(flow.request)
         controller_settings = copy.deepcopy(flow.settings)
         ticket = flow.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
@@ -2254,6 +2313,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.flow_git('add', 'impl.py', 'helper.py', 'generated/helper_copy.py')
         flow.flow_git('commit', '-qm', 'implement staged private helper')
         candidate = flow.flow_git('rev-parse', 'HEAD')
+        self.complete_candidate_fixture_reviews(flow, candidate, '-staged-helper')
         flow.invoke('observe', flow.observation('idle', 'result', ref='native:dispatcher'))
         checkpoint = flow.state()['control']['context']['handoff_progress']
         checks = fixture.fixture.transfer.checks_for(
@@ -2270,9 +2330,6 @@ class PlanRevisionProgressTests(unittest.TestCase):
                     'dispatcher_ref': 'native:dispatcher'}}})
         self.assertEqual(flow.state()['control']['context']['handoff_progress']['state'],
                          'reviewable', ready.get('error'))
-        flow.mark_reviewable = lambda _candidate, fixture_execution=False: {
-            'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
-            'plan_authority': checkpoint['plan_authority'], 'checks': checks}
         payload = {'artifacts': ['impl.py', 'helper.py', 'generated/helper_copy.py'], 'checks': ['staged behavior passed'],
             'candidate_commit': candidate,
             'review': {axis: {'candidate': candidate, 'reviewer_ref': axis,
@@ -2280,9 +2337,11 @@ class PlanRevisionProgressTests(unittest.TestCase):
             'verification': {'candidate': candidate}}
         accepted = flow.accept_current(payload, 'native:dispatcher', fixture_execution=False)
         self.assertEqual(accepted['status'], 'accepted', accepted)
-        predecessor = flow.state()['accepted']
+        predecessor_ref = progress.handoff.render_implementation_delivery(flow.checkpoint)['payload']['accepted_transfer']
+        predecessor, _ = progress.implementation_acceptance(predecessor_ref)
         current_scope = flow.state()['scope_authority']['scope']
         closure = flow.input_for(4, predecessor)
+        closure['predecessor'] = predecessor_ref
         for key in ('downstream', 'implementation_paths', 'closure_paths'):
             closure['scope'][key] = copy.deepcopy(current_scope[key])
         closure['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
@@ -2505,15 +2564,16 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(rejected["input_digest"], progress.entry.digest(report))
         self.assertEqual(rejected["old_authority"], authority)
         self.assertEqual(rejected["state"], "rejected")
-        saved_checkpoint = progress.read_record(flow.checkpoint)
-        changed_checkpoint = copy.deepcopy(saved_checkpoint)
-        changed_checkpoint[progress.KEY]["plan_revision_history"][report["revision_id"]][
-            "rejection"]["result"]["message"] = "forged rejection result"
-        progress.atomic_save(flow.checkpoint, changed_checkpoint)
+        owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+        original_rejection = copy.deepcopy(owner.state['plan_revision_history'][report['revision_id']])
+        owner.state['plan_revision_history'][report['revision_id']]['rejection']['result']['message'] = 'forged rejection result'
+        owner.save()
         with self.assertRaises(progress.entry.PreparationError) as forged_rejection:
             flow.invoke("inspect")
         self.assertEqual(forged_rejection.exception.code, "invalid_checkpoint")
-        progress.atomic_save(flow.checkpoint, saved_checkpoint)
+        restored_owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+        restored_owner.state["plan_revision_history"][report["revision_id"]] = original_rejection
+        restored_owner.save()
         self.assertEqual(flow.flow_git("rev-parse", "HEAD"), before)
         self.assertIn("later.py", flow.state()["control"]["context"]["handoff_progress"]["allowed_paths"])
         reconciled = flow.invoke("reconcile-plan-revision", {"revision_id": report["revision_id"]})
@@ -2672,6 +2732,9 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.settings['thread_id'] = 'task'
         flow.request['host'].update(thread_id='task', role='controller', source_ref=None)
         flow.request['host'].pop('actor_ref', None)
+        self.complete_candidate_fixture_reviews(flow, candidate, '-retired-helper')
+        owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+        coverage = owner.build_review_coverage(candidate, delivery=False)
         checkpoint = flow.state()['control']['context']['handoff_progress']
         checks = fixture.fixture.transfer.checks_for(
             checkpoint['validation_plan']['review_required'], candidate)
@@ -2680,14 +2743,15 @@ class PlanRevisionProgressTests(unittest.TestCase):
             'attempt': flow.state()['control']['context']['carrier']['attempt'],
             'commit': candidate, 'expected_target_head': flow.git('rev-parse', 'main'),
             'binding': flow.binding, 'plan_digest': checkpoint['plan_digest'],
-            'plan_authority': checkpoint['plan_authority'], 'checks': checks,
+            'plan_authority': checkpoint['plan_authority'], 'checks': checks, 'ticket_coverage': coverage,
             'source': {'adapter': 'fixture', 'call_ref': 'retired-helper-ready',
                 'response_ref': 'retired-helper-ready-result',
                 'raw': {'checks': checks, 'source_unchanged': True, 'stopped': True,
                         'dispatcher_ref': 'native:dispatcher'}}}
         ready = progress.control_git.verified_transition({'repository': str(flow.flow),
             'baseline': checkpoint['git_baseline_commit'], 'request': {
-                'schema_version': 6, 'action': 'candidate-ready', 'actor_ref': 'task',
+                'schema_version': flow.state()['control']['context']['schema_version'],
+                'action': 'candidate-ready', 'actor_ref': flow.state()['control']['context']['controller_ref'],
                 'context': copy.deepcopy(flow.state()['control']['context']),
                 'evidence': evidence}})
         self.assertTrue(ready['ok'], ready)
@@ -2708,7 +2772,8 @@ class PlanRevisionProgressTests(unittest.TestCase):
                                     'candidate history escapes implementation scope'):
             progress.control_git.verified_transition({'repository': str(flow.flow),
                 'baseline': checkpoint['git_baseline_commit'], 'request': {
-                    'schema_version': 6, 'action': 'candidate-ready', 'actor_ref': 'task',
+                    'schema_version': flow.state()['control']['context']['schema_version'],
+                'action': 'candidate-ready', 'actor_ref': flow.state()['control']['context']['controller_ref'],
                     'context': copy.deepcopy(flow.state()['control']['context']),
                     'evidence': forged_evidence}})
 
@@ -2718,9 +2783,6 @@ class PlanRevisionProgressTests(unittest.TestCase):
             'receipt': evidence['source']})
         self.assertEqual(flow.state()['control']['context']['handoff_progress']['state'],
                          'reviewable', ready)
-        flow.mark_reviewable = lambda _candidate, fixture_execution=False: {
-            'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
-            'plan_authority': checkpoint['plan_authority'], 'checks': checks}
         payload = {'artifacts': ['impl.py', 'independent.py', 'downstream.py', 'reader.py'],
             'checks': ['retired helper behavior passed'], 'candidate_commit': candidate,
             'review': {axis: {'candidate': candidate, 'reviewer_ref': axis,
@@ -2739,7 +2801,12 @@ class PlanRevisionProgressTests(unittest.TestCase):
             return observation
         with patch.object(flow, 'observation', side_effect=with_historical_agents):
             if use_new_id:
-                with patch.object(progress.handoff, 'render', side_effect=RuntimeError('lost accepted response')):
+                original_render = progress.handoff.render
+                def lose_accepted_response(saved, **kwargs):
+                    if saved.get('status') == 'accepted' and saved.get('handoff', {}).get('stage') == 3:
+                        raise RuntimeError('lost accepted response')
+                    return original_render(saved, **kwargs)
+                with patch.object(progress.handoff, 'render', side_effect=lose_accepted_response):
                     with self.assertRaisesRegex(RuntimeError, 'lost accepted response'):
                         flow.accept_current(payload, 'native:dispatcher', fixture_execution=False)
                 self.assertEqual(flow.state()['status'], 'accepted')
@@ -2751,9 +2818,11 @@ class PlanRevisionProgressTests(unittest.TestCase):
             self.assertEqual(replayed['status'], 'accepted')
             self.assertEqual(replayed['completion'], flow.invoke('inspect')['completion'])
             self.assertEqual(replayed['completion']['payload']['candidate_commit'], candidate)
-        predecessor = flow.state()['accepted']
+        predecessor_ref = progress.handoff.render_implementation_delivery(flow.checkpoint)['payload']['accepted_transfer']
+        predecessor, _ = progress.implementation_acceptance(predecessor_ref)
         current_scope = flow.state()['scope_authority']['scope']
         closure = flow.input_for(4, predecessor)
+        closure['predecessor'] = predecessor_ref
         for key in ('downstream', 'implementation_paths', 'closure_paths'):
             closure['scope'][key] = copy.deepcopy(current_scope[key])
         closure['authorization']['scope_digest'] = fixture.fixture.transfer.entry.digest(
@@ -2768,18 +2837,19 @@ class PlanRevisionProgressTests(unittest.TestCase):
         with self.assertRaises(progress.entry.PreparationError):
             progress.handoff.prepare(stale, checkpoint_path=str(flow.checkpoint))
         if use_new_id:
-            original_checkpoint = progress.read_record(flow.checkpoint)
+            original_owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+            original_history = copy.deepcopy(original_owner.state['plan_revision_history'])
             for mutation in ('unknown-state', 'wrong-old-authority', 'reordered-history',
                              'wrong-rejection-evidence'):
-                changed = copy.deepcopy(original_checkpoint)
-                rejected_entry = changed[progress.KEY]['plan_revision_history'][rejected_id]
+                changed_owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+                rejected_entry = changed_owner.state['plan_revision_history'][rejected_id]
                 if mutation == 'unknown-state':
                     rejected_entry['state'] = 'unknown'
                 elif mutation == 'wrong-old-authority':
                     rejected_entry['old_authority']['scope']['implementation_paths'] = ['forged.py']
                 elif mutation == 'reordered-history':
                     rejected_entry['old_authority'] = copy.deepcopy(
-                        changed[progress.KEY]['plan_revision_transaction']['proposed_authority'])
+                        changed_owner.state['plan_revision_transaction']['proposed_authority'])
                     rejected_entry['rejection']['result']['retired_paths'] = ['impl.py']
                     rejected_entry['rejection']['result']['message'] = (
                         'retired implementation paths still differ from baseline: impl.py')
@@ -2793,10 +2863,12 @@ class PlanRevisionProgressTests(unittest.TestCase):
                         'retired_paths': rejected_entry['rejection']['result']['retired_paths']})
                 elif mutation == 'wrong-rejection-evidence':
                     rejected_entry['rejection']['result']['message'] = 'forged rejection'
-                progress.atomic_save(flow.checkpoint, changed)
+                changed_owner.save()
                 with self.subTest(mutation=mutation), self.assertRaises(progress.entry.PreparationError):
                     flow.invoke('inspect')
-                progress.atomic_save(flow.checkpoint, original_checkpoint)
+                restored_owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+                restored_owner.state['plan_revision_history'] = copy.deepcopy(original_history)
+                restored_owner.save()
         prepared_closure = progress.handoff.prepare(closure, checkpoint_path=str(flow.checkpoint))
         self.assertEqual(progress.handoff.verify(prepared_closure,
             checkpoint_path=str(flow.checkpoint)), prepared_closure)

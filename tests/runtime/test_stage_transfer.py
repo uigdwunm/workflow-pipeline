@@ -774,18 +774,18 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         payload = {"artifacts": ["impl.py"], "checks": ["CLI passed"], "candidate_commit": candidate,
                    "review": {axis: {"candidate": candidate, "reviewer_ref": axis, "status": "accepted"} for axis in ("standards", "spec")},
                    "verification": {"candidate": candidate, "checks": ["CLI passed"]}}
+        import test_workflow_progress as progress_fixture
+        self.accept_current = progress_fixture.ProgressTests.accept_current.__get__(self, type(self))
+        done = self.accept_current(payload, 'native:dispatcher')
+        self.assertEqual(done['status'], 'accepted', done)
+        predecessor = handoff.render_implementation_delivery(self.checkpoint)['payload']['accepted_transfer']
+        accepted, _ = progress.implementation_acceptance(predecessor)
         # A planning write cannot be accepted as an implementation result.
         (self.flow / "docs/spec.md").write_text("unauthorized implementation edit\n")
         self.flow_git("add", "docs/spec.md"); self.flow_git("commit", "-qm", "invalid implementation planning edit")
         bad = copy.deepcopy(payload)
         bad["candidate_commit"] = self.flow_git("rev-parse", "HEAD")
-        review_plan = self.state()['control']['context']['handoff_progress']['validation_plan']
-        bad['verification'] = {'candidate': bad['candidate_commit'],
-            'expected_target_head': self.git('rev-parse', 'main'),
-            'validation_plan': review_plan, 'plan_digest': control.digest(review_plan),
-            'review_digest': 'diagnostic', 'review_decision': {}, 'attempts': [],
-            'dispatcher_ref': 'native:dispatcher',
-            'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}
+        bad['verification'] = copy.deepcopy(accepted['payload']['verification'])
         for axis in bad["review"].values():
             axis["candidate"] = bad["candidate_commit"]
         self.assert_code('invalid_scope', lambda: handoff.verify_result(3, bad,
@@ -793,14 +793,12 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         # Reverting in a new commit would retain the unauthorized planning edit
         # in candidate history. Discard that commit before resuming acceptance.
         self.flow_git("reset", "--hard", candidate)
-        from test_workflow_progress import ProgressTests
-        self.accept_current = ProgressTests.accept_current.__get__(self, type(self))
-        done = self.accept_current(payload, 'native:dispatcher')
-        self.assertEqual(done['status'], 'accepted', done)
-        accepted = self.state()['accepted']
+
         self.assertIn("docs/spec.md", accepted["handoff"]["scope"]["protected_paths"])
-        self.assertEqual(handoff.render(accepted)["payload"]["protected_paths"], sorted([self.requirement_path, "docs/adr.md"]))
+        self.assertEqual(handoff.render_implementation_delivery(self.checkpoint)["payload"]["protected_paths"], sorted([self.requirement_path, "docs/adr.md"]))
         closure = self.input_for(4, accepted)
+        # The constructor reads resolved facts; B consumes the original sealed pin.
+        closure['predecessor'] = predecessor
         closure["scope"].update(owned_paths=["docs/spec.md"], closure_paths=["docs/spec.md"], protected_paths=sorted([self.requirement_path, "docs/adr.md"]))
         closure["authorization"]["scope_digest"] = entry.digest(closure["scope"])
         for changed in ([self.requirement_path], ["other.md"]):

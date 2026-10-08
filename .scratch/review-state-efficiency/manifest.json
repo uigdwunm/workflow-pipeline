@@ -222,7 +222,11 @@
       "remaining_scope": "Preserve reviewed core; exclude deferred B. T06 only repairs consumed_scope_readiness for original accepted activation during later pending revision, using bounded original transaction/Control proof. No GC/quota/reserve/log-spool/physical ledger accounting or extreme-scale work.",
       "t06_g2_remaining_scope": "G2 only Progress.save/prepare_review_archive current lookup for original valid unconverted runner11 outer; let existing save_current_record validate initial CAS; do not relax Store legacy guard. Existing five canonical outputs regenerated.",
       "t06_g4_remaining_scope": "G4 archive_action production ordinary intent measurement/precheck before reserve and no-effect capacity rejection only before external dispatch. Other subject/scope/native-owner/attached/closed-docs production fixes remain unknown until exact public probes; temporary bounded diagnostics must be removed, no guard/cap expansion. Confirmed actor producer repair only review_activity observe/preflight and commit_review_start/read_review_start_result: namespace original verified originating actor, generic Controller receipts unchanged. Confirmed integration review diff baseline expected_target_head then verified integration_target_head then original baseline, no added exclusions. Confirmed native registry/owner subset consumer: freeze_implementation_native_owners omits accepted-owner only for exact replaced original dispatcher with valid activated recovery stop proof and truly accepted current replacement, retains original native_refs and denies old finalize; all other missing owners still fail. Confirmed subject duplication: stage_subject_value/read_active_owner reuse existing accepted body-ref only for identical dispatch.acceptance, restore and verify original sealed dispatch digest/ref/hash/owner. Confirmed 32/37 original implementation recovery: read-only git projection is not a mutable planning record; original Stage3 has no automatic archive locator. implementation_delivery retains only genuine necessary planning records/sources and carried/revalidation facts in existing CAS-bound recovery_ref; implementation_recovery restores those exact facts, validates original context/authority and retains original read limits. Remove disproved archive lookup; no history scan, invented revision_ref, full old stage/C or new object type. Confirmed51 review_activity original local_check_source/review_issuer writes must be in existing measure_writes preflight and ordinary intent count, then materialize identical refs after capacity check/reserve; no early physical object/index write, no change to identity/RPC/CAS/receipt/guard/cap contracts. P2 original multi-recovery compatibility: freeze_implementation_native_owners validates bounded original(ref,attempt) activated recovery chain to current accepted dispatcher with original control.digest algorithm, preserving all host/stop/old dispatch/ready receipt/configuration/authority proofs and rejecting malformed/disconnected/cyclic/duplicate/revoked chain; no old business owner grant or new route.",
-      "t06_final_foundation_remaining_scope": "Final81e prepare_review_archive/native_refs exact original global reviewer role identities/proof/census consumer gap. First one original old-reviewer test probe confirms original action IDs and archive refs/current expected refs/pending; only validated bounded original primitive identities/exact refs remain in existing authority, no full history scan, stopped inference/business grant/CAS/source or quota relaxation."
+      "t06_final_foundation_remaining_scope": "Final81e prepare_review_archive/native_refs exact original global reviewer role identities/proof/census consumer gap. First one original old-reviewer test probe confirms original action IDs and archive refs/current expected refs/pending; only validated bounded original primitive identities/exact refs remain in existing authority, no full history scan, stopped inference/business grant/CAS/source or quota relaxation.",
+      "t06_final_runtime_remaining_scope": {
+        "scope_ref": "#/plan_revision/execution_revision/final_runtime_repair_scope/paths/src~1shared~1scripts~1workflow_progress.py",
+        "writer_rule": "Original G4 only after root sole writer dispatch; original reviewer fixed-object review only."
+      }
     },
     {
       "path": "src/shared/scripts/workflow_control.py",
@@ -417,7 +421,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ],
       "kind": "source",
       "reason": "typed控制/计划投影与repair identity",
@@ -463,7 +468,11 @@
         "skills/problem-framing/scripts/stage_dispatch.py",
         "skills/solution-design/scripts/stage_dispatch.py"
       ],
-      "implementation_note": " T04实际依赖：prepared repair目前仅从当前executions取原task，修订激活将合法无关B置于carried并历史化原slot后无法同ref续行。仅repair分支消费Controller验证的原carry/revision source lookup；保持原receipt/nonce/stop身份，以新authority/new invocation发放lease，不复活旧lease或新增宿主入口。 T05 actual serialized consumer: after original allocation intent/request/base-control digest verification, resolve archive facts only from original checkpoint or exact ledger pointer; compare source digest/expected pointer before validation. Never trust sender JSON facts or loosen nonce/scope/lease/CAS."
+      "implementation_note": " T04实际依赖：prepared repair目前仅从当前executions取原task，修订激活将合法无关B置于carried并历史化原slot后无法同ref续行。仅repair分支消费Controller验证的原carry/revision source lookup；保持原receipt/nonce/stop身份，以新authority/new invocation发放lease，不复活旧lease或新增宿主入口。 T05 actual serialized consumer: after original allocation intent/request/base-control digest verification, resolve archive facts only from original checkpoint or exact ledger pointer; compare source digest/expected pointer before validation. Never trust sender JSON facts or loosen nonce/scope/lease/CAS.",
+      "t06_final_runtime_remaining_scope": {
+        "scope_ref": "#/plan_revision/execution_revision/final_runtime_repair_scope/paths/src~1shared~1scripts~1stage_dispatch.py",
+        "writer_rule": "Original G4 only after root sole writer dispatch; original reviewer fixed-object review only."
+      }
     },
     {
       "path": "src/shared/scripts/stage_handoff.py",
@@ -542,7 +551,11 @@
         "skills/problem-framing/scripts/stage_handoff.py",
         "skills/solution-design/scripts/stage_handoff.py"
       ],
-      "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。"
+      "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。",
+      "t06_final_runtime_remaining_scope": {
+        "scope_ref": "#/plan_revision/execution_revision/final_runtime_repair_scope/paths/src~1shared~1scripts~1stage_handoff.py",
+        "writer_rule": "Original G4 only after root sole writer dispatch; original reviewer fixed-object review only."
+      }
     },
     {
       "path": "src/shared/scripts/discussion_core/workflow_control.py",
@@ -1317,7 +1330,11 @@
       "remaining_scope": "T06 exact original fixture helper compatibility only; no new mechanisms or weakening assertions",
       "t06_g1_compat_remaining_scope": "G1 continuation only complete_fixture_local_reviews originating actor from original handoff.expected_entry.actor.thread_id (production guard8504) and original context.controller_ref receipt instead of literal task, with exact unchanged public review inputs. Source t06-g2/64 closed-docs failure; no runtime identity guard change.",
       "t06_g4_remaining_scope": "G4 existing archive capacity test/no dispatch/no reserve/no checkpoint/usage change; original final integration recovery scope and closed-docs consumers may contain temporary exact-boundary probes only until real cause/symbols established, remove before freeze. Do not relax original scope/permission/role checks.",
-      "t06_final_foundation_remaining_scope": "Final81e original completion/oldreviewer tests and shared invoke/observation/complete_fixture_local_reviews producers. Actual finite identity/transport, admitted adapter-specific census and newly created canonical role refs; preserve original designer/dispatcher/executor/reviewer identities, stage/parent/query/stop/claim/fingerprint/CAS/negative assertions. No fake stop/rename oldroles or later legacy pin migration."
+      "t06_final_foundation_remaining_scope": "Final81e original completion/oldreviewer tests and shared invoke/observation/complete_fixture_local_reviews producers. Actual finite identity/transport, admitted adapter-specific census and newly created canonical role refs; preserve original designer/dispatcher/executor/reviewer identities, stage/parent/query/stop/claim/fingerprint/CAS/negative assertions. No fake stop/rename oldroles or later legacy pin migration.",
+      "t06_final_runtime_remaining_scope": {
+        "scope_ref": "#/plan_revision/execution_revision/final_runtime_repair_scope/paths/tests~1runtime~1test_workflow_progress.py",
+        "writer_rule": "Original G4 only after root sole writer dispatch; original reviewer fixed-object review only."
+      }
     },
     {
       "path": "tests/runtime/test_workflow.py",
@@ -1430,6 +1447,10 @@
         "group": "plan-fixtures",
         "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/plan-fixtures",
         "writer_rule": "Only the original author after root serial dispatch."
+      },
+      "t06_final_runtime_remaining_scope": {
+        "scope_ref": "#/plan_revision/execution_revision/final_runtime_repair_scope/paths/tests~1runtime~1test_plan_driven_dispatch.py",
+        "writer_rule": "Original G4 only after root sole writer dispatch; original reviewer fixed-object review only."
       }
     },
     {
@@ -1482,6 +1503,10 @@
         "group": "plan-fixtures",
         "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/plan-fixtures",
         "writer_rule": "Only the original author after root serial dispatch."
+      },
+      "t06_final_runtime_remaining_scope": {
+        "scope_ref": "#/plan_revision/execution_revision/final_runtime_repair_scope/paths/tests~1runtime~1test_plan_revision_progress.py",
+        "writer_rule": "Original G4 only after root sole writer dispatch; original reviewer fixed-object review only."
       }
     },
     {
@@ -3581,6 +3606,33 @@
         },
         "rule": "Diagnosed original test dependencies only, serialized original authors; root sole planning/Git owner. Current foundation source frozen and reviewed by original reviewer while next distinct fixtures may run. No new Ticket/ADR/platform, caps, routes, legacy migration or deferred features. Final full gate mandatory after repairs.",
         "basis_candidate": "81e61f0b120dbc4e13cdbe7fca1c02af1a0fc9bb"
+      },
+      "final_plan_fixture_result": {
+        "basis": "dd11e5c6f6fe94b4ba970f1efb6a076e70d99c9c",
+        "source_snapshot": "t06-final-plan-fixtures/source-snapshot.json",
+        "source_snapshot_sha256": "76e7b407aa726ab7636d72cb980b45f37dd28d5b0c51f8d75c0e7b7a3ab2173f",
+        "patch_sha256": "973dd7294e865b65385d3376283beef3d8a09f0ae13f6354dc4a768a9ea5bb23",
+        "commands": "t06-final-plan-fixtures/index.json",
+        "result": "7tests205+/104-, original IDs and13dependencies unchanged;42 real commands20PASS22RED retain original inputs. No whole group/full PASS;02latebind,21stagedidentity,31capacity,43readonlysnapshot unresolved; first source review pending."
+      },
+      "final_runtime_repair_scope": {
+        "author": "/root/t06_g4",
+        "paths": {
+          "src/shared/scripts/workflow_progress.py": "Restore original historical reviewer finalization_owner from exact CAS-verified read_native_archive review source, keeping current fresh stop/adverse and no current candidate claim/new lease. Actual31 receive/save stage subject264520>262144: first one real top-field/source/duplicate measurement, then only demonstrated original projection/reference producer fix; preserve all audit/claims/stop/CAS and caps. Staged21 actual supported original continuation/host identity source only; no new foreground route or fabricated identities.",
+          "src/shared/scripts/stage_dispatch.py": "record_for referenced allocation original verified C intent settlement must not be treated as new preparation; preserve exact original intent/receipt/attempt/digest/ref/current authority/ended/replay/stop/matching and pending newprepare refusal. No caller self-reported bypass flags.",
+          "src/shared/scripts/stage_handoff.py": "verify_inline_recovery_pin exact captured source relation. Actual43 pure readonly zero source_digest not rejected; published C corruption remains unproved. Read original stored source/proof before deciding: only necessary existing-source correspondence validation in this consumer if demonstrated; no all-zero blacklist, arbitrary extra check, new public contract or new readiness route. Otherwise retain proof-boundary diagnosis and verify the real source rejection.",
+          "tests/runtime/test_workflow_progress.py": "One real public distinct old globals -> original repair/new globals -> first accepted delivery/freezer/Stage4 RED then PASS, retaining exact original old tuple and stop/unknown/source/foreign/active/CAS refusals. Shared original supported continuation/identity producer only if demonstrated; no synthetic native admission or host state as business authority.",
+          "tests/runtime/test_plan_revision_progress.py": "Only staged private helper original continuation/Stage4 consumer and rejected-id lost accepted response case necessary legitimate producer/probe/real source regression. Preserve final targets, original accepted/rejected audit, fixed cap and no checkpoint/header rewind. All other original G1 source frozen/verify.",
+          "tests/runtime/test_plan_driven_dispatch.py": "Only inline final recovery original snapshot/source counterfactual and original no-intent/foreign/protected/public revalidation consumer. Distinguish trusted readonly projection from actual published C; do not weaken original source/candidate/lease guard or report unproved native issue. Existing real original pin/resolvers, no fake Control."
+        },
+        "evidence": [
+          "t06-final-foundation/independent-review-dd11e5c.md",
+          "t06-final-plan-fixtures/index.json",
+          "t06-final-plan-fixtures/02-late-native-original-settlement.log",
+          "t06-final-plan-fixtures/31-original-accepted-response-fault.log",
+          "t06-final-plan-fixtures/43-original-inline-integrated-receipt-identity.log"
+        ],
+        "rule": "One original runtime writer/runner for coupled original source and necessary fixtures. Root planning/Git only at source freeze. First minimum actual public feedback, then demonstrated source repair; unknown boundaries not speculated as vulnerabilities. Same existing canonical outputs/digests regenerated; no newmapping/Ticket/ADR/cap/runner/route/deferred platform. Full final gate mandatory."
       }
     }
   }
