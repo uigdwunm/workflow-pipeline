@@ -199,6 +199,16 @@
           "name": "consumed_scope_readiness",
           "status": "existing-verified",
           "reason": "attempt17 real public second-revision failure; current accepted authority must remain provable while a later transaction is pending"
+        },
+        {
+          "name": "stage3_scope",
+          "status": "existing-verified",
+          "reason": "attempt23 original B current_readiness receives finite projection without fullowner activated proof"
+        },
+        {
+          "name": "validate_stage3_scope",
+          "status": "existing-verified",
+          "reason": "attempt23 original B current_readiness receives finite projection without fullowner activated proof"
         }
       ],
       "generated_outputs": [
@@ -208,7 +218,7 @@
         "skills/problem-framing/scripts/workflow_progress.py",
         "skills/solution-design/scripts/workflow_progress.py"
       ],
-      "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。 T06 attempt17（35.26s）证明第二次prepare替换最新txn后，原已activated authority被readiness消费者误拒。仅核现有有界原activated transaction/control receipt与当前原Control authority一致性，保留predecessor/contract/baseline、缺失/篡改/foreign/未激活拒绝；不新增机制、格式或限额。",
+      "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。 T06 attempt17（35.26s）证明第二次prepare替换最新txn后，原已activated authority被readiness消费者误拒。仅核现有有界原activated transaction/control receipt与当前原Control authority一致性，保留predecessor/contract/baseline、缺失/篡改/foreign/未激活拒绝；不新增机制、格式或限额。 T06 attempt23（35.87s）合法第二次activated后原B scope projection缺fullowner证明；保持既有shape/预算及pending事务事实，从原已提交root/control证明产生有限execution_authority事实并核原checkpoint投影，缺proof/自报JSON不授ready，新pending不授B新派发。不导出history、不新flag/服务/hydrate。",
       "remaining_scope": "Preserve reviewed core; exclude deferred B. T06 only repairs consumed_scope_readiness for original accepted activation during later pending revision, using bounded original transaction/Control proof. No GC/quota/reserve/log-spool/physical ledger accounting or extreme-scale work."
     },
     {
@@ -3204,6 +3214,16 @@
         "ProgressTests.accept_current"
       ],
       "scope": "original public temporary C/B/Git fixtures; unused finalize and isolated pure-control fake inputs unchanged"
+    },
+    "scope_projection_dependency": {
+      "source": "src/shared/scripts/workflow_progress.py",
+      "symbols": [
+        "stage3_scope",
+        "validate_stage3_scope",
+        "read_scope_readiness"
+      ],
+      "evidence": "attempt23 original stage_handoff.current_readiness rejects legal current authority because finite scope projection lacks fullowner Control/history",
+      "scope": "original finite producer/consumer consistency only; five existing source mappings unchanged; preserve pending/no-new-dispatch guard"
     }
   }
 }
