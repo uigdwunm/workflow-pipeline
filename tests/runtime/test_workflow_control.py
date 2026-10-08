@@ -163,12 +163,18 @@ class WorkflowControlTests(unittest.TestCase):
         ticket_source = {'kind': 'inline', 'commit': None, 'sha256': '4' * 64,
                          'plan_version': 1}
         ticket = {'ticket_id': 'INLINE-TEST', 'plan_version': 1, 'source': ticket_source,
-                  'plan': {'blocked_by': [], 'steps': [step], 'artifact_steps': [],
+                  'plan': {'schema_version': 2, 'ticket_id': 'INLINE-TEST', 'plan_version': 1,
+                           'spec_ref': {'path': 'inline', 'section': 'brief'},
+                           'contract_refs': ['standalone:objective'],
+                           'blocked_by': [], 'steps': [step], 'artifact_steps': [],
+                           'behavior_slices': [{'id': 'slice-a', 'step_ids': ['step-a'],
+                               'ac_refs': ['standalone:objective'], 'verification_refs': ['V-a'],
+                               'read_only': [], 'shared_state': []}],
                            'verifications': [{'id': 'V-a', 'behavior': 'behavior a',
                                               'seam': 'pure control JSON boundary',
                                               'commands': [verification_command]}]},
                   'covered_paths': ['src/a.py']}
-        catalog = {'schema_version': 1, 'commit': None, 'tickets': [ticket],
+        catalog = {'schema_version': 2, 'commit': None, 'tickets': [ticket],
                    'ordered_step_ids': ['step-a'], 'contract_digest': '3' * 64}
         catalog['plan_digest'] = control.authority_digest(catalog)
         authority = {'state': 'sealed', 'revision': 1,
@@ -245,7 +251,7 @@ class WorkflowControlTests(unittest.TestCase):
                 control_git.plan_revision_snapshot(root, authority,
                     ['planning.md'], ['planning.md'])
 
-    def call(self, action, evidence=None, context=None, schema_version=6):
+    def call(self, action, evidence=None, context=None, schema_version=7):
         request = {'schema_version': schema_version, 'action': action,
                    'actor_ref': 'controller', 'context': context or self.context(),
                    'evidence': evidence or {}}
@@ -279,13 +285,15 @@ class WorkflowControlTests(unittest.TestCase):
 
     def test_previous_control_schema_requires_its_original_runtime(self):
         current = self.context()
-        previous = copy.deepcopy(current)
-        previous['schema_version'] = 5
-        rejected_context = self.call('select-configuration', {}, previous)
-        rejected_request = self.call('select-configuration', {}, current, schema_version=5)
-        self.assertIn('legacy_run_requires_original_runtime', rejected_context['error'])
-        self.assertIn('legacy_run_requires_original_runtime', rejected_request['error'])
-        self.assertEqual(previous['schema_version'], 5)
+        for version in (5, 6):
+            with self.subTest(previous_schema=version):
+                previous = copy.deepcopy(current)
+                previous['schema_version'] = version
+                rejected_context = self.call('select-configuration', {}, previous)
+                rejected_request = self.call('select-configuration', {}, current, schema_version=version)
+                self.assertIn('legacy_run_requires_original_runtime', rejected_context['error'])
+                self.assertIn('legacy_run_requires_original_runtime', rejected_request['error'])
+                self.assertEqual(previous['schema_version'], version)
 
     def test_preparation_freezes_one_plan_without_creating_a_task(self):
         result = self.call('prepare', {'target': 'local', 'project': 'project',
@@ -803,16 +811,16 @@ class WorkflowControlTests(unittest.TestCase):
             'retention': retention, 'new_execution_authority': revised,
             'classification': {'kind': 'internal', 'reference': 'controller:private'},
             'git_facts': {'commit': 'a' * 40, 'changed_paths': ['docs/draft.md']}}
-        activated = self.call('plan-revision-activate', evidence, context, schema_version=6)
+        activated = self.call('plan-revision-activate', evidence, context, schema_version=7)
         self.assertTrue(activated['ok'], activated)
-        self.assertEqual(activated['context']['schema_version'], 6)
+        self.assertEqual(activated['context']['schema_version'], 7)
         self.assertEqual(activated['context']['handoff_progress']['plan_authority'], new)
         self.assertEqual(len(activated['context']['handoff_progress']['plan_revisions']), 1)
-        replay = self.call('plan-revision-activate', evidence, activated['context'], schema_version=6)
+        replay = self.call('plan-revision-activate', evidence, activated['context'], schema_version=7)
         self.assertTrue(replay['acknowledged'], replay)
         changed = copy.deepcopy(evidence)
         changed['new_authority']['contract_digest'] = '6' * 64
-        self.assertFalse(self.call('plan-revision-activate', changed, activated['context'], schema_version=6)['ok'])
+        self.assertFalse(self.call('plan-revision-activate', changed, activated['context'], schema_version=7)['ok'])
 
 if __name__ == '__main__':
     unittest.main()

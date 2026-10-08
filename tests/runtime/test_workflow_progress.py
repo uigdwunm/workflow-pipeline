@@ -2109,6 +2109,8 @@ class ProgressTests(transfer.StageTransferTests):
                 _, applications = owner.review_applications(candidate)
                 if applications.get(axis, {}).get('applicable'):
                     continue
+                actor_ref = owner.state['handoff']['expected_entry']['actor']['thread_id']
+                controller_ref = owner.state['control']['context']['controller_ref']
                 checkpoint = owner.state['control']['context']['handoff_progress']
                 checks = transfer.checks_for(progress.review_evidence.local_required_checks(catalog, axis, str(self.flow)), candidate)
                 identity = candidate + ':' + axis + evidence_suffix
@@ -2120,19 +2122,19 @@ class ProgressTests(transfer.StageTransferTests):
                     'environment': {'adapter': 'fixture-command', 'cwd': str(self.flow)},
                     'fixture': {'axis': axis, 'candidate': candidate}}}
                 prepared = self.invoke('review-activity', {'operation': 'prepare', 'axis': axis, 'candidate': candidate,
-                    'actor_ref': 'task', 'verification': {'plan_authority': checkpoint['plan_authority'], 'checks': checks, 'source': source}})
+                    'actor_ref': actor_ref, 'verification': {'plan_authority': checkpoint['plan_authority'], 'checks': checks, 'source': source}})
                 self.assertEqual((prepared.get('next_action') or {}).get('operation'), 'invoke-review', prepared)
                 scope = prepared['next_action']['review_scope']
                 response = 'review-stopped:' + identity
                 observed = self.invoke('review-activity', {'operation': 'observe', 'axis': axis, 'candidate': candidate,
-                    'actor_ref': 'task', 'action_id': prepared['next_action']['action_id'], 'receipt': {'adapter': 'fixture-native',
+                    'actor_ref': actor_ref, 'action_id': prepared['next_action']['action_id'], 'receipt': {'adapter': 'fixture-native',
                     'call_ref': 'review:' + identity, 'response_ref': response, 'status': 'stopped', 'ref': 'native:reviewer:' + axis,
                     'raw': {'review': {'status': 'accepted', 'findings': [], 'checks': checks,
                         **{key: scope[key] for key in ('read_paths', 'ac_refs', 'dependency_claim_ids', 'requirement_refs')},
                         'review_scope': scope}}}})
                 self.assertNotEqual(observed['status'], 'blocked', observed)
                 accepted = self.invoke('control', {'action': action, 'evidence': {'axis': axis, 'candidate': candidate,
-                    'result_ref': response}, 'receipt': {'controller_ref': 'task', 'reference': 'controller:' + identity}})
+                    'result_ref': response}, 'receipt': {'controller_ref': controller_ref, 'reference': 'controller:' + identity}})
                 self.assertNotEqual(accepted['status'], 'blocked', accepted)
 
     def mark_reviewable(self, candidate, *, fixture_execution=True, evidence_suffix=""):

@@ -35,16 +35,18 @@ class StageScopeRunnerTests(unittest.TestCase):
         }
 
     def test_runner_ten_rejects_original_runner_nine_record(self):
-        with self.assertRaisesRegex(runner.WorkflowError, "legacy_run_requires_original_runtime"):
-            runner._validate_record({"version": 9, "confirmed": {"packages": {}}})
-        self.assertEqual(runner._new_state({})["version"], 10)
-        self.record.write_text(json.dumps({"version": 9}))
-        with self.assertRaisesRegex(runner.WorkflowError, "legacy_run_requires_original_runtime"):
-            runner._request_control(self.record, "pause", live=False)
+        for version in (9, 10):
+            with self.subTest(previous_runner=version):
+                with self.assertRaisesRegex(runner.WorkflowError, "legacy_run_requires_original_runtime"):
+                    runner._validate_record({"version": version, "confirmed": {"packages": {}}})
+                self.record.write_text(json.dumps({"version": version}))
+                with self.assertRaisesRegex(runner.WorkflowError, "legacy_run_requires_original_runtime"):
+                    runner._request_control(self.record, "pause", live=False)
+        self.assertEqual(runner._new_state({})["version"], 11)
 
     def test_runner_rejects_removed_recovery_source(self):
         with self.assertRaisesRegex(runner.WorkflowError, "unsupported run record recovery_source"):
-            runner._validate_record({"version": 10, "recovery_source": {}})
+            runner._validate_record({"version": 11, "recovery_source": {}})
 
     def test_stage_two_projection_uses_current_readiness(self):
         readiness = {"accepted_digest": "accepted-planning", "scope_revision": 2}
@@ -52,7 +54,7 @@ class StageScopeRunnerTests(unittest.TestCase):
         with patch.object(runner.progression, "scope_readiness", return_value=readiness), \
              patch.object(runner.stage_handoff, "render", return_value={"stage_result": exact}) as render:
             self.assertEqual(runner._stage_projection(self.record, "stage2", self.current), exact)
-        render.assert_called_once_with(self.accepted, readiness=readiness)
+        render.assert_called_once_with(self.accepted, readiness=readiness, checkpoint_path=None)
 
     def test_unready_required_implementation_does_not_project_handoff(self):
         self.current["scope_authority"]["scope"]["downstream"]["implementation_required"] = True

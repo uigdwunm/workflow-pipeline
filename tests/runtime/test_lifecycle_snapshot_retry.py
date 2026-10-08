@@ -1,24 +1,35 @@
 """Only unsent lifecycle lookups may defer when C owns the checkpoint."""
 import json
-from pathlib import Path
-import tempfile
 import unittest
 from unittest.mock import patch
 
 from test_stage_scope_runner import runner
+import test_workflow_progress as progress_fixture
 
 
 class LifecycleSnapshotRetryTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        self.record = Path(temporary.name) / 'run.json'
-        self.state = {'status': 'completed', 'current_stage': 'stage2',
-            'confirmed': {'host': {}, 'repository': temporary.name},
-            'launch': {'invocation_id': 'original-turn'}, 'transport': {},
-            runner.progression.KEY: {'stage': 2, 'revision': 1,
-                                     'host': {'status': 'stopped', 'generation': 1}}}
-        runner.progression.atomic_save(self.record, self.state)
+        flow = progress_fixture.ProgressTests(methodName='runTest')
+        flow.setUp()
+        self.addCleanup(flow.doCleanups)
+        self.record = flow.checkpoint
+        package_root, confirmed_path = flow.runner_stage2_fixture()
+        raw = json.loads(confirmed_path.read_text())
+        raw['registry_input'] = str(confirmed_path.resolve())
+        with patch.object(runner, '__file__', str(package_root / 'guided-implementation/scripts/workflow.py')):
+            confirmed = runner.validate_confirmed(raw)
+        initial = runner._new_state(confirmed)
+        initial['sessions']['stage2'] = flow.request['host']['thread_id']
+        initial['launch']['invocation_id'] = 'original-turn'
+        initial['transport'] = {}
+        runner.progression.save_outer_record(self.record, initial, expected_revision=0)
+        flow.begin()
+        flow.invoke('observe', flow.observation())
+        self.assertEqual(flow.invoke('pause')['status'], 'pausing')
+        self.assertEqual(flow.invoke('observe', flow.observation('stopped', 'result'))['status'], 'paused')
+        self.state = runner.CheckpointState(runner._read_checkpoint(self.record))
+        self.carrier_ref = flow.state()['control']['context']['carrier']['ref']
+        self.generation = flow.state()['host']['generation']
         self.log = runner._host_events_path(self.record, self.state)
 
     def with_production_journal(self, scenario):
@@ -26,7 +37,7 @@ class LifecycleSnapshotRetryTests(unittest.TestCase):
 
         def factory(configuration, cwd, journal):
             host = real_host(configuration, cwd, journal)
-            host.threads['stage2'] = 'original-carrier'
+            host.threads['stage2'] = self.carrier_ref
             self.addCleanup(host.selector.close)
             return host
 
@@ -58,8 +69,8 @@ class LifecycleSnapshotRetryTests(unittest.TestCase):
                 self.poll(host)
                 self.assertEqual(write.call_count, 2)  # live and archived pages
                 apply.assert_called_once()
-                saved = runner.progression.read_record(self.record)
-                self.assertEqual(saved['transport']['snapshot_key'], ['stage2', 1, 0])
+                saved = runner._read_checkpoint(self.record)
+                self.assertEqual(saved['transport']['snapshot_key'], ['stage2', self.generation, 0])
                 self.poll(host)
                 self.assertEqual(write.call_count, 2)
                 self.assertEqual(apply.call_count, 1)
@@ -94,13 +105,15 @@ class LifecycleSnapshotRetryTests(unittest.TestCase):
             busy = runner.entry_prepare.PreparationError('checkpoint_busy', 'C owns checkpoint')
             with patch.object(runner.progression, 'handle', side_effect=[busy, {}]) as apply:
                 self.poll(host)
-                self.assertNotIn('snapshot_key', runner.progression.read_record(self.record)['transport'])
+                self.assertNotIn('snapshot_key', runner._read_checkpoint(self.record)['transport'])
                 self.poll(host)
                 self.assertEqual(apply.call_count, 2)
                 self.assertEqual(write.call_count, 4)
-            saved = runner.progression.read_record(self.record)
+            saved = runner._read_checkpoint(self.record)
             saved['transport'].pop('snapshot_key')
-            runner.progression.atomic_save(self.record, saved)
+            runner.progression.save_outer_record(self.record,
+                {key: value for key, value in saved.items() if key != runner.progression.KEY},
+                expected_revision=saved.authority_revision)
             with patch.object(runner.progression, 'handle', side_effect=
                     runner.entry_prepare.PreparationError('invalid_checkpoint', 'invalid evidence')):
                 with self.assertRaises(runner.entry_prepare.PreparationError) as raised:
