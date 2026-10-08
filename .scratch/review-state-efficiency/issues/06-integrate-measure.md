@@ -116,6 +116,14 @@ ordinary／raw／physical 独立峰值为 1,110,259／2,097,152／2,393,053B，�
 
 当前继续原已登记G2八owner/CAS测试、G4四native consumer夹具，源只读增量审查用固定Git，与下一独立测试writer可并行；不添加新Ticket或延期功能。所有必需夹具/累计findings闭合后冻结最终candidate，完整validate仍必跑。本段报告实际来源结果，不签whole T06/native/efficiency。
 
+G2 owner夹具批次已冻结，八原测试路径、原AST库存、文件模式、归档source副本与49,457B patch精确核对；freeze SHA256 `37486972cadb041ad1f35a8e3a51d69e815ae3dabcd3ca5bd6a3dc7cf9f9e8e7`，patch `e13f05f2a45cbceb8d308bf4fe910f9ad193fd6af3800689df144f3dfcbbdb35`。命令索引 `t06-final-owner-fixtures/command-index.md`（10,226B）保存原输入/时间/exit/log，不重标旧失败；作者最终关联49个原tests定向PASS，不是完整八module或最终validate。生产/共用helper/包字节未变，局部独立增量尚待。
+
+原typed saved result与exact owner/CAS、query retry singleCAS、Unified真实callback故障、hostloss/cancel、scope seal/stale/legacy以及全部business字段的lifecycle重放已到达。Publication17原失败ID逐项闭环；cancel/pause-cancel/recover各分支改为独立真实C，不复活或回滚已消费权威。Stage4四暂停原casePASS448.02s（必要真实分支设置成本），unsaved2为78.39s、intake1为111.76s；无同字节重跑完整module。原request/decision/unknown/no B或宿主重发/Git/source/proof不变断言均保留。
+
+原attached worker input从当前已激活Stage3 handoff/Phase/run/attempt/source取得，仍由实际Topic actor与expected_entry真实双身份验证，不创建第二Phase。allocation snapshot核实际prepare时独立Git HEAD、原baseline ancestry及全部旧fingerprints；current/archived执行结果仍按exact taskID/allocation digest/refs。原publication/cleanup/Phase replay全目标PASS226.18s；final recovery需真正currentTopic/native caller的unchanged integration adoption分配/接受/停止而不是readonly prepare，完整目标PASS376.80s，completed3/active4、readonly和separateDispatcher拒绝、原source/recovery均保。replace前fault hook从真实prepared root/subjects/ref/hash恢复原B record来计算request digest，不读latestC猜request或改故障时点/预算。42原recover新红由constructor已经提供replacement、旧test重复append同ID造成；只删重复append并核原完整唯一row，46原新/旧business block与proof/history恢复PASS19.36s，47 before-start gates和48 stale query通过。所有RED保其原source，不把owner fixture当native现场或正式效率证据。
+
+当前转最后四原native消费者夹具（已有manifest范围，原G4唯一writer/runner），八test固定Git可由原reviewer只读并行；运行时5e81的累计审查Standards0/localSpec新0，两原P2已闭合。四夹具及其实际影响、最终完整gate和交付两轴仍必需，不宣称whole T06完成。
+
 下列段落保留先前候选的检查时点；其中“待补”“下一位”属于该时点，不覆盖本批范围或唯一管理记录。
 
 G4 固定 `91c5a54` 原审查者已关闭恢复链 P2，Standards 0、localSpec 新发现 0；预留前写入修复的 `2bd9943` 增量结论保持。后续两测试文件的原 Git 29 项、pure 23 项和 peers 用例通过，原 test IDs 保留；冻结 patch SHA256 `0e4dd983dfa4434157f9a7cf22ce93021d0af53992c9a65e8fc513f014900db5`。真实初始包 pin、A/规划基线、bound dispatcher 接收及原 Task Ticket 检查、原 predecessor/保护路径均经已有产生者接线，生产代码和包未再改变。当前待该测试增量独立审查、固定候选完整验证和最终两轴交付覆盖，不能标记 T06 或原生现场完成。

@@ -3641,6 +3641,14 @@
         "patch_sha256": "31deae1a3e44f472c90e80234e93b13cbd3e43af53c360424f66a92682e80383",
         "evidence": "t06-final-runtime/index.json",
         "result": "26paths,201 original testmethods preserved+one genuine public oldglobals delivery regression. Original owner/latebinding/staged/subjectlostresponse/inline source positive and negative targets PASS, fixed limits retained; cumulative original reviewer pending, full02 remains failed. Remaining owner/native fixture scope unchanged."
+      },
+      "final_owner_fixture_result": {
+        "source_base": "5e81a9fee75b680797ccf6e2ad152f4f9337c307",
+        "freeze": "t06-final-owner-fixtures/freeze.json",
+        "freeze_sha256": "37486972cadb041ad1f35a8e3a51d69e815ae3dabcd3ca5bd6a3dc7cf9f9e8e7",
+        "patch_sha256": "e13f05f2a45cbceb8d308bf4fe910f9ad193fd6af3800689df144f3dfcbbdb35",
+        "commands": "t06-final-owner-fixtures/command-index.md",
+        "result": "8 exact original test paths/AST methods/modes/49457B patch and archived source copies verified; author final49 related original tests PASS incl Publication17 original failed IDs. No runtime/shared/package changes, immutable original reviewer increment pending. Remaining native4/full gate unchanged."
       }
     }
   }

@@ -259,13 +259,18 @@ class UnifiedRecoveryTests(unittest.TestCase):
         self.start()
         data = self.f.observation("idle", "result", self.message("needs_input"))
         consume = progress.Progress.consume_transaction
-        def crash(owner):
-            consume(owner)
+        def crash(owner, result):
+            consume(owner, result)
             raise KeyboardInterrupt()
         with patch.object(progress.Progress, "consume_transaction", new=crash):
             with self.assertRaises(KeyboardInterrupt):
                 self.f.invoke("observe", data)
-        pending = self.f.state()["pending"]
+        saved = self.f.state()
+        pending = saved["pending"]
+        self.assertIsNone(saved["transaction"])
+        self.assertIsNone(saved["transaction_source"])
+        self.assertIsNone(saved["transaction_result"])
+        self.assertTrue(saved["events"][data["event_id"]]["applied"])
         with patch.object(progress.dispatch, "handle", side_effect=AssertionError("consumed result replayed")):
             self.assertEqual(self.f.invoke("resume")["pending"], pending)
             self.assertTrue(self.f.invoke("observe", data)["acknowledged"])

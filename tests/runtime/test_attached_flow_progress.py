@@ -76,6 +76,36 @@ class AttachedFlowTests(fixtures.ProgressTests):
             'idempotency_key': str(uuid.uuid4()), **values})
 
     def input_for(self, stage, predecessor=None):
+        if stage == 3 and self.request['host']['role'] == 'implementation-dispatcher':
+            # The public fixture explicitly calls its base execution_input;
+            # that worker route must consume the current activated Phase.
+            state = self.state()
+            self.assertEqual(state['stage'], 3)
+            parent = state['handoff']
+            self.assertEqual(parent['entry']['source']['attachment'], self.attachment)
+            actor = parent['expected_entry']['actor']['thread_id']
+            self.assertEqual(actor, self.attachment['actor_conversation_ref'])
+            # This current-topic carrier consumes its own attached source.
+            # A separate Dispatcher retains the existing identity rejection.
+            dispatcher = state['control']['context']['carrier']['ref']
+            self.settings['thread_id'] = actor
+            self.request['host'].update(thread_id=actor, actor_ref=dispatcher)
+            value = self.execution_transfer_request()
+            value['entry']['host'].update(thread_id=actor, role='implementation-dispatcher',
+                                         source_ref=parent['controller_ref'], actor_ref=dispatcher)
+            value['expected_entry'] = fixtures.transfer.entry.resolve(value['entry'])
+            phase = self.phases[3]
+            self.assertEqual(value['authorization']['phase'],
+                             {'run_id': phase['phase_run_id'], 'attempt_id': phase['attempt_id']})
+            run = protocol.handle({**self.base, 'operation': 'read-phase-run',
+                                   'phase_run_id': phase['phase_run_id']})['phase_run']
+            self.assertEqual(run['source_topic_id'], self.attachment['actor_topic_id'])
+            self.assertEqual(run['evidence'], phase['evidence'])
+            expected = 'completed' if parent['authorization'].get('integration_recovery') else 'active'
+            self.assertEqual(run['state'], expected)
+            attempt = next(item for item in run['attempts'] if item['attempt_id'] == phase['attempt_id'])
+            self.assertEqual(attempt['state'], expected)
+            return value
         if stage == 2:
             phase = self.mutate('prepare-wrapper-phase-run', from_phase=0, to_phase=2, route='0->2',
                 carrier_kind='solution-designer', source_checkpoint_id=self.frozen['checkpoint']['checkpoint_id'],
@@ -96,6 +126,18 @@ class AttachedFlowTests(fixtures.ProgressTests):
         value = super().context_for(stage)
         value['topic_ref'] = self.attachment['actor_topic_id']
         return value
+
+    def assert_lifecycle_replay(self, actual, original):
+        # Physical reads are per-call diagnostics; every business field remains exact.
+        actual, original = copy.deepcopy(actual), copy.deepcopy(original)
+        observations = []
+        for reply in (actual, original):
+            reading = reply.pop('reading')
+            self.assertLessEqual(reading.pop('structured_bytes'), progress.state_store.READ_LIMIT)
+            self.assertGreater(reading.pop('structured_files'), 0)
+            observations.append(reading)
+        self.assertEqual(*observations)
+        self.assertEqual(actual, original)
 
     def activate_designer(self):
         phase = self.phases[2]
@@ -248,7 +290,7 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.assertEqual(recovered['result']['result']['state'], 'active')
         ledger_bytes = self.ledger.read_bytes()
         replay = self.invoke('lifecycle', {'request': request})
-        self.assertEqual(replay, recovered)
+        self.assert_lifecycle_replay(replay, recovered)
         self.assertEqual(self.ledger.read_bytes(), ledger_bytes)
         self.assertEqual(progress.state_store.StateStore(self.checkpoint).open_current().reference, after.reference)
         self.assertLessEqual(self.checkpoint.stat().st_size, progress.state_store.ROOT_LIMIT)
@@ -367,24 +409,24 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.assertIsNone(self.state()['pending'])
         self.assertIsNone(progress.scope_readiness(self.state(), self.checkpoint))
         gated = self.checkpoint.read_bytes()
-        self.assertEqual(self.invoke('lifecycle', {'request': request}), original)
+        self.assert_lifecycle_replay(self.invoke('lifecycle', {'request': request}), original)
         self.assertEqual(self.checkpoint.read_bytes(), gated)
         ledger = self.ledger.read_bytes()
         set_runner_gate(False)
         self.assertIsNotNone(progress.scope_readiness(self.state(), self.checkpoint))
-        self.assertEqual(self.invoke('lifecycle', {'request': request}), original)
+        self.assert_lifecycle_replay(self.invoke('lifecycle', {'request': request}), original)
         pending = self.state()['pending']
         self.assertIsNotNone(pending, 'released readiness must still ask for the first Stage-3 confirmation')
         self.assertEqual(pending['kind'], 'stage-entry')
         self.assertEqual(pending['subject'], {'stage': 3, 'predecessor': self.state()['accepted']['digest']})
         pending_root = self.checkpoint.read_bytes()
-        self.assertEqual(self.invoke('lifecycle', {'request': request}), original)
+        self.assert_lifecycle_replay(self.invoke('lifecycle', {'request': request}), original)
         self.assertEqual(self.state()['pending'], pending)
         self.assertEqual(self.checkpoint.read_bytes(), pending_root)
         self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
             'answer': 'confirm', 'reference': 'controller:delayed-confirmation'})
         confirmed_root = self.checkpoint.read_bytes()
-        self.assertEqual(self.invoke('lifecycle', {'request': request}), original)
+        self.assert_lifecycle_replay(self.invoke('lifecycle', {'request': request}), original)
         self.assertIsNone(self.state()['pending'])
         self.assertEqual(self.checkpoint.read_bytes(), confirmed_root)
         self.assertEqual(self.ledger.read_bytes(), ledger)
@@ -829,23 +871,36 @@ class AttachedFlowTests(fixtures.ProgressTests):
     def test_attached_final_recovery_keeps_completed_phase_and_active_closure(self):
         metrics = []
         replace = os.replace
-        directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
         def tracked_commit(source, target):
             if Path(target) == self.checkpoint:
                 envelope = json.loads(Path(source).read_bytes())
-                if envelope.get('store_format') == progress.state_store.FORMAT:
-                    digest = envelope['current']['sha256']
-                    root = json.loads((directory / 'objects' / digest[:2] / digest[2:4] / digest).read_bytes())['value']
+                if (envelope.get('store_format') == progress.state_store.FORMAT and
+                        envelope[progress.KEY]['stage'] == 3):
+                    store = progress.state_store.open_store(self.checkpoint)
+                    current = store.open_current()
+                    self.assertEqual(envelope['run_id'], current.run_id)
+                    root = store.read_evidence(envelope['current'], run_id=current.run_id,
+                        kind='root', maximum=progress.state_store.ROOT_LIMIT)['value']
                     subject_ref = root['subjects'][root['metadata']['stage_subject']]
-                    digest = subject_ref['sha256']
-                    state = json.loads((directory / 'objects' / digest[:2] / digest[2:4] / digest).read_bytes())['value']
+                    state = store.read_evidence(subject_ref, run_id=current.run_id, kind='subject')['value']
                     result = state.get('transaction_result')
                     if state['stage'] == 3 and (state.get('transaction') or {}).get('operation') == 'accept' and result:
                         self.assertEqual(result['kind'], 'stage-transaction-result-ref-v1')
-                        self.assertEqual(result['request_digest'], entry.digest(state['transaction']))
+                        # This is the prepared, unpublished subject, not latest C.
+                        # Resolve only its original received record before hashing
+                        # the pending request, as the real owner reader does.
+                        transaction = copy.deepcopy(state['transaction'])
+                        original = store.read_evidence(transaction['record'], run_id=current.run_id,
+                            maximum=progress.state_store.SUBJECT_LIMIT)['value']
+                        fixtures.transfer.handoff.unseal(original)
+                        self.assertEqual(original, state['dispatch'])
+                        self.assertEqual(original['status'], 'received')
+                        transaction['record'] = original
+                        self.assertEqual(result['request_digest'], entry.digest(transaction))
+                        proof = progress.read_stage_transaction_result({**state, 'transaction': transaction})
+                        self.assertEqual(proof['record']['status'], 'accepted')
                         self.assertLessEqual(len(progress.state_store.encode(result)), 1024)
                         self.assertLessEqual(subject_ref['size'], progress.state_store.SUBJECT_LIMIT)
-                        store = progress.state_store.open_store(self.checkpoint)
                         self.assertLessEqual(store.bytes_read, progress.state_store.READ_LIMIT)
                         metrics.append({'root_bytes': len(Path(source).read_bytes()),
                             'subject_bytes': subject_ref['size'], 'result_ref_bytes': len(progress.state_store.encode(result)),
@@ -878,10 +933,37 @@ class AttachedFlowTests(fixtures.ProgressTests):
         pending = self.state()['pending']
         self.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
             'answer': 'confirm', 'reference': 'controller:enter-stage3'})
-        self.finish_next(3, 'stepwise')
+        original_invoke = self.invoke
+        prepared_sources = []
+        def capture_prepared_source(operation, data=None, revision=None):
+            preparing = operation == 'allocation' and data.get('operation') == 'prepare'
+            head = self.flow_git('rev-parse', 'HEAD') if preparing else None
+            result = original_invoke(operation, data, revision)
+            if preparing:
+                slot = self.allocation_slot(data['allocation_id'])
+                attempt = slot['record']['request']['attempt']
+                checkpoint = self.state()['control']['context']['handoff_progress']
+                matches = [item for item in fixtures.transfer.control.all_execution_results(checkpoint)
+                           if item['allocation_digest'] == attempt]
+                self.assertEqual(len(matches), 1)
+                prepared_sources.append({'allocation_id': data['allocation_id'], 'head': head,
+                    'task_id': matches[0]['task_id'], 'attempt': attempt,
+                    'refs': copy.deepcopy(slot['handoff']['refs'])})
+            return result
+        with patch.object(self, 'invoke', capture_prepared_source):
+            self.finish_next(3, 'stepwise')
         checkpoint = self.state()['control']['context']['handoff_progress']
-        accepted_execution = checkpoint['executions'][-1]
-        self.assertEqual(accepted_execution['git_snapshot']['head'], checkpoint['git_baseline_commit'])
+        self.assertEqual(len(prepared_sources), 1)
+        prepared = prepared_sources[0]
+        matches = [item for item in fixtures.transfer.control.all_execution_results(checkpoint)
+                   if item['task_id'] == prepared['task_id']]
+        self.assertEqual(len(matches), 1)
+        accepted_execution = matches[0]
+        self.assertEqual(accepted_execution['state'], 'accepted')
+        self.assertEqual(accepted_execution['allocation_digest'], prepared['attempt'])
+        self.assertEqual(self.allocation_slot(prepared['allocation_id'])['handoff']['refs'], prepared['refs'])
+        self.assertEqual(accepted_execution['git_snapshot']['head'], prepared['head'])
+        fixtures.transfer.handoff.ancestor(str(self.flow), checkpoint['git_baseline_commit'], prepared['head'])
         self.assertEqual(set(accepted_execution['git_snapshot']['files']), set(checkpoint['allowed_paths']))
         self.assertIsNone(accepted_execution['git_snapshot']['files']['impl.py'])
         self.assertEqual(accepted_execution['git_result_snapshot']['impl.py'],
@@ -942,10 +1024,43 @@ class AttachedFlowTests(fixtures.ProgressTests):
             self.assertEqual(self.ledger.read_bytes(), ledger)
             self.assertEqual(self.checkpoint.read_bytes(), checkpoint)
             self.assertEqual(progress.control_git.snapshot(self.flow), snapshot)
+            # The read-only transfer above grants no lease. Revalidate the
+            # retained integration through the current Topic's original C/B
+            # prepare/bind/receive/accept before current local/Ticket review.
+            execution = copy.deepcopy(request)
+            dispatcher = self.state()['control']['context']['carrier']['ref']
+            execution['entry']['host'].update(role='implementation-dispatcher',
+                source_ref=parent['controller_ref'], actor_ref=dispatcher)
+            execution['expected_entry'] = entry.resolve(execution['entry'])
+            allocated = self.invoke('allocation', {'allocation_id': 'attached-integrated-execution',
+                'operation': 'prepare', 'handoff': execution})
+            self.assertEqual(allocated['next_action']['operation'], 'invoke-host', allocated)
+            slot = self.allocation_slot('attached-integrated-execution')
+            executor = 'native:attached-integrated-executor'
+            bound = self.invoke('allocation', {'allocation_id': 'attached-integrated-execution',
+                'operation': 'bind', 'receipt': self.receipt(slot['record'], ref=executor)})
+            self.assertEqual(bound['next_action']['result']['status'], 'bound', bound)
+            slot = self.allocation_slot('attached-integrated-execution')
+            received = self.invoke('allocation', {'allocation_id': 'attached-integrated-execution',
+                'operation': 'receive', 'receipt': self.receipt(slot['record'], 'stopped', 'result', ref=executor),
+                'result': {'delivery_id': 'attached-integrated-execution', 'status': 'completed', 'payload': {
+                    'changed_paths': [], 'adopted_paths': source['pending_paths'],
+                    'file_hashes': {path: hashlib.sha256((self.flow / path).read_bytes()).hexdigest()
+                                   for path in source['pending_paths']},
+                    'tests': ['retained implementation bytes verified'],
+                    'write_release': bound['next_action']['result']['write_release'],
+                    'plan_refs': execution['semantic']['plan_refs'],
+                    'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
+            self.assertEqual(received['next_action']['result']['status'], 'received', received)
+            accepted_group = self.invoke('allocation', {'allocation_id': 'attached-integrated-execution',
+                'operation': 'accept', 'decision': {'reference': 'dispatcher:attached-integrated-execution'}})
+            self.assertEqual(accepted_group['next_action']['result']['status'], 'accepted', accepted_group)
+            self.assertEqual(progress.control_git.snapshot(self.flow), snapshot)
             payload = {'candidate_commit':candidate, 'artifacts':['impl.py'], 'checks':['verified'],
                 'review':{axis:{'candidate':candidate,'reviewer_ref':axis,'status':'accepted'} for axis in ('standards','spec')},
                 'verification':{'candidate':candidate}}
             accepted = self.accept_current(payload, 'native:dispatcher',
+                fixture_execution=False,
                 evidence_suffix='-attached-final-recovery')
             self.assertEqual(accepted['status'],'accepted',accepted.get('error'))
             self.assertEqual(self.phases[3], completed_phase)

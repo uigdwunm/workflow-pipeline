@@ -175,7 +175,8 @@ class ScopeProgressTests(unittest.TestCase):
         _, digest = self.propose(candidate)
         self.flow.ready_publication(candidate, "controller:planning-readiness")
         self.seal(digest)
-        outer = progress.read_record(self.flow.checkpoint)
+        before = self.flow.checkpoint.read_bytes()
+        outer = progress.read_active_owner(self.flow.checkpoint)
         state = outer[progress.KEY]
         authority = state["scope_authority"]
         authority["scope"]["downstream"]["manifest"][-1]["path"] = "other.py"
@@ -183,9 +184,8 @@ class ScopeProgressTests(unittest.TestCase):
         authority["proposal"]["manifest"][-1]["path"] = "other.py"
         authority["proposal_digest"] = fixture.transfer.entry.digest(authority["proposal"])
         authority["scope"]["downstream"]["proposal_ref"] = authority["proposal_digest"]
-        progress.atomic_save(self.flow.checkpoint, outer)
-        before = self.flow.checkpoint.read_bytes()
         with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
+            progress.Progress(self.flow.checkpoint, outer).save()
             self.flow.invoke("inspect")
         self.assertEqual(error.exception.code, "scope_changed")
         self.assertEqual(self.flow.checkpoint.read_bytes(), before)
@@ -262,9 +262,10 @@ class ScopeProgressTests(unittest.TestCase):
         self.assertEqual(readiness_calls.call_count, 1)
         current = self.flow.state()
         fixture.transfer.handoff.render(current["accepted"], readiness=accepted["readiness"])
-        outer = progress.read_record(self.flow.checkpoint)
-        outer[progress.KEY]["revision"] += 1
-        progress.atomic_save(self.flow.checkpoint, outer)
+        # Advance the real current revision through its owner CAS; retain the
+        # original accepted readiness token to exercise stale-token rejection.
+        owner = progress.Progress(self.flow.checkpoint, progress.read_active_owner(self.flow.checkpoint))
+        owner.save()
         with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
             fixture.transfer.handoff.render(current["accepted"], readiness=accepted["readiness"])
         self.assertEqual(error.exception.code, "handoff_not_ready")
@@ -512,22 +513,24 @@ class ScopeProgressTests(unittest.TestCase):
 
     def test_progression_rejects_old_runner_envelope_without_writes(self):
         self.finish_planned_design()
-        original = progress.read_record(self.flow.checkpoint)
-        readiness = progress.scope_readiness(original[progress.KEY], self.flow.checkpoint)
+        original = self.flow.checkpoint.read_bytes()
+        readiness = progress.scope_readiness(self.flow.state(), self.flow.checkpoint)
         for version in (7, 8):
             with self.subTest(version=version):
-                outer = {**copy.deepcopy(original), "version": version}
-                progress.atomic_save(self.flow.checkpoint, outer)
-                checkpoint = self.flow.checkpoint.read_bytes()
+                legacy = self.flow.checkpoint.with_name('legacy-' + str(version) + '.json')
+                progress.atomic_save(legacy, {'version': version, progress.KEY: {'protocol': progress.PROTOCOL}})
+                checkpoint = legacy.read_bytes()
                 with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
-                    self.flow.invoke("inspect")
+                    progress.handle(legacy, {'protocol': progress.PROTOCOL, 'operation': 'inspect',
+                        'expected_revision': 0, 'data': {}})
                 self.assertEqual(error.exception.code, "legacy_run_requires_original_runtime")
-                self.assertEqual(self.flow.checkpoint.read_bytes(), checkpoint)
+                self.assertEqual(legacy.read_bytes(), checkpoint)
 
                 with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
-                    fixture.transfer.handoff.current_readiness(readiness)
+                    fixture.transfer.handoff.current_readiness({**readiness, 'checkpoint_path': str(legacy.resolve())})
                 self.assertEqual(error.exception.code, "legacy_run_requires_original_runtime")
-                self.assertEqual(self.flow.checkpoint.read_bytes(), checkpoint)
+                self.assertEqual(legacy.read_bytes(), checkpoint)
+                self.assertEqual(self.flow.checkpoint.read_bytes(), original)
 
     def test_correction_updates_stepwise_boundary_without_reasking_confirmed_entry(self):
         candidate = self.planning_candidate("stepwise")

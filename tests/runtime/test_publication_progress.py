@@ -1,5 +1,6 @@
 """D's C/B seam using real temporary Git and exact fixture host receipts."""
 import copy
+from contextlib import contextmanager
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,18 @@ class PublicationProgressTests(unittest.TestCase):
         self.flow = fixtures.ProgressTests(methodName="runTest")
         self.addCleanup(self.flow.doCleanups)
         self.flow.setUp()
+
+    @contextmanager
+    def independent_flow(self):
+        original = self.flow
+        fixture = fixtures.ProgressTests(methodName='runTest')
+        try:
+            fixture.setUp()
+            self.flow = fixture
+            yield fixture
+        finally:
+            self.flow = original
+            fixture.doCleanups()
 
     def closure(self):
         f = self.flow
@@ -94,7 +107,12 @@ class PublicationProgressTests(unittest.TestCase):
         self.assertEqual(f.state()["dispatch"]["delivery"]["message"], transaction["result"])
         self.assertEqual(f.state()["publication"]["intake"]["native_candidate"], native)
 
-    def saved_intake_interruption(self, stage):
+    def saved_intake_interruption(self, stage, operation=None):
+        if operation is None:
+            for action in ('resume', 'receive-publication', 'advance'):
+                with self.subTest(stage=stage, operation=action), self.independent_flow():
+                    self.saved_intake_interruption(stage, action)
+            return
         f = self.flow
         if stage == 2:
             f.prepare_design_result("continuous")
@@ -110,23 +128,19 @@ class PublicationProgressTests(unittest.TestCase):
         with patch.object(progress.Progress, "apply", new=crash_after_save):
             with self.assertRaises(KeyboardInterrupt):
                 f.invoke("receive-publication")
-        self.assertEqual(f.state()["transaction_result"]["record"]["status"], "received")
+        self.assertEqual(progress.read_stage_transaction_result(f.state())["record"]["status"], "received")
         self.assertEqual(f.state()["step"], "publication-complete")
         self.assertIsNotNone(f.state()["transaction"])
         merge = f.git("rev-parse", "HEAD")
-        snapshot = copy.deepcopy(progress.read_record(f.checkpoint))
-        for operation in ("resume", "receive-publication", "advance"):
-            with self.subTest(stage=stage, operation=operation):
-                progress.atomic_save(f.checkpoint, copy.deepcopy(snapshot))
-                with patch.object(progress.dispatch, "handle", side_effect=AssertionError("B replayed")), \
-                     patch.object(supervision, "_merge_candidate_into_target", side_effect=AssertionError("republished")):
-                    result = f.invoke(operation)
-                    self.assertEqual(result["status"], "needs_input")
-                    self.assertEqual(result["pending"]["kind"], "acceptance")
-                    pending = copy.deepcopy(result["pending"])
-                    for repeat in ("resume", "receive-publication", "advance"):
-                        self.assertEqual(f.invoke(repeat)["pending"], pending)
-                self.assertEqual(f.git("rev-parse", "HEAD"), merge)
+        with patch.object(progress.dispatch, "handle", side_effect=AssertionError("B replayed")), \
+             patch.object(supervision, "_merge_candidate_into_target", side_effect=AssertionError("republished")):
+            result = f.invoke(operation)
+            self.assertEqual(result["status"], "needs_input")
+            self.assertEqual(result["pending"]["kind"], "acceptance")
+            pending = copy.deepcopy(result["pending"])
+            for repeat in ("resume", "receive-publication", "advance"):
+                self.assertEqual(f.invoke(repeat)["pending"], pending)
+        self.assertEqual(f.git("rev-parse", "HEAD"), merge)
 
     def test_stage2_saved_intake_recovers_local_step(self):
         self.saved_intake_interruption(2)
@@ -151,13 +165,17 @@ class PublicationProgressTests(unittest.TestCase):
             if after_save:
                 original(owner, result)
             raise KeyboardInterrupt()
-        with patch.object(progress.Progress, "apply", new=crash_after_save):
+        with patch.object(progress.dispatch, "handle", wraps=progress.dispatch.handle) as original_call, \
+             patch.object(progress.Progress, "apply", new=crash_after_save):
             with self.assertRaises(KeyboardInterrupt):
                 f.invoke("decide", decision)
         self.assertEqual(f.state()["dispatch"]["status"], "received")
         if after_save:
-            self.assertEqual(f.state()["transaction_result"]["record"]["status"], "accepted")
+            self.assertEqual(progress.read_stage_transaction_result(f.state())["record"]["status"], "accepted")
+        self.assertEqual(original_call.call_count, 1)
+        original_request = copy.deepcopy(original_call.call_args.args[0])
         transaction = copy.deepcopy(f.state()["transaction"])
+        self.assertEqual(transaction["record"], original_request["record"])
         options = {"side_effect": AssertionError("B acceptance replayed")} if after_save else {"wraps": progress.dispatch.handle}
         with patch.object(progress.dispatch, "handle", **options) as handler:
             rejected = f.invoke("decide", {**decision, "reference": "different:decision"})
@@ -174,7 +192,7 @@ class PublicationProgressTests(unittest.TestCase):
             self.assertTrue(f.invoke("decide", decision)["acknowledged"])
             if not after_save:
                 self.assertEqual(handler.call_count, 1)
-                self.assertEqual(handler.call_args.args[0], transaction)
+                self.assertEqual(handler.call_args.args[0], original_request)
 
     def test_stage2_saved_acceptance_recovers_original_decision(self):
         self.saved_acceptance_interruption(2)
@@ -197,15 +215,19 @@ class PublicationProgressTests(unittest.TestCase):
         f.ready_publication(candidate, "controller:closure", "native:closure")
         f.invoke("publication", {"candidate_commit": candidate, "reference": "controller:closure",
                                  "expected_target_head": f.git("rev-parse", "HEAD")})
-        with patch.object(progress.Progress, "apply", side_effect=KeyboardInterrupt()):
+        with patch.object(progress.dispatch, "handle", wraps=progress.dispatch.handle) as original_call, \
+             patch.object(progress.Progress, "apply", side_effect=KeyboardInterrupt()):
             with self.assertRaises(KeyboardInterrupt):
                 f.invoke("receive-publication")
+        self.assertEqual(original_call.call_count, 1)
+        original_request = copy.deepcopy(original_call.call_args.args[0])
         transaction = copy.deepcopy(f.state()["transaction"])
+        self.assertEqual(transaction["record"], original_request["record"])
         with patch.object(progress.dispatch, "handle", wraps=progress.dispatch.handle) as handler:
             result = f.invoke("resume")
         self.assertEqual(result["pending"]["kind"], "acceptance")
         self.assertEqual(handler.call_count, 1)
-        self.assertEqual(handler.call_args.args[0], transaction)
+        self.assertEqual(handler.call_args.args[0], original_request)
 
     def test_saved_intake_does_not_override_pause_or_cancel(self):
         f = self.flow
@@ -228,7 +250,12 @@ class PublicationProgressTests(unittest.TestCase):
                 f.invoke("receive-publication")
         self.assertIsNone(f.state()["pending"])
 
-    def paused_transaction_window(self, stage, operation, saved):
+    def paused_transaction_window(self, stage, operation, saved, branch=None):
+        if branch is None:
+            for route in ('cancel', 'pause-cancel', 'recover'):
+                with self.subTest(stage=stage, operation=operation, saved=saved, route=route), self.independent_flow():
+                    self.paused_transaction_window(stage, operation, saved, route)
+            return
         f = self.flow
         if stage == 2:
             f.prepare_design_result("continuous")
@@ -247,15 +274,18 @@ class PublicationProgressTests(unittest.TestCase):
             if saved:
                 original_apply(owner, result)
             raise KeyboardInterrupt()
-        with patch.object(progress.Progress, "apply", new=interrupted):
+        with patch.object(progress.dispatch, "handle", wraps=progress.dispatch.handle) as original_call, \
+             patch.object(progress.Progress, "apply", new=interrupted):
             with self.assertRaises(KeyboardInterrupt):
                 f.invoke("decide", decision) if decision else f.invoke("receive-publication")
+        self.assertEqual(original_call.call_count, 1)
+        original_request = copy.deepcopy(original_call.call_args.args[0])
         transaction = copy.deepcopy(f.state()["transaction"])
+        self.assertEqual(transaction["record"], original_request["record"])
         native = copy.deepcopy(f.state()["dispatch"]["request"])
         publication = copy.deepcopy(f.state()["publication"])
         merge = f.git("rev-parse", "HEAD")
-        interrupted_state = copy.deepcopy(progress.read_record(f.checkpoint))
-        if not saved:
+        if not saved and branch == "recover":
             role = "native:designer" if stage == 2 else "native:closure"
             f.invoke("observe", f.observation("running", "result", ref=role))
             self.assertEqual(f.invoke("pause")["status"], "pausing")
@@ -265,15 +295,10 @@ class PublicationProgressTests(unittest.TestCase):
             self.assertEqual(f.state()["transaction"], transaction)
             self.assertFalse(f.state()["stopped"])
             self.assertEqual(f.invoke("observe", f.observation("stopped", "result", ref=role))["status"], "paused")
-        # Counterfactual stop paths share immutable Git facts in this isolated
-        # fixture; its control port has no external ledger or host mutations.
-        for pause_first in (False, True):
-            progress.atomic_save(f.checkpoint, copy.deepcopy(interrupted_state))
-            if pause_first:
+        if branch in ('cancel', 'pause-cancel'):
+            if branch == 'pause-cancel':
                 self.assertEqual(f.invoke("pause")["status"], "paused")
             cancellation = f.invoke("cancel")
-            # Stage 4 may need its original control recovery after Git removed
-            # the worktree. That cannot revoke the durable cancellation intent.
             self.assertIn(cancellation["status"], {"cancelled", "cancelling", "blocked"})
             self.assertEqual(f.state()["stop_requested"], "cancelling")
             with patch.object(progress.dispatch, "handle", side_effect=AssertionError("cancelled transaction replayed")):
@@ -284,16 +309,21 @@ class PublicationProgressTests(unittest.TestCase):
             if decision:
                 f.invoke("decide", decision)
                 self.assertNotIn(decision["decision_id"], f.state().get("decisions", {}))
-        progress.atomic_save(f.checkpoint, copy.deepcopy(interrupted_state))
+            self.assertEqual(f.state()["dispatch"]["request"], native)
+            self.assertEqual(f.state()["publication"]["request"], publication["request"])
+            self.assertEqual(f.git("rev-parse", "HEAD"), merge)
+            return
         self.assertEqual(f.invoke("pause")["status"], "paused")
-        outer = progress.read_record(f.checkpoint)
+        identity = progress.read_projection(f.checkpoint, projection="identity")
+        outer = {key: value for key, value in identity.record.items() if key != progress.KEY}
         outer["runner_request"] = {"operation": "pause", "request_id": "original-runner-pause"}
-        progress.atomic_save(f.checkpoint, outer)
+        progress.save_outer_record(f.checkpoint, outer, expected_revision=identity.authority_revision)
         with patch.object(progress.dispatch, "handle", side_effect=AssertionError("runner request bypassed")):
             self.assertEqual(f.invoke("resume")["status"], "paused")
-        outer = progress.read_record(f.checkpoint)
+        identity = progress.read_projection(f.checkpoint, projection="identity")
+        outer = {key: value for key, value in identity.record.items() if key != progress.KEY}
         self.assertEqual(outer.pop("runner_request"), {"operation": "pause", "request_id": "original-runner-pause"})
-        progress.atomic_save(f.checkpoint, outer)
+        progress.save_outer_record(f.checkpoint, outer, expected_revision=identity.authority_revision)
         self.assertEqual(f.invoke("advance")["status"], "paused")
         if decision:
             deferred = f.invoke("decide", decision)
@@ -325,7 +355,7 @@ class PublicationProgressTests(unittest.TestCase):
                 self.assertEqual(repeated["pending"], pending)
             self.assertEqual(calls.call_count, 0 if saved else 1)
             if not saved:
-                self.assertEqual(calls.call_args.args[0], transaction)
+                self.assertEqual(calls.call_args.args[0], original_request)
         self.assertIsNone(f.state()["transaction"])
         self.assertIsNone(f.state().get("stop_requested"))
         self.assertEqual(f.state()["dispatch"]["request"], native)
@@ -384,15 +414,16 @@ class PublicationProgressTests(unittest.TestCase):
     def test_new_control_cannot_write_to_a_v1_progression(self):
         f = self.flow
         f.begin("continuous")
-        outer = progress.read_record(f.checkpoint)
-        outer.update(version=4, status="active")
-        outer[progress.KEY]["protocol"] = "workflow-progress-v1"
-        progress.atomic_save(f.checkpoint, outer)
-        before = f.checkpoint.read_bytes()
+        current = f.checkpoint.read_bytes()
+        legacy = f.checkpoint.with_name('legacy-v1.json')
+        progress.atomic_save(legacy, {'version': 4, 'status': 'active',
+                                    progress.KEY: {'protocol': 'workflow-progress-v1'}})
+        before = legacy.read_bytes()
         for operation in ("pause", "cancel"):
             with self.assertRaises(fixtures.runner.WorkflowError):
-                fixtures.runner.request_control(f.checkpoint, operation)
-            self.assertEqual(f.checkpoint.read_bytes(), before)
+                fixtures.runner.request_control(legacy, operation)
+            self.assertEqual(legacy.read_bytes(), before)
+            self.assertEqual(f.checkpoint.read_bytes(), current)
 
     def test_stage4_business_recovery_keeps_native_identity_and_candidate(self):
         f = self.flow

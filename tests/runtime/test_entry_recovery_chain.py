@@ -92,10 +92,16 @@ class RecoveryPriorityTests(unittest.TestCase):
 
     def test_host_loss_names_original_identities_and_missing_evidence(self):
         f = self.f; progress = progress_fixture.progress
-        outer = progress.read_record(f.checkpoint)
+        identity = progress.read_projection(f.checkpoint, projection='identity')
+        store = progress.state_store.StateStore(f.checkpoint)
+        original = store.open_current()
+        outer = {key: value for key, value in identity.record.items() if key != progress.KEY}
         outer['transport'] = {'instance':'fixture-host','state':'lost','native_event_sequence':0}
         outer['sessions'] = {'stage2':'task'}
-        progress.atomic_save(f.checkpoint,outer)
+        progress.save_outer_record(f.checkpoint, outer, expected_revision=identity.authority_revision)
+        current = store.open_current()
+        for key in ('metadata', 'subjects', 'scope', 'delivery'):
+            self.assertEqual(current.root.get(key), original.root.get(key))
         result = f.invoke('transport-lost',{'instance':'fixture-host','reason':'external owner exited'})
         action = result['next_action']
         self.assertEqual(action['operation'],'await-host-recovery')

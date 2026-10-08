@@ -121,21 +121,36 @@ class AcceptedQueryRetryTests(unittest.TestCase):
         f.invoke('observe',f.observation('unknown','result',ref=role))
         ended = copy.deepcopy(f.state()['host']['query'])
         accepted = copy.deepcopy(f.state()['accepted'])
+        before = f.checkpoint.read_bytes()
+        generation = f.state()['host']['generation']
+        published = None
         save = progress.Progress.save
         def crash(owner):
-            if owner.state['host']['query'] is None and owner.state['host'].get('query_history'):
+            nonlocal published
+            query = owner.state['host']['query']
+            if (owner.state['host'].get('query_history') == [ended] and query is not None
+                    and query['action_id'] != ended['action_id']
+                    and query['generation'] == generation
+                    and query['payload'] == first['payload']):
+                published = copy.deepcopy(query)
                 if after: save(owner)
                 raise KeyboardInterrupt()
             save(owner)
         with patch.object(progress.Progress,'save',new=crash):
             with self.assertRaises(KeyboardInterrupt): f.invoke('resume')
-        self.assertEqual(f.state()['host']['query'],None if after else ended)
+        self.assertIsNotNone(published)
+        self.assertEqual(f.state()['host']['query'], published if after else ended)
+        if not after:
+            self.assertEqual(f.checkpoint.read_bytes(), before)
         new = f.invoke('resume')['next_action']
         self.assertEqual(new['operation'],'inspect-host-state')
         self.assertNotEqual(new['action_id'],first['action_id'])
         self.assertEqual(new['payload'],first['payload'])
         self.assertEqual(f.state()['host']['query_history'],[ended])
         self.assertEqual(f.state()['accepted'],accepted)
+        if after:
+            self.assertEqual(new, published)
+        self.assertEqual(f.invoke('resume')['next_action'], new)
 
     def test_retry_before_archive_save_keeps_old_query(self): self.retry_save_window(False)
     def test_retry_after_archive_save_keeps_original_action(self): self.retry_save_window(True)

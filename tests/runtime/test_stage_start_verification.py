@@ -15,7 +15,8 @@ START_ERRORS = (transfer.entry.PreparationError, transfer.control.ControlError,
 class LaunchAssertions:
     def assert_no_host_launch(self, effects):
         self.assertNotIn('invoke-host', [call.args[1] for call in effects.call_args_list])
-        saved = progress.read_record(self.checkpoint).get(progress.KEY, {})
+        saved = (progress.read_active_owner(self.checkpoint).get(progress.KEY, {})
+                 if self.checkpoint.exists() else {})
         for key in ('action', 'host_action'):
             self.assertNotEqual((saved.get(key) or {}).get('operation'), 'invoke-host')
         self.assertFalse(saved.get('retained_host_actions'))
@@ -207,7 +208,7 @@ class StageStartVerificationTests(LaunchAssertions, existing.ProgressTests):
         self.assertIsNotNone(saved['transaction_result'])
         self.assertIsNone(saved['dispatch'])
         self.assertIsNone(saved['action'])
-        return copy.deepcopy(saved['transaction_result'])
+        return copy.deepcopy(progress.read_stage_transaction_result(saved))
 
     def test_saved_dispatch_result_resumes_original_attempt_without_recalling_b(self):
         original = self.saved_dispatch_result()
@@ -251,8 +252,10 @@ class AttachedStageStartVerificationTests(LaunchAssertions, existing.AttachedPro
             nonlocal cancelled, reserved_attempt
             self.assertEqual(checkpoint.call_count, 1)
             self.assertEqual(checkpoint.call_args.args[2], 'reserve-launch')
-            reserved = self.read()['workflow_control']
-            saved = progress.read_record(self.checkpoint)[progress.KEY]
+            public = self.read()
+            reserved = public['workflow_control']
+            saved = progress.read_active_owner(self.checkpoint)[progress.KEY]
+            self.assertEqual(saved['control']['store_ref'], public['workflow_control_ref'])
             self.assertEqual(reserved, saved['control']['context'])
             self.assertEqual(reserved['handoff_progress']['launch_input'], saved['handoff']['digest'])
             reserved_attempt = reserved['carrier']['attempt']

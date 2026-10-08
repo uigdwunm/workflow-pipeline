@@ -128,20 +128,31 @@ class BusinessRecoveryTests(unittest.TestCase):
         self.start()
         block = self.business_fail()
         decision = self.decision()
-        original = progress.atomic_save
+        request = copy.deepcopy(self.f.state()['dispatch']['request'])
+        original = progress.Progress.save
         for after in (False, True):
-            def crash(path, value):
-                if after:
-                    original(path, value)
-                raise KeyboardInterrupt()
-            with patch.object(progress, "atomic_save", new=crash):
+            before = self.f.checkpoint.read_bytes()
+            def crash(owner):
+                if (owner.state.get('recovery_decisions', {}).get(decision['decision_id']) == decision
+                        and owner.state.get('business_block') is None
+                        and owner.state.get('business_history', [])[-1:]
+                        and owner.state['business_history'][-1]['block'] == block):
+                    if after:
+                        original(owner)
+                    raise KeyboardInterrupt()
+                original(owner)
+            with patch.object(progress.Progress, "save", new=crash):
                 with self.assertRaises(KeyboardInterrupt):
                     self.f.invoke("recover-business", decision)
             if not after:
                 self.assertEqual(self.f.state()["business_block"], block)
+                self.assertEqual(self.f.checkpoint.read_bytes(), before)
             else:
                 self.assertIsNone(self.f.state()["business_block"])
                 self.assertTrue(self.f.invoke("recover-business", decision)["acknowledged"])
+                self.assertEqual(self.f.state()['recovery_decisions'][decision['decision_id']], decision)
+                self.assertIsNone(self.f.state()['host']['proof'])
+            self.assertEqual(self.f.state()['dispatch']['request'], request)
         self.assertEqual(len(self.f.state()["business_history"]), 1)
         self.assertEqual(self.f.invoke("resume")["next_action"]["operation"], "inspect-host-state")
 
@@ -222,16 +233,18 @@ class BusinessRecoveryTests(unittest.TestCase):
 
     def test_old_v3_member_is_rejected_without_writing(self):
         self.start()
-        outer = progress.read_record(self.f.checkpoint)
-        outer[progress.KEY]["protocol"] = "workflow-progress-v3"
-        progress.atomic_save(self.f.checkpoint, outer)
-        before = self.f.checkpoint.read_bytes()
+        current = self.f.checkpoint.read_bytes()
+        legacy = self.f.checkpoint.with_name('legacy-v3.json')
+        progress.atomic_save(legacy, {progress.KEY: {'protocol': 'workflow-progress-v3'}})
+        before = legacy.read_bytes()
         for operation in ("resume", "prepare-requirement", "lifecycle", "recover-business"):
             with self.subTest(operation=operation):
                 with self.assertRaises(progress.entry.PreparationError) as error:
-                    self.f.invoke(operation)
+                    progress.handle(legacy, {'protocol': progress.PROTOCOL, 'operation': operation,
+                        'expected_revision': 0, 'data': {}})
                 self.assertEqual(error.exception.code, "legacy_run_requires_original_runtime")
-                self.assertEqual(self.f.checkpoint.read_bytes(), before)
+                self.assertEqual(legacy.read_bytes(), before)
+                self.assertEqual(self.f.checkpoint.read_bytes(), current)
 
     def test_recovery_instruction_is_delivered_and_source_drift_still_blocks(self):
         self.start()
@@ -272,11 +285,14 @@ class BusinessRecoveryTests(unittest.TestCase):
             'intent_id':intent['intent_id'],'status':'ready','ref':'native:replacement','raw':{'write_authority':False}}
         f.invoke('control',{'action':'dispatch-recovery-result','evidence':{'recovery_id':prepared['recovery_id'],'receipt':receipt},'receipt':receipt})
         snapshot = f.observation('stopped','result',ref='native:dispatcher')['lifecycle']
-        snapshot['pages'][0]['response']['data'].append({'id':'native:replacement','status':{'type':'idle'}})
-        f.invoke('lifecycle-state',snapshot)
+        replacement = [row for row in snapshot['pages'][0]['response']['data']
+                       if row['id'] == 'native:replacement']
+        self.assertEqual(replacement, [{'id': 'native:replacement', 'status': {'type': 'idle'}}])
+        lifecycle = f.invoke('lifecycle-state',snapshot)
         recovery = {'action':'recover-dispatch','evidence':{**identity,'replacement_ref':'native:replacement'},'receipt':owner}
-        f.invoke('control',recovery)
-        self.assertIsNone(f.state()["business_block"])
+        recovered = f.invoke('control',recovery)
+        self.assertIsNone(f.state()["business_block"], {'lifecycle': lifecycle,
+            'recovery': recovered, 'census': snapshot['pages'][0]['response']['data']})
         self.assertEqual(f.state()["business_history"][0]["block"], block)
         self.assertEqual(f.state()["business_history"][0]["kind"], "recover-dispatch")
         self.assertEqual(f.state()["control"]["context"]["carrier"]["ref"], "native:replacement")
