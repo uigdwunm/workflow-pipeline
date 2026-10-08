@@ -2018,15 +2018,21 @@
     },
     {
       "path": "tests/packages/test_build.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
       "kind": "test",
-      "reason": "五包资源闭包/compatibility/固定身份回归；按实际fixture适配",
+      "reason": "T06新release/compat版本消费夹具：原PackageBuildTests仍固定1.3.0/control11/runner10/v14/v19/v1，适配已批准1.4.0与当前版本组，并保留原旧运行拒绝",
       "exists_at_design": true,
-      "symbols": [],
-      "generated_outputs": []
+      "symbols": [
+        {
+          "name": "PackageBuildTests.test_release_rejects_prior_transfer_and_progress",
+          "status": "existing-verified"
+        }
+      ],
+      "generated_outputs": [],
+      "remaining_scope": "only current release/compat expectations and preceding v14/v19 refusal in the original release seam; preserve older rejection cases"
     },
     {
       "path": "tests/packages/test_cross_package.py",
@@ -3132,6 +3138,11 @@
         "t05-a-affected-t04-claims.log"
       ],
       "effect": "existing modify path gains precise T06 owner; original shared fixture, no new runtime behavior"
+    },
+    "release_fixture_dependency": {
+      "path": "tests/packages/test_build.py",
+      "evidence": "4faa63b:test_build.py:17–35 literal prior compatibility/release expectations; direct producer-consumer of approved1.4.0 manifest",
+      "scope": "no package runtime feature change or broad test rewrite"
     }
   }
 }
