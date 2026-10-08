@@ -67,6 +67,10 @@ G4 原小预算回归、容量拒绝/四 archive 邻居、audit/hash/cross-run �
 
 G4 原因探针17/21确认 scripted-carrier actor 与 Controller 不同：observe/prepare receipt writer 用 Controller namespace，既有 reader 用原 originating actor；native anchor 又把原 actor 强制与 Controller 相等。精确追加 `workflow_control_git.verify_review_native_anchor` 与现有五输出，Progress 的 observe/preflight/commit_review_start/read_review_start_result 连贯匹配原 CAS prepare/observe 和原已验证 handoff actor，不信客户端自述，不动 generic Controller receipts、角色/来源/hash/停止 guard。18真实 integration diff 错用旧 baseline：只补原已验证 integration_target_head 为 expected_target_head 缺失时的基准，不加排除规则。22查明旧 native:dispatcher 有 activated recovery 停止事实却无原 business accepted owner；不得伪标旧业务接受，恢复结束权限语义仍 pending。Subject 与 attached cause 待实际探针。
 
+G4 后续实际原因：24 closed-docs 原公开全恢复85.61s通过，原actor/CAS/anchor/closure均到达。22确认 native_refs 是注册/停止事实集合，native_owner_refs 合同只要求其子集；freeze consumer 仅对原有效 activated recovery 明确退役的已停止原 dispatcher 省略 accepted-owner，保留注册事实和旧角色 finalize 拒绝，其他缺 owner 照拒绝。26已走原D2交付/Stage4 transfer与四腐坏拒绝；额外 post-transfer 断言属于另一 adapter 身份先拒绝，已移除，最终正式 PASS 待补。
+
+27实际 subject 274,367B，重复 dispatch.acceptance 48,768B；stage_subject_value/read_active_owner 仅复用既有 accepted body-ref，恢复后核原 sealed digest，预计体积225,821B待公开验证。28真实 ledger cause 为 Ticket check snapshot scope differs：`discussion_core/workflow_control.py:GIT_BACKED_ACTIONS` 缺 ticket-check/local-review/ticket-accept/review-applicability，原已激活 ledger 绕过既有 Git snapshot/native/CAS消费者。精确追加此源和现有五生成映射，只接回原 verified_transition；不新增动作/支持路线/ledger初始化。修复后原ledger原流程与真实拒绝邻居仍必验。全部临时 observer 已退出源码，原未知不重标通过；最终 canonical/check/独立局部审查/全量 gate 仍必做。
+
 ## 验证顺序与交付
 
 1. 每组先选择通过项目 runner 的最小反馈命令，证明合法输入和目标失败确实可达；准备失败先修合法基线，避免反复跑长模块寻找同一输入错误。

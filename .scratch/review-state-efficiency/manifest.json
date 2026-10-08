@@ -221,7 +221,7 @@
       "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。 T06 attempt17（35.26s）证明第二次prepare替换最新txn后，原已activated authority被readiness消费者误拒。仅核现有有界原activated transaction/control receipt与当前原Control authority一致性，保留predecessor/contract/baseline、缺失/篡改/foreign/未激活拒绝；不新增机制、格式或限额。 T06 attempt23（35.87s）合法第二次activated后原B scope projection缺fullowner证明；保持既有shape/预算及pending事务事实，从原已提交root/control证明产生有限execution_authority事实并核原checkpoint投影，缺proof/自报JSON不授ready，新pending不授B新派发。不导出history、不新flag/服务/hydrate。",
       "remaining_scope": "Preserve reviewed core; exclude deferred B. T06 only repairs consumed_scope_readiness for original accepted activation during later pending revision, using bounded original transaction/Control proof. No GC/quota/reserve/log-spool/physical ledger accounting or extreme-scale work.",
       "t06_g2_remaining_scope": "G2 only Progress.save/prepare_review_archive current lookup for original valid unconverted runner11 outer; let existing save_current_record validate initial CAS; do not relax Store legacy guard. Existing five canonical outputs regenerated.",
-      "t06_g4_remaining_scope": "G4 archive_action production ordinary intent measurement/precheck before reserve and no-effect capacity rejection only before external dispatch. Other subject/scope/native-owner/attached/closed-docs production fixes remain unknown until exact public probes; temporary bounded diagnostics must be removed, no guard/cap expansion. Confirmed actor producer repair only review_activity observe/preflight and commit_review_start/read_review_start_result: namespace original verified originating actor, generic Controller receipts unchanged. Confirmed integration review diff baseline expected_target_head then verified integration_target_head then original baseline, no added exclusions."
+      "t06_g4_remaining_scope": "G4 archive_action production ordinary intent measurement/precheck before reserve and no-effect capacity rejection only before external dispatch. Other subject/scope/native-owner/attached/closed-docs production fixes remain unknown until exact public probes; temporary bounded diagnostics must be removed, no guard/cap expansion. Confirmed actor producer repair only review_activity observe/preflight and commit_review_start/read_review_start_result: namespace original verified originating actor, generic Controller receipts unchanged. Confirmed integration review diff baseline expected_target_head then verified integration_target_head then original baseline, no added exclusions. Confirmed native registry/owner subset consumer: freeze_implementation_native_owners omits accepted-owner only for exact replaced original dispatcher with valid activated recovery stop proof and truly accepted current replacement, retains original native_refs and denies old finalize; all other missing owners still fail. Confirmed subject duplication: stage_subject_value/read_active_owner reuse existing accepted body-ref only for identical dispatch.acceptance, restore and verify original sealed dispatch digest/ref/hash/owner."
     },
     {
       "path": "src/shared/scripts/workflow_control.py",
@@ -576,7 +576,8 @@
         "skills/solution-design/scripts/discussion_core/workflow_control.py"
       ],
       "implementation_note": "T01 ledger B 准备读取：原 stage subject 的 prepare intent、scope/基线、原 ledger pointer/revision 有限读取及 HEAD 漂移拒绝。正常邻居仅证明 B 守卫与 ledger start-dispatch；baseline 已有 full-topic entry equality 导致后续 verify_launch entry_changed，保持明确拒绝，不宣称完整 ledger Stage3 launch 受支持。不得忽略 topic 权威字段、重采 expected 或扩展延期初始化。 T02：现有 _bounded_workflow_control 的无记录 context schema6 默认值须同步 schema7；保持原受支持 default/CAS/身份守卫，不扩展 Stage2/Phase0 初始化或正常 Stage3 launch。 T05 required ledger archive-current consumer: retain original generation and receipts; verify bounded references on original read/projection paths and commit only through existing ledger lock, transition, record revision and pointer CAS. No deferred initialization or foreground ingress expansion.",
-      "remaining_scope": "Preserve accepted core source; isolate deferred uncommitted T05-B before build/review. No GC, whole-run quota/reserve/log-spool/physical ledger-accounting or extreme-scale additions in this delivery."
+      "remaining_scope": "Preserve accepted core source; isolate deferred uncommitted T05-B before build/review. No GC, whole-run quota/reserve/log-spool/physical ledger-accounting or extreme-scale additions in this delivery.",
+      "t06_g4_remaining_scope": "Confirmed original attached revision ticket-check missing Git-backed verification: GIT_BACKED_ACTIONS routes existing ticket-check/local-review/ticket-accept/review-applicability through original _git.verified_transition and its snapshot/CAS/native/source guards. No new action/route/initialization, no pure authority bypass."
     },
     {
       "path": "src/stages/guided-implementation/scripts/workflow.py",
@@ -3343,7 +3344,8 @@
           "tests/runtime/test_layered_review.py",
           "tests/runtime/test_plan_revision_progress.py",
           "tests/runtime/test_attached_flow_progress.py",
-          "src/shared/scripts/workflow_control_git.py"
+          "src/shared/scripts/workflow_control_git.py",
+          "src/shared/scripts/discussion_core/workflow_control.py"
         ],
         "evidence": [
           "t06-g4/01-capacity-red.receipt.json",
@@ -3361,7 +3363,10 @@
           "21-closed-docs-actor-scope.receipt.json"
         ],
         "scope_source_evidence": "18-integration-scope-probe: actual residual impl.py/other-task.md, expected target absent, original integration target already Controller-verified",
-        "native_retirement_unknown": "22 exact old native:dispatcher stopped by activated recovery but no original accepted business owner; no fake acceptance, permission model remains pending"
+        "native_retirement_unknown": "22 exact old native:dispatcher stopped by activated recovery but no original accepted business owner; no fake acceptance, permission model remains pending",
+        "ledger_source_evidence": "28 exact ProtocolError Ticket check snapshot scope differs; actual activated ledger/actor/control pointer preserved, action skipped _git snapshot because GIT_BACKED_ACTIONS omitted original four review actions",
+        "native_source_evidence": "22 exact old stopped dispatcher without business owner;26 original D2 delivery/Stage4 transfer and4 corruption guards reached; invalid extra post-transfer assertion removed, final formal PASS pending",
+        "subject_source_evidence": "27 actual post-compaction subject274367B: same accepted body repeated in dispatch.acceptance48768B versus accepted ref222B; reuse original immutable body and digest, cap stays262144"
       }
     }
   }
