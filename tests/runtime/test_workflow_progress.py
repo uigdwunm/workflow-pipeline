@@ -855,7 +855,7 @@ class ProgressTests(transfer.StageTransferTests):
         if operation == 'start' and data['handoff'].get('stage', 0) >= 2 and 'native_host' not in data:
             carrier = data['handoff']['entry']['host']['thread_id']
             data = {**data, 'native_host': {'adapter': 'app-server', 'snapshot': {
-                'instance': (progress.read_record(self.checkpoint).get('transport') or {}).get('instance', 'fixture-host'),
+                'instance': (progress.read_projection(self.checkpoint, projection='identity').record.get('transport') or {}).get('instance', 'fixture-host'),
                 'carrier_thread': carrier, 'sequence': 0, 'events': [],
                 'pages': [{'request': {'method': 'thread/list', 'params': {
                     'ancestorThreadId': carrier, 'archived': archived,
@@ -894,7 +894,10 @@ class ProgressTests(transfer.StageTransferTests):
                                               "outcome": "completed"}
         if result is not None:
             value["result"] = result
-        if status == 'stopped':
+        if status == 'stopped' and saved.get('native_host', {}).get('adapter') == 'collaboration':
+            value['lifecycle'] = None  # No RPC proof; the collaboration caller consumes its native inventory.
+        if (status == 'stopped' and saved.get('native_host', {}).get('adapter') == 'app-server' and
+                ref == saved['control']['context']['carrier']['ref']):
             context = saved['control']['context']
             threads = [{'id':ref, 'status':{'type':'idle'}}]
             for execution in (context.get('handoff_progress') or {}).get('executions', []):
@@ -925,7 +928,20 @@ class ProgressTests(transfer.StageTransferTests):
             stopped = {item['agent_ref'] for item in executions if item.get('stopped') is True}
             if checkpoint.get('review_claims'):
                 stopped.update(claim['reviewer_ref'] for claim in owner.read_review_claims().values())
+            for slot in progress.retired_review_slots(owner.state).values():
+                receipt = progress.state_store.open_store(self.checkpoint).read_evidence(
+                    slot['receipt_refs'][-1], run_id=slot['receipt_refs'][-1]['run_id'])['value']['native_review_stop']
+                if receipt['status'] == 'stopped' and receipt['ref'] == slot['ref']:
+                    stopped.add(slot['ref'])
             missing = owner.native_refs() - {thread['id'] for thread in threads}
+            recovery = checkpoint.get('recovery')
+            if recovery and recovery['state'] == 'ready':
+                prepared = recovery['receipts'][-1]
+                self.assertEqual(prepared['status'], 'ready')
+                self.assertIs(prepared['raw']['write_authority'], False)
+                if prepared['ref'] in missing:
+                    threads.append({'id': prepared['ref'], 'status': {'type': 'idle'}})
+                    missing.remove(prepared['ref'])
             self.assertLessEqual(missing, stopped, 'fixture requires original stop proof for archived roles')
             threads.extend({'id': identity, 'status': {'type': 'idle'}} for identity in sorted(missing))
             carrier = progress.read_projection(self.checkpoint, projection='identity').record.get('sessions', {}).get('stage' + str(saved['stage'])) or saved['handoff']['expected_entry']['actor']['thread_id']
@@ -1717,12 +1733,56 @@ class ProgressTests(transfer.StageTransferTests):
                 self.invoke('review-activity',request)
                 slots[axis] = request
             rounds.append(slots)
+        # The current CAS names exact compact original review evidence. Damage
+        # to that source must fail before any checkpoint or authority mutation.
+        registered = self.state()['retired_review_refs']
+        self.assertTrue(set(rounds[0][axis]['action_id'] for axis in ('standards', 'spec')) <= set(registered))
+        action_id = rounds[0]['standards']['action_id']
+        reference = registered[action_id]
+        store = progress.state_store.StateStore(self.checkpoint)
+        path = store._path(reference['sha256'])
+        original, before = path.read_bytes(), self.checkpoint.read_bytes()
+        for content in (None, b'corrupt original retired reviewer'):
+            with self.subTest(retired_source=content):
+                try:
+                    if content is None:
+                        path.unlink()
+                    else:
+                        path.write_bytes(content)
+                    with self.assertRaises(progress.entry.PreparationError) as denied:
+                        self.invoke('inspect')
+                    self.assertEqual(denied.exception.code,
+                        'state_object_missing' if content is None else 'state_object_corrupt')
+                    self.assertEqual(self.checkpoint.read_bytes(), before)
+                finally:
+                    path.write_bytes(original)
+        for mutation in ('foreign-run', 'different-action', 'malformed-source'):
+            with self.subTest(retired_identity=mutation), progress.record_lock(self.checkpoint), \
+                    progress.state_store.operation_store(self.checkpoint) as measured:
+                owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+                if mutation == 'foreign-run':
+                    owner.state['retired_review_refs'][action_id] = {**reference, 'run_id': 'foreign-run'}
+                elif mutation == 'different-action':
+                    owner.state['retired_review_refs']['different-action'] = owner.state['retired_review_refs'].pop(action_id)
+                else:
+                    body = measured.read_evidence(reference, run_id=reference['run_id'])['value']
+                    body['review_slot']['prepare_ref']['run_id'] = 'foreign-run'
+                    with measured.measure_writes():
+                        owner.state['retired_review_refs'][action_id] = measured.write_object(reference['run_id'], 'evidence', body)
+                        with self.assertRaises(progress.entry.PreparationError):
+                            progress.retired_review_slots(owner.state)
+                    self.assertEqual(self.checkpoint.read_bytes(), before)
+                    continue
+                with self.assertRaises(progress.entry.PreparationError):
+                    progress.retired_review_slots(owner.state)
+                self.assertEqual(self.checkpoint.read_bytes(), before)
         self.invoke('pause')
         observation = self.observation('stopped','result',ref='native:dispatcher')
         snapshot = observation['lifecycle']
         for request in rounds[0].values():
             ref = request['receipt']['ref']
-            snapshot['pages'][0]['response']['data'].append({'id':ref,'status':{'type':'idle'}})
+            if ref not in {thread['id'] for thread in snapshot['pages'][0]['response']['data']}:
+                snapshot['pages'][0]['response']['data'].append({'id':ref,'status':{'type':'idle'}})
             snapshot['events'].append({'method':'item/completed','params':{'threadId':snapshot['carrier_thread'],
                 'item':{'type':'subAgentActivity','id':'create-'+ref,'kind':'started','agentPath':ref,'agentThreadId':ref}}})
         self.assertEqual(self.invoke('observe',observation)['status'],'paused')
@@ -2132,9 +2192,12 @@ class ProgressTests(transfer.StageTransferTests):
                 self.assertEqual((prepared.get('next_action') or {}).get('operation'), 'invoke-review', prepared)
                 scope = prepared['next_action']['review_scope']
                 response = 'review-stopped:' + identity
+                native_host = self.state()['native_host']
+                reviewer = ('native:reviewer:' + axis if native_host['adapter'] == 'app-server' else
+                    native_host['controller_ref'] + '/reviewer_' + hashlib.sha256(axis.encode()).hexdigest()[:16])
                 observed = self.invoke('review-activity', {'operation': 'observe', 'axis': axis, 'candidate': candidate,
                     'actor_ref': actor_ref, 'action_id': prepared['next_action']['action_id'], 'receipt': {'adapter': 'fixture-native',
-                    'call_ref': 'review:' + identity, 'response_ref': response, 'status': 'stopped', 'ref': 'native:reviewer:' + axis,
+                    'call_ref': 'review:' + identity, 'response_ref': response, 'status': 'stopped', 'ref': reviewer,
                     'raw': {'review': {'status': 'accepted', 'findings': [], 'checks': checks,
                         **{key: scope[key] for key in ('read_paths', 'ac_refs', 'dependency_claim_ids', 'requirement_refs')},
                         'review_scope': scope}}}})

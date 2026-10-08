@@ -1195,10 +1195,9 @@ def verify_stored_review_coverage(view, progress, packages, run_id):
             certificate['certificate_digest'] == state_store.entry.digest({key: value for key, value in certificate.items() if key != 'certificate_digest'}),
             'accepted coverage certificate digest changed')
     claims, applications = {}, {}
-    repository = Path(progress['binding']['worktree'])
-    # Closure may retain only the surviving primary repository after Flow removal.
-    if not repository.exists():
-        repository = Path(progress['binding']['repository'])
+    # Committed candidate trees belong to the original shared Git objects.
+    # A recreated Flow directory is not a new source of accepted evidence.
+    repository = Path(progress['binding']['repository'])
     for axis, claim_view in certificate['claims'].items():
         claim = store.read_evidence(claim_view['claim_ref'], run_id=run_id)['value']['review_claim']
         review_evidence.validate_claim(claim)

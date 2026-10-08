@@ -1355,7 +1355,12 @@
         }
       ],
       "generated_outputs": [],
-      "implementation_note": "T02 三层交付证据、plan-v2 与同 C Stage3→4 消费契约的必经 fixture 适配；保持原身份、停止及交付门禁反例。 T06实证依赖t03-21：179–192 input_for(3)仍固定inline schema_version1且缺behavior_slices，现行v2 catalog在新T03逻辑前拒绝；只适配新运行fixture生产者，原legacy拒绝回归保留。 T06新运行mark/accept路径经原公有C/B/Git allocation与local/Ticket claim接线；只在测试temporary repo按原基线/原已接受fingerprints恢复尚无owner的owned bytes、保留HEAD/index/candidate，再在真实write grant下写回候选原bytes/modes并accept delta。保护planning/unrelated/unknown/既有accepted bytes。unused finalize_candidate与pure-control fixture_accepted_execution继续不改；不append权限或弱化生产拒绝。"
+      "implementation_note": "T02 三层交付证据、plan-v2 与同 C Stage3→4 消费契约的必经 fixture 适配；保持原身份、停止及交付门禁反例。 T06实证依赖t03-21：179–192 input_for(3)仍固定inline schema_version1且缺behavior_slices，现行v2 catalog在新T03逻辑前拒绝；只适配新运行fixture生产者，原legacy拒绝回归保留。 T06新运行mark/accept路径经原公有C/B/Git allocation与local/Ticket claim接线；只在测试temporary repo按原基线/原已接受fingerprints恢复尚无owner的owned bytes、保留HEAD/index/candidate，再在真实write grant下写回候选原bytes/modes并accept delta。保护planning/unrelated/unknown/既有accepted bytes。unused finalize_candidate与pure-control fixture_accepted_execution继续不改；不append权限或弱化生产拒绝。",
+      "t06_final_fixture_remaining_scope": {
+        "group": "plan-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/plan-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_unified_recovery.py",
@@ -1367,7 +1372,12 @@
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "owner-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/owner-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_discussion_protocol.py",
@@ -1379,7 +1389,12 @@
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "plan-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/plan-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_review_first_validation.py",
@@ -1410,7 +1425,12 @@
       "symbols": [],
       "generated_outputs": [],
       "t06_g1_remaining_scope": "inline_plan still emits schema1/no slices; positive mutations need slices, activated revision parses v1, and unbound new_active_flow calls absent instance helper. Original dispatch assertions unchanged.",
-      "t06_g2_remaining_scope": "G2 only test_fake_accepted_ref_cannot_make_git_candidate_ready source current-owner/CAS fixture after G1 lawful plan baseline; preserve fake-accepted rejection and no-write evidence."
+      "t06_g2_remaining_scope": "G2 only test_fake_accepted_ref_cannot_make_git_candidate_ready source current-owner/CAS fixture after G1 lawful plan baseline; preserve fake-accepted rejection and no-write evidence.",
+      "t06_final_fixture_remaining_scope": {
+        "group": "plan-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/plan-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_execution_plans.py",
@@ -1457,7 +1477,12 @@
       "implementation_note": "T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal.",
       "t06_g1_remaining_scope": "new_active_flow shared by unbound dispatch fixture needs explicit shared helper invocation; inline_revision_b_delivery new helper must be included in existing slice; do not alter revision business/refusal assertions.",
       "t06_g2_remaining_scope": "G3 only inline_revision_b_delivery current real local/Ticket acceptance and early checks before candidate-ready; G1 version/input identity assertions remain. Do not construct fake acceptance or weaken review guards. Original same-test activated-to-prepared tamper now targets exact pinned original predecessor object, rejects hash corruption without checkpoint write, restores in finally; integrity claim only, no invented semantic CAS pass.",
-      "t06_g4_remaining_scope": "G4 original ticket-comments full integration recovery: temporary probe actual compacted subject wrapper/top/nested sizes at production serialization guard; no guard/cap change or invented semantic authority."
+      "t06_g4_remaining_scope": "G4 original ticket-comments full integration recovery: temporary probe actual compacted subject wrapper/top/nested sizes at production serialization guard; no guard/cap change or invented semantic authority.",
+      "t06_final_fixture_remaining_scope": {
+        "group": "plan-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/plan-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_workflow_control_git.py",
@@ -1503,7 +1528,12 @@
       "reason": "新增真实生产边界行为回归",
       "exists_at_design": false,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "native-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/native-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_layered_review.py",
@@ -1545,7 +1575,7 @@
     },
     {
       "path": "tests/runtime/test_accepted_query_retry.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1553,7 +1583,12 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "owner-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/owner-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_attached_design_recovery.py",
@@ -1596,11 +1631,16 @@
       "implementation_note": "T01 ledger B 准备读取：原 stage subject 的 prepare intent、scope/基线、原 ledger pointer/revision 有限读取及 HEAD 漂移拒绝。正常邻居仅证明 B 守卫与 ledger start-dispatch；baseline 已有 full-topic entry equality 导致后续 verify_launch entry_changed，保持明确拒绝，不宣称完整 ledger Stage3 launch 受支持。不得忽略 topic 权威字段、重采 expected 或扩展延期初始化。",
       "t06_g1_remaining_scope": "write_planning_spec uses v2 ScopeProgress producer with v1 fence. Only correct valid fence at existing planning seam; no attached initialization/ingress feature expansion.",
       "t06_g2_remaining_scope": "G3 only test_attached_plan_revision_uses_original_ledger_record original candidate-ready setup after actual ledger activation/execution: real applicable local/Ticket acceptance and early checks. Evidence t06-g1/22-attached-revision-fixed.log at line623 review_incomplete after the corrected v2 consumer. Preserve original ledger/CAS/replay/scope assertions and unsupported initialization guards.",
-      "t06_g4_remaining_scope": "Temporary exact-boundary probe in original attached ledger revision test only: capture original ticket-check adapter exception cause/actual actor/request/version/authority, preserve original ledger/CAS/execution/blocked state. Remove observer before freeze; production seam changes require confirmed cause and recorded scope."
+      "t06_g4_remaining_scope": "Temporary exact-boundary probe in original attached ledger revision test only: capture original ticket-check adapter exception cause/actual actor/request/version/authority, preserve original ledger/CAS/execution/blocked state. Remove observer before freeze; production seam changes require confirmed cause and recorded scope.",
+      "t06_final_fixture_remaining_scope": {
+        "group": "owner-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/owner-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_business_recovery.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1608,7 +1648,12 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "owner-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/owner-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_collaboration_lifecycle.py",
@@ -1634,7 +1679,12 @@
           "status": "existing-verified"
         }
       ],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "native-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/native-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_dedicated_stage.py",
@@ -1668,7 +1718,7 @@
     },
     {
       "path": "tests/runtime/test_design_recovery.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1676,7 +1726,12 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "native-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/native-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_discussion_project_identity.py",
@@ -1692,7 +1747,7 @@
     },
     {
       "path": "tests/runtime/test_dispatch_recovery.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1700,7 +1755,12 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "plan-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/plan-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_entry_prepare.py",
@@ -1716,7 +1776,7 @@
     },
     {
       "path": "tests/runtime/test_entry_recovery_chain.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1724,11 +1784,16 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "owner-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/owner-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_foreground_host.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1736,7 +1801,12 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "native-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/native-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_git_identity_reads.py",
@@ -1814,7 +1884,7 @@
     },
     {
       "path": "tests/runtime/test_publication_progress.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1822,7 +1892,12 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "owner-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/owner-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_publication_recovery.py",
@@ -1850,7 +1925,7 @@
     },
     {
       "path": "tests/runtime/test_requirement_delivery.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1858,7 +1933,12 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "plan-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/plan-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_requirement_prepare.py",
@@ -1950,7 +2030,12 @@
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": [],
-      "implementation_note": "T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal."
+      "implementation_note": "T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal.",
+      "t06_final_fixture_remaining_scope": {
+        "group": "owner-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/owner-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_stage_scope_runner.py",
@@ -1976,11 +2061,16 @@
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": [],
-      "t06_g1_remaining_scope": "setUp adds AP1-01 to v2 ScopeProgress plan but writes v1 fence and omits slice. Exact direct producer dependency; only setUp valid v2 catalog/slice, preserve original manifest/seal/ceiling assertions."
+      "t06_g1_remaining_scope": "setUp adds AP1-01 to v2 ScopeProgress plan but writes v1 fence and omits slice. Exact direct producer dependency; only setUp valid v2 catalog/slice, preserve original manifest/seal/ceiling assertions.",
+      "t06_final_fixture_remaining_scope": {
+        "group": "plan-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/plan-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_stage_start_verification.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1988,7 +2078,12 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_final_fixture_remaining_scope": {
+        "group": "owner-fixtures",
+        "scope_ref": "plan_revision/execution_revision/final_repair_fixture_scope/groups/owner-fixtures",
+        "writer_rule": "Only the original author after root serial dispatch."
+      }
     },
     {
       "path": "tests/runtime/test_supervision_protocol.py",
@@ -3416,6 +3511,76 @@
           "t06-full/02-full-validation.receipt.json"
         ],
         "scope": "Committed review fingerprints read original accepted binding.repository shared Git objects, not replacement Flow directory. Exact one original archived-review identity/proof/census/pending probe before production retirement/native_refs fix; bounded original identities and refs only, no history scan/grant or caps. Shared tests invoke reads actual identity/transport projection, observation constructs correct admitted adapter response preserving all original identities/stop/causal proof, complete_fixture_local_reviews new role refs use original adapter namespace only. Original two WF failing cases and actual shared consumers required; other test files remain readonly until exact subsequent scope."
+      },
+      "final_repair_foundation_result": {
+        "source_base": "680d1e7ff65c3c45613f811c26cd0b5bb634ccdf",
+        "source_snapshot": "t06-final-foundation/source-snapshot.json",
+        "source_snapshot_sha256": "6c3683a0645c307c5896e26edfffb1e940392adb726d32622e7fc12d782fb60c",
+        "patch_sha256": "857b1aa482a666e00c9d785792108ceaf6b8dba95810e14fd259a1e285381645",
+        "evidence": "t06-final-foundation/command-index.json",
+        "result": "Original completion, admitted adapter, retired-review source/stop negatives and maximum8x8MiB PASS; namespace recovery11 still ERROR at readonly archived-slot consumer. Independent increment pending; full02 remains failed."
+      },
+      "final_repair_fixture_scope": {
+        "groups": {
+          "plan-fixtures": {
+            "author": "/root/t06_g1",
+            "paths": [
+              "tests/runtime/test_plan_revision_progress.py",
+              "tests/runtime/test_plan_driven_dispatch.py",
+              "tests/runtime/test_dispatch_recovery.py",
+              "tests/runtime/test_requirement_delivery.py",
+              "tests/runtime/test_discussion_protocol.py",
+              "tests/runtime/test_stage_transfer.py",
+              "tests/runtime/test_stage_scope_transfer.py"
+            ],
+            "reports": [
+              "plan-coverage.md",
+              "plan-driven-coverage-appendix.md",
+              "plan-owner-native.md",
+              "plan-schema-scope.md",
+              "stage-scope-allocation.md"
+            ],
+            "scope": "Original public plan/local/Ticket positive producers; exact current and archived execution/slot/proof refs; current schema7 positives only. Preserve independent behavior slices, original IDs/ownership/read witness, stale/unowned/legacy/protected-path/source refusals. Late-bind actual short feedback before changing expectation; no runtime changes."
+          },
+          "owner-fixtures": {
+            "author": "/root/t06_g2",
+            "paths": [
+              "tests/runtime/test_attached_flow_progress.py",
+              "tests/runtime/test_publication_progress.py",
+              "tests/runtime/test_stage_scope_progress.py",
+              "tests/runtime/test_accepted_query_retry.py",
+              "tests/runtime/test_business_recovery.py",
+              "tests/runtime/test_entry_recovery_chain.py",
+              "tests/runtime/test_unified_recovery.py",
+              "tests/runtime/test_stage_start_verification.py"
+            ],
+            "reports": [
+              "attached-owner.md",
+              "owner-faults.md",
+              "stage-start-owner.md"
+            ],
+            "scope": "Original full owner and exact saved transaction proof consumers; original CAS pre/post fault windows and callback arity; actual outer identity/transport. Reuse active Phase, separate only top-level reading telemetry, preserve full business equality/no-effect/later-authority/legacy/source guards. No header rewind, direct control JSON or new Phase/runtime route."
+          },
+          "native-fixtures": {
+            "author": "/root/t06_g4",
+            "paths": [
+              "tests/runtime/test_collaboration_lifecycle.py",
+              "tests/runtime/test_foreground_host.py",
+              "tests/runtime/test_design_recovery.py",
+              "tests/runtime/test_bounded_progress.py"
+            ],
+            "reports": [
+              "collaboration-native.md",
+              "foreground-native.md",
+              "design-native.md",
+              "bounded-native.md",
+              "plan-bounded.md"
+            ],
+            "scope": "Original finite owner/allocation/proof consumers and admitted adapter causal census/stop; original current real-pipe producer and exact no-effect fault source; stable distinct second business allocation, actual complete semantic review, serialized real subject overflow probe. Keep all original role IDs, stop/unknown/authority/hash/scope/EOF/cancel/owned worker cleanup negatives. No deadline increase without actual cause, no runtime/runner changes. Foundation11 confirms final_recovery_with_native_retirement must resolve original archived first-slice rather than current allocations."
+          }
+        },
+        "rule": "Diagnosed original test dependencies only, serialized original authors; root sole planning/Git owner. Current foundation source frozen and reviewed by original reviewer while next distinct fixtures may run. No new Ticket/ADR/platform, caps, routes, legacy migration or deferred features. Final full gate mandatory after repairs.",
+        "basis_candidate": "81e61f0b120dbc4e13cdbe7fca1c02af1a0fc9bb"
       }
     }
   }

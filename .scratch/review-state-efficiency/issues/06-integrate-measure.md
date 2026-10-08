@@ -41,7 +41,9 @@ Execution rules: ../execution-policy.md
 
 优先定位 G1/G2 的共同入口并收敛合法基线，再处理其消费者；G4 可独立先诊断，不能预设为夹具。相互独立的只读诊断按需并行；同文件/共享入口只有一个写入者，紧密依赖合组或串行。同组固定实现者和独立 reviewer，findings 回原上下文修复，稳定后检查累计影响；每个补丁不新建任务或完整报告。
 
-## 当前修复索引
+## 历史修复索引（保留原候选来源）
+
+以下保留原候选时的结果与未知项，不作为当前派发指令；已关闭项不重跑。当前范围见“验证顺序与交付”，活动作者、runner 和下一步只由唯一管理记录维护。
 
 G1：原失败日志 2258/3499/867/306/4343/504。已确认正输入 v2 与旧 v1 消费者不一致、函数变更未同步 slices，以及 unbound fixture 调用缺少实例 helper。精确写范围为 `test_execution_plans.py`、`test_workflow_control_git.py`、`test_plan_driven_dispatch.py`、`test_plan_revision_progress.py`、`test_stage_scope_transfer.py` 的原 setUp、`test_attached_flow_progress.py` 的 write_planning_spec（均在 tests/runtime）。manifest 已记录实际依赖；不改生产源码。首次快反馈：`python3 scripts/run_tests.py --test-file tests/runtime/test_execution_plans.py --match test_sealed_scope_exposes_versioned_execution_plan_envelope --jobs 1 --nice 10`。随后覆盖原 malformed arrays、scope transfer ceiling、standalone plan、真实 Git diff、multifile dispatch 和 inline revision B delivery；发现其他失败先核归属。实现者 `/root/t06_g1`，独立审查和原执行证据待补。
 
@@ -76,6 +78,24 @@ G4 后续实际原因：24 closed-docs 原公开全恢复85.61s通过，原actor
 最终原完整验证 `81e61f0` 已正常结束：60 模块 39 PASS／21 FAIL，1423 项、46 failures／67 errors／1 skip，exit 1，6845.043 秒；625 tracked 输入前后完全一致。失败不是验收，原日志和字节保持。按已保存的原失败共同产生者继续修复，不新增 Ticket 或延期功能，也不能用局部绿替代最终全量。
 
 首个修复批次只涉及三条基础路径：原 `workflow_control_git.verify_stored_review_coverage` 的 committed Git 对象源选择；`workflow_progress.prepare_review_archive/native_refs` 先经一次旧 reviewer 原 action/archive/census/pending 探针确认的身份保留；原 `ProgressTests.invoke/observation/complete_fixture_local_reviews` 对有限身份、真实连接和 admitted adapter 的构造。保原保护范围、已注册角色、原停止／查询／CAS／来源证明、固定预算与实际拒绝。原作者唯一写入与 runner；其他失败测试先只读，后按已证明依赖登记必要适配。同源生成副本仅按原映射同步，完整候选必须重新通过 `validate.sh`。
+
+### 完整验证失败后的必要修复批次
+
+基础批次已冻结：原 Git committed 对象读取固定 repository；退役 reviewer 只以原 action→原 compact slot ref 保留登记，不恢复停止或验收权限；共享测试读取真实 finite transport 并按 admitted adapter 构造新审查者。18 路径冻结 snapshot SHA256 `6c3683a0645c307c5896e26edfffb1e940392adb726d32622e7fc12d782fb60c`、patch `857b1aa482a666e00c9d785792108ceaf6b8dba95810e14fd259a1e285381645`，原命令索引 `t06-final-foundation/command-index.json`（12,452B）。completion、实际 adapter、退役 stop/source 拒绝和最大八份8MiB报告通过；原 full02 仍失败，独立增量待审。
+
+ordinary／raw／physical 独立峰值为 1,110,259／2,097,152／2,393,053B，各自低于原固定限额；峰值不能相加。新登记沿同 operation 聚合普通读预算，Stage Subject 测写在物理落盘之前；没有新条数限额、读取豁免或旧运行迁移。
+
+下一阶段一次登记已证明的原测试依赖，按共同边界串行，不按失败模块新建任务：
+
+| 原作者 | 原测试路径（均在 tests/runtime） | 最小完成边界 |
+| --- | --- | --- |
+| G1 | plan_revision_progress、plan_driven_dispatch、dispatch_recovery、requirement_delivery、discussion_protocol、stage_transfer、stage_scope_transfer | 当前计划/schema7正输入、原local/Ticket前置、原精确allocation/归档proof消费者；保旧版本、witness、ownership和planning越权拒绝 |
+| G2 | attached_flow_progress、publication_progress、stage_scope_progress、accepted_query_retry、business_recovery、entry_recovery_chain、unified_recovery、stage_start_verification | 原owner／transaction proof／CAS故障点；不重复Phase、不回写或回退header，完整业务断言与原调用恢复不变 |
+| G4 | collaboration_lifecycle、foreground_host、design_recovery、bounded_progress | 原adapter／census／stop、原finite proof与real-pipe输入，真正subject溢出和新业务调用身份；不删除角色、fake stop、放宽deadline或预算 |
+
+原只读原因与selectors引用 `t06-final-diagnosis` 的各共同入口报告，manifest `final_repair_fixture_scope` 绑定精确路径。基础命令11已越过审查者namespace，在collaboration第474行读取退出current的first-slice失败：只能通过原精确归档slot/proof取数，不重标该用例PASS。每组先落实已确认的最小修改再跑原失败短反馈；下游未知按实际返回值定位，新增生产路径或公共合同另行诊断。共用入口仍唯一writer/runner，原reviewer可只读固定Git增量，整合后的完整gate必重跑。
+
+下列段落保留先前候选的检查时点；其中“待补”“下一位”属于该时点，不覆盖本批范围或唯一管理记录。
 
 G4 固定 `91c5a54` 原审查者已关闭恢复链 P2，Standards 0、localSpec 新发现 0；预留前写入修复的 `2bd9943` 增量结论保持。后续两测试文件的原 Git 29 项、pure 23 项和 peers 用例通过，原 test IDs 保留；冻结 patch SHA256 `0e4dd983dfa4434157f9a7cf22ce93021d0af53992c9a65e8fc513f014900db5`。真实初始包 pin、A/规划基线、bound dispatcher 接收及原 Task Ticket 检查、原 predecessor/保护路径均经已有产生者接线，生产代码和包未再改变。当前待该测试增量独立审查、固定候选完整验证和最终两轴交付覆盖，不能标记 T06 或原生现场完成。
 

@@ -1853,7 +1853,37 @@ def read_stage_transaction_result(state):
     return proof['result']
 
 
+def retired_review_slots(state):
+    """Read exact registered identities, without restoring historical review authority."""
+    references = state.get('retired_review_refs', {})
+    require(isinstance(references, dict), 'invalid_checkpoint', 'retired review identities must retain their original references')
+    store = state_store.open_store(state['checkpoint_path'])
+    current = store.open_current()
+    slots = {}
+    for action_id, reference in references.items():
+        require(isinstance(action_id, str) and bool(action_id) and isinstance(reference, dict),
+                'invalid_checkpoint', 'retired review registration changed its original action')
+        body = store.read_evidence(reference, run_id=current.run_id, maximum=state_store.SUBJECT_LIMIT)['value']
+        require(isinstance(body, dict) and set(body) == {'review_slot'} and isinstance(body['review_slot'], dict),
+                'state_object_corrupt', 'retired review registration lost its original slot')
+        slot = body['review_slot']
+        require(slot.get('action_id') == action_id and isinstance(slot.get('ref'), str) and bool(slot['ref']) and
+                isinstance(slot.get('prepare_ref'), dict) and isinstance(slot.get('receipt_refs'), list),
+                'state_object_corrupt', 'retired review registration changed its original native identity')
+        for source in [slot['prepare_ref'], *slot['receipt_refs']]:
+            require(isinstance(source, dict) and set(source) == {'run_id', 'kind', 'sha256', 'size'} and
+                    source['run_id'] == current.run_id and source['kind'] == 'evidence' and
+                    isinstance(source['sha256'], str) and re.fullmatch(r'[0-9a-f]{64}', source['sha256']) and
+                    type(source['size']) is int and 0 < source['size'] <= state_store.SUBJECT_LIMIT,
+                    'state_object_corrupt', 'retired review registration changed its original source')
+        slots[action_id] = slot
+    require(store.read_totals.get('ordinary_bytes', 0) <= state_store.READ_LIMIT,
+            'state_capacity', 'retired review identities exceed current read budget')
+    return slots
+
+
 def validate_saved_reviews(state):
+    retired_review_slots(state)
     store = state_store.open_store(state['checkpoint_path'])
     current = store.open_current()
     identities = set()
@@ -3052,12 +3082,29 @@ class Progress:
         state['allocations'] = {identity: slot for identity, slot in slots.items() if identity not in closed}
         return archives
 
-    def prepare_review_archive(self, *, maximum):
+    def prepare_review_archive(self, *, maximum, _prechecked=False):
         """Retire settled calls; current claims retain their original CAS evidence."""
         state = self.state
         claims = (state['control']['context'].get('handoff_progress') or {}).get('review_claims', {})
         store = state_store.open_store(self.path)
         current = store.open_current() if read_record(self.path).get('store_format') == state_store.FORMAT else None
+        if (current is not None and maximum > 0 and store._measured_writes is None and not _prechecked and
+                any(slot.get('stopped') is True and slot.get('business_settled') is True
+                    for group in [state.get('review_activity', {}), *state.get('review_history', [])]
+                    for slot in group.values())):
+            # Register every retired identity in the bounded current subject
+            # before materializing any of this compaction's immutable objects.
+            with store.measure_writes():
+                outer = copy.deepcopy(self.outer)
+                outer[KEY] = copy.deepcopy(state)
+                candidate = Progress(self.path, outer)
+                candidate.prepare_review_archive(maximum=maximum, _prechecked=True)
+                candidate.state['revision'] += 1
+                value = stage_subject_value(candidate.state)
+                size = len(state_store.encode({'format': state_store.FORMAT, 'run_id': current.run_id,
+                    'kind': 'subject', 'subject_id': state['stage_subject'], 'value': value}))
+                require(size <= state_store.SUBJECT_LIMIT, 'state_capacity',
+                        'retired review identity registry exceeds the current subject budget')
         archives, retained = {}, []
         for historical, group in [(False, state.get('review_activity', {})),
                                   *((True, group) for group in state.get('review_history', []))]:
@@ -3083,9 +3130,12 @@ class Progress:
                     facts['prepare_ref'] = store.write_object(current.run_id, 'evidence', slot['prepare'])
                     facts['receipt_refs'] = [store.write_object(current.run_id, 'evidence', {'native_review_stop': receipt})
                         for receipt in slot['receipts']]
+                    slot_ref = store.write_object(current.run_id, 'evidence', {'review_slot': facts})
+                    if slot.get('ref'):
+                        state.setdefault('retired_review_refs', {})[slot['action_id']] = slot_ref
                     archives[identity] = {'status': 'completed', 'stopped': True,
                         'axis': axis, 'stage_subject': state['stage_subject'],
-                        'review_slot_ref': store.write_object(current.run_id, 'evidence', {'review_slot': facts}),
+                        'review_slot_ref': slot_ref,
                         'slot_digest': entry.digest(slot),
                         **({'claim_ref': view['claim_ref']} if accepted else {})}
                 else:
@@ -3237,6 +3287,7 @@ class Progress:
             prior = read_design_predecessor(s['design_predecessor'], self.path)
             refs.add(prior['accepted']['role_ref'])
         refs.update(s.get('recovered_native_refs', []))
+        refs.update(slot['ref'] for slot in retired_review_slots(s).values())
         if s.get('stage', 0) < 2:
             return refs
         if s.get('dispatch') and s['dispatch'].get('request'):
@@ -4312,6 +4363,7 @@ class Progress:
                 if transaction.get('scope') == 'archive' and transaction.get('intent_persisted') is True
                 and transaction.get('reserve_action') and transaction.get('operation_id')},
             "native_finalizations": copy.deepcopy(old.get('native_finalizations', []) if old else []),
+            "retired_review_refs": copy.deepcopy((old or {}).get('retired_review_refs', {})),
             "native_host": native_host,
             "workspace_evidence": selection,
             "host_preflight": copy.deepcopy(data.get('native_host')),
@@ -5752,7 +5804,8 @@ class Progress:
                 and transaction.get('reserve_action') and transaction.get('operation_id')},
             retained_host_actions=[], phase_complete=facts['phase_complete'],
             stopped=False, continuation_intent={'kind': 'final-integration', 'reference': data['reference']},
-            review_activity={}, action=None, host_action=None,
+            review_activity={}, retired_review_refs=copy.deepcopy(s.get('retired_review_refs', {})),
+            action=None, host_action=None,
             recovered_native_refs=recovered_refs,
             host={'generation': s['host']['generation'] + 1, 'status': 'unknown', 'proof': None,
                   'query': None, 'seen': {}, 'calls': {}, 'last_stop': None})
