@@ -1259,14 +1259,22 @@
       "operation": "modify",
       "tickets": [
         "T01",
-        "T02"
+        "T02",
+        "T06"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
-      "symbols": [],
+      "symbols": [
+        {
+          "name": "ProgressTests.allocation_slot",
+          "status": "existing-verified",
+          "reason": "shared original fixture for LayeredReview/T04 archive consumers"
+        }
+      ],
       "generated_outputs": [],
-      "implementation_note": "T02 execution-plan-v2 的真实 Stage2 冻结与后续分层审查夹具依赖 planning_spec；保留 Stage2 两轴原权限，不将执行 accepted 当作局部审查。"
+      "implementation_note": "T02 execution-plan-v2 的真实 Stage2 冻结与后续分层审查夹具依赖 planning_spec；保留 Stage2 两轴原权限，不将执行 accepted 当作局部审查。 T06确认：Layered/T04父夹具allocation_slot在本文件53–60，仅read_subject导致真实归档后subject_missing（原t05-a-affected-layered-certificate/t04-claims日志）；允许该原helper用store精确归档引用读取，保留未知/损坏/跨run拒绝。其他helper仅实际已授权fixture依赖可适配，不扩展生产行为。",
+      "remaining_scope": "T06 exact original fixture helper compatibility only; no new mechanisms or weakening assertions"
     },
     {
       "path": "tests/runtime/test_workflow.py",
@@ -3109,6 +3117,16 @@
       "formal old/new efficiency comparison and new measurement/worksheet functionality"
     ],
     "deferred_wip_status": "preserved uncommitted and unaccepted; excluded before core build/review; this planning revision does not alter runtime files",
-    "historical_inventory": "entries/tickets record original ownership; remaining_scope and this revision constrain remaining work; frozen requirement unchanged"
+    "historical_inventory": "entries/tickets record original ownership; remaining_scope and this revision constrain remaining work; frozen requirement unchanged",
+    "confirmed_fixture_dependency": {
+      "path": "tests/runtime/test_workflow_progress.py",
+      "symbol": "ProgressTests.allocation_slot",
+      "source_head": "7b7b459b95720302d4539a29e13adbb0249e4096",
+      "evidence": [
+        "t05-a-affected-layered-certificate.log",
+        "t05-a-affected-t04-claims.log"
+      ],
+      "effect": "existing modify path gains precise T06 owner; original shared fixture, no new runtime behavior"
+    }
   }
 }
