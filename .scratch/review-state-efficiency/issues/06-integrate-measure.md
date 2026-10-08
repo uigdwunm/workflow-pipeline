@@ -63,6 +63,10 @@ G1 后续兼容小组：原 `test_workflow_control.py` 的 call/schema、v2 cata
 
 G4 开工边界：先连贯修原 archive ordinary intent 预检和 Store 合法 raw/metadata 计账，固定2.25MiB/16MiB/18.25MiB与hash/原调用/CAS，不改物理B。精确源码为 workflow_progress.archive_action 与 workflow_state_store 原计账/三raw读取路径；五包 canonical 映射不新增。小 Store 回归覆盖合法 raw 后普通 predecessor、跨 owner/dependency 普通总预算；原大报告8份8MiB仍必过。精确测试范围为 state_archive 的两小回归、workflow_progress 原容量/恢复、layered_review 原大报告/替换角色、plan_revision_progress 原 ticket-comments subject。Subject serialization 后字段尺寸、scope 真实 Git 差集、native 原角色 accepted/stop 来源、attached adapter/closed-docs 原错误 cause 均先捕一次真实公开探针，未知不先改语义或晋升新源码。临时诊断在冻结前移除，仅保有限事实引用；本组作者 `/root/t06_g4` 独占 writer/runner。
 
+G4 原小预算回归、容量拒绝/四 archive 邻居、audit/hash/cross-run 已通过；原8份8MiB报告71.92s通过，实测 metadata 1,120,008B、raw 2,097,152B、combined 2,383,333B，固定上限不变。原 evidence 02–15 保留各自 HEAD/WIP 来源，不重标最终候选。
+
+G4 原因探针17/21确认 scripted-carrier actor 与 Controller 不同：observe/prepare receipt writer 用 Controller namespace，既有 reader 用原 originating actor；native anchor 又把原 actor 强制与 Controller 相等。精确追加 `workflow_control_git.verify_review_native_anchor` 与现有五输出，Progress 的 observe/preflight/commit_review_start/read_review_start_result 连贯匹配原 CAS prepare/observe 和原已验证 handoff actor，不信客户端自述，不动 generic Controller receipts、角色/来源/hash/停止 guard。18真实 integration diff 错用旧 baseline：只补原已验证 integration_target_head 为 expected_target_head 缺失时的基准，不加排除规则。22查明旧 native:dispatcher 有 activated recovery 停止事实却无原 business accepted owner；不得伪标旧业务接受，恢复结束权限语义仍 pending。Subject 与 attached cause 待实际探针。
+
 ## 验证顺序与交付
 
 1. 每组先选择通过项目 runner 的最小反馈命令，证明合法输入和目标失败确实可达；准备失败先修合法基线，避免反复跑长模块寻找同一输入错误。

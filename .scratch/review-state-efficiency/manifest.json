@@ -221,7 +221,7 @@
       "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。 T06 attempt17（35.26s）证明第二次prepare替换最新txn后，原已activated authority被readiness消费者误拒。仅核现有有界原activated transaction/control receipt与当前原Control authority一致性，保留predecessor/contract/baseline、缺失/篡改/foreign/未激活拒绝；不新增机制、格式或限额。 T06 attempt23（35.87s）合法第二次activated后原B scope projection缺fullowner证明；保持既有shape/预算及pending事务事实，从原已提交root/control证明产生有限execution_authority事实并核原checkpoint投影，缺proof/自报JSON不授ready，新pending不授B新派发。不导出history、不新flag/服务/hydrate。",
       "remaining_scope": "Preserve reviewed core; exclude deferred B. T06 only repairs consumed_scope_readiness for original accepted activation during later pending revision, using bounded original transaction/Control proof. No GC/quota/reserve/log-spool/physical ledger accounting or extreme-scale work.",
       "t06_g2_remaining_scope": "G2 only Progress.save/prepare_review_archive current lookup for original valid unconverted runner11 outer; let existing save_current_record validate initial CAS; do not relax Store legacy guard. Existing five canonical outputs regenerated.",
-      "t06_g4_remaining_scope": "G4 archive_action production ordinary intent measurement/precheck before reserve and no-effect capacity rejection only before external dispatch. Other subject/scope/native-owner/attached/closed-docs production fixes remain unknown until exact public probes; temporary bounded diagnostics must be removed, no guard/cap expansion."
+      "t06_g4_remaining_scope": "G4 archive_action production ordinary intent measurement/precheck before reserve and no-effect capacity rejection only before external dispatch. Other subject/scope/native-owner/attached/closed-docs production fixes remain unknown until exact public probes; temporary bounded diagnostics must be removed, no guard/cap expansion. Confirmed actor producer repair only review_activity observe/preflight and commit_review_start/read_review_start_result: namespace original verified originating actor, generic Controller receipts unchanged. Confirmed integration review diff baseline expected_target_head then verified integration_target_head then original baseline, no added exclusions."
     },
     {
       "path": "src/shared/scripts/workflow_control.py",
@@ -308,7 +308,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ],
       "kind": "source",
       "reason": "指纹证据/短停Git分区一致性；T03原repair invocation的当前执行快照",
@@ -354,7 +355,8 @@
         "skills/problem-framing/scripts/workflow_control_git.py",
         "skills/solution-design/scripts/workflow_control_git.py"
       ],
-      "implementation_note": "T01 Stage4 typed delivery 精确引用在现有 Git adapter 验证；pure control仅有限事实机械校验，不引入FS或progress依赖。 T03在verified_transition中将repair-execution纳入原scope/overlap/verify_execution_start及新invocation Git snapshot，assign仍核其当前快照；只补原修复闭环，不扩展入口。 T05实际依赖晋升：有限当前execution/history和candidate/恢复/coverage消费者仍要求完整内嵌历史；须与归档产生者接线，读取原owner验证的有限引用并分页核验原claims/receipt/fingerprints，不扩大authority或固定容量。"
+      "implementation_note": "T01 Stage4 typed delivery 精确引用在现有 Git adapter 验证；pure control仅有限事实机械校验，不引入FS或progress依赖。 T03在verified_transition中将repair-execution纳入原scope/overlap/verify_execution_start及新invocation Git snapshot，assign仍核其当前快照；只补原修复闭环，不扩展入口。 T05实际依赖晋升：有限当前execution/history和candidate/恢复/coverage消费者仍要求完整内嵌历史；须与归档产生者接线，读取原owner验证的有限引用并分页核验原claims/receipt/fingerprints，不扩大authority或固定容量。",
+      "t06_g4_remaining_scope": "Confirmed scripted-carrier actor mismatch at verify_review_native_anchor: prepared actor incorrectly required equal Controller; consume only original CAS prepare proof and original verified handoff actor, not client self-report. Match actual originating prepare receipt namespace, preserve all candidate/scope/source/stopped/raw/hash guards. No role/grant expansion."
     },
     {
       "path": "src/shared/scripts/execution_plan.py",
@@ -2332,7 +2334,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2344,7 +2347,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2356,7 +2360,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2368,7 +2373,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2380,7 +2386,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -3335,7 +3342,8 @@
           "tests/runtime/test_workflow_progress.py",
           "tests/runtime/test_layered_review.py",
           "tests/runtime/test_plan_revision_progress.py",
-          "tests/runtime/test_attached_flow_progress.py"
+          "tests/runtime/test_attached_flow_progress.py",
+          "src/shared/scripts/workflow_control_git.py"
         ],
         "evidence": [
           "t06-g4/01-capacity-red.receipt.json",
@@ -3347,7 +3355,13 @@
         "known": "ordinary archive intent precheck and explicit raw/metadata accounting; original maximum report stays required",
         "unknown": "actual serialized subject culprit, actual integration diff, native finalization ref, attached adapter cause and closed-docs accept cause; one exact public probe each before changes",
         "generated": "five existing Store/progress canonical paths unchanged; T06 added to original five Store output ownership rows; existing package digests regenerate only",
-        "rule": "sole source/runner writer, no new Ticket/ADR/platform or cap/guard relaxation; exact further source seams documented from real cause"
+        "rule": "sole source/runner writer, no new Ticket/ADR/platform or cap/guard relaxation; exact further source seams documented from real cause",
+        "actor_source_evidence": [
+          "17-closed-docs-original-cause.receipt.json",
+          "21-closed-docs-actor-scope.receipt.json"
+        ],
+        "scope_source_evidence": "18-integration-scope-probe: actual residual impl.py/other-task.md, expected target absent, original integration target already Controller-verified",
+        "native_retirement_unknown": "22 exact old native:dispatcher stopped by activated recovery but no original accepted business owner; no fake acceptance, permission model remains pending"
       }
     }
   }
