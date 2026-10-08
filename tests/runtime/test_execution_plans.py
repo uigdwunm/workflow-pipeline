@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import test_stage_scope_progress as fixture
 import test_stage_scope_transfer as git_fixture
+import test_plan_revision_progress as revision_fixture
 import execution_plan
 
 
@@ -108,6 +109,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         plan["artifact_steps"] = [{"id": "ART-1", "path": "prompt.md", "operation": "add",
             "capability": "provide approved artifact", "approach": "write approved prompt",
             "verification_refs": [plan["verifications"][0]["id"]]}]
+        revision_fixture.PlanRevisionProgressTests.refresh_fixture_slices(plan)
         arguments = (scope, state["handoff"]["semantic"],
                      state["handoff"]["requirement_identity"])
         valid = execution_plan.collect_inline_plan(plan, *arguments, repository=str(flow.flow))
@@ -141,11 +143,12 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
                 candidate = case.planning_candidate()
                 source = case.flow.flow / "docs/spec.md"
                 body = source.read_text()
-                match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+                match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
                 plan = json.loads(match.group(1))
                 plan["artifact_steps"] = [{"id": "ART-1", "path": "prompt.md",
                     "operation": operation, "capability": "provide approved artifact",
                     "approach": "write approved prompt", "verification_refs": ["V1"]}]
+                revision_fixture.PlanRevisionProgressTests.refresh_fixture_slices(plan)
                 source.write_text(body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
                 case.flow.flow_git("add", "docs/spec.md")
                 case.flow.flow_git("commit", "-qm", "malformed artifact operation")
@@ -174,7 +177,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         envelope = authority["execution_plan"]
         self.assertEqual(set(envelope), {"schema_version", "catalog", "plan_digest",
             "contract_digest", "plan_commit", "sources", "original_scope_revision"})
-        self.assertEqual(envelope["schema_version"], 1)
+        self.assertEqual(envelope["schema_version"], 2)
         self.assertEqual(envelope["original_scope_revision"], authority["revision"])
         self.assertEqual(envelope["plan_commit"], authority["candidate_commit"])
         self.assertEqual(envelope["plan_digest"], envelope["catalog"]["plan_digest"])
@@ -210,7 +213,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         candidate = case.planning_candidate()
         path = case.flow.flow / "docs/spec.md"
         text = path.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", text, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", text, re.DOTALL)
         plan = json.loads(match.group(1))
         replacement = change(plan)
         updated = text[:match.start(1)] + replacement + text[match.end(1):]
@@ -272,7 +275,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         candidate = case.planning_candidate()
         path = case.flow.flow / "docs/spec.md"
         body = path.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["steps"][0]["target"].update(symbol=symbol, operation="modify")
         path.write_text(body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
@@ -377,7 +380,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
 
     def test_ticket_projection_protects_bytes_after_plan_in_any_language(self):
         prefix = b"# Ticket\nTicket ID: TASK-B\nPlan Version: 1\n**Blocked by:** None\n"
-        block = b"```execution-plan-v1\n{\"plan_version\":1}\n```\n"
+        block = b"```execution-plan-v2\n{\"plan_version\":1}\n```\n"
         tail = "## 后续行为\n- [ ] AC-2: 用户可见结果\n".encode()
         source = {"path": "docs/issues/ticket.md", "mode": "100644", "body": prefix + block + tail,
                   "sha256": "committed-document-identity"}
@@ -391,7 +394,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         prefix = (b"# Ticket\nTicket ID: TASK-B\nPlan Version: 1\n"
                   b"**What to build:** approved behavior\n**Blocked by:** None\n"
                   b"- [ ] AC-1: approved result\n")
-        block = b"```execution-plan-v1\n{\"plan_version\":1}\n```\n"
+        block = b"```execution-plan-v2\n{\"plan_version\":1}\n```\n"
         body = prefix + block + b"\n## Comments\nInitial implementation note.\n"
         source = {"path": "docs/issues/ticket.md", "mode": "100644", "body": body,
                   "sha256": "committed-document-identity"}
@@ -472,7 +475,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
                 baseline = case.git("rev-parse", "HEAD")
                 path = case.root / "docs/spec.md"
                 body = path.read_text()
-                match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+                match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
                 plan = json.loads(match.group(1))
                 plan["steps"][0]["target"] = {"path": target_path, "symbol": symbol,
                                                  "operation": "modify"}
@@ -489,19 +492,19 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
                                                       ("tests/test_impl.py", "add"))]
                 scope = {"baseline": baseline, "downstream": {"manifest": manifest}}
                 catalog = execution_plan.collect_execution_plan(str(case.root), candidate,
-                    ["docs/spec.md"], scope, {"path": "docs/requirement.md"})
+                    ["docs/spec.md"], scope, case.original["requirement_identity"])
                 self.assertEqual(catalog["tickets"][0]["plan"]["steps"][0]["target"]["symbol"], symbol)
                 if target_path == "impl.js":
                     plan["steps"][0]["approach"][-1] = "production-caller: impl.js:99"
                     committed = path.read_text()
-                    match = re.search(r"```execution-plan-v1\n(.*?)\n```", committed, re.DOTALL)
+                    match = re.search(r"```execution-plan-v2\n(.*?)\n```", committed, re.DOTALL)
                     path.write_text(committed[:match.start(1)] + json.dumps(plan) + committed[match.end(1):])
                     case.git("add", "docs/spec.md")
                     case.git("commit", "-qm", "invalid caller location")
                     invalid = case.git("rev-parse", "HEAD")
                     with self.assertRaises(fixture.fixture.transfer.entry.PreparationError) as error:
                         execution_plan.collect_execution_plan(str(case.root), invalid,
-                            ["docs/spec.md"], scope, {"path": "docs/requirement.md"})
+                            ["docs/spec.md"], scope, case.original["requirement_identity"])
                     self.assertEqual(error.exception.code, "execution_plan_incomplete")
 
     def test_blocker_uses_stable_ticket_id_instead_of_prefix_inference(self):
@@ -511,11 +514,13 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         path = case.root / "docs/spec.md"
         body = path.read_text().replace("Ticket ID: FEP-01", "Ticket ID: TASK-B").replace(
             "**Blocked by:** None", "**Blocked by:** TASK-A")
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["ticket_id"] = "TASK-B"
         plan["blocked_by"] = ["TASK-A"]
         plan["contract_refs"] = [ref.replace("FEP-01:", "TASK-B:") for ref in plan["contract_refs"]]
+        for group in plan["behavior_slices"]:
+            group["ac_refs"] = [ref.replace("FEP-01:", "TASK-B:") for ref in group["ac_refs"]]
         path.write_text(body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
         case.git("add", "docs/spec.md")
         case.git("commit", "-qm", "stable Ticket ID")
@@ -565,12 +570,13 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         candidate = case.planning_candidate()
         path = case.flow.flow / "docs/spec.md"
         text = path.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", text, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", text, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["steps"] = []
         plan["artifact_steps"] = [{"id": "ART-1", "path": "prompt.md", "operation": "add",
             "capability": "provide the prompt artifact", "approach": "write the approved prompt",
             "verification_refs": ["V1"]}]
+        revision_fixture.PlanRevisionProgressTests.refresh_fixture_slices(plan)
         path.write_text(text[:match.start(1)] + json.dumps(plan) + text[match.end(1):])
         case.flow.flow_git("add", "docs/spec.md")
         case.flow.flow_git("commit", "-qm", "artifact-only plan")
@@ -579,7 +585,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
             {"path": "prompt.md", "owner": "implementation", "kind": "source", "operation": "add",
              "basis": {"commit": candidate, "path": "docs/spec.md", "section": "approved design"}}]}}
         catalog = execution_plan.collect_execution_plan(str(case.flow.flow), candidate,
-            ["docs/spec.md"], scope, {"path": "docs/requirement.md"})
+            ["docs/spec.md"], scope, case.flow.state()["handoff"]["requirement_identity"])
         self.assertEqual(catalog["ordered_step_ids"], ["ART-1"])
         authority = {"state": "sealed", "revision": 1, "scope": scope,
                      "execution_plan": execution_plan.authority_envelope(catalog, 1)}
@@ -593,7 +599,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         candidate = case.planning_candidate()
         path = case.flow.flow / "docs/spec.md"
         text = path.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", text, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", text, re.DOTALL)
         plan = json.loads(match.group(1))
         first, second = plan["steps"]
         first["id"] = "A"
@@ -604,6 +610,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
         third["id"] = "C"
         third["target"]["symbol"] = "third"
         plan["steps"].append(third)
+        revision_fixture.PlanRevisionProgressTests.refresh_fixture_slices(plan)
         path.write_text(text[:match.start(1)] + json.dumps(plan) + text[match.end(1):])
         case.flow.flow_git("add", "docs/spec.md")
         case.flow.flow_git("commit", "-qm", "three sibling steps")
@@ -612,7 +619,7 @@ class ExecutionPlanAdmissionTests(unittest.TestCase):
             {"path": "impl.py", "owner": "implementation", "kind": "source", "operation": "add",
              "basis": {"commit": candidate, "path": "docs/spec.md", "section": "approved design"}}]}}
         catalog = execution_plan.collect_execution_plan(str(case.flow.flow), candidate,
-            ["docs/spec.md"], scope, {"path": "docs/requirement.md"})
+            ["docs/spec.md"], scope, case.flow.state()["handoff"]["requirement_identity"])
         self.assertEqual(catalog["ordered_step_ids"], ["B", "C", "A"])
 
 

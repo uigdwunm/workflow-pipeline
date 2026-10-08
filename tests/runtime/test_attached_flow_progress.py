@@ -64,7 +64,7 @@ class AttachedFlowTests(fixtures.ProgressTests):
         content = ('approved design\nTicket ID: FEP-01\nPlan Version: 1\n'
                    '**What to build:** approved behavior\n**Blocked by:** None\n'
                    'AC-1: approved behavior\n## Implementation Decisions\n'
-                   '### D1 — Plan\n```execution-plan-v1\n' +
+                   '### D1 — Plan\n```execution-plan-v2\n' +
                    json.dumps(plan, ensure_ascii=False) + '\n```\n')
         (self.flow / 'docs/spec.md').write_text(content)
         return content, plan

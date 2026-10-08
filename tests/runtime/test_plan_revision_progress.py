@@ -97,7 +97,8 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 continue
             groups.append({**group, 'step_ids': members})
             covered.update(members)
-        groups.extend({'id': identity, 'step_ids': [identity], 'ac_refs': ['FEP-01:AC-1'],
+        ac_refs = sorted({ref for group in plan['behavior_slices'] for ref in group['ac_refs']})
+        groups.extend({'id': identity, 'step_ids': [identity], 'ac_refs': ac_refs,
             'shared_state': []} for identity in steps if identity not in covered)
         for group in groups:
             selected = [steps[identity] for identity in group['step_ids']]
@@ -615,7 +616,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 plan["artifact_steps"] = [{"id": "ART-1", "path": "prompt.md",
                     "operation": "add", "capability": "provide the approved prompt artifact",
                     "approach": "write the approved prompt", "verification_refs": ["V1"]}]
-                self.refresh_fixture_slices(plan)
+                PlanRevisionProgressTests.refresh_fixture_slices(plan)
                 updated = text[:match.start(1)] + json.dumps(plan) + text[match.end(1):]
                 if artifact_mode == "only":
                     updated = updated.replace("Implementation: impl.py", "Implementation: prompt.md")
@@ -655,13 +656,13 @@ class PlanRevisionProgressTests(unittest.TestCase):
                     plan["steps"][1]["read_only"] = []
                     plan["steps"][2]["read_only"] = ["impl.py"]
                     plan["steps"][3]["depends_on"] = ["FP1-02", "FP1-03"]
-                self.refresh_fixture_slices(plan)
+                PlanRevisionProgressTests.refresh_fixture_slices(plan)
                 if grouped_reads:
                     plan['behavior_slices'] = [group for group in plan['behavior_slices']
                         if group['id'] not in {'FP1-02', 'FP1-03'}] + [{
                         'id': 'mixed-group', 'step_ids': ['FP1-02', 'FP1-03'],
                         'ac_refs': ['FEP-01:AC-1'], 'shared_state': []}]
-                    self.refresh_fixture_slices(plan)
+                    PlanRevisionProgressTests.refresh_fixture_slices(plan)
                 path.write_text(text[:match.start(1)] + json.dumps(plan) + text[match.end(1):])
                 case.flow.flow_git("add", "docs/spec.md")
                 case.flow.flow_git("commit", "-qm", "planned accepted implementation read")
@@ -1994,6 +1995,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         helper_step['target'] = {'path': 'helper.py', 'symbol': 'helper', 'operation': 'add'}
         helper_step['depends_on'] = [plan['steps'][0]['id']]
         plan['steps'].append(helper_step)
+        self.refresh_fixture_slices(plan)
         old_manifest = authority['scope']['downstream']['manifest']
         helper_manifest = copy.deepcopy(next(item for item in old_manifest if item['path'] == 'impl.py'))
         helper_manifest['path'] = 'helper.py'
@@ -2048,10 +2050,15 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertIsNotNone(prepared_allocation['next_action'], prepared_allocation)
         self.assertEqual(prepared_allocation['next_action']['operation'], 'invoke-host', prepared_allocation)
         slot = flow.state()['allocations']['inline-current']
-        payload = slot['record']['request']['payload']
-        self.assertEqual(payload['execution_plan']['sources'][0]['input_digest'],
-                         authority['execution_plan']['sources'][0]['input_digest'])
-        self.assertNotEqual(payload['input_digest'], payload['execution_plan']['sources'][0]['input_digest'])
+        record = progress.dispatch.record_for({'record': slot['record'],
+            'control': copy.deepcopy(flow.state()['control'])})
+        original_input = progress.dispatch.dispatch_input(record)
+        payload = progress.handoff.unseal(progress.dispatch.allocation_launch(record))['payload']
+        source = original_input['inline_authority']['execution_plan']['sources'][0]
+        self.assertEqual(source['input_digest'], authority['execution_plan']['sources'][0]['input_digest'])
+        self.assertEqual(payload['execution_plan']['identity']['plan_digest'],
+                         original_input['inline_authority']['execution_plan']['plan_digest'])
+        self.assertNotEqual(payload['input_digest'], source['input_digest'])
         bound = flow.invoke('allocation', {'allocation_id': 'inline-current', 'operation': 'bind',
             'receipt': flow.receipt(slot['record'], ref='native:inline-agent')})
         release = bound['next_action']['result']['write_release']

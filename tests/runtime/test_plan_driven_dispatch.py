@@ -22,7 +22,7 @@ import test_workflow_progress as progress_fixture
 
 def inline_plan(requirement_path):
     return {
-        "schema_version": 1, "ticket_id": "INLINE-1", "plan_version": 1,
+        "schema_version": 2, "ticket_id": "INLINE-1", "plan_version": 1,
         "spec_ref": {"path": "inline", "section": "brief"},
         "contract_refs": ["standalone:objective"], "blocked_by": [],
         "verifications": [{"id": "V-inline", "behavior": "requested behavior is present",
@@ -31,7 +31,10 @@ def inline_plan(requirement_path):
             "capability": "implement the brief", "approach": ["write the requested implementation"],
             "inputs": ["frozen brief"], "outputs": ["observable result"], "failures": ["invalid input is reported"],
             "depends_on": [], "verification_refs": ["V-inline"],
-            "read_only": [requirement_path]}], "artifact_steps": []}
+            "read_only": [requirement_path]}], "artifact_steps": [],
+        "behavior_slices": [{"id": "inline-step", "step_ids": ["inline-step"],
+            "ac_refs": ["standalone:objective"], "verification_refs": ["V-inline"],
+            "read_only": [requirement_path], "shared_state": []}]}
 
 
 class PlanDrivenDispatchTests(unittest.TestCase):
@@ -143,7 +146,7 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         case, request = self.existing_inline_request(
             "impl.py", "def run():\n    return True\n", "run",
             ["change the existing function"])
-        request["semantic"]["inline_plan"]["schema_version"] = 1.0
+        request["semantic"]["inline_plan"]["schema_version"] = 2.0
         with self.assertRaises(entry.PreparationError) as error:
             handoff.handle(request)
         self.assertEqual(error.exception.code, "execution_plan_incomplete")
@@ -156,6 +159,7 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         plan["artifact_steps"] = [{"id": "prompt-artifact", "path": "prompt.md",
             "operation": "modify", "capability": "revise the prompt",
             "approach": "write the approved prompt text", "verification_refs": ["V-inline"]}]
+        revision_fixture.PlanRevisionProgressTests.refresh_fixture_slices(plan)
         saved = handoff.handle(request)
         prepared = dispatch.handle({"protocol": handoff.PROTOCOL,
             "operation": "prepare", "handoff": saved,
@@ -256,11 +260,15 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         self.assertIsNotNone(response.get("next_action"), response)
         self.assertEqual(response["next_action"]["operation"], "invoke-host", response)
         saved = flow.state()["allocations"]["group"]
-        self.assertEqual(saved["record"]["handoff"]["semantic"]["plan_refs"], request["semantic"]["plan_refs"])
-        self.assertEqual(saved["record"]["request"]["payload"]["current_scope_authority"]["revision"], 1)
-        self.assertEqual(saved["record"]["request"]["payload"]["semantic"]["execution_plan"]["plan_digest"],
+        record = dispatch.record_for({"record": saved["record"],
+            "control": copy.deepcopy(flow.state()["control"])})
+        original_input = dispatch.dispatch_input(record)
+        payload = handoff.unseal(dispatch.allocation_launch(record))["payload"]
+        self.assertEqual(original_input["semantic"]["plan_refs"], request["semantic"]["plan_refs"])
+        self.assertEqual(original_input["semantic"]["authority_revision"], 1)
+        self.assertEqual(payload["semantic"]["execution_plan"]["plan_digest"],
                          flow.state()["scope_authority"]["execution_plan"]["plan_digest"])
-        self.assertIn("generated/impl_copy.py", saved["record"]["request"]["payload"]["generated_outputs"]["impl.py"])
+        self.assertIn("generated/impl_copy.py", payload["generated_outputs"]["impl.py"])
 
     def test_bound_group_release_result_and_accept_use_the_same_plan_identity(self):
         flow = self.active_flow()
@@ -420,6 +428,7 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         helper_step['target'] = {'path': 'helper.py', 'symbol': 'helper', 'operation': 'add'}
         helper_step['read_only'] = []
         plan['steps'].append(helper_step)
+        revision_fixture.PlanRevisionProgressTests.refresh_fixture_slices(plan)
         flow.context = flow.context_for(3)
         flow.begin('continuous', request)
         flow.invoke('observe', flow.observation(ref='native:dispatcher'))
@@ -596,7 +605,7 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         release = prepared["next_action"]["write_release"]
         spec = flow.flow / "docs/spec.md"
         original = spec.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", original, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", original, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"][0]["approach"].append("Keep the current behavior with a revised private step")
@@ -765,8 +774,11 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         request.pop("inline_authority", None)
         saved = handoff.handle(request)
         payload = handoff.render(saved)["payload"]
-        self.assertEqual(payload["execution_plan"]["catalog"]["tickets"][0]["plan"]["ticket_id"], "INLINE-1")
-        self.assertEqual(payload["current_scope_authority"]["kind"], "inline")
+        authority = handoff.unseal(saved)["inline_authority"]
+        catalog = execution_plan.current_catalog(authority)
+        self.assertEqual(catalog["tickets"][0]["plan"]["ticket_id"], "INLINE-1")
+        self.assertEqual(authority["kind"], "inline")
+        self.assertEqual(payload["execution_plan"]["plan_digest"], catalog["plan_digest"])
 
     def test_standalone_inline_group_allocates_under_original_controller(self):
         case = progress_fixture.ProgressTests(methodName="runTest")

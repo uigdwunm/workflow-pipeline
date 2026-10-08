@@ -69,7 +69,7 @@ class WorkflowGitTests(unittest.TestCase):
                           'operation': 'modify' if (self.repo / path).exists() else 'add',
                           'basis': {'commit': self.base, 'path': 'docs/draft.md',
                                     'section': 'initial requirement'}} for path in paths]}}
-        plan = {'schema_version': 1, 'ticket_id': 'INLINE-GIT', 'plan_version': 1,
+        plan = {'schema_version': 2, 'ticket_id': 'INLINE-GIT', 'plan_version': 1,
                 'spec_ref': {'path': 'inline', 'section': 'brief'},
                 'contract_refs': ['standalone:objective'], 'blocked_by': [],
                 'verifications': [{'id': 'V-cli', 'behavior': 'CLI behavior',
@@ -88,6 +88,10 @@ class WorkflowGitTests(unittest.TestCase):
             if declared_dependency:
                 plan['steps'][1]['depends_on'] = [plan['steps'][0]['id']]
             plan['steps'][1]['read_only'] = [paths[0]]
+        plan['behavior_slices'] = [
+            {'id': step['id'], 'step_ids': [step['id']],
+             'ac_refs': ['standalone:objective'], 'verification_refs': step['verification_refs'],
+             'read_only': step['read_only'], 'shared_state': []} for step in plan['steps']]
         semantic = {'objective': 'implement the frozen requirement', 'testing_basis': 'CLI',
                     'completion_criteria': ['CLI'], 'constraints': ['stay in scope']}
         authority = execution_plan.inline_authority(plan, scope, semantic,

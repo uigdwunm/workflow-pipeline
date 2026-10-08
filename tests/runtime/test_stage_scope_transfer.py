@@ -20,6 +20,7 @@ import test_stage_scope_progress as progress_fixture
 
 class StageScopeTransferTests(unittest.TestCase):
     def setUp(self):
+        import hashlib
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
@@ -37,17 +38,22 @@ class StageScopeTransferTests(unittest.TestCase):
                 "implementation_required": None, "manifest": None, "proposal_ref": None, "seal_ref": None}}
         self.original = handoff.seal({"protocol": handoff.PROTOCOL, "kind": "stage-input", "stage": 2,
             "expected_entry": {"repository": {"root": str(self.root)}},
-            "requirement_identity": {"path": "docs/requirement.md"}, "scope": self.unresolved,
+            "requirement_identity": {"path": "docs/requirement.md",
+                "sha256": hashlib.sha256((self.root / "docs/requirement.md").read_bytes()).hexdigest()},
+            "scope": self.unresolved,
             "controller_ref": "controller:test", "binding": {"worktree": str(self.root)},
             "source_commit": self.baseline, "role": "solution-designer"})
         plan = progress_fixture.ScopeProgressTests.inline_plan(self)
         plan["artifact_steps"] = [{"id": "AP1-01", "path": "tests/test_impl.py", "operation": "add",
             "capability": "verify approved behavior", "approach": "test the public result",
             "verification_refs": ["V1"]}]
+        plan["behavior_slices"].append({"id": "AP1-01", "step_ids": ["AP1-01"],
+            "ac_refs": ["FEP-01:AC-1"], "verification_refs": ["V1"],
+            "read_only": [], "shared_state": []})
         (self.root / "docs/spec.md").write_text(
             "# Approved file decision\nTicket ID: FEP-01\nPlan Version: 1\n"
             "**What to build:** approved behavior\n**Blocked by:** None\nAC-1: approved behavior\n"
-            "## Implementation Decisions\n### D1 — Plan\n```execution-plan-v1\n" +
+            "## Implementation Decisions\n### D1 — Plan\n```execution-plan-v2\n" +
             json.dumps(plan) + "\n```\n", encoding="utf-8")
         self.git("add", "docs/spec.md")
         self.git("commit", "-qm", "planning")
