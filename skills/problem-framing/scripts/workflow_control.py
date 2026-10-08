@@ -40,6 +40,27 @@ class ControlError(ValueError):
     pass
 
 
+class ArchivedProgress(dict):
+    """Finite facts verified by the original Store, absent from JSON inputs."""
+    def __init__(self, value, results):
+        super().__init__(value)
+        self.archived_results = copy.deepcopy(results)
+        self.archived_references = copy.deepcopy(value.get('archived_executions', []))
+
+
+def archived_execution_results(progress):
+    references = progress.get('archived_executions', [])
+    if not references:
+        return []
+    require(isinstance(progress, ArchivedProgress) and references == progress.archived_references,
+            'archived execution facts require original Store verification')
+    return progress.archived_results
+
+
+def all_execution_results(progress):
+    return archived_execution_results(progress) + progress.get('executions', [])
+
+
 def require(condition, message):
     if not condition:
         raise ControlError(message)
@@ -136,7 +157,7 @@ def adoption_source(progress):
 def current_accepted_results(progress):
     """Final integration requires fresh acceptance under its captured bytes."""
     carried = [] if progress.get('integration_source') is not None else progress.get('carried_results', [])
-    return carried + [execution for execution in progress['executions']
+    return carried + [execution for execution in all_execution_results(progress)
                       if execution['state'] == 'accepted' and execution['agent_ref'] is not None]
 
 
@@ -160,6 +181,11 @@ def repair_execution_record(progress, ref):
     if current:
         require(len(current) == 1, 'ambiguous original repair identity')
         return current[0]
+    archived = [item for item in archived_execution_results(progress) if item['agent_ref'] == ref]
+    if archived:
+        require(len(archived) == 1 and archived[0]['plan_authority'] == progress['plan_authority'],
+                'ambiguous or stale archived repair identity')
+        return copy.deepcopy(archived[0])
     carried = [item for item in progress.get('carried_results', []) if item['agent_ref'] == ref]
     require(len(carried) == 1 and carried[0]['plan_authority'] == progress['plan_authority'],
             'unknown current carried execution identity')
@@ -621,7 +647,7 @@ def validate_progress(progress):
             validate_scope_seal_evidence(seal['evidence'],
                                          {'requirement_identity': seal['evidence']['requirement_identity']}, progress)
     elif 'executions' in progress:
-        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'integration_target_head', 'integration_candidate', 'integration_source', 'integration_retained', 'plan_authority', 'execution_authority', 'plan_revisions', 'plan_revision_sources', 'carried_results', 'revalidation_source', 'review_claims', 'review_applicability', 'coverage', 'ticket_checks'}
+        allowed = {'state', 'binding', 'allowed_paths', 'protected_paths', 'authority_digest', 'executions', 'candidate', 'tests', 'configuration', 'git_baseline_commit', 'validation_plan', 'plan_digest', 'expected_target_head', 'candidate_evidence', 'review_decision', 'review_digest', 'attempts', 'validation_history', 'accepted_delivery', 'recovery', 'recovery_history', 'implementation_policy', 'implementation_escalation', 'implementation_target_head', 'integration_target_head', 'integration_candidate', 'integration_source', 'integration_retained', 'plan_authority', 'execution_authority', 'plan_revisions', 'plan_revision_sources', 'carried_results', 'revalidation_source', 'review_claims', 'review_applicability', 'coverage', 'ticket_checks', 'archived_executions', 'archive_batch'}
         if 'integration_target_head' in progress:
             for field in ('integration_target_head', 'integration_candidate'):
                 require(re.fullmatch('[0-9a-f]{40}', progress.get(field, '')), 'invalid final integration identity')
@@ -790,7 +816,7 @@ def validate_progress(progress):
             for recovery in progress['recovery_history']:
                 validate_recovery(recovery, progress)
         require(isinstance(progress['executions'], list), 'executions must be a list')
-        for execution in progress['executions']:
+        for execution in all_execution_results(progress):
             required = {'task_id', 'paths', 'read_only', 'behavior', 'tests', 'git_operations', 'configuration', 'agent_ref', 'state', 'stopped', 'file_hashes', 'allocation_digest'}
             require(isinstance(execution, dict) and required <= set(execution) <= required | {'git_snapshot', 'git_result_snapshot', 'adopt_paths', 'adoption_snapshot_digest', 'adoption_fingerprints', 'changed_paths', 'adopted_paths', 'plan_refs', 'plan_authority', 'group_digest', 'write_release', 'repair', 'repair_count'}, 'invalid execution envelope fields')
             if 'plan_refs' in execution:
@@ -1289,7 +1315,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             import execution_plan
             retention = execution_plan.classify_retained_results(
                 progress['execution_authority'], current_authority,
-                progress['executions'], progress.get('carried_results', []),
+                all_execution_results(progress), progress.get('carried_results', []),
                 progress.get('revalidation_source'), evidence['snapshot'],
                 evidence['baseline_fingerprints'], evidence['git_facts']['changed_paths'])
         except (ValueError, KeyError, TypeError) as error:
@@ -1314,7 +1340,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
                                               evidence['validation_plan'], progress['binding'])
         progress.setdefault('plan_revision_sources', []).append({
             'revision_id': evidence['revision_id'],
-            'executions': copy.deepcopy(progress['executions']),
+            'executions': copy.deepcopy(all_execution_results(progress)),
             'carried_results': copy.deepcopy(progress.get('carried_results', [])),
             'revalidation_source': copy.deepcopy(progress.get('revalidation_source')),
             'validation_plan': copy.deepcopy(progress['validation_plan']),
@@ -1327,6 +1353,7 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
             **{key: copy.deepcopy(progress[key]) for key in
                ('review_claims', 'review_applicability', 'coverage', 'ticket_checks') if key in progress}})
         progress['executions'] = []
+        progress.pop('archived_executions', None)
         progress['carried_results'] = retention['carried_results']
         progress['revalidation_source'] = {'revision_id': evidence['revision_id'],
             'authority_digest': new['authority_digest'],
@@ -1510,6 +1537,9 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         require(set(paths(evidence['pending_paths'], empty=True)) <= set(progress['allowed_paths']),
                 'final integration adoption escapes scope')
         progress['integration_source'] = source
+        # The retained-candidate boundary needs fresh acceptance; archived
+        # results remain audit evidence and cannot authorize captured bytes.
+        progress.pop('archived_executions', None)
         progress['implementation_policy'] = {'mode': 'full'}
         for field in ('implementation_escalation', 'implementation_target_head', 'recovery', 'recovery_history'):
             progress.pop(field, None)
@@ -1584,6 +1614,16 @@ def _transition_single(request: dict[str, Any]) -> dict[str, Any]:
         if original is None or not any(original is item for item in progress['executions']):
             if original is not None:
                 allocation['repair_count'] = original.get('repair_count', 0) + 1
+                # A fresh repair retires only this original fact from the
+                # current view; its immutable subject remains in the audit.
+                archived = archived_execution_results(progress)
+                keep = [number for number, item in enumerate(archived)
+                        if item['allocation_digest'] != original['allocation_digest']]
+                if len(keep) != len(archived):
+                    refs = progress['archived_executions']
+                    progress['archived_executions'] = [refs[number] for number in keep]
+                    progress = ArchivedProgress(progress, [archived[number] for number in keep])
+                    context['handoff_progress'] = progress
             progress['executions'].append(allocation)
         else:
             allocation['repair_count'] = original.get('repair_count', 0) + 1

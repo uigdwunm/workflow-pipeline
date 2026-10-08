@@ -32,6 +32,42 @@ Flow Worktree. Do not create a second control ledger. The adapter owns only
 outer object. The runner owns its other fields, retains a separate process lock,
 and merges these members under the same short checkpoint lock.
 
+## Bounded current state and original history
+
+New runs retain at most eight current subjects and 32 current allocations.
+Completed allocation contracts/results and applied observations use exact
+immutable references inside the current subject. A stopped accepted batch seals
+at 32 completed allocations; applied events seal at 256 entries into segments
+of at most 1 MiB. Ticket acceptance also retires its settled allocations and
+accepted review calls. Unknown calls, unresolved transactions and revoked native
+stops remain current. Each subject stays within 256 KiB; reference expansion is
+included in the combined recovery read budget.
+
+The original checkpoint CAS, or the original attached ledger generation/CAS,
+commits history. Hash locators resolve an exact original receipt, closed subject,
+native identity or review response without scanning history. A prepared locator
+cannot acknowledge an operation before its authority commit proof exists.
+Repeated original calls return their committed result with no new write release;
+another digest or an unrelated new invocation for a closed allocation is rejected.
+An explicit Controller repair verifies the original slot, accepted C result and
+native stop before issuing the same Slice a fresh invocation and write release.
+Each repaired completion seals its own generation; the first native proof and
+every original acceptance remain reachable for the final audit. Archived
+Execution identities remain ineligible to review their own implementation.
+
+Normal recovery reads current subjects and explicitly needed original facts.
+Completed runner history moves out of its current outer record in 32-entry
+batches through the runner's original CAS. Final completion additionally pages
+the committed archive directory (at most 256 entries per page), verifies original
+acceptance/native/claim references, and reports its complete structured read
+bytes/files separately as `archive_reading`. This final audit is not a daily
+recovery scan. Missing or damaged original evidence rejects completion.
+
+An archived Execution projection grants no authority by itself. JSON transports
+must reopen the same original checkpoint or exact ledger pointer and verify its
+digest against the persisted C intent before consuming those facts. No sender
+can grant permissions by reporting an archived-progress JSON object.
+
 The short lock waits up to five seconds using a monotonic deadline. A timeout
 does not establish executor failure. The runner saves local CLI observations in
 the existing turn-artifact directory (`*.carrier.json`), bound to the exact

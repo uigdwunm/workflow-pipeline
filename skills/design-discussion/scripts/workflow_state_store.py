@@ -28,9 +28,12 @@ RUN_LIMIT = 2 * 1024 * 1024 * 1024
 MAX_SUBJECTS = 8
 BUSINESS_RESERVE = 4 * EVIDENCE_LIMIT
 RECOVERY_RESERVE = 4 * EVIDENCE_LIMIT
+ARCHIVE_PAGE_LIMIT = 256
+EVENT_LIMIT = 1024 * 1024
 _operation_store = ContextVar('workflow_operation_store', default=None)
 _operation_read_totals = ContextVar('workflow_operation_read_totals', default=None)
 _measurement_stores = ContextVar('workflow_measurement_stores', default={})
+_archive_audit_reads = ContextVar('workflow_archive_audit_reads', default=None)
 
 
 @contextmanager
@@ -223,6 +226,7 @@ class StateStore:
         self.directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
         self.files_read = 0
         self.bytes_read = 0
+        self._ordinary_bytes_read = 0
         self._read_totals = _operation_read_totals.get()
         if self._read_totals is None:
             self._read_totals = {'files': 0, 'bytes': 0, 'coverage': 'state-store-only'}
@@ -386,6 +390,12 @@ class StateStore:
         require(len(data) <= maximum, 'state object exceeds its fixed budget', 'state_capacity')
         self.files_read += 1
         self.bytes_read += len(data)
+        audit = _archive_audit_reads.get()
+        if audit is not None:
+            audit['files'] += 1
+            audit['bytes'] += len(data)
+            return data
+        self._ordinary_bytes_read += len(data)
         totals = _operation_read_totals.get()
         if totals is None:
             totals = self._read_totals
@@ -393,7 +403,7 @@ class StateStore:
         totals['bytes'] += len(data)
         require(totals['bytes'] <= READ_LIMIT + EVIDENCE_LIMIT,
                 'combined operation exceeded its read budget', 'state_capacity')
-        require(self.bytes_read <= READ_LIMIT + EVIDENCE_LIMIT,
+        require(self._ordinary_bytes_read <= READ_LIMIT + EVIDENCE_LIMIT,
                 'operation exceeded its read budget', 'state_capacity')
         return data
 
@@ -410,12 +420,13 @@ class StateStore:
 
     def write_object(self, run_id, kind, value, *, subject_id=None):
         require(kind in {'root', 'subject', 'scope', 'predecessor', 'native-source-index', 'evidence', 'receipt',
+                         'archive-manifest', 'archive-page', 'event-segment',
                          'ledger-control', 'ledger-handoff'}, 'invalid object type')
         body = {'format': FORMAT, 'run_id': run_id, 'kind': kind, 'value': value}
         if subject_id is not None:
             body['subject_id'] = subject_id
         data = encode(body)
-        maximum = EVIDENCE_LIMIT if kind == 'evidence' else SUBJECT_LIMIT
+        maximum = EVIDENCE_LIMIT if kind == 'evidence' else EVENT_LIMIT if kind == 'event-segment' else SUBJECT_LIMIT
         require(len(data) <= maximum, kind + ' exceeds its fixed budget', 'state_capacity')
         digest = hashlib.sha256(data).hexdigest()
         path = self._path(digest)
@@ -598,7 +609,7 @@ class StateStore:
         require(isinstance(reference, dict) and set(reference) == {'run_id', 'kind', 'sha256', 'size'} and
                 reference['run_id'] == run_id and reference['kind'] == kind and
                 type(reference['size']) is int, 'cross-run or malformed object reference')
-        limit = EVIDENCE_LIMIT if kind == 'evidence' else SUBJECT_LIMIT
+        limit = EVIDENCE_LIMIT if kind == 'evidence' else EVENT_LIMIT if kind == 'event-segment' else SUBJECT_LIMIT
         if maximum is not None:
             limit = min(limit, maximum)
         require(0 < reference['size'] <= limit, 'object reference exceeds its read limit', 'state_capacity')
@@ -646,10 +657,11 @@ class StateStore:
                 'ledger control authority changed')
         ref = pointer['reference']
         body = self.read_evidence(ref, run_id=ref['run_id'], kind='ledger-control')['value']
-        require(isinstance(body, dict) and set(body) == {'identity', 'context', 'retired', 'receipt'} and
+        require(isinstance(body, dict) and {'identity', 'context', 'retired', 'receipt'} <= set(body) <=
+                {'identity', 'context', 'retired', 'receipt', 'archive_refs'} and
                 body['identity'] == {k: v for k, v in pointer.items() if k != 'reference'},
                 'ledger generation identity changed')
-        context = body['context']
+        context = self.resolve_control_context(body['context'], run_id=ref['run_id'])
         require(context.get('controller_ref') == pointer['controller_ref'] and
                 context.get('topic_ref') == pointer['topic_id'] and
                 'retired_handoffs' not in context and isinstance(body['retired'], dict) and
@@ -663,13 +675,72 @@ class StateStore:
                 retired = self.read_evidence(value['reference'], run_id=ref['run_id'], kind='ledger-handoff')['value']
                 require(retired.get('handoff_id') == key, 'retired ledger identity changed')
                 context['retired_handoffs'] = {key: retired['value']}
-        require(self.bytes_read <= READ_LIMIT, 'ledger projection exceeded its read budget', 'state_capacity')
+        require(self._ordinary_bytes_read <= READ_LIMIT, 'ledger projection exceeded its read budget', 'state_capacity')
         return context, body
 
+    def resolve_control_context(self, context, *, run_id):
+        """Verify only current needed execution refs, never the archive directory."""
+        import workflow_control as control
+        result = copy.deepcopy(context)
+        progress = result.get('handoff_progress') or {}
+        references = progress.get('archived_executions', [])
+        if not references:
+            return result
+        require(isinstance(references, list), 'invalid current execution references')
+        executions = []
+        for reference in references:
+            proof = self.read_evidence(reference, run_id=run_id, maximum=SUBJECT_LIMIT)['value']
+            require(isinstance(proof, dict) and set(proof) == {'execution', 'controller_ref', 'binding'} and
+                    proof['controller_ref'] == result['controller_ref'] and proof['binding'] == progress['binding'] and
+                    proof['execution'].get('state') == 'accepted' and proof['execution'].get('stopped') is True and
+                    proof['execution'].get('plan_authority') == progress.get('plan_authority'),
+                    'archived result changed original owner, scope, stop or authority', 'state_object_corrupt')
+            executions.append(proof['execution'])
+        result['handoff_progress'] = control.ArchivedProgress(progress, executions)
+        require(self._ordinary_bytes_read <= READ_LIMIT, 'current execution facts exceed recovery budget', 'state_capacity')
+        return result
+
+    def compact_control_context(self, context, *, run_id, force=False):
+        """Prepare current fact refs from stopped results owned by this authority.
+
+        The caller must publish the returned context through its original CAS.
+        A failed transition leaves these objects uncommitted, never a new lease.
+        """
+        import workflow_control as control
+        progress = context.get('handoff_progress') or {}
+        if 'executions' not in progress:
+            return context, []
+        closed = [item for item in progress['executions'] if item.get('state') == 'accepted' and item.get('stopped')]
+        if not closed or (not force and len(closed) < 32):
+            return context, []
+        original = control.archived_execution_results(progress)
+        previous_refs = progress.get('archived_executions', [])
+        new_refs = [self.write_object(run_id, 'evidence', {'execution': item,
+                    'controller_ref': context['controller_ref'], 'binding': progress['binding']}) for item in closed]
+        results, references = original + closed, previous_refs + new_refs
+        # Keep the most recent original proof for each current path/function.
+        # Historical subjects retain all versions; this is a bounded current view.
+        needed = {}
+        for index, item in enumerate(results):
+            for relative in item['paths']:
+                needed[('path', relative)] = index
+            for ref in item.get('plan_refs', []):
+                needed[('step', control.digest(ref))] = index
+        selected = sorted(set(needed.values()))
+        packed = copy.deepcopy(context)
+        current = dict(packed['handoff_progress'])
+        current['executions'] = [item for item in progress['executions'] if item not in closed]
+        current['archived_executions'] = [references[index] for index in selected]
+        current['archive_batch'] = progress.get('archive_batch', 0) + 1
+        packed['handoff_progress'] = control.ArchivedProgress(current, [results[index] for index in selected])
+        control.validate_current_context(packed)
+        return packed, new_refs
+
     def prepare_ledger_control(self, context, *, topic_id, ledger_revision, control_revision,
-                               previous, receipt):
+                               previous, receipt, force_archive=False):
         """Prepare immutable objects only. The existing ledger transaction publishes them."""
         run_id = previous['reference']['run_id'] if previous else str(uuid.uuid4())
+        context, archives = self.compact_control_context(context, run_id=run_id, force=force_archive)
         retired = self.read_ledger_control(previous)[1]['retired'] if previous else {}
         # Construct current fields directly; no full context/history copy is externalized.
         current = {key: value for key, value in context.items() if key != 'retired_handoffs'}
@@ -683,6 +754,8 @@ class StateStore:
             'topic_id': topic_id, 'controller_ref': context['controller_ref'],
             'ledger_revision': ledger_revision, 'control_revision': control_revision}
         body = {'identity': identity, 'context': current, 'retired': retired, 'receipt': receipt}
+        if archives:
+            body['archive_refs'] = archives
         reference = self.write_object(run_id, 'ledger-control', body)
         pointer = {**identity, 'reference': reference}
         # Account for the original receipt before the ledger may commit. A crash
@@ -737,8 +810,368 @@ class StateStore:
         require(reference is not None, 'subject is not in the current window', 'subject_missing')
         body = self.read_evidence(reference, run_id=current.run_id, kind='subject')
         require(body.get('subject_id') == subject_id and isinstance(body['value'], dict), 'subject identity changed')
-        require(self.bytes_read <= READ_LIMIT, 'current subjects exceed the operation budget', 'state_capacity')
-        return SubjectProjection(subject_id, body['value'], reference)
+        value = body['value']
+        for number, observation in enumerate(value.get('observations', [])):
+            if observation.get('kind') != 'current-observation-ref-v1':
+                continue
+            require(set(observation) == {'kind', 'event_id', 'reference', 'observation_digest'},
+                    'current observation reference changed')
+            original = self.read_evidence(observation['reference'], run_id=current.run_id,
+                maximum=SUBJECT_LIMIT)['value']
+            require(original.get('event_id') == observation['event_id'] and
+                    entry.digest(original) == observation['observation_digest'],
+                    'current original observation changed', 'state_object_corrupt')
+            value['observations'][number] = original
+        for identity, slot in value.get('allocations', {}).items():
+            if slot.get('kind') != 'current-allocation-ref-v1':
+                continue
+            require(set(slot) == {'kind', 'reference', 'slot_digest'}, 'current allocation reference changed')
+            original = self.read_evidence(slot['reference'], run_id=current.run_id,
+                maximum=SUBJECT_LIMIT)['value']
+            require(set(original) == {'allocation_id', 'slot'} and original['allocation_id'] == identity and
+                    entry.digest(original['slot']) == slot['slot_digest'] and
+                    (original['slot'].get('record') or {}).get('status') == 'accepted' and
+                    original['slot'].get('transaction') is None,
+                    'current allocation original facts changed', 'state_object_corrupt')
+            value['allocations'][identity] = original['slot']
+        require(self._ordinary_bytes_read <= READ_LIMIT, 'current subjects exceed the operation budget', 'state_capacity')
+        return SubjectProjection(subject_id, value, reference)
+
+    def _archive_path(self, subject_id):
+        require(isinstance(subject_id, str) and subject_id and len(subject_id.encode()) <= 4096,
+                'bounded archive subject ID required')
+        digest = hashlib.sha256(subject_id.encode()).hexdigest()
+        return self._safe(Path('archives') / digest[:2] / digest[2:4] / digest)
+
+    def _native_archive_path(self, ref, kind='execution'):
+        require(isinstance(ref, str) and ref and len(ref.encode()) <= 4096, 'exact bounded native identity required')
+        require(kind in {'execution', 'review'}, 'original native role kind required')
+        digest = hashlib.sha256(ref.encode()).hexdigest()
+        return self._safe(Path('native-archives') / kind / digest[:2] / digest[2:4] / digest)
+
+    def read_native_archive(self, current, ref):
+        """Locate one original stopped role by its native identity, never a scan."""
+        for kind in ('execution', 'review'):
+            path = self._native_archive_path(ref, kind)
+            if not path.exists():
+                continue
+            index = json.loads(self._read(path, 16 * 1024))
+            require(index.get('native_ref') == ref, 'archived native identity changed', 'state_object_corrupt')
+            if not self._archive_proof(current, index):
+                continue
+            original = self._read_archive_manifest(current, index['reference'], index['subject_id'])
+            slot = original.value['slot']
+            native = ((slot.get('record') or {}).get('acceptance') or {}).get('role_ref') if index['subject_id'].startswith('allocation:') else slot.get('ref')
+            require(native == ref, 'archived native role differs from its original subject', 'state_object_corrupt')
+            return original
+        return None
+
+    def _review_archive_path(self, action_id, response_ref):
+        require(all(isinstance(value, str) and value and len(value.encode()) <= 4096
+                    for value in (action_id, response_ref)), 'exact original review response required')
+        digest = entry.digest([action_id, response_ref])
+        return self._safe(Path('review-archives') / digest[:2] / digest[2:4] / digest)
+
+    def read_review_archive(self, current, action_id, response_ref):
+        path = self._review_archive_path(action_id, response_ref)
+        require(path.exists(), 'original accepted review is unavailable', 'subject_missing')
+        index = json.loads(self._read(path, 16 * 1024))
+        require(index.get('action_id') == action_id and index.get('response_ref') == response_ref and
+                self._archive_proof(current, index), 'review archive is not originally committed', 'subject_missing')
+        return self.read_archive(current, index['subject_id'])
+
+    def _archive_proof(self, current, index):
+        require(isinstance(index, dict) and index.get('run_id') == current.run_id and
+                type(index.get('revision')) is int and index['revision'] > 0,
+                'invalid archive commit identity')
+        marker = self._safe(Path('commits') / str(index['revision']))
+        if not marker.exists():
+            if index['revision'] != current.revision or index.get('root') != current.reference['sha256']:
+                return False
+            self._ensure_marker(current)
+        proof = json.loads(self._read(marker, 16 * 1024))
+        member = {'subject_hash': hashlib.sha256(index['subject_id'].encode()).hexdigest(),
+                  'reference': index['reference']}
+        require(proof.get('revision') == index['revision'] and proof.get('root') == index.get('root') and
+                member in proof.get('archives', []), 'archive lacks original authority commit proof',
+                'state_object_corrupt')
+        return True
+
+    def read_archive(self, current, subject_id):
+        """Resolve exactly one closed subject, without scanning historical pages."""
+        path = self._archive_path(subject_id)
+        require(path.exists(), 'archived subject is unavailable', 'subject_missing')
+        index = json.loads(self._read(path, 16 * 1024))
+        actual_id = index.get('subject_id')
+        require(isinstance(actual_id, str) and
+                (actual_id == subject_id or subject_id.startswith('allocation:') and actual_id.startswith(subject_id + ':')) and
+                self._archive_proof(current, index),
+                'archive is not committed', 'subject_missing')
+        original = self._read_archive_manifest(current, index['reference'], actual_id)
+        if actual_id != subject_id:
+            require(subject_id == 'allocation:' + original.value['allocation_id'] and
+                    actual_id == subject_id + ':' + original.value['slot']['record']['request']['attempt'],
+                    'archive locator changed its original allocation generation', 'state_object_corrupt')
+        return original
+
+    def _read_archive_manifest(self, current, reference, subject_id):
+        """Read one immutable page/locator member after its commit proof check."""
+        manifest = self.read_evidence(reference, run_id=current.run_id, kind='archive-manifest')['value']
+        require(manifest.get('subject_id') == subject_id, 'archive subject identity changed')
+        reference = manifest['subject_ref']
+        body = self.read_evidence(reference, run_id=current.run_id, kind='subject')
+        require(body.get('subject_id') == subject_id, 'archived subject identity changed')
+        value = body['value']
+        if 'slot_ref' in value:
+            original = self.read_evidence(value['slot_ref'], run_id=current.run_id,
+                maximum=SUBJECT_LIMIT)['value']
+            require(set(original) == {'allocation_id', 'slot'} and
+                    original['allocation_id'] == value['allocation_id'] and
+                    entry.digest(original['slot']) == value['slot_digest'],
+                    'archived allocation original changed', 'state_object_corrupt')
+            value['slot'] = original['slot']
+        elif 'review_slot_ref' in value:
+            value['slot'] = self._read_review_slot(current.run_id, value)
+        return SubjectProjection(subject_id, value, reference)
+
+    def _read_review_slot(self, run_id, value):
+        original = self.read_evidence(value['review_slot_ref'], run_id=run_id, maximum=SUBJECT_LIMIT)['value']
+        require(set(original) == {'review_slot'}, 'original review slot reference changed')
+        facts = original['review_slot']
+        slot = {key: item for key, item in facts.items() if key not in {'prepare_ref', 'receipt_refs'}}
+        slot['prepare'] = self.read_evidence(facts['prepare_ref'], run_id=run_id, maximum=SUBJECT_LIMIT)['value']
+        slot['receipts'] = [self.read_evidence(reference, run_id=run_id, maximum=SUBJECT_LIMIT)['value']['native_review_stop']
+            for reference in facts['receipt_refs']]
+        require(entry.digest(slot) == value['slot_digest'], 'original review slot facts changed', 'state_object_corrupt')
+        return slot
+
+    def read_archive_page(self, current, cursor=None):
+        """Read one committed delivery page; daily recovery never calls this API."""
+        if cursor is None:
+            reference = current.root.get('archive_directory')
+        else:
+            require(isinstance(cursor, dict) and set(cursor) == {'run_id', 'reference', 'revision', 'root'} and
+                    cursor['run_id'] == current.run_id and type(cursor['revision']) is int and
+                    0 < cursor['revision'] <= current.revision, 'invalid archive page cursor')
+            proof = json.loads(self._read(self._safe(Path('commits') / str(cursor['revision'])), 16 * 1024))
+            require(proof.get('root') == cursor['root'] and proof.get('archive_directory') == cursor['reference'],
+                    'page cursor lacks original commit proof', 'state_object_corrupt')
+            reference = cursor['reference']
+        if reference is None:
+            return {'items': [], 'next_cursor': None}
+        page = self.read_evidence(reference, run_id=current.run_id, kind='archive-page')['value']
+        require(isinstance(page.get('items'), list) and len(page['items']) <= ARCHIVE_PAGE_LIMIT,
+                'archive page exceeds its fixed entry budget', 'state_capacity')
+        return {'items': copy.deepcopy(page['items']), 'next_cursor': copy.deepcopy(page['previous'])}
+
+    def verify_archive_chain(self, current, *, verify_subject=None):
+        """Final audit only: page committed originals and verify their full closure.
+
+        The visited set is per subject, never a cumulative in-memory ID index.
+        Recovery and admission deliberately do not call this operation.
+        """
+        totals = {'bytes': self.bytes_read, 'files': self.files_read}
+        token = _archive_audit_reads.set(totals)
+        try:
+            result = self._verify_archive_chain(current, verify_subject=verify_subject)
+            return {**result, 'structured_bytes': totals['bytes'], 'structured_files': totals['files'],
+                    'purpose': 'final-archive-audit'}
+        finally:
+            _archive_audit_reads.reset(token)
+
+    def _verify_archive_chain(self, current, *, verify_subject):
+        cursor, pages, subjects = None, 0, 0
+        stores = {current.run_id: self}
+        stage_id = current.root['metadata']['stage_subject']
+        stage = self.read_evidence(current.root['subjects'][stage_id], run_id=current.run_id, kind='subject')['value']
+        original_pointer = (stage.get('control') or {}).get('store_ref')
+        def register_ledger(pointer):
+            require(original_pointer is not None and
+                    all(pointer[key] == original_pointer[key] for key in ('ledger_path', 'topic_id', 'controller_ref')) and
+                    pointer['reference']['run_id'] == original_pointer['reference']['run_id'] and
+                    pointer['ledger_revision'] <= original_pointer['ledger_revision'] and
+                    pointer['control_revision'] <= original_pointer['control_revision'],
+                    'archive pointer differs from the original checkpoint ledger identity', 'state_object_corrupt')
+            ledger_store = stores.get(pointer['reference']['run_id']) or StateStore(pointer['ledger_path'])
+            require(str(ledger_store.checkpoint.resolve()) == pointer['ledger_path'], 'archive ledger path changed')
+            context, body = ledger_store.read_ledger_control(pointer)
+            require(context['controller_ref'] == current.root['metadata']['controller_ref'],
+                    'archive ledger original Controller changed', 'state_object_corrupt')
+            certificate = body['receipt']
+            require(certificate is not None, 'archive lost its original ledger commit receipt')
+            replay = ledger_store.read_ledger_receipt(pointer['topic_id'], certificate['key'], certificate['fingerprint'])
+            require(replay is not None and replay['control']['store_ref'] == pointer,
+                    'archive ledger generation is not committed')
+            stores[pointer['reference']['run_id']] = ledger_store
+        def verify_refs(value, seen):
+            if isinstance(value, dict):
+                if value.get('format') == 'ledger-control-v1' and set(value) == {
+                        'format', 'ledger_path', 'topic_id', 'controller_ref', 'ledger_revision', 'control_revision', 'reference'}:
+                    register_ledger(value)
+                if set(value) == {'run_id', 'kind', 'sha256', 'size'}:
+                    key = (value['run_id'], value['sha256'])
+                    if key not in seen:
+                        seen.add(key)
+                        require(value['run_id'] in stores, 'archive reference changed its original run', 'state_object_corrupt')
+                        owner = stores[value['run_id']]
+                        if value['kind'] == 'raw-chunk':
+                            require(type(value['size']) is int and 0 < value['size'] <= EVENT_LIMIT,
+                                    'raw chunk reference exceeds its fixed limit', 'state_capacity')
+                            data = owner._read(owner._path(value['sha256']), EVENT_LIMIT)
+                            require(len(data) == value['size'] and hashlib.sha256(data).hexdigest() == value['sha256'],
+                                    'original raw chunk changed', 'state_object_corrupt')
+                        else:
+                            body = owner.read_evidence(value, run_id=value['run_id'], kind=value['kind'])
+                            verify_refs(body, seen)
+                else:
+                    for item in value.values():
+                        verify_refs(item, seen)
+            elif isinstance(value, list):
+                for item in value:
+                    verify_refs(item, seen)
+        while True:
+            page = self.read_archive_page(current, cursor)
+            pages += 1
+            for item in page['items']:
+                require(isinstance(item, dict) and set(item) == {'subject_id', 'reference'},
+                        'archive directory entry changed', 'state_object_corrupt')
+                original = self._read_archive_manifest(current, item['reference'], item['subject_id'])
+                ledger = original.value.get('ledger_ref')
+                if ledger is not None:
+                    register_ledger(ledger)
+                manifest = self.read_evidence(item['reference'], run_id=current.run_id,
+                    kind='archive-manifest')['value']
+                require(manifest['subject_id'] == item['subject_id'] and manifest['subject_ref'] == original.reference,
+                        'archive directory differs from original committed subject', 'state_object_corrupt')
+                verify_refs(original.value, set())
+                if verify_subject is not None:
+                    verify_subject(item['subject_id'], original.value)
+                subjects += 1
+                # Explicit final reads may span the whole run; the cache does
+                # not turn that stream into an in-memory historical collection.
+                for owner in stores.values():
+                    owner._verified_objects.clear()
+                stores = {current.run_id: self}
+            cursor = page['next_cursor']
+            if cursor is None:
+                break
+        return {'subjects': subjects, 'pages': pages}
+
+    def _event_path(self, run_id, event_id):
+        require(isinstance(event_id, str) and event_id and len(event_id.encode()) <= 4096,
+                'bounded original event ID required')
+        digest = hashlib.sha256(encode([run_id, event_id])).hexdigest()
+        return self._safe(Path('events') / digest[:2] / digest[2:4] / digest)
+
+    def prepare_event_segment(self, current, events, *, pinned=()):
+        require(isinstance(events, dict), 'current events must be an object')
+        completed = [(identity, value) for identity, value in events.items()
+                     if value.get('applied') is True and identity not in pinned][:256]
+        if len(completed) < 256:
+            return events, []
+        records = [{'event_id': identity, 'value': value} for identity, value in completed]
+        reference = self.write_object(current.run_id, 'event-segment', {'events': records})
+        removed = {identity for identity, _ in completed}
+        return {identity: value for identity, value in events.items() if identity not in removed}, [reference]
+
+    def read_event(self, current, event_id, request):
+        """Exact committed event replay; no historical event/subject scan."""
+        path = self._event_path(current.run_id, event_id)
+        if not path.exists():
+            return None
+        index = json.loads(self._read(path, 16 * 1024))
+        require(index.get('run_id') == current.run_id and index.get('event_id') == event_id and
+                type(index.get('revision')) is int and index['revision'] > 0,
+                'event index identity changed', 'state_object_corrupt')
+        marker = self._safe(Path('commits') / str(index['revision']))
+        if not marker.exists():
+            if index['revision'] != current.revision or index.get('root') != current.reference['sha256']:
+                return None
+            self._ensure_marker(current)
+        proof = json.loads(self._read(marker, 16 * 1024))
+        require(proof.get('root') == index.get('root') and index['segment'] in proof.get('event_segments', []),
+                'event lacks original committed segment proof', 'state_object_corrupt')
+        segment = self.read_evidence(index['segment'], run_id=current.run_id, kind='event-segment')['value']
+        offset = index['offset']
+        require(type(offset) is int and 0 <= offset < len(segment['events']) <= 256,
+                'event segment offset changed')
+        record = segment['events'][offset]
+        require(record['event_id'] == event_id and record['value'].get('digest') == entry.digest(request),
+                'event ID was reused with another observation', 'event_conflict')
+        return copy.deepcopy(record['value'])
+
+    def compact(self, *, expected_revision, subject_ids):
+        """Archive stopped terminal subjects in the original owner's Root CAS."""
+        current = self.open_current()
+        require(current is not None and current.revision == expected_revision,
+                'checkpoint revision changed', 'stale_checkpoint')
+        require(isinstance(subject_ids, list) and len(subject_ids) <= MAX_SUBJECTS and
+                len(set(subject_ids)) == len(subject_ids), 'bounded exact subjects required')
+        values = []
+        for subject_id in subject_ids:
+            require(subject_id != current.root['metadata'].get('stage_subject'),
+                    'current stage cannot exit its authority window')
+            value = self.read_subject(current, subject_id).value
+            require(value.get('status') in {'accepted', 'completed', 'cancelled'} and value.get('stopped') is True and
+                    not value.get('pending') and not value.get('transaction') and
+                    not value.get('control_transactions') and not value.get('unknown') and
+                    (value.get('host') or {}).get('status') != 'unknown' and
+                    not any((value.get(key) or {}).get('resolved') is False
+                            for key in ('query', 'host_action', 'action')),
+                    'subject has unresolved authority or native calls', 'archive_pending')
+            values.append((subject_id, current.root['subjects'][subject_id]))
+        self._ensure_marker(current)
+        root = {**current.root, 'revision': current.revision + 1, 'receipts': [],
+                'subjects': {key: ref for key, ref in current.root['subjects'].items() if key not in subject_ids}}
+        stage_id = current.root['metadata'].get('stage_subject')
+        stage = self.read_subject(current, stage_id).value
+        source_events = copy.deepcopy(stage.get('events', {}))
+        for observation in stage.get('observations', []):
+            identity = observation.get('event_id')
+            if identity in source_events and source_events[identity].get('applied') is True:
+                source_events[identity]['observation_ref'] = self.write_object(current.run_id, 'evidence', observation)
+        events, segments = self.prepare_event_segment(current, source_events)
+        if segments:
+            archived_ids = set(source_events) - set(events)
+            stage['events'] = events
+            if 'observations' in stage:
+                stage['observations'] = [item for item in stage['observations'] if item.get('event_id') not in archived_ids]
+            root['subjects'][stage_id] = self.write_object(current.run_id, 'subject', stage, subject_id=stage_id)
+            root['event_segments'] = segments
+            identity = 'event-batch:' + str(root['revision'])
+            reference = self.write_object(current.run_id, 'subject', {
+                'status': 'completed', 'stopped': True, 'event_segment_ref': segments[0]}, subject_id=identity)
+            values.append((identity, reference))
+        if values:
+            self._prepare_archives(current, root, values)
+        elif not segments:
+            return current
+        return self._commit_root(current, current.run_id, root)
+
+    def _prepare_archives(self, current, root, values):
+        require(len(values) <= ARCHIVE_PAGE_LIMIT, 'archive commit batch exceeds its fixed page budget', 'state_capacity')
+        updates = []
+        for subject_id, reference in values:
+            prior_index = self._archive_path(subject_id)
+            if prior_index.exists():
+                index = json.loads(self._read(prior_index, 16 * 1024))
+                if self._archive_proof(current, index):
+                    existing = self.read_archive(current, subject_id)
+                    require(existing.reference == reference, 'closed subject ID cannot name another generation',
+                            'archive_conflict')
+            manifest = {'subject_id': subject_id, 'subject_ref': reference,
+                        'source_revision': current.revision, 'source_root_digest': current.reference['sha256']}
+            updates.append({'subject_id': subject_id,
+                'reference': self.write_object(current.run_id, 'archive-manifest', manifest)})
+        prior = current.root.get('archive_directory')
+        previous = None
+        if prior is not None:
+            previous = {'run_id': current.run_id, 'reference': prior,
+                        'revision': current.revision, 'root': current.reference['sha256']}
+        page = self.write_object(current.run_id, 'archive-page', {'items': updates, 'previous': previous})
+        root['archives'] = [{'subject_hash': hashlib.sha256(item['subject_id'].encode()).hexdigest(),
+                             'reference': item['reference']} for item in updates]
+        root['archive_directory'] = page
 
     def write_allocation_part(self, current, part, value):
         require(part in {'contract', 'package', 'baseline'} and isinstance(value, dict),
@@ -763,7 +1196,7 @@ class StateStore:
         require(isinstance(value, dict) and value.get('kind') in {'accepted-design-v1', 'accepted-implementation-v1'} and
                 value.get('checkpoint_path') == str(self.checkpoint.resolve()),
                 'predecessor belongs to another Controller checkpoint')
-        require(self.bytes_read <= READ_LIMIT, 'predecessor exceeds read budget', 'state_capacity')
+        require(self._ordinary_bytes_read <= READ_LIMIT, 'predecessor exceeds read budget', 'state_capacity')
         return value
 
     def read_scope(self, current, subject_id):
@@ -776,7 +1209,7 @@ class StateStore:
                 body['subject_id'] == subject_id and
                 body['subject_ref'] == current.root['subjects'].get(subject_id) and
                 isinstance(body['value'], dict), 'scope does not name the current stage subject')
-        require(self.bytes_read <= READ_LIMIT, 'scope exceeds the current read budget', 'state_capacity')
+        require(self._ordinary_bytes_read <= READ_LIMIT, 'scope exceeds the current read budget', 'state_capacity')
         return body['value']
 
     def _poll_index_path(self, kind, key):
@@ -791,13 +1224,53 @@ class StateStore:
         require(self._run_id is not None, 'open the current authority before reading fingerprints')
         path = self._poll_index_path(kind, key)
         if not path.exists():
-            return None
+            return self._event_fingerprint(kind, key)
         record = json.loads(self._read(path, 512))
         require(isinstance(record, dict) and set(record) == {'run_id', 'digest'} and
                 record['run_id'] == self._run_id and isinstance(record['digest'], str) and
                 len(record['digest']) == 64 and all(c in '0123456789abcdef' for c in record['digest']),
                 'invalid poll conflict fingerprint', 'state_object_corrupt')
         return record['digest']
+
+    def _event_fingerprint_path(self, kind, key):
+        require(kind in {'response', 'call', 'source-call_ref', 'source-response_ref', 'source-query_id'} and
+                isinstance(key, str) and len(key) == 64 and all(c in '0123456789abcdef' for c in key),
+                'exact original host fingerprint required')
+        return self._safe(Path('event-fingerprints') / kind / key[:2] / key[2:4] / key)
+
+    def _event_fingerprint(self, kind, key):
+        if kind not in {'response', 'call', 'source-call_ref', 'source-response_ref', 'source-query_id'}:
+            return None
+        path = self._event_fingerprint_path(kind, key)
+        if not path.exists():
+            return None
+        index = json.loads(self._read(path, 16 * 1024))
+        require(index.get('run_id') == self._run_id and index.get('kind') == kind and index.get('key') == key,
+                'original host fingerprint identity changed', 'state_object_corrupt')
+        current = self.open_current()
+        marker = self._safe(Path('commits') / str(index['revision']))
+        if not marker.exists():
+            if index['revision'] != current.revision or index['root'] != current.reference['sha256']:
+                return None
+            self._ensure_marker(current)
+        proof = json.loads(self._read(marker, 16 * 1024))
+        require(proof.get('root') == index['root'] and index['segment'] in proof.get('event_segments', []),
+                'host fingerprint lacks original committed event proof', 'state_object_corrupt')
+        segment = self.read_evidence(index['segment'], run_id=current.run_id, kind='event-segment')['value']
+        offset = index['offset']
+        require(type(offset) is int and 0 <= offset < len(segment['events']) <= 256,
+                'original host fingerprint offset changed')
+        original = segment['events'][offset]['value']['fingerprints'][kind]
+        require(original == {'key': key, 'digest': index['digest']},
+                'original host fingerprint changed', 'state_object_corrupt')
+        return original['digest']
+
+    def read_source_stage(self, kind, identity):
+        require(kind in {'call_ref', 'response_ref', 'query_id'} and isinstance(identity, str) and identity,
+                'exact original source identity required')
+        if self._run_id is None:
+            self.open_current()
+        return self._event_fingerprint('source-' + kind, entry.digest([kind, identity]))
 
     def record_poll(self, *, revision, identity, first, latest, fingerprints):
         """Telemetry does not create a new authority revision or evidence object."""
@@ -840,7 +1313,8 @@ class StateStore:
             return
         marker = self._safe(Path('commits') / str(current.revision))
         proof = encode({'revision': current.revision, 'root': current.reference['sha256'],
-                        'receipts': current.root.get('receipts', [])})
+                        'receipts': current.root.get('receipts', []),
+                        **({key: current.root[key] for key in ('archives', 'archive_directory', 'event_segments') if key in current.root})})
         if marker.exists():
             require(self._read(marker, 16 * 1024) == proof,
                     'commit proof differs from the current authority', 'state_object_corrupt')
@@ -884,7 +1358,7 @@ class StateStore:
         return self.read_evidence(receipt['result'], run_id=current.run_id)['value']
 
     def commit_current(self, *, expected_revision, revision, subjects, metadata, outer, receipts=(), initial_outer=None,
-                       scope=None, delivery=None):
+                       scope=None, delivery=None, archive_records=None, event_segments=()):
         if initial_outer is not None:
             require(self.checkpoint.exists() and not self.directory.exists() and
                     json.loads(self._read(self.checkpoint, ROOT_LIMIT)) == initial_outer and
@@ -904,12 +1378,34 @@ class StateStore:
         require(type(revision) is int and revision > actual and len(subjects) + (scope is not None) + (delivery is not None) <= MAX_SUBJECTS,
                 'invalid revision or active subject count', 'state_capacity')
         run_id = current.run_id if current else str(uuid.uuid4())
+        subjects = copy.deepcopy(subjects)
+        # A stopped allocation's immutable contract/result is one current fact,
+        # not 10 KiB of repeated bytes in a 32-entry Ticket record. Its exact
+        # original remains in the current read closure until the batch closes.
+        for value in subjects.values():
+            for number, observation in enumerate(value.get('observations', [])):
+                identity = observation.get('event_id')
+                if identity and value.get('events', {}).get(identity, {}).get('applied') is True:
+                    reference = self.write_object(run_id, 'evidence', observation)
+                    require(reference['size'] <= SUBJECT_LIMIT, 'current observation exceeds its original read limit', 'state_capacity')
+                    value['observations'][number] = {'kind': 'current-observation-ref-v1', 'event_id': identity,
+                        'reference': reference, 'observation_digest': entry.digest(observation)}
+            for identity, slot in value.get('allocations', {}).items():
+                if ((slot.get('record') or {}).get('status') == 'accepted' and
+                        slot.get('transaction') is None and not slot.get('repair_proposal') and
+                        (not slot.get('raw_ingress') or slot['raw_ingress'].get('resolved'))):
+                    original = {'allocation_id': identity, 'slot': slot}
+                    require(len(encode({'format': FORMAT, 'run_id': run_id, 'kind': 'evidence',
+                        'value': original})) <= SUBJECT_LIMIT, 'current allocation original exceeds its fixed read limit', 'state_capacity')
+                    reference = self.write_object(run_id, 'evidence', original)
+                    value['allocations'][identity] = {'kind': 'current-allocation-ref-v1',
+                        'reference': reference, 'slot_digest': entry.digest(slot)}
         # Validate the complete bounded candidate before writing any object.
         for name, value in subjects.items():
-            require(isinstance(name, str) and name and isinstance(value, dict) and
-                    len(encode({'format': FORMAT, 'run_id': run_id, 'kind': 'subject',
-                                'subject_id': name, 'value': value})) <= SUBJECT_LIMIT,
-                    'subject exceeds its fixed budget', 'state_capacity')
+            require(isinstance(name, str) and name and isinstance(value, dict), 'invalid subject record')
+            size = len(encode({'format': FORMAT, 'run_id': run_id, 'kind': 'subject',
+                              'subject_id': name, 'value': value}))
+            require(size <= SUBJECT_LIMIT, f'subject {name} exceeds its fixed budget ({size} bytes)', 'state_capacity')
         if scope is not None:
             subject_id = metadata['stage_subject']
             require(subject_id in subjects and isinstance(scope, dict), 'scope requires its current subject')
@@ -933,10 +1429,19 @@ class StateStore:
         require(len(receipts) <= 16, 'receipt commit batch exceeds its fixed proof budget', 'state_capacity')
         root = {'revision': revision, 'subjects': references, 'metadata': metadata, 'outer': outer,
                 'receipts': list(receipts)}
+        if current is not None and 'archive_directory' in current.root:
+            root['archive_directory'] = current.root['archive_directory']
+        if event_segments:
+            root['event_segments'] = list(event_segments)
         if scope is not None:
             root['scope'] = self.write_object(run_id, 'scope', scope_body)
         if delivery is not None:
             root['delivery'] = self.write_object(run_id, 'predecessor', delivery)
+        if archive_records:
+            require(current is not None, 'archive requires the original existing authority')
+            archived = [(name, self.write_object(run_id, 'subject', value, subject_id=name))
+                        for name, value in archive_records.items()]
+            self._prepare_archives(current, root, archived)
         return self._commit_root(current, run_id, root)
 
     def commit_outer(self, *, expected_revision, outer):
@@ -947,13 +1452,28 @@ class StateStore:
         self._ensure_marker(current)
         if outer == current.root['outer']:
             return current
+        outer = copy.deepcopy(outer)
+        history = outer.get('history', [])
+        require(isinstance(history, list), 'runner history must be an array')
+        sealed = history[:32] if len(history) >= 32 else history if outer.get('status') == 'completed' else []
+        require(len(history) <= 64, 'runner history exceeds its fixed window', 'state_capacity')
+        if sealed:
+            outer['history'] = history[len(sealed):]
         root = {**current.root, 'revision': current.revision + 1,
-                'outer': outer, 'receipts': []}
+                'outer': outer, 'receipts': [], 'archives': [], 'event_segments': []}
+        if sealed:
+            subject_id = 'runner-history:' + str(root['revision'])
+            reference = self.write_object(current.run_id, 'subject', {
+                'status': 'completed', 'stopped': True, 'history': sealed}, subject_id=subject_id)
+            self._prepare_archives(current, root, [(subject_id, reference)])
         return self._commit_root(current, current.run_id, root)
 
     def _commit_root(self, current, run_id, root):
         revision, receipts, metadata = root['revision'], root['receipts'], root['metadata']
         reference = self.write_object(run_id, 'root', root)
+        marker = {'revision': revision, 'root': reference['sha256'], 'receipts': list(receipts),
+                  **{key: root[key] for key in ('archives', 'archive_directory', 'event_segments') if key in root}}
+        require(len(encode(marker)) <= 16 * 1024, 'commit proof exceeds its fixed budget', 'state_capacity')
         if self._measured_writes is not None:
             for receipt in receipts:
                 index = {**receipt, 'revision': revision, 'run_id': run_id, 'root': reference['sha256']}
@@ -965,7 +1485,8 @@ class StateStore:
                         'workflow_progress': metadata}
             require(len(encode(envelope)) <= ROOT_LIMIT, 'current root exceeds its fixed budget', 'state_capacity')
             self._measured_writes[str(self.checkpoint)] = len(encode(envelope))
-            marker = {'revision': revision, 'root': reference['sha256'], 'receipts': list(receipts)}
+            marker = {'revision': revision, 'root': reference['sha256'], 'receipts': list(receipts),
+                      **{key: root[key] for key in ('archives', 'archive_directory', 'event_segments') if key in root}}
             self._measured_writes[str(self._safe(Path('commits') / str(revision)))] = len(encode(marker))
             measured_current = CurrentProjection(run_id, revision, root, reference)
             if self._measure_sequence:
@@ -975,6 +1496,51 @@ class StateStore:
             index = {**receipt, 'revision': revision, 'run_id': run_id, 'root': reference['sha256']}
             require(len(encode(index)) <= 16 * 1024, 'receipt index exceeds its fixed budget', 'state_capacity')
             atomic_write(self._receipt_path(receipt['key']), encode(index))
+        for archive in root.get('archives', []):
+            manifest = self.read_evidence(archive['reference'], run_id=run_id, kind='archive-manifest')['value']
+            subject_id = manifest['subject_id']
+            require(hashlib.sha256(subject_id.encode()).hexdigest() == archive['subject_hash'],
+                    'archive commit subject changed')
+            index = {'subject_id': subject_id, 'reference': archive['reference'],
+                     'run_id': run_id, 'revision': revision, 'root': reference['sha256']}
+            atomic_write(self._archive_path(subject_id), encode(index))
+            if subject_id.startswith(('allocation:', 'review:')):
+                value = self.read_evidence(manifest['subject_ref'], run_id=run_id, kind='subject')['value']
+                slot = (self.read_evidence(value['slot_ref'], run_id=run_id)['value']['slot']
+                        if value.get('slot_ref') else self._read_review_slot(run_id, value)
+                        if value.get('review_slot_ref') else value['slot'])
+                if subject_id.startswith('allocation:') and subject_id != 'allocation:' + value['allocation_id']:
+                    require(subject_id == 'allocation:' + value['allocation_id'] + ':' + slot['record']['request']['attempt'],
+                            'archive allocation generation changed', 'state_object_corrupt')
+                    atomic_write(self._archive_path('allocation:' + value['allocation_id']), encode(index))
+                native = (((slot.get('record') or {}).get('acceptance') or {}).get('role_ref')
+                          if subject_id.startswith('allocation:') else slot.get('ref'))
+                if native:
+                    prior = self.read_native_archive(current, native)
+                    # Preserve the first original role. In particular, a later
+                    # review can never hide that this actor implemented a path.
+                    if prior is None or subject_id.startswith('allocation:') and prior.subject_id.startswith('review:'):
+                        kind = 'execution' if subject_id.startswith('allocation:') else 'review'
+                        atomic_write(self._native_archive_path(native, kind), encode({**index, 'native_ref': native}))
+                if subject_id.startswith('review:') and value.get('claim_ref'):
+                    claim = self.read_evidence(value['claim_ref'], run_id=run_id)['value']['review_claim']
+                    action, response = claim['native_stop']['action_id'], claim['native_stop']['response_ref']
+                    atomic_write(self._review_archive_path(action, response), encode({**index,
+                        'action_id': action, 'response_ref': response}))
+        for segment_ref in root.get('event_segments', []):
+            segment = self.read_evidence(segment_ref, run_id=run_id, kind='event-segment')['value']
+            require(len(segment['events']) <= 256, 'event segment exceeds fixed entry budget')
+            for offset, item in enumerate(segment['events']):
+                index = {'run_id': run_id, 'event_id': item['event_id'], 'segment': segment_ref,
+                         'offset': offset, 'revision': revision, 'root': reference['sha256']}
+                atomic_write(self._event_path(run_id, item['event_id']), encode(index))
+                for kind, fingerprint in item['value'].get('fingerprints', {}).items():
+                    known = (self.poll_fingerprint(kind, fingerprint['key']) if kind in {'response', 'call'} else
+                             self._event_fingerprint(kind, fingerprint['key']))
+                    require(known is None or known == fingerprint['digest'],
+                            'original host fingerprint conflicts with a closed event', 'event_conflict')
+                    fingerprint_index = {**index, 'kind': kind, **fingerprint}
+                    atomic_write(self._event_fingerprint_path(kind, fingerprint['key']), encode(fingerprint_index))
         envelope = {'store_format': FORMAT, 'run_id': run_id, 'revision': revision,
                     'current': reference, 'previous': current.reference if current else None,
                     'workflow_progress': metadata}

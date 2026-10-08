@@ -138,6 +138,17 @@ their exact idempotency key and revisions must be retained on an unknown result.
                    "baseline": baseline, "request": payload})
     else:
         result = control.transition(payload)
+    returned = result['context'].get('handoff_progress') or {}
+    if returned.get('archived_executions') and not isinstance(returned, control.ArchivedProgress):
+        original = context['handoff_progress']
+        require(returned['archived_executions'] == original.get('archived_executions') and
+                result['context']['controller_ref'] == context['controller_ref'] and
+                returned['binding'] == original['binding'] and
+                returned['plan_authority'] == original['plan_authority'],
+                'authority_changed', 'control result changed its original archived fact references')
+        result['context']['handoff_progress'] = control.ArchivedProgress(
+            returned, control.archived_execution_results(original))
+        control.validate_current_context(result['context'])
     return result, None
 
 
@@ -995,6 +1006,15 @@ def verify_allocation_intent(request):
             state['request_digest'] == entry.digest(supplied) and
             state['base_control_digest'] == entry.digest(request['control']),
             'authority_changed', 'allocation request differs from the original Controller intent')
+    if (request['control']['context'].get('handoff_progress') or {}).get('archived_executions'):
+        # JSON transports cannot carry the Store-verified in-memory fact view.
+        # Recover it only from this exact persisted intent's original C port;
+        # neither a caller summary nor a newer ledger generation can replace it.
+        original = workflow_progress.read_active_owner(saved['checkpoint'])[workflow_progress.KEY]['control']
+        require(entry.digest(original) == state['base_control_digest'] and
+                original.get('store_ref') == request['control'].get('store_ref'),
+                'authority_changed', 'archived facts differ from the original allocation control port')
+        request['control'] = original
 
 
 def handle(request, *, validate_only=False):

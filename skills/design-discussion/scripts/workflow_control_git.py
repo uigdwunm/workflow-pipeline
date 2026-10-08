@@ -16,7 +16,7 @@ import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from workflow_control import ControlError, MAX_BYTES, keys, path, paths, require, transition, decode_json, validate_context, execution_record, direct_implementation, adoption_source, implementation_policy, current_accepted_results
+from workflow_control import ControlError, MAX_BYTES, keys, path, paths, require, transition, decode_json, validate_context, execution_record, direct_implementation, adoption_source, implementation_policy, current_accepted_results, all_execution_results
 
 
 def git(repository, *arguments):
@@ -412,7 +412,7 @@ def recovery_snapshot(repository, progress):
         for relative, fingerprint in fingerprints.items():
             owners[relative] = result['agent_ref']
             accepted_fingerprints[relative] = fingerprint
-    for execution in progress['executions']:
+    for execution in all_execution_results(progress):
         if execution['state'] == 'cancelled':
             continue
         require(execution.get('git_snapshot') is not None, 'allocation lacks original Git ownership evidence')
@@ -580,7 +580,7 @@ def verify_execution_start(repository, progress):
     historical_refs = (set(recovery['host_evidence']['stopped_refs'])
                        if recovery is not None and recovery['state'] == 'activated' else set())
     accepted_before, accepted_after, active_paths = [], [], set()
-    for execution in progress['executions']:
+    for execution in all_execution_results(progress):
         if execution['state'] == 'accepted':
             require('git_result_snapshot' in execution,
                     'accepted execution has no verified result snapshot')
@@ -596,7 +596,7 @@ def verify_execution_start(repository, progress):
     if recovery is not None and recovery['state'] == 'activated':
         released = {item['agent_ref'] for item in recovery.get('releases', [])}
         assumed = set(recovery['decision']['assume_paths'])
-        for execution in progress['executions']:
+        for execution in all_execution_results(progress):
             if execution['agent_ref'] in released:
                 assumed.update(execution['paths'])
         for relative in assumed:
@@ -643,15 +643,41 @@ def verified_transition(payload):
     keys(payload, {'repository', 'baseline', 'request'})
     require(isinstance(payload['repository'], str) and Path(payload['repository']).is_absolute(), 'repository must be absolute')
     keys(payload['request'], {'schema_version', 'action', 'actor_ref', 'context', 'evidence'})
-    validate_context(payload['request']['context'])
     require(isinstance(payload['request']['evidence'], dict), 'evidence must be an object')
+    request = copy.deepcopy(payload['request'])
+    context = request['context']
+    require(isinstance(context, dict), 'context must be an object')
+    progress = context.get('handoff_progress') or {}
+    require(isinstance(progress, dict), 'progress must be an object')
+    if progress.get('archived_executions'):
+        from workflow_control import ArchivedProgress, digest
+        if not isinstance(progress, ArchivedProgress):
+            # JSON cannot carry the Store's verified facts. Existing claim or
+            # coverage proofs name the original C; compare its complete context
+            # before accepting that Store projection across the CLI boundary.
+            evidence = request['evidence']
+            proof = (evidence.get('ticket_coverage') or evidence.get('coverage') or
+                     evidence.get('review_retention') or progress.get('coverage') or {})
+            require(isinstance(proof, dict), 'archived execution proof must be an object')
+            checkpoint_path = evidence.get('claim_checkpoint') or proof.get('checkpoint_path')
+            require(isinstance(checkpoint_path, str) and Path(checkpoint_path).is_absolute() and
+                    str(Path(checkpoint_path).resolve()) == checkpoint_path,
+                    'archived execution facts require their original Controller checkpoint')
+            import workflow_progress as progression
+            owner = progression.read_active_owner(checkpoint_path)[progression.KEY]
+            original = owner['control']['context']
+            require(digest(original) == digest(context) and
+                    original['controller_ref'] == context['controller_ref'] and
+                    original['handoff_progress']['binding']['worktree'] == str(Path(payload['repository']).resolve()),
+                    'archived execution facts differ from the original Controller checkpoint')
+            request['context'] = original
+    validate_context(request['context'])
     if payload['request']['context'].get('stage') == 4:
         verify_closure_delivery(payload['request']['context'].get('handoff_progress'))
         if payload['request']['action'] == 'start-closure':
             verify_closure_delivery(payload['request']['evidence'])
     repository = Path(payload['repository']).resolve()
     require(repository.is_dir() and repository.is_absolute(), 'repository must exist')
-    request = copy.deepcopy(payload['request'])
     action, evidence = request.get('action'), request.get('evidence', {})
     context = request.get('context', {})
     progress = context.get('handoff_progress')
@@ -939,7 +965,7 @@ def verified_transition(payload):
             fingerprints = accepted_owned_fingerprints(result)
             require(fingerprints is not None, 'carried execution lacks verified owned fingerprints')
             accepted_fingerprints.update(fingerprints)
-        for execution in progress['executions']:
+        for execution in all_execution_results(progress):
             if execution['state'] == 'accepted':
                 require('git_result_snapshot' in execution,
                         'accepted execution has no verified result snapshot')

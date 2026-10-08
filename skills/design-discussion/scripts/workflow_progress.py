@@ -561,6 +561,9 @@ def read_active_owner(path):
         require(len(allocations) <= 32, 'state_capacity', 'current allocation window is full')
     outer[KEY]['allocations'] = allocations
     restore_ledger_mirror(outer[KEY])
+    if outer[KEY]['control'].get('discussion') is None:
+        outer[KEY]['control']['context'] = store.resolve_control_context(
+            outer[KEY]['control']['context'], run_id=current.run_id)
     return outer
 
 
@@ -671,7 +674,7 @@ def stage3_scope(state):
             'source_result_digest', 'source_owned_start_fingerprints', 'owned_final_fingerprints',
             'read_only_fingerprints'}} | ({'git_snapshot': {'files': copy.deepcopy(item['git_snapshot']['files'])}}
                 if isinstance(item.get('git_snapshot'), dict) and 'files' in item['git_snapshot'] else {})
-            for item in current.get('carried_results', []) + current.get('executions', [])
+            for item in control.current_accepted_results(current)
             if item.get('state') == 'accepted'],
         'plan_revision_transaction': ({key: copy.deepcopy(state['plan_revision_transaction'].get(key))
             for key in ('state', 'proposed_authority')} if state.get('plan_revision_transaction') else None)}
@@ -794,6 +797,11 @@ def freeze_implementation_native_owners(state, store, current, prior):
                     'final-validation-pending', 'validating', 'final-validation-failed', 'deliverable', 'completed'}:
                 accepted_owner(slot['ref'], slot['originating_ref'], slot['originating_ref'],
                     entry.digest(slot['receipts']), True)
+    owner = Progress(state['checkpoint_path'], {**current.root['outer'], KEY: state})
+    for ref in owner.native_refs():
+        if ref not in references:
+            source_owner, digest, parent = owner.finalization_owner(ref)
+            accepted_owner(ref, source_owner, parent, digest, True)
     return references
 
 
@@ -1500,7 +1508,7 @@ def validate_stage2_scope(state):
                 'invalid_checkpoint', 'scope acceptance changed handoff')
 
 
-def save_current_record(path, outer, expected_revision, *, expected_authority_revision, receipt_action=None, receipts=()):
+def save_current_record(path, outer, expected_revision, *, expected_authority_revision, receipt_action=None, receipts=(), archive_records=None, event_segments=()):
     state = outer[KEY]
     require(not state.get('history'), 'state_capacity',
             'stage history must be archived before opening another current stage')
@@ -1571,6 +1579,8 @@ def save_current_record(path, outer, expected_revision, *, expected_authority_re
         outer={key: value for key, value in outer.items() if key != KEY}, receipts=receipts,
         initial_outer=initial, scope=(stage2_scope(state, path, outer) if state['stage'] == 2 else
                stage3_scope(state) if state['stage'] == 3 else None),
+        archive_records=archive_records,
+        event_segments=event_segments,
         delivery=(implementation_delivery(state, path, store, current) if state['stage'] == 3 and
                   state['status'] == 'accepted' and state['stopped'] and state['phase_complete'] else None))
 
@@ -2664,8 +2674,49 @@ def verify_completion(state):
         root = saved['binding']['repository']
         handoff.ancestor(root, proof['planning_commit'], proof['planning_merge_commit'])
         handoff.ancestor(root, proof['planning_merge_commit'], payload['merge_commit'])
+    archive_reading = verify_archived_completion(state)
     return {"completed": True, "merge_commit": payload["merge_commit"], "cleanup": actual["cleanup"],
-            "acceptance": accepted["digest"], "phase_complete": True}
+            "acceptance": accepted["digest"], "phase_complete": True, 'archive_reading': archive_reading}
+
+
+def verify_archived_completion(state):
+    """Final, streaming original-fact verification, separate from recovery reads."""
+    store = state_store.StateStore(state['checkpoint_path'])
+    current = store.open_current()
+    def original_subject(identity, value):
+        require(value.get('stopped') is True and value.get('status') in {'accepted', 'completed', 'cancelled'},
+                'archive_pending', 'final archive contains an unresolved subject')
+        if identity.startswith('allocation:'):
+            record = handoff.unseal(value['slot']['record'])
+            accepted, delivery = handoff.unseal(record['acceptance']), handoff.unseal(record['delivery'])
+            require(record['status'] == 'accepted' and accepted['status'] == 'accepted' and
+                    accepted['attempt'] == record['request']['attempt'] and
+                    accepted['request_digest'] == record['request']['digest'] and
+                    accepted['delivery_digest'] == record['delivery']['digest'] and
+                    accepted['role_ref'] == delivery['role_ref'],
+                    'identity_mismatch', 'archived B acceptance changed its original invocation')
+            ledger = value.get('ledger_ref')
+            owner = state_store.StateStore(ledger['ledger_path']) if ledger else store
+            proof = owner.read_evidence(value['execution_ref'],
+                run_id=ledger['reference']['run_id'] if ledger else current.run_id)['value']
+            execution = proof['execution']
+            require(proof['controller_ref'] == state['handoff']['controller_ref'] and
+                    proof['binding'] == state['handoff']['binding'] and execution['state'] == 'accepted' and
+                    execution['stopped'] is True and execution['agent_ref'] == accepted['role_ref'] and
+                    execution['allocation_digest'] == accepted['attempt'],
+                    'identity_mismatch', 'archive lost its original stopped C acceptance')
+            for receipt in record['receipts']:
+                native = store.read_evidence(receipt['raw_ref'], run_id=current.run_id)['value']['allocation_receipt']
+                require({key: item for key, item in native.items() if key != 'raw'} ==
+                        {key: item for key, item in receipt.items() if key != 'raw_ref'},
+                        'identity_mismatch', 'archive changed its original native receipt')
+        elif identity.startswith('review:') and value.get('claim_ref'):
+            claim = store.read_evidence(value['claim_ref'], run_id=current.run_id)['value']['review_claim']
+            review_evidence.validate_claim(claim)
+            authority = store.read_evidence(claim['verification']['source_authority_ref'], run_id=current.run_id)['value']['review_source_authority']
+            stop = store.read_evidence(claim['native_stop_ref'], run_id=current.run_id)['value']['native_review_stop']
+            control_git.verify_review_native_anchor(store, current, claim, authority, stop, slot=value['slot'])
+    return store.verify_archive_chain(current, verify_subject=original_subject)
 
 
 class Progress:
@@ -2694,13 +2745,59 @@ class Progress:
         if self.state.get("business_block") and self.state["status"] not in {"pausing", "paused", "cancelling", "cancelled"}:
             self.state["status"] = "blocked"
             self.state["error"] = copy.deepcopy(self.state["business_block"]["error"])
+        archives = self.prepare_history_archive(force=getattr(self, '_archive_force', False)) or {}
+        archives.update(self.prepare_review_archive(maximum=32 - len(archives)))
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        segments = []
+        if current is not None:
+            pinned = {(self.state.get('transaction_source') or {}).get('event_id'),
+                      (self.state.get('deferred_observation') or {}).get('event_id'),
+                      ((self.state.get('host_action') or {}).get('creation_receipt') or {}).get('event_id')}
+            previous_events = self.state.get('events', {})
+            eligible = [identity for identity, event in previous_events.items()
+                        if event.get('applied') is True and identity not in pinned][:256]
+            candidates = previous_events
+            if len(eligible) == 256:
+                observations = {item['event_id']: item for item in self.state.get('observations', []) if item.get('event_id')}
+                candidates = {identity: dict(event) for identity, event in previous_events.items()}
+                for identity in eligible:
+                    if identity in observations:
+                        observation = observations[identity]
+                        candidates[identity]['observation_ref'] = store.write_object(current.run_id, 'evidence', observation)
+                        provenance, receipt = observation.get('provenance'), observation.get('receipt')
+                        if provenance and receipt:
+                            fingerprints = {}
+                            for kind, key in (
+                                ('response', entry.digest([receipt['adapter'], provenance['response_ref']])),
+                                ('call', entry.digest([receipt['adapter'], provenance['call_ref']]))):
+                                known = self.state['host']['seen' if kind == 'response' else 'calls'].get(key)
+                                if known is not None:
+                                    fingerprints[kind] = {'key': key, 'digest': known if kind == 'response' else entry.digest(known)}
+                            for key in ('call_ref', 'response_ref'):
+                                fingerprints['source-' + key] = {'key': entry.digest([key, provenance[key]]),
+                                    'digest': entry.digest(self.state['stage_subject'])}
+                            candidates[identity]['fingerprints'] = fingerprints
+            events, segments = store.prepare_event_segment(current, candidates, pinned=pinned)
+            if segments:
+                archived_ids = set(previous_events) - set(events)
+                self.state['events'] = events
+                self.state['observations'] = [item for item in self.state.get('observations', [])
+                                              if item.get('event_id') not in archived_ids]
+                for identity in archived_ids:
+                    for kind, fingerprint in candidates[identity].get('fingerprints', {}).items():
+                        if kind in {'response', 'call'}:
+                            self.state['host']['seen' if kind == 'response' else 'calls'].pop(fingerprint['key'], None)
+                for segment in segments:
+                    archives['event-batch:' + str(current.revision + 1)] = {
+                        'status': 'completed', 'stopped': True, 'event_segment_ref': segment}
         previous_revision = self.state["revision"]
         self.state["revision"] += 1
         self.outer[KEY] = self.state
         try:
             committed = save_current_record(self.path, self.outer, previous_revision,
                 expected_authority_revision=self._authority_revision, receipt_action=self._receipt_action,
-                receipts=self._commit_receipts)
+                receipts=self._commit_receipts, archive_records=archives, event_segments=segments)
             self._authority_revision = committed.revision
             self._commit_receipts = []
             self.release_settled_reserves()
@@ -2720,6 +2817,116 @@ class Progress:
             except entry.ERROR_TYPES + (control.ControlError,) as reconciliation_error:
                 raise error from reconciliation_error
             raise
+
+    def compact_history(self):
+        """Original-owner lifecycle compaction, with no native/business effect."""
+        self.require_controls_reconciled()
+        require(self.state.get('transaction') is None and not self.unresolved_host_actions(),
+                'archive_pending', 'settle original intents before lifecycle compaction')
+        self._archive_force = True
+        try:
+            self.save()
+        finally:
+            self._archive_force = False
+        return _view(self.state)
+
+    def prepare_history_archive(self, *, force=False):
+        """Seal a stopped execution batch without changing original authority."""
+        state = self.state
+        slots = state.get('allocations', {})
+        closed = {identity: slot for identity, slot in slots.items()
+            if (slot.get('record') or {}).get('status') == 'accepted' and
+               slot.get('transaction') is None and slot.get('repair_proposal') is None and
+               (slot.get('record', {}).get('acceptance') or {}).get('role_ref') not in state.get('native_adverse', {}) and
+               not (slot.get('raw_ingress') and not slot['raw_ingress'].get('resolved'))}
+        if not closed or (not force and len(closed) < 32):
+            return None
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        context = state['control']['context']
+        results = control.all_execution_results(context['handoff_progress'])
+        references = list(context['handoff_progress'].get('archived_executions', []))
+        proofs = {item['allocation_digest']: reference for item, reference in
+                  zip(control.archived_execution_results(context['handoff_progress']), references)}
+        if state['control'].get('discussion') is None:
+            original_closed = [item for item in context['handoff_progress']['executions']
+                               if item['state'] == 'accepted' and item['stopped']]
+            context, new_refs = store.compact_control_context(context, run_id=current.run_id, force=force)
+            proofs.update({item['allocation_digest']: reference for item, reference in zip(original_closed, new_refs)})
+        else:
+            pointer = state['control']['store_ref']
+            ledger = state_store.open_store(pointer['ledger_path'])
+            _, body = ledger.read_ledger_control(pointer)
+            original_closed = [ledger.read_evidence(reference, run_id=pointer['reference']['run_id'])['value']['execution']
+                               for reference in body.get('archive_refs', [])]
+            proofs.update({item['allocation_digest']: reference for item, reference in
+                           zip(original_closed, body.get('archive_refs', []))})
+            results = original_closed + results
+        results = {item['allocation_digest']: item for item in results}
+        # Each sealed B acceptance must still have its original stopped C result.
+        for identity, slot in closed.items():
+            digest = slot['record']['request']['attempt']
+            require(digest in results and results[digest]['stopped'] and
+                    results[digest]['state'] == 'accepted', 'archive_pending',
+                    'archive requires the original accepted stopped execution')
+        archives = {'allocation:' + identity + (':' + slot['record']['request']['attempt']
+                    if slot['handoff']['semantic'].get('repair') else ''): {'status': 'accepted', 'stopped': True,
+                    'allocation_id': identity,
+                    'slot_ref': store.write_object(current.run_id, 'evidence',
+                        {'allocation_id': identity, 'slot': slot}), 'slot_digest': entry.digest(slot),
+                    'execution_ref': copy.deepcopy(proofs[slot['record']['request']['attempt']]),
+                    **({'ledger_ref': copy.deepcopy(state['control']['store_ref'])}
+                       if state['control'].get('store_ref') else {})}
+                    for identity, slot in closed.items()}
+        state['control']['context'] = context
+        state['allocations'] = {identity: slot for identity, slot in slots.items() if identity not in closed}
+        return archives
+
+    def prepare_review_archive(self, *, maximum):
+        """Retire settled calls; current claims retain their original CAS evidence."""
+        state = self.state
+        claims = (state['control']['context'].get('handoff_progress') or {}).get('review_claims', {})
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        archives, retained = {}, []
+        for historical, group in [(False, state.get('review_activity', {})),
+                                  *((True, group) for group in state.get('review_history', []))]:
+            keep = {}
+            for axis, slot in group.items():
+                settled = (slot.get('stopped') is True and slot.get('business_settled') is True and
+                    slot.get('start', {}).get('applied') is True and
+                    (not slot.get('query') or slot['query'].get('resolved') is True) and
+                    (not slot.get('raw_ingress') or slot['raw_ingress'].get('resolved') is True))
+                view = claims.get(axis)
+                accepted = False
+                if view and settled:
+                    claim = store.read_evidence(view['claim_ref'], run_id=current.run_id,
+                        maximum=state_store.SUBJECT_LIMIT)['value']['review_claim']
+                    accepted = claim['native_stop']['action_id'] == slot['action_id']
+                if settled and (historical or accepted) and len(archives) < maximum:
+                    identity = 'review:' + slot['action_id']
+                    if store._archive_path(identity).exists():
+                        original = store.read_archive(current, identity).value['slot']
+                        if original != slot:
+                            identity += ':' + entry.digest(slot)
+                    facts = {key: copy.deepcopy(value) for key, value in slot.items() if key not in {'prepare', 'receipts'}}
+                    facts['prepare_ref'] = store.write_object(current.run_id, 'evidence', slot['prepare'])
+                    facts['receipt_refs'] = [store.write_object(current.run_id, 'evidence', {'native_review_stop': receipt})
+                        for receipt in slot['receipts']]
+                    archives[identity] = {'status': 'completed', 'stopped': True,
+                        'axis': axis, 'stage_subject': state['stage_subject'],
+                        'review_slot_ref': store.write_object(current.run_id, 'evidence', {'review_slot': facts}),
+                        'slot_digest': entry.digest(slot),
+                        **({'claim_ref': view['claim_ref']} if accepted else {})}
+                else:
+                    keep[axis] = slot
+            if historical:
+                if keep:
+                    retained.append(keep)
+            else:
+                state['review_activity'] = keep
+        state['review_history'] = retained
+        return archives
 
     def release_settled_reserves(self):
         pending = {action['action_id'] for action in self.unresolved_host_actions()}
@@ -2875,6 +3082,8 @@ class Progress:
             selected = s.get('control', {}).get('context', {})
         progress = selected.get('handoff_progress') or {}
         refs.update(item['agent_ref'] for item in progress.get('executions', []) if item.get('agent_ref'))
+        refs.update(item['agent_ref'] for item in control.archived_execution_results(progress) if item.get('agent_ref'))
+        refs.update(view['reviewer_ref'] for view in progress.get('review_claims', {}).values())
         refs.update(item['agent_ref'] for item in progress.get('carried_results', [])
                     if item.get('agent_ref'))
         for source in progress.get('plan_revision_sources', []):
@@ -2905,6 +3114,12 @@ class Progress:
                                          for record in s.get('native_finalizations', [])]})
 
     def reject_design_native_replay(self, data):
+        store = state_store.open_store(self.path)
+        for key in ('query_id', 'call_ref', 'response_ref'):
+            if key in data:
+                source_stage = store.read_source_stage(key, data[key])
+                require(source_stage is None or source_stage == entry.digest(self.state['stage_subject']),
+                        'host_provenance_conflict', 'original archived native source cannot bind another stage attempt')
         references = []
         design = self.state.get('design_predecessor')
         recovery_prior = self.state.get('implementation_predecessor') or self.state.get('recovery_predecessor')
@@ -3010,7 +3225,10 @@ class Progress:
 
     def finalization_owner(self, ref):
         """Acceptance stays in B/control; lifecycle evidence grants no role."""
-        require(ref in self.native_refs() or any(ref in self.native_refs(old) for old in self.state.get('history', [])),
+        store = state_store.open_store(self.path)
+        current = store.open_current()
+        archived = store.read_native_archive(current, ref)
+        require(archived is not None or ref in self.native_refs() or any(ref in self.native_refs(old) for old in self.state.get('history', [])),
                 'identity_mismatch', 'finalize only a registered workflow native identity')
         for saved in [self.state, *reversed(self.state.get('history', []))]:
             accepted = saved.get('accepted')
@@ -3045,6 +3263,21 @@ class Progress:
                         return slot['originating_ref'], entry.digest(slot['receipts']), slot['originating_ref']
                     require(not (saved is self.state and index == 0 and slot and slot.get('ref') == ref),
                             'result_incomplete', 'current review must stop and converge before native finalization')
+            if checkpoint.get('state') in {'final-validation-pending', 'validating', 'final-validation-failed', 'deliverable', 'completed'}:
+                for axis, claim in self.read_review_claims().items():
+                    if claim['reviewer_ref'] == ref:
+                        original = store.read_review_archive(current, claim['native_stop']['action_id'],
+                            claim['native_stop']['response_ref']).value['slot']
+                        require(ref not in self.state.get('native_adverse', {}),
+                                'result_incomplete', 'original review stop was revoked')
+                        return original['originating_ref'], entry.digest(original['receipts']), original['originating_ref']
+        if archived is not None and archived.subject_id.startswith('allocation:'):
+            slot = archived.value['slot']
+            record = handoff.unseal(slot['record'])
+            require(record['status'] == 'accepted' and record['acceptance']['role_ref'] == ref and
+                    ref not in self.state.get('native_adverse', {}),
+                    'result_incomplete', 'archived native business acceptance or stop was revoked')
+            return slot['owner_ref'], record['acceptance']['digest'], handoff.resolve_allocation(slot['handoff'])['expected_entry']['actor']['thread_id']
         if self.state.get('design_predecessor') is not None:
             prior = read_design_predecessor(self.state['design_predecessor'], self.path)
             if prior['accepted']['role_ref'] == ref:
@@ -4376,7 +4609,7 @@ class Progress:
                     control_git.git(repository, "status", "--porcelain", "-z", "--", relative)):
                 return False
             cleaned = False
-            for execution in checkpoint["executions"]:
+            for execution in control.all_execution_results(checkpoint):
                 if (execution["state"] != "accepted" or
                         execution["allocation_digest"] in previously_accepted or
                         execution.get("plan_authority") != checkpoint["plan_authority"] or
@@ -4594,7 +4827,7 @@ class Progress:
             message = "retired implementation paths still differ from baseline: " + ", ".join(nonbaseline)
             stop = copy.deepcopy(s["host"]["last_stop"])
             accepted_executions = sorted(execution["allocation_digest"] for execution in
-                s["control"]["context"]["handoff_progress"]["executions"]
+                control.all_execution_results(s["control"]["context"]["handoff_progress"])
                 if execution["state"] == "accepted")
             transaction["rejection"] = {"snapshot": snapshot, "stop": stop,
                 "accepted_executions": accepted_executions,
@@ -4781,7 +5014,7 @@ class Progress:
             repository, checkpoint["git_baseline_commit"], relative)
             for relative in new["scope"]["implementation_paths"]}
         retention = execution_plan.classify_retained_results(
-            old, new, checkpoint["executions"], checkpoint.get("carried_results", []),
+            old, new, control.all_execution_results(checkpoint), checkpoint.get("carried_results", []),
             checkpoint.get("revalidation_source"), transaction["snapshot"],
             baseline_fingerprints, transaction["git_facts"]["changed_paths"])
         evidence = {"revision_id": data["revision_id"],
@@ -6693,6 +6926,18 @@ class Progress:
                 'allocation_digest': slot['record']['request']['attempt'],
                 'reference': store.write_object(current.run_id, 'evidence', {'plan_revision_allocation': slot})}
                 for allocation_id, slot in s.get('allocations', {}).items()}
+            for execution in control.archived_execution_results(s['control']['context']['handoff_progress']):
+                original = store.read_native_archive(current, execution['agent_ref'])
+                require(original is not None and original.subject_id.startswith('allocation:'),
+                        'identity_mismatch', 'revision lost its original archived allocation')
+                allocation_id = original.value['allocation_id']
+                latest = store.read_archive(current, 'allocation:' + allocation_id).value['slot']
+                require(latest['record']['request']['attempt'] == execution['allocation_digest'] and
+                        allocation_id not in revision_allocations,
+                        'identity_mismatch', 'revision archive differs from its current accepted execution')
+                revision_allocations[allocation_id] = {'kind': 'plan-revision-allocation-ref',
+                    'allocation_digest': execution['allocation_digest'],
+                    'reference': store.write_object(current.run_id, 'evidence', {'plan_revision_allocation': latest})}
         # Retain exact ledger envelope on a lost response; never promote slots by hand.
         try:
             if data["action"] == "plan-revision-activate" and s["control"]["discussion"] is None:
@@ -6811,7 +7056,11 @@ class Progress:
         self._commit_receipts.append(membership)
         self.remember_rework_receipt(transactions[identity], membership)
         del transactions[identity]
-        self.save()
+        self._archive_force = data['action'] == 'ticket-accept'
+        try:
+            self.save()
+        finally:
+            self._archive_force = False
         if data['action'] == 'dispatch-recovery-result' and s.get('transport_loss'):
             return _view(s, s['recovery_action'])
         if data['action'] == 'dispatch-recovery-intent':
@@ -7117,6 +7366,13 @@ class Progress:
         require(operation in {"prepare", "repair", "bind", "reconcile", "receive", "accept"}, "invalid_operation", "unknown allocation operation")
         s = self.state
         prior_slot = s.get('allocations', {}).get(identity)
+        if operation == 'prepare' and prior_slot is None:
+            archive_store = state_store.open_store(self.path)
+            archive_current = archive_store.open_current()
+            if archive_store._archive_path('allocation:' + identity).exists():
+                archive_store.read_archive(archive_current, 'allocation:' + identity)
+                raise entry.PreparationError('attempt_ended',
+                    'closed allocation requires its original exact receipt; no new call is authorized')
         inherited_slot = False
         if operation == 'repair' and prior_slot is None:
             checkpoint = s['control']['context']['handoff_progress']
@@ -7126,9 +7382,20 @@ class Progress:
                 (group['allocations'][identity].get('allocation_digest')
                  if group['allocations'][identity].get('kind') == 'plan-revision-allocation-ref' else
                  (group['allocations'][identity].get('record') or {}).get('request', {}).get('attempt')) in carried]
-            require(len(candidates) == 1, 'allocation_missing', 'repair requires one original carried allocation')
-            prior_slot = copy.deepcopy(plan_revision_allocation_slot(s, candidates[0]))
-            inherited_slot = True
+            if candidates:
+                require(len(candidates) == 1, 'allocation_missing', 'repair requires one original carried allocation')
+                prior_slot = copy.deepcopy(plan_revision_allocation_slot(s, candidates[0]))
+                inherited_slot = 'carried'
+            else:
+                archive_store = state_store.open_store(self.path)
+                archive_current = archive_store.open_current()
+                require(archive_store._archive_path('allocation:' + identity).exists(),
+                        'allocation_missing', 'repair requires one original carried or archived allocation')
+                archived = archive_store.read_archive(archive_current, 'allocation:' + identity)
+                require(archived.value['allocation_id'] == identity,
+                        'identity_mismatch', 'repair archive changed its original slice')
+                prior_slot = copy.deepcopy(archived.value['slot'])
+                inherited_slot = 'archived'
         proposal = prior_slot.get('repair_proposal') if prior_slot else None
         require(proposal is None or operation in {'repair', 'prepare'}, 'outcome_unknown',
                 'reconcile the original repair preparation before another allocation operation')
@@ -7140,6 +7407,18 @@ class Progress:
             require(data['receipt'].get('attempt') == launch['attempt'] and
                     data['receipt'].get('request_digest') == launch['digest'],
                     'attempt_mismatch', 'receipt belongs to a previous execution invocation')
+            if data['receipt'].get('ref'):
+                store = state_store.open_store(self.path)
+                prior_native = store.read_native_archive(store.open_current(), data['receipt']['ref'])
+                repair = prior_slot['handoff']['semantic'].get('repair')
+                original_attempt = prior_native.value['slot']['record']['request']['attempt'] if prior_native else None
+                require(prior_native is None or not prior_native.subject_id.startswith('allocation:') or
+                        original_attempt == launch['attempt'] or repair is not None and
+                        repair['agent_ref'] == data['receipt']['ref'] and any(
+                            store.read_evidence(reference, run_id=store.open_current().run_id)['value']['execution_invocation']
+                                ['record']['request']['attempt'] == original_attempt
+                            for reference in prior_slot.get('invocation_history', [])),
+                        'identity_mismatch', 'original completed execution identity cannot bind another invocation')
         if operation in {'prepare', 'repair'}:
             self.require_business_ready()
         if operation == 'repair':
@@ -7168,10 +7447,11 @@ class Progress:
                     original_record = handoff.unseal(prior_slot['record'])
                     dispatch.verified_launch(original_record)
                     dispatch.verify_allocation_receipts(original_record)
-                    carry = carried[original_record['request']['attempt']]
-                    original = control.repair_execution_record(checkpoint, carry['agent_ref'])
+                    carry = carried[original_record['request']['attempt']] if inherited_slot == 'carried' else None
+                    original = control.repair_execution_record(checkpoint,
+                        carry['agent_ref'] if carry else original_record['acceptance']['role_ref'])
                     require(original['allocation_digest'] == original_record['request']['attempt'] and
-                            original['task_id'] == carry['task_id'],
+                            (carry is None or original['task_id'] == carry['task_id']),
                             'identity_mismatch', 'carried allocation differs from its original native request')
                     ref, state = original['agent_ref'], original['state']
                 else:
@@ -7519,6 +7799,8 @@ class Progress:
     def require_allocation_active(self):
         self.require_not_stopping()
         self.require_finalizations_released()
+        require(not self.state.get('native_adverse'), 'host_recovery_required',
+                'reconcile revoked original native stops before allocating more work')
 
     def review_dependency_axes(self, axis):
         catalog = execution_plan.current_catalog(self.state['scope_authority'])
@@ -7582,8 +7864,9 @@ class Progress:
             slots = [group[axis] for group in [self.state.get('review_activity', {}),
                 *self.state.get('review_history', [])] if axis in group and
                 group[axis]['action_id'] == claim['native_stop']['action_id']]
-            require(len(slots) == 1, 'review_incomplete', 'claim has no exact original prepared native review action')
-            control_git.verify_review_native_anchor(store, current, claim, authority, stop, slot=slots[0])
+            require(len(slots) <= 1, 'review_incomplete', 'claim repeats its original prepared native action')
+            control_git.verify_review_native_anchor(store, current, claim, authority, stop,
+                slot=slots[0] if slots else None)
             context = self.state['control']['context']
             require(identity in review_evidence.source_dispatchers(context['carrier'], context['handoff_progress']),
                     'review_incomplete', 'original command source has no authenticated Dispatcher lineage')
@@ -7740,11 +8023,14 @@ class Progress:
                 report.get('requirement_refs') == scope['requirement_refs'] and
                 report.get('dependency_claim_ids') == scope['dependency_claim_ids'],
                 'review_incomplete', 'delivery review must accept cross-Ticket/shared-state and complete coverage')
-        writers = checkpoint['executions'] + checkpoint.get('carried_results', [])
+        writers = control.all_execution_results(checkpoint) + checkpoint.get('carried_results', [])
         for source in checkpoint.get('plan_revision_sources', []):
             writers += source['executions'] + source['carried_results']
         require(receipt['ref'] not in {item['agent_ref'] for item in writers} | {self.bound_ref(), self.state['handoff']['controller_ref']},
                 'identity_mismatch', 'delivery reviewer cannot be any implementation author')
+        archived_author = store.read_native_archive(current, receipt['ref'])
+        require(archived_author is None or not archived_author.subject_id.startswith('allocation:'),
+                'identity_mismatch', 'delivery reviewer cannot be an archived implementation author')
         source = checkpoint['candidate_evidence']['source']
         required = checkpoint['validation_plan']['review_required']
         control.validate_checks(required, checkpoint['tests'], checkpoint['candidate'])
@@ -7849,7 +8135,7 @@ class Progress:
                 'review_incomplete', 'semantic claim must name its original native stopped response')
         receipt, projection = receipts[0], slot['subject']
         checkpoint = self.state['control']['context']['handoff_progress']
-        executions = list(checkpoint['executions']) + list(checkpoint.get('carried_results', []))
+        executions = control.all_execution_results(checkpoint) + list(checkpoint.get('carried_results', []))
         for previous in checkpoint.get('plan_revision_sources', []):
             executions.extend(previous['executions'] + previous['carried_results'])
         require(slot['ref'] not in {result['agent_ref'] for result in executions
@@ -7858,6 +8144,15 @@ class Progress:
                 'identity_mismatch', 'a reviewer cannot review any version of its implementation')
         store = state_store.open_store(self.path)
         current = store.open_current()
+        prior_native = store.read_native_archive(current, slot['ref'])
+        if prior_native is not None and prior_native.subject_id.startswith('allocation:'):
+            prior = prior_native.value
+            ledger = prior.get('ledger_ref')
+            original_store = state_store.open_store(ledger['ledger_path']) if ledger else store
+            original = original_store.read_evidence(prior['execution_ref'],
+                run_id=ledger['reference']['run_id'] if ledger else current.run_id)['value']['execution']
+            require(not set(original['paths']) & set(projection['owned_fingerprints']),
+                    'identity_mismatch', 'a reviewer cannot review its archived implementation')
         semantic = self.read_original_review_semantic(store, current, slot, receipt)
         require(isinstance(semantic, dict) and semantic.get('status') == 'accepted' and
                 semantic.get('findings') == [] and semantic.get('checks') == slot['prepare']['verification']['checks'] and
@@ -8840,6 +9135,35 @@ def _handle(path, request):
             return _view(owner.state)
         # Exact duplicate observations/decisions may ACK even with an old revision.
         data = request.get("data", {})
+        if owner.state is not None and operation == 'observe' and isinstance(data, dict) and data.get('event_id'):
+            store = state_store.open_store(path)
+            prior = store.read_event(store.open_current(), data['event_id'], data)
+            if prior is not None:
+                require(prior.get('applied') is True, 'outcome_unknown', 'original observation remains pending')
+                return _view(owner.state, {'operation': 'observation-ack', 'event_id': data['event_id'],
+                    'write_authority': False}, acknowledged=True)
+        if owner.state is not None and operation == 'review-activity' and isinstance(data, dict) and data.get('action_id'):
+            store = state_store.open_store(path)
+            current = store.open_current()
+            archived_id = 'review:' + data['action_id']
+            live = any(slot['action_id'] == data['action_id'] for group in [owner.state.get('review_activity', {}),
+                *owner.state.get('review_history', [])] for slot in group.values())
+            if not live and store._archive_path(archived_id).exists():
+                archived = store.read_archive(current, archived_id).value
+                require(data.get('operation') == 'observe' and archived['axis'] == data.get('axis') and
+                        archived['slot']['candidate'] == data.get('candidate') and
+                        archived['slot']['originating_ref'] == data.get('actor_ref'),
+                        'review_conflict', 'retain the original closed reviewer identity')
+                original = owner.review_receipt_request(data)
+                key = store.receipt_key(current, actor=data['actor_ref'], kind='review:observe',
+                    subject=archived['stage_subject'], invocation=data['receipt']['response_ref'])
+                if store.read_receipt(current, key, original) is not None:
+                    return _view(owner.state, acknowledged=True)
+                require(actual == request['expected_revision'] and archived['stage_subject'] == owner.state['stage_subject'],
+                        'attempt_ended', 'closed review accepts only its original exact receipt')
+                # A new observation may revoke an old stop. Bring that exact call
+                # back into the active stop barrier before consuming its receipt.
+                owner.state.setdefault('review_history', []).append({archived['axis']: archived['slot']})
         if operation in {"prepare-plan-revision", "commit-plan-revision", "reconcile-plan-revision"}:
             require(isinstance(data, dict) and isinstance(data.get("revision_id"), str) and
                     bool(data["revision_id"].strip()), "invalid_request",

@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "cb6ea862639bce21ffa36a27adaad3985a8c0a592e47df8e25a44c91c44acf0b",
+  "bundle_digest": "ba3927ad78eb5480b7940d2654b0e4a82e0b29f8ac4c73e37d0c67129b027e4f",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 12,
@@ -108,7 +108,7 @@
     },
     "references/shared/workflow-progression.md": {
       "mode": "0644",
-      "sha256": "a1ad9c0073b284fce4f796144e04e12818c76dc26d6fd7d57a1314ef1244dd96"
+      "sha256": "2b7db407f1897c0e9f84a68e525e0d75cd6168131d64bdefce28765497470be0"
     },
     "references/solution-design/conversation-source.md": {
       "mode": "0644",
@@ -172,7 +172,7 @@
     },
     "scripts/discussion_core/workflow_control.py": {
       "mode": "0644",
-      "sha256": "3c3b7b0fcbc2f94827dfb074051749a0fea3bc294cce27dd4f8f2e4cd8672434"
+      "sha256": "8e8e7480503f6032371cc9b27393757b1ee044054334044a892ea13b1f5ab0d1"
     },
     "scripts/discussion_protocol.py": {
       "mode": "0644",
@@ -212,7 +212,7 @@
     },
     "scripts/stage_dispatch.py": {
       "mode": "0644",
-      "sha256": "8420a2cf332eef5bfad59901015e778cc1aad3c049fefc45b683e4eeba07b7d8"
+      "sha256": "3c8933a4ae0a8cb9c163c5a7c43a04513c85407e83f44a33a593be199073c3c9"
     },
     "scripts/stage_handoff.py": {
       "mode": "0644",
@@ -240,19 +240,19 @@
     },
     "scripts/workflow_control.py": {
       "mode": "0644",
-      "sha256": "74181266e347ea3b4f24b7e553af9eaf3ce981d8edfd2fa3ebf00f0353322afc"
+      "sha256": "d38f48c5ab10986fb6c65326bbb81e97bf9c1b98ef5e2c6e37ec0e59abf80afd"
     },
     "scripts/workflow_control_git.py": {
       "mode": "0644",
-      "sha256": "64b5a24603a20ea9be8590cfe2512b2d7e4bb4b32c8a78a2a52907976406d4f8"
+      "sha256": "69c6f36fce49432591e6e5a403ec60573e56534cf8856314f8f8887a6e585bdf"
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "b6ede22c128f18ac9e6376f99344e6c0d7e0ec51db6fafb28b7621ec1228d852"
+      "sha256": "05dd54e9ad8fec597c32f95db42f7cee6d315ebccc3ae5bbd91d8fbc953a0153"
     },
     "scripts/workflow_state_store.py": {
       "mode": "0644",
-      "sha256": "bbb1ec863310a24f4998537a5b54dde0c246fcb84b2966244ee35e8d17a94096"
+      "sha256": "2fd00d2ad583178b1eb270c2024f8e9c8902e67b02e7ae5f32e811bb42a18493"
     }
   },
   "format_version": 1,

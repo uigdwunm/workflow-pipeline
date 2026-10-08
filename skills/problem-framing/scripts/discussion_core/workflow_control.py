@@ -356,7 +356,8 @@ def _bounded_workflow_control(request):
                   'record_revision': topic_revision, 'control': compact}
         pointer = store.prepare_ledger_control(control['context'], topic_id=topic['topic_id'],
             ledger_revision=revision + 1, control_revision=record['record_revision'], previous=pointer,
-            receipt={'key': request['idempotency_key'], 'fingerprint': _mutation_fingerprint(request), 'result': result})
+            receipt={'key': request['idempotency_key'], 'fingerprint': _mutation_fingerprint(request), 'result': result},
+            force_archive=action == 'ticket-accept')
         record['data_json'] = _canonical_json(pointer)
         result = {**result, 'control': {**compact, 'store_ref': pointer}}
         if measurement is None:
