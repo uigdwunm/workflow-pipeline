@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "52c5887ed9a3bebcb015d9c2c80f61fd74d5b7694a5ea3eb2d6af9077e6bfa0f",
+  "bundle_digest": "b7d6dc4dca3f92b095ccc461e4abe3b16fa2af22d0f41ae2ac02803ecded075f",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 12,
@@ -231,7 +231,7 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "740ae9400948db6e83c3598ddb4ff8fc27aeb1ed2093e67166f4fe27dd8cb065"
+      "sha256": "f248d29fc58c54e8eabf8eea1ae9826839fe1facb5528e42e4a2ca2c26a2c2a9"
     },
     "scripts/workflow_state_store.py": {
       "mode": "0644",
@@ -240,7 +240,7 @@
   },
   "format_version": 1,
   "name": "change-closure",
-  "release": "1.3.0",
+  "release": "1.4.0",
   "resources": [
     "change-closure/SKILL.md",
     "change-closure/agents/openai.yaml",
@@ -295,6 +295,6 @@
     "shared/scripts/workflow_state_store.py",
     "solution-design/references/conversation-source.md"
   ],
-  "source_revision": "workflow-pipeline-v1.3.0",
+  "source_revision": "workflow-pipeline-v1.4.0",
   "stage": 4
 }

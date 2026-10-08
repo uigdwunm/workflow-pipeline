@@ -954,28 +954,9 @@ class ArchiveAffectedTests(unittest.TestCase):
     def test_archive_affected_cli_original_proof_rejections(self):
         from test_layered_review import LayeredReviewTests
         flow = self.layered_fixture()
-        original_run = subprocess.run
-        originals = []
-        def original_cli(command, *args, **kwargs):
-            if len(command) > 1 and command[1] == str(Path(progress.control_git.__file__)) and kwargs.get('input'):
-                envelope = json.loads(kwargs['input'])
-                if envelope['request']['action'] == 'review-converged':
-                    originals.append(copy.deepcopy(envelope))
-                    # The original adversarial cases must reach their original
-                    # issuer/certificate checks using today's valid C context.
-                    # Keep every forged proof and original rejection assertion.
-                    envelope['request']['context'] = flow.state()['control']['context']
-                    kwargs['input'] = json.dumps(envelope)
-            return original_run(command, *args, **kwargs)
-        with patch.object(subprocess, 'run', side_effect=original_cli):
-            LayeredReviewTests.test_layered_coverage_git_cli_consumes_original_proofs(flow)
-        before = flow.checkpoint.read_bytes()
-        stale = original_run([sys.executable, str(Path(progress.control_git.__file__))],
-            input=json.dumps(originals[0]), text=True, capture_output=True, cwd=flow.flow)
-        self.assertEqual(stale.returncode, 1, stale.stdout + stale.stderr)
-        self.assertIn('archived execution facts differ from the original Controller checkpoint', json.loads(stale.stdout)['error'])
-        self.assertNotIn('Traceback', stale.stderr)
-        self.assertEqual(flow.checkpoint.read_bytes(), before)
+        # The original public fixture now resolves committed archives itself
+        # and tests both current hostile proofs and the unchanged stale C.
+        LayeredReviewTests.test_layered_coverage_git_cli_consumes_original_proofs(flow)
 
 
 def load_tests(loader, tests, pattern):

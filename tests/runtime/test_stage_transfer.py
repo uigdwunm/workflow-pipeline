@@ -176,7 +176,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                 request["readiness"] = progress.scope_readiness(state, self.checkpoint)
         if stage == 3 and predecessor is None:
             request["semantic"]["inline_plan"] = {
-                "schema_version": 1, "ticket_id": "INLINE-TRANSFER", "plan_version": 1,
+                "schema_version": 2, "ticket_id": "INLINE-TRANSFER", "plan_version": 1,
                 "spec_ref": {"path": "inline", "section": "brief"},
                 "contract_refs": ["standalone:objective"], "blocked_by": [],
                 "verifications": [{"id": "V-inline", "behavior": "approved implementation behavior",
@@ -187,7 +187,10 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                     "inputs": ["frozen brief"], "outputs": ["observable result"],
                     "failures": ["invalid input is reported"], "depends_on": [],
                     "verification_refs": ["V-inline"], "read_only": [self.requirement_path]}],
-                "artifact_steps": []}
+                "artifact_steps": [],
+                "behavior_slices": [{"id": "inline-behavior", "step_ids": ["inline-implementation"],
+                    "ac_refs": ["standalone:objective"], "verification_refs": ["V-inline"],
+                    "read_only": [self.requirement_path], "shared_state": []}]}
         return request
 
     def context_for(self, stage):
@@ -208,6 +211,10 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         return execution
 
     def test_inline_source_uses_complete_original_b_input_seal(self):
+        legacy = self.input_for(3)
+        legacy['semantic']['inline_plan']['schema_version'] = 1
+        legacy['semantic']['inline_plan'].pop('behavior_slices')
+        self.assert_code('execution_plan_incomplete', lambda: handoff.handle(legacy))
         saved = handoff.handle(self.input_for(3))
         body = handoff.unseal(saved)
         original = copy.deepcopy(body)
@@ -283,7 +290,7 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
         self.invoke("observe", self.observation())
         planning_paths = self.input["scope"]["owned_paths"]
         for path in planning_paths:
-            plan = {"schema_version": 1, "ticket_id": "FEP-01", "plan_version": 1,
+            plan = {"schema_version": 2, "ticket_id": "FEP-01", "plan_version": 1,
                 "spec_ref": {"path": "docs/spec.md", "section": "Implementation Decisions"},
                 "contract_refs": ["FEP-01:What to build", "FEP-01:AC-1", "PRD:D1:Plan"],
                 "blocked_by": [], "verifications": [{"id": "V1", "behavior": "approved behavior",
@@ -293,12 +300,15 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                     "capability": "implement approved behavior", "approach": ["write and connect run"],
                     "inputs": ["approved design"], "outputs": ["observable result"],
                     "failures": ["invalid input is reported"], "depends_on": [],
-                    "verification_refs": ["V1"], "read_only": []}], "artifact_steps": []}
+                    "verification_refs": ["V1"], "read_only": []}], "artifact_steps": [],
+                "behavior_slices": [{"id": "approved-behavior", "step_ids": ["FP1-01"],
+                    "ac_refs": ["FEP-01:AC-1"], "verification_refs": ["V1"],
+                    "read_only": [], "shared_state": []}]}
             content = "approved plan\nImplementation: impl.py\nClosure: CHANGELOG.md\n"
             if path == "docs/spec.md":
                 content += ("Ticket ID: FEP-01\nPlan Version: 1\n**What to build:** approved behavior\n"
                     "**Blocked by:** None\nAC-1: approved behavior\n## Implementation Decisions\n"
-                    "### D1 — Plan\n```execution-plan-v1\n" + json.dumps(plan) + "\n```\n")
+                    "### D1 — Plan\n```execution-plan-v2\n" + json.dumps(plan) + "\n```\n")
             (self.flow / path).write_text(content)
         self.flow_git("add", *planning_paths)
         self.flow_git("commit", "-qm", "planning")
@@ -374,26 +384,9 @@ class StageTransferTests(test_entry_prepare.EntrySupport):
                 'review':review,'verification':control.delivery_verification(self.context['handoff_progress'],'native:dispatcher')}
 
     def mark_reviewable(self, candidate, *, fixture_execution=True, evidence_suffix=""):
-        if fixture_execution:
-            outer = progress.read_active_owner(self.checkpoint)
-            self.fixture_accepted_execution(outer[progress.KEY]['control']['context'], candidate)
-            progress.Progress(self.checkpoint, outer).save()
-        self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
-        checkpoint = self.state()['control']['context']['handoff_progress']
-        checks = checks_for(checkpoint['validation_plan']['review_required'], candidate)
-        ready = self.invoke('control', {'action': 'candidate-ready', 'evidence': {
-            'dispatcher_ref': 'native:dispatcher',
-            'attempt': self.state()['control']['context']['carrier']['attempt'],
-            'commit': candidate, 'expected_target_head': self.git('rev-parse', 'main'),
-            'binding': self.binding, 'plan_digest': checkpoint['plan_digest'],
-            'plan_authority': checkpoint['plan_authority'], 'checks': checks},
-            'receipt': {'adapter': 'fixture', 'call_ref': 'focused-stage3' + evidence_suffix,
-                'response_ref': 'focused-stage3-result' + evidence_suffix, 'raw': {'checks': checks,
-                    'source_unchanged': True, 'stopped': True,
-                    'dispatcher_ref': 'native:dispatcher'}}})
-        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'reviewable', ready)
-        return {'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
-                'plan_authority': checkpoint['plan_authority'], 'checks': checks}
+        from test_workflow_progress import ProgressTests
+        return ProgressTests.mark_reviewable(self, candidate, fixture_execution=fixture_execution,
+                                             evidence_suffix=evidence_suffix)
 
     def test_real_a_freeze_and_flow_transfer_preserve_user_changes(self):
         (self.root / "existing.txt").write_text("user staged\n")

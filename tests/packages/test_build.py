@@ -17,10 +17,10 @@ class PackageBuildTests(unittest.TestCase):
         key = config['compatibility_key']
         self.assertEqual((key['control'], key['runner'], key['stage_transfer'], key['workflow_progress'],
                           key['execution_plan']),
-                         (11, 10, 'workflow-stage-transfer-v14', 'workflow-progress-v19',
-                          'execution-plan-v1'))
+                         (12, 11, 'workflow-stage-transfer-v15', 'workflow-progress-v20',
+                          'execution-plan-v2'))
         self.assertEqual((config['release'], config['source_revision']),
-                         ('1.3.0', 'workflow-pipeline-v1.3.0'))
+                         ('1.4.0', 'workflow-pipeline-v1.4.0'))
         self.assertEqual(key['topic_gate'], 'phase-0-1-discussion-v2')
         self.assertEqual(key['confirmation'], 'goal-scoped-confirmation-v3')
         with tempfile.TemporaryDirectory() as temporary:
@@ -32,10 +32,13 @@ class PackageBuildTests(unittest.TestCase):
                          'guided-implementation', 'change-closure'):
                 package = json.loads((output / name / 'package.json').read_text())
                 self.assertEqual(package['compatibility_key'], key)
-                self.assertEqual(package['release'], '1.3.0')
+                self.assertEqual(package['release'], '1.4.0')
                 self.assertIn('scripts/execution_plan.py', package['files'])
             scripts = output / 'guided-implementation/scripts'
-            requests = [('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v12', 'operation': 'prepare'}),
+            requests = [('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v14', 'operation': 'prepare'}),
+                        ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
+                         {'protocol': 'workflow-progress-v19', 'operation': 'inspect', 'expected_revision': 0, 'data': {}}),
+                        ('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v12', 'operation': 'prepare'}),
                         ('workflow_progress.py', [str(root / 'old-checkpoint.json')],
                          {'protocol': 'workflow-progress-v18', 'operation': 'inspect', 'expected_revision': 0, 'data': {}}),
                         ('stage_handoff.py', [], {'protocol': 'workflow-stage-transfer-v9', 'operation': 'prepare'}),

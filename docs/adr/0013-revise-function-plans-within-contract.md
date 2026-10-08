@@ -4,6 +4,7 @@ Status: Accepted
 Review: fep-solution-review-20261001-01
 Authorization: user-current-conversation:confirm-continuous:fep-solution-review-20261001-01
 Amends: ADR-0007 and ADR-0011 for new protocol runs only
+Amended by: ADR-0014 for layered review and result applicability in new protocol runs; the shared Git stopped-writer barrier remains.
 
 Ticket 保留功能、验收和前置依赖合同，其内函数级执行计划由原 Workflow Controller 在既有 checkpoint 中修订；采用短暂全停止、精确规划写入窗口和一次 current Scope Authority 切换，使规划字节、文件权限、分配资格与恢复证据保持一致。保留原冻结需求、launch 和历史结果：未受影响结果按计划/依赖/验证/字节依据 carry forward，受影响字节经真实 Execution Agent 复核后重新验收。
 

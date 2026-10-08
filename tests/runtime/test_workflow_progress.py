@@ -57,7 +57,12 @@ class ProgressTests(transfer.StageTransferTests):
             ticket_id = tickets[0]['ticket_id']
         store = progress.state_store.StateStore(self.checkpoint)
         current = store.open_current()
-        return store.read_subject(current, 'ticket:' + ticket_id + ':0').value['allocations'][allocation_id]
+        subject_id = 'ticket:' + ticket_id + ':0'
+        if subject_id in current.root['subjects']:
+            slots = store.read_subject(current, subject_id).value['allocations']
+            if allocation_id in slots:
+                return slots[allocation_id]
+        return store.read_archive(current, 'allocation:' + allocation_id).value['slot']
 
     def retired_fixture(self, carrier_ref='old-task'):
         import test_workflow_control
@@ -903,6 +908,20 @@ class ProgressTests(transfer.StageTransferTests):
             listed = {thread['id'] for thread in threads}
             threads.extend({'id': prior, 'status': {'type': 'idle'}}
                            for prior in saved.get('recovered_native_refs', []) if prior not in listed)
+            # Closed roles remain in the real host census after their current
+            # slots leave the window. Only verified original stop facts may
+            # supply the fixture's idle rows; unknown roles must stay missing.
+            owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+            checkpoint = owner.state['control']['context'].get('handoff_progress') or {}
+            executions = progress.control.all_execution_results(checkpoint) + checkpoint.get('carried_results', [])
+            for source in checkpoint.get('plan_revision_sources', []):
+                executions.extend(source['executions'] + source['carried_results'])
+            stopped = {item['agent_ref'] for item in executions if item.get('stopped') is True}
+            if checkpoint.get('review_claims'):
+                stopped.update(claim['reviewer_ref'] for claim in owner.read_review_claims().values())
+            missing = owner.native_refs() - {thread['id'] for thread in threads}
+            self.assertLessEqual(missing, stopped, 'fixture requires original stop proof for archived roles')
+            threads.extend({'id': identity, 'status': {'type': 'idle'}} for identity in sorted(missing))
             carrier = progress.read_projection(self.checkpoint, projection='identity').record.get('sessions', {}).get('stage' + str(saved['stage'])) or saved['handoff']['expected_entry']['actor']['thread_id']
             transport = progress.read_projection(self.checkpoint, projection='identity').record.get('transport') or {}
             value['lifecycle'] = {'instance':transport.get('instance','fixture-host'),'carrier_thread':carrier,
@@ -1976,6 +1995,146 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.invoke("pause")["status"], "paused")
         self.assertEqual(self.invoke("resume")["pending"], pending)
 
+    def accept_fixture_candidate(self, candidate):
+        """Recreate temporary candidate bytes only through the real writer grant."""
+        owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+        checkpoint = owner.state['control']['context']['handoff_progress']
+        self.assertEqual(self.flow_git('rev-parse', 'HEAD'), candidate)
+        self.assertFalse(self.flow_git('status', '--porcelain'))
+        executions = progress.control.all_execution_results(checkpoint)
+        self.assertTrue(all(item.get('stopped') is True and item['state'] == 'accepted'
+            for item in executions if item.get('agent_ref')), 'fixture cannot replace unknown or unsettled owners')
+        allowed = checkpoint['allowed_paths']
+        expected = {name: progress.control_git.committed_fingerprint(self.flow,
+            checkpoint['git_baseline_commit'], name) for name in allowed}
+        if checkpoint.get('integration_source') is not None:
+            expected = copy.deepcopy(checkpoint['integration_source']['snapshot']['files'])
+        else:
+            revision = checkpoint.get('revalidation_source')
+            if revision:
+                expected.update({name: revision['snapshot']['files'][name] for name in revision['pending_paths']})
+            for result in checkpoint.get('carried_results', []) + executions:
+                if result.get('state') == 'accepted':
+                    expected.update(execution_plan.accepted_owned_fingerprints(result))
+        changed = [name for name in allowed if progress.control_git.file_fingerprint(self.flow, name) != expected[name]]
+        if not changed:
+            return
+        original = progress.control_git.snapshot(self.flow)
+        protected = {name: progress.control_git.file_fingerprint(self.flow, name) for name in checkpoint['protected_paths']}
+        catalog = execution_plan.current_catalog(owner.state['scope_authority'])
+        self.assertEqual(len(catalog['tickets']), 1, 'multi-Ticket candidates use their original execution fixtures')
+        ticket = catalog['tickets'][0]
+        steps = ticket['plan']['steps'] + ticket['plan']['artifact_steps']
+        owned = sorted({step.get('target', {}).get('path', step.get('path')) for step in steps})
+        self.assertLessEqual(set(changed), set(owned))
+        contents = {}
+        for name in owned:
+            path = self.flow / name
+            self.assertFalse(path.is_symlink())
+            self.assertTrue(path.resolve().is_relative_to(self.flow.resolve()))
+            contents[name] = (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None
+        commits = [checkpoint['git_baseline_commit']] + self.flow_git('rev-list',
+            checkpoint['git_baseline_commit'] + '..' + candidate).splitlines()
+        for name in changed:
+            path = self.flow / name
+            if expected[name] is None:
+                path.unlink()
+                continue
+            source = next((commit for commit in commits
+                if progress.control_git.committed_fingerprint(self.flow, commit, name) == expected[name]), None)
+            self.assertIsNotNone(source, 'fixture must retain exact original accepted bytes and mode: ' + name)
+            body = subprocess.run(['git', '-C', str(self.flow), 'show', source + ':' + name],
+                capture_output=True, check=True).stdout
+            tree = self.flow_git('ls-tree', source, '--', name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+            path.chmod(0o755 if tree.startswith('100755 ') else 0o644)
+            self.assertEqual(progress.control_git.file_fingerprint(self.flow, name), expected[name])
+        previous_thread = self.settings['thread_id']
+        previous_host = copy.deepcopy(self.request['host'])
+        try:
+            execution = ProgressTests.execution_input(self)
+            execution['scope']['owned_paths'] = owned
+            execution['semantic']['plan_refs'] = [execution_plan.step_ref(ticket, step) for step in steps]
+            execution['authorization']['scope_digest'] = transfer.entry.digest(execution['scope'])
+            identity = 'fixture-candidate-' + candidate + '-' + str(owner.state['scope_authority']['revision'])
+            prepared = self.invoke('allocation', {'allocation_id': identity, 'operation': 'prepare', 'handoff': execution})
+            self.assertEqual((prepared.get('next_action') or {}).get('operation'), 'invoke-host', prepared)
+            slot = ProgressTests.allocation_slot(self, identity, ticket['ticket_id'])
+            ref = 'native:' + identity
+            bound = self.invoke('allocation', {'allocation_id': identity, 'operation': 'bind',
+                'receipt': self.receipt(slot['record'], ref=ref)})
+            self.assertEqual(bound['next_action']['result']['status'], 'bound', bound)
+            for name, content in contents.items():
+                path = self.flow / name
+                if content is None:
+                    if path.exists():
+                        path.unlink()
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(content[0])
+                    path.chmod(content[1])
+            actual = progress.control_git.snapshot(self.flow)
+            self.assertEqual({key: actual[key] for key in ('head', 'branch', 'index_hash')},
+                             {key: original[key] for key in ('head', 'branch', 'index_hash')})
+            self.assertEqual({name: progress.control_git.file_fingerprint(self.flow, name) for name in protected}, protected)
+            payload = {'changed_paths': sorted(changed),
+                'file_hashes': {name: progress.control_git.implementation_hash(self.flow, name) for name in changed},
+                'tests': ['deterministic public execution fixture'], 'write_release': bound['next_action']['result']['write_release'],
+                'plan_refs': execution['semantic']['plan_refs'], 'plan_authority': checkpoint['plan_authority']}
+            received = self.invoke('allocation', {'allocation_id': identity, 'operation': 'receive',
+                'receipt': self.receipt(slot['record'], 'stopped', 'result', ref=ref),
+                'result': {'delivery_id': identity, 'status': 'completed', 'payload': payload}})
+            self.assertEqual(received['next_action']['result']['status'], 'received', received)
+            accepted = self.invoke('allocation', {'allocation_id': identity, 'operation': 'accept',
+                'decision': {'reference': 'dispatcher:' + identity}})
+            self.assertEqual(accepted['next_action']['result']['status'], 'accepted', accepted)
+        finally:
+            self.settings['thread_id'] = previous_thread
+            self.request['host'] = previous_host
+
+    def complete_fixture_local_reviews(self, candidate, evidence_suffix):
+        """Deterministic host/command responses consumed by original C review calls."""
+        import test_layered_review
+        owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+        for ticket in owner.ticket_checks_due():
+            checked = test_layered_review.LayeredReviewTests.early_ticket_check(self, candidate, ticket)
+            self.assertTrue(checked['next_action']['result']['ok'], checked)
+        catalog = execution_plan.current_catalog(self.state()['scope_authority'])
+        for ticket in catalog['tickets']:
+            axes = [('local:' + ticket['ticket_id'] + ':' + group['id'], 'local-review')
+                for group in ticket['plan']['behavior_slices']] + [('ticket:' + ticket['ticket_id'], 'ticket-accept')]
+            for axis, action in axes:
+                owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+                _, applications = owner.review_applications(candidate)
+                if applications.get(axis, {}).get('applicable'):
+                    continue
+                checkpoint = owner.state['control']['context']['handoff_progress']
+                checks = transfer.checks_for(progress.review_evidence.local_required_checks(catalog, axis, str(self.flow)), candidate)
+                identity = candidate + ':' + axis + evidence_suffix
+                source = {'adapter': 'fixture-command', 'call_ref': 'check:' + identity,
+                    'response_ref': 'check-stopped:' + identity, 'raw': {'checks': copy.deepcopy(checks),
+                    'source_unchanged': True, 'stopped': True, 'dispatcher_ref': owner.state['control']['context']['carrier']['ref'],
+                    'candidate': candidate, 'run_id': progress.read_record(self.checkpoint)['current']['run_id'],
+                    'package_digest': transfer.entry.digest(self.state()['packages']), 'plan_authority': checkpoint['plan_authority'],
+                    'environment': {'adapter': 'fixture-command', 'cwd': str(self.flow)},
+                    'fixture': {'axis': axis, 'candidate': candidate}}}
+                prepared = self.invoke('review-activity', {'operation': 'prepare', 'axis': axis, 'candidate': candidate,
+                    'actor_ref': 'task', 'verification': {'plan_authority': checkpoint['plan_authority'], 'checks': checks, 'source': source}})
+                self.assertEqual((prepared.get('next_action') or {}).get('operation'), 'invoke-review', prepared)
+                scope = prepared['next_action']['review_scope']
+                response = 'review-stopped:' + identity
+                observed = self.invoke('review-activity', {'operation': 'observe', 'axis': axis, 'candidate': candidate,
+                    'actor_ref': 'task', 'action_id': prepared['next_action']['action_id'], 'receipt': {'adapter': 'fixture-native',
+                    'call_ref': 'review:' + identity, 'response_ref': response, 'status': 'stopped', 'ref': 'native:reviewer:' + axis,
+                    'raw': {'review': {'status': 'accepted', 'findings': [], 'checks': checks,
+                        **{key: scope[key] for key in ('read_paths', 'ac_refs', 'dependency_claim_ids', 'requirement_refs')},
+                        'review_scope': scope}}}})
+                self.assertNotEqual(observed['status'], 'blocked', observed)
+                accepted = self.invoke('control', {'action': action, 'evidence': {'axis': axis, 'candidate': candidate,
+                    'result_ref': response}, 'receipt': {'controller_ref': 'task', 'reference': 'controller:' + identity}})
+                self.assertNotEqual(accepted['status'], 'blocked', accepted)
+
     def mark_reviewable(self, candidate, *, fixture_execution=True, evidence_suffix=""):
         current = self.state()['control']['context']
         dispatcher = current['carrier']['ref']
@@ -1984,9 +2143,8 @@ class ProgressTests(transfer.StageTransferTests):
                 'evidence':{'candidate':current['handoff_progress']['candidate'],'reference':'fixture:remediation','reason':'replacement'},
                 'receipt':{'adapter':'fixture','call_ref':'remediate','response_ref':'remediation','raw':{'decision':'fix'}}})
         if fixture_execution:
-            outer = progress.read_active_owner(self.checkpoint)
-            self.fixture_accepted_execution(outer[progress.KEY]['control']['context'], candidate)
-            progress.Progress(self.checkpoint, outer).save()
+            ProgressTests.accept_fixture_candidate(self, candidate)
+        ProgressTests.complete_fixture_local_reviews(self, candidate, evidence_suffix)
         self.invoke('observe', self.observation('idle','result',ref=dispatcher))
         current = self.state()['control']['context']
         plan = current['handoff_progress']['validation_plan']
@@ -2013,7 +2171,12 @@ class ProgressTests(transfer.StageTransferTests):
                 self.invoke('review-activity',{'operation':'observe','axis':axis,'candidate':payload['candidate_commit'],
                     'actor_ref':actor,'action_id':prepared['next_action']['action_id'],
                     'receipt':{'adapter':'fixture','call_ref':('review-' + evidence_suffix)+axis,'response_ref':('terminal-' + evidence_suffix)+axis,
-                               'ref':ref,'status':'stopped','raw':{'task_name':ref,'status':'completed'}}})
+                               'ref':ref,'status':'stopped','raw':{'task_name':ref,'status':'completed',
+                                   'review': {'status': 'accepted', 'findings': [],
+                                       'checks': verification['checks'], **{
+                                           key: prepared['next_action']['review_scope'][key] for key in
+                                           ('read_paths', 'ac_refs', 'requirement_refs', 'dependency_claim_ids')},
+                                       'review_scope': prepared['next_action']['review_scope']}}}})
             candidate = payload['candidate_commit']
             checkpoint = self.state()['control']['context']['handoff_progress']
             review = {axis:{'candidate':candidate,'expected_target_head':checkpoint['expected_target_head'],

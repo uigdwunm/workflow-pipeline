@@ -98,6 +98,35 @@ A change owned by the original Workflow Controller to a function execution plan
 within the accepted behavior contract and business responsibility boundary.
 _Avoid_: Dispatcher plan edit, requirement change, old-run migration
 
+**Behavior Slice**:
+A complete observable behavior within an Implementation Ticket, with its
+acceptance criteria, dependencies and verification boundary.
+_Avoid_: Function count, independent Ticket
+
+**Evidence Claim**:
+An immutable review conclusion retaining its original candidate, verified source,
+scope and stopped reviewer evidence.
+_Avoid_: Rewritten report, current candidate approval
+
+**Target Applicability**:
+The verified relationship that permits an original Evidence Claim to cover a
+later candidate when its contract, dependencies and relevant bytes remain valid.
+_Avoid_: Copied approval, report candidate rewrite
+
+**Coverage Certificate**:
+The complete review coverage for one candidate, combining applicable local
+Behavior Slice, Ticket acceptance and independent delivery review claims.
+_Avoid_: Final validation, collection of passing reports
+
+**Current Window**:
+The bounded active workflow facts needed for current permissions and recovery.
+_Avoid_: Complete run history, second control authority
+
+**Committed Archive**:
+Closed workflow facts retained with their original authority and evidence for
+exact replay and recovery after leaving the Current Window.
+_Avoid_: Deleted evidence, newly granted permission
+
 **Pre-Stage-3 Scope Correction**:
 The original Controller may correct an accepted Stage-2 manifest only before
 any saved Stage-3 preparation, launch intent or session. Later omissions block

@@ -1014,7 +1014,16 @@ class LayeredReviewTests(fixture.ProgressTests):
             self.delivery_reviews(candidate)
         self.assertEqual([item['request']['action'] for item in envelopes], ['candidate-ready', 'review-converged'])
         self.assertTrue(self.state()['control']['context']['handoff_progress']['coverage']['delivery'])
+        before = self.checkpoint.read_bytes()
+        stale = subprocess.run([sys.executable, str(executable)], input=json.dumps(envelopes[-1]),
+            text=True, capture_output=True, cwd=self.flow)
+        self.assertEqual(stale.returncode, 1, stale.stdout + stale.stderr)
+        self.assertIn('archived execution facts differ from the original Controller checkpoint',
+                      json.loads(stale.stdout)['error'])
+        self.assertNotIn('Traceback', stale.stderr)
+        self.assertEqual(self.checkpoint.read_bytes(), before)
         bad = copy.deepcopy(envelopes[-1])
+        bad['request']['context'] = self.state()['control']['context']
         bad['request']['evidence']['coverage']['certificate_digest'] = '0' * 64
         before = self.checkpoint.read_bytes()
         rejected = subprocess.run([sys.executable, str(executable)], input=json.dumps(bad),
@@ -1046,6 +1055,7 @@ class LayeredReviewTests(fixture.ProgressTests):
             forged['claim_id'] = fixture.transfer.entry.digest({key: value for key, value in forged.items() if key != 'claim_id'})
             claim_ref = store.write_object(claim['run_id'], 'evidence', {'review_claim': forged})
             hostile = copy.deepcopy(envelopes[-1])
+            hostile['request']['context'] = self.state()['control']['context']
             hostile['request']['evidence']['claims']['standards'] = progress.review_evidence.claim_view(forged, claim_ref)
             blocked = subprocess.run([sys.executable, str(executable)], input=json.dumps(hostile),
                 text=True, capture_output=True, cwd=self.flow)

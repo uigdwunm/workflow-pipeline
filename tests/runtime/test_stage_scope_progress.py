@@ -32,14 +32,17 @@ class ScopeProgressTests(unittest.TestCase):
                 "inputs": ["approved input"], "outputs": ["approved result"],
                 "failures": ["invalid input is rejected"], "depends_on": depends_on,
                 "verification_refs": ["V1"], "read_only": []}
-        return {"schema_version": 1, "ticket_id": "FEP-01", "plan_version": 1,
+        return {"schema_version": 2, "ticket_id": "FEP-01", "plan_version": 1,
             "spec_ref": {"path": "docs/spec.md", "section": "Implementation Decisions"},
             "contract_refs": ["FEP-01:What to build", "FEP-01:AC-1", "PRD:D1:Plan"],
             "blocked_by": [], "verifications": [{"id": "V1", "behavior": "approved behavior",
                 "seam": "C scope-propose and Git fixture", "commands":
                 ["python3 scripts/run_tests.py --test-file tests/runtime/test_stage_scope_progress.py"]}],
             "steps": [step("FP1-01", "prepare", []), step("FP1-02", "execute", ["FP1-01"])],
-            "artifact_steps": []}
+            "artifact_steps": [],
+            "behavior_slices": [{"id": identity, "step_ids": [identity],
+                "ac_refs": ["FEP-01:AC-1"], "verification_refs": ["V1"],
+                "read_only": [], "shared_state": []} for identity in ("FP1-01", "FP1-02")]}
 
     def planning_candidate(self, mode="continuous", *, with_plan=True):
         self.flow.begin(mode)
@@ -48,7 +51,7 @@ class ScopeProgressTests(unittest.TestCase):
         if with_plan:
             content += ("Ticket ID: FEP-01\nPlan Version: 1\n**What to build:** approved behavior\n"
                         "**Blocked by:** None\nAC-1: approved behavior\n## Implementation Decisions\n"
-                        "### D1 — Plan\n```execution-plan-v1\n" +
+                        "### D1 — Plan\n```execution-plan-v2\n" +
                         json.dumps(self.inline_plan(), ensure_ascii=False) + "\n```\n")
         (self.flow.flow / "docs/spec.md").write_text(content)
         self.flow.flow_git("add", "docs/spec.md")

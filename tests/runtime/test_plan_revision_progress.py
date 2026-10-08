@@ -84,6 +84,27 @@ class T04Flow(layered_fixture.LayeredReviewTests):
 
 
 class PlanRevisionProgressTests(unittest.TestCase):
+    @staticmethod
+    def refresh_fixture_slices(plan):
+        # Preserve the original fixture's complete allocation groups while
+        # updating their declared reads/verifications after a valid revision.
+        steps = {step['id']: step for step in plan['steps'] + plan['artifact_steps']}
+        groups = []
+        covered = set()
+        for group in plan['behavior_slices']:
+            members = [identity for identity in group['step_ids'] if identity in steps]
+            if not members:
+                continue
+            groups.append({**group, 'step_ids': members})
+            covered.update(members)
+        groups.extend({'id': identity, 'step_ids': [identity], 'ac_refs': ['FEP-01:AC-1'],
+            'shared_state': []} for identity in steps if identity not in covered)
+        for group in groups:
+            selected = [steps[identity] for identity in group['step_ids']]
+            group['verification_refs'] = sorted({value for step in selected for value in step['verification_refs']})
+            group['read_only'] = sorted({value for step in selected for value in step.get('read_only', [])})
+        plan['behavior_slices'] = groups
+
     def t04_inline_authority(self, *, shared=None, same_file=False, read=False,
                              reverse_shared=False, planning_shared=False):
         count = 4 if reverse_shared or planning_shared else 2
@@ -587,13 +608,14 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 _original(*args, **kwargs)
                 path = case.flow.flow / "docs/spec.md"
                 text = path.read_text()
-                match = re.search(r"```execution-plan-v1\n(.*?)\n```", text, re.DOTALL)
+                match = re.search(r"```execution-plan-v2\n(.*?)\n```", text, re.DOTALL)
                 plan = json.loads(match.group(1))
                 if artifact_mode == "only":
                     plan["steps"] = []
                 plan["artifact_steps"] = [{"id": "ART-1", "path": "prompt.md",
                     "operation": "add", "capability": "provide the approved prompt artifact",
                     "approach": "write the approved prompt", "verification_refs": ["V1"]}]
+                self.refresh_fixture_slices(plan)
                 updated = text[:match.start(1)] + json.dumps(plan) + text[match.end(1):]
                 if artifact_mode == "only":
                     updated = updated.replace("Implementation: impl.py", "Implementation: prompt.md")
@@ -608,7 +630,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 _original(*args, **kwargs)
                 path = case.flow.flow / "docs/spec.md"
                 text = path.read_text()
-                match = re.search(r"```execution-plan-v1\n(.*?)\n```", text, re.DOTALL)
+                match = re.search(r"```execution-plan-v2\n(.*?)\n```", text, re.DOTALL)
                 plan = json.loads(match.group(1))
                 plan["steps"][1]["target"] = {"path": "later.py", "symbol": "later", "operation": "add"}
                 plan["steps"][1]["read_only"] = ["impl.py"]
@@ -633,6 +655,13 @@ class PlanRevisionProgressTests(unittest.TestCase):
                     plan["steps"][1]["read_only"] = []
                     plan["steps"][2]["read_only"] = ["impl.py"]
                     plan["steps"][3]["depends_on"] = ["FP1-02", "FP1-03"]
+                self.refresh_fixture_slices(plan)
+                if grouped_reads:
+                    plan['behavior_slices'] = [group for group in plan['behavior_slices']
+                        if group['id'] not in {'FP1-02', 'FP1-03'}] + [{
+                        'id': 'mixed-group', 'step_ids': ['FP1-02', 'FP1-03'],
+                        'ac_refs': ['FEP-01:AC-1'], 'shared_state': []}]
+                    self.refresh_fixture_slices(plan)
                 path.write_text(text[:match.start(1)] + json.dumps(plan) + text[match.end(1):])
                 case.flow.flow_git("add", "docs/spec.md")
                 case.flow.flow_git("commit", "-qm", "planned accepted implementation read")
@@ -772,6 +801,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
 
     def accept_planned_step(self, flow, ticket, identity, relative, content, allocation_id,
                             *, accept=True):
+        self.check_due_fixture_tickets(flow)
         execution = flow.execution_input()
         execution["scope"]["owned_paths"] = [relative]
         step = next(item for item in ticket["plan"]["steps"] if item["id"] == identity)
@@ -808,6 +838,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
 
     def accept_planned_group(self, flow, ticket, identities, contents, allocation_id,
                              read_only=(), owned_paths=None):
+        self.check_due_fixture_tickets(flow)
         execution = flow.execution_input()
         execution["scope"]["owned_paths"] = sorted(contents if owned_paths is None else owned_paths)
         execution["scope"]["protected_paths"] += list(read_only)
@@ -839,6 +870,35 @@ class PlanRevisionProgressTests(unittest.TestCase):
             "operation": "accept", "decision": {"reference": "dispatcher:" + allocation_id}})
         self.assertEqual(delivered["next_action"]["result"]["status"], "accepted")
 
+    def check_due_fixture_tickets(self, flow):
+        owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+        due = owner.ticket_checks_due()
+        if not due:
+            return
+        checkpoint = owner.state['control']['context']['handoff_progress']
+        self.assertTrue(all(item.get('stopped') is True
+            for item in progress.control.all_execution_results(checkpoint) if item.get('agent_ref')),
+            'fixture integration requires original execution stop facts')
+        allowed = set(flow.state()['scope_authority']['scope']['implementation_paths'])
+        changed = set(filter(None, flow.flow_git('diff', '--name-only', 'HEAD').splitlines()))
+        changed.update(filter(None, flow.flow_git('ls-files', '--others', '--exclude-standard').splitlines()))
+        self.assertLessEqual(changed, allowed, 'fixture integration must preserve planning and unrelated bytes')
+        previous_thread = flow.settings['thread_id']
+        previous_host = copy.deepcopy(flow.request['host'])
+        flow.settings['thread_id'] = 'task'
+        flow.request['host'].update(thread_id='task', role='controller', source_ref=None, actor_ref=None)
+        try:
+            if changed:
+                flow.flow_git('add', '-A', '--', *sorted(changed))
+                flow.flow_git('commit', '--only', '-qm', 'integrated accepted fixture slices', '--', *sorted(changed))
+            candidate = flow.flow_git('rev-parse', 'HEAD')
+            for ticket in due:
+                checked = layered_fixture.LayeredReviewTests.early_ticket_check(flow, candidate, ticket)
+                self.assertTrue(checked['next_action']['result']['ok'], checked)
+        finally:
+            flow.settings['thread_id'] = previous_thread
+            flow.request['host'] = previous_host
+
     def carried_mixed_group(self, replacement_contents=None):
         flow = self.new_active_flow(read_dependency=True, grouped_reads=True)
         controller_request = copy.deepcopy(flow.request)
@@ -864,7 +924,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
         source = flow.flow / "docs/spec.md"
         body = source.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"][4]["approach"].append("revise unrelated reader")
@@ -993,14 +1053,63 @@ class PlanRevisionProgressTests(unittest.TestCase):
             verification_impact=["V2"], carry_forward=["FP1-01", "FP1-02", "FP1-03"])
         flow.invoke("prepare-plan-revision", report)
         stopped = flow.observation("stopped", "result", ref="native:dispatcher")
-        stopped["lifecycle"]["pages"][0]["response"]["data"].extend(
-            {"id": ref, "status": {"type": "idle"}}
-            for ref in ("input-owner", "mixed-group", "replacement-group"))
+        projection = progress.read_projection(flow.checkpoint, projection='scope')
+        scoped = projection.record[progress.KEY]
+        pending_transaction = flow.state()['plan_revision_transaction']
+        self.assertEqual(scoped['plan_revision_transaction'], {key: pending_transaction.get(key)
+            for key in ('state', 'proposed_authority')})
+        self.assertIn(scoped['plan_revision_transaction']['state'], ('stopping', 'prepared'))
+        self.assertEqual(scoped['execution_authority'], flow.state()['scope_authority'])
+        self.assertLessEqual(projection.bytes_read, progress.state_store.READ_LIMIT)
+        self.assertLessEqual(len(progress.state_store.encode(scoped)), 256 * 1024)
+        pending_input = flow.execution_input()
+        before_pending = flow.checkpoint.read_bytes()
+        with self.assertRaises(progress.entry.PreparationError) as pending_error:
+            progress.handoff.handle(pending_input)
+        self.assertEqual(pending_error.exception.code, 'handoff_not_ready')
+        self.assertNotIn('pending-must-not-dispatch', flow.state().get('allocations', {}))
+        self.assertEqual(flow.checkpoint.read_bytes(), before_pending)
+        original_history = copy.deepcopy(progress.read_active_owner(flow.checkpoint)[progress.KEY]['plan_revision_history'])
+        for corruption in ('missing', 'receipt', 'foreign', 'unactivated', 'commit-input'):
+            with self.subTest(activated_proof=corruption):
+                changed = progress.read_active_owner(flow.checkpoint)
+                history = changed[progress.KEY]['plan_revision_history']
+                transaction = next(iter(history.values()))
+                if corruption == 'missing':
+                    history.clear()
+                elif corruption == 'receipt':
+                    transaction['control_result']['revision_ref'] = '0' * 64
+                elif corruption == 'foreign':
+                    transaction['proposed_authority']['revision'] += 1
+                elif corruption == 'unactivated':
+                    transaction['state'] = 'prepared'
+                else:
+                    transaction['commit_input'] = []
+                progress.Progress(flow.checkpoint, changed).save()
+                before = flow.checkpoint.read_bytes()
+                invalid_projection = progress.read_projection(flow.checkpoint, projection='scope').record[progress.KEY]
+                self.assertIsNone(invalid_projection['execution_authority'])
+                self.assertIsNone(progress.consumed_scope_readiness(invalid_projection, flow.checkpoint))
+                forged_projection = copy.deepcopy(invalid_projection)
+                forged_projection['execution_authority'] = copy.deepcopy(forged_projection['scope_authority'])
+                self.assertIsNone(progress.consumed_scope_readiness(forged_projection, flow.checkpoint))
+                forged_projection['scope_authority'] = copy.deepcopy(forged_projection['consumed_readiness']['scope_authority'])
+                forged_projection['execution_authority'] = copy.deepcopy(forged_projection['scope_authority'])
+                self.assertIsNone(progress.consumed_scope_readiness(forged_projection, flow.checkpoint))
+                with self.assertRaises(progress.entry.PreparationError):
+                    flow.invoke('inspect')
+                self.assertEqual(flow.checkpoint.read_bytes(), before)
+                restored = progress.read_active_owner(flow.checkpoint)
+                restored[progress.KEY]['plan_revision_history'] = copy.deepcopy(original_history)
+                progress.Progress(flow.checkpoint, restored).save()
+        listed = {row['id'] for row in stopped['lifecycle']['pages'][0]['response']['data']}
+        self.assertLessEqual({'input-owner', 'mixed-group', 'replacement-group'}, listed)
         prepared = flow.invoke("observe", stopped)
+        self.assertIsNotNone(prepared['next_action'], prepared)
         self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
         source = flow.flow / "docs/spec.md"
         body = source.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 3
         plan["steps"][4]["approach"].append("revise unrelated reader again")
@@ -1084,7 +1193,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
         source = flow.flow / "docs/spec.md"
         body = source.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"][2]["approach"].append("revise unrelated private implementation")
@@ -1121,7 +1230,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
             self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared", prepared)
             source = flow.flow / "docs/spec.md"
             body = source.read_text()
-            match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+            match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
             plan = json.loads(match.group(1))
             plan["plan_version"] = number + 1
             plan["steps"][2]["approach"].append(f"independent revision {number}")
@@ -1204,7 +1313,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
         source = flow.flow / "docs/spec.md"
         body = source.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"][0]["approach"].append("retain the public behavior with revised internals")
@@ -1229,7 +1338,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
         source = flow.flow / "docs/spec.md"
         body = source.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"][0]["approach"].append("revise private helper sequence")
@@ -1369,7 +1478,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         planning_path = "docs/issues/FEP-01.md" if ticket else "docs/spec.md"
         planning = flow.flow / planning_path
         body = planning.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"][1]["approach"].append("revise private implementation")
@@ -1658,7 +1767,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
                 spec = flow.flow / "docs/spec.md"
                 body = spec.read_text()
-                match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+                match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
                 plan = json.loads(match.group(1))
                 plan["plan_version"] = 2
                 plan["artifact_steps"][0]["approach"] = "write the revised private prompt"
@@ -1688,7 +1797,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
             self.assertEqual(prepared["next_action"]["operation"], "plan-revision-prepared")
             spec = flow.flow / "docs/spec.md"
             body = spec.read_text()
-            match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+            match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
             plan = json.loads(match.group(1))
             plan["plan_version"] += 1
             if number in (1, 3):
@@ -1698,6 +1807,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
             else:
                 plan["artifact_steps"] = [item for item in plan["artifact_steps"]
                                           if item["id"] != "ART-retired"]
+            self.refresh_fixture_slices(plan)
             spec.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
                             .replace(f"Plan Version: {number}", f"Plan Version: {number + 1}"))
             flow.flow_git("add", "docs/spec.md")
@@ -1797,7 +1907,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         release = prepared["next_action"]["write_release"]
         spec = flow.flow / "docs/spec.md"
         old = spec.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", old, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", old, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"][0]["approach"].append("move the private helper without changing output")
@@ -1835,7 +1945,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
             self.assertEqual(prepared['next_action']['operation'], 'plan-revision-prepared', prepared)
             spec = flow.flow / 'docs/spec.md'
             body = spec.read_text()
-            match = re.search(r'```execution-plan-v1\n(.*?)\n```', body, re.DOTALL)
+            match = re.search(r'```execution-plan-v2\n(.*?)\n```', body, re.DOTALL)
             plan = json.loads(match.group(1))
             plan['plan_version'] += 1
             if number in (1, 3):
@@ -1846,6 +1956,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 plan['steps'].append(helper)
             else:
                 plan['steps'] = [step for step in plan['steps'] if step['id'] != 'FP1-retired-helper']
+            self.refresh_fixture_slices(plan)
             spec.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
                             .replace(f'Plan Version: {number}', f'Plan Version: {number + 1}'))
             flow.flow_git('add', 'docs/spec.md')
@@ -2071,7 +2182,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
             ref='native:dispatcher'))
         planning = flow.flow / 'docs/spec.md'
         body = planning.read_text()
-        match = re.search(r'```execution-plan-v1\n(.*?)\n```', body, re.DOTALL)
+        match = re.search(r'```execution-plan-v2\n(.*?)\n```', body, re.DOTALL)
         plan = json.loads(match.group(1))
         plan['plan_version'] += 1
         plan['steps'][0]['approach'].append('Use the new private helper')
@@ -2080,6 +2191,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         extra['target'] = {'path': 'helper.py', 'symbol': 'helper', 'operation': 'add'}
         extra['depends_on'] = [plan['steps'][0]['id']]
         plan['steps'].append(extra)
+        self.refresh_fixture_slices(plan)
         planning.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
                             .replace('Plan Version: 1', 'Plan Version: 2'))
         flow.flow_git('add', 'docs/spec.md')
@@ -2198,7 +2310,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 relative = 'docs/issues/FEP-01.md' if ticket else 'docs/spec.md'
                 source = flow.flow / relative
                 body = source.read_text()
-                match = re.search(r'```execution-plan-v1\n(.*?)\n```', body, re.DOTALL)
+                match = re.search(r'```execution-plan-v2\n(.*?)\n```', body, re.DOTALL)
                 plan = json.loads(match.group(1))
                 plan['plan_version'] += 1
                 plan['steps'][0]['approach'].append('revise private helper')
@@ -2230,7 +2342,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
             'stopped', 'result', ref='native:dispatcher'))
         source = flow.flow / 'docs/spec.md'
         body = source.read_text()
-        match = re.search(r'```execution-plan-v1\n(.*?)\n```', body, re.DOTALL)
+        match = re.search(r'```execution-plan-v2\n(.*?)\n```', body, re.DOTALL)
         plan = json.loads(match.group(1))
         plan['plan_version'] += 1
         plan['steps'][0]['approach'].append('revise private helper')
@@ -2254,7 +2366,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
         spec = flow.flow / "docs/spec.md"
         original = spec.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", original, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", original, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"][0]["approach"].append("move private helper")
@@ -2290,12 +2402,13 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertIsNone(flow.state()["plan_revision_transaction"]["snapshot"]["files"]["helper.py"])
         spec = flow.flow / "docs/spec.md"
         original = spec.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", original, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", original, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"].append({**copy.deepcopy(plan["steps"][0]), "id": "FP1-03",
             "target": {"path": "helper.py", "symbol": "helper", "operation": "add"},
             "depends_on": ["FP1-01"]})
+        self.refresh_fixture_slices(plan)
         spec.write_text((original[:match.start(1)] + json.dumps(plan) + original[match.end(1):])
                         .replace("Plan Version: 1", "Plan Version: 2"))
         flow.flow_git("add", "docs/spec.md")
@@ -2484,12 +2597,13 @@ class PlanRevisionProgressTests(unittest.TestCase):
         self.assertEqual(flow.state()["plan_revision_transaction"]["snapshot"]["head"], cleaned_helper)
         source = flow.flow / "docs/spec.md"
         body = source.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", body, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", body, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"] = [step for step in plan["steps"] if step["id"] != "FP1-02"]
         next(step for step in plan["steps"] if step["id"] == "FP1-04")["depends_on"] = []
         next(step for step in plan["steps"] if step["id"] == "FP1-05")["read_only"] = []
+        self.refresh_fixture_slices(plan)
         source.write_text((body[:match.start(1)] + json.dumps(plan) + body[match.end(1):])
                           .replace("Plan Version: 1", "Plan Version: 2"))
         flow.flow_git("add", "docs/spec.md")
@@ -2754,7 +2868,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
         spec = flow.flow / "docs/spec.md"
         original = spec.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", original, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", original, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"][0]["approach"].append("private revision with incomplete output map")
@@ -2794,7 +2908,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
         spec = flow.flow / "docs/spec.md"
         original = spec.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", original, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", original, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"][0]["approach"].append("use the same approved public behavior")
@@ -2829,7 +2943,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         prepared = flow.invoke("observe", flow.observation("stopped", "result", ref="native:dispatcher"))
         spec = flow.flow / "docs/spec.md"
         original = spec.read_text()
-        match = re.search(r"```execution-plan-v1\n(.*?)\n```", original, re.DOTALL)
+        match = re.search(r"```execution-plan-v2\n(.*?)\n```", original, re.DOTALL)
         plan = json.loads(match.group(1))
         plan["plan_version"] = 2
         plan["steps"][0]["approach"].append("keep the same output after moving a helper")

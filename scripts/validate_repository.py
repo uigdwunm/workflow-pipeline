@@ -345,7 +345,8 @@ def validate_workflow_control_docs(repository: Path) -> list[dict[str, str]]:
                 metadata = None
             if (isinstance(metadata, dict) and
                     isinstance(metadata.get('compatibility_key'), dict) and
-                    metadata['compatibility_key'].get('execution_plan') == 'execution-plan-v1'):
+                    metadata['compatibility_key'].get('execution_plan') in
+                    {'execution-plan-v1', 'execution-plan-v2'}):
                 return [{'code': 'workflow-control-contract',
                          'path': WORKFLOW_CONTROL_REFERENCE,
                          'marker': 'workflow-control-protocol.md'}]

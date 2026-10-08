@@ -73,11 +73,13 @@ class RepositoryValidationTests(unittest.TestCase):
             repository = Path(directory)
             manifest = repository / 'skills/guided-implementation/package.json'
             manifest.parent.mkdir(parents=True)
-            manifest.write_text(json.dumps({'compatibility_key': {'execution_plan': 'execution-plan-v1'}}))
-            self.assertEqual(REPOSITORY_VALIDATION.validate_workflow_control_docs(repository), [
-                {'code': 'workflow-control-contract',
-                 'path': REPOSITORY_VALIDATION.WORKFLOW_CONTROL_REFERENCE,
-                 'marker': 'workflow-control-protocol.md'}])
+            for version in ('execution-plan-v1', 'execution-plan-v2'):
+                with self.subTest(version=version):
+                    manifest.write_text(json.dumps({'compatibility_key': {'execution_plan': version}}))
+                    self.assertEqual(REPOSITORY_VALIDATION.validate_workflow_control_docs(repository), [
+                        {'code': 'workflow-control-contract',
+                         'path': REPOSITORY_VALIDATION.WORKFLOW_CONTROL_REFERENCE,
+                         'marker': 'workflow-control-protocol.md'}])
 
     def test_dedicated_grilling_split_proposal_contract_is_fixed(self) -> None:
         protocol = (REPOSITORY / "skills/problem-framing/references/problem-framing/dedicated-grilling-protocol.md").read_text(encoding="utf-8")

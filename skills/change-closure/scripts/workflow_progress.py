@@ -656,12 +656,21 @@ def stage3_scope(state):
     """Read authority and identity facts without native payloads or writer leases."""
     context = state['control']['context']
     current = context.get('handoff_progress') or {}
+    authority = current.get('execution_authority')
+    original = (state.get('consumed_readiness') or {}).get('scope_authority') or state['handoff'].get('inline_authority')
+    verified = (authority == state.get('scope_authority') and (
+        authority == original or activated_plan_authority(state, authority)))
+    if state.get('consumed_readiness') is not None:
+        verified = authority == state.get('scope_authority') and consumed_scope_readiness(state, state['checkpoint_path']) is not None
+    elif state.get('recovery_predecessor') is not None:
+        accepted, _, _ = read_implementation_delivery(state['checkpoint_path'], state['recovery_predecessor'])
+        verified = authority == accepted['execution_authority'] == state.get('scope_authority')
     return {**{key: copy.deepcopy(state.get(key)) for key in (
         'protocol', 'revision', 'stage', 'stage_subject', 'checkpoint_path', 'handoff',
         'scope_authority', 'consumed_readiness', 'design_predecessor', 'recovery_predecessor', 'decision_provenance')},
         'scope_kind': 'stage3-scope-v1', 'control_digest': entry.digest(context),
         'control_revision': context.get('revision'),
-        'execution_authority': copy.deepcopy(current.get('execution_authority')),
+        'execution_authority': copy.deepcopy(authority) if verified else None,
         'integration_recovery': ({'decision': copy.deepcopy(state['final_integration_recovery']),
             'predecessor': copy.deepcopy(state['recovery_predecessor']),
             'carrier': copy.deepcopy(context['carrier']),
@@ -2215,6 +2224,8 @@ def read_scope_readiness(readiness):
         return state
     if outer.get('store_format') == state_store.FORMAT and outer.get(KEY, {}).get('stage') == 3:
         state = read_projection(path, projection='scope').record[KEY]
+        require((state.get('plan_revision_transaction') or {}).get('state') in (None, 'activated'),
+                'handoff_not_ready', 'Controller plan revision is pending; no new B preparation is ready')
         actual = consumed_scope_readiness(state, path)
         require(actual is not None and actual == readiness, 'handoff_not_ready', 'Controller readiness is stale or changed')
         return state
@@ -2317,12 +2328,52 @@ def scope_readiness(state, checkpoint_path, *, persisted=None):
             "checkpoint_path": str(path), "checkpoint_revision": state["revision"]}
 
 
+def activated_plan_authority(state, authority):
+    """Match one bounded activated journal entry to the original Control receipt."""
+    history = state.get('plan_revision_history', {})
+    checkpoint = state.get('control', {}).get('context', {}).get('handoff_progress') or {}
+    records = checkpoint.get('plan_revisions', [])
+    if (not isinstance(authority, dict) or not isinstance(history, dict) or len(history) > 32 or
+            not isinstance(records, list) or not 0 < len(records) <= 32 or
+            not isinstance(authority.get('execution_plan'), dict) or type(authority.get('revision')) is not int or
+            not all(isinstance(transaction, dict) for transaction in history.values()) or
+            checkpoint.get('execution_authority') != authority):
+        return False
+    expected = {'revision': authority['revision'], 'authority_digest': entry.digest(authority),
+        'plan_digest': authority['execution_plan'].get('plan_digest'),
+        'contract_digest': authority['execution_plan'].get('contract_digest')}
+    receipt = records[-1]
+    if (not isinstance(receipt, dict) or not isinstance(receipt.get('evidence'), dict) or
+            not isinstance(receipt['evidence'].get('planning_commit'), str) or
+            checkpoint.get('plan_authority') != expected or
+            receipt.get('controller_ref') != state['control']['context']['controller_ref'] or
+            receipt.get('revision_ref') != entry.digest({key: value for key, value in receipt.items()
+                if key != 'revision_ref'}) or receipt.get('evidence', {}).get('new_authority') != expected):
+        return False
+    transactions = [*history.values(), state.get('plan_revision_transaction') or {}]
+    return any(isinstance(transaction, dict) and transaction.get('state') == 'activated' and
+        transaction.get('proposed_authority') == authority and
+        transaction.get('control_result') == receipt and
+        isinstance(transaction.get('commit_input'), dict) and
+        transaction.get('commit_input', {}).get('planning_commit') == receipt['evidence']['planning_commit']
+        for transaction in transactions)
+
+
 def consumed_scope_readiness(state, checkpoint_path):
     """Verify the one Stage-2 readiness atomically consumed by current Stage 3."""
     if state.get("stage") != 3 or not isinstance(state.get("consumed_readiness"), dict):
         return None
     readiness = state["consumed_readiness"]
     path = Path(checkpoint_path).resolve()
+    verified_projection = False
+    if state.get('scope_kind') == 'stage3-scope-v1':
+        validate_stage3_scope(state)
+        # JSON self-assertions cannot replace the exact current Store projection.
+        current_scope = read_projection(path, projection='scope').record[KEY]
+        if state != current_scope:
+            return None
+        verified_projection = (current_scope['execution_authority'] is not None and
+            current_scope['execution_authority'] == state.get('scope_authority'))
     if state.get('design_predecessor') is not None:
         old = read_design_predecessor(state['design_predecessor'], path)
         saved = state['handoff']
@@ -2343,8 +2394,7 @@ def consumed_scope_readiness(state, checkpoint_path):
                 return {**copy.deepcopy(readiness), 'scope_revision': current['revision'],
                     'scope_seal': current['seal_ref'], 'scope_authority': copy.deepcopy(current),
                     'execution_plan': copy.deepcopy(current['execution_plan'])}
-        transaction = state.get('plan_revision_transaction') or {}
-        if (transaction.get('state') != 'activated' or transaction.get('proposed_authority') != current or
+        if (not (verified_projection or activated_plan_authority(state, current)) or
                 current.get('execution_plan', {}).get('contract_digest') != readiness['execution_plan']['contract_digest'] or
                 current.get('scope', {}).get('baseline') != old['scope_authority']['scope']['baseline']):
             return None
@@ -2392,9 +2442,7 @@ def consumed_scope_readiness(state, checkpoint_path):
     current = state.get("scope_authority")
     if current == readiness["scope_authority"]:
         return copy.deepcopy(readiness)
-    transaction = state.get("plan_revision_transaction") or {}
-    if (transaction.get("state") != "activated" or
-            transaction.get("proposed_authority") != current or
+    if (not (verified_projection or activated_plan_authority(state, current)) or
             current.get("execution_plan", {}).get("contract_digest") !=
             readiness["execution_plan"]["contract_digest"] or
             current.get("scope", {}).get("baseline") !=

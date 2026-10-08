@@ -1,5 +1,5 @@
 {
-  "bundle_digest": "972fcdefd47dc6f72b5af1e7f8831b8e009f2011d25f7a8eee0e5fb8d735e761",
+  "bundle_digest": "7c92e17c502698bda25e44c7697febba42c028cc03244a7c6dafeeda6b214374",
   "compatibility_key": {
     "confirmation": "goal-scoped-confirmation-v3",
     "control": 12,
@@ -248,11 +248,11 @@
     },
     "scripts/workflow_progress.py": {
       "mode": "0644",
-      "sha256": "740ae9400948db6e83c3598ddb4ff8fc27aeb1ed2093e67166f4fe27dd8cb065"
+      "sha256": "f248d29fc58c54e8eabf8eea1ae9826839fe1facb5528e42e4a2ca2c26a2c2a9"
     },
     "scripts/workflow_stage_result.schema.json": {
       "mode": "0644",
-      "sha256": "dd2919b822e625ee00b44d99031809c377d79e9bd3f7908e13650c25734d61d4"
+      "sha256": "538fc4910c5e0181c5371bf58bdceb62d47a63c14c25b3d8e017d8580db22679"
     },
     "scripts/workflow_state_store.py": {
       "mode": "0644",
@@ -261,7 +261,7 @@
   },
   "format_version": 1,
   "name": "guided-implementation",
-  "release": "1.3.0",
+  "release": "1.4.0",
   "resources": [
     "design-discussion/references/confirmation-contract.md",
     "design-discussion/references/ledger-protocol.md",
@@ -320,6 +320,6 @@
     "shared/scripts/workflow_state_store.py",
     "solution-design/references/conversation-source.md"
   ],
-  "source_revision": "workflow-pipeline-v1.3.0",
+  "source_revision": "workflow-pipeline-v1.4.0",
   "stage": 3
 }
