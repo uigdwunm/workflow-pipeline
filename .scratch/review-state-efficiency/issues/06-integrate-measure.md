@@ -73,6 +73,8 @@ G4 后续实际原因：24 closed-docs 原公开全恢复85.61s通过，原actor
 
 ## 验证顺序与交付
 
+G4 恢复链的已确认增量：原命令 32 暴露只读 Git 计划投影被当作完整可写 C 记录；37 证明 Stage3 没有自动归档定位，归档读取假设不成立。只在现有 `implementation_delivery` 的 `recovery_ref` 保存恢复必需的原真实计划记录、来源及 carried/revalidation 事实，由 `implementation_recovery` 核验原 CAS 引用、身份、权限和当前 schema 后恢复。保留普通 Git 投影、固定读取预算及无修订恢复路线；不扫描历史或构造缺失记录。原 31 attached ledger、33 actor/prepare/closure、35 D2/native owner 回归已通过，完整恢复及最终全量仍未完成。
+
 1. 每组先选择通过项目 runner 的最小反馈命令，证明合法输入和目标失败确实可达；准备失败先修合法基线，避免反复跑长模块寻找同一输入错误。
 2. 修复后跑实际失败用例和共同入口的直接消费者，再跑必要的真实 C/Git/CAS/停止与审查组合。纯格式反例只构造对应公开边界需要的合法输入；权限与接线仍用真实模块验证。
 3. 公共输入/读取入口稳定、已知失败已处理后固定候选，完成 `scripts/validate.sh` 及最终 coverage/两轴审查。完整 gate 失败则按实际影响回到对应组；修复后重新绑定最终候选完成全量，不跳过失败模块，也不以局部通过替代。
