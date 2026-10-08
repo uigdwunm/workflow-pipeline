@@ -433,13 +433,27 @@ class PlanDrivenDispatchTests(unittest.TestCase):
         flow.begin('continuous', request)
         flow.invoke('observe', flow.observation(ref='native:dispatcher'))
         (flow.flow / 'impl.py').write_bytes(b'def run():\n    return 1\n')
-        flow.flow_git('add', 'impl.py')
-        flow.flow_git('commit', '-qm', 'legacy incomplete group')
+        (flow.flow / 'helper.py').write_bytes(b'def helper():\n    return 2\n')
+        flow.flow_git('add', 'impl.py', 'helper.py')
+        flow.flow_git('commit', '-qm', 'original complete implementation')
         candidate = flow.flow_git('rev-parse', 'HEAD')
-        outer = progress.read_record(flow.checkpoint)
-        context = outer[progress.KEY]['control']['context']
+        flow.accept_fixture_candidate(candidate)
+        flow.complete_fixture_local_reviews(candidate, '-fake-accepted-negative')
+        owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+        coverage = owner.build_review_coverage(candidate, delivery=False)
+        before = flow.checkpoint.read_bytes()
+        context = copy.deepcopy(owner.state['control']['context'])
+        # Only the caller's detached negative input claims a partial result.
+        # The original C, allocation acceptance and Ticket coverage stay real.
+        context['handoff_progress'] = dict(context['handoff_progress'])
+        context['handoff_progress']['executions'] = []
+        context['handoff_progress']['archived_executions'] = []
         flow.fixture_accepted_execution(context, candidate)
         execution = context['handoff_progress']['executions'][0]
+        execution['paths'] = ['impl.py']
+        execution['file_hashes'] = {'impl.py': execution['file_hashes']['impl.py']}
+        execution['git_result_snapshot'] = {'impl.py': execution['git_result_snapshot']['impl.py']}
+        execution['plan_refs'] = [ref for ref in execution['plan_refs'] if ref['step_id'] != helper_step['id']]
         authority = context['handoff_progress']['execution_authority']
         ticket = authority['execution_plan']['catalog']['tickets'][0]
         execution['plan_refs'].append(execution_plan.step_ref(ticket, helper_step))
@@ -451,7 +465,7 @@ class PlanDrivenDispatchTests(unittest.TestCase):
             'attempt': context['carrier']['attempt'],
             'commit': candidate, 'expected_target_head': flow.git('rev-parse', 'main'),
             'binding': flow.binding, 'plan_digest': checkpoint['plan_digest'],
-            'plan_authority': checkpoint['plan_authority'], 'checks': checks,
+            'plan_authority': checkpoint['plan_authority'], 'checks': checks, 'ticket_coverage': coverage,
             'source': {'adapter': 'fixture', 'call_ref': 'focused-incomplete',
                 'response_ref': 'focused-incomplete-result', 'raw': {'checks': checks,
                     'source_unchanged': True, 'stopped': True,
@@ -462,6 +476,7 @@ class PlanDrivenDispatchTests(unittest.TestCase):
                     'schema_version': context['schema_version'], 'actor_ref': 'task',
                     'context': context, 'action': 'candidate-ready', 'evidence': evidence}})
         self.assertIn('current function step', str(error.exception))
+        self.assertEqual(flow.checkpoint.read_bytes(), before)
 
     def test_later_native_allocation_reads_accepted_implementation_file(self):
         flow = self.active_flow(read_dependency=True)

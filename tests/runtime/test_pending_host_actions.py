@@ -29,7 +29,7 @@ class PendingHostActionTests(unittest.TestCase):
         return copy.deepcopy(result['next_action'])
 
     def unresolved(self):
-        return progress.Progress(self.f.checkpoint,progress.read_record(self.f.checkpoint)).unresolved_host_actions()
+        return progress.Progress(self.f.checkpoint,progress.read_active_owner(self.f.checkpoint)).unresolved_host_actions()
 
     def pause_and_stop(self):
         self.bind()
@@ -119,6 +119,7 @@ class PendingHostActionTests(unittest.TestCase):
 
     def stop_save_window(self,after):
         original = self.continue_action()
+        before = self.f.checkpoint.read_bytes()
         save = progress.Progress.save
         def crash(owner):
             if (owner.state.get('action') or {}).get('operation') == 'stop-host':
@@ -132,6 +133,15 @@ class PendingHostActionTests(unittest.TestCase):
         if after:
             self.assertEqual(action['operation'],'lookup-exact-action')
             action = action['action']
+        else:
+            # Pause and the replacement stop intent share the original CAS.
+            # A fault before it commits leaves only the original continue;
+            # recover that identity, then retry the same requested pause.
+            self.assertEqual(self.f.checkpoint.read_bytes(), before)
+            self.assertIsNone(self.f.state().get('stop_requested'))
+            self.assertEqual(action['operation'], 'lookup-exact-action')
+            self.assertEqual(action['action'], original)
+            action = self.f.invoke('pause')['next_action']
         self.assertEqual(action['operation'],'stop-host')
         self.f.invoke('observe',self.f.observation('stopped','result'))
         self.assertEqual(self.f.state()['status'],'pausing')

@@ -2796,7 +2796,7 @@ class Progress:
         archives = self.prepare_history_archive(force=getattr(self, '_archive_force', False)) or {}
         archives.update(self.prepare_review_archive(maximum=32 - len(archives)))
         store = state_store.open_store(self.path)
-        current = store.open_current()
+        current = store.open_current() if read_record(self.path).get('store_format') == state_store.FORMAT else None
         segments = []
         if current is not None:
             pinned = {(self.state.get('transaction_source') or {}).get('event_id'),
@@ -2945,7 +2945,7 @@ class Progress:
         state = self.state
         claims = (state['control']['context'].get('handoff_progress') or {}).get('review_claims', {})
         store = state_store.open_store(self.path)
-        current = store.open_current()
+        current = store.open_current() if read_record(self.path).get('store_format') == state_store.FORMAT else None
         archives, retained = {}, []
         for historical, group in [(False, state.get('review_activity', {})),
                                   *((True, group) for group in state.get('review_history', []))]:

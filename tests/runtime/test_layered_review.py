@@ -1423,7 +1423,10 @@ class LayeredReviewTests(fixture.ProgressTests):
             'status': 'ready', 'ref': 'native:dispatcher-D2', 'raw': {'write_authority': False}}
         self.invoke('control', {'action': 'dispatch-recovery-result', 'evidence': {
             'recovery_id': prepared['recovery_id'], 'receipt': receipt}, 'receipt': receipt})
-        inventory = self.observation('stopped', 'result', ref='native:dispatcher')['lifecycle']
+        self.assertEqual(self.state()['control']['context']['handoff_progress']['recovery']['state'], 'ready')
+        # The original host census still contains the stopped writers; its
+        # newly created replacement has not begun its first execution turn.
+        inventory = copy.deepcopy(stopped['lifecycle'])
         inventory['pages'][0]['response']['data'].append({'id': 'native:dispatcher-D2', 'status': {'type': 'idle'}})
         self.invoke('lifecycle-state', inventory)
         activated = self.invoke('control', {'action': 'recover-dispatch', 'evidence': {

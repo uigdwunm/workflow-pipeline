@@ -79,13 +79,20 @@ class ReviewFirstTests(fixture.ProgressTests):
         other.update(id='inline-other', target={'path': 'other.py', 'symbol': 'run', 'operation': 'add'},
                      verification_refs=['V-other'])
         plan['steps'].append(other)
+        plan['behavior_slices'].append({**copy.deepcopy(plan['behavior_slices'][0]),
+            'id': 'other-behavior', 'step_ids': [other['id']], 'verification_refs': ['V-other']})
         value['authorization']['scope_digest'] = transfer.entry.digest(scope)
         self.begin('continuous', value)
         self.invoke('observe', self.observation(ref='native:dispatcher'))
 
         execution = self.execution_input()
+        execution['scope']['owned_paths'] = ['impl.py']
+        ticket = self.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
+        execution['semantic']['plan_refs'] = [execution_plan.step_ref(ticket, ticket['plan']['steps'][0])]
+        execution['authorization']['scope_digest'] = transfer.entry.digest(execution['scope'])
         prepared = self.invoke('allocation', {'allocation_id': 'unchanged', 'operation': 'prepare',
                                                'handoff': execution})
+        self.assertIsNotNone(prepared['next_action'], prepared)
         self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
         slot = self.state()['allocations']['unchanged']
         self.invoke('allocation', {'allocation_id': 'unchanged', 'operation': 'bind',
@@ -99,7 +106,7 @@ class ReviewFirstTests(fixture.ProgressTests):
                 'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
                 'tests': ['real allocation fixture passed'],
                 'write_release': transfer.dispatch.execution_release_token(slot['record']),
-                'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_refs': transfer.handoff.resolve_allocation(slot['handoff'])['semantic']['plan_refs'],
                 'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
         self.invoke('allocation', {'allocation_id': 'unchanged', 'operation': 'accept',
             'decision': {'reference': 'dispatcher:accepted'}})
@@ -126,7 +133,7 @@ class ReviewFirstTests(fixture.ProgressTests):
                 'file_hashes': {'other.py': hashlib.sha256(other_data).hexdigest()},
                 'tests': ['real allocation fixture passed'],
                 'write_release': transfer.dispatch.execution_release_token(slot['record']),
-                'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_refs': transfer.handoff.resolve_allocation(slot['handoff'])['semantic']['plan_refs'],
                 'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
         self.invoke('allocation', {'allocation_id': 'affected-old', 'operation': 'accept',
             'decision': {'reference': 'dispatcher:other-accepted'}})
@@ -161,25 +168,23 @@ class ReviewFirstTests(fixture.ProgressTests):
         forged['handoff_progress']['carried_results'][0]['file_hashes']['impl.py'] = '0' * 64
         with self.assertRaises(control.ControlError):
             control.validate_context(forged)
-        owner = fixture.progress.Progress(self.checkpoint, fixture.progress.read_record(self.checkpoint))
+        owner = fixture.progress.Progress(self.checkpoint, fixture.progress.read_active_owner(self.checkpoint))
         self.assertTrue({'native:executor', 'native:other-executor'} <= owner.native_refs())
         self.assertEqual(owner.finalization_owner('native:executor')[0], 'native:dispatcher')
         active = self.observation('stopped', 'result', ref='native:dispatcher')['lifecycle']
-        active['pages'][0]['response']['data'].extend([
-            {'id': 'native:executor', 'status': {'type': 'idle'}},
-            {'id': 'native:other-executor', 'status': {'type': 'active'}}])
-        self.invoke('lifecycle-state', active)
+        other_thread = next(thread for thread in active['pages'][0]['response']['data']
+                            if thread['id'] == 'native:other-executor')
+        other_thread['status'] = {'type': 'active'}
+        active_result = self.invoke('lifecycle-state', active)
+        self.assertNotEqual(active_result['status'], 'blocked', active_result)
         pending = fixture.progress.Progress(self.checkpoint,
-            fixture.progress.read_record(self.checkpoint)).stop_barrier_pending()
+            fixture.progress.read_active_owner(self.checkpoint)).stop_barrier_pending()
         self.assertTrue(any(item['kind'] == 'native-turn-not-stopped' and
                             item['thread'] == 'native:other-executor' for item in pending), pending)
         stopped = self.observation('stopped', 'result', ref='native:dispatcher')['lifecycle']
-        stopped['pages'][0]['response']['data'].extend([
-            {'id': 'native:executor', 'status': {'type': 'idle'}},
-            {'id': 'native:other-executor', 'status': {'type': 'idle'}}])
         self.invoke('lifecycle-state', stopped)
         pending = fixture.progress.Progress(self.checkpoint,
-            fixture.progress.read_record(self.checkpoint)).stop_barrier_pending()
+            fixture.progress.read_active_owner(self.checkpoint)).stop_barrier_pending()
         self.assertFalse(any(item['kind'] in {'unreconciled-descendants',
             'native-turn-not-stopped'} for item in pending), pending)
         unknown = copy.deepcopy(stopped)
@@ -187,7 +192,7 @@ class ReviewFirstTests(fixture.ProgressTests):
             {'id': 'native:unbound', 'status': {'type': 'idle'}})
         self.invoke('lifecycle-state', unknown)
         pending = fixture.progress.Progress(self.checkpoint,
-            fixture.progress.read_record(self.checkpoint)).stop_barrier_pending()
+            fixture.progress.read_active_owner(self.checkpoint)).stop_barrier_pending()
         self.assertTrue(any(item['kind'] == 'unreconciled-descendants' for item in pending), pending)
         self.invoke('lifecycle-state', stopped)
         if storage != 'dirty':
@@ -202,6 +207,7 @@ class ReviewFirstTests(fixture.ProgressTests):
         controller_host()
         self.invoke('advance')
         self.invoke('observe', self.observation('running', 'result', ref='native:dispatcher'))
+        missing_step_context = None
         def candidate_request(call_ref):
             candidate = self.flow_git('rev-parse', 'HEAD')
             checks = fixture.transfer.checks_for(self.plan()['review_required'], candidate)
@@ -224,13 +230,7 @@ class ReviewFirstTests(fixture.ProgressTests):
             self.assertEqual(execution_plan.current_accepted_steps(
                 catalog, accepted, progress['execution_authority'], fingerprints),
                 {'inline-implementation'})
-            with self.assertRaises(control.ControlError) as stale_result:
-                control_git.verified_transition({'repository': str(self.flow),
-                    'baseline': current['git_baseline_commit'],
-                    'request': {'schema_version': 6, 'action': 'candidate-ready',
-                        'actor_ref': 'task', 'context': copy.deepcopy(self.state()['control']['context']),
-                        'evidence': candidate_request('before-fresh-adoption')['evidence']}})
-            self.assertIn('current function step: inline-other', str(stale_result.exception))
+            missing_step_context = copy.deepcopy(self.state()['control']['context'])
         if advance_target:
             (self.root / 'impl.py').write_text("print('upstream sibling')\n")
             self.git('add', 'impl.py')
@@ -264,7 +264,7 @@ class ReviewFirstTests(fixture.ProgressTests):
                 'file_hashes': {'other.py': hashlib.sha256(other_data).hexdigest()},
                 'tests': ['fresh behavioral revalidation passed'],
                 'write_release': transfer.dispatch.execution_release_token(slot['record']),
-                'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_refs': transfer.handoff.resolve_allocation(slot['handoff'])['semantic']['plan_refs'],
                 'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
         self.invoke('allocation', {'allocation_id': 'affected-new', 'operation': 'accept',
             'decision': {'reference': 'dispatcher:fresh-adoption-accepted'}})
@@ -274,6 +274,20 @@ class ReviewFirstTests(fixture.ProgressTests):
         controller_host()
         candidate_request_data = candidate_request('after-fresh-adoption')
         candidate = candidate_request_data['evidence']['commit']
+        self.complete_fixture_local_reviews(candidate, '-revision-adoption')
+        if missing_step_context is not None:
+            owner = fixture.progress.Progress(self.checkpoint, fixture.progress.read_active_owner(self.checkpoint))
+            rejected_evidence = copy.deepcopy(candidate_request_data['evidence'])
+            rejected_evidence['source'] = copy.deepcopy(candidate_request_data['receipt'])
+            rejected_evidence['ticket_coverage'] = owner.build_review_coverage(candidate, delivery=False)
+            before = self.checkpoint.read_bytes()
+            with self.assertRaises(control.ControlError) as stale_result:
+                control_git.verified_transition({'repository': str(self.flow),
+                    'baseline': current['git_baseline_commit'],
+                    'request': {'schema_version': missing_step_context['schema_version'], 'action': 'candidate-ready',
+                        'actor_ref': 'task', 'context': missing_step_context, 'evidence': rejected_evidence}})
+            self.assertIn('current function step: inline-other', str(stale_result.exception))
+            self.assertEqual(self.checkpoint.read_bytes(), before)
         checks = candidate_request_data['evidence']['checks']
         evidence = candidate_request_data['evidence']
         result = self.invoke('control', candidate_request_data)
@@ -287,9 +301,11 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.assertEqual(review['next_action']['operation'], 'invoke-review', review)
         stale = copy.deepcopy(verification)
         stale['plan_authority'] = {**current_ref, 'revision': old['revision']}
-        refused = self.invoke('review-activity', {'operation': 'prepare', 'axis': 'spec',
-            'candidate': candidate, 'actor_ref': 'task', 'verification': stale})
-        self.assertEqual(refused['status'], 'blocked', refused)
+        before = self.checkpoint.read_bytes()
+        with self.assertRaisesRegex(control.ControlError, 'review verification differs'):
+            self.invoke('review-activity', {'operation': 'prepare', 'axis': 'spec',
+                'candidate': candidate, 'actor_ref': 'task', 'verification': stale})
+        self.assertEqual(self.checkpoint.read_bytes(), before)
 
     def test_c_revision_carries_unchanged_accepted_step_through_current_authority(self):
         self._revision_carry_and_adopt('committed')
@@ -309,9 +325,7 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.flow_git('add', 'impl.py')
         self.flow_git('commit', '-qm', 'accepted implementation')
         accepted = self.flow_git('rev-parse', 'HEAD')
-        outer = fixture.progress.read_record(self.checkpoint)
-        self.fixture_accepted_execution(outer[fixture.progress.KEY]['control']['context'], accepted)
-        fixture.progress.atomic_save(self.checkpoint, outer)
+        self.accept_fixture_candidate(accepted)
         if merged:
             self.flow_git('checkout', '-qb', 'foreign-side')
         (self.flow / 'foreign.py').write_text('outside assigned scope\n')
@@ -324,6 +338,7 @@ class ReviewFirstTests(fixture.ProgressTests):
             self.flow_git('checkout', '-q', self.binding['branch'])
             self.flow_git('merge', '--no-ff', '-qm', 'merge foreign side', 'foreign-side')
         candidate = self.flow_git('rev-parse', 'HEAD')
+        self.complete_fixture_local_reviews(candidate, '-foreign-history')
         self.assertNotIn('foreign.py', self.flow_git('diff', '--name-only',
             self.git('rev-parse', 'main'), candidate).splitlines())
         checkpoint = self.state()['control']['context']['handoff_progress']
@@ -333,10 +348,12 @@ class ReviewFirstTests(fixture.ProgressTests):
             'commit': candidate, 'expected_target_head': self.git('rev-parse', 'main'),
             'binding': self.binding, 'plan_digest': control.digest(self.plan()),
             'checks': checks}
+        owner = fixture.progress.Progress(self.checkpoint, fixture.progress.read_active_owner(self.checkpoint))
+        evidence['ticket_coverage'] = owner.build_review_coverage(candidate, delivery=False)
         with self.assertRaises(control.ControlError) as rejected:
             control_git.verified_transition({'repository': str(self.flow),
                 'baseline': checkpoint['git_baseline_commit'],
-                'request': {'schema_version': 6, 'action': 'candidate-ready',
+                'request': {'schema_version': self.state()['control']['context']['schema_version'], 'action': 'candidate-ready',
                     'actor_ref': 'task', 'context': self.state()['control']['context'],
                     'evidence': evidence}})
         self.assertIn('history escapes implementation scope', str(rejected.exception))
@@ -352,9 +369,8 @@ class ReviewFirstTests(fixture.ProgressTests):
         (self.flow / 'impl.py').write_text("print('ok')\n")
         self.flow_git('add', 'impl.py'); self.flow_git('commit', '-qm', 'implementation')
         candidate = self.flow_git('rev-parse', 'HEAD')
-        outer = fixture.progress.read_record(self.checkpoint)
-        self.fixture_accepted_execution(outer[fixture.progress.KEY]['control']['context'], candidate)
-        fixture.progress.atomic_save(self.checkpoint, outer)
+        self.accept_fixture_candidate(candidate)
+        self.complete_fixture_local_reviews(candidate, '-review-first')
         target = self.git('rev-parse', 'main')
         self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
         checks = [dict(item, status='passed', exit_code=0, start_commit=candidate, end_commit=candidate,
@@ -468,12 +484,18 @@ class ReviewFirstTests(fixture.ProgressTests):
         other = copy.deepcopy(plan['steps'][0])
         other.update(id='inline-other', target={'path': 'other.py', 'symbol': 'run', 'operation': 'add'})
         plan['steps'].append(other)
+        plan['behavior_slices'].append({**copy.deepcopy(plan['behavior_slices'][0]),
+            'id': 'other-behavior', 'step_ids': [other['id']]})
         value['authorization']['scope_digest'] = transfer.entry.digest(scope)
         self.begin('continuous', value)
         self.invoke('observe', self.observation(ref='native:dispatcher'))
 
         def accept(allocation_id, agent_ref, data):
             execution = self.execution_input()
+            execution['scope']['owned_paths'] = ['impl.py']
+            ticket = self.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
+            execution['semantic']['plan_refs'] = [execution_plan.step_ref(ticket, ticket['plan']['steps'][0])]
+            execution['authorization']['scope_digest'] = transfer.entry.digest(execution['scope'])
             prepared = self.invoke('allocation', {'allocation_id': allocation_id,
                 'operation': 'prepare', 'handoff': execution})
             self.assertEqual(prepared['next_action']['operation'], 'invoke-host', prepared)
@@ -489,7 +511,7 @@ class ReviewFirstTests(fixture.ProgressTests):
                     'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
                     'tests': ['real behavior check passed'],
                     'write_release': transfer.dispatch.execution_release_token(slot['record']),
-                    'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                    'plan_refs': transfer.handoff.resolve_allocation(slot['handoff'])['semantic']['plan_refs'],
                     'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
             self.invoke('allocation', {'allocation_id': allocation_id, 'operation': 'accept',
                 'decision': {'reference': 'dispatcher:' + allocation_id}})
@@ -542,13 +564,7 @@ class ReviewFirstTests(fixture.ProgressTests):
                 'call_ref': 'partial-checks', 'response_ref': 'partial-checks-result',
                 'raw': {'checks': checks, 'source_unchanged': True, 'stopped': True,
                         'dispatcher_ref': 'native:dispatcher'}}}
-        with self.assertRaises(control.ControlError) as missing_step:
-            control_git.verified_transition({'repository': str(self.flow),
-                'baseline': self.state()['control']['context']['handoff_progress']['git_baseline_commit'],
-                'request': {'schema_version': 6, 'action': 'candidate-ready', 'actor_ref': 'task',
-                    'context': copy.deepcopy(self.state()['control']['context']),
-                    'evidence': incomplete}})
-        self.assertIn('current function step: inline-other', str(missing_step.exception))
+        missing_step_context = copy.deepcopy(self.state()['control']['context'])
         other_execution = self.execution_input()
         other_execution['scope']['owned_paths'] = ['other.py']
         ticket = self.state()['scope_authority']['execution_plan']['catalog']['tickets'][0]
@@ -571,7 +587,7 @@ class ReviewFirstTests(fixture.ProgressTests):
                 'file_hashes': {'other.py': hashlib.sha256(other_bytes).hexdigest()},
                 'tests': ['other behavior verified'],
                 'write_release': transfer.dispatch.execution_release_token(slot['record']),
-                'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_refs': transfer.handoff.resolve_allocation(slot['handoff'])['semantic']['plan_refs'],
                 'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
         self.invoke('allocation', {'allocation_id': 'other-current', 'operation': 'accept',
             'decision': {'reference': 'dispatcher:other-current'}})
@@ -581,6 +597,20 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.settings['thread_id'] = 'task'
         self.request['host'].update(thread_id='task', role='controller', source_ref=None)
         self.request['host'].pop('actor_ref', None)
+        self.complete_fixture_local_reviews(candidate, '-writer-replacement')
+        owner = fixture.progress.Progress(self.checkpoint, fixture.progress.read_active_owner(self.checkpoint))
+        incomplete['commit'] = candidate
+        incomplete['ticket_coverage'] = owner.build_review_coverage(candidate, delivery=False)
+        incomplete['checks'] = fixture.transfer.checks_for(self.plan()['review_required'], candidate)
+        incomplete['source']['raw']['checks'] = copy.deepcopy(incomplete['checks'])
+        before = self.checkpoint.read_bytes()
+        with self.assertRaises(control.ControlError) as missing_step:
+            control_git.verified_transition({'repository': str(self.flow),
+                'baseline': missing_step_context['handoff_progress']['git_baseline_commit'],
+                'request': {'schema_version': missing_step_context['schema_version'], 'action': 'candidate-ready',
+                    'actor_ref': 'task', 'context': missing_step_context, 'evidence': incomplete}})
+        self.assertIn('current function step: inline-other', str(missing_step.exception))
+        self.assertEqual(self.checkpoint.read_bytes(), before)
         checks = fixture.transfer.checks_for(self.plan()['review_required'], candidate)
         result = self.invoke('control', {'action': 'candidate-ready', 'evidence': {
             'dispatcher_ref': 'native:dispatcher',
@@ -595,7 +625,7 @@ class ReviewFirstTests(fixture.ProgressTests):
                       if item.get('rejection')]
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],
                          'reviewable', (result, rejections))
-        current_results = self.state()['control']['context']['handoff_progress']['executions']
+        current_results = control.all_execution_results(self.state()['control']['context']['handoff_progress'])
         self.assertEqual(next(item['file_hashes'] for item in current_results
                               if item['agent_ref'] == 'native:new-writer'),
                          {'impl.py': hashlib.sha256(replacement).hexdigest()})
@@ -706,7 +736,11 @@ class ReviewFirstTests(fixture.ProgressTests):
                 'actor_ref':'task','verification':{'candidate':candidate,'plan_digest':evidence['plan_digest'],
                                                    'checks':evidence['checks'],'plan_authority':current_plan}})
             receipt = {'adapter':'fixture-native','call_ref':'call:'+axis,'response_ref':'response:'+axis,
-                       'status':'stopped','ref':'native:'+axis,'raw':{'result':'accepted'}}
+                       'status':'stopped','ref':'native:'+axis,'raw':{'review': {
+                           'status': 'accepted', 'findings': [], 'checks': evidence['checks'],
+                           **{key: prepared['next_action']['review_scope'][key] for key in
+                              ('read_paths', 'ac_refs', 'requirement_refs', 'dependency_claim_ids')},
+                           'review_scope': prepared['next_action']['review_scope']}}}
             self.invoke('review-activity', {'operation':'observe','axis':axis,'candidate':candidate,'actor_ref':'task',
                         'action_id':prepared['next_action']['action_id'],'receipt':receipt})
             reviews[axis] = {'candidate':candidate,'expected_target_head':evidence['expected_target_head'],
@@ -741,9 +775,11 @@ class ReviewFirstTests(fixture.ProgressTests):
         checks = [dict(item, status=status, exit_code=0 if status == 'passed' else 1, start_commit=candidate, end_commit=candidate,
                        environment_fingerprint=None, output_ref='fixture:full', output_digest='b'*64)
                   for item in self.plan()['final_required']]
-        result = self.invoke('control', {'action':'validation-result','evidence':{'attempt_id':'final-1','checks':checks},
+        request = {'action':'validation-result','evidence':{'attempt_id':'final-1','checks':checks},
             'receipt':{'adapter':'fixture-controller','call_ref':'full-command','response_ref':'full-observed',
-                       'raw':{'attempt_id':'final-1','checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':'native:dispatcher'}}})
+                       'raw':{'attempt_id':'final-1','checks':checks,'source_unchanged':True,'stopped':True,'dispatcher_ref':'native:dispatcher'}}}
+        self.completed_final_request = copy.deepcopy(request)
+        result = self.invoke('control', request)
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'deliverable' if status == 'passed' else 'final-validation-failed', result)
         self.assertIsNone(self.state()['dispatch']['delivery'])
         return candidate
@@ -816,10 +852,7 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.flow_git('add', 'impl.py')
         self.flow_git('commit', '-qm', 'accepted implementation')
         candidate = self.flow_git('rev-parse', 'HEAD')
-        outer = fixture.progress.read_record(self.checkpoint)
-        self.fixture_accepted_execution(outer[fixture.progress.KEY]['control']['context'], candidate)
-        fixture.progress.atomic_save(self.checkpoint, outer)
-        self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
+        self.accept_fixture_candidate(candidate)
         payload = {'artifacts': ['impl.py'], 'checks': ['behavior passed'],
             'candidate_commit': candidate,
             'review': {axis: {'candidate': candidate, 'reviewer_ref': axis,
@@ -869,20 +902,27 @@ class ReviewFirstTests(fixture.ProgressTests):
             self.assertIsNotNone(slot['record'])
             self.assertIsNone(slot.get('action'))
             self.assertNotIn('readiness', slot['handoff'])
-            with self.assertRaises(transfer.entry.PreparationError):
-                transfer.handoff.verify(slot['handoff'])
+            before = self.checkpoint.read_bytes()
+            self.assertEqual(slot['handoff']['kind'], 'allocation-input')
+            self.assertEqual(transfer.handoff.verify(slot['handoff']), slot['handoff'])
+            self.assertEqual(self.checkpoint.read_bytes(), before)
             with self.assertRaises(transfer.entry.PreparationError):
                 transfer.dispatch.handle({'protocol': transfer.handoff.PROTOCOL,
                     'operation': 'prepare', 'handoff': slot['handoff'],
                     'control': copy.deepcopy(self.state()['control'])})
             saved_record = copy.deepcopy(slot['record'])
+            original_launch = transfer.dispatch.allocation_launch(saved_record)
             retried = self.invoke('allocation', {'allocation_id': 'integrated',
-                'operation': 'prepare', 'handoff': execution})
+                 'operation': 'prepare', 'handoff': execution})
             self.assertEqual((retried.get('next_action') or {}).get('operation'),
                              'invoke-host', retried.get('error'))
-            self.assertEqual(self.state()['allocations']['integrated']['record'], saved_record)
+            issued_record = self.state()['allocations']['integrated']['record']
+            self.assertEqual(retried['next_action']['payload'], original_launch)
+            self.assertEqual(issued_record['allocation'], saved_record['allocation'])
+            self.assertEqual(issued_record['request']['attempt'], saved_record['request']['attempt'])
+            self.assertEqual(issued_record['request']['digest'], original_launch['digest'])
             bound = self.invoke('allocation', {'allocation_id': 'integrated',
-                'operation': 'bind', 'receipt': self.receipt(saved_record,
+                'operation': 'bind', 'receipt': self.receipt(issued_record,
                     ref='native:integrated-executor')})
             self.assertEqual(bound['next_action']['result']['status'], 'bound', bound)
             record = self.state()['allocations']['integrated']['record']
@@ -894,7 +934,7 @@ class ReviewFirstTests(fixture.ProgressTests):
                         'file_hashes': {'impl.py': hashlib.sha256(implementation).hexdigest()},
                         'tests': ['integrated behavior passed'],
                         'write_release': transfer.dispatch.execution_release_token(record),
-                        'plan_refs': record['handoff']['semantic']['plan_refs'],
+                        'plan_refs': transfer.handoff.resolve_allocation(self.allocation_slot('integrated')['handoff'])['semantic']['plan_refs'],
                         'plan_authority': self.state()['control']['context'][
                             'handoff_progress']['plan_authority']}}})
             self.assertEqual(received['next_action']['result']['status'], 'received', received)
@@ -996,13 +1036,13 @@ class ReviewFirstTests(fixture.ProgressTests):
             **{k:checkpoint[k] for k in ('candidate','expected_target_head','plan_digest',
                                          'plan_authority','review_digest')}},
             'receipt':{'adapter':'fixture','call_ref':'start','response_ref':'start-approved','raw':{'decision':'run'}}}
-        original = fixture.progress.atomic_save
-        def interrupted(path, value):
-            original(path,value)
-            state = value.get(fixture.progress.KEY,{})
+        original = fixture.progress.Progress.save
+        def interrupted(owner):
+            original(owner)
+            state = owner.state
             if state.get('step') == 'continue' and (state.get('continuation_intent') or {}).get('kind') == 'final-validation':
                 raise KeyboardInterrupt()
-        with patch.object(fixture.progress,'atomic_save',side_effect=interrupted):
+        with patch.object(fixture.progress.Progress,'save',new=interrupted):
             with self.assertRaises(KeyboardInterrupt):
                 self.invoke('control',request)
         checkpoint = self.state()['control']['context']['handoff_progress']
@@ -1034,14 +1074,17 @@ class ReviewFirstTests(fixture.ProgressTests):
 
     def test_old_runner_progress_and_transfer_records_are_not_migrated(self):
         self.begin_dispatcher()
-        state = fixture.progress.read_record(self.checkpoint)
+        state = fixture.progress.read_active_owner(self.checkpoint)
+        legacy_path = self.checkpoint.with_name('legacy-checkpoint.json')
         state[fixture.progress.KEY]['protocol'] = 'workflow-progress-v6'
-        fixture.progress.atomic_save(self.checkpoint,state)
-        before = self.checkpoint.read_bytes()
+        fixture.progress.atomic_save(legacy_path,state)
+        before = legacy_path.read_bytes()
+        current_before = self.checkpoint.read_bytes()
         with self.assertRaises(fixture.transfer.entry.PreparationError) as error:
-            fixture.progress.handle(self.checkpoint,{'protocol':fixture.progress.PROTOCOL,'operation':'inspect','expected_revision':state[fixture.progress.KEY]['revision']})
+            fixture.progress.handle(legacy_path,{'protocol':fixture.progress.PROTOCOL,'operation':'inspect','expected_revision':state[fixture.progress.KEY]['revision']})
         self.assertEqual(error.exception.code,'legacy_run_requires_original_runtime')
-        self.assertEqual(self.checkpoint.read_bytes(),before)
+        self.assertEqual(legacy_path.read_bytes(),before)
+        self.assertEqual(self.checkpoint.read_bytes(),current_before)
         for version in (1,2,3,4):
             original = {'version':version,'confirmed':{'packages':{}},'sentinel':'unchanged'}
             with self.assertRaisesRegex(fixture.runner.WorkflowError,'legacy_run_requires_original_runtime'):
@@ -1096,8 +1139,15 @@ class ReviewFirstTests(fixture.ProgressTests):
             ('publication',{'candidate_commit':candidate,'reference':'blocked'})]
         for operation,data in sibling_requests:
             with self.subTest(operation=operation):
-                response = self.invoke(operation,data)
-                self.assertEqual(response['error']['code'],'control_outcome_unknown')
+                before = self.checkpoint.read_bytes()
+                if operation == 'review-activity':
+                    with self.assertRaises(fixture.transfer.entry.PreparationError) as rejected_review:
+                        self.invoke(operation, data)
+                    self.assertEqual(rejected_review.exception.code, 'control_outcome_unknown')
+                    self.assertEqual(self.checkpoint.read_bytes(), before)
+                else:
+                    response = self.invoke(operation,data)
+                    self.assertEqual(response['error']['code'],'control_outcome_unknown')
                 self.assertEqual(self.state()['control']['context'],context)
         invalidate = {'action':'invalidate-candidate',
             'evidence':{'candidate':candidate,'reference':'controller:invalidate','reason':'replacement'},
@@ -1171,6 +1221,13 @@ class ReviewFirstTests(fixture.ProgressTests):
         self.assertEqual(self.invoke('control',self.final_result_request(checks,'wrong-fingerprint'))['status'],'blocked')
         checks[-1].update(status='unknown',environment_fingerprint='fixture-host-identity')
         self.invoke('control',self.final_result_request(checks,'unknown-verdict'))
+        checkpoint = self.state()['control']['context']['handoff_progress']
+        self.assertEqual(checkpoint['state'], 'validating')
+        self.assertEqual(checkpoint['attempts'][-1]['state'], 'unknown')
+        self.assertEqual(checkpoint['attempts'][-1]['source']['call_ref'], 'final-command')
+        self.assertIsNone(self.state()['dispatch']['delivery'])
+        checks[-1]['status'] = 'failed'
+        self.invoke('control', self.final_result_request(checks, 'definitive-failed-verdict'))
         self.assertEqual(self.state()['control']['context']['handoff_progress']['state'],'final-validation-failed')
         self.assertIsNone(self.state()['dispatch']['delivery'])
 
@@ -1241,13 +1298,13 @@ class ReviewFirstTests(fixture.ProgressTests):
     def test_resume_delivery_intent_survives_unpause_write_interruption(self):
         from unittest.mock import patch
         candidate = self.pause_after_lost_validation_result()
-        original = fixture.progress.atomic_save
-        def crash_after_unpause(path, value):
-            original(path,value)
-            state = value.get(fixture.progress.KEY,{})
+        original = fixture.progress.Progress.save
+        def crash_after_unpause(owner):
+            original(owner)
+            state = owner.state
             if state.get('status') == 'active' and state.get('resume_intent'):
                 raise KeyboardInterrupt()
-        with patch.object(fixture.progress,'atomic_save',side_effect=crash_after_unpause):
+        with patch.object(fixture.progress.Progress,'save',new=crash_after_unpause):
             with self.assertRaises(KeyboardInterrupt):
                 self.invoke('resume')
         self.assertEqual(self.state()['step'],'continue')
@@ -1257,12 +1314,17 @@ class ReviewFirstTests(fixture.ProgressTests):
     def test_duplicate_deferred_validation_result_resumes_to_actual_delivery(self):
         candidate = self.complete_final()
         self.invoke('observe',self.observation('idle','result',ref='native:dispatcher'))
-        request = next(value['request'] for value in self.state()['control_transactions'].values()
-                       if value['request']['action'] == 'validation-result')
+        request = copy.deepcopy(self.completed_final_request)
         self.invoke('pause')
         self.invoke('observe',self.observation('stopped','result',ref='native:dispatcher'))
-        self.invoke('control',request)
-        self.assertIn('deferred_validation',self.state())
+        before = self.checkpoint.read_bytes()
+        duplicate = self.invoke('control',request)
+        self.assertTrue(duplicate['acknowledged'], duplicate)
+        self.assertEqual(duplicate['next_action']['result']['effects'], [])
+        self.assertFalse(duplicate['next_action']['write_authority'])
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertEqual(self.state()['status'], 'paused')
+        self.assertIsNone(self.state()['dispatch']['delivery'])
         response = self.invoke('resume')
         self.assertNotIn('deferred_validation',self.state())
         self.finish_resumed_validation_delivery(response,candidate)

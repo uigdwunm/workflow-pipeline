@@ -2088,6 +2088,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
         flow.flow_git('add', 'impl.py', 'helper.py', 'generated/helper_copy.py')
         flow.flow_git('commit', '-qm', 'revised inline implementation')
         candidate = flow.flow_git('rev-parse', 'HEAD')
+        fixture.fixture.ProgressTests.complete_fixture_local_reviews(flow, candidate, '-inline-revision')
         flow.invoke('observe', flow.observation('idle', 'result', ref='native:dispatcher'))
         checkpoint = flow.state()['control']['context']['handoff_progress']
         checks = fixture.fixture.transfer.checks_for(checkpoint['validation_plan']['review_required'], candidate)
@@ -2102,7 +2103,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
                     'source_unchanged': True, 'stopped': True,
                     'dispatcher_ref': 'native:dispatcher'}}})
         self.assertEqual(flow.state()['control']['context']['handoff_progress']['state'], 'reviewable', ready)
-        flow.mark_reviewable = lambda _candidate, fixture_execution=False: {
+        flow.mark_reviewable = lambda _candidate, fixture_execution=False, evidence_suffix='': {
             'candidate': candidate, 'plan_digest': checkpoint['plan_digest'],
             'plan_authority': checkpoint['plan_authority'], 'checks': checks}
         payload = {'artifacts': ['impl.py', 'helper.py', 'generated/helper_copy.py'], 'checks': ['revised behavior passed'],
@@ -2159,14 +2160,27 @@ class PlanRevisionProgressTests(unittest.TestCase):
             progress.dispatch.record_for({'record': forged,
                 'control': copy.deepcopy(stage4['control'])})
         original_checkpoint = flow.checkpoint.read_bytes()
-        changed = progress.read_record(flow.checkpoint)
-        changed[progress.KEY]['history'][-1]['plan_revision_transaction']['state'] = 'prepared'
+        pinned = stage4['implementation_predecessor']
+        original_delivery, current, store = progress.read_implementation_delivery(flow.checkpoint, pinned)
+        self.assertEqual(current.root['metadata']['implementation_predecessor'], pinned)
+        self.assertEqual(original_delivery['authority_lineage'][-1]['state'], 'activated')
+        original_path = store._path(pinned['reference']['sha256'])
+        original_bytes = original_path.read_bytes()
+        self.assertEqual(hashlib.sha256(original_bytes).hexdigest(), pinned['reference']['sha256'])
+        changed = json.loads(original_bytes)
+        changed['value']['authority_lineage'][-1]['state'] = 'prepared'
         try:
-            progress.atomic_save(flow.checkpoint, changed)
+            # A pinned activated revision is immutable: rewriting it as
+            # prepared must fail its original proof hash before reuse.
+            original_path.write_bytes(progress.state_store.encode(changed))
             with self.assertRaises(progress.entry.PreparationError):
                 progress.handoff.verify(stage4['handoff'], checkpoint_path=str(flow.checkpoint))
+            self.assertEqual(flow.checkpoint.read_bytes(), original_checkpoint)
         finally:
-            flow.checkpoint.write_bytes(original_checkpoint)
+            original_path.write_bytes(original_bytes)
+        self.assertEqual(hashlib.sha256(original_path.read_bytes()).hexdigest(), pinned['reference']['sha256'])
+        self.assertEqual(flow.checkpoint.read_bytes(), original_checkpoint)
+        self.assertEqual(progress.handoff.verify(stage4['handoff'], checkpoint_path=str(flow.checkpoint)), stage4['handoff'])
 
     def test_staged_private_helper_revision_reaches_current_stage4_handoff(self):
         flow = self.new_active_flow()

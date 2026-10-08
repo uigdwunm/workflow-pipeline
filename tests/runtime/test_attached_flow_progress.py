@@ -605,6 +605,7 @@ class AttachedFlowTests(fixtures.ProgressTests):
         self.flow_git('add', 'impl.py')
         self.flow_git('commit', '-qm', 'attached revised implementation')
         candidate = self.flow_git('rev-parse', 'HEAD')
+        fixtures.ProgressTests.complete_fixture_local_reviews(self, candidate, '-attached-revision')
         self.invoke('observe', self.observation('idle', 'result', ref='native:dispatcher'))
         checkpoint = self.state()['control']['context']['handoff_progress']
         checks = fixtures.transfer.checks_for(checkpoint['validation_plan']['review_required'], candidate)
